@@ -107,13 +107,13 @@ let followed = follow_with(stream, |id, _from| {
 assert!(matches!(followed.frames.last(), Some(BuildFrame::Complete { .. })));
 ```
 
-The fabric, every mesh and every node stay ready-for-traffic; no node restarts and no node changes
+The fabric, every mesh and every node stay ready; no node restarts and no node changes
 state. Once the Build is `Complete`, `fabric.get` names `test-target` with `file` previous, and every
 node's row names `test-target`.
 
 Cells: `a_customer_changes_topology_storage_without_restarting_members` (the change on a two-mesh fabric
-with history, every line carried in source order), `every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change`
-(`node.get` of every node answers the same birth, ready-for-traffic, before, while every mesh-primary is
+with history, every line carried in source order), `every_serving_node_keeps_its_birth_and_ready_through_a_change`
+(`node.get` of every node answers the same birth, ready, before, while every mesh-primary is
 blocked, and after).
 
 ### Your commands during a change

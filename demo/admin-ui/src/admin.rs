@@ -246,7 +246,7 @@ impl Admin {
 
     /// build.create of the current topology as it stands: every live path on the executable its row records,
     /// based on the current Build. It changes nothing any node runs, so its Build has nothing to execute
-    /// and is Complete once the fabric holds ready-for-traffic (states.md "Resize and executable replacement").
+    /// and is Complete once the fabric holds ready (states.md "Resize and executable replacement").
     pub async fn resubmit(&self) -> Result<Accepted, CallEnd> {
         let current = self.current().await?;
         let nodes = current.paths.into_values().collect();

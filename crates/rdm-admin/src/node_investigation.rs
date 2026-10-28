@@ -206,7 +206,7 @@ pub async fn inspect_birth(provider: &dyn crate::deployment::provider::Deploymen
 
 /// Step a's leads of `node`'s exact birth, from `rows`, the store's by-destination index read for its
 /// node id (connections.md §3.1): the sources of the rows that hold a connection to that birth, each
-/// resolved to a member of `view` in any mesh that is ready for traffic, never `me` (the caller is
+/// resolved to a member of `view` in any mesh that is ready, never `me` (the caller is
 /// never its own carrier) and never the node itself; one per node, in path order.
 ///
 /// Taken: the rows connections.md §3.2's carrier discovery reads, `Direct` and `Connected`
@@ -227,7 +227,7 @@ pub fn leads_of(rows: &[NodeConnection], view: &Topology, node: &Node, me: Optio
         }
         let Some(source) = view.members().find(|m| m.node_id == row.source.node_id) else { continue };
         let same_birth = row.source.incarnation.as_ref().is_none_or(|i| source.incarnation_id.as_ref() == Some(i));
-        if !same_birth || source.node_id == node.node_id || Some(&source.node_id) == me || source.status != NodeStatus::ReadyForTraffic {
+        if !same_birth || source.node_id == node.node_id || Some(&source.node_id) == me || source.status != NodeStatus::Ready {
             continue;
         }
         if !leads.iter().any(|l| l.node_id == source.node_id) {
@@ -252,7 +252,7 @@ mod tests {
         let mut n = Node::allocated(name.parse().unwrap());
         n.node_id = NodeId::mint();
         n.incarnation_id = Some(IncarnationId::mint());
-        n.status = NodeStatus::ReadyForTraffic;
+        n.status = NodeStatus::Ready;
         n
     }
 
@@ -261,7 +261,7 @@ mod tests {
         let mut node = ready("mesh1.rpc.1");
         node.status = NodeStatus::PendingReconnect;
         let nodes = vec![ready("mesh1.admin.1"), node.clone(), ready("mesh1.rpc.2"), ready("mesh1.rpc.3"), ready("mesh2.rpc.1"), ready("mesh2.rpc.2")];
-        (node, Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process }, meshes: vec![], nodes })
+        (node, Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes })
     }
 
     fn of(view: &Topology, name: &str) -> Node {
@@ -277,7 +277,7 @@ mod tests {
     }
 
     fn current(n: &Node) -> StatusReply {
-        StatusReply::Current { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic }
+        StatusReply::Current { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Ready }
     }
 
     /// CONTRACT (Q107 item 1 step a; connections.md §3.2, carrier discovery
@@ -310,7 +310,7 @@ mod tests {
         assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), ["mesh1.rpc.2", "mesh2.rpc.1"], "the active Direct sources in any mesh, once each, in path order");
         let mut view = view;
         view.nodes.iter_mut().find(|n| n.node_id == m1.node_id).unwrap().status = NodeStatus::PendingReconnect;
-        assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), ["mesh1.rpc.2"], "a source the view holds off ready-for-traffic carries nothing");
+        assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), ["mesh1.rpc.2"], "a source the view holds off ready carries nothing");
         assert!(leads_of(&rows, &view, &Node { incarnation_id: None, ..node.clone() }, None).is_empty(), "no birth, no leads");
     }
 
@@ -323,7 +323,7 @@ mod tests {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
             node: rdm_core::MeshNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation, supersedes: None, runtime },
-            status: rdm_core::MemberStatus::ReadyForTraffic,
+            status: rdm_core::MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 1,

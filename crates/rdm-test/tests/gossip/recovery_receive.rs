@@ -15,13 +15,13 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip) {
 async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, frame: Frame, serial: u64, author: &rdm_transport::envelope::Birth) {
     let source = match frame.data() { Frame::Digest { digest } => rdm_transport::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() }, _ => author.clone() };
     sender.broadcast_neighbors(frame.authored(&source, 10, 1).encode().into()).await.unwrap();
-    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(author, 10, 1).encode().into()).await.unwrap();
+    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(author, 10, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.expect("the following frame proves this receipt finished");
 }
 fn birth(fabric: &FabricId, mesh: &MeshId, path: &str, ordinal: u16) -> MeshDigest {
-    MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: format!("127.0.0.1:{}",12000+ordinal).parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None }
+    MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: format!("127.0.0.1:{}",12000+ordinal).parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None }
 }
 fn operation(d: &MeshDigest, command: &str) -> LifecycleOp {
     LifecycleOp { build_id: "recovery-receive".into(), attempt: 1, operation: format!("node.{command}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
@@ -71,8 +71,8 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         for d in [&own,&restarted,&started,&deleted,&holder] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::Digest{digest:old},serial,&author).await;}
         let old_full=vec![own.clone(),restarted.clone(),deleted.clone(),holder.clone()].into_iter().map(|mut d|{d.digest_seq=1;d}).collect();
         serial+=1;send(&sender,&receiver,Frame::MeshTopology{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:10,published_at_rafka_ms:10,snapshot_id:1,chunk_index:0,chunk_count:1,digests:old_full,in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},serial,&author).await;
-        serial+=1;send(&sender,&receiver,Frame::MeshStatus{mesh:"mesh1".into(),status:"ready-for-traffic".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
-        serial+=1;send(&sender,&receiver,Frame::FabricStatus{fabric:fabric.clone(),status:"ready-for-traffic".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
+        serial+=1;send(&sender,&receiver,Frame::MeshStatus{mesh:"mesh1".into(),status:"ready".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
+        serial+=1;send(&sender,&receiver,Frame::FabricStatus{fabric:fabric.clone(),status:"ready".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         let resolver=Arc::new(StaticResolver::new());resolver.insert(ResolvedNode{node_id:own.node.node_id.clone(),name:own.node.name.clone(),endpoint_id:server_ep.id(),transport_addr:server_addr,incarnation:own.node.incarnation.clone()});
         let client=NodeRpcClient::new(receiver_ep.clone(),resolver);
         let read=rdm_node::topology_read::get_topology(&client,&NodeTarget::ExactNode(own.node.node_id.clone()),"mesh1",&receiver,None,None).await.unwrap();

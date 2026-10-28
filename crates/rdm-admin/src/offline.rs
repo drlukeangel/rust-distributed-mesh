@@ -39,7 +39,7 @@ pub(crate) struct SilentNode {
 /// `floor`, the instant its silence passed the floor (node-recovery.md "Detection and proof" step 1:
 /// "Each node's pruner marks a member `PendingReconnect` once it is unheard past the staleness
 /// floor"). A birth the digest view holds only from its mesh-primary's projection is unheard since the digest view
-/// first held it, and is tickled only once the view holds it off ready-for-traffic (its caller's
+/// first held it, and is tickled only once the view holds it off ready (its caller's
 /// filter: the topology, not what this admin has heard, decides who is tickled; Q87). A birth the view holds nothing of, a receipt of another incarnation, or one heard
 /// within the floor carries no mark.
 pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, digest_view: &rdm_transport::topology::DigestView, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
@@ -73,13 +73,13 @@ pub struct UnreachableMark {
 }
 
 /// Whether a reachability `NotSent` marks a birth whose mesh-primary holds `recorded` for it
-/// (node-recovery.md step 1): an observer mark beside a live status (`Pending`, `ReadyForTraffic`, or
+/// (node-recovery.md step 1): an observer mark beside a live status (`Pending`, `Ready`, or
 /// none held), never over a lifecycle state the node reported and the mesh-primary recorded
 /// (connections-deleting, stopping, stopped).
 pub(crate) fn marks_over(recorded: Option<rdm_core::MemberStatus>) -> bool {
     match recorded {
         Some(rdm_core::MemberStatus::ConnectionsDeleting | rdm_core::MemberStatus::Leaving) => false,
-        Some(rdm_core::MemberStatus::Pending | rdm_core::MemberStatus::ReadyForTraffic) | None => true,
+        Some(rdm_core::MemberStatus::Pending | rdm_core::MemberStatus::Ready) | None => true,
     }
 }
 
@@ -305,10 +305,10 @@ pub enum Tickle {
 }
 
 /// The eligible live peers of `node`'s mesh (node-tickle.md step 3), in path order: every member of
-/// its mesh the view holds ready-for-traffic, other than the node and `me` (the caller is never its
+/// its mesh the view holds ready, other than the node and `me` (the caller is never its
 /// own carrier).
 pub fn eligible_carriers<'a>(view: &'a crate::topology::Topology, node: &'a crate::model::Node, me: Option<&'a crate::model::NodeId>) -> impl Iterator<Item = &'a crate::model::Node> + 'a {
-    view.members().filter(move |c| c.mesh == node.mesh && c.node_id != node.node_id && Some(&c.node_id) != me && c.status == crate::model::NodeStatus::ReadyForTraffic)
+    view.members().filter(move |c| c.mesh == node.mesh && c.node_id != node.node_id && Some(&c.node_id) != me && c.status == crate::model::NodeStatus::Ready)
 }
 
 /// What the caller probes with: its Node RPC client under its own call deadline, the carriers it holds
@@ -845,7 +845,7 @@ fn silence_word(status: Option<crate::model::NodeStatus>) -> &'static str {
     match status {
         None => "cleared",
         Some(Pending) => "pending",
-        Some(ReadyForTraffic) => "ready-for-traffic",
+        Some(Ready) => "ready",
         Some(ConnectionsDeleting) => "connections-deleting",
         Some(Leaving) => "leaving",
         Some(PendingReconnect) => "pending-reconnect",
@@ -873,7 +873,7 @@ pub(crate) mod tests {
     #[test]
     fn a_pending_reconnect_mark_never_overwrites_an_admitted_stopping() {
         use rdm_core::MemberStatus as M;
-        for live in [None, Some(M::Pending), Some(M::ReadyForTraffic)] {
+        for live in [None, Some(M::Pending), Some(M::Ready)] {
             assert!(marks_over(live), "{live:?}: marked");
         }
         for lifecycle in [M::Leaving, M::ConnectionsDeleting] {
@@ -900,7 +900,7 @@ pub(crate) mod tests {
     }
 
     fn current_answer() -> rdm_core::status::StatusReply {
-        rdm_core::status::StatusReply::Current { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint(), state: rdm_core::status::NodeState::ReadyForTraffic }
+        rdm_core::status::StatusReply::Current { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint(), state: rdm_core::status::NodeState::Ready }
     }
 
     /// An `unreached` over `asked` carriers: the direct probe and every carried one ended `NotSent`.
@@ -1255,7 +1255,7 @@ pub(crate) mod tests {
         }
 
         fn current(b: &(NodeId, IncarnationId)) -> StatusReply {
-            StatusReply::Current { node_id: b.0.clone(), incarnation: b.1.clone(), state: NodeState::ReadyForTraffic }
+            StatusReply::Current { node_id: b.0.clone(), incarnation: b.1.clone(), state: NodeState::Ready }
         }
 
         fn stopped(b: &(NodeId, IncarnationId)) -> StatusReply {
@@ -1270,14 +1270,14 @@ pub(crate) mod tests {
                 let mut n = Node::allocated(name.parse().unwrap());
                 n.node_id = NodeId::mint();
                 n.incarnation_id = Some(IncarnationId::mint());
-                n.status = NodeStatus::ReadyForTraffic;
+                n.status = NodeStatus::Ready;
                 n
             };
             let mut node = ready("mesh1.rpc.1");
             node.node_id = b.0.clone();
             node.incarnation_id = Some(b.1.clone());
             node.status = NodeStatus::PendingReconnect;
-            let view = crate::topology::Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![ready("mesh1.admin.1"), node.clone(), ready("mesh1.rpc.2"), ready("mesh1.rpc.3"), ready("mesh2.rpc.1")] };
+            let view = crate::topology::Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![ready("mesh1.admin.1"), node.clone(), ready("mesh1.rpc.2"), ready("mesh1.rpc.3"), ready("mesh2.rpc.1")] };
             (node, view)
         }
 
@@ -1626,7 +1626,7 @@ pub(crate) mod tests {
         let digest = |name: &str| MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { node_id: crate::model::NodeId::mint(), name: name.parse().unwrap(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
-            status: MemberStatus::ReadyForTraffic,
+            status: MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: 1,
@@ -1888,8 +1888,8 @@ pub(crate) mod tests {
         let written = crate::node_rows::WrittenRows::default();
         let inc = held.incarnation_id.clone().unwrap();
         // The record as its writer holds it: the birth's declared state is on it.
-        let mut row = crate::storage::NodeRow::new(held.name.clone(), held.node_id.clone(), NodeStatus::ReadyForTraffic);
-        row.birth_mut(&inc, &held.name).declared.insert(rdm_core::status::NodeState::ReadyForTraffic);
+        let mut row = crate::storage::NodeRow::new(held.name.clone(), held.node_id.clone(), NodeStatus::Ready);
+        row.birth_mut(&inc, &held.name).declared.insert(rdm_core::status::NodeState::Ready);
         written.hold(&row);
 
         assert_eq!(put_silence_status(&store, &written, &held, Some(NodeStatus::Dead)).await, Ok(true), "the silence mark is written");
@@ -1897,7 +1897,7 @@ pub(crate) mod tests {
         let stored = store.inner.node(&held.node_id).await.unwrap().expect("the record is written whole");
         let birth = stored.birth(&inc).expect("the birth's facts");
         assert_eq!(birth.silence, Some(NodeStatus::Dead), "the mark is on the record");
-        assert!(birth.declared.contains(&rdm_core::status::NodeState::ReadyForTraffic), "the declared state the record held stands beside it");
+        assert!(birth.declared.contains(&rdm_core::status::NodeState::Ready), "the declared state the record held stands beside it");
         held.incarnation_id = None;
         assert!(put_silence_status(&store, &written, &held, None).await.is_err(), "a held record with no birth is named, never skipped");
     }

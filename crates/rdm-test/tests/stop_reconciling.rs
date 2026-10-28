@@ -18,7 +18,7 @@ use std::time::Duration;
 const WRONG: Duration = Duration::from_secs(60);
 
 // @feature: node-lifecycle
-/// CONTRACT (`Running::stop_reconciling`): once the Day-0 fabric is ready-for-traffic and its admin is
+/// CONTRACT (`Running::stop_reconciling`): once the Day-0 fabric is ready and its admin is
 /// told to stop reconciling, no attempt of any Build begins (no `via-reconcile`, no deployment step), so a
 /// node launched by hand afterwards is never taken for surplus and runs on.
 /// Must NOT happen: the Day-0 Build's drive, spawned before the call and not stopped by it, planning a
@@ -37,9 +37,9 @@ fn an_admin_that_stopped_reconciling_starts_no_build_attempt() {
         let (root_dir, rpc_dir) = (base.join("admin1"), base.join("rpc1"));
         std::fs::create_dir_all(&root_dir).unwrap();
         let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
-        tokio::time::timeout(WRONG, spans.recorded("rdm.node_admin.fabric.update.via-state-entered", |f| f.get("to").map(String::as_str) == Some("ready-for-traffic")))
+        tokio::time::timeout(WRONG, spans.recorded("rdm.node_admin.fabric.update.via-state-entered", |f| f.get("to").map(String::as_str) == Some("ready")))
             .await
-            .expect("the Day-0 fabric reaches ready-for-traffic");
+            .expect("the Day-0 fabric reaches ready");
         root.stop_reconciling().await;
         // Every span opened from here on is keyed above the last one opened before.
         let stopped_at = spans.0.lock().unwrap().keys().copied().max().unwrap_or(0);
@@ -67,7 +67,7 @@ fn an_admin_that_stopped_reconciling_starts_no_build_attempt() {
             .map(|(_, (n, _, f))| (n.clone(), f.clone()))
             .collect();
         assert!(after.is_empty(), "a Build attempt began after the admin stopped reconciling: {after:#?}");
-        assert_eq!(*rpc.status.lock().unwrap(), rdm_core::MemberStatus::ReadyForTraffic, "the hand-launched node runs on");
+        assert_eq!(*rpc.status.lock().unwrap(), rdm_core::MemberStatus::Ready, "the hand-launched node runs on");
 
         rpc.stop().await;
         root.leave().await;

@@ -1,8 +1,8 @@
-//! Q87 (Luke, 2026-10-20): every node coming to ready-for-traffic from any other state connects to
+//! Q87 (Luke, 2026-10-20): every node coming to ready from any other state connects to
 //! its node-admin for its cert, its time and its cache, and a ready node may do the same; the
 //! `pre_node_ready` hook is where it does that; the one exception is the Day-0 fabric-primary, with no
 //! other node to connect to. The pages: node-recovery.md step 1 ("A birth heard again runs its
-//! `pre_node_ready` hook again before it is ready-for-traffic"), node-tickle.md ("on `reached` for a node
+//! `pre_node_ready` hook again before it is ready"), node-tickle.md ("on `reached` for a node
 //! that is off its channel it commands node.mesh.join"), node-mesh-join.md step 10 (the commanded join
 //! continues into node.start steps 3 to 5), fabric-node-hooks.md "Where it runs".
 //!
@@ -17,9 +17,9 @@
 //! span and in the same order (a birth whose kind registered no hook has no hook attempt at either
 //! start), each step after the one before it closed; the accepting
 //! authority issues it a fresh member cert at that join (`cert.create.via-join` after the release);
-//! the view holds the birth Pending and then ReadyForTraffic again, the same NodeId and incarnation.
+//! the view holds the birth Pending and then Ready again, the same NodeId and incarnation.
 //! What must NOT happen: a new birth at the path, a terminate (`via-path-investigation outcome=unreached`: the previous birth is deleted, its runtime terminated), a
-//! `node.create` for it, a start step missing, outside its root or out of order, or a ready-for-traffic
+//! `node.create` for it, a start step missing, outside its root or out of order, or a ready
 //! with no hook attempt before it.
 use rdm_client::NodeStatus;
 use rdm_test::estate::{named, wait_for, Estate, Owner};
@@ -72,7 +72,7 @@ fn now_nano() -> u64 {
 /// Hold `node`'s exact runtime past the floor, then release it; the instant of the release.
 async fn hold_past_the_floor_then_release(estate: &Estate, node: &str, floor: Duration) -> u64 {
     let before = estate.node_view(node).await;
-    assert_eq!(before.status, NodeStatus::ReadyForTraffic, "{node} is ready before the hold: {before:?}");
+    assert_eq!(before.status, NodeStatus::Ready, "{node} is ready before the hold: {before:?}");
     let rt = ExactRuntime::published(Path::new(&estate.data_dir(node).await)).expect("the node's published runtime");
     rt.apply(Fault::Stop).expect("the hold is acknowledged by the provider");
     estate
@@ -85,7 +85,7 @@ async fn hold_past_the_floor_then_release(estate: &Estate, node: &str, floor: Du
     assert_eq!((&during.node_id, &during.incarnation_id), (&before.node_id, &before.incarnation_id), "{node} is the same birth while held: silence is not death");
     let release_at = now_nano();
     rt.apply(Fault::Continue).expect("the release is acknowledged by the provider");
-    // The released birth's first digest still says ReadyForTraffic (its own stale state): the re-entry
+    // The released birth's first digest still says Ready (its own stale state): the re-entry
     // is the mesh-primary's commanded join, which begins the birth's next cycle; wait for that, then
     // for the birth ready again as the same birth.
     wait_for(&format!("the mesh-primary begins {node}'s next cycle after the release"), floor * 8 + Duration::from_secs(60), || async {
@@ -93,8 +93,8 @@ async fn hold_past_the_floor_then_release(estate: &Estate, node: &str, floor: Du
     })
     .await;
     let back = estate
-        .until_node(node, &format!("{node} is ready-for-traffic again as the same birth"), floor * 8 + Duration::from_secs(60), |n| {
-            n.filter(|n| n.status == NodeStatus::ReadyForTraffic && n.node_id == before.node_id && n.incarnation_id == before.incarnation_id).cloned()
+        .until_node(node, &format!("{node} is ready again as the same birth"), floor * 8 + Duration::from_secs(60), |n| {
+            n.filter(|n| n.status == NodeStatus::Ready && n.node_id == before.node_id && n.incarnation_id == before.incarnation_id).cloned()
         })
         .await;
     assert_eq!(back.incarnation_id, before.incarnation_id, "{node} came back as itself");
@@ -155,8 +155,8 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         assert!(overlaps.is_empty(), "{node}: each start step begins only after the one before it closed: {overlaps:?}");
         // The authority: the birth's next cycle begins at its join, never before the command reached it
         // (node-start.md step 2: no state is written before the command is accepted), and the birth is
-        // published Pending at that join and ready-for-traffic only once its hook has passed
-        // (node-mesh-join.md step 10): its peers hold it off ready-for-traffic while its gate is closed.
+        // published Pending at that join and ready only once its hook has passed
+        // (node-mesh-join.md step 10): its peers hold it off ready while its gate is closed.
         let joins = after(&spans, "rdm.node_admin.node.update.via-join", node, since);
         let joined_at = joins.iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "installed").map(at).min().unwrap_or_else(|| panic!("{node}: the heard-again join is served (via-join installed) after the release: {joins:?}"));
         let begun_at = begun.iter().map(at).min().unwrap();
@@ -167,9 +167,9 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         // install span closes the serve), so it is read after the command, not against the install's clock.
         assert!(pending_at.is_some_and(|p| p >= since), "{node}: the authority publishes the heard-again birth Pending at its join (node-mesh-join.md step 10; via-mesh-join-admitted applied, after the release {since}): {admitted:?}");
         let _ = joined_at;
-        // The authority's record of the birth's own ready-for-traffic declaration (its `sender`).
-        let ready_at = named(&spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| s(&sp["attributes"]["sender"]) == node && s(&sp["attributes"]["state"]) == "ReadyForTraffic" && s(&sp["attributes"]["outcome"]) == "applied" && at(sp) >= since).map(at).min();
-        assert!(ready_at.is_some_and(|r| r > pending_at.unwrap()), "{node}: ready-for-traffic is declared only after the Pending publish: pending {pending_at:?}, ready {ready_at:?}");
+        // The authority's record of the birth's own ready declaration (its `sender`).
+        let ready_at = named(&spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| s(&sp["attributes"]["sender"]) == node && s(&sp["attributes"]["state"]) == "Ready" && s(&sp["attributes"]["outcome"]) == "applied" && at(sp) >= since).map(at).min();
+        assert!(ready_at.is_some_and(|r| r > pending_at.unwrap()), "{node}: ready is declared only after the Pending publish: pending {pending_at:?}, ready {ready_at:?}");
         // What a peer holds of the birth never goes back. Gossip is eventual and unordered (a cell never
         // asserts when a copy arrives, c6a8211f), so a copy of an older digest of the birth can reach a
         // peer late, before or after the re-entry: the receive rule refuses it (`via-stale` below the
@@ -216,7 +216,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
 /// CONTRACT (node-mesh-join.md step 10, Q97, Q99: one Pending per accepted join report, per join and
 /// not per birth): a birth held past the floor and released is commanded back and ready again; held
 /// and released a second time in the same Build attempt, it is commanded back again and is ready
-/// again. Each command back is its own command: the second join's ready-for-traffic declaration is
+/// again. Each command back is its own command: the second join's ready declaration is
 /// applied, never answered AlreadyApplied from the first join's, so the birth never stays Pending
 /// after its second return. What must NOT happen: the birth left Pending after its second return.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -233,10 +233,10 @@ async fn a_node_held_twice_is_commanded_back_and_ready_after_each_release() {
     let applied_after = |since: u64| {
         named(&spans, "rdm.node_admin.status.update.via-declaration")
             .into_iter()
-            .any(|sp| s(&sp["attributes"]["sender"]) == "mesh1.rpc.2" && s(&sp["attributes"]["state"]) == "ReadyForTraffic" && s(&sp["attributes"]["outcome"]) == "applied" && at(sp) >= since)
+            .any(|sp| s(&sp["attributes"]["sender"]) == "mesh1.rpc.2" && s(&sp["attributes"]["state"]) == "Ready" && s(&sp["attributes"]["outcome"]) == "applied" && at(sp) >= since)
     };
-    assert!(applied_after(first), "mesh1.rpc.2: its ready-for-traffic declaration after the first release is applied");
-    assert!(applied_after(second), "mesh1.rpc.2: its ready-for-traffic declaration after the second release is applied, not answered from the first join's");
+    assert!(applied_after(first), "mesh1.rpc.2: its ready declaration after the first release is applied");
+    assert!(applied_after(second), "mesh1.rpc.2: its ready declaration after the second release is applied, not answered from the first join's");
 }
 
 /// CONTRACT (node-recovery.md step 2, "never to a birth with a command of its authority open or in
@@ -257,7 +257,7 @@ async fn a_birth_stopped_and_started_by_builds_and_held_later_is_still_commanded
     let before = estate.node_view(node).await;
     estate.stop_then_start(&node.parse().unwrap()).await;
     let restarted = estate
-        .until_node(node, &format!("{node} is ready-for-traffic again after its stop and start"), Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).cloned())
+        .until_node(node, &format!("{node} is ready again after its stop and start"), Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned())
         .await;
     assert_eq!((&restarted.node_id, &restarted.incarnation_id), (&before.node_id, &before.incarnation_id), "a stop then a start keep the node.id and the incarnation");
     tokio::time::sleep(floor).await;
@@ -319,7 +319,7 @@ async fn a_node_being_created_is_not_commanded_back_while_its_first_start_runs()
         rt.apply(Fault::Continue).expect("the release is acknowledged by the provider");
     };
     let (_, ()) = tokio::join!(estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]), hold);
-    estate.until_node(node, &format!("{node} is ready-for-traffic"), Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).cloned()).await;
+    estate.until_node(node, &format!("{node} is ready"), Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
     estate.stop().await;
     let spans = estate.spans();
     let first_ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node).map(at).min().unwrap_or_else(|| panic!("{node}: its first start reached node.started (via-ready)"));

@@ -1556,7 +1556,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let outcome = if written.is_ok() { "recorded" } else { "record-refused" };
                                         tracing::info_span!("rdm.node_admin.mesh.update.via-applied", mesh = %mesh, mesh_id = %mesh_id, state = ?state, outcome, error = %written.as_ref().err().cloned().unwrap_or_default(), "otel.kind" = "internal")
                                             .in_scope(|| tracing::info!("the fabric-primary answered the mesh's state: its primary records it on the mesh's own record"));
-                                        if written.is_ok() && state == rdm_core::status::MeshState::ReadyForTraffic && entered.load(std::sync::atomic::Ordering::SeqCst) {
+                                        if written.is_ok() && state == rdm_core::status::MeshState::Ready && entered.load(std::sync::atomic::Ordering::SeqCst) {
                                             crate::fabric_status::notify_mesh_ready(on_mesh_ready, crate::wiring::MeshReadyCtx { fabric_id, mesh_id: mesh_id.clone(), mesh: mesh.clone() });
                                         }
                                         written.map(|_| ())
@@ -2056,7 +2056,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             if let (true, Some((source, map))) = (entering_existing_mesh, entry_map.take()) {
                                 tasks.push(spawn_entry_sweep(&stop_gate, entry_ctx.clone(), source, map, sweep_slot.clone(), records.clone(), policy.provider));
                             }
-                            // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
+                            // Authority-capable Ready: this admin commits `Ready` (and so
                             // becomes eligible for every seat) only once it can manage every birth it
                             // holds: each live member publishes a runtime fact this admin's provider
                             // adopts in its own control domain, and the Day-0 admin holds a Complete
@@ -2145,7 +2145,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let pre_node_ready_state = pre_node_ready_cell.clone();
                                         let (digest, digest_view, provider, topology_view) = (digest.clone(), digest_view.clone(), provider_dyn.clone(), topology_view.clone());
                                         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
-                                        // The adoption launch's attempt completes once it is ReadyForTraffic (Q156).
+                                        // The adoption launch's attempt completes once it is Ready (Q156).
                                         let adopted = adoption_claim.clone().map(|c| (c, journal.clone(), mesh_claims.clone()));
                                         let (hydrated, start_progress, entering_gate) = (builds_dyn.clone(), progress.clone(), entering.clone());
                                         let sweep_slot_gate = sweep_slot.clone();
@@ -2202,7 +2202,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     },
                                                 }
                                                 if blocked.is_empty() {
-                                                    let (set, d_ready) = super::session::set_own_status(&digest, Some(MemberStatus::Pending), MemberStatus::ReadyForTraffic);
+                                                    let (set, d_ready) = super::session::set_own_status(&digest, Some(MemberStatus::Pending), MemberStatus::Ready);
                                                     if !set {
                                                         break;
                                                     }
@@ -2241,7 +2241,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         runtime_facts_held = held.len(),
                                                         build_id = %held_build,
                                                     )
-                                                    .in_scope(|| tracing::info!("ready for traffic: every held birth's runtime is adoptable"));
+                                                    .in_scope(|| tracing::info!("ready: every held birth's runtime is adoptable"));
                                                     // Under a delete the claimed attempt is the delete's own: the teardown ends it (Q159).
                                                     if let Some((claimed, builds, claims)) = adopted.as_ref().filter(|(c, _, _)| c.under_delete.is_none()) {
                                                         if let Err(e) = super::adoption::complete(claimed, &node_id, &**builds, &**claims).await {
@@ -2563,11 +2563,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 crate::offline::watch_marked(&mut watched, &marks, &view, &me_id);
                                                 // The topology decides who is tickled (Luke, Q87): a mesh-primary's view comes from the
-                                                // fabric-primary and is current, so a member it holds ready-for-traffic there is not
+                                                // fabric-primary and is current, so a member it holds ready there is not
                                                 // tickled on this admin's own fresh digest view; only a member the view holds off
-                                                // ready-for-traffic (its mark, or a command never sent) is.
+                                                // ready (its mark, or a command never sent) is.
                                                 let silent: Vec<crate::offline::SilentNode> = crate::offline::silent_set(
-                                                    watched.values().filter(|n| n.status != NodeStatus::ReadyForTraffic).filter(|n| {
+                                                    watched.values().filter(|n| n.status != NodeStatus::Ready).filter(|n| {
                                                         marks.contains_key(&n.node_id)
                                                             || !recovery
                                                                 .digest_view
@@ -2663,9 +2663,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     if holds_seat {
                                                         if let (Some(heard_again), Some(mut n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
                                                             // The tick held this birth off its mesh (it was tickled and returned): the view's
-                                                            // ready-for-traffic, when it shows one, is the birth's own last word before the
+                                                            // ready, when it shows one, is the birth's own last word before the
                                                             // silence, not where it stands now (Q87).
-                                                            if n.status == NodeStatus::ReadyForTraffic {
+                                                            if n.status == NodeStatus::Ready {
                                                                 n.status = NodeStatus::PendingReconnect;
                                                             }
                                                             if let Some(incarnation) = n.incarnation_id.clone() {
@@ -2692,8 +2692,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     if report.answered_current.contains(id) && holds_seat {
                                                         if let (Some(heard_again), Some(mut n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
                                                             // Held off its mesh in the tick's eyes (it was kicked and answered): the view's
-                                                            // ready-for-traffic is its last word before the silence (Q87).
-                                                            if n.status == NodeStatus::ReadyForTraffic {
+                                                            // ready is its last word before the silence (Q87).
+                                                            if n.status == NodeStatus::Ready {
                                                                 n.status = NodeStatus::PendingReconnect;
                                                             }
                                                             if let Some(incarnation) = n.incarnation_id.clone() {
@@ -2913,7 +2913,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if let Some(Some(b)) = current {
                                                     records.set_planned(&b.topology);
                                                 }
-                                                records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| topology_view.mesh_status(m).is_some_and(|h| h.status == rdm_transport::topology::MESH_READY_FOR_TRAFFIC)).cloned().collect());
+                                                records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| topology_view.mesh_status(m).is_some_and(|h| h.status == rdm_transport::topology::MESH_READY)).cloned().collect());
                                                 // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
                                                 records.set_heard_dead(topology_view.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
                                                     topology_view.digest_view.all().into_iter().find(|d| d.node.name.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
@@ -3035,8 +3035,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let fabric_status = |records: &Records| {
                                                     let basis = if fabric_primary { held_state.scope() } else { t.fabric.status };
                                                     match basis {
-                                                        crate::model::ScopeStatus::Degraded | crate::model::ScopeStatus::ReadyForTraffic => {
-                                                            status_of(if records.adopted_degraded() || records.peer_recovering() { crate::model::ScopeStatus::Degraded } else { crate::model::ScopeStatus::ReadyForTraffic })
+                                                        crate::model::ScopeStatus::Degraded | crate::model::ScopeStatus::Ready => {
+                                                            status_of(if records.adopted_degraded() || records.peer_recovering() { crate::model::ScopeStatus::Degraded } else { crate::model::ScopeStatus::Ready })
                                                         }
                                                         other => status_of(other),
                                                     }
@@ -3073,7 +3073,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // The next turn is due after one gossip interval, or at once when what the turn
                                                 // decides on moved: a checklist the fabric-primary waits on; an attempt claimed; or the view changes a member's status or a primary,
                                                 // its mesh's or a node type's (this admin's own roles among them), or a mesh's status.
-                                                // The fabric is ready-for-traffic once every planned mesh is, and a
+                                                // The fabric is ready once every planned mesh is, and a
                                                 // status change is sent at once (states.md; gossip.md §3.2: timers only for
                                                 // heartbeat and anti-entropy).
                                                 let decides = |v: &Topology| (v.members().map(|n| (n.name.clone(), n.status, n.is_primary, n.is_fabric_primary)).collect::<Vec<_>>(), v.meshes.iter().map(|m| (m.name.clone(), m.status)).collect::<Vec<_>>());

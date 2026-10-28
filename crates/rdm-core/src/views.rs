@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NodeStatus {
-    /// Born and not yet ready for traffic.
+    /// Born and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    ReadyForTraffic,
+    #[serde(alias = "ready-for-traffic")]
+    Ready,
     /// Connections-deleting: it takes no new work while it finishes what it holds.
     #[serde(rename = "connections-deleting")]
     ConnectionsDeleting,
@@ -53,10 +54,11 @@ pub enum NodeStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScopeStatus {
-    /// Created and not yet ready for traffic.
+    /// Created and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    ReadyForTraffic,
+    #[serde(alias = "ready-for-traffic")]
+    Ready,
     /// Leaving: a mesh whose shutdown was accepted; it is not selected for new work.
     Leaving,
     /// Dead: a mesh every one of whose births was proven exited; final.

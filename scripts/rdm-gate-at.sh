@@ -294,7 +294,7 @@ done
 # stem; the fast gate runs this one cell of it, the serving births through a change (~10 s).
 if [ "$GATE" = fast ]; then
     m=$(exe $SCENARIO_PKG main)
-    if [ -n "$m" ]; then echo "topology_storage_provider_fast $m --exact topology_storage_provider::every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change" >> $D/jobs; else echo "FAIL topology_storage_provider_fast 0s" | tee -a $O; fi
+    if [ -n "$m" ]; then echo "topology_storage_provider_fast $m --exact topology_storage_provider::every_serving_node_keeps_its_birth_and_ready_through_a_change" >> $D/jobs; else echo "FAIL topology_storage_provider_fast 0s" | tee -a $O; fi
 fi
 SCENARIO_SKIP=$(for s in $SCENARIOS build_log estate_handover estate_teardown await_attempt seeded operation_ledger driver_reconcile proof_holder_lifecycle manifest_replay restart_canary_seed action_generator failpoint_explorer wedge_detector process_fault_backend container_fault_backend bootstrap_pending primary_loss_takeover supplied_clock delta_gap_recovery held_status_join partition_rejoin proxy_cutback restarted_member_rejoin stopped_last_admin peer_mesh_topology topology_get container_kill node_connections_delete poc_chaos_kit rshape_burn_in; do printf " --skip %s::" "$s"; done)
 # One job per test executable (2026-10-12): a crate's lib, bin and main executables run in parallel, each its tests in

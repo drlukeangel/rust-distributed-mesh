@@ -87,7 +87,7 @@ wire enum. A topology Digest cannot complete the caller's stream or the deployme
 
 Follow the [create steps](#bound-endpoint-and-join-admission), then the complete
 [start sequence](node-start.md#end-to-end-sequence). `node.created` proves creation;
-it does not claim the node is ready-for-traffic.
+it does not claim the node is ready.
 
 ## Mermaid sequence diagram
 

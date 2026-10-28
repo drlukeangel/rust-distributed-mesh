@@ -32,12 +32,12 @@ fn story(kind: StatusEvent, scenario: Story) {
         // predecessor published under the same identity (a resumed attempt replays its receipted step).
         let successor = PublisherId { node: "mesh1.admin.2".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         sender.set_author(&publisher);
-        receiver.digest_view.record(MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { node_id: op.node_id.clone(), name: op.name.clone(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None });
+        receiver.digest_view.record(MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { node_id: op.node_id.clone(), name: op.name.clone(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None });
         assert!(receiver.digest_view.started(&op.node_id, &op.incarnation, &op.name));
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up") { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.unwrap();
-        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
+        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status("mesh1").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
         assert!(receiver.digest_view.routable(op.node_id.as_str()));
         if matches!(scenario, Story::Completed) {

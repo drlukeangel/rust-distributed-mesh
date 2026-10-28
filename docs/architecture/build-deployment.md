@@ -47,13 +47,13 @@ with its guards: a type's non-primary members before its primary, the primary's 
 node.primary.update, the fabric-primary's move ending the caller's stream `FabricPrimaryMoved` and the
 caller resubmitting the same build_id, a type's only node replaced with no update (node-primary-update.md
 "No-successor cases"), and a mesh whose only node-admin is to be replaced first given a second node-admin
-at a new `path.name` of that type on the new executable, ReadyForTraffic and mesh-primary, which stays. A path under node recovery is
+at a new `path.name` of that type on the new executable, Ready and mesh-primary, which stays. A path under node recovery is
 replaced after that recovery's attempt completes, never in the same attempt. The successor's storage follows its create spec's `storage`: `Persistent` inherits the
 predecessor's data dir and endpoint key, `Ephemeral` allocates a fresh one; config and tags come from
 the Deleted row (node-replace.md "Inherited"); a storage or placement change in the same request is the
 same re-birth with the new properties. The row then records the new executable. node.stop and node.start keep the executable
 (node-stop.md "Kept"); nothing changes a running birth's executable. A Build that puts the fabric
-back to pending completes only after its own ready-for-traffic state is set (states.md).
+back to pending completes only after its own ready state is set (states.md).
 
 ## 4. Recovery
 

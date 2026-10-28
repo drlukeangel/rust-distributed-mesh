@@ -27,7 +27,7 @@ type Birth = (NodeId, IncarnationId);
 pub struct Plan {
     /// Exact silent births to investigate from this admin's own view.
     pub investigate: Vec<Node>,
-    /// Exact births the view holds ready for traffic that left a command unanswered past the floor:
+    /// Exact births the view holds ready that left a command unanswered past the floor:
     /// silent whatever they gossip (node-investigation.md, Q182), investigated on the same terms.
     pub unanswered: Vec<Node>,
 }
@@ -82,9 +82,9 @@ fn seat_record(which: &str, record: Option<&Primary>, me: &Birth, lost: &HashSet
 /// `was_mesh_primary`: whether this admin's primary view holds a silent node-admin as its mesh's primary
 /// replaced by another birth (the election named a new mesh-primary past the floor).
 pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, said: &mut Said, was_mesh_primary: &dyn Fn(&Node) -> bool, left_unanswered: &dyn Fn(&Node) -> bool) -> Plan {
-    // Silent by its gossip, or ready for traffic and silent by the command it left unanswered past the
+    // Silent by its gossip, or ready and silent by the command it left unanswered past the
     // floor (node-investigation.md, Q182): whatever it gossips, a node that answers no command is silent.
-    let silent_of = |n: &Node| n.kind == NodeKind::NodeAdmin && (n.status == NodeStatus::PendingReconnect || (n.status == NodeStatus::ReadyForTraffic && left_unanswered(n)));
+    let silent_of = |n: &Node| n.kind == NodeKind::NodeAdmin && (n.status == NodeStatus::PendingReconnect || (n.status == NodeStatus::Ready && left_unanswered(n)));
     let silent: HashSet<Birth> = view.members().filter(|n| silent_of(n)).filter_map(birth).collect();
     said.investigated.retain(|b| silent.contains(b));
     let mut plan = Plan::default();
@@ -158,7 +158,7 @@ impl Looker {
             let commands = view.own(&self.me_id).is_some_and(|me| me.is_fabric_primary);
             if let (true, Some(heard_again), Some(incarnation)) = (commands, self.heard_again.get(), n.incarnation_id.as_ref()) {
                 // Held off its mesh in this watch's eyes (it was looked at because it was silent): the
-                // view's ready-for-traffic is its last word before the silence, not where it stands now.
+                // view's ready is its last word before the silence, not where it stands now.
                 let held = Node { status: NodeStatus::PendingReconnect, ..n.clone() };
                 heard_again.command(&held, incarnation).await;
             }
@@ -210,7 +210,7 @@ pub struct Watch {
     /// The recovery submitter: the fabric-primary's recovery of an unheard peer-mesh primary (node-recovery.md step 3).
     pub recovery: Option<crate::admin::RecoverySubmitter>,
     /// Fabric recovery (Q122): this watch starts it at the first tick after the fabric-primary's mark when
-    /// this admin is the lowest ReadyForTraffic node-admin of its mesh.
+    /// this admin is the lowest Ready node-admin of its mesh.
     pub fabric_recovery: Arc<crate::fabric_recovery::FabricRecoveryDoor>,
 }
 
@@ -237,15 +237,15 @@ pub async fn run(w: Watch) {
         let view = w.topology.read().await.clone();
         // The mesh the fabric seat's record names: the takeover's hold is kept on its node-admins.
         let fabric_mesh = w.topology_view.primaries().fabric().map(|h| h.mesh.clone());
-        // A node-admin in the view whose digest has returned (`ReadyForTraffic`).
+        // A node-admin in the view whose digest has returned (`Ready`).
         let commands = view.own(&w.me_id).is_some_and(|me| me.is_fabric_primary);
-        for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic) {
+        for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::Ready) {
             if let Some(b) = birth(n) {
                 // A seat holder this watch said unreachable, heard again by its digest, is commanded
                 // back through node.mesh.join by the fabric-primary (Q87), on its own task.
                 if said.unreachable.remove(&b).is_some() && commands {
                     if let (Some(heard_again), Some(incarnation)) = (w.looker.heard_again.get().cloned(), n.incarnation_id.clone()) {
-                        // The holder this watch said unreachable: held off ready-for-traffic in its eyes
+                        // The holder this watch said unreachable: held off ready in its eyes
                         // until this digest, as `watch_marked` holds a marked birth.
                         let n = Node { status: NodeStatus::PendingReconnect, ..n.clone() };
                         tokio::spawn(async move { heard_again.command(&n, &incarnation).await; });
@@ -255,7 +255,7 @@ pub async fn run(w: Watch) {
         }
         let me = w.topology_view.digest_view.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me, Some(&w.me_id)));
         // The fabric-primary unheard past the floor (fabric-recovery.md step 2, its own mesh; Q122): its
-        // mesh's lowest ReadyForTraffic node-admin starts fabric recovery at the first tick after the mark,
+        // mesh's lowest Ready node-admin starts fabric recovery at the first tick after the mark,
         // once the record has named the unheard birth for a floor in its own view (a record learned after a
         // heal names a birth whose silence here began before it). It takes no primary role and needs no probe.
         let held_a_floor = w.topology_view.primaries().fabric_held_for() >= w.topology_view.digest_view.staleness_floor();
@@ -374,7 +374,7 @@ mod tests {
 
     fn view(nodes: Vec<Node>) -> Topology {
         use crate::model::{Fabric, FabricId, ProviderKind, ScopeStatus};
-        Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process }, meshes: Vec::new(), nodes }
+        Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: Vec::new(), nodes }
     }
 
     fn me_of(n: &Node) -> Birth {
@@ -384,8 +384,8 @@ mod tests {
         let mut holder = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::PendingReconnect);
         holder.is_primary = true;
         holder.is_fabric_primary = true;
-        let standby = admin("mesh1.admin.2", "400000000000", "s1", NodeStatus::ReadyForTraffic);
-        let mut outsider = admin("mesh2.admin.1", "100000000000", "o1", NodeStatus::ReadyForTraffic);
+        let standby = admin("mesh1.admin.2", "400000000000", "s1", NodeStatus::Ready);
+        let mut outsider = admin("mesh2.admin.1", "100000000000", "o1", NodeStatus::Ready);
         outsider.is_primary = true;
         (view(vec![holder.clone(), standby.clone(), outsider.clone()]), holder, standby, outsider)
     }
@@ -407,12 +407,12 @@ mod tests {
     fn an_admin_investigates_neither_a_ready_fabric_primary_nor_its_own_birth() {
         let (mut t, holder, standby, _) = world();
         assert!(plan(&t, &holder.name, &me_of(&holder), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty());
-        t.nodes[0].status = NodeStatus::ReadyForTraffic;
+        t.nodes[0].status = NodeStatus::Ready;
         assert!(plan(&t, &standby.name, &me_of(&standby), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty());
     }
 
     /// CONTRACT (node-investigation.md, Q182): "A node that does not answer a command is silent, whatever
-    /// it gossips": a node-admin the view holds ready for traffic that left a command unanswered past the
+    /// it gossips": a node-admin the view holds ready that left a command unanswered past the
     /// floor is investigated like a silent one, once per time it is so, on the same terms of who looks;
     /// one that answers its commands, and one already listed silent, are not listed twice. Must NOT
     /// happen: a gossiping node-admin with no command unanswered investigated, or a silent one
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn a_ready_admin_that_left_a_command_unanswered_is_investigated_once_as_a_silent_one_is() {
         let (mut t, holder, standby, _) = world();
-        t.nodes[0].status = NodeStatus::ReadyForTraffic;
+        t.nodes[0].status = NodeStatus::Ready;
         let fabric_primary_unanswered = |n: &Node| n.node_id == holder.node_id;
         let mut said = Said::default();
         let none = plan(&t, &standby.name, &me_of(&standby), &mut said, &|_| false, &|_| false);
@@ -459,7 +459,7 @@ mod tests {
     #[test]
     fn an_admin_does_not_treat_a_former_birth_at_its_path_as_itself() {
         let (t, holder, _, _) = world();
-        let successor = admin("mesh1.admin.1", "600000000000", "r2", NodeStatus::ReadyForTraffic);
+        let successor = admin("mesh1.admin.1", "600000000000", "r2", NodeStatus::Ready);
         let p = plan(&t, &successor.name, &me_of(&successor), &mut Said::default(), &|_| false, &|_| false);
         assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&holder)]);
     }
@@ -471,11 +471,11 @@ mod tests {
     /// node-admin of a peer mesh that was never its primary is that mesh's primary's to investigate.
     #[test]
     fn the_fabric_primary_investigates_a_peer_meshs_former_primary_after_the_election_replaced_it() {
-        let mut fp = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::ReadyForTraffic);
+        let mut fp = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::Ready);
         fp.is_primary = true;
         fp.is_fabric_primary = true;
         let former = admin("mesh2.admin.1", "100000000000", "o1", NodeStatus::PendingReconnect);
-        let mut elected = admin("mesh2.admin.2", "200000000000", "o2", NodeStatus::ReadyForTraffic);
+        let mut elected = admin("mesh2.admin.2", "200000000000", "o2", NodeStatus::Ready);
         elected.is_primary = true;
         let member = admin("mesh2.admin.3", "500000000000", "o3", NodeStatus::PendingReconnect);
         let t = view(vec![fp.clone(), former.clone(), elected, member]);
@@ -491,7 +491,7 @@ mod tests {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
             node: rdm_core::MeshNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
-            status: rdm_core::MemberStatus::ReadyForTraffic,
+            status: rdm_core::MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 1,
@@ -508,7 +508,7 @@ mod tests {
 
     /// The fabric-primary mesh1.admin.1 and mesh2's primary mesh2.admin.1, unheard past the floor.
     fn unheard_peer_primary() -> (Node, Node, Topology) {
-        let mut fp = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::ReadyForTraffic);
+        let mut fp = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::Ready);
         fp.is_primary = true;
         fp.is_fabric_primary = true;
         let mut peer = admin("mesh2.admin.1", "100000000000", "o1", NodeStatus::PendingReconnect);
@@ -595,15 +595,15 @@ mod tests {
     /// that mesh-primary when it is unheard.
     #[test]
     fn the_fabric_primary_leaves_a_silent_secondary_admin_of_its_own_mesh_to_its_mesh_primary() {
-        let mut fp = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::ReadyForTraffic);
+        let mut fp = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::Ready);
         fp.is_primary = true;
         fp.is_fabric_primary = true;
         let secondary = admin("mesh1.admin.2", "400000000000", "s1", NodeStatus::PendingReconnect);
-        let other = admin("mesh1.admin.3", "500000000000", "s3", NodeStatus::ReadyForTraffic);
+        let other = admin("mesh1.admin.3", "500000000000", "s3", NodeStatus::Ready);
         let t = view(vec![fp.clone(), secondary.clone(), other.clone()]);
         assert!(plan(&t, &fp.name, &me_of(&fp), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty(), "the fabric-primary opens no investigation of a secondary node-admin of its own mesh");
         assert_eq!(plan(&t, &other.name, &me_of(&other), &mut Said::default(), &|_| false, &|_| false).investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&secondary)], "an admin that is not the fabric-primary still looks");
-        let mut fp_only = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::ReadyForTraffic);
+        let mut fp_only = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::Ready);
         fp_only.is_fabric_primary = true;
         let mut primary = admin("mesh1.admin.2", "400000000000", "s1", NodeStatus::PendingReconnect);
         primary.is_primary = true;

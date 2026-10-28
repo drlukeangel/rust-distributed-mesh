@@ -87,7 +87,7 @@ async fn a_start_of_another_meshs_node_sent_the_moment_its_stop_completes_is_adm
         }
         let after = estate.until_node(&node.to_string(), "the node ready again after its stop and start", std::time::Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["stopped"] == false).then_some(n)
+            (n["status"] == "ready" && n["stopped"] == false).then_some(n)
         }).await;
         assert_eq!((&after["node_id"], &after["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "{node}: the same birth after its stop and start: {after}");
     }
@@ -120,7 +120,7 @@ async fn a_stop_of_another_meshs_node_sent_the_moment_its_start_completes_is_adm
             Err(e) => {
                 refused_stops.push(format!("{node}: {e}"));
                 // The cell goes on with this node stopped, so every node is asked.
-                let views_live = |n: Option<&rdm_client::NodeView>| n.filter(|n| serde_json::to_value(n).map(|v| v["status"] == "ready-for-traffic" && v["stopped"] == false).unwrap_or(false)).map(|_| ());
+                let views_live = |n: Option<&rdm_client::NodeView>| n.filter(|n| serde_json::to_value(n).map(|v| v["status"] == "ready" && v["stopped"] == false).unwrap_or(false)).map(|_| ());
                 estate.until_node(&node.to_string(), "the started node live at the asked admin", std::time::Duration::from_secs(60), views_live).await;
                 Estate::workflow(&format!("node.stop of {node}"), estate.nodes_obj().await.stop(&node).await).await;
             }
@@ -129,7 +129,7 @@ async fn a_stop_of_another_meshs_node_sent_the_moment_its_start_completes_is_adm
         Estate::workflow(&format!("node.start of {node}"), estate.nodes_obj().await.start(&node).await).await;
         estate.until_node(&node.to_string(), "the node ready again", std::time::Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["stopped"] == false).then_some(())
+            (n["status"] == "ready" && n["stopped"] == false).then_some(())
         }).await;
     }
     estate.stop().await;
@@ -241,7 +241,7 @@ async fn a_delayed_observation_of_another_meshs_node_never_moves_the_atlas_back(
         atlas_holds_for(&estate, &node, 1, "R-FA3: after the stop's Complete", |row| if row.stopped { Ok(()) } else { Err(format!("{node} is not stopped in the atlas")) }).await;
         Estate::workflow(&format!("node.start of {node}"), estate.nodes_obj().await.start(&node).await).await;
         atlas_holds_for(&estate, &node, 2, "R-FA3: after the start's Complete", |row| {
-            if row.stopped || status_of(row) != "ready-for-traffic" {
+            if row.stopped || status_of(row) != "ready" {
                 return Err(format!("{node} is not live in the atlas"));
             }
             if (row.node_id.to_string(), row.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default()) != birth {

@@ -1254,7 +1254,7 @@ async fn an_owed_call_outlives_every_bound_and_is_delivered_when_its_receiver_co
 /// absent receiver still ends `NotSent` at once, and an Owed call to a receiver the view holds proven
 /// gone ends `NotSent`/`Resolve(Gone)` at once. Must NOT happen: the Owed call ending
 /// `NotSent`/`Resolve(Unknown)` because the view did not hold its receiver yet (the re-born admin cell:
-/// a member resumed after its mesh's primary was re-born declared ReadyForTraffic to it, the call ended
+/// a member resumed after its mesh's primary was re-born declared Ready to it, the call ended
 /// so, and nothing sent it again; kept/e6s7-i144-e4-re-born-admin-owed-declaration, trace
 /// 704617ac4b3ac6bbd29b0c8707af019b).
 #[tokio::test]

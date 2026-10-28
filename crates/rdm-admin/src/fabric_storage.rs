@@ -100,7 +100,7 @@ pub async fn release_name(storage: &dyn FabricStorage, identity: &FabricIdentity
 }
 
 /// The Fabric record (storage-whole-records.md, "The objects"): the fabric's identity, immutable inside
-/// it, and the fabric events applied (`ready-for-traffic`, `shutdown-initiated:<by>`), each once, in
+/// it, and the fabric events applied (`ready`, `shutdown-initiated:<by>`), each once, in
 /// the order applied. Kept at the fabric's id and written whole by the fabric-primary from the copy it
 /// caches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,8 +109,9 @@ pub struct FabricRecord {
     pub fabric_id: FabricId,
     /// The fabric's name, claimed above the per-fabric roots.
     pub name: String,
-    /// The fabric events applied, each once.
-    #[serde(default)]
+    /// The fabric events applied, each once. A record written before Q176 named the ready
+    /// event `ready-for-traffic` (Q176); it reads back as `ready`.
+    #[serde(default, deserialize_with = "events_of")]
     pub events: Vec<String>,
     /// The deployment provider that runs the fabric's nodes: fabric policy, fixed by Day 0's
     /// `MESH_SPAWN_TYPE` and written by the bootstrap admin with the record. An adoption launch takes
@@ -129,6 +130,13 @@ pub struct FabricRecord {
     /// deleted by RDM.
     #[serde(default)]
     pub previous_topology_storage_providers: Vec<String>,
+}
+
+/// The fabric events a record holds, the ready event written before Q176 (`ready-for-traffic`) read as
+/// `ready`, the name it has since.
+fn events_of<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let events: Vec<String> = Deserialize::deserialize(d)?;
+    Ok(events.into_iter().map(|e| if e == "ready-for-traffic" { "ready".into() } else { e }).collect())
 }
 
 /// The `topology_storage_provider` of a record written before the field: RDM's file backend.
@@ -307,7 +315,7 @@ mod tests {
         let fabric = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
         assert_eq!(crate::fabric_storage::claim_identity(&s, &fabric).await.unwrap(), Ok(FabricClaim::Written));
         let mut ready = FabricRecord::new(fabric.clone());
-        ready.events.push("ready-for-traffic".into());
+        ready.events.push("ready".into());
         s.put_fabric(&ready).await.unwrap();
         let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::store_log::LogWriter::mint()).await.unwrap();
         assert_eq!(reopened.fabric().await.unwrap(), Some(ready), "the latest line is the record");

@@ -72,11 +72,11 @@ fn executed_by(spans: &[Value], span_name: &str, node: &str, build_id: &str) -> 
 }
 
 /// The executor of the last attempt of `build` (the Build view's JSON) that ran a step. The Build put the
-/// fabric back to pending, so it is Complete only once the fabric is ready-for-traffic again from its own
+/// fabric back to pending, so it is Complete only once the fabric is ready again from its own
 /// change (Q154; states.md "Resize and executable replacement"); no page makes that Complete an attempt of
-/// its own. The fabric-primary sets ready-for-traffic once every mesh the accepted Build names is ready and
-/// its attempt is claimed (states.md "The fabric's ready-for-traffic"): a removal's meshes are ready at the
-/// claim, so its run may be planned on a fabric already ready-for-traffic from this Build and end Complete
+/// its own. The fabric-primary sets ready once every mesh the accepted Build names is ready and
+/// its attempt is claimed (states.md "The fabric's ready"): a removal's meshes are ready at the
+/// claim, so its run may be planned on a fabric already ready from this Build and end Complete
 /// itself, while a run planned on a pending fabric hands back and the next attempt completes the Build.
 fn last_run_executor(build: &Value) -> String {
     let stepped = build["steps"].as_array().into_iter().flatten().filter_map(|r| r["attempt"].as_u64()).max().expect("the Build ran steps");
@@ -124,14 +124,14 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let fabric_admin = estate.admin.clone();
     estate.enter(&Estate::path(&mesh2_primary)).await;
 
-    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses the removal of a node until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Grow and shrink mesh2 from its own endpoint: the fabric-primary accepts the call, mesh2's primary executes the Build.
     let mut growing = estate.create_node("mesh2", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
     let grow = Estate::complete(&mut growing).await.build_id.to_string();
     let b = built(&estate, &grow).await;
     assert_eq!(last_run_executor(&b), mesh2_primary, "{b:#}");
-    estate.until_node("mesh2.rpc.4", "mesh2.rpc.4 ready for traffic", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
+    estate.until_node("mesh2.rpc.4", "mesh2.rpc.4 ready", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
     let mut shrinking = estate.nodes_obj().await.delete(&"mesh2.rpc.4".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh2.rpc.4: {e}"));
     let shrink = Estate::complete(&mut shrinking).await.build_id.to_string();
     let b = built(&estate, &shrink).await;

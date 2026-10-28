@@ -2,12 +2,12 @@
 //! from public surfaces (`node.get` at the authority, `rdm-rpc-probe`'s `declare` oracle on the
 //! node) and the estate's span evidence only.
 //!
-//! 0. Born ready, every rpc node declares `ReadyForTraffic` to its mesh-primary by itself
+//! 0. Born ready, every rpc node declares `Ready` to its mesh-primary by itself
 //!    (i143.e4.s11), and the non-primary admin declares its own to its mesh-primary: the
 //!    authority's view shows them as `declared` before any probe asks.
-//! 1. The node's `ReadyForTraffic` asked again through the oracle: `AlreadyApplied` (one logical
+//! 1. The node's `Ready` asked again through the oracle: `AlreadyApplied` (one logical
 //!    event); topology view's `status` is untouched.
-//! 2. `Pending` after `ReadyForTraffic`: `RejectedInvalidNodeTransition`.
+//! 2. `Pending` after `Ready`: `RejectedInvalidNodeTransition`.
 //! 3. A declaration naming a node the authority does not hold: `RejectedNotPrimary`
 //!    (subject-unknown; decided for the subject, never the caller); under a wrong incarnation:
 //!    `RejectedStaleIncarnation`.
@@ -54,29 +54,29 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     // 0. Born ready, the nodes and the other admin declared by themselves.
     let declared_by_birth = Estate::values(
         &estate
-            .until_view("every birth's own ReadyForTraffic declared at the authority", Duration::from_secs(20), |views| {
+            .until_view("every birth's own Ready declared at the authority", Duration::from_secs(20), |views| {
                 let of = |name: &str| views.iter().find(|n| n.name.to_string() == name).and_then(|n| n.declared.clone());
                 // The primary's own declaration is applied by itself and reaches this view like every
                 // other: it is waited for, never asserted on the instant after the others landed.
-                [("mesh1.rpc.1"), ("mesh1.rpc.2"), other_admin["name"].as_str().unwrap(), primary["name"].as_str().unwrap()].iter().all(|name| of(name).as_deref() == Some("ReadyForTraffic")).then(|| views.to_vec())
+                [("mesh1.rpc.1"), ("mesh1.rpc.2"), other_admin["name"].as_str().unwrap(), primary["name"].as_str().unwrap()].iter().all(|name| of(name).as_deref() == Some("Ready")).then(|| views.to_vec())
             })
             .await,
     );
     let view = declared_by_birth.iter().find(|n| n["name"] == "mesh1.rpc.1").unwrap().clone();
-    assert_eq!(view["status"], "ready-for-traffic", "topology view's status is untouched");
-    // The authority itself: its own ReadyForTraffic goes through the same door, applied by itself.
+    assert_eq!(view["status"], "ready", "topology view's status is untouched");
+    // The authority itself: its own Ready goes through the same door, applied by itself.
     let self_declared = declared_by_birth.iter().find(|n| n["name"] == primary["name"]).unwrap();
-    assert_eq!(self_declared["declared"], "ReadyForTraffic", "the mesh primary declared its own birth to itself: {self_declared}");
+    assert_eq!(self_declared["declared"], "Ready", "the mesh primary declared its own birth to itself: {self_declared}");
 
     // 1. The same declaration asked again: one logical event.
-    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "ready-for-traffic"]);
+    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "ready"]);
     assert_eq!(declared(&r).0, "already-applied", "{r}");
 
     // 2. Backward is refused by name.
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "pending"]);
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-invalid-node-transition", "{r}");
-    assert!(detail.contains("ReadyForTraffic"), "{r}");
+    assert!(detail.contains("Ready"), "{r}");
 
     // 3. A subject the authority does not hold (decided for the subject, never the caller:
     // node-rpc.md §14); a stale birth.
@@ -94,13 +94,13 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-not-primary", "{r}");
     assert!(detail.contains("ReceiverNotPrimary"), "{r}");
-    assert_eq!(estate.node_value("mesh1.rpc.1").await["declared"], "ReadyForTraffic", "a refusal applies nothing");
+    assert_eq!(estate.node_value("mesh1.rpc.1").await["declared"], "Ready", "a refusal applies nothing");
 
     // 5. Forward moves apply and the view follows.
     assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting"])).0, "applied");
     assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "stopped"])).0, "applied");
     assert_eq!(estate.node_value("mesh1.rpc.1").await["declared"], "Stopped");
-    assert_eq!(estate.node_value("mesh1.rpc.2").await["declared"], "ReadyForTraffic", "rpc.2 declared only its birth");
+    assert_eq!(estate.node_value("mesh1.rpc.2").await["declared"], "Ready", "rpc.2 declared only its birth");
 
     estate.artifact("declarations.json", &json!({"primary": primary["name"], "other_admin": other_admin["name"], "node": rpc1["name"]}));
     estate.stop().await;
@@ -111,11 +111,11 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     let on_primary = |outcome: &str| decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == outcome && s["attributes"]["sender"] == "mesh1.rpc.1").count();
     assert_eq!(on_primary("applied"), 3, "RFT (by the node at birth), ConnectionsDeleting, Leaving: {decided:?}");
     assert!(on_primary("already-applied") >= 1, "the oracle's repeat, and the node's own ConnectionsDeleting/Leaving at stop: {decided:?}");
-    // The oracle's Pending after ReadyForTraffic; and, once the oracle moved the node to Leaving, the
+    // The oracle's Pending after Ready; and, once the oracle moved the node to Leaving, the
     // node's own ConnectionsDeleting at stop is a backward move too: refused by name, never regressing.
     let backward: Vec<_> = decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == "rejected-invalid-node-transition" && s["attributes"]["sender"] == "mesh1.rpc.1").collect();
-    assert!(backward.iter().any(|s| s["attributes"]["detail"] == "ReadyForTraffic"), "Pending after ReadyForTraffic: {backward:?}");
-    assert!(backward.iter().all(|s| s["attributes"]["detail"] == "ReadyForTraffic" || s["attributes"]["detail"] == "Stopped"), "{backward:?}");
+    assert!(backward.iter().any(|s| s["attributes"]["detail"] == "Ready"), "Pending after Ready: {backward:?}");
+    assert!(backward.iter().all(|s| s["attributes"]["detail"] == "Ready" || s["attributes"]["detail"] == "Stopped"), "{backward:?}");
     assert_eq!(on_primary("rejected-stale-incarnation"), 1);
     assert_eq!(on_primary("rejected-not-primary"), 1, "subject-unknown on the primary");
     assert!(decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == "rejected-not-primary").all(|s| s["attributes"]["detail"] == "subject-unknown"), "the primary refuses no caller: {decided:?}");
@@ -195,17 +195,17 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     }
     estate.until_node("mesh1.admin.2", "mesh1.admin.2 holds the seats", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     Estate::workflow("node.start of mesh1.admin.1", estate.nodes_obj().await.start(&a1).await).await;
-    estate.until_node("mesh1.admin.1", "mesh1.admin.1 runs again holding no seat", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && !n.stopped && !n.is_primary).map(|_| ())).await;
+    estate.until_node("mesh1.admin.1", "mesh1.admin.1 runs again holding no seat", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped && !n.is_primary).map(|_| ())).await;
     let restart_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop_then_start(&rpc1).await;
-    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && !n.stopped).map(|_| ())).await;
+    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped).map(|_| ())).await;
 
     // A declaration straight to the admin holding no seat: its own seat decision.
     let (rpc1v, a1v, a2v) = (estate.node_value("mesh1.rpc.1").await, estate.node_value("mesh1.admin.1").await, estate.node_value("mesh1.admin.2").await);
     let holder_id = a2v["node_id"].as_str().unwrap().to_string();
     let node = format!("exact:{}", rpc1v["node_id"].as_str().unwrap());
     let seatless = format!("exact:{}", a1v["node_id"].as_str().unwrap());
-    let r = estate.probe(&["declare", "--target", &node, "--to", &seatless, "--state", "ready-for-traffic"]);
+    let r = estate.probe(&["declare", "--target", &node, "--to", &seatless, "--state", "ready"]);
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-not-primary", "the admin holding no seat answers by its seat decision: {r}");
     assert!(detail.contains("ReceiverNotPrimary") && detail.contains("mesh-primary of mesh1"), "{r}");

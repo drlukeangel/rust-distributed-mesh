@@ -111,7 +111,7 @@ pub enum CutSpec {
     },
     /// A node's declaration (`DeclareNodeState`) reached this admin's status door and is not yet
     /// decided: held unanswered until the release, so its node still owes it (i146 Q39). `node`
-    /// narrows the cut to one declaring node, `state` to one state (`ReadyForTraffic`, `Leaving`, ...).
+    /// narrows the cut to one declaring node, `state` to one state (`Ready`, `Leaving`, ...).
     Declaration {
         /// The declaring node's `path.name`.
         #[serde(default)] node: Option<String>,

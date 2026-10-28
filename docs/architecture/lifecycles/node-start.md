@@ -15,7 +15,7 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
 | Stopped reachability | Fresh Node RPC dial to its still-bound endpoint ([stopped nodes](states.md#stopped-nodes)) |
 | Context | `start_kind = FirstStart` or `AfterStop`; the spec says whether the data dir is inherited |
 | Hooks | [`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready), blocking, with joined channel, cert and current rafka-time; topology follows the hook. [`on_node_ready`](../fabric-node-hooks.md#on_node_ready), a notice, once after `node.started` |
-| Completion | Hook Ok, complete topology, current time, required Build floor, `node.started`, and the mesh-primary's ReadyForTraffic on it |
+| Completion | Hook Ok, complete topology, current time, required Build floor, `node.started`, and the mesh-primary's Ready on it |
 
 ## End-to-end sequence
 
@@ -47,8 +47,8 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    is current when the node re-enters.
 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot nor a
    Blocked hook permits it. That frame is the node's report: the mesh-primary sets
-   ReadyForTraffic on that exact birth through the [node status](node-status.md) apply,
-   not a caller op. The node also declares ReadyForTraffic to its mesh-primary as an owed message, as it declares
+   Ready on that exact birth through the [node status](node-status.md) apply,
+   not a caller op. The node also declares Ready to its mesh-primary as an owed message, as it declares
    Stopped (Q36, Q87); frame and declaration apply once (Q49). A typed
    refusal of that apply completes no readiness.
 6. Start ends with `node.started`. The node then calls
@@ -67,9 +67,9 @@ StartNode { node_id, incarnation, build_id, attempt, operation }
   ← NodeJoined (Data; mesh-primary records pending)
   [pre_node_ready]
   [node.topology.get, missing Build floor, rafka-time last]
-  ← NodeStarted (Terminal; mesh-primary records ReadyForTraffic)
+  ← NodeStarted (Terminal; mesh-primary records Ready)
   [on_node_ready, a notice]
-  [outer Build Complete only after the ReadyForTraffic record]
+  [outer Build Complete only after the Ready record]
 ```
 
 If join fails after start:
@@ -99,7 +99,7 @@ sequenceDiagram
     M-->>N: topology, required Build facts, rafka-time last
     N-->>M: node.started
     Note over N: on_node_ready (notice)
-    Note over M: sets ReadyForTraffic
+    Note over M: sets Ready
     N-->>M: Complete
 ```
 

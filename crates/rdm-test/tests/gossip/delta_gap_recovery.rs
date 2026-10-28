@@ -344,7 +344,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     hold.signal("-STOP", true);
     let delta_e = until_arrival("the observer hears the delta for the held rpc node while the member is cut", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").into_iter().find(|d| d.0 > cut_at)).await;
     // The held rpc node, released, re-entered through node.mesh.join (Q87): its Pending and its
-    // ReadyForTraffic were deltas of their own after the one the member applied at the baseline. The
+    // Ready were deltas of their own after the one the member applied at the baseline. The
     // member applied every one of them (no gap) before the cut, and the delta heard during the cut
     // follows the latest the member applied.
     let member_latest = {
@@ -421,10 +421,10 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     assert!(!admin_fulls.is_empty(), "mesh1's primary put forwarded fulls into its Mesh");
     let deltas_forwarded: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|sp| attr(sp, "node") == "mesh1.admin.1" && attr(sp, "mesh") == "mesh2" && at(sp) >= t_change_a && at(sp) < t_stop).collect();
     // The real changes in mesh2: held; released, at which the held node re-enters through node.mesh.join
-    // and is published Pending and then ReadyForTraffic (node-mesh-join.md step 10, Q87); held again. The
+    // and is published Pending and then Ready (node-mesh-join.md step 10, Q87); held again. The
     // forwarder emits one delta from the version it last published to the one it holds (gossip.md
     // invariant 31): the deltas chain with no hole and end at the version the member installed, and the
-    // three changes apart in time are three deltas at least (Pending and ReadyForTraffic may share one
+    // three changes apart in time are three deltas at least (Pending and Ready may share one
     // mesh topology checklist, one version).
     let mut chain: Vec<(u64, u64)> = deltas_forwarded.iter().map(|sp| (num(sp, "base_version"), num(sp, "topology_version"))).collect();
     chain.sort();

@@ -1,5 +1,5 @@
 //! Leadership, as a product sees it (i143.e11.s4): a cohort's seat is the one election,
-//! node-admin's (`rafka-node-admin-core` `election.rs`, lowest ReadyForTraffic NodeId per
+//! node-admin's (`rafka-node-admin-core` `election.rs`, lowest Ready NodeId per
 //! `(mesh, kind)` cohort). A product reads the seat from node-admin's public view and never
 //! computes it: nothing here orders NodeIds.
 

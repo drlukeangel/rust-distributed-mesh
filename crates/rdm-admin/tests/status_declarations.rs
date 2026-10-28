@@ -41,7 +41,7 @@ fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_pri
     node.endpoint_id = Some(EndpointId(key.public().to_string()));
     node.incarnation_id = Some(IncarnationId::mint());
     node.provider = Some(ProviderKind::Process);
-    node.status = NodeStatus::ReadyForTraffic;
+    node.status = NodeStatus::Ready;
     node.is_primary = is_primary;
     node.is_fabric_primary = is_fabric_primary;
     node.transport_addr = Some("127.0.0.1:1".parse().unwrap());
@@ -141,7 +141,7 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
     let mut nodes = vec![admin.node.clone()];
     nodes.extend(others.values().map(|b| b.node.clone()));
     let topology = Arc::new(tokio::sync::RwLock::new(Topology {
-        fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: Vec::new(),
         nodes,
     }));
@@ -243,15 +243,15 @@ fn reply(out: &RpcOutcome<StatusReply>) -> StatusReply {
 async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_first() {
     let (rig, b) = rig().await;
     let rpc1 = &b["rpc1"];
-    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
+    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Ready)).await), StatusReply::Applied);
     // Applied is on the subject's row before it was answered.
     let row = rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
-    assert_eq!(row.state, NodeState::ReadyForTraffic);
+    assert_eq!(row.state, NodeState::Ready);
     assert_eq!(row.incarnation_id, rpc1.node.incarnation_id.clone().unwrap());
     // The same natural key again: one logical event.
-    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::AlreadyApplied);
+    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Ready)).await), StatusReply::AlreadyApplied);
     // Backward is refused naming the current state; a skip forward applies.
-    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Pending)).await), StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic });
+    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Pending)).await), StatusReply::RejectedInvalidNodeTransition { current: NodeState::Ready });
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Stopped)).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ConnectionsDeleting)).await), StatusReply::RejectedInvalidNodeTransition { current: NodeState::Stopped });
     assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Stopped));
@@ -267,26 +267,26 @@ async fn the_deciding_primary_is_the_one_the_subject_needs_never_the_callers() {
     let (rig, b) = rig().await;
     let (rpc1, rpc2, admin2, m2admin) = (&b["rpc1"], &b["rpc2"], &b["admin2"], &b["m2admin"]);
     // rpc.2 sending rpc.1's state: decided for rpc.1.
-    assert_eq!(reply(&call(&rig, rpc2, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
-    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "applied for the subject");
+    assert_eq!(reply(&call(&rig, rpc2, &declare(rpc1, NodeState::Ready)).await), StatusReply::Applied);
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "applied for the subject");
     assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc2.node.node_id, rpc2.node.incarnation_id.as_ref().unwrap()), None, "nothing applied for the caller");
     // A subject the view does not hold at all.
     let stranger = birth("mesh1.rpc.9", NodeKind::RpcNode, "mesh1", false, false);
-    let r = reply(&call(&rig, &stranger, &declare(&stranger, NodeState::ReadyForTraffic)).await);
+    let r = reply(&call(&rig, &stranger, &declare(&stranger, NodeState::Ready)).await);
     assert_eq!(r, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
     // A stale birth: the view holds a newer incarnation of the subject.
-    let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic, operation: None };
+    let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::Ready, operation: None };
     assert_eq!(reply(&call(&rig, rpc1, &stale).await), StatusReply::RejectedStaleIncarnation { held: rpc1.node.incarnation_id.clone().unwrap() });
     // A node of another mesh: this admin is not its mesh-primary.
     let foreign = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
     rig.topology.write().await.nodes.push(foreign.node.clone());
-    let r = reply(&call(&rig, &foreign, &declare(&foreign, NodeState::ReadyForTraffic)).await);
+    let r = reply(&call(&rig, &foreign, &declare(&foreign, NodeState::Ready)).await);
     assert_eq!(r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
     // A node-admin declares to its own mesh's primary (this admin is mesh1's): Applied.
-    assert_eq!(reply(&call(&rig, admin2, &declare(admin2, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
+    assert_eq!(reply(&call(&rig, admin2, &declare(admin2, NodeState::Ready)).await), StatusReply::Applied);
     // A node-admin of another mesh is refused by the seat it needs, its own mesh's primary, though
     // this admin holds the fabric seat (node-status.md: "A node reports to its mesh's primary").
-    let r = reply(&call(&rig, m2admin, &declare(m2admin, NodeState::ReadyForTraffic)).await);
+    let r = reply(&call(&rig, m2admin, &declare(m2admin, NodeState::Ready)).await);
     assert_eq!(r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
 }
 
@@ -305,23 +305,23 @@ async fn a_declaration_from_an_endpoint_the_mesh_primary_never_heard_of_is_decid
     let stranger = birth("mesh1.rpc.9", NodeKind::RpcNode, "mesh1", false, false);
     assert!(rig.topology.read().await.births().all(|n| n.endpoint_id != stranger.node.endpoint_id), "the stranger is in no birth of the view");
     // A member's declaration is decided for that member: Applied, on its row first.
-    assert_eq!(reply(&call(&rig, &stranger, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
+    assert_eq!(reply(&call(&rig, &stranger, &declare(rpc1, NodeState::Ready)).await), StatusReply::Applied);
     let row = rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
-    assert_eq!((row.state, row.name.clone()), (NodeState::ReadyForTraffic, rpc1.node.name.clone()), "the row is the subject's, at its own path.name");
+    assert_eq!((row.state, row.name.clone()), (NodeState::Ready, rpc1.node.name.clone()), "the row is the subject's, at its own path.name");
     // A node-admin's declaration reaches the fabric seat this admin holds.
-    assert_eq!(reply(&call(&rig, &stranger, &declare(admin2, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
+    assert_eq!(reply(&call(&rig, &stranger, &declare(admin2, NodeState::Ready)).await), StatusReply::Applied);
     // A mesh's declaration reaches the fabric-primary for a mesh it holds.
-    let m2 = StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: MeshState::ReadyForTraffic };
+    let m2 = StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: MeshState::Ready };
     assert_eq!(reply(&call(&rig, &stranger, &m2).await), StatusReply::Applied);
     // The direction refusals stay.
-    assert_eq!(reply(&call(&rig, &stranger, &declare(&stranger, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a subject the view does not hold");
-    let unknown_mesh = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic };
+    assert_eq!(reply(&call(&rig, &stranger, &declare(&stranger, NodeState::Ready)).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a subject the view does not hold");
+    let unknown_mesh = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready };
     assert_eq!(reply(&call(&rig, &stranger, &unknown_mesh).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a mesh the fabric-primary does not hold");
     let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: None };
     assert_eq!(reply(&call(&rig, &stranger, &stale).await), StatusReply::RejectedStaleIncarnation { held: rpc1.node.incarnation_id.clone().unwrap() });
     let foreign = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
     rig.topology.write().await.nodes.push(foreign.node.clone());
-    assert_eq!(reply(&call(&rig, &stranger, &declare(&foreign, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
+    assert_eq!(reply(&call(&rig, &stranger, &declare(&foreign, NodeState::Ready)).await), StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -330,24 +330,24 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     let (m2admin, rpc1, admin2) = (&b["m2admin"], &b["rpc1"], &b["admin2"]);
     // mesh2's primary declares mesh2's state to the fabric-primary.
     let m2 = |s| StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: s };
-    assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::ReadyForTraffic)).await), StatusReply::Applied);
+    assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::Ready)).await), StatusReply::Applied);
     // Q144: a repeated declaration is answered `Applied` again, so a mesh-primary that lost its record
     // write before it landed records it on the answer to its next declaration.
-    assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::ReadyForTraffic)).await), StatusReply::Applied);
+    assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::Ready)).await), StatusReply::Applied);
     assert!(rig.authority.meshes_storage.mesh(&rig.mesh_id("mesh2")).await.unwrap().is_none_or(|r| r.states.is_empty()), "the fabric-primary writes nothing of mesh2's record: its primary does");
-    assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::Pending)).await), StatusReply::RejectedInvalidMeshTransition { current: MeshState::ReadyForTraffic });
+    assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::Pending)).await), StatusReply::RejectedInvalidMeshTransition { current: MeshState::Ready });
     // The declaration is decided for the mesh it names, whoever calls (an ordinary node; a
     // non-primary admin of another mesh): forward applies once, a mesh the holder does not hold is
     // `SubjectUnknown`.
     assert_eq!(reply(&call(&rig, rpc1, &m2(MeshState::Leaving)).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, admin2, &m2(MeshState::Leaving)).await), StatusReply::Applied, "a repeated declaration is answered Applied again (Q144)");
-    let unknown = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic };
+    let unknown = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready };
     assert_eq!(reply(&call(&rig, m2admin, &unknown).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown });
     // A fabric event is applied at a mesh primary (this admin is mesh1's), whoever sends it, once.
-    let ev = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: FabricEvent::ReadyForTraffic };
+    let ev = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: FabricEvent::Ready };
     assert_eq!(reply(&call(&rig, m2admin, &ev).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, m2admin, &ev).await), StatusReply::AlreadyApplied);
-    let wrong = StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ReadyForTraffic };
+    let wrong = StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::Ready };
     assert_eq!(reply(&call(&rig, m2admin, &wrong).await), StatusReply::RejectedStaleFabric { held: rig.authority.fabric_id.clone() });
     // ApplyMeshState(Pending) from the fabric-primary at an admin of that mesh: this admin is
     // mesh1's; mesh2's Pending is not its to apply, mesh1's is, and a foreign mesh id is refused.
@@ -366,17 +366,17 @@ async fn a_cut_applies_nothing_and_a_lost_reply_is_indeterminate_then_already_ap
     let c = client_of(&rig, rpc1).await;
     let target = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
     // Cut before the request commits: NotSent, nothing applied, no row.
-    let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions { cut_before_finish: true, ..Default::default() }).await;
+    let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &CallOptions { cut_before_finish: true, ..Default::default() }).await;
     assert!(matches!(out, RpcOutcome::NotSent(_)), "{out:?}");
     assert!(rig.authority.declared.lock().unwrap().nodes.is_empty());
     assert!(rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).iter().all(|c| c.node_id != rpc1.node.node_id));
     // Applied, reply lost: Indeterminate at the caller; the same declaration again is AlreadyApplied.
     rig.authority.hold_next_reply.store(true, Ordering::SeqCst);
-    let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;
+    let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;
     assert!(matches!(out, RpcOutcome::Indeterminate(_)), "{out:?}");
     assert!(ev.unwrap().committed);
-    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "applied before the reply was lost");
-    let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions::default()).await;
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "applied before the reply was lost");
+    let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &CallOptions::default()).await;
     assert_eq!(reply(&out), StatusReply::AlreadyApplied, "one logical event");
 }
 
@@ -395,11 +395,11 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
     let target = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
     rig.withhold.arm();
     let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(600) }, ..Default::default() };
-    let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &opts).await;
+    let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &opts).await;
     assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == rdm_core::outcome::IndeterminateReason::ReplyDeadline), "{out:?}");
     assert!(ev.unwrap().committed, "the request crossed the commit cut before the reply was withheld");
     rig.withhold.reached().await;
-    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "applied before the reply was withheld");
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "applied before the reply was withheld");
     assert_eq!(ServerStats::get(&rig.server.stats().dispatched), 1, "the handler ran once for the lost call");
 
     // The reply goes out only now, after the caller classified the call.
@@ -411,11 +411,11 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
     assert!(late.written.is_err(), "the late reply was refused at the abandoned stream: {late:?}");
 
     // The completed call is unchanged and the retry is one logical event.
-    let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions::default()).await;
+    let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &CallOptions::default()).await;
     assert_eq!(reply(&out), StatusReply::AlreadyApplied, "one logical event");
     assert_eq!(ServerStats::get(&rig.server.stats().dispatched), 2, "the lost call and the retry, nothing replayed");
     let row = rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
-    assert_eq!(row.state, NodeState::ReadyForTraffic);
+    assert_eq!(row.state, NodeState::Ready);
 }
 
 /// Drain admission never prevents an authority from receiving the upward certainty calls
@@ -892,7 +892,7 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
         let (tick, views) = tokio::sync::watch::channel(0u64);
         door.watch_views(views);
         let atlas = rdm_admin::atlas::Atlas::default();
-        atlas.write_record(&rdm_admin::storage::NodeRow::new(m2rpc.node.name.clone(), node_id.clone(), NodeStatus::ReadyForTraffic));
+        atlas.write_record(&rdm_admin::storage::NodeRow::new(m2rpc.node.name.clone(), node_id.clone(), NodeStatus::Ready));
         let told: BTreeMap<String, String> = [("admin_api_base".to_string(), "rdm://mesh2".to_string())].into();
         let req = StatusRequest::UpdateNodeConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: told.clone() };
         let view = rig.topology.read().await.clone();
@@ -1072,7 +1072,7 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
 async fn fabric_primary_door(rig: &Rig, births: &[&Birth], resolves: &[ResolvedNode]) -> Arc<rdm_admin::atlas::Atlas> {
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     for b in births {
-        atlas.write_record(&rdm_admin::storage::NodeRow::new(b.node.name.clone(), b.node.node_id.clone(), NodeStatus::ReadyForTraffic));
+        atlas.write_record(&rdm_admin::storage::NodeRow::new(b.node.name.clone(), b.node.node_id.clone(), NodeStatus::Ready));
     }
     let _ = rig.authority.atlas.set(atlas.clone());
     // Every record its writer holds is its atlas's too (Q203, as the boot wires it).
@@ -1435,7 +1435,7 @@ fn a_successor_mesh_primary_owes_every_rows_push_again_and_the_fabric_primary_ta
         let fp_atlas = fabric_primary_door(&rig, &[rpc1], &[]).await;
         let joined = second_admin(&rig, admin2, &[rig.resolved.clone()]).await;
         let config: BTreeMap<String, String> = [("zone".to_string(), "e".to_string())].into();
-        let row = rdm_admin::storage::NodeRow { config: config.clone(), revision: 5, ..rdm_admin::storage::NodeRow::new(rpc1.node.name.clone(), rpc1.node.node_id.clone(), NodeStatus::ReadyForTraffic) };
+        let row = rdm_admin::storage::NodeRow { config: config.clone(), revision: 5, ..rdm_admin::storage::NodeRow::new(rpc1.node.name.clone(), rpc1.node.node_id.clone(), NodeStatus::Ready) };
         joined.status.caches.nodes.hold(&row);
         let view = rig.topology.read().await.clone();
         joined.status.configs.get().unwrap().owe_pushes(&admin2.node.name, &admin2.node.node_id, &view, "mesh1");
@@ -1707,23 +1707,23 @@ fn outcomes_and_connections(spans: &[(String, BTreeMap<String, String>)]) -> Vec
 }
 
 /// CONTRACT (proposal node-properties-own-commands.md §2.1 Precondition and Validation: "A
-/// ready-for-traffic node, or one still holding a connection, is refused"; "the precondition holds,
+/// ready node, or one still holding a connection, is refused"; "the precondition holds,
 /// else `RejectedAdmittingConnections { status, held_connections }`"; §2.4 "Refused before the claim
 /// ...: nothing written, nothing changed"): a caller's `node.name.update` of the live,
-/// ready-for-traffic successor `mesh1.rpc.8` to the name `3` at mesh1's primary is refused
-/// `RejectedAdmittingConnections { status: ReadyForTraffic, held_connections: [] }`. Nothing is claimed
+/// ready successor `mesh1.rpc.8` to the name `3` at mesh1's primary is refused
+/// `RejectedAdmittingConnections { status: Ready, held_connections: [] }`. Nothing is claimed
 /// (no row at `mesh1.rpc.3`), the view keeps the birth at `mesh1.rpc.8`, and the birth is told nothing. One
 /// `rdm.node_admin.name.update.via-writer` span says `rejected-admitting-connections` with
-/// `traffic=ReadyForTraffic` and `connections=none-deleted`. What must NOT happen: the row written, the
+/// `traffic=Ready` and `connections=none-deleted`. What must NOT happen: the row written, the
 /// birth told `ApplyNodeName`, or `NameUpdated`.
 #[test]
-fn a_ready_for_traffic_nodes_rename_is_refused_admitting_connections_and_nothing_is_claimed_or_told() {
+fn a_ready_nodes_rename_is_refused_admitting_connections_and_nothing_is_claimed_or_told() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
         let (succ, node) = successor_new(&rig).await;
         let reply = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
-        assert_eq!(reply, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ReadyForTraffic, held_connections: vec![] });
+        assert_eq!(reply, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::Ready, held_connections: vec![] });
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
@@ -1734,10 +1734,10 @@ fn a_ready_for_traffic_nodes_rename_is_refused_admitting_connections_and_nothing
     let (trace_id, attrs) = &spans[0];
     assert_eq!(
         (attrs.get("outcome").map(String::as_str), attrs.get("traffic").map(String::as_str), attrs.get("connections").map(String::as_str), attrs.get("answered")),
-        (Some("rejected-admitting-connections"), Some("ReadyForTraffic"), Some("none-deleted"), None),
+        (Some("rejected-admitting-connections"), Some("Ready"), Some("none-deleted"), None),
         "{attrs:?}"
     );
-    eprintln!("trace {trace_id}: {NAME_SPAN} from=mesh1.rpc.8 name=3 traffic=ReadyForTraffic connections=none-deleted outcome=rejected-admitting-connections");
+    eprintln!("trace {trace_id}: {NAME_SPAN} from=mesh1.rpc.8 name=3 traffic=Ready connections=none-deleted outcome=rejected-admitting-connections");
 }
 
 /// CONTRACT (node-name-update.md Precondition: "The node is live and admits no connection: this
@@ -1865,7 +1865,7 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
         let routed = &b["rpc1"];
         let refused = reply(&call(&rig, &b["admin2"], &update_name(routed, "1.old")).await);
-        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ReadyForTraffic, held_connections: vec![] }, "a live node that can carry traffic keeps its name");
+        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::Ready, held_connections: vec![] }, "a live node that can carry traffic keeps its name");
     });
     let spans = cap.spans(NAME_SPAN);
     let outcomes: Vec<_> = spans.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect();
@@ -2146,13 +2146,13 @@ fn labels(l: &[&str]) -> std::collections::BTreeSet<String> {
     l.iter().map(|s| s.to_string()).collect()
 }
 
-/// CONTRACT (Q171: no workflow waits for the initial fabric's first ready-for-traffic; proposal
+/// CONTRACT (Q171: no workflow waits for the initial fabric's first ready; proposal
 /// node-properties-own-commands.md §1): while the initial fabric is pending and has never been
-/// ready-for-traffic, a caller's `node.name.update` of the left `mesh1.rpc.2` (its connections deleted,
+/// ready, a caller's `node.name.update` of the left `mesh1.rpc.2` (its connections deleted,
 /// its mesh left) at its mesh-primary ends `NameUpdated`: the row moves to `mesh1.rpc.2.old`. What must
 /// NOT happen: a refusal for a fabric not yet ready.
 #[test]
-fn a_node_name_update_before_the_fabric_first_reaches_ready_for_traffic_is_admitted() {
+fn a_node_name_update_before_the_fabric_first_reaches_ready_is_admitted() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
@@ -2161,7 +2161,7 @@ fn a_node_name_update_before_the_fabric_first_reaches_ready_for_traffic_is_admit
         rig.topology.write().await.fabric.status = ScopeStatus::Pending;
         let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2.old")).await);
-        assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() }, "admitted before the first ready-for-traffic");
+        assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() }, "admitted before the first ready");
         assert_eq!(rig.nodes.record_at(&to).await.unwrap().map(|r| r.node_id), Some(rpc2.node.node_id.clone()));
     });
     let updates = cap.spans(NAME_SPAN);
@@ -2183,7 +2183,7 @@ fn delete_tags(b: &Birth, scope: rdm_core::status::TagScope) -> StatusRequest {
 /// node.tags: "Create is a blind put of that key, so creating a label the node already carries is
 /// ignored and writes no duplicate; delete tombstones the named keys ... a node carries at most 32; a
 /// label ... past the 32, is refused by name and nothing is written"): while the initial fabric is
-/// pending and has never been ready-for-traffic, a caller's `node.config.update` {zone: a} of
+/// pending and has never been ready, a caller's `node.config.update` {zone: a} of
 /// `mesh1.rpc.1` at its mesh-primary ends `ConfigUpdated`, the row carries the map (and no tag) and the
 /// birth is sent `ApplyNodeConfig` with it. Then: create {rabbit} ends `TagsCreated` and the tags index
 /// answers rabbit; create {rabbit, red} names rabbit already carried; delete {rabbit, blue} names blue
@@ -2193,7 +2193,7 @@ fn delete_tags(b: &Birth, scope: rdm_core::status::TagScope) -> StatusRequest {
 /// `via-writer` span ends with the reply's name. What must NOT happen: a duplicate label row, a label past
 /// the cap, a tags command that calls the node, or a command refused for a fabric not yet ready.
 #[test]
-fn node_tags_commands_and_a_config_update_before_the_fabric_first_reaches_ready_for_traffic_write_the_row_and_its_tags_index() {
+fn node_tags_commands_and_a_config_update_before_the_fabric_first_reaches_ready_write_the_row_and_its_tags_index() {
     use rdm_core::status::TagScope;
     let cap = capture();
     cap.run(async {
@@ -2204,7 +2204,7 @@ fn node_tags_commands_and_a_config_update_before_the_fabric_first_reaches_ready_
         rig.topology.write().await.fabric.status = ScopeStatus::Pending;
         let zone: BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
         let config = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone.clone() };
-        assert_eq!(updated(&reply(&call(&rig, &b["admin2"], &config).await)), updated_of(rpc1, &zone), "node.config.update is admitted before the first ready-for-traffic");
+        assert_eq!(updated(&reply(&call(&rig, &b["admin2"], &config).await)), updated_of(rpc1, &zone), "node.config.update is admitted before the first ready");
         let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("the config update writes the row");
         assert_eq!((row.config.clone(), row.tags.clone()), (zone.clone(), Default::default()), "the row carries the map and no tag");
         assert!(rig.nodes.tagged("rabbit").await.unwrap().is_empty(), "no tags index entry is written");
@@ -2443,7 +2443,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
     use rdm_admin::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, MemoryBuildStateAdapter};
     let admin = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
     let view = Topology {
-        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: Vec::new(),
         nodes: vec![admin.node.clone()],
     };
@@ -2826,7 +2826,7 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
             assert!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty());
         } else {
             assert!(matches!((&result, start), (A::Started {}, true) | (A::Stopped { .. }, false)), "{result:?}");
-            let state = if start { NodeState::ReadyForTraffic } else { NodeState::Stopped };
+            let state = if start { NodeState::Ready } else { NodeState::Stopped };
             assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node_id, subject.incarnation_id.as_ref().unwrap()), Some(state), "recorded before the outer Build can complete");
             assert_eq!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).len(), 1);
         }
@@ -2899,7 +2899,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
 /// A start after a stop of mesh1.rpc.2 at its mesh-primary, carried on a real command stream: the
 /// birth's stop is recorded (its Stopped row, the view's stop), the start's join report is accepted
 /// and its Pending recorded there, before the join is answered (node-mesh-join.md step 10). With
-/// `ready_first`, the node's own ReadyForTraffic declaration is decided before its mesh-primary takes
+/// `ready_first`, the node's own Ready declaration is decided before its mesh-primary takes
 /// the start's `NodeJoined` frame; otherwise after it. What the mesh-primary holds of the birth once
 /// it took `NodeJoined` is checked by `joined`, before `NodeStarted` is sent; the spans the run
 /// exported are returned.
@@ -2935,8 +2935,8 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         // A later report of that join (a retry of the same report) belongs to that Pending and starts no other.
         assert_eq!(rig.authority.joined_pending(&rpc.node.node_id, &rpc.node.name, &incarnation, false).await, StatusReply::AlreadyApplied, "a retried join report applies as already applied");
         if ready_first {
-            // Answered, the node runs its start and declares ReadyForTraffic before its NodeJoined frame is taken.
-            assert_eq!(reply(&call(&rig, rpc, &declare(rpc, NodeState::ReadyForTraffic)).await), StatusReply::Applied, "the node's ReadyForTraffic, declared after its join was answered, applies over the join's Pending");
+            // Answered, the node runs its start and declares Ready before its NodeJoined frame is taken.
+            assert_eq!(reply(&call(&rig, rpc, &declare(rpc, NodeState::Ready)).await), StatusReply::Applied, "the node's Ready, declared after its join was answered, applies over the join's Pending");
         }
         let server_delivery = Arc::new(OnceLock::<rdm_transport::Delivery>::new());
         let (taken, release) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
@@ -2971,13 +2971,13 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         tokio::time::timeout(Duration::from_secs(10), taken.notified()).await.expect("the mesh-primary took the start's NodeJoined");
         joined(&rig, rpc, &digest_view);
         if !ready_first {
-            assert_eq!(reply(&call(&rig, rpc, &declare(rpc, NodeState::ReadyForTraffic)).await), StatusReply::Applied, "the node's ReadyForTraffic applies over the join's Pending");
+            assert_eq!(reply(&call(&rig, rpc, &declare(rpc, NodeState::Ready)).await), StatusReply::Applied, "the node's Ready applies over the join's Pending");
         }
         release.notify_one();
         let answer = tokio::time::timeout(Duration::from_secs(10), start).await.unwrap().unwrap();
         assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");
-        assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc.node.node_id, &incarnation), Some(NodeState::ReadyForTraffic));
-        assert_eq!(digest_view.member_status(&rpc.node.node_id, &incarnation), Some(rdm_core::MemberStatus::ReadyForTraffic));
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc.node.node_id, &incarnation), Some(NodeState::Ready));
+        assert_eq!(digest_view.member_status(&rpc.node.node_id, &incarnation), Some(rdm_core::MemberStatus::Ready));
     });
     cap
 }
@@ -3000,20 +3000,20 @@ fn of_rpc2(cap: &Capture, name: &str) -> Vec<BTreeMap<String, String>> {
 /// CONTRACT (node-mesh-join.md step 10: the mesh-primary "records and publishes the node once as
 /// Pending when it accepts the node's join report, before it answers it. Every later report of that
 /// join, its retries and its `NodeJoined` included, belongs to that Pending and starts no other"): a
-/// start after a stop whose node declared ReadyForTraffic, once answered, before its mesh-primary
-/// took its `NodeJoined` frame stays ReadyForTraffic through that frame: declared ReadyForTraffic,
-/// its member status ReadyForTraffic, its stop cleared at node.mesh.joined and the birth held again;
+/// start after a stop whose node declared Ready, once answered, before its mesh-primary
+/// took its `NodeJoined` frame stays Ready through that frame: declared Ready,
+/// its member status Ready, its stop cleared at node.mesh.joined and the birth held again;
 /// the birth's cycle begun once, at its join report. Must NOT happen: `NodeJoined` beginning another
 /// cycle and recording Pending again, or the view setting the ready birth back to Pending.
 #[test]
-fn a_starts_node_joined_taken_after_the_births_ready_declaration_leaves_it_ready_for_traffic() {
-    let cap = start_after_a_stop_with_the_pending_recorded_at_the_join(true, |rig, rpc, digest_view| held_after_node_joined(rig, rpc, digest_view, NodeState::ReadyForTraffic, rdm_core::MemberStatus::ReadyForTraffic));
+fn a_starts_node_joined_taken_after_the_births_ready_declaration_leaves_it_ready() {
+    let cap = start_after_a_stop_with_the_pending_recorded_at_the_join(true, |rig, rpc, digest_view| held_after_node_joined(rig, rpc, digest_view, NodeState::Ready, rdm_core::MemberStatus::Ready));
     let begun = of_rpc2(&cap, "rdm.node_admin.status.update.via-cycle-begun");
     assert_eq!(begun.len(), 1, "the birth's cycle begins once, at its join report: {begun:?}");
     let admitted = of_rpc2(&cap, "rdm.node_admin.status.update.via-mesh-join-admitted");
     assert_eq!(admitted.iter().map(|a| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["applied".to_string(), "already-applied".to_string()], "the join report's Pending is recorded once; its retry applies as already applied: {admitted:?}");
     let joined: Vec<_> = of_rpc2(&cap, "rdm.mesh.topology.update.via-node-joined");
-    assert_eq!(joined.iter().map(|a| (a.get("outcome").cloned().unwrap_or_default(), a.get("status").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("already-applied".to_string(), "ReadyForTraffic".to_string())], "the view took node.mesh.joined as already applied, holding the ready birth ready: {joined:?}");
+    assert_eq!(joined.iter().map(|a| (a.get("outcome").cloned().unwrap_or_default(), a.get("status").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("already-applied".to_string(), "Ready".to_string())], "the view took node.mesh.joined as already applied, holding the ready birth ready: {joined:?}");
     let frames: Vec<_> = of_rpc2(&cap, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|a| a.get("frame").map(String::as_str) == Some("node-joined")).collect();
     assert_eq!(frames.iter().map(|a| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["already-applied".to_string()], "{frames:?}");
 }
@@ -3021,7 +3021,7 @@ fn a_starts_node_joined_taken_after_the_births_ready_declaration_leaves_it_ready
 /// CONTRACT (node-mesh-join.md step 10, as above): a start after a stop whose mesh-primary takes its
 /// `NodeJoined` frame while the birth is still Pending from its join report records nothing again:
 /// declared Pending, its member status Pending, its stop cleared at node.mesh.joined and the birth
-/// held again; the birth's cycle begun once, at its join report; its ReadyForTraffic then applies.
+/// held again; the birth's cycle begun once, at its join report; its Ready then applies.
 /// Must NOT happen: `NodeJoined` beginning a second cycle and putting a second Pending row.
 #[test]
 fn a_starts_node_joined_taken_while_the_birth_is_pending_from_its_join_report_begins_no_second_cycle() {

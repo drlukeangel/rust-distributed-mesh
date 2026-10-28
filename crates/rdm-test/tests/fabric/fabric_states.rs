@@ -1,9 +1,9 @@
-//! i143.e12.s6 process E2E: the fabric states (states.md; lifecycles/states.md, "The fabric's ready-for-traffic").
+//! i143.e12.s6 process E2E: the fabric states (states.md; lifecycles/states.md, "The fabric's ready").
 //!
 //! A real estate whose node-admin is the testkit's, carrying the testkit application. The fabric-primary
-//! alone moves the fabric: pending, then ready-for-traffic once every mesh is ready-for-traffic (Q174),
+//! alone moves the fabric: pending, then ready once every mesh is ready (Q174),
 //! and the application is told `on_mesh_ready` and `on_fabric_ready` (Q175). A cell holds a fabric short
-//! of ready-for-traffic by holding a planned node's `pre_node_ready` (`rdm_test::write_pre_node_ready_knob`).
+//! of ready by holding a planned node's `pre_node_ready` (`rdm_test::write_pre_node_ready_knob`).
 //! Evidence is read from the spans every process wrote.
 
 use rdm_client::{BuildFrame, BuildStream, FabricDesired, FabricView, LaunchKind as NodeKind, MeshDesired, ScopeStatus};
@@ -74,11 +74,11 @@ fn change_of<'a>(spans: &'a [Value], build_id: &str) -> (&'a Value, Vec<&'a Valu
     (root, mine)
 }
 
-/// CONTRACT (states.md "The fabric's ready-for-traffic"; Q174, Q175): a fabric whose Build adds a second mesh goes back
-/// to pending, and is ready-for-traffic once every mesh is ready-for-traffic, set by the fabric-primary
+/// CONTRACT (states.md "The fabric's ready"; Q174, Q175): a fabric whose Build adds a second mesh goes back
+/// to pending, and is ready once every mesh is ready, set by the fabric-primary
 /// alone; no node is commanded to open traffic and none checks in. Each mesh-primary tells the
-/// application `on_mesh_ready` once its mesh is ready-for-traffic, and the fabric-primary's one
-/// `on_fabric_ready` follows ready-for-traffic.
+/// application `on_mesh_ready` once its mesh is ready, and the fabric-primary's one
+/// `on_fabric_ready` follows ready.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_two_mesh_fabric_is_ready_once_every_mesh_is_ready() {
     let test = "a_two_mesh_fabric_is_ready_once_every_mesh_is_ready";
@@ -88,7 +88,7 @@ async fn a_two_mesh_fabric_is_ready_once_every_mesh_is_ready() {
 }
 
 /// CONTRACT: a two-mesh fabric whose meshes each hold the product role nodes (a broker, a gateway
-/// and a compute) changes to ready-for-traffic exactly as the rpc-node fabric does: once every mesh is.
+/// and a compute) changes to ready exactly as the rpc-node fabric does: once every mesh is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_two_mesh_fabric_of_role_nodes_is_ready_once_every_mesh_is_ready() {
     let test = "a_two_mesh_fabric_of_role_nodes_is_ready_once_every_mesh_is_ready";
@@ -155,7 +155,7 @@ async fn two_mesh_change(mut estate: Estate, shape: &[(NodeKind, u32)], members:
         .flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain(members.iter().map(move |n| format!("{m}.{n}"))))
         .collect();
     estate.settles_to_named(&want, Duration::from_secs(60)).await;
-    until_fabric(&estate, ScopeStatus::ReadyForTraffic, Some(two_meshes.as_str()), Duration::from_secs(60)).await;
+    until_fabric(&estate, ScopeStatus::Ready, Some(two_meshes.as_str()), Duration::from_secs(60)).await;
     let nodes = estate.node_values().await;
     estate.artifact("nodes.json", &json!(nodes));
     let primaries: std::collections::BTreeSet<String> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).collect();
@@ -169,7 +169,7 @@ async fn two_mesh_change(mut estate: Estate, shape: &[(NodeKind, u32)], members:
     let every_mesh_ready = at("rdm.node_admin.fabric.update.via-every-mesh-ready", &|_| true);
     let notice = at("rdm.node_admin.fabric.update.via-on-fabric-ready", &|_| true);
     assert!(flag(&notice["attributes"]["bound"]), "the testkit application registers on_fabric_ready: {notice}");
-    let order = [("every mesh ready", start(every_mesh_ready)), ("ready-for-traffic", start(entered("ready-for-traffic"))), ("on_fabric_ready notice", start(notice))];
+    let order = [("every mesh ready", start(every_mesh_ready)), ("ready", start(entered("ready"))), ("on_fabric_ready notice", start(notice))];
     for w in order.windows(2) {
         assert!(w[0].1 <= w[1].1, "{} came after {}: {order:?}", w[0].0, w[1].0);
     }
@@ -177,7 +177,7 @@ async fn two_mesh_change(mut estate: Estate, shape: &[(NodeKind, u32)], members:
     for gone in ["rdm.node_admin.fabric.update.via-state-command", "rdm.node_admin.fabric.update.via-member-check-in", "rdm.node_admin.fabric.update.via-mesh-checklist", "rdm.node_admin.fabric.update.via-state-hook", "rdm.mesh.topology.update.via-state-frame"] {
         assert!(named(&spans, gone).is_empty(), "{gone} is in the evidence: the open-traffic checklist ran");
     }
-    // Each mesh's primary told the application once that its mesh is ready-for-traffic (Q175).
+    // Each mesh's primary told the application once that its mesh is ready (Q175).
     let mesh_ready = named(&spans, "rdm.node_admin.mesh.update.via-on-mesh-ready");
     for m in ["mesh1", "mesh2"] {
         let told: Vec<&&Value> = mesh_ready.iter().filter(|sp| sp["attributes"]["mesh"] == m).collect();
@@ -201,8 +201,8 @@ async fn two_mesh_change(mut estate: Estate, shape: &[(NodeKind, u32)], members:
             seen.push(st);
         }
     }
-    let change_states: Vec<&str> = vec!["pending", "ready-for-traffic"];
-    assert!(seen.windows(2).any(|w| w == change_states), "FabricStatus went pending, ready-for-traffic: {seen:?}");
+    let change_states: Vec<&str> = vec!["pending", "ready"];
+    assert!(seen.windows(2).any(|w| w == change_states), "FabricStatus went pending, ready: {seen:?}");
     estate.record_trace_url(&s(&root["trace_id"]));
 }
 
@@ -230,9 +230,9 @@ fn rows_on(root: &std::path::Path) -> Vec<String> {
     out
 }
 
-/// Wait until the fabric is ready-for-traffic under the change of `build`.
+/// Wait until the fabric is ready under the change of `build`.
 async fn ready_under(estate: &Estate, build: &str) {
-    until_fabric(estate, ScopeStatus::ReadyForTraffic, Some(build), Duration::from_secs(90)).await;
+    until_fabric(estate, ScopeStatus::Ready, Some(build), Duration::from_secs(90)).await;
 }
 
 /// Read `stream`'s frames until the drive reports its Build Blocked naming `node`, bounded by `within`. A
@@ -261,16 +261,16 @@ async fn followed(estate: &Estate, stream: BuildStream, what: &str, within: Dura
 }
 
 /// CONTRACT (Q154; states.md "Resize and executable replacement": "Its Build is Complete only when the fabric is
-/// ready-for-traffic again from this Build's own change, as fabric.create's is"; build.md §10: "A Build
-/// that put the fabric back to pending completes when its ready-for-traffic state is set, not with its
-/// last step"; fabric-node-hooks.md: "A node never reaches ReadyForTraffic while its hook has not returned
+/// ready again from this Build's own change, as fabric.create's is"; build.md §10: "A Build
+/// that put the fabric back to pending completes when its ready state is set, not with its
+/// last step"; fabric-node-hooks.md: "A node never reaches Ready while its hook has not returned
 /// `Ok`"): a resize whose mesh2.rpc.1 is held at its `pre_node_ready` reports Blocked waiting for that
 /// node, and while `fabric.get` says pending under it neither its stream nor `build.get` says Complete;
-/// released, it is Complete only after the fabric entered ready-for-traffic under it. Must NOT happen: a
+/// released, it is Complete only after the fabric entered ready under it. Must NOT happen: a
 /// Build Complete while the fabric it put back to pending has not changed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_resize_is_complete_only_after_its_own_ready_for_traffic_state_is_set() {
-    let test = "a_resize_is_complete_only_after_its_own_ready_for_traffic_state_is_set";
+async fn a_resize_is_complete_only_after_its_own_ready_state_is_set() {
+    let test = "a_resize_is_complete_only_after_its_own_ready_state_is_set";
     let mut estate = estate_with(test).await;
     // Day 0's Build is Complete; the resize's mesh2.rpc.1 is held at its pre_node_ready from its first attempt.
     rdm_test::write_pre_node_ready_knob(&estate.root, "mesh2.rpc.1", "held by the cell").unwrap();
@@ -300,31 +300,31 @@ async fn a_resize_is_complete_only_after_its_own_ready_for_traffic_state_is_set(
     ready_under(&estate, &build).await;
     estate.stop().await;
 
-    // The order, from the spans: the fabric entered ready-for-traffic under this Build's change before the
+    // The order, from the spans: the fabric entered ready under this Build's change before the
     // attempt that completed it was dispatched.
     let spans = estate.spans();
     let (_, change) = change_of(&spans, &build);
-    let ready = change.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-state-entered" && sp["attributes"]["to"] == "ready-for-traffic").unwrap_or_else(|| panic!("the fabric entered ready-for-traffic under the change of {build}"));
+    let ready = change.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-state-entered" && sp["attributes"]["to"] == "ready").unwrap_or_else(|| panic!("the fabric entered ready under the change of {build}"));
     let completed = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| sp["attributes"]["build_id"] == build.as_str() && sp["attributes"]["outcome"] == "complete").unwrap_or_else(|| panic!("the attempt that completed {build} is spanned"));
     let Some(BuildFrame::Complete { attempt }) = done.frames.last() else { panic!("Build {build} ended {:?}", done.frames.last()) };
     assert_eq!(num(&completed["attributes"]["attempt"]), Some(u64::from(*attempt)), "the dispatch span is of the attempt the stream reported Complete: {completed}");
-    assert!(start(ready) <= start(completed), "the fabric entered ready-for-traffic under {build} ({}) before the attempt that completed it was dispatched ({}): {completed}", start(ready), start(completed));
+    assert!(start(ready) <= start(completed), "the fabric entered ready under {build} ({}) before the attempt that completed it was dispatched ({}): {completed}", start(ready), start(completed));
     estate.record_trace_url(&s(&ready["trace_id"]));
 }
 
 /// CONTRACT (fabric-create.md, Entry: "Day 0 is the first node-admin and its own mesh, nothing else. Every
 /// further mesh, and every other node, is created by a Build accepted after the fabric's first
-/// ready-for-traffic (Q170)"; Q171: every writer writes its rows to the store root from Day 0;
+/// ready (Q170)"; Q171: every writer writes its rows to the store root from Day 0;
 /// node-identity-and-state.md §2.7, The write: "it writes each create and update at once"; R14 item 9).
 ///
 /// Day 0: its one node, the fabric-primary mesh1.admin.1 (mesh1's primary too), up and ready, the fabric's
 /// store root holds every row Day 0 wrote: the Fabric row, the fabric's name claim (R-FN1) beside the
 /// per-fabric roots, mesh1's Mesh row and name claim, mesh1.admin.1's Node record with its name claim (its
-/// declared states its own ReadyForTraffic alone: the Day-0 root joins nobody, Q97) and the Day-0 Build's
+/// declared states its own Ready alone: the Day-0 root joins nobody, Q97) and the Day-0 Build's
 /// committed facts (Q61); no connections row, since it originated no data-plane connection (connections.md
 /// "The data plane is the connections log", R-CR6).
 ///
-/// After the first ready-for-traffic a growth Build adds mesh2 (its node-admin and an rpc node) and an rpc
+/// After the first ready a growth Build adds mesh2 (its node-admin and an rpc node) and an rpc
 /// node to mesh1, and each of its writers writes straight to the store: mesh2's primary its Mesh record and
 /// name claim, mesh2.rpc.1 the connection it originates to mesh1.rpc.1. `fabric/` has one writer, the
 /// fabric-primary (R14 item 2); the Fabric row carries no pointer to the newest Build (R-BI3): the growth
@@ -336,19 +336,19 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let test = "the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it";
     let mut estate = estate_with(test).await;
     let root = estate.fabric_store_root();
-    // The first Build is the Day-0 Build (fabric-create.md, Q170), Complete once its own ready-for-traffic
+    // The first Build is the Day-0 Build (fabric-create.md, Q170), Complete once its own ready
     // state is set (Q154): the estate followed it there.
     let first = estate.accepted_build_id().await;
     let want: std::collections::BTreeSet<String> = ["mesh1.admin.1"].iter().map(|n| n.to_string()).collect();
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
     ready_under(&estate, &first).await;
     let before = rows_on(&root);
-    estate.artifact("rows-before-ready-for-traffic.json", &json!(before));
+    estate.artifact("rows-before-ready.json", &json!(before));
     let holds = |rows: &[String], prefix: &str| rows.iter().any(|r| r.starts_with(prefix));
     for n in &nodes {
         let name = s(&n["name"]);
-        let want: &[&str] = &["ReadyForTraffic"];
-        // A mesh-primary's own ReadyForTraffic has no Applied reply to be durable before (states.md): its
+        let want: &[&str] = &["Ready"];
+        // A mesh-primary's own Ready has no Applied reply to be durable before (states.md): its
         // writer records it on its own record after the view shows it, so the cell reads until it is there.
         let read = || {
             let record: Value = estate.node_record(&s(&n["node_id"])).unwrap_or_else(|| panic!("the record of {name} is in nodes.jsonl"));
@@ -376,7 +376,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let claimed: Value = serde_json::from_slice(&std::fs::read(&name_claim).unwrap_or_else(|e| panic!("the fabric's name claim stands at {}: {e}", name_claim.display()))).unwrap();
     assert_eq!(claimed["record"]["fabric_id"].as_str(), root.file_name().and_then(|n| n.to_str()), "the name claim names this fabric: {claimed}");
     let after = rows_on(&root);
-    estate.artifact("rows-after-ready-for-traffic.json", &json!(after));
+    estate.artifact("rows-after-ready.json", &json!(after));
     // Under fabric/ the fabric-primary holds nothing: the Fabric record is fabric.jsonl's, the Build journal
     // builds.jsonl's (R-BI6), and no per-seat row stands beside them (Part C2).
     let only_identity_builds_and_events = |rows: &[String]| !rows.iter().any(|r| r.starts_with("fabric/")) && rows.iter().filter(|r| r.starts_with("fabric.jsonl#")).all(|r| r.starts_with("fabric.jsonl#fabric-record/"));
@@ -397,7 +397,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let fp_id = s(&nodes[0]["node_id"]);
     addressed("mesh1", "mesh1.admin.1", &fp_id).await;
 
-    // The growth Build, accepted after the first ready-for-traffic (Q170), adds mesh2 and an rpc node to
+    // The growth Build, accepted after the first ready (Q170), adds mesh2 and an rpc node to
     // mesh1: every row its nodes write goes straight to the store.
     let shape = |m: &str, rpc: u32| MeshDesired::of(m, [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, rpc)]);
     let second = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1", 1), shape("mesh2", 1)] }).await.build_id.to_string();
@@ -436,7 +436,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     for name in want_later.iter().filter(|n| *n != "mesh2.rpc.1") {
         assert!(!holds(&later, &format!("connections.jsonl#node-connection/{name}--")), "{name} originated no connection, so it wrote no connections row; the control plane writes none: {later:#?}");
     }
-    // The fabric-primary accepted the growth Build after the first ready-for-traffic: the Build is its own
+    // The fabric-primary accepted the growth Build after the first ready: the Build is its own
     // entity in the builds store, so no pointer row under `fabric/` names it, and mesh2's primary reads it
     // as the current Build.
     assert!(only_identity_builds_and_events(&later), "accepting the growth Build writes no pointer row under `fabric/` for it: {later:#?}");
@@ -451,7 +451,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let door_span = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == second.as_str()).unwrap_or_else(|| panic!("the growth Build's build.create door is spanned"));
     let resets = named(&spans, "rdm.node_admin.fabric.update.via-state-reset");
     let reset = resets.iter().find(|sp| sp["attributes"]["build_id"] == second.as_str()).unwrap_or_else(|| panic!("the fabric-primary put the fabric back to pending for the growth Build {second}: resets {:?}", resets.iter().map(|sp| &sp["attributes"]).collect::<Vec<_>>()));
-    assert_eq!((s(&reset["attributes"]["node"]), s(&reset["attributes"]["from"])), ("mesh1.admin.1".to_string(), "ready-for-traffic".to_string()), "the fabric-primary put the ready-for-traffic fabric back to pending: {reset}");
+    assert_eq!((s(&reset["attributes"]["node"]), s(&reset["attributes"]["from"])), ("mesh1.admin.1".to_string(), "ready".to_string()), "the fabric-primary put the ready fabric back to pending: {reset}");
     let answered = door_span["end_unix_nano"].as_u64().unwrap();
     assert!(start(reset) <= answered, "the fabric is pending before the door answers the growth Build: reset at {}, door answered at {answered} ({} us later than the answer): {reset}", start(reset), start(reset).saturating_sub(answered) / 1000);
 
@@ -468,11 +468,11 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     estate.record_trace_url(&s(&first_root["trace_id"]));
 }
 
-/// CONTRACT (states.md "The fabric's ready-for-traffic": the fabric is ready-for-traffic once every planned mesh is
-/// ready-for-traffic (Q174); gossip.md §3.2: timers only for heartbeat and anti-entropy): the Day-0 Build's
+/// CONTRACT (states.md "The fabric's ready": the fabric is ready once every planned mesh is
+/// ready (Q174); gossip.md §3.2: timers only for heartbeat and anti-entropy): the Day-0 Build's
 /// change finds every mesh ready when its attempt is claimed; a Build adding a member to a ready mesh puts
 /// the fabric back to pending, and the fabric-primary finds every mesh ready when the last planned member's
-/// ready-for-traffic is applied, and announces that member's node-type primary then, never on its next gossip interval. The estate runs at
+/// ready is applied, and announces that member's node-type primary then, never on its next gossip interval. The estate runs at
 /// the default gossip interval (2 s), so a wait on that interval is a gap of up to 2 s; the bound is a
 /// quarter of it. Must NOT happen: the fabric, or the node-type primary's announcement, waiting for the
 /// gossip interval after the claim or the member's ready.
@@ -484,16 +484,16 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
     let env = [("RDM_GOSSIP_INTERVAL_MS", "2000"), ("RDM_BACKBONE_INTERVAL_MS", "2000"), ("RDM_STALENESS_MS", "30000")];
     let mut estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &env).await.expect("the faulted-admin binding set is accepted");
     // The Day-0 Build's change ends first: the admin alone, whose attempt's claim is the last thing the fabric waits on.
-    until_fabric(&estate, ScopeStatus::ReadyForTraffic, None, Duration::from_secs(60)).await;
+    until_fabric(&estate, ScopeStatus::Ready, None, Duration::from_secs(60)).await;
     let build = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])] }).await.build_id.to_string();
-    until_fabric(&estate, ScopeStatus::ReadyForTraffic, Some(build.as_str()), Duration::from_secs(60)).await;
+    until_fabric(&estate, ScopeStatus::Ready, Some(build.as_str()), Duration::from_secs(60)).await;
     estate.stop().await;
     let spans = estate.spans();
     let ready = named(&spans, "rdm.node_admin.status.update.via-declaration")
         .into_iter()
-        .filter(|d| d["attributes"]["op"] == "declare-node-state" && d["attributes"]["state"] == "ReadyForTraffic" && d["attributes"]["sender"] == "mesh1.rpc.1" && d["attributes"]["outcome"] == "applied")
+        .filter(|d| d["attributes"]["op"] == "declare-node-state" && d["attributes"]["state"] == "Ready" && d["attributes"]["sender"] == "mesh1.rpc.1" && d["attributes"]["outcome"] == "applied")
         .min_by_key(|d| start(d))
-        .expect("mesh1.rpc.1's ready-for-traffic was applied by its mesh-primary");
+        .expect("mesh1.rpc.1's ready was applied by its mesh-primary");
     let (_, change) = change_of(&spans, &build);
     let entered = change.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-every-mesh-ready").unwrap_or_else(|| panic!("every mesh was ready under {build}"));
     let announced = named(&spans, "rdm.mesh.primary.update.via-announcement")

@@ -1,8 +1,8 @@
 //! Q122 (Luke, 2026-10-22): the fabric-primary unheard past the staleness floor is taken by nobody
 //! (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives"; elections §3, §4.1).
-//! The lowest ReadyForTraffic node-admin of its mesh runs fabric recovery and takes no primary role;
+//! The lowest Ready node-admin of its mesh runs fabric recovery and takes no primary role;
 //! node investigation decides what becomes of the lost birth, and node recovery re-creates the
-//! node-admin at its path.name; when that node is ReadyForTraffic the workflow restores it as
+//! node-admin at its path.name; when that node is Ready the workflow restores it as
 //! mesh-primary and fabric-primary, and the node records both on its own row.
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
@@ -41,9 +41,9 @@ fn primaries(nodes: &[Value]) -> Option<(String, bool)> {
 /// elections §3, §4.1): a two-mesh estate; mesh1.admin.1, the fabric-primary and mesh1's primary, has its
 /// exact runtime held (SIGSTOP) past the staleness floor. From the mark until the workflow restores the
 /// fabric-primary, no view names a fabric-primary or a primary node-admin of mesh1: mesh1.admin.2, the
-/// lowest ReadyForTraffic node-admin of the mesh, runs fabric recovery and takes no primary role. Node
+/// lowest Ready node-admin of the mesh, runs fabric recovery and takes no primary role. Node
 /// investigation reads the held runtime (not `reached`), so node recovery re-creates the node-admin at
-/// mesh1.admin.1 with a new node id; once it is ReadyForTraffic the workflow restores it as mesh-primary
+/// mesh1.admin.1 with a new node id; once it is Ready the workflow restores it as mesh-primary
 /// and fabric-primary. What must NOT happen: mesh1.admin.2 or a node of mesh2 named fabric-primary, or
 /// mesh1.admin.2 named mesh1's primary, while the workflow runs. The held birth stays held for the whole
 /// cell (what a returning old birth meets is not this cell's); the teardown kills it.
@@ -67,10 +67,10 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     let held_at = now_ns();
     signal(pid, "-STOP");
     // Past the mark: nobody holds either role, in every sampled view, until a node at mesh1.admin.1 with a
-    // new node id is ReadyForTraffic and holds both.
+    // new node id is Ready and holds both.
     let mut sampled_vacant = false;
     let restored = estate
-        .until_view("the node re-created at mesh1.admin.1 is ReadyForTraffic, mesh-primary and fabric-primary", floor * 12 + Duration::from_secs(120), |views| {
+        .until_view("the node re-created at mesh1.admin.1 is Ready, mesh-primary and fabric-primary", floor * 12 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
             let holders: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
             let mesh1_primary: Vec<String> = ns.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true && s(&n["name"]).starts_with("mesh1.")).map(|n| s(&n["name"])).collect();
@@ -80,7 +80,7 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
                 sampled_vacant = true;
             }
             ns.iter()
-                .find(|n| n["name"] == fp && s(&n["node_id"]) != before.node_id.to_string() && n["status"] == "ready-for-traffic" && n["is_fabric_primary"] == true && n["is_primary"] == true)
+                .find(|n| n["name"] == fp && s(&n["node_id"]) != before.node_id.to_string() && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true)
                 .cloned()
         })
         .await;
@@ -106,13 +106,13 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
 /// node.id and incarnation and a new port, with the same endpoint key over the inherited data dir";
 /// node-admin-lifecycle.md §4.4, "fabric-primary is launched again into its own mesh"; elections §4.3:
 /// "the node-admin at the fabric-primary's path.name is re-created and is mesh-primary and
-/// fabric-primary again when it is ReadyForTraffic"; Q156: "a launch that finds a living admin is
+/// fabric-primary again when it is Ready"; Q156: "a launch that finds a living admin is
 /// refused, never an ordinary admin at the primary's name"; Q199): mesh1 has two node-admins; the
 /// fabric-primary mesh1.admin.1's process is killed (SIGKILL) and a person starts a node-admin again over
 /// its data dir, as the topology-storage restart canaries do, while mesh1.admin.2 lives. The launch is
 /// refused `NameHeld` naming mesh1.admin.2 and exits, having written nothing. Read through mesh1.admin.2,
 /// within the bound of the held-primary cell above, `fabric.get` names the fabric-primary at
-/// mesh1.admin.1, and the views name exactly one birth at mesh1.admin.1, ready-for-traffic, mesh-primary
+/// mesh1.admin.1, and the views name exactly one birth at mesh1.admin.1, ready, mesh-primary
 /// and fabric-primary: the one mesh1.admin.2's fabric recovery re-created. What must NOT happen: the
 /// launch taking the path.name, two births contending for mesh1.admin.1 (a node.delete of the lost birth
 /// refused `name-held` by the started one, again and again), or mesh1 left with no fabric-primary.
@@ -138,10 +138,10 @@ async fn a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives
     let within = floor * 12 + Duration::from_secs(120);
     let killed = before.node_id.to_string();
     let one = estate
-        .until_view_at(&Estate::path(standby), &format!("one birth at {fp}, not the killed {killed}, ready-for-traffic, mesh-primary and fabric-primary"), within, |views| {
+        .until_view_at(&Estate::path(standby), &format!("one birth at {fp}, not the killed {killed}, ready, mesh-primary and fabric-primary"), within, |views| {
             let ns = Estate::values(views);
             let at_fp: Vec<&Value> = ns.iter().filter(|n| n["name"] == fp && n["status"] != "deleted").collect();
-            (at_fp.len() == 1 && s(&at_fp[0]["node_id"]) != killed && at_fp[0]["status"] == "ready-for-traffic" && at_fp[0]["is_fabric_primary"] == true && at_fp[0]["is_primary"] == true).then(|| at_fp[0].clone())
+            (at_fp.len() == 1 && s(&at_fp[0]["node_id"]) != killed && at_fp[0]["status"] == "ready" && at_fp[0]["is_fabric_primary"] == true && at_fp[0]["is_primary"] == true).then(|| at_fp[0].clone())
         })
         .await;
     let named_fp = estate.fabric_view_at(&Estate::path(standby)).await.and_then(|f| f.fabric_primary).map(|p| p.to_string());

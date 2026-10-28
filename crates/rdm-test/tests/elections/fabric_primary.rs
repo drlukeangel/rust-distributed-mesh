@@ -57,10 +57,10 @@ fn s(v: &Value) -> String {
 /// CONTRACT (Q122; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2,
 /// "Outside its mesh"; mesh-investigation.md step 5): every process of the fabric-primary's mesh is
 /// killed. No member of it answers mesh investigation's probes, so at the decision step the lowest
-/// ReadyForTraffic mesh-primary on the backbone, mesh2's, runs fabric recovery, exactly as a node-admin
+/// Ready mesh-primary on the backbone, mesh2's, runs fabric recovery, exactly as a node-admin
 /// of the lost mesh would: it takes no primary role, node investigation reads the lost birth (not
 /// `reached`), node recovery re-creates the node-admin at mesh1.admin.1, and when that node is
-/// ReadyForTraffic the workflow restores it as mesh-primary and fabric-primary. The restored mesh-primary
+/// Ready the workflow restores it as mesh-primary and fabric-primary. The restored mesh-primary
 /// recovers the rest of its mesh, and the fabric accepts and completes a change from it. Must NOT happen:
 /// mesh2's primary, or any other node, named fabric-primary while the workflow runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -94,7 +94,7 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
             let ns = Estate::values(views);
             let holders: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
             assert!(holders.iter().all(|h| h == fp), "only the node at {fp} is ever fabric-primary: {holders:?}");
-            ns.iter().find(|n| n["name"] == fp && s(&n["node_id"]) != old_node_id && n["status"] == "ready-for-traffic" && n["is_fabric_primary"] == true && n["is_primary"] == true).map(|_| ())
+            ns.iter().find(|n| n["name"] == fp && s(&n["node_id"]) != old_node_id && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true).map(|_| ())
         })
         .await;
     // The restored mesh-primary recovers the rest of its mesh; the fabric is ready again.
@@ -146,7 +146,7 @@ async fn a_member_whose_runtime_exited_is_replaced() {
     estate.kill_node("mesh1.rpc.2").await;
     estate
         .until_view("a new birth restores two ready rpc nodes", rdm_transport::topology::staleness_floor() + Duration::from_secs(60), |views| {
-            let ready: Vec<_> = views.iter().filter(|n| n.kind == NodeKind::RpcNode && n.status == NodeStatus::ReadyForTraffic).collect();
+            let ready: Vec<_> = views.iter().filter(|n| n.kind == NodeKind::RpcNode && n.status == NodeStatus::Ready).collect();
             (ready.len() == 2 && !ready.iter().any(|n| n.incarnation_id == gone.incarnation_id)).then_some(())
         })
         .await;
@@ -167,7 +167,7 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
     .await;
     let desired = FabricDesired { fabric: "fabric1".into(), meshes: ["mesh3", "mesh1", "mesh2"].map(|m| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)])).to_vec() };
     estate.reconcile(&desired).await;
-    let all_ready = |nodes: &[Value]| nodes.len() == 9 && nodes.iter().all(|n| n["status"] == "ready-for-traffic");
+    let all_ready = |nodes: &[Value]| nodes.len() == 9 && nodes.iter().all(|n| n["status"] == "ready");
     let nodes = estate
         .until_view("three meshes settle on the computed seats", Duration::from_secs(30), |views| {
             let nodes = Estate::values(views);

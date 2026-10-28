@@ -1438,7 +1438,7 @@ impl DeploymentPipeline<'_> {
     async fn create_steps(&self, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("node.create:{}", req.node)).await?;
         let mut created = self.create_to_ready(&mut run, req, claim_for, pre_node_ready, before_launch).await?;
-        created.node.status = NodeStatus::ReadyForTraffic;
+        created.node.status = NodeStatus::Ready;
         self.step(&mut run, CreateStep::Complete.name(), async {
             self.sink.publish(created.node.clone());
             Ok(())
@@ -2126,7 +2126,7 @@ impl DeploymentPipeline<'_> {
                 }
             })
             .await?;
-        node.status = NodeStatus::ReadyForTraffic;
+        node.status = NodeStatus::Ready;
         Ok(())
     }
 

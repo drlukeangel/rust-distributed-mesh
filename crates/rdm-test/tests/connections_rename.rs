@@ -47,7 +47,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
     let during = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("connections-rename-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -99,7 +99,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         // Both births are held ready by the admin, and each by the other.
         let digest_view = &admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
-        while [&renamed, &peer].iter().any(|l| digest_view.get(l.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic)) {
+        while [&renamed, &peer].iter().any(|l| digest_view.get(l.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready)) {
             heard.changed().await.unwrap();
         }
         let peer_view = &peer_node.topology_view.digest_view;
@@ -276,7 +276,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
     let cap = crate::common::capture("a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_the_name_it_holds");
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("join-row-name-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -317,7 +317,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
         let seams = seams.get().cloned().expect("the node handed its seams");
         let digest_view = &admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
-        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
             heard.changed().await.unwrap();
         }
 

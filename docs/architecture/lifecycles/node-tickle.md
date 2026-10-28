@@ -68,7 +68,7 @@ The direct probe, op `0x1B` (27):
 The node's unary reply when reached:
 
 ```json
-{ "Current": { "node_id": "k8pag1qx95gw", "incarnation": "0000000000000008", "state": "ReadyForTraffic" } }
+{ "Current": { "node_id": "k8pag1qx95gw", "incarnation": "0000000000000008", "state": "Ready" } }
 ```
 
 A stopped node answers `CurrentStopped { node_id, incarnation }`; a node held at its hook answers

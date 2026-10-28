@@ -86,13 +86,13 @@ path now.
 | `Estate::bootstrap(owner, fabric, mesh)` | starts the first node-admin of `fabric` on the provider `MESH_SPAWN_TYPE` selects and waits for its birth |
 | `Estate::bootstrap_with_env(…, extra_env)` | the same, the first admin also given settings it hands on to every admin it launches |
 | `Estate::bootstrap_on(…, set, candidate_sha, required)` | the first admin from an explicit executable binding set, validated before anything starts; a refusal is returned by name with nothing launched |
-| `estate.until_fabric_ready(within)` | waits for the fabric's first ready-for-traffic; only then does `estate.fabric_ready()` hand out the witness every kill takes |
+| `estate.until_fabric_ready(within)` | waits for the fabric's first ready; only then does `estate.fabric_ready()` hand out the witness every kill takes |
 | `estate.submit(&spec)`, `submit_change(change)`, `create_node(mesh, kind)` | submit a Build or a workflow; the reply is a stream the cell awaits to its terminal |
 | `estate.nodes_obj()`, `meshes_obj()`, `fabrics_obj()`, `builds_obj()` | the typed objects at the entry admin; a Build call the entry does not own follows the redirect to the fabric-primary |
 | `estate.fabric_view()`, `mesh_view(mesh)`, `node_views()`, `node_view(name)` | the views, read over Node RPC |
 | `estate.until_view(what, within, check)`, `until_node(name, what, within, check)`, `settles_to(…)` | wait, under the cell's own bound, for a view to satisfy `check` |
 | `estate.enter(admin)`, `enter_fabric_primary()` | change the admin the typed objects start at |
-| `estate.kill_node(node)`, `kill_pid(pid)`, `kill_bootstrap()` | SIGKILL (nothing flushed) of a node's runtime, a pid or the Day-0 admin, each only once the fabric has first been ready-for-traffic |
+| `estate.kill_node(node)`, `kill_pid(pid)`, `kill_bootstrap()` | SIGKILL (nothing flushed) of a node's runtime, a pid or the Day-0 admin, each only once the fabric has first been ready |
 | `estate.restart_admin(data_dir)` | start a node-admin again on its own data dir |
 | `estate.spans()` | every span every process of the estate wrote ([test-otlp-capture.md](test-otlp-capture.md)) |
 | `estate.stop().await`, `estate.shutdown().await` | stop every runtime of the estate through its own provider and wait for each to exit |

@@ -108,7 +108,7 @@ fn replies_match_the_frozen_fifty_eight_variant_wire_schema() {
         (Applied, "00"),
         (AlreadyApplied, "01"),
         (Reserved2 { in_flight: 300 }, "02ac02"),
-        (Current { node_id: node(), incarnation: birth(), state: NodeState::ReadyForTraffic }, "030c3031323334353637383961620c39776370726667777674687901"),
+        (Current { node_id: node(), incarnation: birth(), state: NodeState::Ready }, "030c3031323334353637383961620c39776370726667777674687901"),
         (RejectedStaleIncarnation { held: birth() }, "040c397763707266677776746879"),
         (RejectedStaleMesh { held: mesh() }, "050c313132333435363738396162"),
         (RejectedStaleFabric { held: fabric() }, "060c323132333435363738396162"),
@@ -134,8 +134,8 @@ fn replies_match_the_frozen_fifty_eight_variant_wire_schema() {
         (ConfigNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "18016e01610172"),
         (Blocked { node_id: node(), incarnation: birth(), reason: "r".into(), retry_on: RetryOn::TargetReachable { node_id: node() } }, "190c3031323334353637383961620c3977637072666777767468790172010c303132333435363738396162"),
         (NameUpdated { node_id: node(), incarnation: birth() }, "1a0c3031323334353637383961620c397763707266677776746879"),
-        // status ReadyForTraffic (1) | held_connections (len 1)
-        (RejectedAdmittingConnections { status: NodeStatus::ReadyForTraffic, held_connections: vec![connection()] }, "1b01010c333132333435363738396162"),
+        // status Ready (1) | held_connections (len 1)
+        (RejectedAdmittingConnections { status: NodeStatus::Ready, held_connections: vec![connection()] }, "1b01010c333132333435363738396162"),
         (NameHeld { name: "n".into(), by: node() }, "1c016e0c303132333435363738396162"),
         (NodeRowRefused { node: "n".into(), reason: "r".into() }, "1d016e0172"),
         (NameNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "1e016e01610172"),
@@ -291,7 +291,7 @@ fn node_view() -> NodeView {
         deployment_id: None,
         provider: Some(ProviderKind::Process),
         data_dir: None,
-        status: NodeStatus::ReadyForTraffic,
+        status: NodeStatus::Ready,
         is_primary: false,
         is_fabric_primary: false,
         admin_api_base: None,
@@ -310,7 +310,7 @@ fn node_view() -> NodeView {
 
 /// One mesh as a `mesh.get` answer carries it.
 fn mesh_view() -> MeshView {
-    MeshView { renewals: None, id: Some(mesh()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic, primary_admin: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, nodes: vec!["mesh1.admin.1".parse().unwrap()] }
+    MeshView { renewals: None, id: Some(mesh()), name: "mesh1".into(), status: ScopeStatus::Ready, primary_admin: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, nodes: vec!["mesh1.admin.1".parse().unwrap()] }
 }
 
 fn golden<T: serde::Serialize>(value: T, expected: &str) {
@@ -320,18 +320,18 @@ fn golden<T: serde::Serialize>(value: T, expected: &str) {
 #[test]
 fn nested_enum_discriminants_and_fields_are_frozen_too() {
     for (state, expected) in [
-        (NodeState::Pending, "00"), (NodeState::ReadyForTraffic, "01"),
+        (NodeState::Pending, "00"), (NodeState::Ready, "01"),
         (NodeState::ConnectionsDeleting, "02"), (NodeState::Stopped, "03"),
     ] { golden(state, expected); }
     for (state, expected) in [
-        (MeshState::Pending, "00"), (MeshState::ReadyForTraffic, "01"),
+        (MeshState::Pending, "00"), (MeshState::Ready, "01"),
         (MeshState::Leaving, "02"), (MeshState::Dead, "03"),
     ] { golden(state, expected); }
     // DeclareNodeState's operation (i146 Q36): build_id | attempt | operation, and its Option.
     let op = DeclaredOperation { build_id: "b".into(), attempt: 2, operation: "node.stop:m".into() };
     golden(op.clone(), "0162020b6e6f64652e73746f703a6d");
     golden(Some(op), "010162020b6e6f64652e73746f703a6d");
-    golden(FabricEvent::ReadyForTraffic, "00");
+    golden(FabricEvent::Ready, "00");
     golden(FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() }, "010d6d657368312e61646d696e2e31");
     golden(NotPrimary::ReceiverNotPrimary { needed: "mesh-primary".into() }, "000c6d6573682d7072696d617279");
     golden(NotPrimary::SenderNotSubject { sender: "peer-path".into() }, "0109706565722d70617468");
@@ -367,14 +367,14 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     // connections.get { node } with no pair: Connections | Some(node, birth) | pairs (len 0)
     golden(StatusRequest::Get { entity: rdm_core::filter::Entity::Connections, node: Some((node(), birth())), filter: rdm_core::filter::Filter::new() }, "2103010c3031323334353637383961620c39776370726667777674687900");
     for (status, expected) in [
-        (NodeStatus::Pending, "00"), (NodeStatus::ReadyForTraffic, "01"), (NodeStatus::ConnectionsDeleting, "02"), (NodeStatus::Leaving, "03"),
+        (NodeStatus::Pending, "00"), (NodeStatus::Ready, "01"), (NodeStatus::ConnectionsDeleting, "02"), (NodeStatus::Leaving, "03"),
         (NodeStatus::PendingReconnect, "04"), (NodeStatus::Reserved5, "05"), (NodeStatus::Dead, "06"), (NodeStatus::Deleted, "07"),
         // The row statuses states.md names beside them, appended after Deleted: no position before them moves.
         (NodeStatus::Starting, "08"), (NodeStatus::ConnectionsDeleted, "09"), (NodeStatus::Stopping, "0a"), (NodeStatus::Stopped, "0b"),
         (NodeStatus::Deleting, "0c"),
     ] { golden(status, expected); }
     for (status, expected) in [
-        (ScopeStatus::Pending, "00"), (ScopeStatus::ReadyForTraffic, "01"), (ScopeStatus::Leaving, "02"), (ScopeStatus::Dead, "03"),
+        (ScopeStatus::Pending, "00"), (ScopeStatus::Ready, "01"), (ScopeStatus::Leaving, "02"), (ScopeStatus::Dead, "03"),
         (ScopeStatus::Degraded, "04"),
     ] { golden(status, expected); }
     golden(ProviderKind::Process, "00");

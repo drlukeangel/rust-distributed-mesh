@@ -127,12 +127,12 @@ impl NodeObserver for StartsWhole<'_> {
 
 /// CONTRACT (node-start.md "End-to-end sequence": the start emits `node.joined` after the accepted
 /// join, then runs its hook, topology, Build floor and rafka-time, then emits `node.started`; states.md
-/// "Who sets each state": node pending from node.joined, node ReadyForTraffic from node.started): the
+/// "Who sets each state": node pending from node.joined, node Ready from node.started): the
 /// executor takes a start's node.joined when the birth's join is admitted, before the birth can report
 /// node.started, whatever moment the birth's `Started` answer reaches it. A birth that runs its whole
 /// start before it answers (a node-admin's hook runs inside its start) has node.joined taken first and
 /// node.started after it. Must NOT happen: node.joined taken at the `Started` answer, after the birth's
-/// node.started, so that the Pending node.joined sets stands over the ReadyForTraffic node.started set.
+/// node.started, so that the Pending node.joined sets stands over the Ready node.started set.
 #[tokio::test]
 async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_started() {
     let builds = MemoryBuildStateAdapter::new();

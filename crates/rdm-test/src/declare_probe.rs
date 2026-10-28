@@ -216,7 +216,7 @@ mod tests {
         for r in all {
             assert_eq!(DeclareProbe::decode_reply(&DeclareProbe::encode_reply(&r).unwrap()).unwrap(), r);
         }
-        let req = DeclareRequest::Declare { to: DeclareTarget::Path("mesh1.admin.1".into()), state: NodeState::ReadyForTraffic, node_id: None, incarnation: None };
+        let req = DeclareRequest::Declare { to: DeclareTarget::Path("mesh1.admin.1".into()), state: NodeState::Ready, node_id: None, incarnation: None };
         assert_eq!(DeclareProbe::decode_request(&DeclareProbe::encode_request(&req).unwrap()).unwrap(), req);
     }
 }

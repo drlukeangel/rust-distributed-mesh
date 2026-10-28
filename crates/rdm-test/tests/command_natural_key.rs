@@ -59,7 +59,7 @@ impl Birth {
 
     async fn launched(cell: &str, pre_node_ready: Option<std::sync::Arc<TestPreNodeReady>>, deadline: Duration) -> Self {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
         let dir = std::env::temp_dir().join(format!("{cell}-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
@@ -100,7 +100,7 @@ impl Birth {
         }
         .expect("the node comes up");
         let birth = Self { target: NodeTarget::ExactNode(launch.node_id.clone()), admin, launch, key, pull, dir, running };
-        birth.status_heard(MemberStatus::ReadyForTraffic).await;
+        birth.status_heard(MemberStatus::Ready).await;
         let (d, _) = birth.admin.observer.topology_view.digest_view.get(birth.launch.node_id.as_str()).unwrap();
         birth.admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         birth
@@ -119,7 +119,7 @@ impl Birth {
     }
 
     /// Resolves once the admin side's view holds this birth at `status`: the status it set (its
-    /// ready-for-traffic, from the birth's node.started).
+    /// ready, from the birth's node.started).
     async fn status_heard(&self, status: MemberStatus) {
         let digest_view = &self.admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
@@ -225,7 +225,7 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
 
         assert_eq!(first.await.unwrap(), StatusReply::Started, "attempt 2's start completes");
         assert_eq!(second.await.unwrap(), StatusReply::Started, "attempt 3 answers the outcome of the start it joined");
-        birth.status_heard(MemberStatus::ReadyForTraffic).await;
+        birth.status_heard(MemberStatus::Ready).await;
         let rejoins = spans_named(&spans, "rdm.mesh.node.update.via-start");
         assert_eq!(rejoins.len(), 1, "one rejoin of the birth: {rejoins:?}");
         let _ = std::fs::remove_dir_all(&birth.dir);
@@ -279,7 +279,7 @@ fn an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receip
 /// stop that stopped it answers for a birth that is leaving Leaving. Once the start ends, the stop
 /// is decided on the cycle it ended in: the started birth is stopped afresh, its connections deleted again.
 /// What must NOT happen: `Stopped` with the stopped cycle's receipt while the start goes on to make
-/// the birth live (its commander holding a stopped birth that is ready for traffic, and the
+/// the birth live (its commander holding a stopped birth that is ready, and the
 /// mesh-primary's NodeStopped for it published after the start's node.joined).
 #[test]
 fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopped_cycles_receipt() {
@@ -315,7 +315,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopp
         pre_node_ready.set_mode(Mode::Fixed(HookOutcome::Ok));
         resume.notify_one();
         assert_eq!(start.await.unwrap(), StatusReply::Started);
-        birth.status_heard(MemberStatus::ReadyForTraffic).await;
+        birth.status_heard(MemberStatus::Ready).await;
 
         // The started birth's stop is a stop of its own cycle.
         let after = birth.call(&birth.stop(4)).await;

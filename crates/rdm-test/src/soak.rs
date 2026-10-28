@@ -580,7 +580,7 @@ fn serves_proof(n: &Value) -> bool {
 }
 
 /// The fabric has converged when every live admin's view holds the same births: the expected
-/// counts, every one ready for traffic, the same (path, incarnation) set everywhere; a node-admin
+/// counts, every one ready, the same (path, incarnation) set everywhere; a node-admin
 /// that is not the fabric-primary may instead hold a peer mesh unheard whole (every node of it
 /// `pending-reconnect`, its pruner's mark) and agree on the rest. Returns the live admins that
 /// agree and, per admin, the peer meshes it holds unheard.
@@ -588,12 +588,12 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
     let nodes = estate.node_values().await;
     let shape_ok = |nodes: &[Value]| {
         expected.iter().all(|(m, counts)| {
-            let ready = |k: &str| nodes.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && n["status"] == "ready-for-traffic").count() as u32;
+            let ready = |k: &str| nodes.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && n["status"] == "ready").count() as u32;
             let all = |k: &str| nodes.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && !matches!(n["status"].as_str(), Some("dead"))).count() as u32;
             counts.iter().all(|(kind, n)| ready(kind) == *n && all(kind) == *n)
         })
     };
-    let births = |nodes: &[Value]| -> BTreeSet<(String, String)> { nodes.iter().filter(|n| n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect() };
+    let births = |nodes: &[Value]| -> BTreeSet<(String, String)> { nodes.iter().filter(|n| n["status"] == "ready").map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect() };
     if !shape_ok(&nodes) {
         return None;
     }
@@ -628,7 +628,7 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
         let heard_expected: BTreeMap<String, BTreeMap<&'static str, u32>> = expected.iter().filter(|(m, _)| !unheard.contains(*m)).map(|(m, c)| (m.clone(), c.clone())).collect();
         let shape_heard = |ns: &[Value]| {
             heard_expected.iter().all(|(m, counts)| {
-                let ready = |k: &str| ns.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && n["status"] == "ready-for-traffic").count() as u32;
+                let ready = |k: &str| ns.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && n["status"] == "ready").count() as u32;
                 let all = |k: &str| ns.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && !matches!(n["status"].as_str(), Some("dead"))).count() as u32;
                 counts.iter().all(|(kind, n)| ready(kind) == *n && all(kind) == *n)
             })
@@ -696,17 +696,17 @@ fn allocated_at(steps: &Value, path: &str, after: u64) -> Option<(String, String
         .map(|st| (s(&st["output"]["node_id"]), s(&st["output"]["incarnation"])))
 }
 
-/// Every live admin's view holds exactly `birth` at `path`, ready for traffic, and the replaced
+/// Every live admin's view holds exactly `birth` at `path`, ready, and the replaced
 /// incarnation `old` nowhere live.
 async fn birth_held_everywhere(estate: &Estate, path: &str, birth: &(String, String), old: Option<&str>) -> Result<(), String> {
     let nodes = estate.node_values().await;
     for admin in admins_of(&nodes) {
         let Some(theirs) = views_at(estate, &admin).await else { return Err(format!("{}: node.get unanswered", admin.name)) };
         let at_path: Vec<String> = theirs.iter().filter(|n| n["name"] == path).map(|n| format!("{}/{}:{}", s(&n["node_id"]), s(&n["incarnation_id"]), s(&n["status"]))).collect();
-        let holds = theirs.iter().any(|n| n["name"] == path && n["node_id"] == birth.0.as_str() && n["incarnation_id"] == birth.1.as_str() && n["status"] == "ready-for-traffic");
+        let holds = theirs.iter().any(|n| n["name"] == path && n["node_id"] == birth.0.as_str() && n["incarnation_id"] == birth.1.as_str() && n["status"] == "ready");
         let old_live: Vec<String> = theirs.iter().filter(|n| old.is_some_and(|old| n["incarnation_id"] == old) && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).map(|n| format!("{}:{}", s(&n["name"]), s(&n["status"]))).collect();
         if !holds {
-            return Err(format!("{} holds {at_path:?} at {path}, not {}/{} ready-for-traffic", admin.name, birth.0, birth.1));
+            return Err(format!("{} holds {at_path:?} at {path}, not {}/{} ready", admin.name, birth.0, birth.1));
         }
         if !old_live.is_empty() {
             return Err(format!("{} still holds the replaced incarnation {} live: {old_live:?}", admin.name, old.unwrap_or_default()));
@@ -745,7 +745,7 @@ async fn until_unheard(estate: &mut Estate, known: &[Admin], births: &[(String, 
             let mut judge = entry.clone();
             if true_offline {
                 if let (Some(v), Some(mesh)) = (views_at(estate, &entry).await, paths.first().and_then(|p| p.split('.').next())) {
-                    if let Some(primary) = v.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["is_primary"] == true && n["status"] == "ready-for-traffic").and_then(admin_of) {
+                    if let Some(primary) = v.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["is_primary"] == true && n["status"] == "ready").and_then(admin_of) {
                         judge = primary;
                     }
                 }
@@ -753,7 +753,7 @@ async fn until_unheard(estate: &mut Estate, known: &[Admin], births: &[(String, 
             let mut judges = vec![judge.clone()];
             if direct && !true_offline {
                 if let (Some(v), Some(mesh)) = (views_at(estate, &entry).await, paths.first().and_then(|p| p.split('.').next())) {
-                    let own: Vec<Admin> = v.iter().filter(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["status"] == "ready-for-traffic").filter_map(admin_of).filter(|a| known.contains(a)).collect();
+                    let own: Vec<Admin> = v.iter().filter(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["status"] == "ready").filter_map(admin_of).filter(|a| known.contains(a)).collect();
                     if !own.is_empty() {
                         judges = own;
                     }
@@ -1006,9 +1006,9 @@ fn held_unheard_by(fp_name: &str, fp_mesh: &str, floor: Duration, now: u64, span
 /// What the view says of a silenced birth after its release.
 #[derive(Debug, PartialEq, Eq)]
 enum HeldBirth {
-    /// The same birth reads ready-for-traffic.
+    /// The same birth reads ready.
     Ready,
-    /// The same birth is held, off ready-for-traffic: marked unheard or running its start sequence again.
+    /// The same birth is held, off ready: marked unheard or running its start sequence again.
     Returning,
     /// No row of that birth: another birth stands at the path, or none.
     Replaced,
@@ -1018,7 +1018,7 @@ fn judge_held_birth(nodes: &[Value], path: &str, inc: &str) -> HeldBirth {
     let of_birth: Vec<&Value> = nodes.iter().filter(|n| n["name"] == path && n["incarnation_id"] == inc).collect();
     if of_birth.is_empty() {
         HeldBirth::Replaced
-    } else if of_birth.iter().any(|n| n["status"] == "ready-for-traffic") {
+    } else if of_birth.iter().any(|n| n["status"] == "ready") {
         HeldBirth::Ready
     } else {
         HeldBirth::Returning
@@ -1109,7 +1109,7 @@ impl Driver {
     /// [`held_unheard_by`] reads of its investigation rows. The driver acts on a peer mesh only when
     /// this is `None`.
     fn held_unheard(&mut self, nodes: &[Value]) -> Option<String> {
-        let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic")?;
+        let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true && n["status"] == "ready")?;
         held_unheard_by(&s(&fp["name"]), &s(&fp["mesh"]), self.cfg.floor, now_ns(), self.ladder.poll())
     }
 
@@ -1121,13 +1121,13 @@ impl Driver {
     fn publish_view(&self, nodes: &[Value]) {
         let admin = nodes
             .iter()
-            .find(|n| n["kind"] == "node_admin" && n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic")
-            .or_else(|| nodes.iter().find(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic"))
+            .find(|n| n["kind"] == "node_admin" && n["is_fabric_primary"] == true && n["status"] == "ready")
+            .or_else(|| nodes.iter().find(|n| n["kind"] == "node_admin" && n["status"] == "ready"))
             .and_then(|n| serde_json::from_value::<NodeView>(n.clone()).ok())
             .as_ref()
             .and_then(birth_of_view);
-        let rpcs = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
-        let gateways = nodes.iter().filter(|n| n["kind"] == "gateway" && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+        let rpcs = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+        let gateways = nodes.iter().filter(|n| n["kind"] == "gateway" && n["status"] == "ready").map(|n| s(&n["name"])).collect();
         *self.shared.view.lock().unwrap() = View { admin, rpcs, gateways };
         let mut b = self.shared.op_view.lock().unwrap();
         for n in nodes.iter().filter(|n| serves_proof(n)) {
@@ -1137,7 +1137,7 @@ impl Driver {
 
     /// The live reason an action cannot run now, if any. The model knows no authority.
     fn live_refusal(&self, a: &Action, nodes: &[Value]) -> Option<String> {
-        let node = |p: &str| nodes.iter().find(|n| n["name"] == p && n["status"] == "ready-for-traffic");
+        let node = |p: &str| nodes.iter().find(|n| n["name"] == p && n["status"] == "ready");
         let guarded = |p: &str, what: &str| -> Option<String> {
             let n = node(p)?;
             if n["is_fabric_primary"] == true {
@@ -1150,14 +1150,14 @@ impl Driver {
         };
         // The restart or delete (a replace's first step) of a node that holds its cohort's seat is
         // refused by name, `no-secondary`, while no other node of its type in its mesh is
-        // ready-for-traffic to take the seat (node-primary-update.md "No-successor cases"; a
+        // ready to take the seat (node-primary-update.md "No-successor cases"; a
         // desired-state shrink of a cohort's only node skips the update, so a shrink is not guarded).
         let no_secondary = |n: &Value, what: &str| -> Option<String> {
             if n["kind"] == "node_admin" || n["is_primary"] != true {
                 return None;
             }
-            let secondary = nodes.iter().any(|o| o["mesh"] == n["mesh"] && o["kind"] == n["kind"] && o["name"] != n["name"] && o["status"] == "ready-for-traffic");
-            (!secondary).then(|| format!("{what}: {} holds its cohort's seat and no other {} of {} is ready-for-traffic: node.primary.update has no secondary", s(&n["name"]), s(&n["kind"]), s(&n["mesh"])))
+            let secondary = nodes.iter().any(|o| o["mesh"] == n["mesh"] && o["kind"] == n["kind"] && o["name"] != n["name"] && o["status"] == "ready");
+            (!secondary).then(|| format!("{what}: {} holds its cohort's seat and no other {} of {} is ready: node.primary.update has no secondary", s(&n["name"]), s(&n["kind"]), s(&n["mesh"])))
         };
         // A replacement is a delete then a spawn, and a spawn lands at the lowest free ordinal of
         // its class: it replaces the node at the same path.name only when no lower ordinal is free.
@@ -1180,7 +1180,7 @@ impl Driver {
                 no_secondary(n, "restart")
             }),
             Action::HandOff { mesh } => {
-                let primary = nodes.iter().find(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true && n["status"] == "ready-for-traffic");
+                let primary = nodes.iter().find(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true && n["status"] == "ready");
                 match primary {
                     None => Some(format!("hand-off: {mesh} has no ready mesh primary")),
                     Some(p) => guarded(&s(&p["name"]), "hand-off").filter(|r| r.contains("bootstrap")).or_else(|| lands_on_same_path(&s(&p["name"]))),
@@ -1238,7 +1238,7 @@ impl Driver {
 
     /// Run until the deadline or the first violation.
     pub async fn run(mut self) -> (Report, Estate) {
-        // The initial fabric refuses a node delete, restart and replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+        // The initial fabric refuses a node delete, restart and replace until it has first reached ready (states.md "The initial fabric before ready").
         self.estate.until_fabric_ready(Duration::from_secs(120)).await;
         // The host's counters of a container fabric's bridge, the reference a failed control call's are read against.
         crate::host_net::keep(&self.estate, "start", None).await;
@@ -1414,7 +1414,7 @@ impl Driver {
             Action::HandOff { mesh } => {
                 let n = nodes
                     .iter()
-                    .find(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true && n["status"] == "ready-for-traffic")
+                    .find(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true && n["status"] == "ready")
                     .cloned()
                     .ok_or_else(|| broken("model-matches-view", format!("{mesh} has no ready mesh primary")))?;
                 entry["handed_off_from"] = json!({"node": n["name"], "node_id": n["node_id"], "fabric_primary": n["is_fabric_primary"]});
@@ -1459,7 +1459,7 @@ impl Driver {
                         let nodes = est.node_values().await;
                         let missing: Vec<String> = births
                             .keys()
-                            .filter(|name| nodes.iter().filter(|n| n["name"] == name.as_str()).count() != 1 || !nodes.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic"))
+                            .filter(|name| nodes.iter().filter(|n| n["name"] == name.as_str()).count() != 1 || !nodes.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready"))
                             .cloned()
                             .collect();
                         missing.is_empty().then(|| {
@@ -1478,7 +1478,7 @@ impl Driver {
                 let (target, key) = match op {
                     ProofOp::Put { target, key, .. } | ProofOp::Cas { target, key, .. } | ProofOp::Delete { target, key } => (target, *key),
                 };
-                let n = node_json(target).filter(|n| n["status"] == "ready-for-traffic").ok_or_else(|| broken("model-matches-view", format!("{target} is not ready in the view")))?;
+                let n = node_json(target).filter(|n| n["status"] == "ready").ok_or_else(|| broken("model-matches-view", format!("{target} is not ready in the view")))?;
                 let probe = self.estate.probe_handle();
                 let admin = self.shared.view.lock().unwrap().admin.clone().unwrap_or_else(|| self.estate.entry_birth());
                 let call = match op {
@@ -1599,7 +1599,7 @@ impl Driver {
                     HeldBirth::Ready => break,
                     HeldBirth::Replaced => return Err(broken("silence-is-not-death", format!("{path} came back as another birth than {inc}: silence replaced a running runtime"))),
                     HeldBirth::Returning if Instant::now() >= wait_until => {
-                        return Err(broken("silence-is-not-death", format!("{path}: the released birth {inc} did not read ready-for-traffic within {}s", CONVERGE.as_secs())));
+                        return Err(broken("silence-is-not-death", format!("{path}: the released birth {inc} did not read ready within {}s", CONVERGE.as_secs())));
                     }
                     HeldBirth::Returning => tokio::time::sleep(Duration::from_millis(250)).await,
                 }
@@ -1682,7 +1682,7 @@ impl Driver {
     /// runtime keeps running, silent, and the provider reports it `Running`, so its mesh-primary holds
     /// it under R-FM1 (`held-running`, RDM_HUNG_HOLD_FLOORS floors) instead of re-birthing it
     /// (node-recovery.md steps 3-4; the soaks at 768dfaee). Only once the fabric has first been
-    /// ready-for-traffic: the driver arms no death during fabric start
+    /// ready: the driver arms no death during fabric start
     /// ([`crate::estate::Estate::fabric_ready`], Q74).
     async fn kill(&mut self, node: &str, entry: &mut Value) -> Result<(), Broken> {
         let ready = self.estate.fabric_ready();
@@ -1854,7 +1854,7 @@ impl Driver {
             let held_rt = hold_rt.clone();
             let back = wait_for_opt(&format!("{path} ready as its own birth, or as its replacement with the held runtime ended"), floor * 2 + Duration::from_secs(60), || async {
                 est.node_value_opt(&path).await.filter(|x| {
-                    x["status"] == "ready-for-traffic" && (x["incarnation_id"] == inc.as_str() || (x["node_id"] != n["node_id"] && held_rt.as_ref().is_none_or(|r| r.check().is_err())))
+                    x["status"] == "ready" && (x["incarnation_id"] == inc.as_str() || (x["node_id"] != n["node_id"] && held_rt.as_ref().is_none_or(|r| r.check().is_err())))
                 })
             })
             .await;
@@ -1931,8 +1931,8 @@ impl Driver {
     /// Silence a mesh against the rest of the estate (container provider) until its Heal row.
     async fn unheard(&mut self, mesh: &str, nodes: &[Value], entry: &mut Value) -> Result<(), Broken> {
         self.cut_at.insert(mesh.to_string(), Instant::now());
-        self.cut_births.insert(mesh.to_string(), nodes.iter().filter(|n| n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), (s(&n["node_id"]), s(&n["incarnation_id"])))).collect());
-        let members: Vec<String> = nodes.iter().filter(|n| n["mesh"] == mesh && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+        self.cut_births.insert(mesh.to_string(), nodes.iter().filter(|n| n["status"] == "ready").map(|n| (s(&n["name"]), (s(&n["node_id"]), s(&n["incarnation_id"])))).collect());
+        let members: Vec<String> = nodes.iter().filter(|n| n["mesh"] == mesh && n["status"] == "ready").map(|n| s(&n["name"])).collect();
         let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).unwrap_or_default();
         if self.estate.owner.provider != "container" {
             return self.cut_udp(mesh, nodes, members, entry).await;
@@ -1948,7 +1948,7 @@ impl Driver {
         // soak measures the time it took (`unheard_after_ms`).
         let within = Duration::from_secs(90);
         self.silenced.insert(mesh.to_string(), Cut::Container(sil));
-        let births: Vec<(String, String)> = nodes.iter().filter(|n| n["mesh"] == mesh && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+        let births: Vec<(String, String)> = nodes.iter().filter(|n| n["mesh"] == mesh && n["status"] == "ready").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
         let after = until_unheard(&mut self.estate, &others, &births, false, false, within).await.map_err(|e| broken("fault-is-observed", format!("{mesh} silenced: {e}")))?;
         // The cut window the cell reads (`cut_at_ns` to its Heal row's `healed_at_ns`), as the process
         // provider's udp-drop row records it: a run's cuts are counted and judged from these rows.
@@ -1962,7 +1962,7 @@ impl Driver {
     /// repair the architecture gives an unheard peer mesh; each node-admin of the cut mesh still holds
     /// its own mesh ready, because no node is cut from a member of its own mesh.
     async fn cut_udp(&mut self, mesh: &str, nodes: &[Value], members: Vec<String>, entry: &mut Value) -> Result<(), Broken> {
-        let others: Vec<String> = nodes.iter().filter(|n| n["mesh"] != mesh && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+        let others: Vec<String> = nodes.iter().filter(|n| n["mesh"] != mesh && n["status"] == "ready").map(|n| s(&n["name"])).collect();
         let (pa, pb) = (udp_ports(nodes, &members), udp_ports(nodes, &others));
         if pa.len() != members.len() || pb.len() != others.len() {
             return Err(broken("fault-names-an-exact-runtime", format!("{mesh}: {} of {} members and {} of {} others publish a transport socket", pa.len(), members.len(), pb.len(), others.len())));
@@ -1972,7 +1972,7 @@ impl Driver {
         let mut refeeds = SpanTail::from_now(self.estate.evidence.clone(), |sp| sp["name"] == "rdm.mesh.connection.update.via-refeed" && sp["attributes"]["reason"] == "stale-held-member");
         let cut_at_ns = now_ns();
         self.silenced.insert(mesh.to_string(), Cut::Udp { partition, members: members.clone() });
-        let at_cut: Vec<(String, String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["mesh"]), s(&n["node_id"]))).collect();
+        let at_cut: Vec<(String, String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready").map(|n| (s(&n["name"]), s(&n["mesh"]), s(&n["node_id"]))).collect();
         let window = self.cfg.floor;
         let until = Instant::now() + window * 6 + Duration::from_secs(40);
         let held_at = loop {
@@ -1991,11 +1991,11 @@ impl Driver {
             tokio::time::sleep(Duration::from_millis(500)).await;
         };
         for (name, node_mesh, _) in &at_cut {
-            let own: Vec<&str> = nodes.iter().filter(|n| s(&n["mesh"]) == *node_mesh && n["status"] == "ready-for-traffic").filter_map(|n| n["name"].as_str()).collect();
+            let own: Vec<&str> = nodes.iter().filter(|n| s(&n["mesh"]) == *node_mesh && n["status"] == "ready").filter_map(|n| n["name"].as_str()).collect();
             let Some(theirs) = views_at(&self.estate, &Admin { name: name.clone() }).await else {
                 return Err(broken("cut-leaves-own-mesh-ready", format!("{name} does not answer node.get during the cut")));
             };
-            let missing: Vec<&&str> = own.iter().filter(|p| !theirs.iter().any(|n| n["name"] == **p && n["status"] == "ready-for-traffic")).collect();
+            let missing: Vec<&&str> = own.iter().filter(|p| !theirs.iter().any(|n| n["name"] == **p && n["status"] == "ready")).collect();
             if !missing.is_empty() {
                 return Err(broken("cut-leaves-own-mesh-ready", format!("{name} no longer holds its own mesh members ready during the cut: {missing:?}")));
             }
@@ -2020,7 +2020,7 @@ impl Driver {
         let mut writers: BTreeSet<String> = BTreeSet::new();
         for admin in admins_of(&nodes) {
             let Some(f) = fabric_at(&self.estate, &admin).await else {
-                return Err(broken("live-admin-answers", format!("round {round}: {} (named ready-for-traffic in the view) does not answer fabric.get", admin.name)));
+                return Err(broken("live-admin-answers", format!("round {round}: {} (named ready in the view) does not answer fabric.get", admin.name)));
             };
             if let Some(p) = &f.fabric_primary {
                 writers.insert(p.to_string());
@@ -2028,10 +2028,10 @@ impl Driver {
             if f.build_id.as_deref() != Some(self.build_id.as_str()) {
                 return Err(broken("fabric-build-id-held", format!("round {round}: {} holds the current build_id {:?} not {}", admin.name, f.build_id, self.build_id)));
             }
-            let heard: BTreeSet<String> = f.meshes.iter().filter(|m| m.status == ScopeStatus::ReadyForTraffic).map(|m| m.name.clone()).collect();
+            let heard: BTreeSet<String> = f.meshes.iter().filter(|m| m.status == ScopeStatus::Ready).map(|m| m.name.clone()).collect();
             for (mesh, _) in &self.cfg.shape {
                 if !heard.contains(*mesh) {
-                    return Err(broken("no-peer-mesh-permanently-unheard", format!("round {round}: {} does not hold {mesh} ready-for-traffic", admin.name)));
+                    return Err(broken("no-peer-mesh-permanently-unheard", format!("round {round}: {} does not hold {mesh} ready", admin.name)));
                 }
             }
         }
@@ -2042,7 +2042,7 @@ impl Driver {
         if !ok {
             return Err(broken("seats-equal-the-public-candidates", format!("round {round}: {why}")));
         }
-        for n in nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic") {
+        for n in nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready") {
             let r = self.estate.probe(&["get", "--target", &format!("exact:{}", s(&n["node_id"])), "--key", "9998"]);
             if r["outcome"] != "Reply" || r["reply"]["incarnation_id"] != n["incarnation_id"] {
                 let name = s(&n["name"]);
@@ -2070,7 +2070,7 @@ impl Driver {
     async fn reconcile_ledger(&mut self) -> (LedgerReport, Vec<(String, String)>) {
         let mut found: Vec<(String, String)> = Vec::new();
         let nodes = if relocate_control(&mut self.estate, &self.known).await.is_some() { self.estate.node_values().await } else { Vec::new() };
-        let alive: BTreeMap<String, String> = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic").map(|n| (s(&n["node_id"]), s(&n["name"]))).collect();
+        let alive: BTreeMap<String, String> = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready").map(|n| (s(&n["node_id"]), s(&n["name"]))).collect();
         let (meta, excluded, probe_failures, mut data_dirs) = {
             let b = self.shared.op_view.lock().unwrap();
             (b.meta.clone(), b.excluded.clone(), b.probe_failures.clone(), b.data_dirs.clone())
@@ -2253,7 +2253,7 @@ mod tests {
     use super::*;
 
     /// CONTRACT (node-recovery.md §3: a birth heard again is commanded back through node.mesh.join and
-    /// runs its start sequence before it is ready-for-traffic): right after a wedge's release the same
+    /// runs its start sequence before it is ready): right after a wedge's release the same
     /// birth reads pending-reconnect, and that is the birth returning, never another birth. Must NOT
     /// happen: the authority soak at 3cf384224, round 18, judging it "silence replaced a running
     /// runtime" at the release instant while the birth was running, ready 0.3 s later.
@@ -2261,8 +2261,8 @@ mod tests {
     fn a_released_birth_marked_pending_reconnect_is_returning_never_replaced() {
         let row = |inc: &str, status: &str| json!({"name": "mesh2.admin.1", "incarnation_id": inc, "status": status});
         assert_eq!(judge_held_birth(&[row("qx6", "pending-reconnect")], "mesh2.admin.1", "qx6"), HeldBirth::Returning);
-        assert_eq!(judge_held_birth(&[row("qx6", "ready-for-traffic")], "mesh2.admin.1", "qx6"), HeldBirth::Ready);
-        assert_eq!(judge_held_birth(&[row("zzz", "ready-for-traffic")], "mesh2.admin.1", "qx6"), HeldBirth::Replaced);
+        assert_eq!(judge_held_birth(&[row("qx6", "ready")], "mesh2.admin.1", "qx6"), HeldBirth::Ready);
+        assert_eq!(judge_held_birth(&[row("zzz", "ready")], "mesh2.admin.1", "qx6"), HeldBirth::Replaced);
         assert_eq!(judge_held_birth(&[], "mesh2.admin.1", "qx6"), HeldBirth::Replaced);
     }
 
@@ -2290,7 +2290,7 @@ mod tests {
     /// A held birth is marked unheard by its own row: `dead`, or `pending-reconnect` when the hold is
     /// not judged true offline. Node recovery re-creates it at once on a verdict other than `reached`
     /// (node-recovery.md step 3, Q110, Q111), so its `dead` stands only until recovery's delete (0.45 s
-    /// in the routing soak at 119663355); the path's replacement, Pending or ready-for-traffic, is
+    /// in the routing soak at 119663355); the path's replacement, Pending or ready, is
     /// another birth and never makes the held one heard.
     #[test]
     fn a_held_birth_node_recovery_replaced_is_marked_unheard() {
@@ -2299,8 +2299,8 @@ mod tests {
         assert!(marks_unheard(&[row("y2reptx3zt5y", "dead")], &held, true));
         assert!(!marks_unheard(&[row("y2reptx3zt5y", "pending-reconnect")], &held, true));
         assert!(marks_unheard(&[row("y2reptx3zt5y", "pending-reconnect")], &held, false));
-        assert!(!marks_unheard(&[row("y2reptx3zt5y", "ready-for-traffic")], &held, false));
-        for status in ["pending", "ready-for-traffic"] {
+        assert!(!marks_unheard(&[row("y2reptx3zt5y", "ready")], &held, false));
+        for status in ["pending", "ready"] {
             assert!(marks_unheard(&[row("461hjdtmy4t4", status)], &held, true), "the replacement {status} at the path");
         }
     }

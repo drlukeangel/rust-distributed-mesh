@@ -893,7 +893,7 @@ mod tests {
         let mesh = MeshRecord::new(crate::model::MeshId::mint(), "meshafter");
         meshes.put_mesh(&mesh).await.unwrap();
         meshes.claim_mesh_name("meshafter", &mesh.mesh_id).await.unwrap().unwrap();
-        let row = NodeRow::new("meshafter.rpc.7".parse().unwrap(), NodeId::mint(), crate::model::NodeStatus::ReadyForTraffic);
+        let row = NodeRow::new("meshafter.rpc.7".parse().unwrap(), NodeId::mint(), crate::model::NodeStatus::Ready);
         nodes.put_node(&row).await.unwrap();
         nodes.claim_node_name(&row.name, &row.node_id).await.unwrap().unwrap();
         let runtime = RuntimeRow { node_id: NodeId::mint(), name: "meshafter.rpc.8".parse().unwrap(), incarnation_id: IncarnationId::mint(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-after")).unwrap(), data_dir: None };

@@ -78,12 +78,12 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let absent = estate.probe(&["get", "--target", &path, "--key", &"k".repeat(256)]);
     assert_eq!(absent["reply"]["result"], json!({"found": false}));
 
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 2. A same-node restart, node.stop then node.start (Q183), keeps the store.
     estate.stop_then_start(&NODE.parse().unwrap()).await;
     let restarted = estate
-        .until_node(NODE, "the restarted birth is ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).map(|n| serde_json::to_value(n).expect("a view serializes")))
+        .until_node(NODE, "the restarted birth is ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).map(|n| serde_json::to_value(n).expect("a view serializes")))
         .await;
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
     assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "and the birth: the process was stopped and started, never replaced");
@@ -102,7 +102,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let recovered = estate
         .until_node(NODE, "the recovered node holds the path", crate::node_recovery_due(), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["node_id"] != first["node_id"]).then_some(n)
+            (n["status"] == "ready" && n["node_id"] != first["node_id"]).then_some(n)
         })
         .await;
     assert_ne!(recovered["incarnation_id"], first["incarnation_id"], "recovery creates a new node.id and incarnation");
@@ -126,7 +126,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let replacement = estate
         .until_node(NODE, "a new logical node holds the path", Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["node_id"] != recovered["node_id"]).then_some(n)
+            (n["status"] == "ready" && n["node_id"] != recovered["node_id"]).then_some(n)
         })
         .await;
     assert_ne!(replacement["endpoint_id"], recovered["endpoint_id"], "a planned replacement is a new node with a new endpoint key");

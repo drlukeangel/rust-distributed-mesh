@@ -65,7 +65,7 @@ fn replies_match_the_frozen_twenty_three_variant_wire_schema() {
         (NodeStopped, "0c"),
         (NodeJoined, "0d"),
         (NodeStarted, "0e"),
-        (RejectedInvalidNodeTransition { current: rdm_core::status::NodeState::ReadyForTraffic }, "1001"),
+        (RejectedInvalidNodeTransition { current: rdm_core::status::NodeState::Ready }, "1001"),
         (Failed { step: "s".into(), reason: "r".into(), code: rdm_core::outcome::Code::Internal }, "0f017301720d"),
         (StorageStepped { provider: "f".into() }, "110166"),
         (RejectedStaleChange { held: change() }, "120c333132333435363738396162"),

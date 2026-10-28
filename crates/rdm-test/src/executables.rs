@@ -243,7 +243,7 @@ mod tests {
     fn row(name: &str, primary: bool, sha: &str) -> NodeView {
         let p: PathName = name.parse().unwrap();
         let mut v: NodeView = serde_json::from_value(serde_json::json!({
-            "name": name, "kind": p.kind, "mesh": p.mesh, "node_id": rdm_core::fixture_crockford60(name), "status": "ready-for-traffic",
+            "name": name, "kind": p.kind, "mesh": p.mesh, "node_id": rdm_core::fixture_crockford60(name), "status": "ready",
             "is_primary": primary, "is_fabric_primary": false, "tags": [], "config": {}
         }))
         .unwrap();

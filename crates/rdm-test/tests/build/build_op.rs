@@ -119,8 +119,8 @@ async fn born_framed(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)
     let frames = until_complete(&mut stream).await;
     estate.settles_to(shape, Duration::from_secs(90)).await;
     caller.learn().await;
-    // A workflow a caller submits is refused until the initial fabric has first reached ready-for-traffic
-    // (states.md "The initial fabric before ready-for-traffic").
+    // A workflow a caller submits is refused until the initial fabric has first reached ready
+    // (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(90)).await;
     (carrier, frames)
 }
@@ -279,9 +279,9 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     assert!(matches!(followed.frames.last(), Some(BuildFrame::Complete { .. })), "the Build ends Complete: {followed:?}");
 
     let receipts = Builds::new(carrier.clone()).get(&build_id).await.expect("build.get");
-    // The Build put the fabric back to pending, so it is Complete only once its ready-for-traffic state is set (Q154): its run
+    // The Build put the fabric back to pending, so it is Complete only once its ready state is set (Q154): its run
     // hands back to the fabric-primary, and the one attempt after it, claimed once the fabric is
-    // ready-for-traffic, completes it and runs no step. The close opened none: every step ran in the
+    // ready, completes it and runs no step. The close opened none: every step ran in the
     // attempt the watcher watched.
     assert_eq!(receipts.attempt, attempt + 1, "the close opened no second attempt; the one after the run is the Complete after the fabric's change: {receipts:?}");
     assert!(receipts.steps.iter().all(|r| r.attempt == attempt), "every step ran in attempt {attempt}, the one the watcher watched: {receipts:?}");
@@ -577,7 +577,7 @@ impl Caller {
 
     /// The node-admin that is fabric-primary once `dead`, the fabric-primary, has died: nobody takes the role
     /// meanwhile, and fabric recovery restores the node it re-creates at `dead`'s path.name (Q122). A
-    /// surviving admin's view is read until it names a ReadyForTraffic fabric-primary other than `dead`'s
+    /// surviving admin's view is read until it names a Ready fabric-primary other than `dead`'s
     /// birth; that birth is made reachable here, and its path.name returned.
     async fn restored_fabric_primary(&self, dead: &str) -> String {
         let asked = path(&self.survivor_of(dead));
@@ -585,7 +585,7 @@ impl Caller {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
         loop {
             if let Some(views) = rdm_test::typed::node_views_of(&self.peers, &asked, &self.fabric_id).await {
-                let restored = views.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.is_fabric_primary && n.status == NodeStatus::ReadyForTraffic && n.node_id.to_string() != dead_id);
+                let restored = views.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.is_fabric_primary && n.status == NodeStatus::Ready && n.node_id.to_string() != dead_id);
                 if let Some(n) = restored {
                     if let (Some(ep), Some(addr), Some(inc)) = (n.endpoint_id.as_deref(), n.transport_addr, n.incarnation_id.clone()) {
                         if let Ok(old) = rdm_core::NodeId::parse(&dead_id) {
@@ -605,7 +605,7 @@ impl Caller {
                     }
                 }
             }
-            assert!(tokio::time::Instant::now() < deadline, "{asked}'s view names no ReadyForTraffic fabric-primary other than {dead}'s birth {dead_id} within 120s");
+            assert!(tokio::time::Instant::now() < deadline, "{asked}'s view names no Ready fabric-primary other than {dead}'s birth {dead_id} within 120s");
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
@@ -712,7 +712,7 @@ struct Lost {
     carrier: BuildCarrier,
 }
 
-/// The fabric reached its first ready-for-traffic (a claim is written to the store root at once, Q171).
+/// The fabric reached its first ready (a claim is written to the store root at once, Q171).
 /// A fabric-primary grows the fabric by mesh2 through `build.create` and is lost at `cut` (the
 /// fabric-primary's own Door holds it there), after its claim of mesh2's name landed: mesh2's row is on
 /// the store root. Fabric recovery restores the node it re-creates at the fabric-primary's path.name (Q122), and the caller re-submits the Build there by its id
@@ -726,7 +726,7 @@ struct Lost {
 async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Caller, carrier: &BuildCarrier, cut: Value, survivor_holds: Option<&str>) -> Lost {
     let fp = carrier.fabric_primary().to_string();
     let root = estate.fabric_store_root();
-    // Ready-for-traffic: the Day-0 Build is Complete and a growth may be accepted (Q170).
+    // Ready: the Day-0 Build is Complete and a growth may be accepted (Q170).
     estate.until_fabric_ready(Duration::from_secs(90)).await;
 
     let door = Door::at(&estate, &fp).await;

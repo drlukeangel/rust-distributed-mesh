@@ -36,7 +36,7 @@ pub(crate) struct MapNode {
     pub incarnation: IncarnationId,
     /// The lifecycle transition the source held the birth in (being born, drained or leaving), or
     /// `None` for a settled birth. Every birth of the own mesh is pinged on entry; the status is
-    /// what the view learns of a birth in transition that answers, never `ReadyForTraffic`.
+    /// what the view learns of a birth in transition that answers, never `Ready`.
     pub transition: Option<crate::model::NodeStatus>,
     /// What the source knew: a birth the source holds ready is ready, anything else settled is
     /// not yet reached.
@@ -76,7 +76,7 @@ impl MapNode {
     }
 
     /// The birth as the view holds it until the topology view speaks for it: `status` is what the map
-    /// knows (`ReadyForTraffic` for a settled birth that answered a Ping, the transition its source
+    /// knows (`Ready` for a settled birth that answered a Ping, the transition its source
     /// held for one in transition that answered, `PendingReconnect` for a settled one not yet
     /// reached; never `Dead`).
     pub(crate) fn as_node(&self, status: crate::model::NodeStatus, provider: crate::model::ProviderKind) -> crate::model::Node {
@@ -108,7 +108,7 @@ pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rd
             // A digest says what the node last reported, not that it is alive: whoever answered
             // heard it at an age the digest does not carry. Every birth is therefore not yet
             // reached (the sweep's ping, or its own digest, says more), never ready.
-            let transition = (d.status != rdm_core::MemberStatus::ReadyForTraffic).then(|| crate::admin::node_status(d.status));
+            let transition = (d.status != rdm_core::MemberStatus::Ready).then(|| crate::admin::node_status(d.status));
             MapNode {
                 transition,
                 ready: false,
@@ -328,7 +328,7 @@ mod tests {
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:1".parse().unwrap(),
             incarnation: IncarnationId::mint(),
-            transition: (status != MemberStatus::ReadyForTraffic).then(|| crate::admin::node_status(status)),
+            transition: (status != MemberStatus::Ready).then(|| crate::admin::node_status(status)),
             ready: false,
             data_dir: None,
             admin_api_base: None,
@@ -339,12 +339,12 @@ mod tests {
     /// every node IN ITS OWN MESH"): the entry pings every birth of the own-mesh map, whatever the
     /// status its source held. A member in a lifecycle transition (Pending, ConnectionsDeleting, Leaving) is a
     /// node of the mesh: in a leaving mesh every member is, and an entry that pings only the
-    /// ReadyForTraffic ones reads no local topology and sweeps none of them.
+    /// Ready ones reads no local topology and sweeps none of them.
     #[test]
     fn the_entry_pings_every_own_mesh_birth_whatever_its_status() {
         let map = vec![
             birth("mesh2.rpc.1", MemberStatus::Leaving),
-            birth("mesh2.rpc.2", MemberStatus::ReadyForTraffic),
+            birth("mesh2.rpc.2", MemberStatus::Ready),
             birth("mesh2.rpc.3", MemberStatus::ConnectionsDeleting),
             birth("mesh2.rpc.4", MemberStatus::Pending),
         ];
@@ -355,15 +355,15 @@ mod tests {
     /// CONTRACT (node-admin-lifecycle.md §4.1 step 5: "Read GetTopology from a LOCAL node of the
     /// recovering admin's own mesh"; node-rpc-envelope.md: "A draining node refuses new non-status
     /// calls"): the local node is tried settled births first, then births in transition, each in
-    /// path order, so a ConnectionsDeleting node ahead of a ReadyForTraffic one in path order is never the one
+    /// path order, so a ConnectionsDeleting node ahead of a Ready one in path order is never the one
     /// the current topology is read from while the ready one answers.
     #[test]
     fn the_local_node_is_tried_settled_births_first() {
         let map = vec![
             birth("mesh2.rpc.1", MemberStatus::ConnectionsDeleting),
             birth("mesh2.rpc.2", MemberStatus::Leaving),
-            birth("mesh2.rpc.3", MemberStatus::ReadyForTraffic),
-            birth("mesh2.rpc.4", MemberStatus::ReadyForTraffic),
+            birth("mesh2.rpc.3", MemberStatus::Ready),
+            birth("mesh2.rpc.4", MemberStatus::Ready),
         ];
         let tried: Vec<String> = local_candidates(&map).iter().map(|n| n.name.to_string()).collect();
         assert_eq!(tried, vec!["mesh2.rpc.3", "mesh2.rpc.4", "mesh2.rpc.1", "mesh2.rpc.2"]);

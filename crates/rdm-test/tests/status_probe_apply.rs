@@ -87,13 +87,13 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         // The node answers the probe whoever sends it (node-rpc.md §14): the first probe is answered.
         let probe = StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
         let first = call(probe.clone()).await;
-        assert_eq!(first, StatusReply::Current { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ReadyForTraffic });
+        assert_eq!(first, StatusReply::Current { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Ready });
         // A stale incarnation: refused with the one held.
         let stale = StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: IncarnationId::mint() };
         assert_eq!(call(stale).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() });
         // An upward declaration sent to the node: its Status door has no handler for it (R24, Luke Q11):
         // not handled, never an authority refusal.
-        let downward_declare = StatusRequest::DeclareNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ReadyForTraffic, operation: None };
+        let downward_declare = StatusRequest::DeclareNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Ready, operation: None };
         assert_eq!(call(downward_declare).await, StatusReply::RequestNotHandled { request: "declare-node-state".into() }, "a request the node has no handler for is answered not handled here");
         // node-left is never sent: refused by name as no command, as a node-admin refuses it, never
         // sent on to "a node-admin" that would refuse it too.
@@ -108,8 +108,8 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         );
         // ApplyNodeState sets no state: refused with the held state, nothing moves.
         let apply = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ConnectionsDeleting };
-        assert_eq!(call(apply).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic });
-        assert!(matches!(call(probe.clone()).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }), "the refused apply moved nothing");
+        assert_eq!(call(apply).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Ready });
+        assert!(matches!(call(probe.clone()).await, StatusReply::Current { state: NodeState::Ready, .. }), "the refused apply moved nothing");
         // apply-node-config (node-config-update.md step 3: "it applies the map"): the birth holds the
         // whole config; no digest carries it (Q203).
         let config: std::collections::BTreeMap<String, String> = [("tags".to_string(), "edge".to_string()), ("zone".to_string(), "a".to_string())].into();

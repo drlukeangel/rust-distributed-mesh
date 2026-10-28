@@ -45,7 +45,7 @@ and recording it are separate for every type.
 1. The primary is commanded from above, as a step of the Build that stops, deletes, replaces or
    runs `node.connections.delete { scope: All }` on it.
 2. The writer pre-checks from its own view: the election over the nodes of that type in the mesh with the
-   primary excluded names a ReadyForTraffic successor. If it names none, the step is refused by name and
+   primary excluded names a Ready successor. If it names none, the step is refused by name and
    nothing has changed, no row ([no-successor cases](#no-successor-cases)).
 3. For the `node-admin` type, NA1 finishes the writes it has issued before it calls NA2 (Q109): once
    NA2 is mesh-primary NA1 writes the mesh's rows no more. A non-admin primary has no mesh rows to finish writing
@@ -95,7 +95,7 @@ and recording it are separate for every type.
 - **The successor is unheard after the update.** When node investigation's verdict is anything but
   reached, the step fails by name, `the successor is unheard after the update: <verdict>`, and the Build
   is Failed (R-BI4). The ordinary election then names whoever it names, the old primary included: the
-  lowest ReadyForTraffic node of that type in the mesh is primary, its digest carries it and the
+  lowest Ready node of that type in the mesh is primary, its digest carries it and the
   mesh-primary records it. The successor's node goes through
   [node recovery](node-recovery.md) like any unheard member. A caller's resubmit opens a new run, so a
   new update under its own key, which excludes the old primary.
@@ -130,8 +130,8 @@ and recording it are separate for every type.
   The exceptions that skip the update: the delete of a mesh's only node, and the delete of a type's only
   node in its mesh, whether the node leaves the topology (a removal) or is re-created at the same
   `path.name` (node recovery, an executable replacement); the type has no primary until the election names
-  the new birth ReadyForTraffic. A mesh's sole `broker` cannot be stopped until a second
-  broker is ReadyForTraffic. No row and no vacancy inferred from a stop.
+  the new birth Ready. A mesh's sole `broker` cannot be stopped until a second
+  broker is Ready. No row and no vacancy inferred from a stop.
 - **No other mesh-primary for the fabric-primary:** the fabric arm's own refusal,
   [below](#the-fabric-primary-nodefabric-primaryupdate).
 - **The last node-admin of a mesh:** mesh.delete's path, and mesh.delete never updates the mesh-primary.
@@ -154,17 +154,17 @@ successor search and the row differ.
 
 Successor search for the commanded transfer:
 
-1. the fabric-primary's own mesh: the lowest ReadyForTraffic node-admin NodeId there, where the
+1. the fabric-primary's own mesh: the lowest Ready node-admin NodeId there, where the
    fabric-primary stays by preference;
 2. only when that mesh has none, or it is the departing mesh under mesh.delete: the lowest NodeId among
-   the other ReadyForTraffic mesh-primaries;
+   the other Ready mesh-primaries;
 3. **neither found: refused by name**, `cannot transfer fabric-primary: no other node-admin
-   ReadyForTraffic in mesh <mesh>, no other mesh-primary ReadyForTraffic`, naming both searches and what
+   Ready in mesh <mesh>, no other mesh-primary Ready`, naming both searches and what
    each found. The fabric-primary stays fabric-primary, no row is written, and the commanding workflow
    fails with that reason until a successor is available.
 
 Where the refusal bites: a single-mesh fabric with one node-admin cannot stop or delete its
-fabric-primary until a second node-admin is ReadyForTraffic; mesh.delete of the only mesh, or of the
+fabric-primary until a second node-admin is Ready; mesh.delete of the only mesh, or of the
 fabric-primary's mesh when no other mesh has a Ready primary, is refused the same way, and deleting the
 last mesh is fabric.delete's path.
 
@@ -185,7 +185,7 @@ nothing.
 
 ```text
 commander → primary       (a step of the Build that stops, deletes, replaces or deletes the primary's connections)
-writer                    pre-check: a ReadyForTraffic successor of the type in the mesh, the primary excluded
+writer                    pre-check: a Ready successor of the type in the mesh, the primary excluded
 primary                   issued writes finished (node-admin type)
 primary → successor       node.primary.update (PrimaryUpdate)
 successor                 becomes primary: installs the election's result in its topology view
@@ -208,7 +208,7 @@ sequenceDiagram
     participant NA2 as NA2 (successor, writer)
     participant G as Mesh channel and backbone
     FP->>NA1: Build step on NA1 (stop, delete, replace, connections delete)
-    Note over NA1: pre-check: a ReadyForTraffic successor, NA1 excluded
+    Note over NA1: pre-check: a Ready successor, NA1 excluded
     Note over NA1: issued writes finished
     NA1->>NA2: node.primary.update
     Note over NA2: becomes primary: installs the election's result

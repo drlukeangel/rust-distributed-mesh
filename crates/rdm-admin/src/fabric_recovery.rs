@@ -1,12 +1,12 @@
 //! Fabric recovery (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives";
 //! elections §3, §4.1, §4.3; build.md §5.3; Q122). Unheard past the staleness floor, the fabric-primary is
-//! taken by nobody: the lowest ReadyForTraffic node-admin of its mesh, or when the mesh has none the
-//! lowest ReadyForTraffic mesh-primary on the backbone from mesh investigation's decision step, runs one
+//! taken by nobody: the lowest Ready node-admin of its mesh, or when the mesh has none the
+//! lowest Ready mesh-primary on the backbone from mesh investigation's decision step, runs one
 //! workflow. It takes no primary role. Node investigation decides what becomes of the lost birth (Q111):
 //! reached, it is commanded back through node.mesh.join; any other verdict, node recovery re-creates the
 //! node-admin at its path.name, an attempt of the current Build that names the lost birth, except from the
 //! backbone on `running`, where the report stands and nothing is written (Q153). When the node
-//! at that path.name is ReadyForTraffic the workflow restores it as mesh-primary and fabric-primary
+//! at that path.name is Ready the workflow restores it as mesh-primary and fabric-primary
 //! (node.primary.update's call on it): the node installs both roles, acknowledges, and records them on
 //! its own row; the workflow completes on the acknowledgement.
 //! Under an in-force fabric.delete it re-creates and restores nothing: the executor holds the
@@ -34,8 +34,8 @@ pub struct FabricRecovery {
     pub target: Primary,
     /// The path.name that birth lived at: its node's in the view, else its digest's or its departure's.
     pub at: Option<PathName>,
-    /// The admin that runs the workflow: the lowest ReadyForTraffic node-admin of the target's mesh, else
-    /// the lowest ReadyForTraffic mesh-primary of another mesh.
+    /// The admin that runs the workflow: the lowest Ready node-admin of the target's mesh, else
+    /// the lowest Ready mesh-primary of another mesh.
     pub executor: Option<PathName>,
     /// Whether `executor` is of the target's own mesh (the own-mesh arm) rather than the backbone's.
     pub own_mesh: bool,
@@ -55,7 +55,7 @@ pub fn of(view: &Topology, inc: &Incumbency, digest_view: &DigestView) -> Option
     let backbone = || {
         members
             .iter()
-            .filter(|n| n.kind == NodeKind::NodeAdmin && n.mesh != target.mesh && n.is_primary && n.status == NodeStatus::ReadyForTraffic && !n.incarnation_id.as_ref().is_some_and(|i| inc.lost.contains(i)))
+            .filter(|n| n.kind == NodeKind::NodeAdmin && n.mesh != target.mesh && n.is_primary && n.status == NodeStatus::Ready && !n.incarnation_id.as_ref().is_some_and(|i| inc.lost.contains(i)))
             .min_by(|a, b| a.node_id.as_str().cmp(b.node_id.as_str()))
             .map(|n| n.name.clone())
     };
@@ -364,11 +364,11 @@ impl FabricRecoveryDoor {
             }
             let view = self.topology.read().await.clone();
             let lost = view.members().find(|n| n.node_id == target.node_id && n.incarnation_id.as_ref() == Some(&target.incarnation)).cloned();
-            // ReadyForTraffic in the view, or re-created by this workflow's completed attempt, whose create
+            // Ready in the view, or re-created by this workflow's completed attempt, whose create
             // waited for it to be ready (an executor of another mesh holds no member status of it).
-            let restored = view.node(&at).filter(|n| n.kind == NodeKind::NodeAdmin && (n.status == NodeStatus::ReadyForTraffic || (done && n.node_id != target.node_id))).cloned();
+            let restored = view.node(&at).filter(|n| n.kind == NodeKind::NodeAdmin && (n.status == NodeStatus::Ready || (done && n.node_id != target.node_id))).cloned();
             match (lost, restored) {
-                // The node at the path.name is ReadyForTraffic: a new birth, or the lost birth returned.
+                // The node at the path.name is Ready: a new birth, or the lost birth returned.
                 (_, Some(node)) if node.node_id != target.node_id || node.incarnation_id.as_ref() != Some(&target.incarnation) => {
                     return match self.restore(target, &node).await {
                         Ok(entries) => {
@@ -518,7 +518,7 @@ impl FabricRecoveryDoor {
         }
     }
 
-    /// Restore `node`, ReadyForTraffic at the target's path.name, as mesh-primary and fabric-primary
+    /// Restore `node`, Ready at the target's path.name, as mesh-primary and fabric-primary
     /// (fabric-recovery.md step 4): node.primary.update's call on it, each record at its next revision.
     async fn restore(&self, target: &Primary, node: &Node) -> Result<Vec<rdm_node::member_handover::Entry>, rdm_core::handover::NodePrimaryUpdateReply> {
         let door = self.handover.get().cloned().ok_or_else(|| rdm_core::reply::handover::not_ready("this admin's node.primary.update door is not built yet".into()))?;

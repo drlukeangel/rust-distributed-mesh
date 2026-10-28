@@ -130,7 +130,7 @@ async fn seed_cell(cell: &str, provider: &str) {
     let trace = create["trace_id"].as_str().unwrap().to_string();
     let after = estate_dir(cell).join("nodes-after.json");
     let nodes: Value = serde_json::from_str(&std::fs::read_to_string(&after).expect("nodes-after.json")).unwrap();
-    let ready = |kind: &str| nodes.as_array().unwrap().iter().filter(|n| n["kind"] == kind && n["status"] == "ready-for-traffic").count();
+    let ready = |kind: &str| nodes.as_array().unwrap().iter().filter(|n| n["kind"] == kind && n["status"] == "ready").count();
     assert_eq!((ready("node_admin"), ready("rpc_node")), (2, 3), "the seed shape is MN = 2 admins + 3 rpc nodes: {nodes}");
     write_result(
         cell,
@@ -155,7 +155,7 @@ async fn seed_runner_completes_every_operation_on_container() {
     seed_cell("seed_runner_completes_every_operation_on_container", "container").await;
 }
 
-/// One MN estate whose initial Build settled and whose fabric first reached ready-for-traffic, and a second
+/// One MN estate whose initial Build settled and whose fabric first reached ready, and a second
 /// Build (two more rpc nodes) accepted and still reconciling: the estate and the stream that follows it.
 /// The Build in flight is a second one, accepted after the Day-0 Build completed (Q170).
 async fn estate_with_build_in_flight(cell: &str) -> (Estate, BuildStream) {

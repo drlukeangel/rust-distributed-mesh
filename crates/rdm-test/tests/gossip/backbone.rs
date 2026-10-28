@@ -228,7 +228,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     // an attempt that holds the fabric's lane until it completes: step 4 starts once it has.
     estate
         .until_view(&format!("{old_name} is recovered as a new node"), rdm_transport::topology::staleness_floor() * 4 + Duration::from_secs(60), |views| {
-            Estate::values(views).iter().any(|n| s(&n["name"]) == old_name && s(&n["node_id"]) != old_id && n["status"] == "ready-for-traffic").then_some(())
+            Estate::values(views).iter().any(|n| s(&n["name"]) == old_name && s(&n["node_id"]) != old_id && n["status"] == "ready").then_some(())
         })
         .await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -250,7 +250,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
         .node_values()
         .await
         .iter()
-        .filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic" && s(&n["node_id"]) != fp_id)
+        .filter(|n| n["kind"] == "node_admin" && n["status"] == "ready" && s(&n["node_id"]) != fp_id)
         .map(|n| s(&n["name"]))
         .collect();
     assert!(!survivors.is_empty(), "a live admin other than the fabric primary {fp_name}");
@@ -311,7 +311,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
 
     // 8. Stop then start mesh2.rpc.1: it rejoins as the same birth (node-stop.md "Kept"; node-start.md)
     // and is ready again holding both meshes.
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let before = s(&estate.node_value("mesh2.rpc.1").await["incarnation_id"]);
     let ready_before = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "incarnation_id") == before).count();
@@ -322,7 +322,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
         .until_node("mesh2.rpc.1", "the asked admin's view holds the restarted birth ready", Duration::from_secs(15), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             let ready_now = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "incarnation_id") == before).count();
-            (n["status"] == "ready-for-traffic" && s(&n["incarnation_id"]) == before && ready_now > ready_before).then_some(s(&n["incarnation_id"]))
+            (n["status"] == "ready" && s(&n["incarnation_id"]) == before && ready_now > ready_before).then_some(s(&n["incarnation_id"]))
         })
         .await;
     assert_eq!(restarted, before, "a stop then a start keep the birth");
@@ -375,10 +375,10 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     let admins: Vec<PathName> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["name"]).parse().unwrap()).collect();
     let one_primary = |view: &[Value]| -> Result<(), String> {
         let mut seen: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
-        for n in view.iter().filter(|n| n["is_primary"] == true && n["status"] == "ready-for-traffic") {
+        for n in view.iter().filter(|n| n["is_primary"] == true && n["status"] == "ready") {
             seen.entry((s(&n["mesh"]), s(&n["kind"]))).or_default().push(s(&n["name"]));
         }
-        let fps: Vec<String> = view.iter().filter(|n| n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+        let fps: Vec<String> = view.iter().filter(|n| n["is_fabric_primary"] == true && n["status"] == "ready").map(|n| s(&n["name"])).collect();
         match seen.iter().find(|(_, v)| v.len() > 1) {
             Some((k, v)) => Err(format!("two primaries of {k:?}: {v:?}")),
             None if fps.len() > 1 => Err(format!("two fabric-primaries: {fps:?}")),
@@ -440,7 +440,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     // recovery may have re-created: it is entered again through a node-admin the cut never touched.
     let entry: PathName = "mesh2.admin.1".parse().unwrap();
     estate.enter(&entry).await;
-    // Healed: every pre-cut path.name holds exactly one live ReadyForTraffic birth, the same in every
+    // Healed: every pre-cut path.name holds exactly one live Ready birth, the same in every
     // admin's view (a new NodeId where its recovery re-created it). The untouched admin is read first:
     // its view names the birth a re-created admin holds now, which is how that admin is reached.
     let in_order: Vec<PathName> = std::iter::once(entry.clone()).chain(admins.iter().filter(|a| **a != entry).cloned()).collect();
@@ -451,7 +451,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
             one_primary(&view).ok()?;
             let mut at = BTreeMap::new();
             for p in &pre_cut {
-                let live: Vec<&Value> = view.iter().filter(|n| n["name"] == p.as_str() && n["status"] == "ready-for-traffic").collect();
+                let live: Vec<&Value> = view.iter().filter(|n| n["name"] == p.as_str() && n["status"] == "ready").collect();
                 if live.len() != 1 {
                     return None;
                 }

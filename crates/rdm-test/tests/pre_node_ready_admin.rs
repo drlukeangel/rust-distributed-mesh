@@ -25,23 +25,23 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
     .expect("a readable environment")
 }
 
-/// Resolves once `running`'s admin published ReadyForTraffic (the Ready check runs on its own
+/// Resolves once `running`'s admin published Ready (the Ready check runs on its own
 /// cadence; this reads the digest it publishes).
 async fn until_ready(running: &rdm_admin::admin::Running) {
     let waited = async {
         loop {
-            if running.digest.lock().unwrap().status == MemberStatus::ReadyForTraffic {
+            if running.digest.lock().unwrap().status == MemberStatus::Ready {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     };
-    tokio::time::timeout(WRONG, waited).await.expect("the admin never published ReadyForTraffic");
+    tokio::time::timeout(WRONG, waited).await.expect("the admin never published Ready");
 }
 
 /// CONTRACT: the Day-0 root's `pre_node_ready` runs once, is handed `authority: None` with the
 /// reason (no authority exists before this admin), completes from local state, and only then does
-/// the admin publish ReadyForTraffic: the attempt span records `ok` and the Ready check named the
+/// the admin publish Ready: the attempt span records `ok` and the Ready check named the
 /// running hook as a blocker until then. What must NOT happen: the root's hook pulling from an
 /// authority that does not exist, or the root Ready before its hook returned.
 #[test]
@@ -82,8 +82,8 @@ fn the_day_zero_root_runs_the_hook_with_no_mesh_primary_and_completes_from_local
 /// answered typed `NotReady`, its hook is `Blocked { PrimaryReady }`, the Ready check names that
 /// blocker (`rdm.node_admin.runtime.reject.via-not-ready`) and it publishes Pending.
 /// Its executor's `ready_blocker` (a `ProbeNodeState` to the exact birth) is answered Status
-/// `Blocked` carrying that blocker, named with no attempt counter (node-start.md step 3). When the Day-0 admin's hook returns and it publishes ReadyForTraffic, the joining admin's hook
-/// runs again, pulls the rows and it publishes ReadyForTraffic after its authority. What must NOT
+/// `Blocked` carrying that blocker, named with no attempt counter (node-start.md step 3). When the Day-0 admin's hook returns and it publishes Ready, the joining admin's hook
+/// runs again, pulls the rows and it publishes Ready after its authority. What must NOT
 /// happen: the joining admin Ready while its hook is blocked, or its probe answered `Current`.
 #[test]
 fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_does() {
@@ -235,7 +235,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         resume.notify_one();
         assert_eq!(tokio::time::timeout(WRONG, handle.settled()).await.expect("the hook runs again"), PreNodeReadyState::Passed);
         until_ready(&joiner).await;
-        assert_eq!(root.digest.lock().unwrap().status, MemberStatus::ReadyForTraffic, "the authority was Ready before the joiner");
+        assert_eq!(root.digest.lock().unwrap().status, MemberStatus::Ready, "the authority was Ready before the joiner");
         assert_eq!(joiner_pre_node_ready.held().0.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(root_pre_node_ready.contexts.lock().unwrap().len(), 1);
         assert!(root_pre_node_ready.contexts.lock().unwrap()[0].2.is_some(), "the Day-0 root's hook was handed authority None");

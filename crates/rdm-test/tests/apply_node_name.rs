@@ -38,7 +38,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, crate::common::serve_ping).await;
         let dir = std::env::temp_dir().join(format!("apply-node-name-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
@@ -84,7 +84,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         // Every digest the admin's view takes ticks this count: the cell awaits a published digest, never the cadence.
         let mut digests = digest_view.digest_changes();
         let mut heard = digest_view.heard_changes();
-        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
             heard.changed().await.unwrap();
         }
         let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();

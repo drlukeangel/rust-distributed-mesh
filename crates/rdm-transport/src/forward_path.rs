@@ -355,7 +355,7 @@ mod tests {
                 supersedes: None,
                 runtime: None,
             },
-            status: MemberStatus::ReadyForTraffic,
+            status: MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: seq,
@@ -372,7 +372,7 @@ mod tests {
     /// every version is a delta from the one before.
     fn source_at(ids: &[(NodeId, IncarnationId)], version: u64) -> Full {
         let mut d = digest(1, &ids[0].0, &ids[0].1, 1);
-        d.status = if version % 2 == 0 { MemberStatus::ReadyForTraffic } else { MemberStatus::ConnectionsDeleting };
+        d.status = if version % 2 == 0 { MemberStatus::Ready } else { MemberStatus::ConnectionsDeleting };
         d.node.transport_addr = format!("127.0.0.1:{}", 42_000 + version).parse().unwrap();
         Full::new(vec![d], Vec::new(), Vec::new())
     }

@@ -35,7 +35,7 @@ fn logged(id: &str) -> String {
 /// planner's gossip view has dropped it yet. A node.delete of an rpc node completes; a node.create of
 /// an rpc node in the same mesh is accepted at once, inside the window before the fabric-primary's
 /// view drops the deleted birth. The create plans the birth at the lowest free ordinal, the deleted
-/// path, and the path is born once as a new node.id, ready-for-traffic. What must NOT happen: the
+/// path, and the path is born once as a new node.id, ready. What must NOT happen: the
 /// create's attempt reconciled with no operation and the Build complete with nothing born, a second
 /// birth at the path, or the deleted node.id back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -51,7 +51,7 @@ async fn a_create_accepted_inside_a_deletions_window_births_the_path_once() {
     let path = estate.mesh_view("mesh2").await.primary_admin.expect("mesh2 has a primary admin").to_string();
     let path = path.as_str();
     let before = estate.node_view(path).await;
-    assert_eq!(before.status, NodeStatus::ReadyForTraffic, "{path} is ready before the delete: {before:?}");
+    assert_eq!(before.status, NodeStatus::Ready, "{path} is ready before the delete: {before:?}");
 
     let mut deleting = estate.nodes_obj().await.delete(&path.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {path}: {e}"));
     let delete = Estate::complete(&mut deleting).await.build_id.to_string();
@@ -60,8 +60,8 @@ async fn a_create_accepted_inside_a_deletions_window_births_the_path_once() {
     let create = Estate::complete(&mut creating).await.build_id.to_string();
 
     let born = estate
-        .until_node(path, &format!("{path} is born again as a new node.id and ready-for-traffic"), Duration::from_secs(90), |n| {
-            n.filter(|n| n.status == NodeStatus::ReadyForTraffic && n.node_id != before.node_id).cloned()
+        .until_node(path, &format!("{path} is born again as a new node.id and ready"), Duration::from_secs(90), |n| {
+            n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()
         })
         .await;
     assert_ne!(born.node_id, before.node_id, "{path} is a new birth, never the deleted node.id back");

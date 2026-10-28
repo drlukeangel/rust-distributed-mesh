@@ -1,6 +1,6 @@
 //! i143.e11.s10 process E2E: status and lifecycle on a role (PRD §13.1; node-identity-and-state.md
 //! §7.3). `{node_admin: 1, broker: 2, gateway: 1}`; a broker is frozen in place (SIGSTOP).
-//! - Born, the broker declared `ReadyForTraffic` to its mesh primary over the status op: the
+//! - Born, the broker declared `Ready` to its mesh primary over the status op: the
 //!   view shows it `declared` before anything asks.
 //! - Silent, it is marked `pending-reconnect` at the staleness floor, and its mesh's primary runs node
 //!   investigation on it: unreached, the provider reads its runtime suspended (`os-stopped`), and node
@@ -39,7 +39,7 @@ async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_f
     let (path, birth) = (s(&target["name"]), s(&target["incarnation_id"]));
     // Born ready, the broker declared its readiness to its mesh primary by itself (the status op). No stream
     // announces it: the admin's view carries it (`declared`).
-    estate.until_node(&path, &format!("{path}'s own ReadyForTraffic declared at the authority"), Duration::from_secs(20), |n| n.filter(|n| n.declared.as_deref() == Some("ReadyForTraffic")).map(|_| ())).await;
+    estate.until_node(&path, &format!("{path}'s own Ready declared at the authority"), Duration::from_secs(20), |n| n.filter(|n| n.declared.as_deref() == Some("Ready")).map(|_| ())).await;
 
     // Frozen: pending-reconnect at the floor, then re-created at its path.name.
     let floor = rdm_transport::topology::staleness_floor();
@@ -58,9 +58,9 @@ async fn a_wedged_broker_is_found_os_stopped_and_re_created_at_its_path_over_a_f
     };
     let mut check = primary_now();
     let back = estate
-        .until_view(&format!("{path} re-created with a new node id and ready-for-traffic"), floor * 6 + Duration::from_secs(60), |views| {
+        .until_view(&format!("{path} re-created with a new node id and ready"), floor * 6 + Duration::from_secs(60), |views| {
             let ns = check(views);
-            ns.into_iter().find(|n| n["name"] == path.as_str() && s(&n["node_id"]) != old_id && n["status"] == "ready-for-traffic")
+            ns.into_iter().find(|n| n["name"] == path.as_str() && s(&n["node_id"]) != old_id && n["status"] == "ready")
         })
         .await;
     let _ = std::process::Command::new("kill").args(["-KILL", &pid.to_string()]).status();

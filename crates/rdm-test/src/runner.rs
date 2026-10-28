@@ -159,7 +159,7 @@ pub async fn run_replayable(
     let shape: Vec<(&str, u32, u32)> = sc.meshes.iter().map(|m| (m.name.as_str(), m.node_admin, m.rpc_node)).collect();
     estate.settles_to(&shape, SETTLE).await;
 
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(SETTLE).await;
     let mut failures = Vec::new();
     let mut outcomes = Vec::new();
@@ -194,7 +194,7 @@ pub async fn run_replayable(
             let after = estate
                 .until_node(node, &format!("{node} ready again as the same birth after its restart"), SETTLE, |n| {
                     let n = serde_json::to_value(n?).expect("a view serializes");
-                    (n["status"] == "ready-for-traffic" && n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"]).then_some(n)
+                    (n["status"] == "ready" && n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"]).then_some(n)
                 })
                 .await;
             outcomes.push(StepOutcome {

@@ -58,7 +58,7 @@ async fn estate(cell: &str) -> (Estate, rdm_client::BuildId) {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let accepted = estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node restart until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     (estate, accepted.build_id)
 }
@@ -101,7 +101,7 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     let (restart_attempt, _) = estate.stop_then_start(&NODE.parse().unwrap()).await;
     let restart_build = restart_attempt.build_id.to_string();
     let restarted = view(&estate, NODE).await;
-    assert_eq!(restarted["status"], "ready-for-traffic", "the restarted birth is ready: {restarted}");
+    assert_eq!(restarted["status"], "ready", "the restarted birth is ready: {restarted}");
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
     assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "a restart is node.stop then node.start on the stopped process: the same birth (ops-naming-proposal.md, Restart is not a re-birth)");
     let restarted_dir = estate.node_view(NODE).await.data_dir.expect("the launching admin advertises the node's data dir");
@@ -201,7 +201,7 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     let replacement = estate
         .until_node(NODE, "a new logical node holds the path", Duration::from_secs(120), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["node_id"] != first["node_id"]).then_some(n)
+            (n["status"] == "ready" && n["node_id"] != first["node_id"]).then_some(n)
         })
         .await;
     let replacement_dir = estate.node_view(NODE).await.data_dir.expect("the launching admin advertises the node's data dir");

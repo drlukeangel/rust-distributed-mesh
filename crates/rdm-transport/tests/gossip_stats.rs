@@ -25,7 +25,7 @@ fn digest(name: &str, ep: &iroh::Endpoint) -> MeshDigest {
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::ReadyForTraffic,
+        status: MemberStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,

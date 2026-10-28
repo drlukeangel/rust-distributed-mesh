@@ -1117,7 +1117,7 @@ One reply frame of a node command's stream. Positional order is part of the wire
 | 11.0 | `receipt` | `ConnectionsReceipt` → [`ConnectionsReceipt`](#t-rdm_core-status-ConnectionsReceipt) |  |  | The closure's Established or Deadline evidence. |
 | 12 | **`NodeStopped`** |  |  | `name() = "node-stopped"` | The stop's transport cut is complete; the live process is stopped. |
 | 13 | **`NodeJoined`** |  |  | `name() = "node-joined"` | The accepted join and channel join completed; start gates remain. |
-| 14 | **`NodeStarted`** |  |  | `name() = "node-started"` | Every start gate completed; the receiver records ReadyForTraffic. |
+| 14 | **`NodeStarted`** |  |  | `name() = "node-started"` | Every start gate completed; the receiver records Ready. |
 | 15 | **`Failed`** |  |  | `name() = "failed"` | An accepted command failed at this named step. |
 | 15.0 | `step` | `String` |  |  | The step that failed. |
 | 15.1 | `reason` | `String` |  |  | Its explanation. |
@@ -2147,7 +2147,7 @@ A Fabric event the fabric-primary applies at a mesh primary.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
-| 0 | **`ReadyForTraffic`** |  |  | `name() = "ready-for-traffic"` | The fabric is ready for traffic. |
+| 0 | **`Ready`** |  |  | `name() = "ready"` | The fabric is ready. |
 | 1 | **`ShutdownInitiated`** |  |  | `name() = "shutdown-initiated"` | A fabric shutdown was initiated by the named admin. |
 | 1.0 | `initiated_by` | `String` |  |  | The admin that initiated the shutdown. |
 
@@ -2367,7 +2367,7 @@ serde: `rename_all = "kebab-case"`
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Pending`** |  |  | The node has not yet declared itself ready. |
-| 1 | **`ReadyForTraffic`** |  |  | The node takes traffic. |
+| 1 | **`Ready`** |  |  | The node takes traffic. |
 | 2 | **`ConnectionsDeleting`** |  | `rename = "connections-deleting"` | The node takes no new work: its connections are being deleted. |
 | 3 | **`Leaving`** |  |  | The node has announced its departure. |
 
@@ -2403,8 +2403,8 @@ A Mesh's status, as declared.
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | **`Pending`** |  |  | Created and not yet ready for traffic. |
-| 1 | **`ReadyForTraffic`** |  |  | Ready: it takes traffic. |
+| 0 | **`Pending`** |  |  | Created and not yet ready. |
+| 1 | **`Ready`** |  |  | Ready: it takes traffic. |
 | 2 | **`Leaving`** |  |  | Leaving: it is closing. |
 | 3 | **`Dead`** |  |  | Dead: every member is gone. |
 
@@ -2569,8 +2569,8 @@ A node birth's lifecycle state, as declared.
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | **`Pending`** |  |  | Born and not yet ready for traffic. |
-| 1 | **`ReadyForTraffic`** |  |  | Ready: it takes traffic. |
+| 0 | **`Pending`** |  |  | Born and not yet ready. |
+| 1 | **`Ready`** |  |  | Ready: it takes traffic. |
 | 2 | **`ConnectionsDeleting`** |  |  | Connections-deleting: it takes no new work. |
 | 3 | **`Stopped`** |  |  | Stopped: declared at node.stop's end, after its connections are deleted and its transport cut |
 
@@ -2586,8 +2586,8 @@ serde: `rename_all = "kebab-case"`
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | **`Pending`** |  |  | Born and not yet ready for traffic. |
-| 1 | **`ReadyForTraffic`** |  |  | Ready: it takes traffic. |
+| 0 | **`Pending`** |  |  | Born and not yet ready. |
+| 1 | **`Ready`** |  |  | Ready: it takes traffic. |
 | 2 | **`ConnectionsDeleting`** |  | `rename = "connections-deleting"` | Connections-deleting: it takes no new work while it finishes what it holds. |
 | 3 | **`Leaving`** |  |  | Leaving: it has announced its departure and is closing. |
 | 4 | **`PendingReconnect`** |  |  | Unheard past the staleness floor: held, never death, and never a reason to restart or |
@@ -2913,7 +2913,7 @@ The event a Blocked `pre_node_ready` hook runs again on (fabric-node-hooks.md, "
 | 0 | **`PrimaryChanged`** |  |  | `name() = "primary-changed"` | The authority's birth changed or departed. |
 | 1 | **`TargetReachable`** |  |  | `name() = "target-reachable"` | The named node became reachable (heard after silence, or first heard). |
 | 1.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The node waited for. |
-| 2 | **`PrimaryReady`** |  |  | `name() = "primary-ready"` | The authority published ReadyForTraffic. |
+| 2 | **`PrimaryReady`** |  |  | `name() = "primary-ready"` | The authority published Ready. |
 | 3 | **`PrimaryAddressed`** |  |  | `name() = "primary-addressed"` | The authority addressed this node (it sent a down op). |
 
 <a id="t-rdm_test-pre_node_ready_probe-Row"></a>
@@ -2956,8 +2956,8 @@ serde: `rename_all = "kebab-case"`
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
-| 0 | **`Pending`** |  |  | `name() = "pending"` | Created and not yet ready for traffic. |
-| 1 | **`ReadyForTraffic`** |  |  | `name() = "ready-for-traffic"` | Ready: it takes traffic. |
+| 0 | **`Pending`** |  |  | `name() = "pending"` | Created and not yet ready. |
+| 1 | **`Ready`** |  |  | `name() = "ready"` | Ready: it takes traffic. |
 | 2 | **`Leaving`** |  |  | `name() = "leaving"` | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
 | 3 | **`Dead`** |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final. |
 | 4 | **`Degraded`** |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |

@@ -14,15 +14,15 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
 | Field | Contract |
 |---|---|
 | Caller / driver | The topology Build that adds the mesh ([build.md §12.1](../build.md#121-create-a-new-mesh)); the fabric-primary accepts it and drives it through the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) |
-| Precondition | The Day-0 Build is Complete; before its ready-for-traffic it is the Build in progress, and the Build is refused `build-in-progress` (Q170) |
+| Precondition | The Day-0 Build is Complete; before its ready it is the Build in progress, and the Build is refused `build-in-progress` (Q170) |
 | MeshId | Minted once, when the mesh enters the accepted topology, and carried by every Build after it; never reissued |
 | Name | `mesh<#>` by default, the Build's `mesh_name`; the first node-admin, as the mesh's primary, claims it at `(path, name)`, unique within its path; held by a different MeshId answers `NameHeld` |
 | Executor / maker | The fabric-primary: it is the maker of the mesh's first node-admin and writes the mesh's rows until the mesh has a primary (R-OW1) |
 | Channel | `f(FabricId, MeshId)`, created by its first listener, the node-admin |
 | Members | The first node-admin only. The mesh's other nodes are created afterwards by that node-admin as mesh-primary, under the same accepted Build's attempts |
-| Mesh states | `pending`, set by the node-admin that launched the mesh's first admin, one `ApplyMeshState(Pending)` after the launched birth answers Ping; `ready-for-traffic`, set by the fabric-primary on its mesh-primary's report that every planned birth is ready ([States](states.md)) |
+| Mesh states | `pending`, set by the node-admin that launched the mesh's first admin, one `ApplyMeshState(Pending)` after the launched birth answers Ping; `ready`, set by the fabric-primary on its mesh-primary's report that every planned birth is ready ([States](states.md)) |
 | Rows | The mesh row, written by the mesh-primary at creation; the node row, written by the fabric-primary until the mesh has a primary, then by the mesh-primary |
-| Completion | The node-admin's `node.created`; the mesh is in the topology from acceptance and in traffic from `ready-for-traffic` |
+| Completion | The node-admin's `node.created`; the mesh is in the topology from acceptance and in traffic from `ready` |
 | Not this | A node-admin created into a mesh that already exists and lost its node-admins is [mesh investigation](mesh-investigation.md#a-node-admin-joins-the-live-mesh): same MeshId, same Build, no mesh create |
 
 ## Numbered end-to-end sequence
@@ -48,7 +48,7 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    [`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) hook, the topology read on its maker,
    the Build floor, rafka-time last, `node.started`, then its
    [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) notice. The fabric-primary, as writer of a mesh with no primary, sets the node-admin's
-   ReadyForTraffic.
+   Ready.
 7. The [election](../fabric-node-lifecycle-elections.md#42-mesh-primary) names the node-admin
    `mesh2`'s mesh-primary: the only candidate. As mesh-primary it claims the mesh's name,
    writes the mesh row and records `is_primary` on its own row, which its `Digest` carries, publishes its mesh's status
@@ -56,8 +56,8 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    step.
 8. The mesh-primary creates `mesh2`'s other nodes as attempts of the same Build. When every
    planned birth is ready it reports to the fabric-primary, which applies
-   `ApplyMeshState(ReadyForTraffic)`; the mesh-primary records it on the mesh's record, publishes
-   `MeshStatus` ready-for-traffic, and the mesh is in traffic. Once that state is newly on the mesh's
+   `ApplyMeshState(Ready)`; the mesh-primary records it on the mesh's record, publishes
+   `MeshStatus` ready, and the mesh is in traffic. Once that state is newly on the mesh's
    record the mesh-primary calls [on_mesh_ready](../fabric-node-hooks.md#on_mesh_ready) once, a
    notice that gates nothing (`rdm.node_admin.mesh.update.via-on-mesh-ready`).
 
@@ -99,7 +99,7 @@ The unary reply, the body alone:
 A repeat of the same apply answers `AlreadyApplied`; an apply that names a mesh the receiver does
 not hold answers `RejectedStaleMesh { held }`; a state the mesh cannot move to answers
 `RejectedInvalidMeshTransition { current }`. At step 8 the same request carries
-`"state": "ReadyForTraffic"`.
+`"state": "Ready"`.
 
 ## Gossip messages
 
@@ -153,15 +153,15 @@ sequenceDiagram
     A-->>F: reply
     F->>A: 5. ApplyMeshState(Pending)
     A-->>F: Applied
-    Note over A: 6. pre_node_ready, topology read, node.started, on_node_ready; fabric-primary sets ReadyForTraffic
+    Note over A: 6. pre_node_ready, topology read, node.started, on_node_ready; fabric-primary sets Ready
     Note over A: 7. election names it mesh-primary, claims mesh name, writes mesh row
     A->>G: 7. Digest (is_primary), MeshStatus pending, first mesh topology
     G-->>R: install mesh2 into external topology
     F-->>C: node.created
     Note over A: 8. creates mesh2's other nodes under the same Build
     A->>F: 8. every planned birth ready
-    F->>A: ApplyMeshState(ReadyForTraffic)
-    A->>G: MeshStatus ready-for-traffic
+    F->>A: ApplyMeshState(Ready)
+    A->>G: MeshStatus ready
     Note over A: on_mesh_ready (notice)
 ```
 
@@ -187,4 +187,4 @@ stream certainty follow the [caller execution contract](../node-rpc-envelope.md#
 | Join | node-admin, fabric-primary | [node.mesh.join](node-mesh-join.md#observability-contract) | same operation |
 | Mesh Pending | fabric-primary | the Ping, then `ApplyMeshState(Pending)`'s call span | mesh id, mesh name |
 | Seat and name | node-admin | `rdm.mesh.election.resolve.via-recompute`; the name claim; the mesh row write | mesh id, revision |
-| Mesh ReadyForTraffic | fabric-primary, node-admin | `ApplyMeshState(ReadyForTraffic)`; `MeshStatus` publish | mesh id |
+| Mesh Ready | fabric-primary, node-admin | `ApplyMeshState(Ready)`; `MeshStatus` publish | mesh id |

@@ -12,14 +12,14 @@ never decides an RDM transition.
 
 | Hook | Called by | When | Gates |
 |---|---|---|---|
-| [`pre_node_ready`](#pre_node_ready) | every node start | after accepted join and mesh-channel join; before topology installation | the node's ReadyForTraffic |
-| [`on_node_ready`](#on_node_ready) | every node | after its ReadyForTraffic | nothing; it is a notice |
-| [`on_mesh_ready`](#on_mesh_ready) | each mesh-primary | after its mesh's ready-for-traffic is on its Mesh record | nothing; it is a notice |
-| [`on_fabric_ready`](#on_fabric_ready) | fabric-primary | after the ready-for-traffic state is set | nothing; it is a notice |
+| [`pre_node_ready`](#pre_node_ready) | every node start | after accepted join and mesh-channel join; before topology installation | the node's Ready |
+| [`on_node_ready`](#on_node_ready) | every node | after its Ready | nothing; it is a notice |
+| [`on_mesh_ready`](#on_mesh_ready) | each mesh-primary | after its mesh's ready is on its Mesh record | nothing; it is a notice |
+| [`on_fabric_ready`](#on_fabric_ready) | fabric-primary | after the ready state is set | nothing; it is a notice |
 
 `pre_` names the one hook the application is asked before the act and holds until it answers; `on_`
 names a notice of what happened, fire and forget. Each notice is called once each time its scope
-enters ready-for-traffic, by the one that set it; a successor that adopts the state calls nothing.
+enters ready, by the one that set it; a successor that adopts the state calls nothing.
 
 RDM also exposes [rafka-time](#rafka-time) to the application as a read handle. That is not
 a hook.
@@ -49,7 +49,7 @@ channel and needs no topology snapshot. FirstStart and AfterStop run the same ho
 `PendingReconnect` when it is heard again: commanded back through node.mesh.join, it answers the
 tickle `Current { pending }` while its start runs (`Blocked` only while its hook reports a blocker),
 with the cert its accepting primary issues at the join and rafka-time refreshed last, and is
-published ready-for-traffic only once the hook passes. Every entry to ready-for-traffic, from any other state, runs the hook;
+published ready only once the hook passes. Every entry to ready, from any other state, runs the hook;
 the process's data-dir inheritance is an independent fact supplied by its spec.
 
 ### What the context carries
@@ -92,7 +92,7 @@ A retry is level-triggered: RDM arms the
 wait, then checks the condition again, so an event that fired before arming cannot leave the
 node waiting. RDM never retries on a timer.
 
-A node never reaches ReadyForTraffic while its hook has not returned `Ok`.
+A node never reaches Ready while its hook has not returned `Ok`.
 
 For Build-backed work the executor frames the blocker on the workflow stream from the
 subject's Status `Blocked` reply, as the [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm)
@@ -120,16 +120,16 @@ here, and it is not a second path for projections.
 
 ## on_mesh_ready
 
-Once its mesh's ready-for-traffic is on its Mesh record ([states](lifecycles/states.md#who-sets-each-state),
+Once its mesh's ready is on its Mesh record ([states](lifecycles/states.md#who-sets-each-state),
 Q144), the mesh-primary calls `on_mesh_ready` once, with `MeshReadyCtx { fabric_id, mesh_id, mesh }`,
 on a task of its own. The notice gates nothing in RDM.
 
 ## on_fabric_ready
 
-After the ready-for-traffic state is set, the fabric-primary sends the application one
-`on_fabric_ready` notice ([ready-for-traffic](lifecycles/states.md#the-fabrics-ready)), with
+After the ready state is set, the fabric-primary sends the application one
+`on_fabric_ready` notice ([ready](lifecycles/states.md#the-fabrics-ready)), with
 `FabricReadyCtx { fabric_id, build_id, attempt, context }`: the accepted Build and attempt whose change
-made the fabric ready-for-traffic and that attempt's observability context. Rafka opens client traffic
+made the fabric ready and that attempt's observability context. Rafka opens client traffic
 on that notice. The notice gates nothing in RDM.
 
 ## rafka-time

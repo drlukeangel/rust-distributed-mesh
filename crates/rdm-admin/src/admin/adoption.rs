@@ -13,7 +13,7 @@
 //! last before the first other mutation, whether any node-admin the store records answers ([`check`]): an
 //! answer refuses the launch `NameHeld`, the attempt closed through the failure path ([`fail`]). Otherwise
 //! the attempt releases the lost birth's name and the launch takes it as itself ([`release_name`]), and
-//! once it is ReadyForTraffic the attempt completes ([`complete`]); fabric recovery restores it as
+//! once it is Ready the attempt completes ([`complete`]); fabric recovery restores it as
 //! fabric-primary (step 4).
 //!
 //! The launch writes under build.md §5.3's executor exception (Q122): this attempt's Build records, and the
@@ -495,7 +495,7 @@ pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storag
     builds.append_step_receipt(&receipt).await.map_err(|e| format!("the NodeDeleted receipt of the lost birth {} could not be written: {e}", c.lost.node_id))
 }
 
-/// The claimed attempt completes once the launch, `me_id`, is ReadyForTraffic at the path.name: the
+/// The claimed attempt completes once the launch, `me_id`, is Ready at the path.name: the
 /// re-create's `node.create:<path>` `Complete` receipt, the attempt's `Converged` verdict, then the
 /// mesh's in-flight row released.
 pub async fn complete(c: &Claimed, me_id: &NodeId, builds: &dyn BuildStateAdapter, claims: &dyn crate::storage::MeshStorage) -> Result<(), String> {
@@ -519,7 +519,7 @@ pub async fn complete(c: &Claimed, me_id: &NodeId, builds: &dyn BuildStateAdapte
     .instrument(span.clone())
     .await;
     span.record("outcome", if r.is_ok() { "converged" } else { "unwritten" });
-    span.in_scope(|| tracing::info!("the adoption launch is ReadyForTraffic: its fabric-recovery attempt completes"));
+    span.in_scope(|| tracing::info!("the adoption launch is Ready: its fabric-recovery attempt completes"));
     r
 }
 

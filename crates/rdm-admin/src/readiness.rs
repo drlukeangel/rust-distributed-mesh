@@ -4,9 +4,9 @@
 //! MM alike:
 //!
 //! ```text
-//! Fabric Pending -> ReadyForTraffic
+//! Fabric Pending -> Ready
 //!     all desired meshes exist
-//!     all desired members of each mesh are ReadyForTraffic
+//!     all desired members of each mesh are Ready
 //!     all blocking pre-ready hooks complete      (the transition pipeline)
 //! ```
 //!
@@ -33,15 +33,15 @@ pub(crate) fn mesh_not_ready(desired: &MeshDesired, observed: &Topology) -> Vec<
         return why;
     }
     for (kind, want) in desired.counts() {
-        let ready = observed.nodes_of_type(&desired.name, kind).filter(|n| n.status == NodeStatus::ReadyForTraffic).count() as u32;
+        let ready = observed.nodes_of_type(&desired.name, kind).filter(|n| n.status == NodeStatus::Ready).count() as u32;
         if ready < want {
-            why.push(format!("mesh {}: {ready}/{want} {} ready-for-traffic", desired.name, kind.segment()));
+            why.push(format!("mesh {}: {ready}/{want} {} ready", desired.name, kind.segment()));
         }
     }
     why
 }
 
-/// Fabric `Pending -> ReadyForTraffic` eligibility.
+/// Fabric `Pending -> Ready` eligibility.
 pub fn fabric_ready_eligibility(desired: &FabricDesired, observed: &Topology) -> Result<(), String> {
     let why: Vec<String> = desired.meshes.iter().flat_map(|m| mesh_not_ready(m, observed)).collect();
     if why.is_empty() {
@@ -85,20 +85,20 @@ mod tests {
 
     #[test]
     fn mn_is_ready_when_its_one_desired_mesh_is_fully_ready() {
-        assert_eq!(fabric_ready_eligibility(&desired(&["mesh1"]), &observed(&[("mesh1", NodeStatus::ReadyForTraffic)])), Ok(()));
+        assert_eq!(fabric_ready_eligibility(&desired(&["mesh1"]), &observed(&[("mesh1", NodeStatus::Ready)])), Ok(()));
     }
 
     #[test]
     fn fabric_readiness_waits_on_every_mesh() {
         let d = desired(&["mesh1", "mesh2"]);
         assert_eq!(
-            fabric_ready_eligibility(&d, &observed(&[("mesh1", NodeStatus::ReadyForTraffic)])),
+            fabric_ready_eligibility(&d, &observed(&[("mesh1", NodeStatus::Ready)])),
             Err("mesh mesh2 does not exist".into())
         );
-        let mut t = observed(&[("mesh1", NodeStatus::ReadyForTraffic), ("mesh2", NodeStatus::ReadyForTraffic)]);
+        let mut t = observed(&[("mesh1", NodeStatus::Ready), ("mesh2", NodeStatus::Ready)]);
         t.nodes.last_mut().unwrap().status = NodeStatus::Pending; // mesh2.rpc.3
-        assert_eq!(fabric_ready_eligibility(&d, &t), Err("mesh mesh2: 2/3 rpc ready-for-traffic".into()));
-        t.nodes.last_mut().unwrap().status = NodeStatus::ReadyForTraffic;
+        assert_eq!(fabric_ready_eligibility(&d, &t), Err("mesh mesh2: 2/3 rpc ready".into()));
+        t.nodes.last_mut().unwrap().status = NodeStatus::Ready;
         assert_eq!(fabric_ready_eligibility(&d, &t), Ok(()));
     }
 

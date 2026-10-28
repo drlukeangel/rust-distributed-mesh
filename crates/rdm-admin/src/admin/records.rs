@@ -293,7 +293,7 @@ pub(crate) fn local_now_ms() -> u64 {
 pub(crate) fn node_status(s: MemberStatus) -> NodeStatus {
     match s {
         MemberStatus::Pending => NodeStatus::Pending,
-        MemberStatus::ReadyForTraffic => NodeStatus::ReadyForTraffic,
+        MemberStatus::Ready => NodeStatus::Ready,
         MemberStatus::ConnectionsDeleting => NodeStatus::ConnectionsDeleting,
         MemberStatus::Leaving => NodeStatus::Leaving,
     }
@@ -363,8 +363,8 @@ pub struct Records {
     /// The accepted Build's planned births per mesh: the nodes a mesh's readiness is counted over.
     /// Empty until an accepted Build is held, when the members the view holds are counted.
     pub(crate) planned: Mutex<BTreeMap<String, BTreeSet<PathName>>>,
-    /// The meshes whose last heard MeshStatus is ready-for-traffic. A mesh's lifecycle is pending,
-    /// ready-for-traffic, leaving, dead (states.md): a ready mesh that loses a node is not pending
+    /// The meshes whose last heard MeshStatus is ready. A mesh's lifecycle is pending,
+    /// ready, leaving, dead (states.md): a ready mesh that loses a node is not pending
     /// again, so its projection holds ready while it has a primary, and the primary that takes over
     /// adopts that state and runs its checklist (R-S3).
     pub(crate) heard_ready: Mutex<BTreeSet<String>>,
@@ -542,12 +542,12 @@ impl Records {
         self.view_tick.subscribe()
     }
 
-    /// Hold which meshes were last heard ready-for-traffic.
+    /// Hold which meshes were last heard ready.
     pub fn set_heard_ready(&self, meshes: BTreeSet<String>) {
         *self.heard_ready.lock().unwrap() = meshes;
     }
 
-    /// Whether `mesh` was last heard ready-for-traffic.
+    /// Whether `mesh` was last heard ready.
     pub fn heard_ready(&self, mesh: &str) -> bool {
         self.heard_ready.lock().unwrap().contains(mesh)
     }

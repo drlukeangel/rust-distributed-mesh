@@ -14,7 +14,7 @@ const SETTLE: Duration = Duration::from_secs(120);
 // The canary restarts the rpc cohort's primary seat holder (`is_primary == true`).
 
 fn ready(node: &Value) -> bool {
-    node["status"] == "ready-for-traffic"
+    node["status"] == "ready"
 }
 
 /// The runtime `node` runs in: its pid (process provider) or its container id (container provider).
@@ -53,7 +53,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let process_before = runtime_of(&estate, node_name).await;
     let transport_before = before["transport_addr"].clone();
 
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 4. Restart: node.stop, then node.start; each answers with an attempt of the accepted Build and
     // does no bespoke work.

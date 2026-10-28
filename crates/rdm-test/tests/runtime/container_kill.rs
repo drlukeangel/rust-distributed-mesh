@@ -74,7 +74,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     let after = estate
         .until_node(NODE, "mesh1.rpc.1 re-created ready under a new incarnation", floor + Duration::from_secs(90), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
+            (n["status"] == "ready" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
         })
         .await;
     let recreated = estate.container_of(NODE).await.expect("the re-created node runs in a container");

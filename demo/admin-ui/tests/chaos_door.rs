@@ -7,9 +7,9 @@ use serde_json::json;
 use rdm_test::process_faults::{local_control_domain, proc_state, start_token};
 use std::process::{Command, Stdio};
 
-/// The status a ready-for-traffic fabric read answers.
+/// The status a ready fabric read answers.
 fn ready() -> Option<rdm_client::ScopeStatus> {
-    Some(rdm_client::ScopeStatus::ReadyForTraffic)
+    Some(rdm_client::ScopeStatus::Ready)
 }
 
 /// A sleeper with a published runtime record in a fresh data dir.
@@ -38,7 +38,7 @@ async fn a_fault_aimed_at_the_fabric_primary_is_refused_by_name_and_signals_noth
     assert_eq!(cut.detail["refusal"], FABRIC_PRIMARY_REFUSAL, "{cut:?}");
 
     let not_ready = chaos.fault(&nodes, "mesh1.rpc.1", "kill", None).await;
-    assert_eq!((not_ready.outcome, not_ready.detail["refusal"].as_str()), ("refused", Some("fabric-not-ready")), "a kill before the fabric is read ready-for-traffic is refused by name: {not_ready:?}");
+    assert_eq!((not_ready.outcome, not_ready.detail["refusal"].as_str()), ("refused", Some("fabric-not-ready")), "a kill before the fabric is read ready is refused by name: {not_ready:?}");
     assert!(matches!(proc_state(rpc.id()), Some('S' | 'R')), "the refused kill signalled nothing");
     let stopped = chaos.fault(&nodes, "mesh1.rpc.1", "stop", ready()).await;
     assert_eq!((stopped.outcome, stopped.detail["state_after"].as_str()), ("applied", Some("T")), "{stopped:?}");

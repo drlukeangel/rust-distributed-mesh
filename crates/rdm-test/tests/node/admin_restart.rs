@@ -60,7 +60,7 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
     let names: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| [format!("{m}.admin.1"), format!("{m}.admin.2"), format!("{m}.rpc.1"), format!("{m}.rpc.2")]).collect();
     let before = Estate::values(&estate.settles_to_named(&names, Duration::from_secs(60)).await);
-    // The initial fabric refuses a restart until it has first reached ready-for-traffic; a kill before
+    // The initial fabric refuses a restart until it has first reached ready; a kill before
     // that is refused by the estate (Q74).
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The target mesh is the one that does not hold the fabric seat: its primary (the holder) and its
@@ -77,8 +77,8 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     estate.stop_then_start(&holder.parse().unwrap_or_else(|e| panic!("{holder} is not a path.name: {e:?}"))).await;
     wait_for(&format!("{successor} holds {away}'s mesh seat and {holder} is back as the same birth, not the primary"), Duration::from_secs(60), || async {
         let nodes = estate.node_values().await;
-        let s_ok = nodes.iter().any(|n| s(&n["name"]) == successor && n["is_primary"] == true && n["status"] == "ready-for-traffic");
-        let h_ok = nodes.iter().any(|n| s(&n["name"]) == holder && n["is_primary"] == false && n["status"] == "ready-for-traffic" && (s(&n["node_id"]), s(&n["incarnation_id"])) == holder_birth);
+        let s_ok = nodes.iter().any(|n| s(&n["name"]) == successor && n["is_primary"] == true && n["status"] == "ready");
+        let h_ok = nodes.iter().any(|n| s(&n["name"]) == holder && n["is_primary"] == false && n["status"] == "ready" && (s(&n["node_id"]), s(&n["incarnation_id"])) == holder_birth);
         (s_ok && h_ok).then_some(())
     })
     .await;
@@ -101,8 +101,8 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     //    to mark it silent, the tickle, a floor to the second no-path, the provider's proof, the create).
     let recovered = wait_for(&format!("{holder} is {away}'s mesh primary again and a new node stands ready at {successor}"), Duration::from_secs(120), || async {
         let nodes = estate.node_values().await;
-        let h_ok = nodes.iter().any(|n| s(&n["name"]) == holder && n["is_primary"] == true && n["status"] == "ready-for-traffic");
-        let reborn = nodes.iter().find(|n| s(&n["name"]) == successor && n["status"] == "ready-for-traffic" && s(&n["node_id"]) != successor_birth.0).cloned();
+        let h_ok = nodes.iter().any(|n| s(&n["name"]) == holder && n["is_primary"] == true && n["status"] == "ready");
+        let reborn = nodes.iter().find(|n| s(&n["name"]) == successor && n["status"] == "ready" && s(&n["node_id"]) != successor_birth.0).cloned();
         if h_ok { reborn } else { None }
     })
     .await;

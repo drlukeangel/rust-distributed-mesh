@@ -31,7 +31,7 @@ use tokio::sync::RwLock;
 
 fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
     n.incarnation_id = Some(IncarnationId::mint());
@@ -41,8 +41,8 @@ fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
 /// mesh1 with two admins (`mesh1.admin.1` primary of mesh1 and the fabric) and one rpc node.
 fn view(mesh_id: &MeshId, fabric_id: &FabricId) -> Topology {
     Topology {
-        fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(mesh_id.clone()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(mesh_id.clone()), name: "mesh1".into(), status: ScopeStatus::Ready }],
         nodes: vec![node("mesh1.admin.1", true, true), node("mesh1.admin.2", false, false), node("mesh1.rpc.1", false, false)],
     }
 }
@@ -70,9 +70,9 @@ async fn taken_over_one_root(trace_id: String) -> Taken {
     // A, mesh1's primary, applied these as the mesh's authority: its rows on the shared root.
     let root = rdm_admin::store_root::StoreRoot::at(&dir);
     let a = stores(&root, &IncarnationId::mint()).await;
-    { let mut r = a.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.states.insert(MeshState::ReadyForTraffic); a.meshes.put_mesh(&r).await.unwrap(); }
+    { let mut r = a.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.states.insert(MeshState::Ready); a.meshes.put_mesh(&r).await.unwrap(); }
     { let mut r = a.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric_id.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new() }); r.events.push("shutdown-initiated:mesh1.admin.1".into()); a.fabric.put_fabric(&r).await.unwrap(); }
-    { let (node_id, incarnation_id, name) = (rpc_birth.0.clone(), rpc_birth.1.clone(), rpc.name.clone()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRow::new(name.clone(), node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::ReadyForTraffic); }).await.unwrap(); }
+    { let (node_id, incarnation_id, name) = (rpc_birth.0.clone(), rpc_birth.1.clone(), rpc.name.clone()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRow::new(name.clone(), node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Ready); }).await.unwrap(); }
     { let (node_id, incarnation_id, name) = (other.0.clone(), other.1.clone(), "mesh1.rpc.2".parse::<PathName>().unwrap()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRow::new(name.clone(), node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Pending); }).await.unwrap(); }
     let fabric_records = rdm_admin::store_log::latest_in(&root.dir().join(rdm_admin::store_root::FABRIC_FILE)).unwrap().into_keys().filter(|(kind, _)| kind == "fabric-record").count();
     let mesh_records = rdm_admin::store_log::keys_in(&root.dir().join(rdm_admin::store_root::MESHES_FILE), "mesh-record").unwrap().len();
@@ -130,10 +130,10 @@ fn a_new_mesh_primary_folds_the_mesh_status_rows_and_a_secondary_folds_none() {
     assert_eq!(t.before.node(&t.rpc.0, &t.rpc.1), None, "a non-holder folds none of the primary's rows: {:#?}", t.before);
     assert!(t.before.meshes.is_empty(), "a non-holder folds no Mesh status row: {:#?}", t.before);
     assert_eq!(t.before.fabric.get(&t.fabric_id), Some(&vec!["b-own".to_string()]), "a non-holder holds only the events it applied: {:#?}", t.before);
-    assert_eq!(t.after.node(&t.rpc.0, &t.rpc.1), Some(NodeState::ReadyForTraffic), "the seat taker folds the primary's declared-state row: {:#?}", t.after);
+    assert_eq!(t.after.node(&t.rpc.0, &t.rpc.1), Some(NodeState::Ready), "the seat taker folds the primary's declared-state row: {:#?}", t.after);
     assert_eq!(t.after.names.get(&t.rpc).map(|n| n.to_string()), Some("mesh1.rpc.1".to_string()), "and the path.name it was declared at");
     assert_eq!(t.after.node(&t.other.0, &t.other.1), Some(NodeState::ConnectionsDeleting), "the greatest state per birth: what B applied later stands over the row's Pending");
-    assert_eq!(t.after.meshes.get(&t.mesh_id), Some(&MeshState::ReadyForTraffic), "the seat taker folds the Mesh status row");
+    assert_eq!(t.after.meshes.get(&t.mesh_id), Some(&MeshState::Ready), "the seat taker folds the Mesh status row");
     let mut events = t.after.fabric.get(&t.fabric_id).cloned().unwrap_or_default();
     events.sort();
     assert_eq!(events, vec!["b-own".to_string(), "shutdown-initiated:mesh1.admin.1".to_string()], "the union of the events, each once");
@@ -179,13 +179,13 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
 /// node-admin joins the live mesh" step 4): B, an admin of mesh1 whose view holds `mesh1.rpc.1`'s
 /// heartbeat and no status for it (an admin entering a live mesh: its topology read installs nothing,
 /// reenter.rs), takes mesh1's seat. A, the primary before it, left a declared-state row for that exact
-/// birth saying ReadyForTraffic, and one for `mesh1.rpc.2`, whose heartbeat B hears only after it took
-/// the seat. The fold of A's rows reaches B's view: both births are ReadyForTraffic there and in B's
-/// member projection. `mesh1.rpc.1` declaring ReadyForTraffic to its new primary (R-S2: a declaration is
-/// owed again when the authority moved) is AlreadyApplied, and the view still says ReadyForTraffic. One
+/// birth saying Ready, and one for `mesh1.rpc.2`, whose heartbeat B hears only after it took
+/// the seat. The fold of A's rows reaches B's view: both births are Ready there and in B's
+/// member projection. `mesh1.rpc.1` declaring Ready to its new primary (R-S2: a declaration is
+/// owed again when the authority moved) is AlreadyApplied, and the view still says Ready. One
 /// `rdm.node_admin.status.update.via-successor-fold` per adopted birth names it, its prior and its status.
 /// Must NOT happen (i143_acceptance_2803, fabric recovery): the successor's projection says a surviving
-/// member Pending while its record says ReadyForTraffic, so the member's declaration is AlreadyApplied
+/// member Pending while its record says Ready, so the member's declaration is AlreadyApplied
 /// and the member stays Pending under the new primary for good.
 #[test]
 fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projection() {
@@ -204,11 +204,11 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                 before_view.nodes.push(node("mesh1.rpc.2", false, false));
                 let by_name = |v: &Topology, name: &str| v.nodes.iter().find(|n| n.name.to_string() == name).cloned().unwrap();
                 let (rpc1, rpc2, b) = (by_name(&before_view, "mesh1.rpc.1"), by_name(&before_view, "mesh1.rpc.2"), by_name(&before_view, "mesh1.admin.2"));
-                // A's rows on the fabric's store root: both members ReadyForTraffic, as A applied them.
+                // A's rows on the fabric's store root: both members Ready, as A applied them.
                 let root = rdm_admin::store_root::StoreRoot::at(&dir);
                 let a = stores(&root, &IncarnationId::mint()).await;
                 for n in [&rpc1, &rpc2] {
-                    { let (node_id, incarnation_id, name) = (n.node_id.clone(), n.incarnation_id.clone().unwrap(), n.name.clone()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRow::new(name.clone(), node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::ReadyForTraffic); }).await.unwrap(); }
+                    { let (node_id, incarnation_id, name) = (n.node_id.clone(), n.incarnation_id.clone().unwrap(), n.name.clone()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRow::new(name.clone(), node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Ready); }).await.unwrap(); }
                 }
                 // B: its topology view's view, its seat fold over the same root.
                 let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
@@ -275,7 +275,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                     digest_view: Some(topology_view.digest_view.clone()),
                     builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
                 };
-                let declared = authority.apply(Some(rpc1.clone()), &StatusRequest::DeclareNodeState { node_id: rpc1.node_id.clone(), incarnation: rpc1.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None }).await;
+                let declared = authority.apply(Some(rpc1.clone()), &StatusRequest::DeclareNodeState { node_id: rpc1.node_id.clone(), incarnation: rpc1.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None }).await;
                 let after_declare = status(&rpc1);
                 let _ = std::fs::remove_dir_all(&dir);
                 (trace_id, after_take, rpc2_heard, projected, declared, after_declare)
@@ -285,11 +285,11 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
         .await
     });
     println!("mesh_primary_status_fold adopt trace_id={trace_id}");
-    assert_eq!(after_take, Some(MemberStatus::ReadyForTraffic), "the seat taker's view adopts the folded ReadyForTraffic of the birth it held Pending");
-    assert_eq!(rpc2_heard, Some(MemberStatus::ReadyForTraffic), "a birth whose row was folded before its heartbeat arrived is held at the adopted status");
-    assert_eq!(projected, vec![("mesh1.rpc.1".to_string(), MemberStatus::ReadyForTraffic), ("mesh1.rpc.2".to_string(), MemberStatus::ReadyForTraffic)], "the successor's member projection carries the adopted statuses");
+    assert_eq!(after_take, Some(MemberStatus::Ready), "the seat taker's view adopts the folded Ready of the birth it held Pending");
+    assert_eq!(rpc2_heard, Some(MemberStatus::Ready), "a birth whose row was folded before its heartbeat arrived is held at the adopted status");
+    assert_eq!(projected, vec![("mesh1.rpc.1".to_string(), MemberStatus::Ready), ("mesh1.rpc.2".to_string(), MemberStatus::Ready)], "the successor's member projection carries the adopted statuses");
     assert_eq!(declared, StatusReply::AlreadyApplied, "the member's re-declaration to its new primary is already held");
-    assert_eq!(after_declare, Some(MemberStatus::ReadyForTraffic), "and the view agrees with the record");
+    assert_eq!(after_declare, Some(MemberStatus::Ready), "and the view agrees with the record");
     let adopted: Vec<Value> = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-successor-fold").collect();
     let mut members: Vec<String> = adopted.iter().map(|s| s["attributes"]["member"].as_str().unwrap_or_default().to_string()).collect();
     members.sort();
@@ -297,7 +297,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
     for s in &adopted {
         assert_eq!(s["trace_id"], trace_id.as_str(), "the adoption is the cell's own story: {s:#}");
         assert_eq!(s["attributes"]["node"], "mesh1.admin.2", "{s:#}");
-        assert_eq!(s["attributes"]["status"], "ReadyForTraffic", "{s:#}");
+        assert_eq!(s["attributes"]["status"], "Ready", "{s:#}");
     }
 }
 
@@ -381,14 +381,14 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 };
                 let reply = authority.apply(Some(rpc.clone()), &StatusRequest::DeclareNodeState {
                     node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(),
-                    state: NodeState::ReadyForTraffic, operation: None,
+                    state: NodeState::Ready, operation: None,
                 }).await;
                 assert_eq!(reply, StatusReply::Applied, "the predecessor acknowledged this exact birth's Ready");
                 assert_eq!(rdm_admin::status_rpc::Declaration::of_records(&storage.nodes.nodes("mesh1").await.unwrap()).len(), 1, "the predecessor reads the acknowledged row");
                 let disk = rdm_admin::store_root::StoreRoot::at(&dir);
                 let independent = stores(&disk, &IncarnationId::mint()).await;
                 assert_eq!(rdm_admin::status_rpc::Declaration::of_records(&independent.nodes.nodes("mesh1").await.unwrap()).len(), 1, "Applied made the row durable before the reply");
-                { let mut r = storage.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.states.insert(MeshState::ReadyForTraffic); storage.meshes.put_mesh(&r).await.unwrap(); }
+                { let mut r = storage.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.states.insert(MeshState::Ready); storage.meshes.put_mesh(&r).await.unwrap(); }
                 assert_eq!(independent.meshes.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>().len(), 1, "the mesh row is on the root at its write");
                 drop(independent);
                 drop(authority);
@@ -425,7 +425,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
     for row in cap.spans() { println!("Q53_SPAN {}", serde_json::to_string(&row).unwrap()); }
     for (trace, (rows, status)) in observed {
         println!("Q53 trace={trace} rows={rows} first={status:?}");
-        assert_eq!((rows, status), (1, MemberStatus::ReadyForTraffic), "Q53: acknowledged exact-birth Ready is in the successor's first full; trace={trace}");
+        assert_eq!((rows, status), (1, MemberStatus::Ready), "Q53: acknowledged exact-birth Ready is in the successor's first full; trace={trace}");
     }
 }
 
@@ -447,20 +447,20 @@ fn a_successor_ignores_declared_rows_for_births_it_does_not_hold() {
         let absent = (NodeId::mint(), IncarnationId::mint());
         // The records as a lost predecessor left them: the exact birth's, another birth of its node, and a
         // node the view never held, each written whole at its id.
-        let mut held = rdm_admin::storage::NodeRow::new(rpc.name.clone(), rpc.node_id.clone(), NodeStatus::ReadyForTraffic);
+        let mut held = rdm_admin::storage::NodeRow::new(rpc.name.clone(), rpc.node_id.clone(), NodeStatus::Ready);
         for (_, incarnation_id) in [&exact, &stale] {
-            held.birth_mut(incarnation_id, &rpc.name).declared.insert(NodeState::ReadyForTraffic);
+            held.birth_mut(incarnation_id, &rpc.name).declared.insert(NodeState::Ready);
         }
         storage.nodes.put_node(&held).await.unwrap();
-        let mut stranger = rdm_admin::storage::NodeRow::new(rpc.name.clone(), absent.0.clone(), NodeStatus::ReadyForTraffic);
-        stranger.birth_mut(&absent.1, &rpc.name).declared.insert(NodeState::ReadyForTraffic);
+        let mut stranger = rdm_admin::storage::NodeRow::new(rpc.name.clone(), absent.0.clone(), NodeStatus::Ready);
+        stranger.birth_mut(&absent.1, &rpc.name).declared.insert(NodeState::Ready);
         storage.nodes.put_node(&stranger).await.unwrap();
         let records = Records::default();
         records.set_status(storage.nodes, storage.meshes, storage.fabric, "mesh1".into(), b.name.clone(), b.node_id.clone());
         let topology = RwLock::new(Topology { nodes: Vec::new(), ..now.clone() });
         records.install_projected(&topology, || now.clone()).await;
         let held = records.declared.lock().unwrap();
-        assert_eq!(held.node(&exact.0, &exact.1), Some(NodeState::ReadyForTraffic));
+        assert_eq!(held.node(&exact.0, &exact.1), Some(NodeState::Ready));
         assert_eq!(held.node(&stale.0, &stale.1), None, "a previous incarnation is not held");
         assert_eq!(held.node(&absent.0, &absent.1), None, "a matching name does not establish a birth");
         drop(held);

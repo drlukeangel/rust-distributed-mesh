@@ -90,7 +90,7 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
 
         let ids: Vec<(NodeId, IncarnationId)> = (0..3).map(|_| (NodeId::mint(), IncarnationId::mint())).collect();
         let at = |seq: u64, moved: bool| -> Vec<MeshDigest> {
-            ids.iter().enumerate().map(|(k, (id, b))| member(k as u32 + 1, id, b, seq, if moved && k == 0 { MemberStatus::ConnectionsDeleting } else { MemberStatus::ReadyForTraffic })).collect()
+            ids.iter().enumerate().map(|(k, (id, b))| member(k as u32 + 1, id, b, seq, if moved && k == 0 { MemberStatus::ConnectionsDeleting } else { MemberStatus::Ready })).collect()
         };
         // Publications until the non-primary admin holds the source, then a change until it holds the next
         // version: it hears both on the backbone.

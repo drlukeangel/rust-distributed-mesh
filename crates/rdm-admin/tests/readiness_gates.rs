@@ -1,7 +1,7 @@
 //! i143.e3.s2 functional: readiness gates run through the transition pipeline.
 //!
 //! One rule gates SN/MN and MM (desired topology); one genuinely
-//! shape-conditional hook runs for MM only; the Fabric commits ReadyForTraffic
+//! shape-conditional hook runs for MM only; the Fabric commits Ready
 //! only after every desired mesh is ready and the blocking pre-ready hooks ran.
 
 use async_trait::async_trait;
@@ -12,7 +12,7 @@ use rdm_admin::readiness::fabric_ready_eligibility;
 use rdm_admin::topology::Topology;
 use std::sync::{Arc, Mutex};
 
-const READY: TransitionKey = TransitionKey { scope: LifecycleScope::Fabric, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
+const READY: TransitionKey = TransitionKey { scope: LifecycleScope::Fabric, from: LifecycleState::Pending, to: LifecycleState::Ready };
 
 struct Log(&'static str, Arc<Mutex<Vec<&'static str>>>);
 
@@ -37,14 +37,14 @@ fn ready_topology(meshes: &[&str]) -> Topology {
         for (k, n) in [("admin", 2), ("rpc", 3)] {
             for i in 1..=n {
                 let mut node = Node::allocated(format!("{m}.{k}.{i}").parse().unwrap());
-                node.status = NodeStatus::ReadyForTraffic;
+                node.status = NodeStatus::Ready;
                 nodes.push(node);
             }
         }
     }
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process },
-        meshes: meshes.iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect(),
+        meshes: meshes.iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::Ready }).collect(),
         nodes,
     }
 }

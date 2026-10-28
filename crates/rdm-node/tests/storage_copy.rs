@@ -145,7 +145,7 @@ impl History {
 
         let f = log(&root, FABRIC_FILE).await;
         f.append(&fp1, "fabric-record/2", fabric.as_str(), &json!({"fabric_id": fabric, "name": "fabric1", "events": []})).await.unwrap();
-        f.append(&fp2, "fabric-record/2", fabric.as_str(), &json!({"fabric_id": fabric, "name": "fabric1", "events": ["ready-for-traffic"]})).await.unwrap();
+        f.append(&fp2, "fabric-record/2", fabric.as_str(), &json!({"fabric_id": fabric, "name": "fabric1", "events": ["ready"]})).await.unwrap();
 
         let m = log(&root, MESHES_FILE).await;
         m.append(&fp1, "mesh-record/3", mesh1.as_str(), &json!({"mesh_id": mesh1, "name": "mesh1", "state": "Ready"})).await.unwrap();
@@ -209,7 +209,7 @@ fn a_copy_preserves_current_values_across_writer_changes() {
         assert_eq!(dst.values().map(line_of).collect::<Vec<_>>(), src.values().map(line_of).collect::<Vec<_>>(), "every mesh's current value is the old provider's");
         let fabric_now = store_log::latest_in(&dest_root.join(FABRIC_FILE)).unwrap();
         let fabric_now = fabric_now.values().next().expect("the Fabric record is copied");
-        assert_eq!((fabric_now.op.as_ref().map(|o| (o.node_id.clone(), o.seq)), fabric_now.record["events"].clone()), (Some((h.fp2.node_id.to_string(), 1)), json!(["ready-for-traffic"])), "the Fabric record's current value is the successor's");
+        assert_eq!((fabric_now.op.as_ref().map(|o| (o.node_id.clone(), o.seq)), fabric_now.record["events"].clone()), (Some((h.fp2.node_id.to_string(), 1)), json!(["ready"])), "the Fabric record's current value is the successor's");
         let at_name = store_log::read_file(&dest_root.join(NODES_FILE)).unwrap().into_iter().filter(|l| l.kind() == "node-record" && l.record["name"] == "mesh1.rpc.2").last().unwrap();
         assert_eq!((at_name.key.clone(), at_name.record["state"].clone()), (h.first.to_string(), json!("Deleted")), "the latest node record at the path.name, across node ids, is the old provider's");
         assert!(file_lines(&dest_root, NODES_FILE).iter().any(|l| l.2 == h.second.to_string() && l.3["state"] == "Running"), "the re-created node's record is copied");

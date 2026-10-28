@@ -27,10 +27,10 @@ fn owner(test: &str) -> Owner {
 }
 
 fn ready(n: &rdm_client::NodeView) -> bool {
-    n.status == NodeStatus::ReadyForTraffic
+    n.status == NodeStatus::Ready
 }
 
-/// Bootstraps mesh1 and builds 1 more node-admin and 2 rpc nodes, all ready, on a fabric ready for traffic.
+/// Bootstraps mesh1 and builds 1 more node-admin and 2 rpc nodes, all ready, on a fabric ready.
 async fn small_estate(test: &str) -> Estate {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;

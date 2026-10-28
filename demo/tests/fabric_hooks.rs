@@ -1,5 +1,5 @@
 //! The fabric hook a consumer registers, on public RDM surfaces only (fabric-node-hooks.md
-//! `on_fabric_ready`; Q175). Its `on_fabric_ready` notice, after the fabric is ready-for-traffic, drives
+//! `on_fabric_ready`; Q175). Its `on_fabric_ready` notice, after the fabric is ready, drives
 //! work on another node: Rafka's day 0, its own work, starts there and asks the gateway to perform the
 //! system-org creations.
 //!
@@ -117,10 +117,10 @@ async fn gateway(root: &Running, dir: &std::path::Path, shared: &std::path::Path
     (running, node_id)
 }
 
-/// CONTRACT (fabric-node-hooks.md `on_fabric_ready`: "After the ready-for-traffic state is set, the
+/// CONTRACT (fabric-node-hooks.md `on_fabric_ready`: "After the ready state is set, the
 /// fabric-primary sends the application one `on_fabric_ready` notice"; Q175): the fabric-primary's one
-/// notice, sent once the Day-0 fabric is ready-for-traffic, asks the gateway, another node, for the work;
-/// the gateway serves it once. Must NOT happen: a second notice, or the notice before ready-for-traffic.
+/// notice, sent once the Day-0 fabric is ready, asks the gateway, another node, for the work;
+/// the gateway serves it once. Must NOT happen: a second notice, or the notice before ready.
 #[test]
 fn on_fabric_ready_drives_work_on_the_gateway() {
     let dir = std::env::temp_dir().join(format!("demo-hooks-{}", NodeId::mint()));
@@ -141,15 +141,15 @@ fn on_fabric_ready_drives_work_on_the_gateway() {
         };
         let root_dir = dir.join("admin");
         let root = start_with(config(&root_dir), Wiring { fabric_hooks: FabricHooks { on_fabric_ready: Some(on_fabric_ready), ..FabricHooks::no_app_work() }, ..Wiring::no_certs() }).await.unwrap();
-        // The Day-0 change reaches ready-for-traffic, and the notice waits for the gateway. Then this admin
+        // The Day-0 change reaches ready, and the notice waits for the gateway. Then this admin
         // reconciles nothing more: the gateway below is launched by hand, so no drift pass takes it for surplus.
         tokio::time::timeout(BOUND, async {
-            while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.node_admin.fabric.update.via-state-entered" && s["attributes"]["to"] == "ready-for-traffic") {
+            while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.node_admin.fabric.update.via-state-entered" && s["attributes"]["to"] == "ready") {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await
-        .expect("the Day-0 fabric reaches ready-for-traffic");
+        .expect("the Day-0 fabric reaches ready");
         root.stop_reconciling().await;
 
         // The gateway comes up; the notice gets where to send.

@@ -33,7 +33,7 @@ fn digest(name: &str, port: u16) -> MeshDigest {
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::ReadyForTraffic,
+        status: MemberStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,

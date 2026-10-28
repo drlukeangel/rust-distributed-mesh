@@ -26,7 +26,7 @@ fn run(malformed: bool) {
         tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
         let (sender, _rx) = topic.split();
         let author = crate::gossip_author(&fabric);
-        let status = |scope: &str, stamp| Frame::MeshStatus { mesh: scope.into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: stamp };
+        let status = |scope: &str, stamp| Frame::MeshStatus { mesh: scope.into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: stamp };
         let (event, parent) = {
             let upstream = tracing::info_span!("rdm.test.gossip.update.via-upstream");
             let span = tracing::info_span!("rdm.test.gossip.update.via-author");
@@ -49,7 +49,7 @@ fn run(malformed: bool) {
         sender.broadcast_neighbors(bytes.clone().into()).await.unwrap();
         sender.broadcast_neighbors(status("barrier", 1).authored(&author, 2, 1).encode().into()).await.unwrap();
         held(&receiver, "barrier", 1).await;
-        assert_eq!(receiver.mesh_status("traced").map(|s| s.status), Some("ready-for-traffic".into()), "tracing never refuses the event");
+        assert_eq!(receiver.mesh_status("traced").map(|s| s.status), Some("ready".into()), "tracing never refuses the event");
         if !malformed {
             // The repeated fact's classifier is on the author's trace too; no second apply.
             sender.broadcast_neighbors(bytes.into()).await.unwrap();
@@ -75,7 +75,7 @@ fn run(malformed: bool) {
                 sender.broadcast_neighbors(status("barrier", stamp).authored(&author, 2, stamp).encode().into()).await.unwrap();
                 held(&receiver, "barrier", stamp).await;
             }
-            assert_eq!(receiver.mesh_status("traced").unwrap().status, "ready-for-traffic");
+            assert_eq!(receiver.mesh_status("traced").unwrap().status, "ready");
         }
         send_ep.close().await; recv_ep.close().await;
         author_trace

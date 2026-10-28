@@ -42,7 +42,7 @@ doubling from the gossip interval to the staleness floor.
    the mesh-primary recorded (`connections-deleting`, `stopping`, `stopped`), and it ends when a digest
    of the exact birth arrives after it, when the birth answers its tickle, or when the view no longer
    holds that birth. A birth heard again runs its `pre_node_ready` hook again before it is
-   ready-for-traffic ([fabric-node-hooks.md](../fabric-node-hooks.md#where-it-runs)).
+   ready ([fabric-node-hooks.md](../fabric-node-hooks.md#where-it-runs)).
 2. **Investigation.** Only the mesh-primary acts. Half a floor after the mark it runs
    [node investigation](node-investigation.md) on the exact birth: the by-destination connections index,
    node.tickle direct, the same tickle via up to two eligible live peers of the birth's mesh sent at
@@ -55,10 +55,10 @@ doubling from the gossip interval to the staleness floor.
 3. **The verdict is the one decision (Q111).** `reached`: a held birth that answered, or that is heard
    again by its digest, is commanded back through [node.mesh.join](node-mesh-join.md) by the primary
    above it (its mesh-primary; the fabric-primary for a mesh-primary: every admin looks, one commands)
-   and runs its start sequence again before it is ready-for-traffic (Q87). The command goes only to a
-   birth the view holds off ready-for-traffic (the topology decides it, not what an admin just started
+   and runs its start sequence again before it is ready (Q87). The command goes only to a
+   birth the view holds off ready (the topology decides it, not what an admin just started
    has heard), once per silence (not again within a staleness floor, nor until it is heard
-   ready-for-traffic or unheard again), never to the fabric-primary, which has no primary above it, and
+   ready or unheard again), never to the fabric-primary, which has no primary above it, and
    never to a birth with a command of its primary open or in flight, which is that command's. A
    commanded start that stops at a step leaves the birth off its channels, Pending, for the next
    command. Any other verdict (`running`, `os-stopped`, `exited`, `unproven`): the recovery below, at

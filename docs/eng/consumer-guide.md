@@ -23,7 +23,7 @@ the linked page before asking: every answer here was already on one.
 | create, resize or reshape meshes and nodes | the Build: [build.md §1–2](../architecture/build.md#1-build-is-the-only-topology-mutation-engine), the wire on [node-rpc-envelope.md, Build op 0x20](../architecture/node-rpc-envelope.md#build-op-0x20-rdm) |
 | name the executable each node runs, and replace it | [build-deployment.md](../architecture/build-deployment.md) |
 | move RDM's records to my own backend, read where they go, return to a previous one | [topology storage provider how-to](../features/topology-storage-provider/how-to.md); the contract on [storage.md §2](../architecture/storage.md#2-topology_storage_provider-where-rdms-records-go) |
-| know when the fabric is usable | [states.md](../architecture/lifecycles/states.md): pending → ready-for-traffic; a Build that changes the fabric is Complete only after its own ready-for-traffic (Q154) |
+| know when the fabric is usable | [states.md](../architecture/lifecycles/states.md): pending → ready; a Build that changes the fabric is Complete only after its own ready (Q154) |
 | stop, start, restart, delete one node | the lifecycle pages under [lifecycles/](../architecture/fabric-mesh-node-lifecycles.md) (`node-stop.md`, `node-start.md`, `node-restart.md`, `node-delete.md`) |
 | delete the whole fabric | [fabric-delete.md](../architecture/lifecycles/fabric-delete.md): wait for the fabric.delete stream's `Complete` (fabric.deleted), then `node.delete` of the fabric-primary to its `node.deleted`; the process then exits by itself. Kill nothing before that |
 
@@ -69,8 +69,8 @@ connections.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
 The same pair list, side by side, from both places:
 
 ```text
-nodes.get                   [["kind", ["broker"]], ["status", ["ready-for-traffic"]]]   the fabric-primary's atlas: the rows
-topology_view.nodes_get     [["kind", ["broker"]], ["status", ["ready-for-traffic"]]]   my own topology: the digests I hear
+nodes.get                   [["kind", ["broker"]], ["status", ["ready"]]]   the fabric-primary's atlas: the rows
+topology_view.nodes_get     [["kind", ["broker"]], ["status", ["ready"]]]   my own topology: the digests I hear
 topology_view.nodes_get     [["config.zone", ["eu-1"]]]                                  refused: config is the row's, read it with nodes.get
 ```
 
@@ -108,7 +108,7 @@ and the `tags` row of [Node properties](../architecture/node-rpc-envelope.md#nod
 
 | How do I… | What happens |
 |---|---|
-| tag a node when it is created | put the labels on its path in the Build; a change of a path's tags alone is no resize, and the fabric stays ready-for-traffic |
+| tag a node when it is created | put the labels on its path in the Build; a change of a path's tags alone is no resize, and the fabric stays ready |
 | add labels | `node.tags.create { label \| [labels] }`: one label or a list; a blind put per label, so a label the node already carries is reported `ALREADY_EXISTS` for that label and nothing is duplicated |
 | remove labels | `node.tags.delete { All \| [labels] }`: every label or the named ones; a label the node does not carry is reported `NOT_FOUND` for that label |
 | read a node's labels | the `tags` field of its node row (`nodes.get`) |

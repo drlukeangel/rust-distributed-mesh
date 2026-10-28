@@ -166,11 +166,11 @@ fn probe(d: &MeshDigest) -> StatusRequest {
 }
 
 /// CONTRACT: a node whose hook is `Blocked` on its authority stays Pending: it publishes Pending
-/// and never ReadyForTraffic, its blocker is named on `rdm.mesh.node.reject.via-pre-node-ready-blocked`,
+/// and never Ready, its blocker is named on `rdm.mesh.node.reject.via-pre-node-ready-blocked`,
 /// and the authority's own pull gate answered the pull typed `NotReady`. When the authority's hook
-/// has passed and it publishes ReadyForTraffic, the hook runs again, returns `Ok`, the blocker span
+/// has passed and it publishes Ready, the hook runs again, returns `Ok`, the blocker span
 /// closes naming the event that cleared it (`primary-ready`) and only then does the node publish
-/// ReadyForTraffic (`via-ready`). What must NOT happen: the node Ready before its hook passed.
+/// Ready (`via-ready`). What must NOT happen: the node Ready before its hook passed.
 #[test]
 fn a_node_blocked_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
@@ -188,7 +188,7 @@ fn a_node_blocked_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is()
 
         assert_eq!(*running.status.lock().unwrap(), MemberStatus::Pending, "a blocked node is Pending");
         until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Pending", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
-        assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "ReadyForTraffic was published while the hook was blocked: {:?}", seen.lock().unwrap());
+        assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "Ready was published while the hook was blocked: {:?}", seen.lock().unwrap());
         assert_eq!(b.authority.answered(), 0, "the authority answered no rows before its own hook passed");
         assert_eq!(spans_named(&spans, "rdm.node_rpc.request.reject.via-pre-node-ready-not-passed").len(), 1, "the authority's gate refused the pull typed NotReady once");
         assert_eq!(attempts(&spans), vec![("blocked".to_string(), "primary-ready".to_string())]);
@@ -200,12 +200,12 @@ fn a_node_blocked_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is()
         assert!(matches!(handle.state(), PreNodeReadyState::Blocked { retry_on: RetryOn::PrimaryReady, .. }), "{:?}", handle.state());
 
         b.authority.gate.open();
-        b.admin.publish_status(MemberStatus::ReadyForTraffic).await;
+        b.admin.publish_status(MemberStatus::Ready).await;
         let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the hook runs again when the authority is Ready");
         assert_eq!(settled, PreNodeReadyState::Passed);
-        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Ready", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
+        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Ready", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Ready)).await;
 
-        assert_eq!(*seen.lock().unwrap(), vec![MemberStatus::Pending, MemberStatus::ReadyForTraffic]);
+        assert_eq!(*seen.lock().unwrap(), vec![MemberStatus::Pending, MemberStatus::Ready]);
         assert_eq!(attempts(&spans), vec![("blocked".to_string(), "primary-ready".to_string()), ("ok".to_string(), String::new())]);
         assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-pre-node-ready-blocked")[0]["cleared_by"], "primary-ready");
         assert_eq!(spans_named(&spans, "rdm.mesh.node.update.via-ready").len(), 1, "via-ready follows the successful attempt");
@@ -218,7 +218,7 @@ fn a_node_blocked_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is()
 /// CONTRACT: a retry armed AFTER the event it waits on already happened still completes. The
 /// authority becomes Ready while the first attempt is still running; when the attempt then returns
 /// `Blocked { PrimaryReady }` the node runs the hook again at once, with no further event, and
-/// then runs the rest of its start to ReadyForTraffic. What must NOT happen: the node waits for an
+/// then runs the rest of its start to Ready. What must NOT happen: the node waits for an
 /// event that already went by.
 #[test]
 fn a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes() {
@@ -239,8 +239,8 @@ fn a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes() {
 
         // The event: the authority publishes Ready, and the node hears it, while the attempt runs.
         b.authority.gate.open();
-        b.admin.publish_status(MemberStatus::ReadyForTraffic).await;
-        until(&node_view, "the node heard its authority Ready", |digest_view| digest_view.get(b.admin.launcher.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
+        b.admin.publish_status(MemberStatus::Ready).await;
+        until(&node_view, "the node heard its authority Ready", |digest_view| digest_view.get(b.admin.launcher.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Ready)).await;
         pre_node_ready.set_mode(Mode::Local);
         resume.notify_one();
 
@@ -250,8 +250,8 @@ fn a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes() {
         assert_eq!(attempts(&spans), vec![("blocked".to_string(), "primary-ready".to_string()), ("ok".to_string(), String::new())]);
         // node.started follows the hook's pass by the start's topology, Build-floor and rafka-time steps
         // (node-start.md steps 4-5): the node is Ready once its authority hears it so.
-        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Ready", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
-        assert_eq!(*running.status.lock().unwrap(), MemberStatus::ReadyForTraffic);
+        until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Ready", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Ready)).await;
+        assert_eq!(*running.status.lock().unwrap(), MemberStatus::Ready);
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
@@ -261,7 +261,7 @@ fn a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes() {
 /// `Blocked { node_id, incarnation, reason, retry_on }` (node-start.md step 3): the exact birth, the
 /// hook's own reason and the event it runs again on. It serves `node.connections.delete { All }`
 /// (`ConnectionsDeleted`); the retirement at its admission cancels the hook: the blocker span closes `retired`, the hook does not run again, and
-/// the node never publishes ReadyForTraffic. What must NOT happen: `Current` or `NotReady` for a
+/// the node never publishes Ready. What must NOT happen: `Current` or `NotReady` for a
 /// blocked node's probe (the executor could not name the blocker, or would take its door for it), or
 /// `NotReady` for a lifecycle command (s15).
 #[test]
@@ -289,7 +289,7 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
         assert_eq!(settled, PreNodeReadyState::Cancelled);
         assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-pre-node-ready-blocked")[0]["cleared_by"], "cancelled");
         assert_eq!(pre_node_ready.attempts.load(std::sync::atomic::Ordering::SeqCst), 1, "the hook did not run again");
-        assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "{:?}", seen.lock().unwrap());
+        assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "{:?}", seen.lock().unwrap());
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
@@ -299,7 +299,7 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
 /// CONTRACT: a retire during the hook cancels the pull. The authority's gate is open and the pull
 /// is held in flight; `node.connections.delete { All }` reaches the node; the attempt span closes `cancelled`, the pull
 /// is dropped in flight (started = answered + dropped, nothing left running), its call span never
-/// records an outcome, and the node never publishes ReadyForTraffic. What must NOT happen: the
+/// records an outcome, and the node never publishes Ready. What must NOT happen: the
 /// pull answering into a node that was retired, or the node going Ready afterwards.
 #[test]
 fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
@@ -311,7 +311,7 @@ fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
     let cap = crate::common::capture("a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::ReadyForTraffic).await;
+        let b = birth(MemberStatus::Ready).await;
         b.authority.gate.open();
         b.authority.hold();
         let seen = observe(&b);
@@ -330,7 +330,7 @@ fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
         assert!(!calls[0].contains_key("outcome"), "the dropped call recorded no outcome: it ended with the hook, not with a reply: {:?}", calls[0]);
         b.authority.release();
         assert!(pre_node_ready.held().0.is_empty(), "no row was applied after the retirement");
-        assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "{:?}", seen.lock().unwrap());
+        assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "{:?}", seen.lock().unwrap());
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
@@ -350,7 +350,7 @@ fn rows_gossiped_during_the_pull_change_the_state_once_per_version() {
     }
     let cap = crate::common::capture("rows_gossiped_during_the_pull_change_the_state_once_per_version");
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::ReadyForTraffic).await;
+        let b = birth(MemberStatus::Ready).await;
         b.authority.gate.open();
         b.authority.hold();
         let pre_node_ready = TestPreNodeReady::new(Mode::Pull);
@@ -365,7 +365,7 @@ fn rows_gossiped_during_the_pull_change_the_state_once_per_version() {
         assert_eq!(changes.into_iter().collect::<Vec<_>>(), vec![(1, 1), (2, 1), (3, 1)], "each version changed the state once");
         assert_eq!(ignored, 1, "row 2 arrived twice and the second was ignored");
         assert_eq!(pre_node_ready.effects.load(std::sync::atomic::Ordering::SeqCst), 3, "one side effect per version");
-        assert_eq!(*running.status.lock().unwrap(), MemberStatus::ReadyForTraffic);
+        assert_eq!(*running.status.lock().unwrap(), MemberStatus::Ready);
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
@@ -385,7 +385,7 @@ fn a_node_whose_hook_fails_ends_by_name_and_is_never_ready() {
     let cap = crate::common::capture("a_node_whose_hook_fails_ends_by_name_and_is_never_ready");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::ReadyForTraffic).await;
+        let b = birth(MemberStatus::Ready).await;
         let seen = observe(&b);
         let pre_node_ready = TestPreNodeReady::new(Mode::Fixed(HookOutcome::Failed { reason: "the snapshot of kind `config` is not complete at its boundary".into() }));
         let why = match start(&b, &pre_node_ready).await.unwrap() {
@@ -401,7 +401,7 @@ fn a_node_whose_hook_fails_ends_by_name_and_is_never_ready() {
         assert_eq!(failed[0]["outcome"], "failed");
         assert!(failed[0]["reason"].contains("is not complete at its boundary"));
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
-        assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "{:?}", seen.lock().unwrap());
+        assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "{:?}", seen.lock().unwrap());
         let _ = std::fs::remove_dir_all(&b.dir);
     })
 }
@@ -424,7 +424,7 @@ fn a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready()
     let cap = crate::common::capture("a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::ReadyForTraffic).await;
+        let b = birth(MemberStatus::Ready).await;
         let seen = observe(&b);
         let pre_node_ready = TestPreNodeReady::new(Mode::Fixed(HookOutcome::Blocked { reason: String::new(), retry_on: RetryOn::PrimaryAddressed }));
         let why = match start(&b, &pre_node_ready).await.unwrap() {
@@ -442,7 +442,7 @@ fn a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready()
         assert!(attempts[0]["reason"].contains("no reason") && attempts[0]["reason"].contains("primary-addressed"), "the attempt names the refusal and the event the hook asked for: {attempts:?}");
         assert!(spans_named(&spans, "rdm.mesh.node.reject.via-pre-node-ready-blocked").is_empty(), "no blocker was opened for a reason that names nothing");
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
-        assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "{:?}", seen.lock().unwrap());
+        assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "{:?}", seen.lock().unwrap());
         let _ = std::fs::remove_dir_all(&b.dir);
     })
 }
@@ -454,7 +454,7 @@ fn a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready()
 fn the_hook_is_handed_the_accepting_mesh_primary_of_its_exact_birth() {
     let cap = crate::common::capture("the_hook_is_handed_the_accepting_mesh_primary_of_its_exact_birth");
     cap.run(crate::common::Threads::Current, async move {
-        let b = birth(MemberStatus::ReadyForTraffic).await;
+        let b = birth(MemberStatus::Ready).await;
         let pre_node_ready = TestPreNodeReady::new(Mode::Local);
         let running = start(&b, &pre_node_ready).await.unwrap().expect("the node comes up");
         assert_eq!(*pre_node_ready.contexts.lock().unwrap(), vec![(1, Some("mesh1.admin.1".to_string()), None)]);
@@ -465,14 +465,14 @@ fn the_hook_is_handed_the_accepting_mesh_primary_of_its_exact_birth() {
 }
 
 /// CONTRACT: the launcher's `WaitForNodeReady` observer (`rig::LiveMesh::ready`) answers ready for a
-/// birth only once that birth's own digest says ReadyForTraffic, as the node-admin's own observer
+/// birth only once that birth's own digest says Ready, as the node-admin's own observer
 /// does. A node whose hook is blocked is Pending and still answers Ping (it is on the mesh and
 /// serves status and its node commands while Pending): the observer names its Pending. What
 /// must NOT happen: a Ping a Pending node answers standing in for ready, which lets a create return
 /// while the birth is still Pending.
 #[test]
-fn the_launchers_ready_waits_for_the_births_own_ready_for_traffic_not_a_ping() {
-    let cap = crate::common::capture("the_launchers_ready_waits_for_the_births_own_ready_for_traffic_not_a_ping");
+fn the_launchers_ready_waits_for_the_births_own_ready_not_a_ping() {
+    let cap = crate::common::capture("the_launchers_ready_waits_for_the_births_own_ready_not_a_ping");
     cap.run(crate::common::Threads::Current, async move {
         use rdm_admin::deployment::pipeline::NodeObserver;
         let b = birth(MemberStatus::Pending).await;

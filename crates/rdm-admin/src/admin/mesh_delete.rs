@@ -399,7 +399,7 @@ impl AdminRunner {
     /// another"): the mesh's issuing material, as any mesh's only admin carries, and the mesh's
     /// CURRENT state as this fabric-primary holds it, handed before its Ready like any mesh's first
     /// admin is handed its mesh's state. Never Pending for a mesh past it: the state only moves
-    /// forward (states.md, "pending -> ready-for-traffic -> leaving -> dead"), and a mesh that is
+    /// forward (states.md, "pending -> ready -> leaving -> dead"), and a mesh that is
     /// leaving is never told it is pending. A fabric-primary that holds no state for the mesh
     /// creates nothing: no state is assumed. The admin runs the executable the row of the lost
     /// predecessor `predecessor` (the amendment's `predecessor`) records: the create is the mesh's

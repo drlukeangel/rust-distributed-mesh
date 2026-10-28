@@ -25,15 +25,15 @@ The sequence below reads topology from a node that is alive; when no node is,
 
 Fabric recovery is one workflow, an attempt of the current Build, and one mechanism wherever it starts
 (Q122). At the staleness floor each node-admin of the fabric-primary's mesh asks: am I a node-admin; am I
-the lowest ReadyForTraffic one; was the former mesh-primary also the fabric-primary? If not, it is
+the lowest Ready one; was the former mesh-primary also the fabric-primary? If not, it is
 mesh-primary now ([elections §4.1](../fabric-node-lifecycle-elections.md#41-the-nodes-of-one-type-in-one-mesh)).
 If so, it takes no primary role: it runs fabric recovery and broadcasts it on the backbone, the fabric
 `degraded` with the workflow named (R-DG1). When the mesh has no node-admin left, the lowest
-ReadyForTraffic mesh-primary on the backbone, from [mesh investigation](mesh-investigation.md)'s decision
+Ready mesh-primary on the backbone, from [mesh investigation](mesh-investigation.md)'s decision
 step, does exactly the same. The workflow re-creates the node-admin at the fabric-primary's path.name
 ([node recovery](node-recovery.md), over the inherited data dir when the investigation's provider step
 found the old runtime exited, otherwise over a newly allocated one, R-FM2). When that node is
-ReadyForTraffic the workflow restores it as mesh-primary and fabric-primary (step 4) and completes. Nothing is
+Ready the workflow restores it as mesh-primary and fabric-primary (step 4) and completes. Nothing is
 taken over and nothing is handed back; the fabric-primary's path.name never changed, so a replacement
 executor starting the workflow over knows it. The attempt names what it recovers, as every recovery
 attempt does, and its executor writes this attempt's Build records while the fabric-primary is
@@ -48,7 +48,7 @@ the same order starts the workflow again, resuming the attempt from its recorded
 2. **Fabric recovery starts.** The executor names itself by the four questions on its own view, opens
    the attempt and broadcasts it. Any other admin that notices tells it; it acts only when its own view
    agrees; repeats answer `AlreadyApplied`.
-   - *Its own mesh*: the lowest ReadyForTraffic node-admin starts fabric recovery at the first tick after
+   - *Its own mesh*: the lowest Ready node-admin starts fabric recovery at the first tick after
      the mark, once the record has named the unheard primary for one staleness floor in its own view: a
      record learned after a heal names a primary whose silence in this admin's view began before the
      record did. It takes no primary role. It needs no probe to know it is alive.
@@ -56,7 +56,7 @@ the same order starts the workflow again, resuming the attempt from its recorded
      [mesh investigation](mesh-investigation.md)'s ladder on it: the fabric-primary first, then its other
      node-admins. An answer from any of them ends the investigation and the fabric-primary stays in that
      mesh. No answer from any of them by the decision step starts fabric recovery at the lowest
-     ReadyForTraffic mesh-primary, exactly as in the own-mesh arm.
+     Ready mesh-primary, exactly as in the own-mesh arm.
 3. **The executor runs the standing playbook on the lost one**: [node investigation](node-investigation.md) decides (Q111). Reached, by the investigation's answer
    from the exact birth and nothing else, the lost birth is commanded back through [node.mesh.join](node-mesh-join.md) and runs its start sequence,
    hook, cert and rafka-time (Q87). Any other verdict, node recovery re-creates it at the same path.name
@@ -75,7 +75,7 @@ the same order starts the workflow again, resuming the attempt from its recorded
    runtime the executor can inspect running but cannot reach is unreachable from the executor, not lost; a
    running fabric-primary its own mesh cannot reach is the own-mesh arm's (Q153).
 4. **The fabric-primary is back.** When the node at the fabric-primary's path.name, returned or
-   re-created, is ReadyForTraffic, the workflow restores it as mesh-primary and fabric-primary: the node
+   re-created, is Ready, the workflow restores it as mesh-primary and fabric-primary: the node
    installs both roles, acknowledges directly, and records them on its own row as the mesh's writer; its
    normal Digest carries the change. The write records the roles; it does not grant them. The workflow
    completes on the acknowledgement. The fabric's shared store root stays where it was. The fabric
@@ -93,13 +93,13 @@ the same order starts the workflow again, resuming the attempt from its recorded
 | its own mesh: the mesh's topology published again | by 34 s | by 4 s |
 | outside its mesh: probe 1, probe 2, decision ([mesh investigation](mesh-investigation.md)) | 20 s, 40 s, 60 s | 2 s, 4 s, 6 s |
 | outside its mesh: the row, when nobody in that mesh answered either probe | 60 s | 6 s |
-| the workflow completes, when the node at the fabric-primary's path.name is ReadyForTraffic | — | — |
+| the workflow completes, when the node at the fabric-primary's path.name is Ready | — | — |
 
 1. Load the durable topology and the accepted Build map; bind port 0 and retain the OS-assigned
    endpoint. The first GetTopology targets a node from that durable map: OWN MESH first,
    install only complete source snapshots. Stabilize the own mesh before investigating peers.
 2. Obtain current own-mesh topology, join the mesh channel from its member addresses, recover
-   control and become ready-for-traffic under the ordinary election.
+   control and become ready under the ordinary election.
 3. Run the single bounded own-mesh Ping sweep
    ([a node-admin joins the live mesh](mesh-investigation.md#a-node-admin-joins-the-live-mesh) steps 4–5); a
    non-answering member goes to [node recovery](node-recovery.md).
@@ -120,7 +120,7 @@ sequenceDiagram
     FP->>FP: durable topology exists; recovery mode; bind port 0
     FP->>L: FIRST topology read: 0x1E GetTopology
     L-->>FP: streamed current topology
-    FP->>FP: complete snapshots; join own mesh; ready-for-traffic / election
+    FP->>FP: complete snapshots; join own mesh; ready / election
     FP->>L: one bounded own-mesh 0x01 Ping
     FP->>P: node investigation for non-answers
     FP->>FP: same Build claim; execute only when won
@@ -169,7 +169,7 @@ correlates admission, completion and the subject's action to the exact birth and
 
 ## Nothing alive
 
-No node-admin is alive, the fabric's other nodes alive or not. Nothing inside the fabric brings an admin back: a person or a script launches a node-admin at the lost fabric-primary's path.name, with no launcher, given the fabric id, its mesh and the store root, which must hold that fabric or the start is refused by name. It adopts what the store holds and mints no fabric or mesh id; it is a new birth with its own node.id. It is given the fabric root and CA, from its environment or an inherited data dir, and the declared values (Q150), and refuses to start without them. Before any recovery mutation other than the claim itself, it claims the fabric-recovery attempt of the current Build for that mesh; a second launch's claim loses and it exits. Concurrent adoption launches resolve to the same recovery attempt for the exact lost birth, read from the Build journal on the store; while that attempt is active, no other launch opens a competing attempt for that birth. It installs the recorded primaries before electing (Q149) and runs node investigation on the lost birth: reached, or any node-admin answering before its first mutation, it is refused NameHeld and exits, closing the attempt through the failure path. Otherwise the claimed attempt releases the name, re-creates the birth as itself, adopts rafka-time from live members, and restores it as fabric-primary by step 4 once ReadyForTraffic; with nothing alive it is the only node, below (Q156).
+No node-admin is alive, the fabric's other nodes alive or not. Nothing inside the fabric brings an admin back: a person or a script launches a node-admin at the lost fabric-primary's path.name, with no launcher, given the fabric id, its mesh and the store root, which must hold that fabric or the start is refused by name. It adopts what the store holds and mints no fabric or mesh id; it is a new birth with its own node.id. It is given the fabric root and CA, from its environment or an inherited data dir, and the declared values (Q150), and refuses to start without them. Before any recovery mutation other than the claim itself, it claims the fabric-recovery attempt of the current Build for that mesh; a second launch's claim loses and it exits. Concurrent adoption launches resolve to the same recovery attempt for the exact lost birth, read from the Build journal on the store; while that attempt is active, no other launch opens a competing attempt for that birth. It installs the recorded primaries before electing (Q149) and runs node investigation on the lost birth: reached, or any node-admin answering before its first mutation, it is refused NameHeld and exits, closing the attempt through the failure path. Otherwise the claimed attempt releases the name, re-creates the birth as itself, adopts rafka-time from live members, and restores it as fabric-primary by step 4 once Ready; with nothing alive it is the only node, below (Q156).
 
 - A store that names no node but the launching admin's own lost birth holds no fabric to recover: the launch deletes that storage and starts as Day 0, a new fabric-primary.
 - Nothing ran mesh.delete or fabric.delete, so the fabric and its meshes were never deleted.

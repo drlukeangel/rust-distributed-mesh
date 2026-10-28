@@ -225,7 +225,7 @@ async fn boot_trace(State(s): State<AppState>, Query(q): Query<BootQuery>) -> Re
 }
 
 /// Put the port the UI bound on its admin's own row config (`admin_ui_port`), once the fabric takes it:
-/// a refusal before the first ready-for-traffic is put again a second later.
+/// a refusal before the first ready is put again a second later.
 async fn put_ui_port(admin: Arc<Admin>, port: u16) {
     loop {
         match admin.put_own_config("admin_ui_port", &port.to_string()).await {

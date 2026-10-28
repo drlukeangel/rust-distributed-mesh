@@ -101,10 +101,10 @@ up() {
   UI_BIND=${UI_BIND%:*}:$port; echo "$UI_BIND" > "$ROOT/ui_bind"
   echo "UI up: http://$UI_BIND"
   for _ in $(seq 1 120); do
-    curl -s "http://$UI_BIND/api/overview" 2>/dev/null | grep -q '"ready-for-traffic"' && break; sleep 0.5
+    curl -s "http://$UI_BIND/api/overview" 2>/dev/null | grep -q '"ready"' && break; sleep 0.5
   done
   local shape="{\"meshes\":[{\"name\":\"$M1\",\"node_admin\":2,\"compute\":2,\"gateway\":3,\"broker\":3},{\"name\":\"$M2\",\"node_admin\":2,\"compute\":2,\"gateway\":3,\"broker\":3}]}"
-  # The Day-0 Build is Complete from its own ready-for-traffic, one Build at a time: while the admin
+  # The Day-0 Build is Complete from its own ready, one Build at a time: while the admin
   # refuses the bootstrap build-in-progress naming it, the bootstrap is submitted again once it is.
   local acc
   for _ in $(seq 1 120); do
@@ -116,11 +116,11 @@ up() {
   for _ in $(seq 1 600); do
     read -r ready total < <(curl -s "http://$UI_BIND/api/topology" 2>/dev/null | python3 -c 'import json,sys
 try:
-    n=json.load(sys.stdin).get("nodes",[]); print(sum(1 for x in n if x.get("status")=="ready-for-traffic"), len(n))
+    n=json.load(sys.stdin).get("nodes",[]); print(sum(1 for x in n if x.get("status")=="ready"), len(n))
 except Exception: print(0, 0)')
     [ "$ready" = 20 ] && break; sleep 1
   done
-  echo "topology after $(( $(date +%s) - t0 ))s: $ready of $total ready-for-traffic"
+  echo "topology after $(( $(date +%s) - t0 ))s: $ready of $total ready"
   echo "ESTATE UP at $ROOT; UI http://$UI_BIND"
 }
 

@@ -67,7 +67,7 @@ fn names_of(nodes: &[rdm_client::NodeView]) -> Vec<String> {
 /// values)` pairs, AND across pairs, any-of within, nothing matching the empty list): a Day-0
 /// node-admin answers the reads over Node RPC from what it holds, and the caller reaches nothing but
 /// the admin's Node RPC endpoint. `nodes.get []` is the fabric's topology, the admin alone, as its
-/// view holds it, with its row's status as its atlas holds it (Q233, query.md §1: ReadyForTraffic
+/// view holds it, with its row's status as its atlas holds it (Q233, query.md §1: Ready
 /// once its row took it; primary of its mesh and of the fabric, its birth, its load and gossip stats
 /// when its view carries them); `[id: the admin]` is that one node and `[id: another]` the empty list;
 /// `[mesh: mesh1] [kind: admin]` the admin and `[mesh: mesh1] [kind: gateway]` nothing (AND across
@@ -98,12 +98,12 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         // holds it (query.md §1 "Status": "a node's `status` is its row's as written: the state the row
         // last took from the node's frame or the mesh-primary's receipt", Q233). The view holds the
         // admin ready and primary of its mesh and of the fabric at its own Ready; its row takes
-        // ReadyForTraffic when its mesh-primary applies its node.started report (states.md "Who sets
+        // Ready when its mesh-primary applies its node.started report (states.md "Who sets
         // each state"), after that. The reads start once both hold.
         tokio::time::timeout(WRONG, async {
             loop {
-                let ready = running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
-                let row_ready = running.control.atlas.record(&me.node.node_id).is_some_and(|r| r.status == rdm_admin::model::NodeStatus::ReadyForTraffic);
+                let ready = running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::Ready && n.is_primary && n.is_fabric_primary);
+                let row_ready = running.control.atlas.record(&me.node.node_id).is_some_and(|r| r.status == rdm_admin::model::NodeStatus::Ready);
                 if ready && row_ready {
                     return;
                 }
@@ -132,7 +132,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         let got = &every_node[0];
         assert_eq!((got.name.clone(), got.kind, got.mesh.as_str(), got.node_id.clone()), (held.name.clone(), NodeKind::NodeAdmin, "mesh1", me.node.node_id.clone()));
         assert_eq!((got.incarnation_id.clone(), got.endpoint_id.clone(), got.transport_addr), (Some(me.node.incarnation.clone()), Some(me.node.endpoint_id.0.clone()), Some(me.node.transport_addr)));
-        assert_eq!((got.status, got.is_primary, got.is_fabric_primary), (NodeStatus::ReadyForTraffic, true, true), "{got:#?}");
+        assert_eq!((got.status, got.is_primary, got.is_fabric_primary), (NodeStatus::Ready, true, true), "{got:#?}");
         let (load, gossip) = loads.get(me.node.node_id.as_str()).cloned().unwrap_or((None, None));
         assert_eq!((got.load.is_some(), got.gossip.is_some()), (load.is_some(), gossip.is_some()), "the load and gossip stats are what the admin's view carries: {got:#?}");
         // [id: x]: one node or none; never NOT_FOUND.
@@ -143,7 +143,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         assert_eq!(names_of(&nodes_get(Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["admin"])).await), vec!["mesh1.admin.1"], "[mesh: mesh1] [kind: admin]");
         assert!(nodes_get(Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["gateway"])).await.is_empty(), "[mesh: mesh1] [kind: gateway]: mesh1 holds no gateway");
         assert!(nodes_get(Filter::new().eq("mesh", ["mesh9"])).await.is_empty(), "[mesh: mesh9]: a mesh the admin does not hold answers the empty list");
-        assert_eq!(names_of(&nodes_get(Filter::new().eq("is_fabric_primary", ["true"]).eq("status", ["ready-for-traffic"])).await), vec!["mesh1.admin.1"], "a boolean and an enum by their page names");
+        assert_eq!(names_of(&nodes_get(Filter::new().eq("is_fabric_primary", ["true"]).eq("status", ["ready"])).await), vec!["mesh1.admin.1"], "a boolean and an enum by their page names");
 
         // An unknown property is INVALID_ARGUMENT naming the pair, on the wire and through the object.
         let bad = rdm_core::status::StatusRequest::Get { entity: rdm_client::Entity::Nodes, node: None, filter: Filter::new().eq("mesh", ["mesh1"]).eq("zone", ["eu-1"]) };
@@ -254,13 +254,13 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
         let dir = std::env::temp_dir().join(format!("node-tags-{}", NodeId::mint()));
         let running = start_with(day0_config(&dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         let me = running.digest.lock().unwrap().clone();
-        // A tags command is refused until the initial fabric has first reached ready-for-traffic (states.md "The
-        // initial fabric before ready-for-traffic"): the admin is ready in both seats, and the fabric is ready.
+        // A tags command is refused until the initial fabric has first reached ready (states.md "The
+        // initial fabric before ready"): the admin is ready in both seats, and the fabric is ready.
         tokio::time::timeout(WRONG, async {
             loop {
                 let t = running.control.topology.read().await;
-                let ready = t.fabric.status == rdm_admin::model::ScopeStatus::ReadyForTraffic
-                    && t.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
+                let ready = t.fabric.status == rdm_admin::model::ScopeStatus::Ready
+                    && t.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::Ready && n.is_primary && n.is_fabric_primary);
                 drop(t);
                 if ready {
                     return;
@@ -269,7 +269,7 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
             }
         })
         .await
-        .expect("the admin's view never held it ready in both seats under a ready-for-traffic fabric");
+        .expect("the admin's view never held it ready in both seats under a ready fabric");
         let admin = ResolvedNode { node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
         let carrier = BuildCarrier::new(client.clone(), me.node.name.clone());
@@ -394,7 +394,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
+        let admin = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("node-reads-rpc-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -434,7 +434,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         let seams = seams.get().cloned().expect("the node handed its seams");
         let digest_view = &admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
-        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
             heard.changed().await.unwrap();
         }
         // The node originates a data-plane connection to its admin: a Direct entry of its log.

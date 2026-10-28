@@ -1862,7 +1862,7 @@ mod tests {
         let mesh_id = MeshId::mint();
         let joined = |name: &str| {
             let name: crate::model::PathName = name.parse().unwrap();
-            let mut row = NodeRow::new(name.clone(), NodeId::mint(), crate::model::NodeStatus::ReadyForTraffic);
+            let mut row = NodeRow::new(name.clone(), NodeId::mint(), crate::model::NodeStatus::Ready);
             row.mesh_id = Some(mesh_id.clone());
             row.births.push(BirthFacts::new(crate::model::IncarnationId::mint(), name));
             row
@@ -2097,7 +2097,7 @@ mod tests {
 
     /// CONTRACT (storage-whole-records.md, "Who writes what changes"): a fabric-primary that becomes a
     /// mesh's writer after its last node-admin is gone writes `Dead` on the mesh's record as storage
-    /// holds it then, never on the copy it held from before: the ReadyForTraffic the mesh-primary
+    /// holds it then, never on the copy it held from before: the Ready the mesh-primary
     /// recorded after that copy was taken stands beside `Dead`. Must NOT happen: the stale copy written
     /// whole over the mesh-primary's write.
     #[tokio::test]
@@ -2110,17 +2110,17 @@ mod tests {
         let mut boot = MeshRecord::new(key.mesh_id.clone(), "mesh2");
         boot.states.insert(MeshState::Pending);
         crate::storage::claim_mesh(&meshes, None, &boot).await.unwrap().unwrap();
-        // The copy this fabric-primary took before mesh2's primary wrote ReadyForTraffic.
+        // The copy this fabric-primary took before mesh2's primary wrote Ready.
         caches.meshes.hold(key.mesh_id.clone(), boot.clone());
         let mut ready = boot.clone();
-        ready.states.insert(MeshState::ReadyForTraffic);
+        ready.states.insert(MeshState::Ready);
         meshes.put_mesh(&ready).await.unwrap();
 
         let declared = std::sync::Mutex::new(crate::status_rpc::Declared::default());
         ensure_mesh_dead(&meshes, &caches, &declared, "mesh1.admin.1", &key, "mesh2").await.unwrap();
         let stored = meshes.mesh(&key.mesh_id).await.unwrap().expect("mesh2's record stands");
         assert!(stored.dead, "Dead is written: {stored:?}");
-        assert!(stored.states.contains(&MeshState::ReadyForTraffic), "the mesh-primary's ReadyForTraffic stands beside Dead: {stored:?}");
+        assert!(stored.states.contains(&MeshState::Ready), "the mesh-primary's Ready stands beside Dead: {stored:?}");
         assert!(stored.states.contains(&MeshState::Dead), "{stored:?}");
         assert_eq!(caches.meshes.get(&key.mesh_id), Some(stored), "the copy held is the record written");
     }

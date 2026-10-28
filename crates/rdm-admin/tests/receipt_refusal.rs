@@ -178,7 +178,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
     node.incarnation_id = Some(IncarnationId::mint());
-    node.status = NodeStatus::ReadyForTraffic;
+    node.status = NodeStatus::Ready;
     let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
@@ -353,7 +353,7 @@ async fn connections_delete_through(builds: &dyn BuildStateAdapter, build_id: &B
 async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, observer: &dyn NodeObserver, stop: bool) -> Result<(), rdm_admin::deployment::pipeline::PipelineError> {
     let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
     node.incarnation_id = Some(IncarnationId::mint());
-    node.status = NodeStatus::ReadyForTraffic;
+    node.status = NodeStatus::Ready;
     let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),

@@ -54,7 +54,7 @@ These start a root of their own today:
   span is the root, and everything the call causes in that process is its child.
 - **A Day-0 or person-started node-admin.** Its boot span takes `TRACEPARENT` when it is given,
   and is a root otherwise.
-- **The fabric's change.** Each change from ready-for-traffic (or an adopted one) opens
+- **The fabric's change.** Each change from ready (or an adopted one) opens
   `rdm.node_admin.fabric.update.via-change` as a root. Its state entries and the
   `on_fabric_ready` notice are its children. It carries `build_id`. It is not a child of the Build's `build.create`: the Build that
   caused it and the change are two traces, joined by `build_id`.
@@ -86,7 +86,7 @@ These start a root of their own today:
 The per-operation chains are on their pages:
 - [fabric recovery](lifecycles/fabric-recovery.md#fabric-recovery-telemetry-chain);
 - [mesh investigation](lifecycles/mesh-investigation.md#telemetry-chain);
-- [the fabric's ready-for-traffic](lifecycles/states.md#the-fabrics-ready).
+- [the fabric's ready](lifecycles/states.md#the-fabrics-ready).
 
 ## 6. Not carried today
 

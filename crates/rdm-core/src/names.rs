@@ -39,7 +39,7 @@ pub enum NodeOp {
     /// with it when the holder holds both) to its same-mesh successor (`0x21`).
     PrimaryUpdate,
     /// `node.fabric-primary.update`: move the fabric-primary seat (`0x21`, C2 step 1 same-mesh first,
-    /// step 2 outside mesh primary when no same-mesh successor is ReadyForTraffic).
+    /// step 2 outside mesh primary when no same-mesh successor is Ready).
     FabricPrimaryUpdate,
 }
 

@@ -55,7 +55,7 @@ async fn recovered(estate: &Estate, node: &str) -> Value {
     estate
         .until_node(node, &format!("{node} is recovered as a new node at its path.name"), crate::node_recovery_due(), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["node_id"] != before["node_id"]).then_some(n)
+            (n["status"] == "ready" && n["node_id"] != before["node_id"]).then_some(n)
         })
         .await
 }

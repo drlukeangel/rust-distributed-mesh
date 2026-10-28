@@ -94,8 +94,8 @@ async fn pending_contract(cell: &str) {
             assert_eq!(r["container"].as_str().map(str::len), Some(64), "an immutable container id: {r}");
         }
     }
-    // The estate stops once the fabric is ready-for-traffic under the creation Build (Q174): every mesh,
-    // mesh2's included, is ready-for-traffic then.
+    // The estate stops once the fabric is ready under the creation Build (Q174): every mesh,
+    // mesh2's included, is ready then.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     estate.stop().await;
     let spans = estate.spans();
@@ -221,7 +221,7 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
     let target = bootstrap_admin_not_fabric_primary(&settled);
     let before = estate.node_view(&target).await;
 
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The restart, node.stop then node.start through the rectifier (Q183): attempts of the accepted Build.
     let restart_build = estate.stop_then_start(&target.parse().unwrap()).await.0.build_id.to_string();
@@ -233,7 +233,7 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
 
     assert_eq!(after.node_id, before.node_id, "the same node");
     assert_eq!(after.incarnation_id, before.incarnation_id, "the same incarnation: a stop then a start keep the birth (node-stop.md, Kept: same node.id, incarnation)");
-    assert_eq!(after.status, NodeStatus::ReadyForTraffic, "{after:?}");
+    assert_eq!(after.status, NodeStatus::Ready, "{after:?}");
     let readies: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|r| r["attributes"]["node"] == target.as_str()).collect();
     assert_eq!(readies.len(), 2, "Ready at birth and again after the restart: {readies:?}");
     let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == mesh_name.as_str()).collect();
@@ -303,13 +303,13 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     let recovered = estate
         .until_node(&lost_admin, "the lost mesh's admin is created again and ready", Duration::from_secs(240), |n| {
             let n = n?;
-            (n.incarnation_id != admin_before.incarnation_id && n.status == NodeStatus::ReadyForTraffic).then(|| serde_json::to_value(n).expect("a view serializes"))
+            (n.incarnation_id != admin_before.incarnation_id && n.status == NodeStatus::Ready).then(|| serde_json::to_value(n).expect("a view serializes"))
         })
         .await;
     assert_eq!(estate.mesh_view(&lost).await.id.expect("the lost mesh still has its id").to_string(), mesh_id, "the lost mesh recovered under its own MeshId");
     assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build");
     // The successor primary reports its checklist; on that report the fabric-primary clears degraded: the
-    // fabric is ready-for-traffic again before the estate stops.
+    // fabric is ready again before the estate stops.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     estate.stop().await;
     let spans = estate.spans();

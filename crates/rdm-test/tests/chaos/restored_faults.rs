@@ -36,7 +36,7 @@ fn owner(test: &str) -> Owner {
 }
 
 fn ready(n: &NodeView) -> bool {
-    n.status == NodeStatus::ReadyForTraffic
+    n.status == NodeStatus::Ready
 }
 
 fn attr(sp: &Value, k: &str) -> String {

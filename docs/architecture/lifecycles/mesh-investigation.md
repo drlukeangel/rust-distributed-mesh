@@ -12,7 +12,7 @@ own call and connection facts, never forwarded topology
 [held-member repair](../gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours)).
 When the unheard mesh's mesh-primary is the fabric-primary, every mesh-primary runs this ladder on it, and its decision step
 starts [fabric recovery](fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives) at the
-lowest ReadyForTraffic mesh-primary, which takes no primary role (Q122).
+lowest Ready mesh-primary, which takes no primary role (Q122).
 
 One investigation per peer mesh, owned by the fabric-primary. Let t be the elapsed monotonic time
 since the fabric-primary's last valid direct backbone receipt from mesh-x. Only that receipt starts
@@ -55,7 +55,7 @@ diagnostic spans that open no node.create.
      mesh-x's own MeshId, with the node.create step 6 describes, over the inherited data dir when
      the verdict is `exited` and over a newly allocated one otherwise (R-FM2). When mesh-x's
      mesh-primary is the fabric-primary, this arm is [fabric recovery](fabric-recovery.md), run by
-     the lowest ReadyForTraffic mesh-primary on the backbone, which takes no primary role (Q122). A crash does not end a mesh, so this is never a new mesh. A mesh-x node that
+     the lowest Ready mesh-primary on the backbone, which takes no primary role (Q122). A crash does not end a mesh, so this is never a new mesh. A mesh-x node that
      comes back after it was re-created is refused at admission and decided by its path.name and the
      atlas ([node investigation](node-investigation.md), Q207): it is deleted and its runtime terminated (Q110).
 6. A carrier-edge-lost verdict runs node.create of a node-admin into mesh-x, on the SAME accepted Build
@@ -90,7 +90,7 @@ an unreachable node-admin; what became of that node-admin is node investigation'
 | any time | Fabric-primary / answering admin | admin answer or direct backbone receipt | stop / cancel | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome`, `at`) |
 | 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |
 | 60 s, carrier-edge-lost verdict | Fabric-primary / provider | same-Build node.create of a node-admin into mesh-x; MeshStatus and FabricStatus degraded (both arms, R-DG1) | mesh-x's MeshId; health marker | `rdm.node_admin.mesh.create.via-recovery` (`mesh`, `at`) |
-| new primary ready-for-traffic | Mesh-x primary; fabric-primary | MeshStatus ready-for-traffic; FabricStatus ready-for-traffic | fabric ready-for-traffic requires [States](states.md#states) completion | readiness evidence and status dissemination below |
+| new primary ready | Mesh-x primary; fabric-primary | MeshStatus ready; FabricStatus ready | fabric ready requires [States](states.md#states) completion | readiness evidence and status dissemination below |
 
 The RPC chain uses `rdm.node_rpc.request.update.via-call` and
 `rdm.node_rpc.request.serve.via-direct` for Ping and outer Forward. The carrier's inner
@@ -197,7 +197,7 @@ the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) and [Status](../n
    (a 2 s deadline each, at most 8 at once). A reply identifies a live exact birth; no reply
    is "not yet reached", never death. Ready waits for the sweep to finish (RDM's `start_booted` in
    `rdm-admin`'s admin module and `enter_existing_mesh` in its reenter module).
-   It then becomes ready-for-traffic and is mesh-primary under the election; as the
+   It then becomes ready and is mesh-primary under the election; as the
    mesh's successor primary it adopts the mesh's held state
    ([fabric primary §7](../fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition)).
    A mesh with no live node has no member to ping, so there is no sweep: the node-admin brings
@@ -208,7 +208,7 @@ the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) and [Status](../n
 6. The fabric-primary claims the creation of the missing secondary node-admin on its own log
    and calls the new mesh-primary with `build.attempt.run`; the executor adopts the won claim and
    runs it as an attempt of that same Build. The secondary node-admin calls its maker, obtains
-   topology, joins the channel and becomes ready-for-traffic.
+   topology, joins the channel and becomes ready.
 
 ```mermaid
 sequenceDiagram
@@ -228,7 +228,7 @@ sequenceDiagram
     FP-->>A: streamed maker topology
     A->>L: 0x1E GetTopology
     L-->>A: streamed current local topology
-    A->>A: install complete snapshots; join mesh channel; ready-for-traffic / mesh-primary
+    A->>A: install complete snapshots; join mesh channel; ready / mesh-primary
     A->>L: one bounded 0x01 Ping
     L-->>A: reply from live exact birth
     A->>D: one bounded 0x01 Ping

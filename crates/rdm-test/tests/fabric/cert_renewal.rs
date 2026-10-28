@@ -406,14 +406,14 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
             matches!(&held, Ok(StatusReply::Connections { connections }) if connections.connections.iter().any(|c| c.id == opened_id)).then_some(held)
         })
         .await;
-        // The renewal is compared against a settled member: its admin holds it ready-for-traffic (a member's
+        // The renewal is compared against a settled member: its admin holds it ready (a member's
         // first ready declaration can reach the admin before the admin's own start ends, and is owed again),
         // and mesh1.rpc.2 holds its digest, which it takes eventually, as mesh1.rpc.1 took its own above.
-        let view_before = until("node.get of mesh1.rpc.1 holds it ready-for-traffic before the renewal", BOUND, async || node_get(&root, &a.digest.node.node_id).await.filter(|v| v.status == NodeStatus::ReadyForTraffic)).await;
-        // The digest in the peer's view moves Pending to ready-for-traffic when the mesh-primary's projected
+        let view_before = until("node.get of mesh1.rpc.1 holds it ready before the renewal", BOUND, async || node_get(&root, &a.digest.node.node_id).await.filter(|v| v.status == NodeStatus::Ready)).await;
+        // The digest in the peer's view moves Pending to ready when the mesh-primary's projected
         // status reaches it (rdm.mesh.topology.update.via-projected-status), after the admin's row is written:
         // the renewal is compared against the peer's settled view of it, never its first digest.
-        let (digest_before, _) = until("mesh1.rpc.2's view holds mesh1.rpc.1's digest ready-for-traffic", BOUND, async || b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).filter(|(d, _)| d.status == rdm_core::digest::MemberStatus::ReadyForTraffic)).await;
+        let (digest_before, _) = until("mesh1.rpc.2's view holds mesh1.rpc.1's digest ready", BOUND, async || b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).filter(|(d, _)| d.status == rdm_core::digest::MemberStatus::Ready)).await;
         let connection_spans = |spans: &crate::common::Spans| spans.0.lock().unwrap().values().filter(|(n, _, _)| n.starts_with("rdm.node.connections.")).count();
         let before = connection_spans(&spans);
 
@@ -476,7 +476,7 @@ fn a_renewal_that_is_not_sent_is_retried_each_tick_and_marks_nothing() {
         .await;
         assert!(renewals_of(&spans, "mesh1.rpc.1").iter().all(|f| f["outcome"] == "not-sent"), "nothing reached it, nothing was installed");
         let view = node_get(&root, &b.digest.node.node_id).await.expect("mesh1.rpc.1 in the view");
-        assert_eq!((view.status, view.incarnation_id.as_ref()), (NodeStatus::ReadyForTraffic, Some(&b.digest.node.incarnation)), "the member is marked nothing: {view:?}");
+        assert_eq!((view.status, view.incarnation_id.as_ref()), (NodeStatus::Ready, Some(&b.digest.node.incarnation)), "the member is marked nothing: {view:?}");
         assert!(view.data_dir_lost.is_none(), "no fact is recorded of it: {view:?}");
         let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|r| r.birth(&b.digest.node.incarnation).and_then(|f| f.cert.clone())).expect("the member's cert dates");
         assert_eq!(row.issued_at, num(&join_issue(&spans, "mesh1.rpc.1"), "issued_at_rafka_ms"), "a renewal not answered writes nothing: the row is still the join's after {tries:?}");

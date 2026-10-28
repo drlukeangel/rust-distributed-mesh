@@ -15,7 +15,7 @@ use tracing_subscriber::layer::SubscriberExt;
 
 fn node(name: &str, primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = primary;
     if n.kind == NodeKind::NodeAdmin {
@@ -28,8 +28,8 @@ fn node(name: &str, primary: bool) -> Node {
 fn view() -> Topology {
     let exited = node("mesh1.rpc.2", false);
     Topology {
-        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
         nodes: vec![node("mesh1.admin.1", true), node("mesh1.admin.2", false), node("mesh1.rpc.1", true), exited],
     }
 }
@@ -378,10 +378,10 @@ fn two_meshes() -> Topology {
     let mut mp = node("mesh2.admin.1", true);
     mp.is_fabric_primary = false;
     Topology {
-        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![
-            Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-            Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready },
+            Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready },
         ],
         nodes: vec![fp, node("mesh1.rpc.1", true), mp, node("mesh2.rpc.1", true)],
     }
@@ -612,7 +612,7 @@ async fn a_topology_change_accepted_while_a_recovery_runs_is_the_current_build_a
     fp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| {
         n.node_id = NodeId::mint();
         n.incarnation_id = Some(IncarnationId::mint());
-        n.status = NodeStatus::ReadyForTraffic;
+        n.status = NodeStatus::Ready;
     });
     let create = fp.submit("build.create", crate::named_request(&fp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await).await.expect("a topology change that touches no held mesh is admitted while a recovery runs in another mesh");
     assert_ne!(create.build_id, b0, "a new topology Build");
@@ -671,7 +671,7 @@ async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_
     let exited = before.node(&member).unwrap().clone();
     // The accepted Build names every node, the member included (it was live when accepted).
     let mut accepted_view = before.clone();
-    accepted_view.nodes.iter_mut().for_each(|n| n.status = NodeStatus::ReadyForTraffic);
+    accepted_view.nodes.iter_mut().for_each(|n| n.status = NodeStatus::Ready);
     let accepted = AcceptedStore::seeded(&*builds, before.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
     let b0 = builds.current_build().await.unwrap().into_build_id().unwrap();
     settle_other(&builds, &b0).await;
@@ -764,7 +764,7 @@ async fn an_in_flight_row_a_lost_mesh_primary_left_after_its_verdict_is_released
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = before.node(&member).unwrap().clone();
     let mut accepted_view = before.clone();
-    accepted_view.nodes.iter_mut().for_each(|n| n.status = NodeStatus::ReadyForTraffic);
+    accepted_view.nodes.iter_mut().for_each(|n| n.status = NodeStatus::Ready);
     let accepted = AcceptedStore::seeded(&*builds, before.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
     let b0 = builds.current_build().await.unwrap().into_build_id().unwrap();
     settle_other(&builds, &b0).await;
@@ -838,7 +838,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = before.node(&member).unwrap().clone();
     let mut accepted_view = before.clone();
-    accepted_view.nodes.iter_mut().for_each(|n| n.status = NodeStatus::ReadyForTraffic);
+    accepted_view.nodes.iter_mut().for_each(|n| n.status = NodeStatus::Ready);
     let accepted = AcceptedStore::seeded(&*builds, before.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
     let b0 = builds.current_build().await.unwrap().into_build_id().unwrap();
     settle_other(&builds, &b0).await;
@@ -968,7 +968,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     let exited = before.node(&member).unwrap().clone();
     let birth = exited.incarnation_id.clone().unwrap();
     let mut accepted_view = before.clone();
-    accepted_view.nodes.iter_mut().for_each(|n| n.status = NodeStatus::ReadyForTraffic);
+    accepted_view.nodes.iter_mut().for_each(|n| n.status = NodeStatus::Ready);
     let accepted = AcceptedStore::seeded(&*builds, before.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
     let b0 = builds.current_build().await.unwrap().into_build_id().unwrap();
     settle_other(&builds, &b0).await;
@@ -1102,7 +1102,7 @@ async fn a_recovery_opened_by_a_deleted_birth_is_refused_by_name_and_writes_noth
 
     // Its own row reads live, but a new birth's claim holds its path.name: it was re-created there.
     let successor = NodeId::mint();
-    rows.put_node(&NodeRow::new(me.clone(), me_id.clone(), NodeStatus::ReadyForTraffic)).await.unwrap();
+    rows.put_node(&NodeRow::new(me.clone(), me_id.clone(), NodeStatus::Ready)).await.unwrap();
     rows.put_node(&NodeRow::new(me.clone(), successor.clone(), NodeStatus::Pending)).await.unwrap();
     rows.claim_node_name(&me, &successor).await.unwrap().unwrap();
     let replaced = cp.open_recovery("fabric-recovery", path.clone(), node_id.clone(), birth.clone()).await;
@@ -1129,7 +1129,7 @@ async fn a_recovery_opened_by_a_deleted_birth_is_refused_by_name_and_writes_noth
 /// `second_admin` false), mesh2's primary `mesh2.admin.1` unheard (`PendingReconnect`, the view still
 /// naming it primary) and every other node of mesh2 unheard with it: the view the fabric-primary holds
 /// of a mesh it hears only through that mesh's primary. Returns (that view, the accepted view: every
-/// node ready for traffic, as it was when accepted).
+/// node ready, as it was when accepted).
 fn unheard_mesh2_primary(second_admin: bool) -> (Topology, Topology) {
     let mut t = two_meshes();
     if second_admin {

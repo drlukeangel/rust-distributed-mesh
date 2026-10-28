@@ -4,7 +4,7 @@
 //! and its mesh channel joined (node-start.md step 3). The hook returns
 //! [`HookOutcome`]:
 //!
-//! - `Ok`: RDM's own checks go on to ReadyForTraffic, and the app's own ops are served
+//! - `Ok`: RDM's own checks go on to Ready, and the app's own ops are served
 //!   ([`PreNodeReadyGate`] opens).
 //! - `Blocked { reason, retry_on }`: the node stays Pending, the blocker is named where Ready
 //!   blockers are named, and the hook runs again only when the named [`RetryOn`] event happens.
@@ -185,7 +185,7 @@ pub trait PreNodeReady: Send + Sync {
 /// path: the node is already serving.
 #[async_trait::async_trait]
 pub trait OnNodeReady: Send + Sync {
-    /// Run once, after the node published ReadyForTraffic.
+    /// Run once, after the node published Ready.
     async fn on_node_ready(&self, ctx: &NodeReadyCtx);
 }
 
@@ -314,7 +314,7 @@ impl Events {
                 Some((d, _)) => self.digest_view.is_deleted(d.node.node_id.as_str()) || Some(&d.node.incarnation) != mark.authority_incarnation.as_ref(),
                 None => mark.authority_incarnation.is_some(),
             },
-            RetryOn::PrimaryReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.digest_view.staleness_floor()),
+            RetryOn::PrimaryReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::Ready && silent <= self.digest_view.staleness_floor()),
             RetryOn::TargetReachable { .. } => unreachable!("answered above"),
             RetryOn::PrimaryAddressed => self.addressed.count(&authority.endpoint) > mark.addressed,
         }

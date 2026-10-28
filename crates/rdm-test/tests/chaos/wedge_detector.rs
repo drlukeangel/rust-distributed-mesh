@@ -338,7 +338,7 @@ fn done_steps(build: &Value, operation: &str, attempt: u64) -> Vec<String> {
 
 /// The attempts a Build that put the fabric back to pending ends at when its one run ran every
 /// operation: that run, attempt 1, then the attempt claimed once the fabric changed to
-/// ready-for-traffic, which completes it and runs no step (Q154; states.md "Resize and executable replacement").
+/// ready, which completes it and runs no step (Q154; states.md "Resize and executable replacement").
 const RUN_THEN_CHANGE: u64 = 2;
 
 /// Whether every step receipt of `build` (the Build view's JSON) is of its one run, attempt 1: the
@@ -518,9 +518,9 @@ impl Run {
         self.estate.node_views().await.iter().map(|n| n.name.to_string()).collect()
     }
 
-    /// `node` once the admin the estate asks lists it ready for traffic.
+    /// `node` once the admin the estate asks lists it ready.
     async fn node_ready(&self, node: &str) -> Value {
-        let ready = self.estate.until_node(node, &format!("{node} ready for traffic"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::ReadyForTraffic).cloned()).await;
+        let ready = self.estate.until_node(node, &format!("{node} ready"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
         serde_json::to_value(ready).expect("a view serializes")
     }
 
@@ -535,7 +535,7 @@ impl Run {
         let mut stream = self.spawn(kind).await;
         self.complete(&mut stream).await;
         self.estate
-            .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.name.to_string()) && n.status == NodeStatus::ReadyForTraffic).map(|n| n.name.to_string()))
+            .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.name.to_string()) && n.status == NodeStatus::Ready).map(|n| n.name.to_string()))
             .await
     }
 
@@ -556,10 +556,10 @@ impl Run {
         match watch {
             Watch::NewNodes(before) => {
                 let new: Vec<&Value> = nodes.iter().filter(|n| !before.contains(&s(&n["name"]))).collect();
-                (new.iter().any(|n| n["status"] == "ready-for-traffic"), if new.is_empty() { "absent from the view".into() } else { new.iter().map(|n| format!("{}={}", n["name"], n["status"])).collect::<Vec<_>>().join(",") })
+                (new.iter().any(|n| n["status"] == "ready"), if new.is_empty() { "absent from the view".into() } else { new.iter().map(|n| format!("{}={}", n["name"], n["status"])).collect::<Vec<_>>().join(",") })
             }
             Watch::Node(name) => match nodes.iter().find(|n| n["name"] == name.as_str()) {
-                Some(n) => (n["status"] == "ready-for-traffic", format!("{name}={}", n["status"])),
+                Some(n) => (n["status"] == "ready", format!("{name}={}", n["status"])),
                 None => (false, format!("{name} absent from the view")),
             },
         }
@@ -721,7 +721,7 @@ async fn create_checks(run: &Run, rec: &mut Reconciliation, done: &Value) {
     let counts = step_counts(done, &op, 1);
     rec.check("every documented create step has one receipt, in order", done_steps(done, &op, 1) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
     let view = run.node_ready(&node).await;
-    rec.check("the node serves", view["status"] == "ready-for-traffic", s(&view["status"]));
+    rec.check("the node serves", view["status"] == "ready", s(&view["status"]));
     rec.check("exactly one runtime serves the node", run.runtimes(&node) == 1, format!("{}", run.runtimes(&node)));
 }
 
@@ -824,7 +824,7 @@ async fn silent_case(run: &Run) {
     let id = "silent-runtime:sigstop-rpc-node";
     let mut ev = Evidence::new(Family::SilentRuntime, id);
     let nodes = run.estate.node_values().await;
-    let target = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["is_primary"] == false && n["status"] == "ready-for-traffic").cloned().unwrap_or_else(|| panic!("a ready non-primary rpc node: {nodes:?}"));
+    let target = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["is_primary"] == false && n["status"] == "ready").cloned().unwrap_or_else(|| panic!("a ready non-primary rpc node: {nodes:?}"));
     let (name, node_id, incarnation) = (s(&target["name"]), s(&target["node_id"]), s(&target["incarnation_id"]));
     let exact = format!("exact:{node_id}");
     let pid = run.estate.pid_of(&name).await;
@@ -849,7 +849,7 @@ async fn silent_case(run: &Run) {
     ev.primitive = Some(Primitive { armed: true, ack: primitive.clone() });
 
     // The topology consequence: the view stops calling it ready, within the staleness window.
-    let silent_view = run.estate.until_node(&name, &format!("{name} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.status != NodeStatus::ReadyForTraffic).cloned()).await;
+    let silent_view = run.estate.until_node(&name, &format!("{name} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.status != NodeStatus::Ready).cloned()).await;
     let silent_view = serde_json::to_value(silent_view).expect("a view serializes");
 
     // Reads while stopped: process state, CPU use and the typed outcome of a call to the exact node.
@@ -882,7 +882,7 @@ async fn silent_case(run: &Run) {
     // Recovery: the same birth is ready again and serves the value stored before the freeze.
     let back = run
         .estate
-        .until_node(&name, &format!("{name} back as {incarnation}"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.incarnation_id.as_ref().is_some_and(|i| i.to_string() == incarnation) && n.status == NodeStatus::ReadyForTraffic).cloned())
+        .until_node(&name, &format!("{name} back as {incarnation}"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.incarnation_id.as_ref().is_some_and(|i| i.to_string() == incarnation) && n.status == NodeStatus::Ready).cloned())
         .await;
     let back = serde_json::to_value(back).expect("a view serializes");
     let kept = run.estate.probe(&["get", "--target", &exact, "--key", "77"]);
@@ -944,7 +944,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     let run = Run { estate, root, doors: Default::default(), evidence: Default::default(), rows: Default::default(), holds: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: two admins first.
     run.estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
-    // The initial fabric refuses a node delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node delete until it has first reached ready (states.md "The initial fabric before ready").
     run.estate.until_fabric_ready(Duration::from_secs(120)).await;
     run.estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
@@ -967,7 +967,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     run.rows.lock().unwrap().push(json!({"cut": "control", "group": "healthy-control", "create_build_id": control_create, "create_steps": create_order, "retire_build_id": control_delete, "retire_steps": retire_order, "door_admin": control_door.name}));
 
     // A deployment step: the runtime is bound and the node declares itself Ready on its own, so the
-    // stalled Build bookkeeping does not unroute it (the public view shows it ready-for-traffic).
+    // stalled Build bookkeeping does not unroute it (the public view shows it ready).
     let door = run.member_door("mesh1").await;
     let before = run.names().await;
     let step = CreateStep::WaitForBind.name();

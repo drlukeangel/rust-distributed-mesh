@@ -120,7 +120,7 @@ const COMMAND: &str = "rdm.node_admin.primary.update.via-command";
 const CALL: &str = "rdm.node_rpc.request.update.via-call";
 
 fn view(nodes: Vec<Node>) -> Topology {
-    Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process }, meshes: vec![], nodes }
+    Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes }
 }
 
 struct Admin {
@@ -221,7 +221,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_sl
                             if let Some(door) = ready.get() {
                                 let _ = slot.set(door.clone());
                             }
-                            rdm_core::status::StatusReply::Current { node_id, incarnation, state: rdm_core::status::NodeState::ReadyForTraffic }
+                            rdm_core::status::StatusReply::Current { node_id, incarnation, state: rdm_core::status::NodeState::Ready }
                         }
                         other => rdm_core::reply::status::not_ready(format!("this cell's admin answers only the probe of its own birth, not {}", other.op())),
                     })
@@ -490,12 +490,12 @@ async fn primaries_fabric_over(fp: FabricPrimary, n_ready: bool) -> Seats {
     let n = admin(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", n_ready, status.clone()).await;
     let m = admin(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true, status.clone()).await;
     let x = admin(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, status).await;
-    let pn = node_of(&p, NodeStatus::ReadyForTraffic, fp == FabricPrimary::P);
-    let mut nn = node_of(&n, NodeStatus::ReadyForTraffic, false);
+    let pn = node_of(&p, NodeStatus::Ready, fp == FabricPrimary::P);
+    let mut nn = node_of(&n, NodeStatus::Ready, false);
     nn.is_primary = false;
-    let mut mn = node_of(&m, NodeStatus::ReadyForTraffic, false);
+    let mut mn = node_of(&m, NodeStatus::Ready, false);
     mn.is_primary = false;
-    let xn = node_of(&x, NodeStatus::ReadyForTraffic, fp == FabricPrimary::X);
+    let xn = node_of(&x, NodeStatus::Ready, fp == FabricPrimary::X);
     let nodes = vec![pn, nn, mn, xn];
     let fabric_primary = match fp {
         FabricPrimary::P => primary_of(&p, 7),
@@ -547,18 +547,18 @@ fn member_node(m: &Member, primary: bool) -> Node {
     n.node_id = m.resolved.node_id.clone();
     n.incarnation_id = Some(m.resolved.incarnation.clone());
     n.endpoint_id = Some(EndpointId(m.resolved.endpoint_id.to_string()));
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n
 }
 
-/// The birth `r` names as its digest says it, ReadyForTraffic: what a member's view holds of a peer of
+/// The birth `r` names as its digest says it, Ready: what a member's view holds of a peer of
 /// its mesh from its mesh-primary's projection.
 fn digest_of(r: &ResolvedNode, fabric: &FabricId) -> rdm_core::MeshDigest {
     rdm_core::MeshDigest {
         fabric_id: fabric.clone(),
         node: rdm_core::MeshNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: rdm_core::EndpointId(r.endpoint_id.to_string()), transport_addr: r.transport_addr, incarnation: r.incarnation.clone(), supersedes: None, runtime: None },
-        status: rdm_core::MemberStatus::ReadyForTraffic,
+        status: rdm_core::MemberStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,
@@ -582,7 +582,7 @@ const RPC: rdm_admin::model::NodeKind = rdm_admin::model::NodeKind::RpcNode;
 
 /// P is mesh1's mesh-primary (revision 3), X is mesh2's and the fabric-primary (revision 7). B1
 /// (`mesh1.rpc.1`) is mesh1's rpc-node primary at revision 2; B2 (`mesh1.rpc.2`) is that type's other
-/// node, born only when `with_b2`; every node's view holds the other rpc node ReadyForTraffic.
+/// node, born only when `with_b2`; every node's view holds the other rpc node Ready.
 struct TypeFabric {
     p: Admin,
     x: Admin,
@@ -600,17 +600,17 @@ async fn type_fabric(with_b2: bool) -> TypeFabric {
     type_fabric_heard(with_b2, true).await
 }
 
-/// [`type_fabric`], B1's own view holding B2 (its digest, ReadyForTraffic) only when `b1_hears_b2`: the
-/// mesh-primary's view holds B2 ReadyForTraffic either way.
+/// [`type_fabric`], B1's own view holding B2 (its digest, Ready) only when `b1_hears_b2`: the
+/// mesh-primary's view holds B2 Ready either way.
 async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
     let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryFabricStorage>::default());
     let p = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000008", true, status.clone()).await;
     let x = admin(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, status).await;
     let b1 = member(&fabric_id, "mesh1", "mesh1.rpc.1", "000000000004").await;
     let b2 = if with_b2 { Some(member(&fabric_id, "mesh1", "mesh1.rpc.2", "000000000006").await) } else { None };
-    let mut pn = node_of(&p, NodeStatus::ReadyForTraffic, false);
+    let mut pn = node_of(&p, NodeStatus::Ready, false);
     pn.is_primary = true;
-    let xn = node_of(&x, NodeStatus::ReadyForTraffic, true);
+    let xn = node_of(&x, NodeStatus::Ready, true);
     let mut nodes = vec![pn, xn, member_node(&b1, true)];
     nodes.extend(b2.iter().map(|b| member_node(b, false)));
     let resolved: Vec<ResolvedNode> = [p.resolved.clone(), x.resolved.clone(), b1.resolved.clone()].into_iter().chain(b2.iter().map(|b| b.resolved.clone())).collect();
@@ -632,7 +632,7 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
         m.door.topology_view().primaries().take(Seat::Cohort(RPC), &member_primary(&b1, 2));
         for other in members.iter().filter(|o| o.resolved.node_id != m.resolved.node_id && (b1_hears_b2 || m.resolved.node_id != b1.resolved.node_id)) {
             assert!(m.door.topology_view().digest_view.record(digest_of(&other.resolved, &other.fabric)));
-            // Its mesh-primary's projection holds it ReadyForTraffic.
+            // Its mesh-primary's projection holds it Ready.
             assert!(m.door.topology_view().digest_view.started(&other.resolved.node_id, &other.resolved.incarnation, &other.resolved.name));
         }
     }
@@ -792,7 +792,7 @@ async fn lone_fabric(x_status: NodeStatus) -> (Admin, Admin) {
     let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryFabricStorage>::default());
     let p = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, status.clone()).await;
     let x = admin(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, status).await;
-    let nodes = vec![node_of(&p, NodeStatus::ReadyForTraffic, true), node_of(&x, x_status, false)];
+    let nodes = vec![node_of(&p, NodeStatus::Ready, true), node_of(&x, x_status, false)];
     for a in [&p, &x] {
         *a.door.topology.write().await = view(nodes.clone());
         for b in [&p, &x] {
@@ -808,8 +808,8 @@ async fn lone_fabric(x_status: NodeStatus) -> (Admin, Admin) {
 /// CONTRACT (node-primary-update.md "No-successor cases": "`node.primary.update` commanded for a type
 /// with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary of type
 /// <node_type> in mesh <mesh>` ... The primary stays primary"; "The fabric-primary" search step 3:
-/// "neither found: refused by name, `cannot transfer fabric-primary: no other node-admin ReadyForTraffic in
-/// mesh <mesh>, no other mesh-primary ReadyForTraffic`"; node-rpc-envelope.md: the commanded arm ends
+/// "neither found: refused by name, `cannot transfer fabric-primary: no other node-admin Ready in
+/// mesh <mesh>, no other mesh-primary Ready`"; node-rpc-envelope.md: the commanded arm ends
 /// `Failed { step, reason, code }`): P, the only node-admin of mesh1, cannot move its mesh-primary; with
 /// X not Ready it cannot move the fabric-primary either. Each fails by its exact text, no writes are
 /// finished and P stays both.
@@ -824,7 +824,7 @@ fn an_update_with_no_successor_fails_by_its_exact_text_and_nothing_moves() {
         assert!(matches!(&mesh, Err(SeatMoveEnd::Failed { step, reason, .. }) if step == "primary-update" && reason == "cannot transfer: no secondary of type node-admin in mesh mesh1"), "{mesh:?}");
         let op = update_operation(Seat::FabricPrimary, "b1", 1, "node.stop:mesh1.admin.1");
         let fabric = p.door.update_own_primaries(Moving::FabricSeatOutside, "b1", 1, &op, None).await;
-        assert!(matches!(&fabric, Err(SeatMoveEnd::Failed { reason, .. }) if reason == "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic"), "{fabric:?}");
+        assert!(matches!(&fabric, Err(SeatMoveEnd::Failed { reason, .. }) if reason == "cannot transfer fabric-primary: no other node-admin Ready in mesh mesh1, no other mesh-primary Ready"), "{fabric:?}");
         assert_eq!(p.finished(), 0, "no writes finished for a refused update");
         assert_eq!((p.door.topology_view.primaries().mesh("mesh1"), p.door.topology_view.primaries().fabric()), (Some(primary_of(&p, 3)), Some(primary_of(&p, 7))), "P stays both");
         let _ = &x;
@@ -841,7 +841,7 @@ fn an_update_with_no_successor_fails_by_its_exact_text_and_nothing_moves() {
 fn the_fabric_primary_moved_outside_its_mesh_leaves_its_old_primary_mesh_primary() {
     let cap = trace_capture("fabric-handover");
     cap.run(async {
-        let (p, x) = lone_fabric(NodeStatus::ReadyForTraffic).await;
+        let (p, x) = lone_fabric(NodeStatus::Ready).await;
         let op = update_operation(Seat::FabricPrimary, "b1", 1, "mesh.delete:mesh1");
         assert!(p.door.fabric_primary_updated("mesh1", &op).await.is_err(), "before the update the fabric-primary is of mesh1");
         let revisions = p.door.update_own_primaries(Moving::FabricSeatOutside, "b1", 1, &op, None).await.expect("the fabric-primary moves to mesh2");
@@ -925,7 +925,7 @@ fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_fo
 }
 
 /// CONTRACT (Q129; node-primary-update.md step 4: "for a type other than `node-admin`, the birth the
-/// mesh-primary's command names (step 2)"): P's view holds B2 ReadyForTraffic; B1's own view has not heard
+/// mesh-primary's command names (step 2)"): P's view holds B2 Ready; B1's own view has not heard
 /// B2 at all. P's stop-time update of B1 completes: B1 calls the B2 P named and answers with B2's
 /// node.primary.updated, with no election of its own and no `cannot transfer` refusal. A command naming no
 /// successor at B1 is refused by name. What must NOT happen: B1 refusing because its own view holds no

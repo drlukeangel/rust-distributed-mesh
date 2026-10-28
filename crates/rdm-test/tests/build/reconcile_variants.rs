@@ -20,10 +20,10 @@
 //! the config as `node.config.update` applies a map (the live node carries it), the storage onto the row.
 //!
 //! Every row (states.md "Resize and executable replacement"; Q154, Q158): the Build is Complete within
-//! the bound and the fabric holds ready-for-traffic after it; a resize or a replacement puts the fabric
+//! the bound and the fabric holds ready after it; a resize or a replacement puts the fabric
 //! back to pending at its acceptance, and a request that is neither (the same executables, the unchanged
 //! request, tags only, config only, storage only: proposal executable-bindings-at-create.md rule 5 re-births a path
-//! for a storage or placement change only "with its executable") leaves it ready-for-traffic, read from
+//! for a storage or placement change only "with its executable") leaves it ready, read from
 //! the `via-state-reset` spans. Must NOT happen: a
 //! Build never Complete (Pending at attempt 1 with no step) after a request that changed nothing the
 //! fabric runs (Rafka 141).
@@ -42,7 +42,7 @@ fn owner(test: &str, rung: &str) -> Owner {
     Owner { product: "mesh".into(), feature: "build".into(), subfeature: "reconcile-variants".into(), rung: rung.into(), provider: "process".into(), test: test.into() }
 }
 
-/// What the pages say a variant does to a ready-for-traffic fabric at its acceptance.
+/// What the pages say a variant does to a ready fabric at its acceptance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Back {
     ToPending,
@@ -103,7 +103,7 @@ async fn node_row(estate: &Estate, path: &str) -> (Value, NodeView) {
 }
 
 /// One Build of the matrix: `request` submitted on `based_on`, Complete within [`BOUND`], and the fabric
-/// ready-for-traffic after it. A Build with no terminal frame within the bound is the defect, named with
+/// ready after it. A Build with no terminal frame within the bound is the defect, named with
 /// what `build.get` and `fabric.get` say of it then.
 async fn row(estate: &Estate, what: &str, based_on: rdm_client::BuildId, request: Vec<NodeSpec>, back: Back, rows: &mut Vec<(String, String, Back)>) {
     let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await;
@@ -119,7 +119,7 @@ async fn row(estate: &Estate, what: &str, based_on: rdm_client::BuildId, request
     assert!(matches!(done.frames.last(), Some(BuildFrame::Complete { .. })), "{what}: Build {id} ends Complete: {:?}", done.frames.last());
     estate.until_fabric_ready(Duration::from_secs(90)).await;
     let fabric = estate.fabric_view().await;
-    assert_eq!(fabric.status, ScopeStatus::ReadyForTraffic, "{what}: the fabric is ready-for-traffic after Build {id}");
+    assert_eq!(fabric.status, ScopeStatus::Ready, "{what}: the fabric is ready after Build {id}");
     rows.push((what.to_string(), id.to_string(), back));
 }
 
@@ -173,13 +173,13 @@ async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, Strin
     let (based_on, mut r, _) = verbatim(estate).await;
     r.push(rdm_test::executables::created_spec(rpc2.parse().unwrap(), estate.executables.of(NodeKind::RpcNode)));
     row(estate, &format!("{mesh}: a new path"), based_on, r, Back::ToPending, rows).await;
-    estate.until_node(&rpc2, &format!("{rpc2} ready"), BOUND, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic).map(|_| ())).await;
+    estate.until_node(&rpc2, &format!("{rpc2} ready"), BOUND, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).map(|_| ())).await;
 
     let (based_on, mut r, rows_now) = verbatim(estate).await;
     let next = another_build(estate, &row_executable(&rows_now, &rpc2), &format!("{mesh}-next"));
     at(&mut r, &rpc2).executable = Some(next.clone());
     row(estate, &format!("{mesh}: another executable"), based_on, r, Back::ToPending, rows).await;
-    let replaced = estate.until_node(&rpc2, &format!("{rpc2} on the new executable"), BOUND, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && n.executable.as_ref() == Some(&next)).cloned()).await;
+    let replaced = estate.until_node(&rpc2, &format!("{rpc2} on the new executable"), BOUND, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.executable.as_ref() == Some(&next)).cloned()).await;
     assert_eq!(replaced.executable.as_ref(), Some(&next), "{rpc2} runs the executable its request named");
 
     let (based_on, mut r, _) = verbatim(estate).await;
@@ -206,7 +206,7 @@ async fn day0_variants(estate: &Estate, rows: &mut Vec<(String, String, Back)>) 
 
 /// CONTRACT (states.md "Resize and executable replacement"; Q154, Q158; proposal
 /// executable-bindings-at-create.md rule 1): on a one-mesh fabric that is the Day-0 admin alone, every
-/// Reconcile variant, one Build at a time, is Complete within the bound with the fabric ready-for-traffic
+/// Reconcile variant, one Build at a time, is Complete within the bound with the fabric ready
 /// after it, and puts the fabric back to pending exactly when it is a resize or a replacement. Must NOT
 /// happen: the request naming the executable the Day-0 admin's row records (its entry names none) left
 /// Pending at attempt 1 with no step for ever (Rafka 141).
@@ -228,7 +228,7 @@ async fn every_reconcile_variant_on_a_day0_fabric_completes_with_the_fabric_read
 
 /// CONTRACT (as above, on two meshes): mesh2 is created by a request that keeps the Day-0 admin's entry
 /// naming no executable; then every variant, the Day-0 admin's in mesh1 and the rpc paths' in mesh2, is
-/// Complete within the bound with the fabric ready-for-traffic after it, and puts the fabric back to
+/// Complete within the bound with the fabric ready after it, and puts the fabric back to
 /// pending exactly when it is a resize or a replacement. Must NOT happen: a Build never Complete after a
 /// request that changed nothing the fabric runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

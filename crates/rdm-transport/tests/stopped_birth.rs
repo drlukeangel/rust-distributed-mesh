@@ -9,7 +9,7 @@
 //!
 //! The defect these cells pin (gate b05c303b, trace 0164315174b5f3d478b34af76d519e94): the
 //! mesh-primary held mesh1.admin.2's heartbeat 13 when the stop installed; heartbeat 14
-//! (`ReadyForTraffic`, the same incarnation, sent before the stop) arrived after it and ended the
+//! (`Ready`, the same incarnation, sent before the stop) arrived after it and ended the
 //! stop as `rdm.mesh.topology.update.via-node-started`.
 
 use iroh::protocol::Router;
@@ -75,7 +75,7 @@ fn stop_op(d: &MeshDigest) -> LifecycleOp {
 }
 
 fn hold_mesh_ready(digest_view: &DigestView) {
-    let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 };
+    let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 };
     assert!(digest_view.statuses.take(&f, &fabric()));
 }
 
@@ -107,13 +107,13 @@ fn a_heartbeat_of_a_stopped_birth_after_node_stopped_is_refused_by_name_and_the_
         hold_mesh_ready(&digest_view);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let at = |status, seq| digest("mesh1.admin.2", &id, &inc, None, status, seq, 41_002);
-        assert!(digest_view.record(at(MemberStatus::ReadyForTraffic, 13)), "heartbeat 13 is held");
+        assert!(digest_view.record(at(MemberStatus::Ready, 13)), "heartbeat 13 is held");
         assert!(digest_view.routable(id.as_str()));
-        let stop = stop_op(&at(MemberStatus::ReadyForTraffic, 13));
+        let stop = stop_op(&at(MemberStatus::Ready, 13));
         assert!(digest_view.stopped(stop.clone()), "NodeStopped installs");
         assert!(digest_view.get(id.as_str()).is_none(), "the stopped birth is dropped from the view");
 
-        assert!(!digest_view.record(at(MemberStatus::ReadyForTraffic, 14)), "heartbeat 14, sent before the stop and delivered after it, is refused");
+        assert!(!digest_view.record(at(MemberStatus::Ready, 14)), "heartbeat 14, sent before the stop and delivered after it, is refused");
         assert!(!digest_view.record(at(MemberStatus::Pending, 15)), "a pending heartbeat of the stopped birth is refused: only node.joined ends the stop");
         assert!(digest_view.get(id.as_str()).is_none(), "no heartbeat brought the stopped birth back");
         assert_eq!(digest_view.in_flight(), vec![stop.clone()], "the stop overlay stands");
@@ -196,7 +196,7 @@ fn read_chunks(topology: &[rdm_transport::snapshot::SourceSnapshot], mesh: &str)
 /// stop (a read built before the stop, at the version held). The member learns the stop ended only
 /// from the mesh-primary's projection: once the primary's projection moves, in order, from the
 /// version carrying the stop to the one listing the birth after `node.joined`. Its status is then the
-/// projection's `Pending` whatever the birth's next heartbeat says, and `ReadyForTraffic` only when
+/// projection's `Pending` whatever the birth's next heartbeat says, and `Ready` only when
 /// the projection says so. Where the stop ends, the member holds the birth again from the latest
 /// heartbeat of it it refused, with the projection's status and that heartbeat's liveness, so the birth
 /// never vanishes from its view. Must NOT happen: a heartbeat, or a projection entry from before the
@@ -223,15 +223,15 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 
         // The mesh-primary's own digest, heard by the member directly.
-        let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_001);
+        let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, None, MemberStatus::Ready, 0, 41_001);
         p.publish(&p_digest).await.unwrap();
         learn_mesh_primary(&m, "mesh1", &p_digest.node.node_id, &p_birth);
         // mesh1.rpc.1: its heartbeats as the primary and the member hear them.
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let b = |status, seq| digest("mesh1.rpc.1", &id, &inc, None, status, seq, 41_011);
-        assert!(p.digest_view.record(b(MemberStatus::ReadyForTraffic, 1)));
-        assert!(p.digest_view.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "the primary sets it ready-for-traffic from its node.started");
-        m.digest_view.record(b(MemberStatus::ReadyForTraffic, 1));
+        assert!(p.digest_view.record(b(MemberStatus::Ready, 1)));
+        assert!(p.digest_view.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "the primary sets it ready from its node.started");
+        m.digest_view.record(b(MemberStatus::Ready, 1));
 
         // v1: the primary's projection lists mesh1.rpc.1 ready.
         publication().await;
@@ -241,7 +241,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         let before_stop = p.held_topology(&p.digest_view.get(p_digest.node.node_id.as_str()).expect("the primary holds itself").0);
 
         // The stop: the primary publishes NodeStopped from the stopped reply; the member takes the event.
-        let stop = stop_op(&b(MemberStatus::ReadyForTraffic, 1));
+        let stop = stop_op(&b(MemberStatus::Ready, 1));
         publish_stopped(&p, &bb, &stop).await;
         until("the member to take NodeStopped", || m.digest_view.in_flight().contains(&stop)).await;
         assert!(m.digest_view.get(id.as_str()).is_none(), "the member dropped the stopped birth");
@@ -260,7 +260,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
 
         // The stopped birth's heartbeats reach the member: a late ready one (sent before the stop) and a
         // pending one (the shape of its rejoin). Each is refused by name; the stop stands.
-        assert!(!m.digest_view.record(b(MemberStatus::ReadyForTraffic, 2)), "a late ready heartbeat of the stopped birth is refused");
+        assert!(!m.digest_view.record(b(MemberStatus::Ready, 2)), "a late ready heartbeat of the stopped birth is refused");
         assert!(!m.digest_view.record(b(MemberStatus::Pending, 3)), "a pending heartbeat of the stopped birth is refused");
         // When the member heard heartbeat 3: the birth's own liveness word, whatever ends the stop later.
         let heard_3 = std::time::Instant::now();
@@ -283,16 +283,16 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         let (again, silent) = m.digest_view.get(id.as_str()).expect("the member holds the birth again once its projection ends the stop");
         assert_eq!((again.node.incarnation.clone(), again.digest_seq, again.status), (inc.clone(), 3, MemberStatus::Pending), "held from the latest refused heartbeat, with the projection's status");
         assert!(silent >= since_3, "its liveness is heartbeat 3's, never refreshed by the projection: silent {silent:?}, heard {since_3:?} ago");
-        assert!(m.digest_view.record(b(MemberStatus::ReadyForTraffic, 4)), "the birth's heartbeat is taken once the stop is over");
-        assert_eq!(m.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "its status is the projection's Pending, not the heartbeat's ReadyForTraffic");
+        assert!(m.digest_view.record(b(MemberStatus::Ready, 4)), "the birth's heartbeat is taken once the stop is over");
+        assert_eq!(m.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "its status is the projection's Pending, not the heartbeat's Ready");
 
-        // node.started: the primary takes the birth's report (its DeclareNodeState(ReadyForTraffic)); its
+        // node.started: the primary takes the birth's report (its DeclareNodeState(Ready)); its
         // heartbeat says nothing of it. Its next projection says ready.
-        assert!(p.digest_view.record(b(MemberStatus::ReadyForTraffic, 4)));
+        assert!(p.digest_view.record(b(MemberStatus::Ready, 4)));
         assert_eq!(p.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "the birth's heartbeat moves no status at the primary");
         assert!(p.digest_view.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "node.started of the birth");
         publication().await;
-        until("the member to take ready-for-traffic from the projection", || m.digest_view.get(id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
+        until("the member to take ready from the projection", || m.digest_view.get(id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Ready)).await;
         let v4 = version_at_m().unwrap();
 
         drop(bb);
@@ -312,7 +312,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         assert_eq!(delta.len(), 1, "the primary published the projection that clears the stop on its own channel: {delta:#?}");
         assert_eq!((attr(delta[0], "base_version"), attr(delta[0], "changed"), attr(delta[0], "in_flight")), (v2.to_string(), "1".to_string(), "0".to_string()), "the clear travels as the birth's own changed entry");
         let statuses: Vec<String> = named(&spans, "rdm.mesh.topology.update.via-projected-status").into_iter().filter(|s| attr(s, "member_id") == id.as_str() && attr(s, "node") == "mesh1.rpc.2").map(|s| format!("{}@{}", attr(s, "status"), attr(s, "topology_version"))).collect();
-        assert_eq!(statuses, vec![format!("ReadyForTraffic@{v1}"), format!("Pending@{v3}"), format!("ReadyForTraffic@{v4}")], "the member's statuses of the birth come from the projection alone");
+        assert_eq!(statuses, vec![format!("Ready@{v1}"), format!("Pending@{v3}"), format!("Ready@{v4}")], "the member's statuses of the birth come from the projection alone");
         let mut lines = String::new();
         for (what, s) in refused.iter().map(|s| ("refused", *s)).chain(ended.iter().map(|s| ("ended", *s))).chain(joined.iter().map(|s| ("joined", *s))).chain(delta.iter().map(|s| ("delta", *s))) {
             lines.push_str(&format!("{what} {} {} door={} held_version={} topology_version={} digest_seq={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "door"), attr(s, "held_version"), attr(s, "topology_version"), attr(s, "digest_seq")));
@@ -354,14 +354,14 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         let publication = || async { bb.publish(&p, bb.own_members(&p)).await };
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 
-        let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_021);
+        let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, None, MemberStatus::Ready, 0, 41_021);
         p.publish(&p_digest).await.unwrap();
         learn_mesh_primary(&m, "mesh1", &p_digest.node.node_id, &p_birth);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let b = |status, seq| digest("mesh1.rpc.1", &id, &inc, None, status, seq, 41_031);
-        assert!(p.digest_view.record(b(MemberStatus::ReadyForTraffic, 1)));
-        assert!(p.digest_view.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "the primary sets it ready-for-traffic from its node.started");
-        m.digest_view.record(b(MemberStatus::ReadyForTraffic, 1));
+        assert!(p.digest_view.record(b(MemberStatus::Ready, 1)));
+        assert!(p.digest_view.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "the primary sets it ready from its node.started");
+        m.digest_view.record(b(MemberStatus::Ready, 1));
 
         // v1: the primary's projection lists mesh1.rpc.1 ready.
         publication().await;
@@ -369,7 +369,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         let v1 = version_at_m().unwrap();
 
         // The stop: the member takes the primary's NodeStopped event, and nothing else of it.
-        let stop = stop_op(&b(MemberStatus::ReadyForTraffic, 1));
+        let stop = stop_op(&b(MemberStatus::Ready, 1));
         publish_stopped(&p, &bb, &stop).await;
         until("the member to take NodeStopped", || m.digest_view.in_flight().contains(&stop)).await;
         assert_eq!(version_at_m(), Some(v1), "no projection carrying the stop reached the member");

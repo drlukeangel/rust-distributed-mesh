@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 fn node(name: &str, primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = primary;
     if n.kind == NodeKind::NodeAdmin {
@@ -29,8 +29,8 @@ fn node(name: &str, primary: bool) -> Node {
 
 fn observed() -> Topology {
     Topology {
-        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
         nodes: vec![node("mesh1.admin.1", true), node("mesh1.admin.2", false), node("mesh1.rpc.1", true)],
     }
 }

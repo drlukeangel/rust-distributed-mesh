@@ -35,13 +35,13 @@ fn receiver_refuses_position_ten_and_changes_no_status_or_primary() {
         let (mesh_sender, _mesh_rx) = mesh_channel.split();
         let (backbone_sender, _backbone_rx) = backbone_channel.split();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
+        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         receiver.digest_view.record(digest);
         assert!(receiver.digest_view.started(&node_id, &incarnation, &"mesh1.admin.2".parse().unwrap()));
         let holder = Primary { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
         receiver.primaries().take(Seat::FabricPrimary, &holder);
         receiver.primaries().take(Seat::MeshPrimary, &holder);
-        receiver.learn_statuses(&[Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: 1 }]);
+        receiver.learn_statuses(&[Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: 1 }]);
         let held = receiver.digest_view.get(node_id.as_str()).unwrap().0;
         let status = receiver.mesh_status("mesh1");
         let fabric_status = receiver.fabric_status();
@@ -56,7 +56,7 @@ fn receiver_refuses_position_ten_and_changes_no_status_or_primary() {
             // A following frame on this same channel proves processing finished, without changing
             // the concerned mesh's status or relying on an arbitrary delay.
             let revision = n as u64 + 10;
-            sender.broadcast(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: revision }.authored(&crate::gossip_author(&fabric), 0, 1).encode().into()).await.unwrap();
+            sender.broadcast(Frame::MeshStatus { mesh: "barrier".into(), status: "ready".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: revision }.authored(&crate::gossip_author(&fabric), 0, 1).encode().into()).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < revision) { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.expect("the following frame was applied on this channel");

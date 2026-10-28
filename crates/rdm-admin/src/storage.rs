@@ -888,16 +888,16 @@ mod tests {
     /// The same script over any nodes store: the facts of one birth, each written from the record its
     /// writer holds, all stand on the record a fresh reader loads whole (storage-whole-records.md,
     /// cells: "two facts of one birth both stand on the record across a reload"): a late `Pending`
-    /// beside `ReadyForTraffic`, two attempts' operation effects, a lost and an unreadable data dir;
+    /// beside `Ready`, two attempts' operation effects, a lost and an unreadable data dir;
     /// the birth's cert dates are its last.
     async fn facts_of_one_birth_all_stand(first: &dyn NodesStorage, reopened: &dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Box<dyn NodesStorage>> + Send>>) {
         let (node_id, incarnation_id, name): (NodeId, IncarnationId, PathName) = (NodeId::mint(), IncarnationId::mint(), "mesh1.rpc.1".parse().unwrap());
         let written = WrittenRows::default();
-        let base = NodeRow::new(name.clone(), node_id.clone(), crate::model::NodeStatus::ReadyForTraffic);
+        let base = NodeRow::new(name.clone(), node_id.clone(), crate::model::NodeStatus::Ready);
         let write = async |change: Box<dyn FnOnce(&mut BirthFacts) + Send>| {
             written.update(first, &node_id, Some(base.clone()), |r| change(r.birth_mut(&incarnation_id, &name))).await.unwrap();
         };
-        write(Box::new(|b| { b.declared.insert(NodeState::ReadyForTraffic); })).await;
+        write(Box::new(|b| { b.declared.insert(NodeState::Ready); })).await;
         write(Box::new(|b| { b.declared.insert(NodeState::Pending); })).await;
         let op = |attempt| rdm_core::status::DeclaredOperation { build_id: "b".into(), attempt, operation: "node.stop:mesh1.rpc.1".into() };
         write(Box::new(move |b| b.apply_operation(&op(1), NodeState::Stopped))).await;
@@ -911,7 +911,7 @@ mod tests {
         let store = reopened().await;
         let record = store.node(&node_id).await.unwrap().expect("the record is read whole");
         let b = record.birth(&incarnation_id).expect("the birth's facts");
-        assert_eq!(b.declared_state(), Some(NodeState::ReadyForTraffic), "a late Pending removes no ReadyForTraffic: the reader takes the greatest");
+        assert_eq!(b.declared_state(), Some(NodeState::Ready), "a late Pending removes no Ready: the reader takes the greatest");
         assert_eq!(b.declared.len(), 2, "two states, both kept");
         assert_eq!(b.operations.len(), 2, "two attempts' effects both stand");
         assert!(b.data_dir_lost.is_some() && b.data_dir_unreadable.is_some(), "a lost and an unreadable data dir both stand");
@@ -924,7 +924,7 @@ mod tests {
     /// on the record across a reload ... on the memory and file backends"): every fact of a birth is
     /// kept by its full identity inside its node's record, so no later or delayed write erases an
     /// independent fact; the file backend's record survives a reopen by another writer. What must NOT
-    /// happen: a late Pending replacing ReadyForTraffic, one attempt's effect erasing another's, a fact
+    /// happen: a late Pending replacing Ready, one attempt's effect erasing another's, a fact
     /// lost on the reload.
     #[tokio::test]
     async fn the_facts_of_one_birth_all_stand_on_its_record_across_a_reload_on_either_backend() {
@@ -976,11 +976,11 @@ mod tests {
         let store = Recording::default();
         let written = WrittenRows::default();
         let (name, node_id, inc): (PathName, NodeId, IncarnationId) = ("mesh1.rpc.1".parse().unwrap(), NodeId::mint(), IncarnationId::mint());
-        let mut held = NodeRow::new(name.clone(), node_id.clone(), crate::model::NodeStatus::ReadyForTraffic);
+        let mut held = NodeRow::new(name.clone(), node_id.clone(), crate::model::NodeStatus::Ready);
         held.config.insert("tier".into(), "gold".into());
         held.tags.insert("red".into());
         written.hold(&held);
-        written.update(&store, &node_id, None, |r| { r.birth_mut(&inc, &name).declared.insert(NodeState::ReadyForTraffic); }).await.unwrap();
+        written.update(&store, &node_id, None, |r| { r.birth_mut(&inc, &name).declared.insert(NodeState::Ready); }).await.unwrap();
         written.update(&store, &node_id, None, |r| r.birth_mut(&inc, &name).silence = Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
         written.update(&store, &node_id, None, |r| r.birth_mut(&inc, &name).cert = Some(CertDates { issued_at: 1, expires_at: 9, issuer_expires_at: 99, renew_at: 6 })).await.unwrap();
         assert_eq!(*store.log.lock().unwrap(), ["put", "put", "put"], "three writes, no read before any of them");
@@ -988,8 +988,8 @@ mod tests {
         let last = puts.last().unwrap();
         assert_eq!((last.config.get("tier").map(String::as_str), last.tags == ["red".to_string()].into()), (Some("gold"), true), "the record's own fields go with every put");
         let b = last.birth(&inc).unwrap();
-        assert!(b.declared.contains(&NodeState::ReadyForTraffic) && b.silence.is_some() && b.cert.is_some(), "the last put carries every fact the copy held: {b:?}");
-        assert!(puts[1].birth(&inc).unwrap().declared.contains(&NodeState::ReadyForTraffic), "the second put carries the first's fact too");
+        assert!(b.declared.contains(&NodeState::Ready) && b.silence.is_some() && b.cert.is_some(), "the last put carries every fact the copy held: {b:?}");
+        assert!(puts[1].birth(&inc).unwrap().declared.contains(&NodeState::Ready), "the second put carries the first's fact too");
     }
 
     /// CONTRACT (storage-whole-records.md cells: "a record write that succeeds while a tag-index write
@@ -1028,12 +1028,12 @@ mod tests {
         let (name, node_id, inc): (PathName, NodeId, IncarnationId) = ("mesh1.admin.1".parse().unwrap(), NodeId::mint(), IncarnationId::mint());
         written.update(&store, &node_id, Some(NodeRow::new(name.clone(), node_id.clone(), crate::model::NodeStatus::Pending)), |_| ()).await.unwrap();
         *store.listed.lock().unwrap() = vec![store.inner.node(&node_id).await.unwrap().unwrap()];
-        written.update(&store, &node_id, None, |r| { r.birth_mut(&inc, &name).declared.insert(NodeState::ReadyForTraffic); }).await.unwrap();
+        written.update(&store, &node_id, None, |r| { r.birth_mut(&inc, &name).declared.insert(NodeState::Ready); }).await.unwrap();
         written.fill(&store, "mesh1").await.unwrap();
         written.update(&store, &node_id, None, |r| r.birth_mut(&inc, &name).signing_cert = Some(SigningCertDates { issued_at: 1, expires_at: 9, renew_at: 6 })).await.unwrap();
         let stored = store.inner.node(&node_id).await.unwrap().unwrap();
         let b = stored.birth(&inc).unwrap();
-        assert!(b.declared.contains(&NodeState::ReadyForTraffic) && b.signing_cert.is_some(), "the write between the listing and the fill stands beside the next: {b:?}");
+        assert!(b.declared.contains(&NodeState::Ready) && b.signing_cert.is_some(), "the write between the listing and the fill stands beside the next: {b:?}");
     }
 
     #[tokio::test]
@@ -1067,7 +1067,7 @@ mod tests {
         let store = IndexRefusing::default();
         let written = WrittenRows::default();
         let (name, node_id): (PathName, NodeId) = ("mesh1.rpc.1".parse().unwrap(), NodeId::mint());
-        written.update(&store, &node_id, Some(NodeRow::new(name.clone(), node_id.clone(), crate::model::NodeStatus::ReadyForTraffic)), |_| ()).await.unwrap();
+        written.update(&store, &node_id, Some(NodeRow::new(name.clone(), node_id.clone(), crate::model::NodeStatus::Ready)), |_| ()).await.unwrap();
         store.refusing.store(true, std::sync::atomic::Ordering::SeqCst);
         let refused = written.update(&store, &node_id, None, |r| { r.tags.insert("red".into()); }).await;
         assert!(refused.is_err(), "the index write's refusal is named");
@@ -1219,22 +1219,22 @@ mod tests {
         r.birth_mut(&old, &r.name.clone());
         r.birth_mut(&birth, &r.name.clone());
         let walk = |r: &mut NodeRow, steps: &[(S, S)]| for (to, then) in steps { r.set_status(&birth, *to); assert_eq!(r.status, *then, "after {to:?}"); };
-        walk(&mut r, &[(S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic), (S::Starting, S::ReadyForTraffic), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
+        walk(&mut r, &[(S::Pending, S::Pending), (S::Ready, S::Ready), (S::Starting, S::Ready), (S::Pending, S::Pending), (S::Ready, S::Ready)]);
         // A stop (Q205): stopping from its admission, then each primitive's frame, then stopped.
         // The node's Stopped declaration may reach the mesh-primary before the stream's last frames
         // (node-stop.md step 5): a stopped row stands, and no stopping takes it.
-        walk(&mut r, &[(S::Stopping, S::Stopping), (S::ReadyForTraffic, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::ConnectionsDeleting, S::Left), (S::Stopped, S::Stopped), (S::Left, S::Stopped), (S::Stopping, S::Stopped)]);
-        walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
+        walk(&mut r, &[(S::Stopping, S::Stopping), (S::Ready, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::ConnectionsDeleting, S::Left), (S::Stopped, S::Stopped), (S::Left, S::Stopped), (S::Stopping, S::Stopped)]);
+        walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::Ready, S::Ready)]);
         walk(&mut r, &[(S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::ConnectionsDeleting, S::ConnectionsDeleted)]);
         // A stop of a node already connections-deleted: its acknowledgement sets stopping (Q233), and
         // its primitives' frames move the row on to stopped.
         walk(&mut r, &[(S::Stopping, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopped, S::Stopped)]);
-        walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
+        walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::Ready, S::Ready)]);
         // A stop of a node already left: the same.
         walk(&mut r, &[(S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopping, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopped, S::Stopped)]);
-        walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
+        walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::Ready, S::Ready)]);
         // A delete of the live node: deleting from its claim, then the composed stop's frames.
-        walk(&mut r, &[(S::Deleting, S::Deleting), (S::ReadyForTraffic, S::Deleting), (S::Pending, S::Deleting), (S::Starting, S::Deleting)]);
+        walk(&mut r, &[(S::Deleting, S::Deleting), (S::Ready, S::Deleting), (S::Pending, S::Deleting), (S::Starting, S::Deleting)]);
         assert!(!r.clone().set_status(&birth, S::Deleting), "deleting again leaves a deleting row unchanged");
         assert!(!r.clone().set_status(&old, S::Stopping), "a superseded birth moves no status");
         walk(&mut r, &[(S::Stopping, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopped, S::Stopped)]);
@@ -1245,7 +1245,7 @@ mod tests {
     }
 
     fn row(name: &str) -> NodeRow {
-        NodeRow::new(name.parse().unwrap(), NodeId::mint(), crate::model::NodeStatus::ReadyForTraffic)
+        NodeRow::new(name.parse().unwrap(), NodeId::mint(), crate::model::NodeStatus::Ready)
     }
 
     /// CONTRACT (node-name-update.md, "Claim and move"; node-delete.md: a delete releases the node's

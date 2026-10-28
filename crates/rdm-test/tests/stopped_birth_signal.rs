@@ -77,11 +77,11 @@ pub(crate) fn deployed(launch: &Launch) -> Deployed {
 
 pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     let waited = async {
-        while digest().status != MemberStatus::ReadyForTraffic {
+        while digest().status != MemberStatus::Ready {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     };
-    tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published ReadyForTraffic"));
+    tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published Ready"));
 }
 
 /// The `StopNode` `root` sends the birth `launch` names, over Node RPC as its mesh's primary sends it.

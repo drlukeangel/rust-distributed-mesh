@@ -561,7 +561,7 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
                 supersedes: None,
                 runtime: None,
             },
-            status: rdm_core::MemberStatus::ReadyForTraffic,
+            status: rdm_core::MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 0,

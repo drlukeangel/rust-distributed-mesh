@@ -18,7 +18,7 @@ fn reserved_unknown_and_malformed_contexts_are_named_before_data_and_mutate_noth
         tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
         let (sender, _rx) = topic.split();
         let author = crate::gossip_author(&fabric);
-        let status = |scope: &str, revision| Frame::MeshStatus { mesh: scope.into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: revision }.authored(&author, 2, revision);
+        let status = |scope: &str, revision| Frame::MeshStatus { mesh: scope.into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: revision }.authored(&author, 2, revision);
         sender.broadcast_neighbors(status("held", 1).encode().into()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status("held").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
         let held = receiver.mesh_status("held");

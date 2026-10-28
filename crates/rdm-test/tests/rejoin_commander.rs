@@ -35,7 +35,7 @@ pub(crate) async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, 
     }
 }
 
-/// The cell's mesh: `primary` launched the rpc node `running` (`mesh1.rpc.1`, ReadyForTraffic at its
+/// The cell's mesh: `primary` launched the rpc node `running` (`mesh1.rpc.1`, Ready at its
 /// primary); `commander` (`mesh1.admin.2`) never says anything on the mesh channel, so the node's
 /// heartbeat view holds no digest of it, while the primary carries it in the member projection the
 /// node installed (`_carried`). The commander reaches the node by its exact birth (`target`).
@@ -67,7 +67,7 @@ async fn rig_carried(tag: &str, carry: bool) -> Rig {
 /// [`rig_carried`], the node running `pre_node_ready` as its `pre_node_ready` hook when one is given.
 pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: Option<std::sync::Arc<rdm_test::pre_node_ready_probe::TestPreNodeReady>>) -> Rig {
     let fabric = rdm_core::FabricId::mint();
-    let primary = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+    let primary = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
     let commander = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, "mesh1.admin.2").await;
     let dir = std::env::temp_dir().join(format!("{tag}-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -101,25 +101,25 @@ pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: O
     let digest_view = &primary.observer.topology_view.digest_view;
     let mut heard = digest_view.heard_changes();
     tokio::time::timeout(NEVER, async {
-        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
             heard.changed().await.unwrap();
         }
     })
     .await
-    .expect("the node never reached ReadyForTraffic at its primary");
+    .expect("the node never reached Ready at its primary");
 
     // Only the carry's delta is in flight once the carry starts: the node first holds its primary's
-    // projection naming it ReadyForTraffic, so no later delta reaches it ahead of an earlier one. A delta
+    // projection naming it Ready, so no later delta reaches it ahead of an earlier one. A delta
     // ahead of its predecessor is a gap, and the top-up's topology read installs the primary's whole
     // projection into the node's view, the commander included (gossip.md §3.3).
     let own_key = digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.node.endpoint_id.0.clone()).expect("the primary holds the node");
     tokio::time::timeout(NEVER, async {
-        while running.topology_view.projected_member_at(&own_key).is_none_or(|d| d.status != MemberStatus::ReadyForTraffic) {
+        while running.topology_view.projected_member_at(&own_key).is_none_or(|d| d.status != MemberStatus::Ready) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("the node never installed its primary's projection naming it ReadyForTraffic");
+    .expect("the node never installed its primary's projection naming it Ready");
 
     // From here on the primary carries the commander in the member projection it publishes (when
     // `carry`); the commander itself says nothing on the mesh channel.
@@ -181,12 +181,12 @@ fn a_stopped_node_whose_heartbeat_view_lacks_its_commander_starts_and_joins_it_t
         let started = call(&commander, &target, &start).await;
         assert_eq!(started, StatusReply::Started, "the node starts after its stop, joining the admin that commanded it through the call");
         tokio::time::timeout(NEVER, async {
-            while !matches!(call(&commander, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
+            while !matches!(call(&commander, &target, &probe).await, StatusReply::Current { state: NodeState::Ready, .. }) {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await
-        .expect("the started node never answered ReadyForTraffic");
+        .expect("the started node never answered Ready");
 
         // The start's join went to the commander, named by the key of its own call.
         let joins = spans_of(&spans, "rdm.mesh.entry.update.via-pull-attempt", "mesh1.rpc.1");
@@ -209,7 +209,7 @@ fn a_stopped_node_whose_heartbeat_view_lacks_its_commander_starts_and_joins_it_t
 /// stopped and started by an admin of its mesh that no record the node holds names (neither its
 /// heartbeat view nor any projection it installed: an admin born after its stop). The stop is
 /// answered `Stopped` and the start `Started`: the start joined the admin through the call's endpoint
-/// and path, and the node is the same birth, ReadyForTraffic again. Must NOT happen: the start
+/// and path, and the node is the same birth, Ready again. Must NOT happen: the start
 /// refused `commander-unrecorded`.
 #[test]
 fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_joins_it_through_the_call() {
@@ -230,12 +230,12 @@ fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_join
         let started = call(&commander, &target, &start).await;
         assert_eq!(started, StatusReply::Started, "the node starts after its stop, joining the admin that commanded it through the call, with no record of it");
         tokio::time::timeout(NEVER, async {
-            while !matches!(call(&commander, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
+            while !matches!(call(&commander, &target, &probe).await, StatusReply::Current { state: NodeState::Ready, .. }) {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await
-        .expect("the started node never answered ReadyForTraffic");
+        .expect("the started node never answered Ready");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
@@ -248,7 +248,7 @@ fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_join
 /// killed mid-restart. A second admin of the mesh (`mesh1.admin.2`, the successor) commands the start
 /// while the first start is still under way. The successor's start is answered `Started`: the start
 /// joined the successor over the successor's own call, and the node is the same birth,
-/// ReadyForTraffic again. Must NOT happen: the successor's start answering the lost commander's
+/// Ready again. Must NOT happen: the successor's start answering the lost commander's
 /// outcome (`StartFailed` at `node.join`, every join attempt aimed at the lost admin), or the
 /// successor's call cut before its answer.
 #[test]
@@ -311,12 +311,12 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
             let started = call(&successor, &target, &start(3)).await;
             assert_eq!(started, StatusReply::Started, "the successor's start is answered Started: the start joined the successor over the successor's own call");
             tokio::time::timeout(NEVER, async {
-                while !matches!(call(&successor, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
+                while !matches!(call(&successor, &target, &probe).await, StatusReply::Current { state: NodeState::Ready, .. }) {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             })
             .await
-            .expect("the started node never answered ReadyForTraffic");
+            .expect("the started node never answered Ready");
             let successor_short = successor_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
             let joins = spans_of(&spans, "rdm.mesh.entry.update.via-pull-attempt", "mesh1.rpc.1");
             assert!(
@@ -372,7 +372,7 @@ fn a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call() {
 /// learns who answered from the join answer): an rpc node is stopped and started by an admin no
 /// record it holds names, and its hook answers `Blocked { PrimaryAddressed }` after that start. The
 /// commander then addresses the node with a down op (a probe): the hook runs again at once, passes,
-/// and the node is ReadyForTraffic. The authority is known by the endpoint of the call it answered
+/// and the node is Ready. The authority is known by the endpoint of the call it answered
 /// on, so its down op is counted whatever record names it. Must NOT happen: the hook waiting on, and
 /// the node held Pending, because the down op came from an endpoint no record names.
 #[test]
@@ -410,12 +410,12 @@ fn a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_n
         let settled = tokio::time::timeout(NEVER, handle.settled()).await.unwrap_or_else(|_| panic!("the hook never ran again on the commander's down op: {:?}", handle.state()));
         assert_eq!(settled, PreNodeReadyState::Passed);
         tokio::time::timeout(NEVER, async {
-            while !matches!(call(&commander, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
+            while !matches!(call(&commander, &target, &probe).await, StatusReply::Current { state: NodeState::Ready, .. }) {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await
-        .expect("the started node never answered ReadyForTraffic");
+        .expect("the started node never answered Ready");
         let blocked = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.node.reject.via-pre-node-ready-blocked" && f.get("cleared_by").map(String::as_str) == Some("primary-addressed")).count();
         assert_eq!(blocked, 1, "the blocker span closes naming the event that cleared it, primary-addressed");
         let _ = std::fs::remove_dir_all(&dir);
@@ -427,7 +427,7 @@ fn a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_n
 /// node's start is commanded by an admin that answers its join and is lost while the start's hook
 /// runs (its endpoint closes before the topology read). A later admin commands the start while it is
 /// under way. The start's topology read and rafka-time refresh go to the later commander, reached back
-/// over its own call, and the start is answered `Started`: the node is ReadyForTraffic, its rafka-time
+/// over its own call, and the start is answered `Started`: the node is Ready, its rafka-time
 /// refresh served by the later commander. Must NOT happen: the read held on the lost commander's
 /// endpoint until its deadline and the start failed at `node.topology`.
 #[test]
@@ -483,12 +483,12 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
             let (started, ()) = tokio::join!(later, release);
             assert_eq!(started, StatusReply::Started, "the later commander's start is answered Started: its reads went to the later commander");
             tokio::time::timeout(NEVER, async {
-                while !matches!(call(&successor, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
+                while !matches!(call(&successor, &target, &probe).await, StatusReply::Current { state: NodeState::Ready, .. }) {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             })
             .await
-            .expect("the started node never answered ReadyForTraffic");
+            .expect("the started node never answered Ready");
             let successor_short = successor_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
             let refreshed = spans_of(&spans, "rdm.mesh.node.update.via-rafka-time-refreshed", "mesh1.rpc.1");
             assert!(

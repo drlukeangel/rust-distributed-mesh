@@ -117,10 +117,10 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication") };
 
-        let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, MemberStatus::ReadyForTraffic, 0, 41_101);
+        let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_101);
         p.publish(&p_digest).await.unwrap();
         let (one, one_birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(p.digest_view.record(digest("mesh1.rpc.1", &one, &one_birth, MemberStatus::ReadyForTraffic, 1, 41_111)));
+        assert!(p.digest_view.record(digest("mesh1.rpc.1", &one, &one_birth, MemberStatus::Ready, 1, 41_111)));
         assert!(p.digest_view.started(&one, &one_birth, &"mesh1.rpc.1".parse().unwrap()));
         let own = || p.digest_view.get(p_node_id.as_str()).expect("the primary holds itself").0;
 

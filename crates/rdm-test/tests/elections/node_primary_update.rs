@@ -174,7 +174,7 @@ async fn born(estate: Estate, skewed: Option<&str>) -> (Estate, Vec<Value>) {
     }
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
     let nodes = Estate::values(&estate.settles_to_named(&names(), Duration::from_secs(30)).await);
-    // The initial fabric refuses a node replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node replace until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     (estate, nodes)
 }
@@ -439,7 +439,7 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
             match estate.node_views_at(&Estate::path(at)).await {
                 Some(v) => {
                     let ns = Estate::values(&v);
-                    let all = everyone.iter().all(|name| ns.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic"));
+                    let all = everyone.iter().all(|name| ns.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready"));
                     if all && fabric_primary(&ns).as_deref() == Some(fp.as_str()) {
                         healed += 1;
                     }
@@ -522,14 +522,14 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
         let r = Estate::values(&views);
         let held = r.iter().filter(|x| x["is_fabric_primary"] == true).count();
         worst = worst.max(held);
-        successor_id = r.iter().find(|x| x["name"] == p.as_str() && x["incarnation_id"] != p_node["incarnation_id"] && x["status"] == "ready-for-traffic").filter(|_| held == 1).map(|x| s(&x["node_id"]));
+        successor_id = r.iter().find(|x| x["name"] == p.as_str() && x["incarnation_id"] != p_node["incarnation_id"] && x["status"] == "ready").filter(|_| held == 1).map(|x| s(&x["node_id"]));
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let successor_id = successor_id.expect("the replaced admin's path is ready again under a new birth");
     let p_old = p.parse::<rdm_core::PathName>().unwrap().renamed().to_string();
     assert_ne!(successor_id, p_id, "P's path holds a new birth");
     assert!(worst <= 1, "a view showed {worst} fabric primaries");
-    // The fabric is ready-for-traffic once its planned births are all ready, set by the new
+    // The fabric is ready once its planned births are all ready, set by the new
     // fabric-primary.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     // The Build is complete when the caller's last stream ends `Complete` and `build.get` says no step

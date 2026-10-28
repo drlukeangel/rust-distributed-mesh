@@ -423,9 +423,9 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         } else {
             NodeStatus::PendingReconnect
         };
-        // Application routing (states.md "Routing"): the birth listed ready-for-traffic, and the view
-        // holds it and its mesh ready-for-traffic. Anything else is a routing stop.
-        n.routable = n.status == NodeStatus::ReadyForTraffic && digest_view.routable(d.node.node_id.as_str());
+        // Application routing (states.md "Routing"): the birth listed ready, and the view
+        // holds it and its mesh ready. Anything else is a routing stop.
+        n.routable = n.status == NodeStatus::Ready && digest_view.routable(d.node.node_id.as_str());
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
         n.transport_addr = Some(d.node.transport_addr);
@@ -600,17 +600,17 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // that holds no seat serves the `degraded` the holder published.
         let held = records.fabric_state();
         let degraded = records.peer_recovering() || records.adopted_degraded() || records.published_degraded();
-        topology.fabric.status = if held == crate::fabric_state::FabricState::ReadyForTraffic && degraded { ScopeStatus::Degraded } else { held.scope() };
+        topology.fabric.status = if held == crate::fabric_state::FabricState::Ready && degraded { ScopeStatus::Degraded } else { held.scope() };
     }
     let declared_meshes = records.declared.lock().unwrap().meshes.clone();
     for m in mesh_names {
-        // A mesh becomes ready-for-traffic when every node of the mesh is (states.md); once heard
+        // A mesh becomes ready when every node of the mesh is (states.md); once heard
         // ready it stays ready while it has a primary, because a lost node is a degraded fabric and
         // a checklist for the primary that takes over, never a mesh gone back to pending.
         let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.node_type_primary(&m, NodeKind::NodeAdmin).is_some());
         let id = mesh_ids.get(&m).cloned();
-        // A mesh past ready-for-traffic is the state its row holds (states.md: pending ->
-        // ready-for-traffic -> leaving -> dead): the leaving mesh's primary commits Leaving at
+        // A mesh past ready is the state its row holds (states.md: pending ->
+        // ready -> leaving -> dead): the leaving mesh's primary commits Leaving at
         // delete-mesh, and this projection is what that primary announces on its MeshStatus send.
         // Dead is final: after mesh.deleted the mesh row is Dead and its last admin, still its
         // primary, publishes MeshStatus Dead (R-NS1 item 1); an admin that does not author the
@@ -622,7 +622,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             _ if id.as_ref().is_some_and(|id| records.mesh_deleted(id)) => ScopeStatus::Dead,
             _ if records.heard_dead(id.as_ref(), authored_here) => ScopeStatus::Dead,
             Some(rdm_core::status::MeshState::Leaving) => ScopeStatus::Leaving,
-            _ if ready => ScopeStatus::ReadyForTraffic,
+            _ if ready => ScopeStatus::Ready,
             _ => ScopeStatus::Pending,
         };
         topology.meshes.push(Mesh { id, name: m, status });

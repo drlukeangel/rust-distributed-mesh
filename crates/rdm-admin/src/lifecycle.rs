@@ -44,10 +44,11 @@ pub enum LifecycleScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LifecycleState {
-    /// Created and not yet ready for traffic.
+    /// Created and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    ReadyForTraffic,
+    #[serde(alias = "ready-for-traffic")]
+    Ready,
     /// Leaving: it has announced its departure.
     Leaving,
     /// Dead: it is gone.
@@ -439,7 +440,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    const READY: TransitionKey = TransitionKey { scope: LifecycleScope::Fabric, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
+    const READY: TransitionKey = TransitionKey { scope: LifecycleScope::Fabric, from: LifecycleState::Pending, to: LifecycleState::Ready };
 
     /// Records its name into a shared call log; fails while `fail_left > 0`.
     struct Probe {
@@ -558,13 +559,13 @@ mod tests {
         Hooks { hooks: h.hooks.iter().map(|(s, k)| (s.clone(), k.clone())).collect() }
     }
 
-    /// CONTRACT: a node's Pending -> ReadyForTraffic transition has one id per birth. A retry of
+    /// CONTRACT: a node's Pending -> Ready transition has one id per birth. A retry of
     /// the same birth keeps its id (so its Complete hook receipts are reused); a re-birth at the
     /// same path is another execution (so its hooks run). Must NOT happen: two births of one path
     /// sharing a transition id, which would skip the second birth's hooks.
     #[test]
     fn a_re_birth_at_the_same_path_is_another_transition_execution() {
-        let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
+        let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::Ready };
         let first = Transition::id_for_birth(key, "mesh1.rpc.1", "inc-a");
         assert_eq!(first, Transition::id_for_birth(key, "mesh1.rpc.1", "inc-a"), "a retry of one birth keeps its id");
         assert_ne!(first, Transition::id_for_birth(key, "mesh1.rpc.1", "inc-b"), "a re-birth at the path is another execution");
@@ -582,8 +583,8 @@ mod tests {
         let p = LifecycleTransitionPipeline::new(hooks, Arc::new(MemoryReceiptLog::default()));
         let shape = ShapeFacts { desired_meshes: 2 };
         let mut committed = false;
-        let r = p.transition(run(READY, &shape), || Err("mesh2 is not ready-for-traffic".into()), || committed = true).await;
-        assert_eq!(r, TransitionResult::NotEligible { reason: "mesh2 is not ready-for-traffic".into() });
+        let r = p.transition(run(READY, &shape), || Err("mesh2 is not ready".into()), || committed = true).await;
+        assert_eq!(r, TransitionResult::NotEligible { reason: "mesh2 is not ready".into() });
         assert!(!committed && log.lock().unwrap().is_empty());
     }
 

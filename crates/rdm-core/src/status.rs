@@ -24,8 +24,8 @@
 //! the node, mesh and fabric families have op numbers of their own: a caller asks, the receiver
 //! answers from what it holds, and nothing changes. Their answers are [`crate::views`].
 //!
-//! Legal moves run forward along `Pending -> ReadyForTraffic -> ConnectionsDeleting -> Stopped` (and
-//! `Pending -> ReadyForTraffic -> Leaving -> Dead` for a Mesh), skips included; the same
+//! Legal moves run forward along `Pending -> Ready -> ConnectionsDeleting -> Stopped` (and
+//! `Pending -> Ready -> Leaving -> Dead` for a Mesh), skips included; the same
 //! state again is `AlreadyApplied`, a backward move `RejectedInvalidNodeTransition` or `RejectedInvalidMeshTransition`. A declaration
 //! for a birth the receiver holds a newer incarnation of, or holds as departed, is
 //! `RejectedStaleIncarnation`. A receiver that is not the authority, or a sender that is not the
@@ -44,10 +44,11 @@ pub struct Status;
 /// A node birth's lifecycle state, as declared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum NodeState {
-    /// Born and not yet ready for traffic.
+    /// Born and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    ReadyForTraffic,
+    #[serde(alias = "ReadyForTraffic")]
+    Ready,
     /// Connections-deleting: it takes no new work.
     ConnectionsDeleting,
     /// Stopped: declared at node.stop's end, after its connections are deleted and its transport cut
@@ -59,10 +60,11 @@ pub enum NodeState {
 /// A Mesh's status, as declared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MeshState {
-    /// Created and not yet ready for traffic.
+    /// Created and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    ReadyForTraffic,
+    #[serde(alias = "ReadyForTraffic")]
+    Ready,
     /// Leaving: it is closing.
     Leaving,
     /// Dead: every member is gone.
@@ -72,8 +74,9 @@ pub enum MeshState {
 /// A Fabric event the fabric-primary applies at a mesh primary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FabricEvent {
-    /// The fabric is ready for traffic.
-    ReadyForTraffic,
+    /// The fabric is ready.
+    #[serde(alias = "ReadyForTraffic")]
+    Ready,
     /// A fabric shutdown was initiated by the named admin.
     ShutdownInitiated {
         /// The admin that initiated the shutdown.
@@ -85,7 +88,7 @@ impl FabricEvent {
     /// The event's name as it appears in spans and replies.
     pub fn name(&self) -> &'static str {
         match self {
-            Self::ReadyForTraffic => "ready-for-traffic",
+            Self::Ready => "ready",
             Self::ShutdownInitiated { .. } => "shutdown-initiated",
         }
     }
@@ -115,7 +118,7 @@ pub enum StatusRequest {
         /// The state the birth committed.
         state: NodeState,
         /// The operation that produced the state, when one did (a stop's `Leaving`, a start's
-        /// `Pending` and `ReadyForTraffic`); `None` for a state the birth measured itself.
+        /// `Pending` and `Ready`); `None` for a state the birth measured itself.
         operation: Option<DeclaredOperation>,
     },
     /// Upward: the mesh's current primary declares the Mesh's state to the fabric-primary.
@@ -435,7 +438,7 @@ pub enum StatusRequest {
     /// the reply. Answered [`StatusReply::TagsCreated`] (`node.tags.created`) once the row and its
     /// index entries are written; a non-label, an empty list, or labels that would carry the node past
     /// [`MAX_NODE_TAGS`] are [`StatusReply::RejectedTags`] with nothing written. No precondition but
-    /// the fabric having first reached ready-for-traffic; the node is told nothing. A single call,
+    /// the fabric having first reached ready; the node is told nothing. A single call,
     /// never a Build.
     CreateTags {
         /// The birth whose tags grow.
@@ -1193,7 +1196,7 @@ pub enum StatusReply {
     },
     /// The `UpdateName` was not made: the node admits connections (R-CR1). Its status is not
     /// stopped, and its mesh-primary holds no `node.connections.deleted` of an `All` made while it was
-    /// not ready-for-traffic that left it holding nothing. Nothing was written.
+    /// not ready that left it holding nothing. Nothing was written.
     RejectedAdmittingConnections {
         /// The node's status as its mesh-primary holds it (at the cut, when it holds one).
         status: NodeStatus,
@@ -1472,7 +1475,7 @@ pub enum RetryOn {
         /// The node waited for.
         node_id: NodeId,
     },
-    /// The authority published ReadyForTraffic.
+    /// The authority published Ready.
     PrimaryReady,
     /// The authority addressed this node (it sent a down op).
     PrimaryAddressed,
@@ -1926,7 +1929,7 @@ pub fn member_of_declared(s: NodeState) -> crate::MemberStatus {
     use crate::MemberStatus as M;
     match s {
         NodeState::Pending => M::Pending,
-        NodeState::ReadyForTraffic => M::ReadyForTraffic,
+        NodeState::Ready => M::Ready,
         NodeState::ConnectionsDeleting => M::ConnectionsDeleting,
         NodeState::Stopped => M::Leaving,
     }
@@ -1937,7 +1940,7 @@ pub fn declared_of_member(s: crate::MemberStatus) -> NodeState {
     use crate::MemberStatus as M;
     match s {
         M::Pending => NodeState::Pending,
-        M::ReadyForTraffic => NodeState::ReadyForTraffic,
+        M::Ready => NodeState::Ready,
         M::ConnectionsDeleting => NodeState::ConnectionsDeleting,
         M::Leaving => NodeState::Stopped,
     }
@@ -1953,7 +1956,7 @@ mod tests {
             (StatusReply::Applied, ReplyKind::Success),
             (StatusReply::AlreadyApplied, ReplyKind::new(crate::outcome::Code::AlreadyExists)),
             (StatusReply::Reserved2 { in_flight: 3 }, ReplyKind::Success),
-            (StatusReply::Current { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic }, ReplyKind::Success),
+            (StatusReply::Current { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Ready }, ReplyKind::Success),
             (StatusReply::RejectedStaleIncarnation { held: IncarnationId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (StatusReply::RejectedStaleMesh { held: MeshId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (StatusReply::RejectedStaleFabric { held: FabricId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
@@ -2016,10 +2019,10 @@ mod tests {
             assert_eq!(Status::classify_reply(&back), kind);
         }
         let reqs = [
-            StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic, operation: None },
+            StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Ready, operation: None },
             StatusRequest::ApplyNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ConnectionsDeleting },
             StatusRequest::ProbeNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
-            StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic },
+            StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready },
             StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending },
             StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } },
             StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.1".into() },
@@ -2198,13 +2201,13 @@ mod tests {
             deployment_id: Some("d".repeat(32)),
             provider: Some(crate::views::ProviderKind::Process),
             data_dir: Some("/var/lib/rdm/fabric1/mesh1.rpc.12".into()),
-            status: crate::views::NodeStatus::ReadyForTraffic,
+            status: crate::views::NodeStatus::Ready,
             is_primary: false,
             is_fabric_primary: false,
             admin_api_base: None,
             transport_addr: Some("127.0.0.1:41235".parse().unwrap()),
             listeners: vec![("control".into(), "127.0.0.1:41236".parse().unwrap())],
-            declared: Some("ReadyForTraffic".into()),
+            declared: Some("Ready".into()),
             stopped: false,
             load: Some(crate::NodeLoad { cpu_used_millicores: 2400, cpu_budget_millicores: 16000, ram_used_bytes: 123_456_789, ram_budget_bytes: 64_000_000_000 }),
             gossip: Some(crate::GossipStats { heard: 20, neighbours: 5, frames_sent: 123_456, frames_received: 654_321 }),
@@ -2216,7 +2219,7 @@ mod tests {
     }
 
     fn mesh_view() -> crate::views::MeshView {
-        crate::views::MeshView { renewals: None, id: Some(MeshId::mint()), name: "mesh1".into(), status: crate::views::ScopeStatus::ReadyForTraffic, primary_admin: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, nodes: vec!["mesh1.admin.1".parse().unwrap(), "mesh1.rpc.1".parse().unwrap()] }
+        crate::views::MeshView { renewals: None, id: Some(MeshId::mint()), name: "mesh1".into(), status: crate::views::ScopeStatus::Ready, primary_admin: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, nodes: vec!["mesh1.admin.1".parse().unwrap(), "mesh1.rpc.1".parse().unwrap()] }
     }
 
     fn connection_view() -> crate::views::ConnectionView {
@@ -2259,10 +2262,10 @@ mod tests {
     fn transitions_move_forward_only_and_the_same_state_is_already_applied() {
         use NodeState::*;
         assert_eq!(transition(None, Pending), Transition::Apply);
-        assert_eq!(transition(Some(Pending), ReadyForTraffic), Transition::Apply);
+        assert_eq!(transition(Some(Pending), Ready), Transition::Apply);
         assert_eq!(transition(Some(Pending), Stopped), Transition::Apply, "a skip is a forward move");
-        assert_eq!(transition(Some(ReadyForTraffic), ReadyForTraffic), Transition::AlreadyApplied);
-        assert_eq!(transition(Some(ConnectionsDeleting), ReadyForTraffic), Transition::Backward { current: ConnectionsDeleting });
+        assert_eq!(transition(Some(Ready), Ready), Transition::AlreadyApplied);
+        assert_eq!(transition(Some(ConnectionsDeleting), Ready), Transition::Backward { current: ConnectionsDeleting });
         assert_eq!(transition(Some(MeshState::Dead), MeshState::Pending), Transition::Backward { current: MeshState::Dead });
     }
 }

@@ -59,7 +59,7 @@ What an operation is admitted against, gate by gate and the source each reads, i
 
 | Workflow | Read when |
 |---|---|
-| [fabric.create](lifecycles/fabric-create.md) | Creating a fabric: minting it, its first mesh's first node-admin as fabric-primary, the fabric's states to ready-for-traffic |
+| [fabric.create](lifecycles/fabric-create.md) | Creating a fabric: minting it, its first mesh's first node-admin as fabric-primary, the fabric's states to ready |
 | [node.primary.update](lifecycles/node-primary-update.md) | Moving the primary of the nodes of one type in one mesh to its successor, first in every stop, delete, replace or `node.connections.delete { scope: All }` of a primary |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | Moving the fabric-primary, the first step of a mesh.delete of its mesh |
 | [fabric.ca.renew](lifecycles/fabric-ca-renew.md) | RDM's CA rotated internally on policy under the same anchor: every issuer re-minted, no node's trust set touched |
@@ -83,7 +83,7 @@ Callers use the [typed node and Build objects](node-rpc-envelope.md#typed-object
 | Workflow / call | Read when |
 |---|---|
 | [node.create](lifecycles/node-create.md) | Bringing a new node into a mesh, through its first start |
-| [node.start](lifecycles/node-start.md) | Taking a node from a join to ready-for-traffic, first start or after a stop |
+| [node.start](lifecycles/node-start.md) | Taking a node from a join to ready, first start or after a stop |
 | [node.mesh.join](lifecycles/node-mesh-join.md) (primitive) | A node's report to its primary and its channel join, `joining` then `node.mesh.joined`; run inside start, standalone after a tickle that reached a node off its channel, and by a node-admin entering a mesh |
 | [node.mesh.leave](lifecycles/node-mesh-leave.md) (primitive) | A node leaving its channels after its connections are deleted, `leaving` then `node.mesh.left`; the step stop and delete end with |
 | [node.tickle](lifecycles/node-tickle.md) (primitive) | The reach ladder on an exact birth: direct, then both via-peer kicks at once; `reached` or `unreached`, never dead; run by node investigation and the primary-update successor ladder |
@@ -117,7 +117,7 @@ are explicit.
 |---|---|---|
 | 0x01 Ping | [Ping](node-rpc-envelope.md#ping-op-0x01-core) | [Mesh investigation](lifecycles/mesh-investigation.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md) |
 | 0x1A Forward | [Forward](node-rpc-envelope.md#forward-op-0x1a-core) | [Mesh investigation](lifecycles/mesh-investigation.md) |
-| 0x1B Status | [Status](node-rpc-envelope.md#status-op-0x1b-rdm) | [node.cert.renew](lifecycles/node-cert-renew.md), [node.issuer.update](lifecycles/node-issuer-update.md), [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive), [Node status](lifecycles/node-status.md), [replace](lifecycles/node-replace.md), [delete](lifecycles/node-delete.md), [ready-for-traffic](lifecycles/states.md#the-fabrics-ready), [mesh.delete](lifecycles/mesh-delete.md), [start](lifecycles/node-start.md), [create](lifecycles/node-create.md), [node recovery](lifecycles/node-recovery.md), [stop](lifecycles/node-stop.md), [node.connections.delete](lifecycles/node-connections-delete.md) |
+| 0x1B Status | [Status](node-rpc-envelope.md#status-op-0x1b-rdm) | [node.cert.renew](lifecycles/node-cert-renew.md), [node.issuer.update](lifecycles/node-issuer-update.md), [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive), [Node status](lifecycles/node-status.md), [replace](lifecycles/node-replace.md), [delete](lifecycles/node-delete.md), [ready](lifecycles/states.md#the-fabrics-ready), [mesh.delete](lifecycles/mesh-delete.md), [start](lifecycles/node-start.md), [create](lifecycles/node-create.md), [node recovery](lifecycles/node-recovery.md), [stop](lifecycles/node-stop.md), [node.connections.delete](lifecycles/node-connections-delete.md) |
 | 0x1C BuildClaim | [BuildClaim](node-rpc-envelope.md#buildclaim-op-0x1c-rdm) | [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) claim-and-dispatch, [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md) |
 | 0x1D JoinNode (node.mesh.join's report) | [Join](node-rpc-envelope.md#join-op-0x1d-rdm) | [node.mesh.join](lifecycles/node-mesh-join.md), [create](lifecycles/node-create.md), [replace](lifecycles/node-replace.md), [node recovery](lifecycles/node-recovery.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh) |
 | 0x1E GetTopology (node.topology.get) | [Topology](node-rpc-envelope.md#topology-op-0x1e-rdm) | [Create](lifecycles/node-create.md), [replace](lifecycles/node-replace.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md), [node.topology.get and running reconnect](lifecycles/node-topology-get.md), [node recovery](lifecycles/node-recovery.md) |
@@ -157,4 +157,4 @@ dissemination facts around an operation ([frame catalog](gossip.md#31-frame-cata
 not the Build operation and not `0x1B` NodeState variants.
 
 **Node self-published status.** A topology digest reports the admitted instance's status, for
-example `Pending` or `ReadyForTraffic`. It is a topology fact, not a caller progress event.
+example `Pending` or `Ready`. It is a topology fact, not a caller progress event.

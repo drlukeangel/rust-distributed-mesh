@@ -362,7 +362,7 @@ pub struct Watch {
     /// The carrier each mesh's latest probe went through.
     pub carriers: Mutex<BTreeMap<String, PathName>>,
     /// Fabric recovery (Q122): no node-admin of the fabric-primary's mesh answered by the decision step, so
-    /// the lowest ReadyForTraffic mesh-primary on the backbone starts it.
+    /// the lowest Ready mesh-primary on the backbone starts it.
     pub fabric_recovery: Arc<crate::fabric_recovery::FabricRecoveryDoor>,
 }
 
@@ -429,7 +429,7 @@ pub async fn run(w: Watch) {
                             wait = wait.min(due);
                         }
                         // No node-admin of that mesh answered by the decision step: fabric recovery starts at the
-                        // lowest ReadyForTraffic mesh-primary on the backbone, exactly as in the own-mesh arm (Q122).
+                        // lowest Ready mesh-primary on the backbone, exactly as in the own-mesh arm (Q122).
                         let decided = { let l = w.ladder.lock().unwrap(); l.unreachable_decided(&mesh) || l.recovery_decided(&mesh) };
                         w.fabric_recovery.start_if_mine(false, decided).await;
                     }
@@ -493,7 +493,7 @@ pub async fn run(w: Watch) {
 /// The mesh this admin, a mesh-primary that does not hold the fabric seat, investigates while the
 /// fabric-primary is unheard: the fabric seat record's mesh, when it is not this admin's own (its own
 /// mesh's standby is the seat watch's arm, node-recovery.md step 2) and the record's birth is held off
-/// ready-for-traffic in this admin's view. `None` otherwise.
+/// ready in this admin's view. `None` otherwise.
 fn fabric_primary_mesh_to_investigate(w: &Watch, view: &Topology, me: &PathName) -> Option<String> {
     if !view.is_mesh_primary(&me.mesh, &w.me_id) {
         return None;
@@ -661,7 +661,7 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
             Step::Decide { recover, latest, unheard_ms } => {
                 // The fabric-primary's mesh, decided at a mesh-primary that is not the fabric-primary: no
                 // node-admin of that mesh answered either probe, so the backbone rule applies and the
-                // lowest ReadyForTraffic mesh-primary is fabric-primary (fabric-recovery.md "Outside its
+                // lowest Ready mesh-primary is fabric-primary (fabric-recovery.md "Outside its
                 // mesh"; elections §4.3). The re-creation of the lost mesh's node-admin follows it.
                 let record = w.topology_view.primaries().fabric().filter(|r| r.mesh == mesh && r.node_id != w.me_id);
                 if let (Some(_), false) = (record, view.is_fabric_primary(&w.me_id)) {
@@ -962,7 +962,7 @@ mod tests {
         use crate::model::*;
         let node = |n: &str| Node::allocated(n.parse().unwrap());
         let t = Topology {
-            fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: Vec::new(),
             nodes: vec![node("mesh1.admin.1"), node("mesh2.admin.1"), node("mesh2.rpc.1"), node("mesh3.admin.1")],
         };
@@ -1027,14 +1027,14 @@ mod tests {
 
     fn view_of(nodes: Vec<Node>) -> Topology {
         use crate::model::{Fabric, FabricId, ProviderKind, ScopeStatus};
-        Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process }, meshes: vec![], nodes }
+        Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes }
     }
 
     fn admin(name: &str, primary: bool) -> Node {
         let mut n = Node::allocated(name.parse().unwrap());
         n.node_id = NodeId::mint();
         n.incarnation_id = Some(crate::model::IncarnationId::mint());
-        n.status = NodeStatus::ReadyForTraffic;
+        n.status = NodeStatus::Ready;
         n.is_primary = primary;
         n
     }
@@ -1067,7 +1067,7 @@ mod tests {
         let digest = |name: &str| MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { node_id: NodeId::mint(), name: name.parse().unwrap(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
-            status: MemberStatus::ReadyForTraffic,
+            status: MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: 1,
@@ -1397,7 +1397,7 @@ mod tests {
         }
 
         fn current(admin: &Node) -> ProbeEnd {
-            ProbeEnd::Reply(StatusReply::Current { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap(), state: rdm_core::status::NodeState::ReadyForTraffic })
+            ProbeEnd::Reply(StatusReply::Current { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap(), state: rdm_core::status::NodeState::Ready })
         }
     }
 

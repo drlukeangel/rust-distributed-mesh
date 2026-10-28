@@ -3145,7 +3145,7 @@ mod tests {
         rpc.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
         let change = crate::accepted::TopologyChange::Reconcile { topology_storage_provider: None, based_on: current.build_id.clone(), nodes: vec![admin, rpc] };
         let observed = crate::topology::Topology {
-            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
             meshes: vec![],
             nodes: vec![],
         };
@@ -3765,11 +3765,11 @@ mod tests {
     /// needed to reconstruct the Fabric and continue an active Build", §5.3: "a successor reads them
     /// there"): a fabric-primary's committed Build facts (the accepted Build, its attempt claim, a step
     /// receipt, the attempt's completion) stand on the shared root before the fabric's first
-    /// ready-for-traffic, so the same fabric-primary restarted (a new process of its birth on the root)
+    /// ready, so the same fabric-primary restarted (a new process of its birth on the root)
     /// and a successor opened on the root each read every one of them, and the Build complete. Must NOT
     /// happen: a committed fact lost with the process that held it.
     #[tokio::test]
-    async fn every_build_fact_committed_before_the_first_ready_for_traffic_is_recovered_by_a_restart_and_by_a_successor() {
+    async fn every_build_fact_committed_before_the_first_ready_is_recovered_by_a_restart_and_by_a_successor() {
         let d = crate::test_support::tempdir("q61-recovery");
         let store = d.join("store");
         std::fs::create_dir_all(&store).unwrap();

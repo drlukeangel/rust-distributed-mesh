@@ -582,10 +582,10 @@ impl Drop for EstateScope {
     }
 }
 
-/// The witness that the fabric an estate runs has first reached ready-for-traffic (states.md "The
-/// initial fabric before ready-for-traffic"), which every kill or terminate of one of its nodes takes. A
+/// The witness that the fabric an estate runs has first reached ready (states.md "The
+/// initial fabric before ready"), which every kill or terminate of one of its nodes takes. A
 /// death during fabric start is not tested, and no chaos exercises it (Luke 2026-10-19, Q74): only an
-/// estate that has waited for its fabric to reach ready-for-traffic hands one out ([`Estate::fabric_ready`]).
+/// estate that has waited for its fabric to reach ready hands one out ([`Estate::fabric_ready`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FabricReady(pub(crate) ());
 
@@ -595,7 +595,7 @@ impl FabricReady {
     /// one; a cell waits with [`Estate::until_fabric_ready`] instead, so its refusal is the same
     /// on every run.
     pub fn read(status: rdm_client::ScopeStatus) -> Option<FabricReady> {
-        (status == rdm_client::ScopeStatus::ReadyForTraffic).then_some(FabricReady(()))
+        (status == rdm_client::ScopeStatus::Ready).then_some(FabricReady(()))
     }
 }
 
@@ -630,7 +630,7 @@ pub struct Estate {
     /// or a view the estate read lists it: the admins the estate reads views of, and the entry a probe is
     /// given ([`Self::entry_birth`]).
     pub(crate) births: std::sync::Mutex<std::collections::BTreeMap<rdm_client::PathName, MeshNode>>,
-    /// Set once the estate has waited for its fabric to reach ready-for-traffic ([`Self::until_fabric_ready`]).
+    /// Set once the estate has waited for its fabric to reach ready ([`Self::until_fabric_ready`]).
     pub(crate) ready: std::sync::OnceLock<FabricReady>,
     /// Dropped last: stops the reaper and removes the root.
     _scope: EstateScope,
@@ -750,7 +750,7 @@ impl Estate {
         // The estate started the Day-0 Build by starting its admin, so it follows that Build to its
         // Complete before a cell submits anything: a cell's first build.create is never refused for a
         // Build in progress it did not start. The Day-0 Build is Complete only from its own
-        // ready-for-traffic (states.md "Resize and executable replacement": "as fabric.create's is").
+        // ready (states.md "Resize and executable replacement": "as fabric.create's is").
         let day_zero = day_zero.unwrap_or_else(|| panic!("the bootstrap admin {} holds fabric {} and no current Build: its Day-0 Build is accepted before it serves", estate.admin, estate.fabric_id));
         let id = rdm_client::BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names the current Build {day_zero}, not a Build id: {e}"));
         let mut stream = estate.carrier().await.resubmit(&id, 1).await.unwrap_or_else(|e| panic!("the bootstrap admin does not stream its Day-0 Build {id}: {e}"));
@@ -851,18 +851,18 @@ impl Estate {
     }
 
     /// The witness a kill or terminate of one of this fabric's nodes takes ([`FabricReady`]): refused by
-    /// name, a panic naming the cell, until the estate has waited for the fabric to reach ready-for-traffic.
+    /// name, a panic naming the cell, until the estate has waited for the fabric to reach ready.
     pub fn fabric_ready(&self) -> FabricReady {
         *self.ready.get().unwrap_or_else(|| {
             panic!(
-                "{}: a kill or terminate of a node before the estate has waited for its fabric to reach ready-for-traffic is refused: a death during fabric start is not tested (Q74, Luke 2026-10-19); the cell waits for the fabric ready (until_fabric_ready) before it kills",
+                "{}: a kill or terminate of a node before the estate has waited for its fabric to reach ready is refused: a death during fabric start is not tested (Q74, Luke 2026-10-19); the cell waits for the fabric ready (until_fabric_ready) before it kills",
                 self.owner.test
             )
         })
     }
 
     /// SIGKILL `node`'s runtime (a fault: it flushes nothing), once the fabric has first been
-    /// ready-for-traffic ([`Self::fabric_ready`]).
+    /// ready ([`Self::fabric_ready`]).
     pub async fn kill_node(&self, node: &str) {
         self.fabric_ready();
         let pid = self.pid_of(node).await;
@@ -1094,7 +1094,7 @@ impl Estate {
     }
 
     /// SIGKILL `pid` (a fault: it flushes nothing) and wait until it is gone, once the fabric has first
-    /// been ready-for-traffic ([`Self::fabric_ready`]).
+    /// been ready ([`Self::fabric_ready`]).
     pub fn kill_pid(&self, pid: u32) {
         self.fabric_ready();
         let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success();
@@ -1115,7 +1115,7 @@ impl Estate {
     }
 
     /// SIGKILL the bootstrap admin (a fault: it flushes nothing), once the fabric has first been
-    /// ready-for-traffic ([`Self::fabric_ready`]).
+    /// ready ([`Self::fabric_ready`]).
     pub fn kill_bootstrap(&mut self) {
         self.fabric_ready();
         if let Some(mut c) = self.bootstrap.take() {

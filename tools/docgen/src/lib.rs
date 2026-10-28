@@ -291,10 +291,10 @@ mod tests {
         let pages = pages(&root).unwrap();
         let statuses = page(&pages, "statuses.md");
         let node_status = statuses.lines().skip_while(|l| !l.starts_with("### `NodeStatus`")).skip(1).take_while(|l| !l.starts_with("### ")).collect::<Vec<_>>().join("\n");
-        for (variant, serde) in [("Pending", "pending"), ("ReadyForTraffic", "ready-for-traffic"), ("PendingReconnect", "pending-reconnect"), ("Deleted", "deleted")] {
+        for (variant, serde) in [("Pending", "pending"), ("Ready", "ready"), ("PendingReconnect", "pending-reconnect"), ("Deleted", "deleted")] {
             assert!(node_status.contains(&format!("**`{variant}`** | `{serde}`")), "NodeStatus::{variant} is `{serde}` on the page:\n{node_status}");
         }
-        assert!(statuses.contains("| `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `crates/rdm-transport/src/topology.rs` |"), "the mesh status string const is listed with its value and its file");
+        assert!(statuses.contains("| `MESH_READY` | `ready` | `crates/rdm-transport/src/topology.rs` |"), "the mesh status string const is listed with its value and its file");
     }
 
     #[test]

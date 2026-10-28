@@ -8,7 +8,7 @@
 //! a restarted node is a candidate for a later vacancy and never displaces the
 //! primary". A holder a
 //! Build stops, restarts or deletes yields first by node.primary.update to the
-//! cohort's lowest ReadyForTraffic NodeId with the holder excluded (proposal
+//! cohort's lowest Ready NodeId with the holder excluded (proposal
 //! node-primary-update-fabric-mesh-and-node-type.md Part C1 steps 1-2). From
 //! public surfaces only (each admin's `node.get`), every sample advertises
 //! exactly one holder per cohort and a living holder keeps its seat. Through
@@ -24,9 +24,9 @@
 //!   recreated path is a new NodeId and never displaces it;
 //! - legal removal of the primary: the next-lowest succeeds;
 //! - UDP cut between two sides of the mesh (Q111, Q122; one host, one store): the side with an eligible
-//!   ReadyForTraffic successor supersedes the primary it no longer hears at the floor; each side
+//!   Ready successor supersedes the primary it no longer hears at the floor; each side
 //!   re-creates only births node investigation did not reach; heal: every pre-cut path.name holds one
-//!   live ReadyForTraffic birth and every admin's view advertises the same seats. No side's outcome is
+//!   live Ready birth and every admin's view advertises the same seats. No side's outcome is
 //!   pinned.
 //!
 //! Evidence: each successor is announced by a
@@ -100,7 +100,7 @@ fn live(nodes: &[Value]) -> Vec<Value> {
 /// Every live node is ready and every seat is the computed one.
 fn settled(nodes: &[Value]) -> bool {
     let nodes = live(nodes);
-    !nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && primaries_as_expected(&nodes).is_ok()
+    !nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready") && primaries_as_expected(&nodes).is_ok()
 }
 
 /// Wait until the view of the node-admin `admin` is settled; return its live rows. A timeout names the last view.
@@ -122,7 +122,7 @@ async fn steady(estate: &Estate, admin: &PathName, label: &str, hold: Duration) 
     let mut first: Option<Vec<Value>> = None;
     while Instant::now() < until {
         let nodes = live(&estate.node_values_at(&admin.to_string()).await);
-        if nodes.iter().all(|n| n["status"] == "ready-for-traffic") {
+        if nodes.iter().all(|n| n["status"] == "ready") {
             if let Err(e) = primaries_as_expected(&nodes) {
                 panic!("{label}: {e}: {nodes:#?}");
             }
@@ -144,7 +144,7 @@ async fn steady(estate: &Estate, admin: &PathName, label: &str, hold: Duration) 
 fn next_lowest(nodes: &[Value], c: &Cohort, holder: &str) -> (String, String) {
     nodes
         .iter()
-        .filter(|n| n["mesh"] == c.0.as_str() && n["kind"] == c.1.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] != holder)
+        .filter(|n| n["mesh"] == c.0.as_str() && n["kind"] == c.1.as_str() && n["status"] == "ready" && n["node_id"] != holder)
         .map(|n| (s(&n["name"]), s(&n["node_id"])))
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap_or_else(|| panic!("no other ready member of {c:?} than {holder}: {nodes:#?}"))
@@ -174,7 +174,7 @@ fn primary_updated(spans: &[Value], c: &Cohort, operation_suffix: &str, successo
 async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Cohort, gone_id: &str) -> (String, String) {
     let (name, id) = before
         .iter()
-        .filter(|n| n["mesh"] == c.0.as_str() && n["kind"] == c.1.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] != gone_id)
+        .filter(|n| n["mesh"] == c.0.as_str() && n["kind"] == c.1.as_str() && n["status"] == "ready" && n["node_id"] != gone_id)
         .map(|n| (s(&n["name"]), s(&n["node_id"])))
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap_or_else(|| panic!("no other ready member of {c:?} to succeed {gone_id}: {before:#?}"));
@@ -229,7 +229,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let rpc_p = primary_of(&nodes, &rpc).unwrap();
     assert_eq!(advertised_fabric(&nodes).as_deref(), Some(boot.0.as_str()), "the Day-0 admin keeps the fabric seat whatever NodeId its mesh's second admin drew (R-A2)");
 
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // stop then start a non-primary -> it keeps its NodeId; the seats stay computed
     let other_rpc: Vec<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["is_primary"] == false).map(|n| s(&n["name"])).collect();
@@ -280,7 +280,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     // count, then for the seats.
     estate
         .until_view_at(&admin1, "drift recovery restores three live rpc nodes", rdm_transport::topology::staleness_floor() * 2 + Duration::from_secs(30), |views| {
-            (views.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.status == NodeStatus::ReadyForTraffic).count() == 3).then_some(())
+            (views.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.status == NodeStatus::Ready).count() == 3).then_some(())
         })
         .await;
     let nodes = settle(&estate, &admin1, "the cohort is back at its desired count").await;
@@ -296,7 +296,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let nodes = estate
         .until_view("the view drops the removed primary", Duration::from_secs(30), |views| {
             let nodes = Estate::values(views);
-            (!nodes.iter().any(|n| n["name"] == removed.as_str() && n["status"] == "ready-for-traffic") && primary_of(&nodes, &rpc).is_some()).then_some(nodes)
+            (!nodes.iter().any(|n| n["name"] == removed.as_str() && n["status"] == "ready") && primary_of(&nodes, &rpc).is_some()).then_some(nodes)
         })
         .await;
     let succ2 = primary_of(&nodes, &rpc).unwrap();
@@ -325,7 +325,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
         Err(why) => eprintln!("SKIP partition case: {why}"),
         Ok(partition) => {
             let cut_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
-            // Side A has an eligible ReadyForTraffic successor to the rpc primary it no longer hears: at the
+            // Side A has an eligible Ready successor to the rpc primary it no longer hears: at the
             // floor the election supersedes the stale primary (elections §4.1, §5).
             let superseded = wait_for(&format!("side A supersedes the unheard rpc primary {rpc_now} with {lone_rpc}"), floor * 3 + Duration::from_secs(30), || {
                 let spans = estate.spans();
@@ -340,12 +340,12 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
             // The cut stands for a few floors: the investigations and recoveries of both sides run.
             tokio::time::sleep(floor * 4).await;
             drop(partition);
-            // Healed: every pre-cut path.name holds one live ReadyForTraffic birth (a re-created one carries
+            // Healed: every pre-cut path.name holds one live Ready birth (a re-created one carries
             // a new node id), and the views converge. Whichever pre-cut admin answers is read first; its view
             // lists the births re-created during the cut, which the estate dials from then on.
             let converged = |views: &[rdm_client::NodeView]| {
                 let view = live(&Estate::values(views));
-                let one_each = everyone.iter().all(|name| view.iter().filter(|n| n["name"] == name.as_str()).count() == 1 && view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic"));
+                let one_each = everyone.iter().all(|name| view.iter().filter(|n| n["name"] == name.as_str()).count() == 1 && view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready"));
                 (one_each && primaries_as_expected(&view).is_ok()).then_some(view)
             };
             // Both pre-cut admin paths are asked on every pass: an answer teaches the estate the births the
@@ -463,13 +463,13 @@ async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
     assert_eq!(advertised_fabric(&nodes).as_deref(), Some("mesh1.admin.1"), "the fabric seat stays with the Day-0 admin of mesh1 while mesh2 loses and regains admins (R-A2)");
     estate
         .until_view_at(&admin1, "drift recovery restores two live mesh2 admins", rdm_transport::topology::staleness_floor() * 2 + Duration::from_secs(30), |views| {
-            (views.iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic).count() == 2).then_some(())
+            (views.iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::Ready).count() == 2).then_some(())
         })
         .await;
     settle(&estate, &admin1, "mesh2's killed admin is back").await;
     steady(&estate, &admin1, "mesh2's killed admin is back", hold).await;
 
-    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses the removal of a node until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // legal removal of the mesh2 admin primary -> the next-lowest succeeds
     let nodes = estate.node_values().await;
@@ -482,7 +482,7 @@ async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
     let nodes = estate
         .until_view("the removed admin primary's seat moves to another admin of its mesh", Duration::from_secs(30), |views| {
             let nodes = Estate::values(views);
-            (!nodes.iter().any(|n| n["name"] == removed.as_str() && n["status"] == "ready-for-traffic") && primary_of(&nodes, &admin2).is_some_and(|p| p != removed)).then_some(nodes)
+            (!nodes.iter().any(|n| n["name"] == removed.as_str() && n["status"] == "ready") && primary_of(&nodes, &admin2).is_some_and(|p| p != removed)).then_some(nodes)
         })
         .await;
     let succ2 = primary_of(&nodes, &admin2).unwrap();

@@ -6,7 +6,7 @@
 use crate::ids::NodeId;
 
 /// One candidate as the election sees it: its identity, and whether it is eligible (current
-/// `ReadyForTraffic`, elections §2).
+/// `Ready`, elections §2).
 #[derive(Debug, Clone, Copy)]
 pub struct Candidate<'a> {
     /// The candidate's node id.

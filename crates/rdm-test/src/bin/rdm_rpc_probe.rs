@@ -153,7 +153,7 @@ async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     };
     let state = match a.state.as_deref().ok_or("declare needs --state")? {
         "pending" => NodeState::Pending,
-        "ready-for-traffic" => NodeState::ReadyForTraffic,
+        "ready" => NodeState::Ready,
         "connections-deleting" => NodeState::ConnectionsDeleting,
         "stopped" => NodeState::Stopped,
         other => return Err(format!("--state {other:?} is not a node state")),
@@ -685,7 +685,7 @@ mod tests {
             deployment_id: None,
             provider: None,
             data_dir: None,
-            status: NodeStatus::ReadyForTraffic,
+            status: NodeStatus::Ready,
             is_primary: false,
             is_fabric_primary: false,
             admin_api_base: None,

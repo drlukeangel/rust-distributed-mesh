@@ -44,7 +44,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let mut spawn = estate.create_node("mesh1", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
     let created = Estate::complete(&mut spawn).await;
     assert_eq!(created.attempt, 1, "{created:?}");
-    estate.until_node(first, &format!("{first} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
+    estate.until_node(first, &format!("{first} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
     // A second rpc node, and the stop is of the one that does not hold the cohort's seat: a stop
     // of the seat's node moves the seat first and needs a secondary to move it to
     // (node-primary-update-fabric-mesh-and-node-type.md Part C1, "no secondary"). The stop opens an
@@ -53,7 +53,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let created = Estate::complete(&mut second).await;
     assert_eq!(created.attempt, 1, "{created:?}");
     let build_id = created.build_id.to_string();
-    estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
+    estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
     let views = estate.node_views().await;
     let node_name = views.iter().find(|n| n.kind == NodeKind::RpcNode && n.mesh == "mesh1" && !n.is_primary).map(|n| n.name.to_string()).expect("one of mesh1's two rpc nodes does not hold the cohort's seat");
     let node = node_name.as_str();
@@ -63,10 +63,10 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
 
     let cut = "stop:StopNode";
     door.arm(cut, json!({"kind": "receipt", "step": RetireStep::StopNode.name(), "operation": "node.stop", "node": node})).await;
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The create put the fabric back to pending, so its Build is Complete at the attempt after its run,
-    // claimed once the fabric's ready-for-traffic state was set (Q154): the stop opens the attempt after that one.
+    // claimed once the fabric's ready state was set (Q154): the stop opens the attempt after that one.
     let attempt = estate.attempt_of_build(&build_id).await as u32 + 1;
     let mut stop = estate.nodes_obj().await.stop(&node.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {node}: {e}"));
     let opened = stop.accepted().clone();

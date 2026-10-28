@@ -33,7 +33,7 @@ fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, port: u16) 
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::ReadyForTraffic,
+        status: MemberStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,

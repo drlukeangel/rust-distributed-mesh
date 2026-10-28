@@ -164,17 +164,17 @@ impl Day0 {
     }
 
     /// Day 0 to the end of the fabric's first change: the Fabric row written at Day 0 and the
-    /// fabric-primary entered ready-for-traffic. Returns the running admin.
+    /// fabric-primary entered ready. Returns the running admin.
     fn day0_until_ready(&self) -> Running {
         let running = self.run();
         let until = Instant::now() + Duration::from_secs(30);
         loop {
             let published = fabric_dirs(&self.store).first().is_some_and(|f| rdm_admin::store_log::read_record(&self.store.join(f).join(rdm_admin::store_root::FABRIC_FILE), "fabric-record", None).is_some());
-            let ready = spans_of(&self.dir, running.pid).iter().any(|s| s["name"] == "rdm.node_admin.fabric.update.via-state-entered" && s["attributes"]["to"] == "ready-for-traffic");
+            let ready = spans_of(&self.dir, running.pid).iter().any(|s| s["name"] == "rdm.node_admin.fabric.update.via-state-entered" && s["attributes"]["to"] == "ready");
             if published && ready {
                 return running;
             }
-            assert!(Instant::now() < until, "the Day-0 admin did not finish its first change in 30 s: the Fabric row published {published}, ready-for-traffic entered {ready}");
+            assert!(Instant::now() < until, "the Day-0 admin did not finish its first change in 30 s: the Fabric row published {published}, ready entered {ready}");
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -281,7 +281,7 @@ impl Prepared {
     }
 
     /// A store root of a fabric whose fabric-primary launched nodes before it was lost: beside its own
-    /// birth, the rows of [`LAUNCHED`], each ReadyForTraffic with an endpoint key and an address on its
+    /// birth, the rows of [`LAUNCHED`], each Ready with an endpoint key and an address on its
     /// newest birth, none of them running.
     fn recovering(name: &str) -> Self {
         Self::prepare(name, &LAUNCHED)
@@ -341,7 +341,7 @@ impl Prepared {
             let row = rdm_admin::storage::NodeRow { topology_storage_provider: None,
                 name: own.name.clone(),
                 node_id: node_id.clone(),
-                status: rdm_admin::model::NodeStatus::ReadyForTraffic,
+                status: rdm_admin::model::NodeStatus::Ready,
                 config: INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
                 tags: INHERITED_TAGS.iter().map(|t| t.to_string()).collect(),
                 allocated: None,
@@ -363,7 +363,7 @@ impl Prepared {
                 let row = rdm_admin::storage::NodeRow { topology_storage_provider: None,
                     name: name.parse().unwrap(),
                     node_id: node_id.clone(),
-                    status: rdm_admin::model::NodeStatus::ReadyForTraffic,
+                    status: rdm_admin::model::NodeStatus::Ready,
                     config: Default::default(),
                     tags: Default::default(),
                     allocated: None,
@@ -885,7 +885,7 @@ fn an_adoption_launch_without_the_fabric_root_is_refused_by_name() {
     assert!(!root.dir.join("adopter").join("ca-secret").exists(), "a root was minted for the adoption launch");
     assert!(spans_of(&root.dir, a.pid).iter().all(|s| s["name"] != ADOPTION_CLAIM), "the refused launch claimed");
     let (at, _) = root.row_and_node("");
-    assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::ReadyForTraffic)), "the lost birth's row is untouched");
+    assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::Ready)), "the lost birth's row is untouched");
 }
 
 /// CONTRACT (Q156: "Day 0 has no RDM_NODE_NAME, mints the fabric id unless given, and a given id whose
@@ -992,7 +992,7 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         v["record"]["node_id"].as_str().unwrap().to_string()
     };
     let custody = custody_of(&d.data_dir);
-    // The Day-0 Build is Complete from its own ready-for-traffic: its attempt reads Converged on the journal
+    // The Day-0 Build is Complete from its own ready: its attempt reads Converged on the journal
     // and then releases mesh1's in-flight row. The admin is held only once both stand, so the launch's
     // claim meets no attempt of Day 0.
     let until = Instant::now() + ADOPTS_WITHIN;
@@ -1101,7 +1101,7 @@ fn under_a_fabric_delete_an_adoption_launch_at_the_lost_fabric_primarys_path_nam
     assert!(err.contains("refusing to start") && err.contains("fabric.delete") && err.contains("mesh1.admin.1") && err.contains("new path.name"), "the refusal names the delete and the path.name it removes: {err}");
     assert!(spans_of(&root.dir, a.pid).iter().all(|s| s["name"] != ADOPTION_CLAIM), "the refused launch claimed");
     let (at, _) = root.row_and_node("");
-    assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::ReadyForTraffic)), "the lost birth's row is untouched");
+    assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::Ready)), "the lost birth's row is untouched");
 }
 
 /// CONTRACT (Q159; fabric-recovery.md "Nothing alive": "If no not-yet-deleted mesh remains, the remaining
@@ -1119,7 +1119,7 @@ fn under_a_fabric_delete_with_no_mesh_left_an_adoption_launch_creates_nothing() 
     assert!(err.contains("refusing to start") && err.contains("no not-yet-deleted mesh remains") && err.contains("node.delete from outside") && err.contains("nothing is created"), "the refusal names the outside caller's node.delete: {err}");
     assert!(spans_of(&root.dir, a.pid).iter().all(|s| s["name"] != ADOPTION_CLAIM && s["name"] != "rdm.node_admin.node.create.via-node-row"), "the refused launch claimed or created");
     let (at, _) = root.row_and_node("");
-    assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::ReadyForTraffic)), "the lost birth's row is untouched");
+    assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::Ready)), "the lost birth's row is untouched");
 }
 
 /// The member cert `pid` installed for the birth at `node`, as the evidence spans it

@@ -123,7 +123,7 @@ fn lifecycle_marks(spans: &[Value], from: u64, to: u64) -> Vec<String> {
 /// Every pre-cut member is live and ready in the view of `base`.
 fn holds_all(view: &[Value], everyone: &[String]) -> bool {
     let view = live(view);
-    everyone.iter().all(|name| view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic"))
+    everyone.iter().all(|name| view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready"))
 }
 
 async fn drop_cut(partition: Partition) -> u64 {
@@ -156,7 +156,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     estate.reconcile_shape("fabric1", &shape).await;
     let nodes: Vec<Value> = estate.settled_views(&shape).await.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
-    // The initial fabric refuses a node delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node delete until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Every admin of both meshes holds all eight members ready before anything is cut.
     let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();

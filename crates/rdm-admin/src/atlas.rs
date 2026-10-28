@@ -43,7 +43,7 @@ struct Stamp {
 /// A birth's lifecycle as a completed operation left it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lifecycle {
-    /// node.start completed: the birth is ready for traffic again (node-start.md "Completion").
+    /// node.start completed: the birth is ready again (node-start.md "Completion").
     Started,
     /// node.stop completed: stopped with a live process (node-stop.md "Completion").
     Stopped,
@@ -699,12 +699,12 @@ impl Atlas {
 
     /// `n`, a birth Build acceptance decides from ([`Self::apply`]; a node read answers [`Self::read`],
     /// the row's status as written), as this atlas holds it: the name its record holds, and the lifecycle the
-    /// ops left it in (a completed stop: stopped; a completed start: ready for traffic over every state
+    /// ops left it in (a completed stop: stopped; a completed start: ready over every state
     /// its stop and its start pass through, the gossip view's stopped birth and its `Starting` and
-    /// `Pending` before the mesh-primary's ReadyForTraffic, node-start.md "Completion", so a projection
+    /// `Pending` before the mesh-primary's Ready, node-start.md "Completion", so a projection
     /// published before the start completed never moves it backward, R-FA3). `false` when an op deleted
     /// the birth: it is not answered. The gossip view's status stands where no op moved the birth, and
-    /// over a completed start where it is a state after ready for traffic (R-FA3: context).
+    /// over a completed start where it is a state after ready (R-FA3: context).
     pub(crate) fn answer(&self, n: &mut crate::model::Node) -> bool {
         let held = self.held.lock().unwrap();
         if let Some(r) = held.records.get(&n.node_id).filter(|r| r.status != NodeStatus::Withdrawn) {
@@ -720,7 +720,7 @@ impl Atlas {
             }
             Some(Lifecycle::Started) if n.stopped || matches!(n.status, NodeStatus::Starting | NodeStatus::Pending) => {
                 n.stopped = false;
-                n.status = NodeStatus::ReadyForTraffic;
+                n.status = NodeStatus::Ready;
             }
             _ => {}
         }
@@ -736,7 +736,7 @@ impl Atlas {
     /// states an operation sets (stopping through deleted, connections-deleting and connections-deleted
     /// included), which reach this atlas with the operation (its receipt, [`Self::take_receipt`], or the
     /// fill at its attempt's completion, before the caller hears `Complete`, R-FA2). A birth's create-time
-    /// progress (starting, pending, ready-for-traffic) is its report to its own mesh-primary, which
+    /// progress (starting, pending, ready) is its report to its own mesh-primary, which
     /// another mesh's record holds only as of this atlas's last fill: that birth answers the view's status
     /// until its mesh-primary feeds this atlas. Never a lifecycle effect laid over the view: a
     /// command the node has not acknowledged moved the row nowhere, so it moves the answer nowhere.
@@ -754,9 +754,9 @@ impl Atlas {
         if let Some(r) = held.records.get(&n.node_id).filter(|r| r.status != NodeStatus::Withdrawn) {
             n.name = r.name.clone();
             let of_birth = r.newest_birth().is_none_or(|b| Some(&b.incarnation_id) == n.incarnation_id.as_ref());
-            let live = matches!(r.status, NodeStatus::Starting | NodeStatus::Pending | NodeStatus::ReadyForTraffic | NodeStatus::ConnectionsDeleting | NodeStatus::ConnectionsDeleted);
+            let live = matches!(r.status, NodeStatus::Starting | NodeStatus::Pending | NodeStatus::Ready | NodeStatus::ConnectionsDeleting | NodeStatus::ConnectionsDeleted);
             let silent = live && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead);
-            let current = held.written.contains(&r.name.mesh) || !matches!(r.status, NodeStatus::Starting | NodeStatus::Pending | NodeStatus::ReadyForTraffic);
+            let current = held.written.contains(&r.name.mesh) || !matches!(r.status, NodeStatus::Starting | NodeStatus::Pending | NodeStatus::Ready);
             if of_birth && held.meshes.contains(&r.name.mesh) && current && !silent {
                 n.status = r.status;
                 n.stopped = r.status == NodeStatus::Stopped;
@@ -766,11 +766,11 @@ impl Atlas {
     }
 
     /// The effect the node row records last of `row`'s birth `incarnation`, with its stamp: a stop's
-    /// `Stopped`, a start's `ReadyForTraffic`; any other effect leaves the lifecycle where it is.
+    /// `Stopped`, a start's `Ready`; any other effect leaves the lifecycle where it is.
     async fn row_effect(row: &NodeRow, incarnation: &IncarnationId, builds: &dyn BuildStateAdapter, held: Option<&Effect>) -> Option<Effect> {
         let op = row.birth(incarnation)?.operations.iter().rev().find(|o| match o.state {
             rdm_core::status::NodeState::Stopped => o.operation.operation.starts_with("node.stop:"),
-            rdm_core::status::NodeState::ReadyForTraffic => o.operation.operation.starts_with("node.start:"),
+            rdm_core::status::NodeState::Ready => o.operation.operation.starts_with("node.start:"),
             _ => false,
         })?;
         let lifecycle = if op.state == rdm_core::status::NodeState::Stopped { Lifecycle::Stopped } else { Lifecycle::Started };
@@ -813,14 +813,14 @@ impl Atlas {
         } else {
             match effect.map(|e| e.lifecycle) {
                 Some(Lifecycle::Stopped) => (NodeStatus::Leaving, true),
-                Some(Lifecycle::Started) => (NodeStatus::ReadyForTraffic, false),
+                Some(Lifecycle::Started) => (NodeStatus::Ready, false),
                 // No op moved the birth since its create: shown as the gossip view holds the same birth
                 // (context), else as far as its node row's declarations reached.
                 _ => match observed_status {
                     Some(s) => (s, false),
                     None => {
-                        let ready = birth.as_ref().and_then(|i| row.birth(i)).is_some_and(|b| b.declared.contains(&rdm_core::status::NodeState::ReadyForTraffic));
-                        (if ready { NodeStatus::ReadyForTraffic } else { NodeStatus::Pending }, false)
+                        let ready = birth.as_ref().and_then(|i| row.birth(i)).is_some_and(|b| b.declared.contains(&rdm_core::status::NodeState::Ready));
+                        (if ready { NodeStatus::Ready } else { NodeStatus::Pending }, false)
                     }
                 },
             }
@@ -954,7 +954,7 @@ mod tests {
     #[tokio::test]
     async fn a_deleted_birth_whose_path_is_re_created_is_deleted() {
         let (old, old_inc) = record("mesh2.compute.2", NodeStatus::Deleted);
-        let (new, new_inc) = record("mesh2.compute.2", NodeStatus::ReadyForTraffic);
+        let (new, new_inc) = record("mesh2.compute.2", NodeStatus::Ready);
         let atlas = atlas_of(&[&old, &new], &["mesh2"]).await;
         let decided = atlas.refused_caller(&old.node_id, &old_inc, &planned(&["mesh2.compute.2"]));
         assert_eq!(decided, CallerDecision::DeleteHeld { path: path("mesh2.compute.2"), by: format!("{}@{}", new.node_id, new_inc.as_str()) });
@@ -965,7 +965,7 @@ mod tests {
     /// happen: a needed path's only live birth deleted.
     #[tokio::test]
     async fn nothing_at_a_needed_path_re_admits_a_caller_whose_record_is_live() {
-        let (live, live_inc) = record("mesh1.rpc.1", NodeStatus::ReadyForTraffic);
+        let (live, live_inc) = record("mesh1.rpc.1", NodeStatus::Ready);
         let atlas = atlas_of(&[&live], &["mesh1"]).await;
         assert_eq!(atlas.refused_caller(&live.node_id, &live_inc, &planned(&["mesh1.rpc.1"])), CallerDecision::ReAdmit { path: path("mesh1.rpc.1") });
     }
@@ -987,7 +987,7 @@ mod tests {
     /// not name the path: the caller is deleted.
     #[tokio::test]
     async fn nothing_at_an_unneeded_path_deletes_the_caller() {
-        let (live, live_inc) = record("mesh1.rpc.3", NodeStatus::ReadyForTraffic);
+        let (live, live_inc) = record("mesh1.rpc.3", NodeStatus::Ready);
         let atlas = atlas_of(&[&live], &["mesh1"]).await;
         assert_eq!(atlas.refused_caller(&live.node_id, &live_inc, &planned(&["mesh1.rpc.1"])), CallerDecision::DeleteUnneeded { path: path("mesh1.rpc.3") });
     }
@@ -1018,7 +1018,7 @@ mod tests {
     /// CONTRACT (Q207): an older birth of a node whose newer birth is current at the path is deleted.
     #[tokio::test]
     async fn an_older_birth_of_the_node_at_the_path_is_deleted() {
-        let (mut r, older) = record("mesh1.rpc.1", NodeStatus::ReadyForTraffic);
+        let (mut r, older) = record("mesh1.rpc.1", NodeStatus::Ready);
         let newer = IncarnationId::mint();
         r.birth_mut(&newer, &path("mesh1.rpc.1"));
         let atlas = atlas_of(&[&r], &["mesh1"]).await;
@@ -1045,7 +1045,7 @@ mod tests {
         let (caller, inc) = (NodeId::mint(), IncarnationId::mint());
         let at = path("mesh2.compute.2");
         let row = |node_id: &NodeId, i: &IncarnationId| rdm_core::views::AtlasView {
-            nodes: vec![rdm_core::views::AtlasNodeView { name: at.clone(), node_id: node_id.clone(), incarnation_id: Some(i.clone()), status: rdm_core::views::NodeStatus::ReadyForTraffic, stopped: false, accepted: None, observed: None }],
+            nodes: vec![rdm_core::views::AtlasNodeView { name: at.clone(), node_id: node_id.clone(), incarnation_id: Some(i.clone()), status: rdm_core::views::NodeStatus::Ready, stopped: false, accepted: None, observed: None }],
         };
         let (other, other_inc) = (NodeId::mint(), IncarnationId::mint());
         let mine = CallerDecision::ReAdmit { path: at.clone() };
@@ -1063,8 +1063,8 @@ mod tests {
     /// mesh. Must NOT happen: a mesh read again on a call that takes nothing.
     #[tokio::test]
     async fn a_mesh_taken_is_filled_once_and_a_mesh_handed_away_is_narrowed() {
-        let (a, _) = record("mesh1.rpc.1", NodeStatus::ReadyForTraffic);
-        let (b, _) = record("mesh2.rpc.1", NodeStatus::ReadyForTraffic);
+        let (a, _) = record("mesh1.rpc.1", NodeStatus::Ready);
+        let (b, _) = record("mesh2.rpc.1", NodeStatus::Ready);
         let store = MemoryNodesStorage::default();
         store.put_node(&a).await.unwrap();
         store.put_node(&b).await.unwrap();

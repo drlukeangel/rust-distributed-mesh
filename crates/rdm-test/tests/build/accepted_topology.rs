@@ -120,7 +120,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     tokio::time::sleep(Duration::from_secs(4)).await;
     signal(held_pid, "-CONT");
     let quiet_until = now_ns();
-    estate.until_node("mesh1.rpc.3", "mesh1.rpc.3 is heard again", Duration::from_secs(20), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
+    estate.until_node("mesh1.rpc.3", "mesh1.rpc.3 is heard again", Duration::from_secs(20), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
 
     // 6. An admin that misses a Build catches up to the current Build when it is back.
     let quiet = estate.node_values().await.into_iter().find(|n| n["kind"] == "node_admin" && n["name"] != "mesh1.admin.1" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no seat");
@@ -138,7 +138,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert_eq!(current_build(&estate).await, r4);
     let resumed_at = now_ns();
     signal(stopped, "-CONT");
-    // The Build is Complete only once its ready-for-traffic state is set (Q154), and a fabric state is set
+    // The Build is Complete only once its ready state is set (Q154), and a fabric state is set
     // only when every member has checked in, the admin that was stopped too.
     tokio::time::timeout(Duration::from_secs(90), estate.follow(r4_stream)).await.unwrap_or_else(|_| panic!("{r4} reached no Complete within 90s of {quiet_name} being back"));
     let quiet_carrier = estate.carrier_at(&quiet_name.parse().unwrap()).await;
@@ -157,7 +157,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let back = estate
         .until_node("mesh1.rpc.2", "mesh1.rpc.2 is recovered", crate::node_recovery_due(), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["incarnation_id"] != lost["incarnation_id"]).then_some(n)
+            (n["status"] == "ready" && n["incarnation_id"] != lost["incarnation_id"]).then_some(n)
         })
         .await;
     assert_eq!(current_build(&estate).await, r4, "recovery writes no Build");
@@ -184,7 +184,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert_eq!(back["endpoint_id"], lost["endpoint_id"], "over the inherited data dir and its endpoint key");
 
     // 8. A stop, then a start, each an attempt of the accepted Build, under the same id.
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let restarted_from = estate.node_value("mesh1.rpc.1").await;
     let (r, started) = estate.stop_then_start(&"mesh1.rpc.1".parse().unwrap()).await;
@@ -194,7 +194,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     estate
         .until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again as the same birth", Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["stopped"] == false && n["incarnation_id"] == restarted_from["incarnation_id"] && n["node_id"] == restarted_from["node_id"]).then_some(())
+            (n["status"] == "ready" && n["stopped"] == false && n["incarnation_id"] == restarted_from["incarnation_id"] && n["node_id"] == restarted_from["node_id"]).then_some(())
         })
         .await;
     assert_eq!(current_build(&estate).await, r4);

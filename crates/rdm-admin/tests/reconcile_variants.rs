@@ -18,7 +18,7 @@
 //     only a create ever named an executable, and the drive fixture's rows (`rows_of`, build_drive.rs)
 //     record a sha only where the entry names one: no fixture held a row recording what an entry that
 //     names none runs.
-// (a) No cell had the fabric reach ready-for-traffic while the held run was in flight. The drive cell
+// (a) No cell had the fabric reach ready while the held run was in flight. The drive cell
 //     for a Build with nothing to execute (build_drive.rs `FabricChange`) flips readiness between
 //     passes only, never during a dispatch; the e2e resizes (fabric/fabric_states.rs) run real
 //     creates, whose births check in after the run handed back, so the fabric was still changing when
@@ -38,19 +38,19 @@
 //! executable (a replacement: delete then create at the path). A placement-only request is the unchanged
 //! one: `PlacementMeta` declares no constraint.
 //!
-//! Timings, the fabric's ready-for-traffic state as the drive's gate reads it: already set before the run,
+//! Timings, the fabric's ready state as the drive's gate reads it: already set before the run,
 //! set while the run is in flight, set after the run handed back, held by the application and then
 //! answered, held and then answered with a failure.
 //!
 //! Every row (states.md "Resize and executable replacement"; Q154; Q158): the Build is Complete only once
-//! the fabric holds ready-for-traffic, reports Blocked naming `fabric-change` while it does not, and is
+//! the fabric holds ready, reports Blocked naming `fabric-change` while it does not, and is
 //! never blocked for ever; a failure the application reports fails it on `fabric-change` by name. Every
 //! operation the request owes runs once, and a request that owes none runs nothing. Must NOT happen: a
 //! held run read as "ended incomplete" because the fabric's change finished while it was in flight, the
 //! drive idle on a world that never moves.
 //!
 //! Which timings a variant meets in the product: one that is neither a resize nor a replacement leaves
-//! the fabric ready-for-traffic (before the run); the drive's rule does not depend on why the fabric
+//! the fabric ready (before the run); the drive's rule does not depend on why the fabric
 //! moves, so every variant runs every timing.
 
 use rdm_admin::accepted::{AcceptedStore, FabricTopology, Recorded, RecordedRow, TopologyChange};
@@ -72,7 +72,7 @@ use tokio::sync::RwLock;
 
 fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
     n.incarnation_id = Some(IncarnationId::mint());
@@ -83,8 +83,8 @@ fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
 /// `mesh1.admin.2`; `mesh1.rpc.1`.
 fn view() -> Topology {
     Topology {
-        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
         nodes: vec![node("mesh1.admin.1", false, true), node("mesh1.admin.2", true, false), node("mesh1.rpc.1", false, false)],
     }
 }
@@ -161,13 +161,13 @@ impl Variant {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Timing {
-    /// Ready-for-traffic is set before the run.
+    /// Ready is set before the run.
     Before,
     /// It is set while the run is in flight: after the drive planned it, before the drive reads how it ended.
     During,
     /// It is set once the run handed back and the drive reported the Build Blocked on the fabric's change.
     After,
-    /// The fabric's change holds for two passes, then the fabric is ready-for-traffic.
+    /// The fabric's change holds for two passes, then the fabric is ready.
     HeldThenAnswered,
 }
 
@@ -216,7 +216,7 @@ impl OperationRunner for Runs {
 }
 
 /// The fixture's dispatcher: the loopback, which, for [`Timing::During`], sets the fabric's
-/// ready-for-traffic state once the attempt it calls has run and before the drive reads how it ended.
+/// ready state once the attempt it calls has run and before the drive reads how it ended.
 struct Dispatch {
     inner: Arc<crate::loopback::Loopback>,
     during: Option<Arc<Readiness>>,
@@ -264,7 +264,7 @@ async fn row(variant: Variant, timing: Timing) -> Row {
     let mut recorded = Recorded::new();
     for (p, sha) in ROWS {
         let n = t.node(&path(p)).expect("the view holds the node");
-        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.node_id.clone(), NodeStatus::ReadyForTraffic);
+        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.node_id.clone(), NodeStatus::Ready);
         row.executable = Some(recorded_binding(n.name.kind, sha));
         store.write_record(&row).await.unwrap();
         recorded.insert(n.name.clone(), RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(sha.into()) });
@@ -330,17 +330,17 @@ async fn frames(reader: &mut rdm_admin::build_drive::DriveReader) -> Vec<Read> {
     out
 }
 
-/// A pass that waits on the fabric's change: Stalled naming the fabric's ready-for-traffic state, never
+/// A pass that waits on the fabric's change: Stalled naming the fabric's ready state, never
 /// "ended incomplete" and never an end of the Build.
 fn waits_on_the_fabric(end: &DriveEnd, what: &str) {
     match end {
-        DriveEnd::Stalled(why) if why.contains("ready-for-traffic") && !why.contains("ended incomplete") => {}
+        DriveEnd::Stalled(why) if why.contains("ready") && !why.contains("ended incomplete") => {}
         other => panic!("{what}: while the fabric changes the drive waits on its change, never ends the Build nor idles as ended incomplete: {other:?}"),
     }
 }
 
 async fn check(variant: Variant, timing: Timing) {
-    let what = format!("{variant:?} with ready-for-traffic {timing:?}");
+    let what = format!("{variant:?} with ready {timing:?}");
     let r = row(variant, timing).await;
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
@@ -369,7 +369,7 @@ async fn check(variant: Variant, timing: Timing) {
     let mut owed: Vec<String> = variant.owes().into_iter().map(String::from).collect();
     owed.sort();
     assert_eq!(once, owed, "{what}: the request's operations ran, and only those");
-    assert_eq!(done.state, BuildState::Complete, "{what}: the Build is Complete after its own ready-for-traffic: {done:?}");
+    assert_eq!(done.state, BuildState::Complete, "{what}: the Build is Complete after its own ready: {done:?}");
 }
 
 macro_rules! rows {

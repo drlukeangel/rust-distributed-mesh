@@ -821,9 +821,9 @@ impl StatusPublisher {
     }
 }
 
-/// The mesh status a `Frame::MeshStatus` carries for a ready-for-traffic mesh (states.md: a mesh is
-/// `pending` -> `ready-for-traffic` -> `leaving` -> `dead`).
-pub const MESH_READY_FOR_TRAFFIC: &str = "ready-for-traffic";
+/// The mesh status a `Frame::MeshStatus` carries for a ready mesh (states.md: a mesh is
+/// `pending` -> `ready` -> `leaving` -> `dead`).
+pub const MESH_READY: &str = "ready";
 
 /// The statuses a node holds, each until the next change: a mesh's by its name, the fabric's. A
 /// frame older than the one held is refused by name, the same one again is taken once.
@@ -1935,7 +1935,7 @@ impl View {
         let routable = births.iter().filter(|d| self.digest_view.routable(d.node.node_id.as_str())).count();
         span.record("births_held", births.len());
         span.record("births_routable", routable);
-        tracing::info!("a mesh status is held: application routing selects the mesh's births only while it is ready-for-traffic");
+        tracing::info!("a mesh status is held: application routing selects the mesh's births only while it is ready");
     }
 
     /// Hold what `f` carries; the digests it carries (for their addresses). A snapshot frame is
@@ -4468,15 +4468,15 @@ impl DigestView {
     }
 
     /// The mesh-primary took node.started of the birth `incarnation` of `node_id`: its
-    /// DeclareNodeState(ReadyForTraffic), applied by its StatusAuthority (states.md "Who sets each
-    /// state": node ReadyForTraffic is set by "the node's mesh-primary" from "the node's node.started
-    /// report, after every start gate"). The birth's status is ReadyForTraffic; its projection says so on
+    /// DeclareNodeState(Ready), applied by its StatusAuthority (states.md "Who sets each
+    /// state": node Ready is set by "the node's mesh-primary" from "the node's node.started
+    /// report, after every start gate"). The birth's status is Ready; its projection says so on
     /// its next publication. Only for a birth of this view's own mesh: a mesh-primary sets its own mesh's
     /// statuses. `false` when nothing moved.
     ///
     /// `name` is the birth's `path.name` as the report's decision named it, read only when this view
     /// holds no digest of the birth (a primary born while the member was
-    /// silent decides its report from durable rows, Q80): the birth is held ready-for-traffic before its
+    /// silent decides its report from durable rows, Q80): the birth is held ready before its
     /// digest arrives, and that digest, a join's or a heartbeat, finds the status held. A held digest's
     /// name wins.
     pub fn started(&self, node_id: &NodeId, incarnation: &IncarnationId, name: &rdm_core::PathName) -> bool {
@@ -4485,7 +4485,7 @@ impl DigestView {
         let name = Some(name);
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         let Some(name) = name.filter(|n| !own_mesh.is_empty() && n.mesh == own_mesh) else { return false };
-        let prior = self.author_status(node_id.as_str(), incarnation, rdm_core::MemberStatus::ReadyForTraffic);
+        let prior = self.author_status(node_id.as_str(), incarnation, rdm_core::MemberStatus::Ready);
         tracing::info_span!(
             "rdm.mesh.topology.update.from-node-started",
             node = %self.observer_name.lock().unwrap(),
@@ -4493,9 +4493,9 @@ impl DigestView {
             node_id = %node_id,
             incarnation_id = %incarnation.as_str(),
             prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
-            status = "ReadyForTraffic",
+            status = "Ready",
         )
-        .in_scope(|| tracing::info!("the mesh-primary took node.started: the birth is ready-for-traffic; its projection says so"));
+        .in_scope(|| tracing::info!("the mesh-primary took node.started: the birth is ready; its projection says so"));
         true
     }
 
@@ -4640,7 +4640,7 @@ impl DigestView {
     /// and its `NodeJoined` included, belongs to that Pending and starts no other"): `node.mesh.joined`
     /// applies as already applied. A stop of that exact birth ends here all the same ("NodeStopped for
     /// that birth is cleared at `node.mesh.joined`"), and the birth is held again with
-    /// `status`, the state its mesh-primary holds for it: Pending, or the ReadyForTraffic it declared
+    /// `status`, the state its mesh-primary holds for it: Pending, or the Ready it declared
     /// since. Never set back to Pending.
     pub fn joined_already_applied(&self, op: &LifecycleOp, status: rdm_core::MemberStatus) -> bool {
         self.take_joined(op, Some(status))
@@ -5189,20 +5189,20 @@ impl DigestView {
     }
 
     /// May application routing select this node (states.md "Routing"): only while the birth is
-    /// ready-for-traffic and its mesh is ready-for-traffic, as this view holds them. Anything else is
+    /// ready and its mesh is ready, as this view holds them. Anything else is
     /// a routing stop from the moment this view holds the fact that says so: no held digest, a
     /// departure, an open lifecycle overlay (NodeStopped, NodeDeleting), a held
-    /// status other than ready-for-traffic, or a mesh status not held ready-for-traffic. A stop is
-    /// never a barrier: the same birth's later ready-for-traffic, or its mesh's, restores selection.
+    /// status other than ready, or a mesh status not held ready. A stop is
+    /// never a barrier: the same birth's later ready, or its mesh's, restores selection.
     /// The resolver and the Node RPC client never read this; only application routing does.
     pub fn routable(&self, node_id: &str) -> bool {
         if self.is_deleted(node_id) || self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id) {
             return false;
         }
-        let Some(mesh) = self.get(node_id).filter(|(d, _)| d.status == rdm_core::MemberStatus::ReadyForTraffic).map(|(d, _)| d.node.name.mesh) else {
+        let Some(mesh) = self.get(node_id).filter(|(d, _)| d.status == rdm_core::MemberStatus::Ready).map(|(d, _)| d.node.name.mesh) else {
             return false;
         };
-        self.statuses.mesh(&mesh).is_some_and(|m| m.status == MESH_READY_FOR_TRAFFIC)
+        self.statuses.mesh(&mesh).is_some_and(|m| m.status == MESH_READY)
     }
 
     /// Hold `d` as its member's latest word, unless it is older than what is
@@ -5707,7 +5707,7 @@ mod tests {
         let author = test_author();
         publisher.set_role(true); publisher.author = Some((author.clone(), 1));
         let now = std::time::Instant::now();
-        let first = publisher.observe("ready-for-traffic", None, true, now, 100).unwrap();
+        let first = publisher.observe("ready", None, true, now, 100).unwrap();
         publisher.author = Some((author, 2));
         let repeated = publisher.due(now + super::STATUS_EVERY).unwrap();
         assert_eq!(first.context(), repeated.context(), "a reinforcement is the original event even when the held committed row advanced");
@@ -5759,14 +5759,14 @@ mod tests {
         let digest_view = DigestView::default();
         let (a, ai) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
         let (b, bi) = (NodeId::parse("000000000001").unwrap(), IncarnationId::mint());
-        let mut da = digest(&a, &ai, None, MemberStatus::ReadyForTraffic, 1);
+        let mut da = digest(&a, &ai, None, MemberStatus::Ready, 1);
         da.is_primary = Some(3);
         da.is_fabric_primary = Some(7);
         assert!(digest_view.record(da.clone()));
         let held = |seat| match seat { Seat::FabricPrimary => digest_view.seats.fabric(), _ => digest_view.seats.cohort("mesh1", rdm_core::NodeKind::RpcNode) };
         assert_eq!(held(Seat::Cohort(rdm_core::NodeKind::RpcNode)), Some(Primary { mesh: "mesh1".into(), node_id: a.clone(), incarnation: ai.clone(), revision: 3 }));
         assert_eq!(held(Seat::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a.clone(), 7)));
-        let mut db = digest(&b, &bi, None, MemberStatus::ReadyForTraffic, 1);
+        let mut db = digest(&b, &bi, None, MemberStatus::Ready, 1);
         db.node.name = "mesh1.rpc.2".parse().unwrap();
         db.is_primary = Some(2);
         assert!(digest_view.record(db.clone()));
@@ -5793,10 +5793,10 @@ mod tests {
         view.digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: publisher.node_id.clone(), incarnation: publisher.incarnation.clone(), revision: 1 });
         let (me, my_inc) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
         let (other, other_inc) = (NodeId::parse("000000000003").unwrap(), IncarnationId::mint());
-        assert!(view.digest_view.record(digest(&me, &my_inc, None, MemberStatus::ReadyForTraffic, 5)));
-        let mut mine = digest(&me, &my_inc, None, MemberStatus::ReadyForTraffic, 3);
+        assert!(view.digest_view.record(digest(&me, &my_inc, None, MemberStatus::Ready, 5)));
+        let mut mine = digest(&me, &my_inc, None, MemberStatus::Ready, 3);
         mine.is_primary = Some(1);
-        let mut theirs = digest(&other, &other_inc, None, MemberStatus::ReadyForTraffic, 1);
+        let mut theirs = digest(&other, &other_inc, None, MemberStatus::Ready, 1);
         theirs.node.name = "mesh1.rpc.2".parse().unwrap();
         let members = Frame::MeshTopology { mesh: "mesh1".into(), publisher, forwarded_by: Some("mesh1.admin.1".into()), topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], in_flight: Vec::new(), deleted: Vec::new() };
         let heard = hear(&mut view.order.lock().unwrap(), &view, &members, &fabric, Side::MeshChannel);
@@ -5834,7 +5834,7 @@ mod tests {
     #[test]
     fn topology_view_of_a_digest_with_gossip_stats_equals_the_view_without() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let plain = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 1);
+        let plain = digest(&id, &inc, None, MemberStatus::Ready, 1);
         let mut with = plain.clone();
         with.gossip = Some(rdm_core::GossipStats { heard: 3, neighbours: 2, frames_sent: 10, frames_received: 12 });
         assert_ne!(plain, with);
@@ -5853,7 +5853,7 @@ mod tests {
         let node_id = NodeId::mint();
         let (first, second) = (IncarnationId::mint(), IncarnationId::mint());
         let at = |port: u16, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, seq: u64| {
-            let mut d = digest(&node_id, incarnation, supersedes, MemberStatus::ReadyForTraffic, seq);
+            let mut d = digest(&node_id, incarnation, supersedes, MemberStatus::Ready, seq);
             d.node.endpoint_id = EndpointId(key.to_string());
             d.node.transport_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             d
@@ -5878,7 +5878,7 @@ mod tests {
         let (old_node, new_node) = (NodeId::mint(), NodeId::mint());
         let (old, new) = (IncarnationId::mint(), IncarnationId::mint());
         let at = |node: &NodeId, port: u16, incarnation: &IncarnationId, seq: u64| {
-            let mut d = digest(node, incarnation, None, MemberStatus::ReadyForTraffic, seq);
+            let mut d = digest(node, incarnation, None, MemberStatus::Ready, seq);
             d.node.endpoint_id = EndpointId(key.to_string());
             d.node.transport_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             d
@@ -5906,12 +5906,12 @@ mod tests {
         };
         let digest_view = DigestView::default();
         let (id, birth) = (NodeId::mint(), IncarnationId::mint());
-        let mut first = digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100);
+        let mut first = digest(&id, &birth, None, MemberStatus::Ready, 100);
         first.node.runtime = Some(fact(11, "process:a:1"));
         assert!(digest_view.record(first.clone()));
         // Same birth, another locator or another control domain: refused, the held one stays.
         for other in [fact(12, "process:a:1"), fact(11, "process:b:1")] {
-            let mut moved = digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200);
+            let mut moved = digest(&id, &birth, None, MemberStatus::Ready, 200);
             moved.node.runtime = Some(other.clone());
             assert!(!digest_view.record(moved.clone()), "{other:?}");
             assert!(!digest_view.record_forwarded(moved));
@@ -5919,7 +5919,7 @@ mod tests {
         assert_eq!(digest_view.get(id.as_str()).unwrap().0.node.runtime, Some(fact(11, "process:a:1")));
         // A restart: a new birth with a new runtime is current; the old birth's fact never returns.
         let next = IncarnationId::mint();
-        let mut restarted = digest(&id, &next, Some(birth.clone()), MemberStatus::ReadyForTraffic, 300);
+        let mut restarted = digest(&id, &next, Some(birth.clone()), MemberStatus::Ready, 300);
         restarted.node.runtime = Some(fact(13, "process:a:1"));
         assert!(digest_view.record(restarted));
         assert!(!digest_view.record(first), "the superseded birth and its runtime are refused");
@@ -5933,8 +5933,8 @@ mod tests {
         let t0 = Instant::now();
         let later = t0 + Duration::from_millis(30);
         assert!(digest_view.record_at(digest(&id, &birth, None, MemberStatus::Leaving, 200), t0));
-        assert!(!digest_view.record_at(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100), later), "an older digest of the same birth");
-        assert!(!digest_view.record_at(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200), later), "a duplicate");
+        assert!(!digest_view.record_at(digest(&id, &birth, None, MemberStatus::Ready, 100), later), "an older digest of the same birth");
+        assert!(!digest_view.record_at(digest(&id, &birth, None, MemberStatus::Ready, 200), later), "a duplicate");
         let (held, age) = digest_view.get_at(id.as_str(), later).unwrap();
         assert_eq!(held.status, MemberStatus::Leaving, "the status is not reverted");
         assert_eq!(age, Duration::from_millis(30), "the member's unheard time is not reset");
@@ -5987,43 +5987,43 @@ mod tests {
     }
 
     /// CONTRACT (states.md "Routing"): application routing selects a birth only while it is
-    /// ready-for-traffic and its mesh is ready-for-traffic; anything else is a routing stop, and a
-    /// later ready-for-traffic for the same exact birth restores selection. A `Pending` birth of a
-    /// ready mesh is not selected; its own ready-for-traffic selects it; its `ConnectionsDeleting` stops it; the
-    /// same birth saying ready-for-traffic again selects it again. Must NOT happen: a `Pending`
-    /// birth selected, or a stop that outlives the birth's later ready-for-traffic.
+    /// ready and its mesh is ready; anything else is a routing stop, and a
+    /// later ready for the same exact birth restores selection. A `Pending` birth of a
+    /// ready mesh is not selected; its own ready selects it; its `ConnectionsDeleting` stops it; the
+    /// same birth saying ready again selects it again. Must NOT happen: a `Pending`
+    /// birth selected, or a stop that outlives the birth's later ready.
     #[test]
-    fn a_birth_is_routable_only_while_it_says_ready_for_traffic_and_a_later_ready_restores_it() {
+    fn a_birth_is_routable_only_while_it_says_ready_and_a_later_ready_restores_it() {
         let digest_view = DigestView::default();
-        hold_mesh_status(&digest_view, "mesh1", "ready-for-traffic", 10);
+        hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 100)));
         assert!(!digest_view.routable(id.as_str()), "a Pending birth is a routing stop");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 110)));
-        assert!(digest_view.routable(id.as_str()), "the birth and its mesh are ready-for-traffic");
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 110)));
+        assert!(digest_view.routable(id.as_str()), "the birth and its mesh are ready");
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 120)));
         assert!(!digest_view.routable(id.as_str()), "a ConnectionsDeleting birth is a routing stop");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 130)), "the same birth's later ready-for-traffic is taken");
-        assert!(digest_view.routable(id.as_str()), "a routing stop is no barrier: the later ready-for-traffic restores selection");
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 130)), "the same birth's later ready is taken");
+        assert!(digest_view.routable(id.as_str()), "a routing stop is no barrier: the later ready restores selection");
     }
 
-    /// CONTRACT (states.md "Routing"): a ready-for-traffic birth is selected only while its mesh's
-    /// status this node holds is ready-for-traffic. No mesh status held, a mesh `pending`, `leaving`
-    /// or `dead`, or another mesh's ready-for-traffic: not selected. The mesh's later
-    /// ready-for-traffic restores selection from the moment it is held. Must NOT happen: a birth of a
-    /// mesh not held ready-for-traffic selected.
+    /// CONTRACT (states.md "Routing"): a ready birth is selected only while its mesh's
+    /// status this node holds is ready. No mesh status held, a mesh `pending`, `leaving`
+    /// or `dead`, or another mesh's ready: not selected. The mesh's later
+    /// ready restores selection from the moment it is held. Must NOT happen: a birth of a
+    /// mesh not held ready selected.
     #[test]
-    fn a_ready_birth_is_routable_only_while_its_mesh_is_held_ready_for_traffic() {
+    fn a_ready_birth_is_routable_only_while_its_mesh_is_held_ready() {
         let digest_view = DigestView::default();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
-        assert!(!digest_view.routable(id.as_str()), "no status of mesh1 is held: mesh1 is not held ready-for-traffic");
-        hold_mesh_status(&digest_view, "mesh2", "ready-for-traffic", 5);
-        assert!(!digest_view.routable(id.as_str()), "another mesh's ready-for-traffic selects nothing in mesh1");
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
+        assert!(!digest_view.routable(id.as_str()), "no status of mesh1 is held: mesh1 is not held ready");
+        hold_mesh_status(&digest_view, "mesh2", "ready", 5);
+        assert!(!digest_view.routable(id.as_str()), "another mesh's ready selects nothing in mesh1");
         hold_mesh_status(&digest_view, "mesh1", "pending", 10);
         assert!(!digest_view.routable(id.as_str()), "a pending mesh is a routing stop");
-        hold_mesh_status(&digest_view, "mesh1", "ready-for-traffic", 20);
-        assert!(digest_view.routable(id.as_str()), "the mesh's ready-for-traffic, received, restores selection");
+        hold_mesh_status(&digest_view, "mesh1", "ready", 20);
+        assert!(digest_view.routable(id.as_str()), "the mesh's ready, received, restores selection");
         hold_mesh_status(&digest_view, "mesh1", "leaving", 30);
         assert!(!digest_view.routable(id.as_str()), "a leaving mesh is a routing stop on receipt, whatever its member says");
         hold_mesh_status(&digest_view, "mesh1", "dead", 40);
@@ -6040,15 +6040,15 @@ mod tests {
         let mut publisher = StatusPublisher::new("mesh1.admin.1", StatusScope::Mesh("mesh1".into()));
         publisher.set_role(true);
         let peer = DigestView::default();
-        let ready = publisher.observe("ready-for-traffic", None, true, now, 10).expect("the first status is a change");
+        let ready = publisher.observe("ready", None, true, now, 10).expect("the first status is a change");
         assert!(peer.statuses.take(&ready, &fabric));
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(peer.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(peer.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
         assert!(peer.routable(id.as_str()));
         let leaving = publisher.observe("leaving", None, true, now, 20).expect("the mesh's leaving is a change, sent at once");
         assert!(matches!(&leaving, Frame::MeshStatus { status, publisher, .. } if status == "leaving" && publisher == "mesh1.admin.1"), "{leaving:?}");
         assert!(peer.statuses.take(&leaving, &fabric));
-        assert!(!peer.routable(id.as_str()), "a peer holding the mesh leaving selects none of its births, though the member still says ready-for-traffic");
+        assert!(!peer.routable(id.as_str()), "a peer holding the mesh leaving selects none of its births, though the member still says ready");
     }
 
     /// Whether `w` says a routing fact moved, without waiting.
@@ -6068,7 +6068,7 @@ mod tests {
     async fn a_mesh_status_taken_moves_the_views_routing_watch() {
         let (digest_view, fabric) = (DigestView::default(), FabricId::parse("fab000000001").unwrap());
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
         let mut w = digest_view.routing_watch();
         w.seen();
         assert!(!moved_now(&mut w).await, "nothing moved yet");
@@ -6085,9 +6085,9 @@ mod tests {
     #[test]
     fn a_deleting_overlay_keeps_the_node_held_and_not_routable_and_a_departure_removes_it() {
         let digest_view = DigestView::default();
-        hold_mesh_status(&digest_view, "mesh1", "ready-for-traffic", 10);
+        hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
         assert!(digest_view.routable(id.as_str()));
         let o = op(&id, &inc, "node.delete:mesh1.rpc.1");
         assert!(digest_view.deleting(o.clone()));
@@ -6103,7 +6103,7 @@ mod tests {
     }
 
     /// The mesh-primary's report-taking of `node.started` of the birth `inc` of `id`: its
-    /// DeclareNodeState(ReadyForTraffic) applied by its StatusAuthority.
+    /// DeclareNodeState(Ready) applied by its StatusAuthority.
     fn node_started(digest_view: &DigestView, id: &NodeId, inc: &IncarnationId) {
         digest_view.started(id, inc, &"mesh1.rpc.1".parse().unwrap());
     }
@@ -6123,17 +6123,17 @@ mod tests {
         *digest_view.observer_name.lock().unwrap() = "mesh1.admin.1".into();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let rpc1: rdm_core::PathName = "mesh1.rpc.1".parse().unwrap();
-        assert_eq!(digest_view.adopt_status(&id, &inc, &rpc1, MemberStatus::ReadyForTraffic), Ok(None), "held before its heartbeat");
-        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::ReadyForTraffic));
+        assert_eq!(digest_view.adopt_status(&id, &inc, &rpc1, MemberStatus::Ready), Ok(None), "held before its heartbeat");
+        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready));
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 10)));
-        assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::ReadyForTraffic), "the heartbeat heard after takes the adopted status");
-        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &IncarnationId::mint(), &"mesh2.rpc.1".parse().unwrap(), MemberStatus::ReadyForTraffic), Err("another-mesh"));
-        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &IncarnationId::mint(), &"mesh1.admin.1".parse().unwrap(), MemberStatus::ReadyForTraffic), Err("predecessor-at-own-path"));
+        assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Ready), "the heartbeat heard after takes the adopted status");
+        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &IncarnationId::mint(), &"mesh2.rpc.1".parse().unwrap(), MemberStatus::Ready), Err("another-mesh"));
+        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &IncarnationId::mint(), &"mesh1.admin.1".parse().unwrap(), MemberStatus::Ready), Err("predecessor-at-own-path"));
         assert_eq!(digest_view.adopt_status(&id, &IncarnationId::mint(), &rpc1, MemberStatus::Leaving), Err("another-birth-held"), "an earlier birth of a node held at a later one");
-        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::ReadyForTraffic), "and the held birth's status stands");
+        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready), "and the held birth's status stands");
         let (gone, gone_inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.depart(op(&gone, &gone_inc, "node.delete:mesh1.rpc.1")));
-        assert_eq!(digest_view.adopt_status(&gone, &gone_inc, &rpc1, MemberStatus::ReadyForTraffic), Err("deleted"));
+        assert_eq!(digest_view.adopt_status(&gone, &gone_inc, &rpc1, MemberStatus::Ready), Err("deleted"));
     }
 
     /// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): a `NodeStopped`
@@ -6145,9 +6145,9 @@ mod tests {
     #[test]
     fn a_stopped_birth_leaves_the_view_and_only_node_joined_brings_it_back() {
         let digest_view = DigestView::default();
-        hold_mesh_status(&digest_view, "mesh1", "ready-for-traffic", 10);
+        hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)));
         let o = op(&id, &inc, "node.stop:mesh1.rpc.1");
         assert!(digest_view.stopped(o.clone()));
@@ -6156,7 +6156,7 @@ mod tests {
         assert!(!digest_view.routable(id.as_str()));
         assert_eq!(digest_view.in_flight(), vec![o.clone()]);
         assert!(digest_view.deleted().is_empty(), "a stop departs nothing");
-        for late in [digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 111), digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 105), digest(&id, &inc, None, MemberStatus::Pending, 109), digest(&id, &inc, None, MemberStatus::Pending, 120)] {
+        for late in [digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 111), digest(&id, &inc, None, MemberStatus::Ready, 105), digest(&id, &inc, None, MemberStatus::Pending, 109), digest(&id, &inc, None, MemberStatus::Pending, 120)] {
             assert!(!digest_view.record(late.clone()), "{late:?}");
             assert!(!digest_view.record_forwarded(late.clone()), "{late:?}");
             assert!(!digest_view.record_topology(late.clone()), "{late:?}");
@@ -6168,10 +6168,10 @@ mod tests {
         let (held, _) = digest_view.get(id.as_str()).expect("held again");
         assert_eq!((held.node.incarnation.clone(), held.status, held.digest_seq), (inc.clone(), MemberStatus::Pending, 120), "the same birth, Pending, from the latest heartbeat heard of it");
         assert!(digest_view.in_flight().is_empty(), "node.joined closes the stop");
-        assert!(!digest_view.routable(id.as_str()), "the joined birth is Pending: a routing stop until it is ready-for-traffic");
-        assert!(!digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 118)), "a heartbeat older than the one it is held from is not taken");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 125)));
-        assert!(digest_view.routable(id.as_str()), "its ready-for-traffic restores selection");
+        assert!(!digest_view.routable(id.as_str()), "the joined birth is Pending: a routing stop until it is ready");
+        assert!(!digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 118)), "a heartbeat older than the one it is held from is not taken");
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 125)));
+        assert!(digest_view.routable(id.as_str()), "its ready restores selection");
         // A departure ends a stop for good.
         let o2 = op(&id, &inc, "node.stop:mesh1.rpc.1");
         assert!(digest_view.stopped(LifecycleOp { attempt: 2, ..o2 }));
@@ -6190,7 +6190,7 @@ mod tests {
     /// lists the birth `Pending` and ends the stop, carried at v2; the birth is held again from the
     /// latest heartbeat of it refused while the stop stood, with that status. The heartbeat of the
     /// birth then gives liveness and nothing of its status, which is the projection's `Pending`, then its
-    /// `ReadyForTraffic`. Must NOT happen: a stop ended by a projection that never carried it, by a
+    /// `Ready`. Must NOT happen: a stop ended by a projection that never carried it, by a
     /// refresh, or by a heartbeat; an own-mesh status taken from a heartbeat.
     #[test]
     fn a_non_primary_admin_ends_a_stop_only_when_its_primarys_projection_moves_past_it() {
@@ -6216,18 +6216,18 @@ mod tests {
             deleted: Vec::new(),
         };
         let status = || view.digest_view.get(id.as_str()).map(|(d, _)| d.status);
-        assert!(view.digest_view.record(b(MemberStatus::ReadyForTraffic, 1)));
+        assert!(view.digest_view.record(b(MemberStatus::Ready, 1)));
         assert_eq!(status(), Some(MemberStatus::Pending), "a heartbeat gives no status: none is held until the projection gives one");
-        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone);
-        assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "the projection's status");
+        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(1, vec![b(MemberStatus::Ready, 1)], vec![]), &fabric, Side::Backbone);
+        assert_eq!(status(), Some(MemberStatus::Ready), "the projection's status");
         assert!(view.digest_view.record(b(MemberStatus::ConnectionsDeleting, 2)));
-        assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "a heartbeat moves no status");
+        assert_eq!(status(), Some(MemberStatus::Ready), "a heartbeat moves no status");
 
         // The event from the seated primary, carrying the version its stop changed the birth at (v2).
         view.digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), revision: 1 });
         view.take(&StatusEvent::Stopped.frame(stop.clone(), publisher.clone(), 2), &fabric, "mesh-channel");
         assert!(view.digest_view.get(id.as_str()).is_none() && view.digest_view.in_flight() == vec![stop.clone()]);
-        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone);
+        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(1, vec![b(MemberStatus::Ready, 1)], vec![]), &fabric, Side::Backbone);
         assert_eq!(view.digest_view.in_flight(), vec![stop.clone()], "a refresh at the version held, built before the stop, ends nothing");
         hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(2, vec![], vec![stop.clone()]), &fabric, Side::Backbone);
         hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(3, vec![], vec![]), &fabric, Side::Backbone);
@@ -6237,10 +6237,10 @@ mod tests {
         hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(4, vec![b(MemberStatus::Pending, 3)], vec![]), &fabric, Side::Backbone);
         assert!(view.digest_view.in_flight().is_empty(), "the projection moved past the stop: it is over");
         assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.digest_seq, d.status)), Some((3, MemberStatus::Pending)), "held again from the latest heartbeat it refused, with the projection's status");
-        assert!(view.digest_view.record(b(MemberStatus::ReadyForTraffic, 4)));
-        assert_eq!(status(), Some(MemberStatus::Pending), "the projection's Pending, not the heartbeat's ReadyForTraffic");
-        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(5, vec![b(MemberStatus::ReadyForTraffic, 4)], vec![]), &fabric, Side::Backbone);
-        assert_eq!(status(), Some(MemberStatus::ReadyForTraffic));
+        assert!(view.digest_view.record(b(MemberStatus::Ready, 4)));
+        assert_eq!(status(), Some(MemberStatus::Pending), "the projection's Pending, not the heartbeat's Ready");
+        hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(5, vec![b(MemberStatus::Ready, 4)], vec![]), &fabric, Side::Backbone);
+        assert_eq!(status(), Some(MemberStatus::Ready));
 
         let refused = spans.named("rdm.mesh.topology.reject.via-stopped-birth");
         let projection: Vec<(String, String, String)> = refused.iter().filter(|f| f["door"] == "projection").map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect();
@@ -6267,9 +6267,9 @@ mod tests {
         view.take_snapshot(&mesh_topology(1, itself(MemberStatus::Pending, 1)), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
         assert!(view.digest_view.member_statuses.lock().unwrap().get(id.as_str()).is_none(), "before its first publication, by its name");
         *view.digest_view.own.lock().unwrap() = Some(id.to_string());
-        assert!(view.digest_view.record(itself(MemberStatus::ReadyForTraffic, 2)));
+        assert!(view.digest_view.record(itself(MemberStatus::Ready, 2)));
         view.take_snapshot(&mesh_topology(2, itself(MemberStatus::Leaving, 1)), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
-        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::ReadyForTraffic), "after it, by its NodeId: its own status stands");
+        assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Ready), "after it, by its NodeId: its own status stands");
     }
 
     /// CONTRACT (gossip.md §3: "the mesh topology/current birth projection preserves the current
@@ -6306,8 +6306,8 @@ mod tests {
         };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let (gone, gone_inc) = (NodeId::mint(), IncarnationId::mint());
-        let member = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 4);
-        let mut other = digest(&gone, &gone_inc, None, MemberStatus::ReadyForTraffic, 4);
+        let member = digest(&id, &inc, None, MemberStatus::Ready, 4);
+        let mut other = digest(&gone, &gone_inc, None, MemberStatus::Ready, 4);
         other.node.name = "mesh1.rpc.2".parse().unwrap();
         view.take_snapshot(&mesh_topology(1, vec![member.clone(), other.clone()], vec![]), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
         let first_held_by = Instant::now();
@@ -6323,7 +6323,7 @@ mod tests {
         assert!(held(Instant::now()).is_some_and(|(_, s)| s.is_some_and(|s| s <= first_held_by)), "the primary dropping the silent member from its projection is no departure: the birth stays held");
         let listed: Vec<String> = view.digest_view.projected_unheard_at(Instant::now()).into_iter().map(|(d, _)| d.node.name.to_string()).collect();
         assert_eq!(listed.len(), 2, "both projected births are held: {listed:?}");
-        assert!(view.digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 5)), "the member's own digest is taken");
+        assert!(view.digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 5)), "the member's own digest is taken");
         assert!(view.digest_view.projected_at(id.as_str(), Instant::now()).is_none(), "its own digest is the birth's word: it is held from the projection no more");
         let mut departure = op(&gone, &gone_inc, "node.delete:mesh1.rpc.2");
         departure.name = "mesh1.rpc.2".parse().unwrap();
@@ -6344,12 +6344,12 @@ mod tests {
         let predecessor = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(view.digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 5)), "the primary holds its member's heartbeat");
-        assert!(view.digest_view.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "and sets it ready-for-traffic from its node.started");
+        assert!(view.digest_view.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "and sets it ready from its node.started");
         for (side, forwarded_by) in [(Side::Backbone, None), (Side::MeshChannel, Some("mesh1.admin.1".to_string()))] {
             let late = Frame::MeshTopology { mesh: "mesh1".into(), publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 6)], in_flight: vec![], deleted: vec![] };
             view.take_snapshot(&late, &fabric, side, &mut view.order.lock().unwrap());
-            assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((MemberStatus::ReadyForTraffic, 5)), "{side:?}: the authored status stands");
-            assert_eq!(view.digest_view.member_statuses.lock().unwrap().get(id.as_str()).map(|(_, s)| *s), Some(MemberStatus::ReadyForTraffic));
+            assert_eq!(view.digest_view.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((MemberStatus::Ready, 5)), "{side:?}: the authored status stands");
+            assert_eq!(view.digest_view.member_statuses.lock().unwrap().get(id.as_str()).map(|(_, s)| *s), Some(MemberStatus::Ready));
         }
     }
 
@@ -6383,54 +6383,54 @@ mod tests {
     }
 
     /// CONTRACT (gossip.md §3.1: a Digest "carries no status: a member's status comes only from its
-    /// mesh-primary"; states.md "Who sets each state": node ReadyForTraffic is set by "the node's
+    /// mesh-primary"; states.md "Who sets each state": node Ready is set by "the node's
     /// mesh-primary" from "the node's node.started report"): at the mesh-primary of mesh1, a member's
-    /// heartbeats move no status, whatever the member's own word. Its ready-for-traffic heartbeat
+    /// heartbeats move no status, whatever the member's own word. Its ready heartbeat
     /// before node.started leaves it Pending, unroutable, and its projection entry Pending;
-    /// node.started sets it ready-for-traffic; a later heartbeat in which it says ConnectionsDeleting, held from
-    /// memory or decoded from the wire, leaves it ready-for-traffic. Must NOT happen: the primary
+    /// node.started sets it ready; a later heartbeat in which it says ConnectionsDeleting, held from
+    /// memory or decoded from the wire, leaves it ready. Must NOT happen: the primary
     /// setting a member's status from its heartbeat.
     #[test]
     fn a_members_heartbeat_moves_no_status_at_its_mesh_primary() {
         let digest_view = DigestView::default();
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         digest_view.primary.store(true, Ordering::Relaxed);
-        hold_mesh_status(&digest_view, "mesh1", "ready-for-traffic", 10);
+        hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let status = |digest_view: &DigestView| digest_view.get(id.as_str()).map(|(d, _)| d.status);
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)), "the heartbeat is taken as liveness");
-        assert_eq!(status(&digest_view), Some(MemberStatus::Pending), "a ready-for-traffic heartbeat before node.started sets nothing");
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)), "the heartbeat is taken as liveness");
+        assert_eq!(status(&digest_view), Some(MemberStatus::Pending), "a ready heartbeat before node.started sets nothing");
         assert!(!digest_view.routable(id.as_str()), "the birth is Pending: not routable");
         assert_eq!(digest_view.current(digest_view.staleness_floor()).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), Some(MemberStatus::Pending), "its projection entry is Pending");
         node_started(&digest_view, &id, &inc);
-        assert_eq!(status(&digest_view), Some(MemberStatus::ReadyForTraffic), "node.started sets it ready-for-traffic");
+        assert_eq!(status(&digest_view), Some(MemberStatus::Ready), "node.started sets it ready");
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)), "the heartbeat is taken as liveness");
-        assert_eq!(status(&digest_view), Some(MemberStatus::ReadyForTraffic), "a heartbeat saying ConnectionsDeleting moves nothing");
+        assert_eq!(status(&digest_view), Some(MemberStatus::Ready), "a heartbeat saying ConnectionsDeleting moves nothing");
         let Frame::Digest { digest: heard } = Frame::decode(&Frame::Digest { digest: digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 120) }.clone().authored(&test_author(), 0, 1).encode()).unwrap().into_data() else { unreachable!() };
         assert!(digest_view.record(heard), "the heartbeat from the wire is taken as liveness");
-        assert_eq!(status(&digest_view), Some(MemberStatus::ReadyForTraffic), "nor does one from the wire");
+        assert_eq!(status(&digest_view), Some(MemberStatus::Ready), "nor does one from the wire");
         assert!(digest_view.routable(id.as_str()));
     }
 
     /// CONTRACT (states.md "Who sets each state": node pending is set by "the node's mesh-primary"
     /// from "the node's node.joined report on the start call"): at the mesh-primary of mesh1, a
     /// node.joined of a held birth sets it Pending though no stop mark is held, and the birth stays
-    /// unroutable until node.started of the same birth sets it ready-for-traffic. A node.joined of a
+    /// unroutable until node.started of the same birth sets it ready. A node.joined of a
     /// birth this view holds nothing of sets nothing. Must NOT happen: node.joined leaving the birth
-    /// ready-for-traffic.
+    /// ready.
     #[test]
     fn a_node_joined_with_no_stop_held_sets_its_held_birth_pending() {
         let digest_view = DigestView::default();
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         digest_view.primary.store(true, Ordering::Relaxed);
-        hold_mesh_status(&digest_view, "mesh1", "ready-for-traffic", 10);
+        hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 100)));
         node_started(&digest_view, &id, &inc);
-        assert!(digest_view.routable(id.as_str()), "the started birth is ready-for-traffic");
+        assert!(digest_view.routable(id.as_str()), "the started birth is ready");
         assert!(!digest_view.joined(&op(&NodeId::mint(), &IncarnationId::mint(), "node.start:mesh1.rpc.9")), "node.joined of a birth this view holds nothing of sets nothing");
         assert!(digest_view.joined(&op(&id, &inc, "node.start:mesh1.rpc.1")), "the node.joined sets its birth Pending");
         assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "held Pending from node.joined");
@@ -6439,24 +6439,24 @@ mod tests {
         let joined = spans.named("rdm.mesh.topology.update.via-node-joined");
         assert_eq!(joined.iter().map(|f| (f["status"].clone(), f["stops_cleared"].clone())).collect::<Vec<_>>(), vec![("Pending".to_string(), String::new())], "one node.joined, Pending, no stop cleared: {joined:#?}");
         node_started(&digest_view, &id, &inc);
-        assert!(digest_view.routable(id.as_str()), "node.started of the same birth: ready-for-traffic again");
+        assert!(digest_view.routable(id.as_str()), "node.started of the same birth: ready again");
     }
 
-    /// CONTRACT (states.md "Who sets each state": node ReadyForTraffic is set by "the node's
+    /// CONTRACT (states.md "Who sets each state": node Ready is set by "the node's
     /// mesh-primary" from "the node's node.started report, after every start gate"; gossip.md `Digest`:
     /// "a heartbeat never carries or moves a status, and a member's status comes only from its
-    /// mesh-primary"): at mesh1's primary, a birth held Pending from its join report and then set ready-for-traffic by its
-    /// node.started stays ready-for-traffic in every read that hands out its digest, whatever digest
+    /// mesh-primary"): at mesh1's primary, a birth held Pending from its join report and then set ready by its
+    /// node.started stays ready in every read that hands out its digest, whatever digest
     /// of that birth the view holds: one read before node.started and written after it (the digest
     /// the primary's heartbeat intake took between the two) moves nothing. Must NOT happen: `get`,
     /// `current`, `all`, `heard_direct_since`, `silent_held` or `routable` answering Pending after
     /// node.started, or the projection publishing it Pending.
     #[test]
-    fn a_digest_held_after_node_started_leaves_the_started_birth_ready_for_traffic() {
+    fn a_digest_held_after_node_started_leaves_the_started_birth_ready() {
         let digest_view = DigestView::default();
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         digest_view.primary.store(true, Ordering::Relaxed);
-        hold_mesh_status(&digest_view, "mesh1", "ready-for-traffic", 10);
+        hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.record_joined(digest(&id, &inc, None, MemberStatus::Pending, 100)), "the join report");
         assert_eq!(digest_view.member_status(&id, &inc), None, "a join digest authors no status");
@@ -6466,7 +6466,7 @@ mod tests {
         // The digest the intake read the status for before node.started, written after it.
         let since = Instant::now();
         digest_view.inner.lock().unwrap().insert(id.to_string(), (digest(&id, &inc, None, MemberStatus::Pending, 101), Instant::now(), Heard::Direct));
-        let ready = Some(MemberStatus::ReadyForTraffic);
+        let ready = Some(MemberStatus::Ready);
         assert_eq!(digest_view.member_status(&id, &inc), ready, "node.started set it");
         assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), ready, "get");
         assert_eq!(digest_view.current(Duration::from_secs(5)).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), ready, "current: the projection's members");
@@ -6476,14 +6476,14 @@ mod tests {
         assert!(digest_view.routable(id.as_str()), "the started birth of a ready mesh is routable");
     }
 
-    /// CONTRACT (states.md "Who sets each state": node ReadyForTraffic is set by "the node's
+    /// CONTRACT (states.md "Who sets each state": node Ready is set by "the node's
     /// mesh-primary" from "the node's node.started report, after every start gate"; Q80 = a): a
     /// mesh-primary that takes the node.started of a birth of its own mesh it holds no digest of yet (a
     /// primary born while the member was silent decides its declaration from durable rows, Q11) holds the
-    /// birth ready-for-traffic and spans `from-node-started`. The birth's digest, arriving after, finds
+    /// birth ready and spans `from-node-started`. The birth's digest, arriving after, finds
     /// its status held: a join digest authors nothing, a heartbeat moves nothing,
-    /// and every read hands the birth out ready-for-traffic. Must NOT happen: the re-born primary applying
-    /// a resumed member's ReadyForTraffic, authoring nothing, then publishing the member Pending for good
+    /// and every read hands the birth out ready. Must NOT happen: the re-born primary applying
+    /// a resumed member's Ready, authoring nothing, then publishing the member Pending for good
     /// (kept/e6s7-i144-e4-re-born-admin-start-unheld, traces 8e6533b70a42c1e26c5786b9de02718a and
     /// b9363650a79356392e9361154673417d).
     #[test]
@@ -6491,22 +6491,22 @@ mod tests {
         let digest_view = DigestView::default();
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         digest_view.primary.store(true, Ordering::Relaxed);
-        hold_mesh_status(&digest_view, "mesh1", "ready-for-traffic", 10);
+        hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.get(id.as_str()).is_none(), "the view holds no digest of the birth");
         assert!(digest_view.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "node.started of a birth not held yet");
-        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::ReadyForTraffic), "held ready-for-traffic before its digest");
+        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready), "held ready before its digest");
         let started = spans.named("rdm.mesh.topology.update.from-node-started");
         assert_eq!(started.iter().map(|f| f["member"].clone()).collect::<Vec<_>>(), vec!["mesh1.rpc.1".to_string()], "from-node-started names the birth: {started:#?}");
         assert!(digest_view.record_joined(digest(&id, &inc, None, MemberStatus::Pending, 100)), "its digest arrives with no status");
-        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::ReadyForTraffic), "nothing is seeded Pending");
+        assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready), "nothing is seeded Pending");
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 101)), "a heartbeat");
-        let ready = Some(MemberStatus::ReadyForTraffic);
+        let ready = Some(MemberStatus::Ready);
         assert_eq!(digest_view.member_status(&id, &inc), ready, "the held status stands");
-        assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), ready, "get hands it out ready-for-traffic");
+        assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), ready, "get hands it out ready");
         assert_eq!(digest_view.current(Duration::from_secs(5)).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), ready, "current: the projection's members");
         assert!(digest_view.routable(id.as_str()), "the started birth of a ready mesh is routable");
         // A held digest's name wins over the one the caller names: here the caller's names another mesh.
@@ -6523,13 +6523,13 @@ mod tests {
     fn an_ended_stop_overlay_is_not_opened_again_by_a_later_copy() {
         let digest_view = DigestView::default();
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
-        hold_mesh_status(&digest_view, "mesh1", "ready-for-traffic", 10);
+        hold_mesh_status(&digest_view, "mesh1", "ready", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)));
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 120)));
         assert!(digest_view.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "node.started of the birth");
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 125)));
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 125)));
         assert!(digest_view.routable(id.as_str()), "no overlay holds it: the ready birth of a ready mesh is selected");
         let stop = op(&id, &inc, "node.stop:mesh1.rpc.1");
         assert!(digest_view.stopped(stop.clone()));
@@ -6546,7 +6546,7 @@ mod tests {
     fn a_stop_of_another_birth_is_refused_and_one_for_an_unheld_node_still_stops_it() {
         let digest_view = DigestView::default();
         let (id, old, new) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &new, Some(old.clone()), MemberStatus::ReadyForTraffic, 100)));
+        assert!(digest_view.record(digest(&id, &new, Some(old.clone()), MemberStatus::Ready, 100)));
         assert!(!digest_view.stopped(op(&id, &old, "node.stop:mesh1.rpc.1")), "the stop names a birth the held one superseded");
         assert!(digest_view.get(id.as_str()).is_some());
         let late_joiner = DigestView::default();
@@ -6563,7 +6563,7 @@ mod tests {
     fn a_stop_overlay_rides_the_aggregate_and_is_told_by_its_operation() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let digest_view = DigestView::default();
-        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
         let stop = op(&id, &inc, "node.stop:mesh1.rpc.1");
         assert!(stop.is_stop());
         assert!(!op(&id, &inc, "node.delete:mesh1.rpc.1").is_stop());
@@ -6578,14 +6578,14 @@ mod tests {
         let digest_view = DigestView::with_retention(Duration::from_millis(40));
         let (id, inc, next) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
         let t0 = Instant::now();
-        digest_view.record_at(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100), t0);
+        digest_view.record_at(digest(&id, &inc, None, MemberStatus::Ready, 100), t0);
         digest_view.depart_at(op(&id, &inc, "node.delete:mesh1.rpc.1"), t0);
         assert!(!digest_view.record_at(digest(&id, &inc, None, MemberStatus::Leaving, 900), t0), "the deleted birth's late digest");
-        assert!(!digest_view.record_forwarded_at(digest(&id, &next, Some(inc.clone()), MemberStatus::ReadyForTraffic, 950), t0), "a later incarnation of the deleted NodeId");
+        assert!(!digest_view.record_forwarded_at(digest(&id, &next, Some(inc.clone()), MemberStatus::Ready, 950), t0), "a later incarnation of the deleted NodeId");
         assert!(digest_view.is_deleted_at(id.as_str(), t0));
         let after = t0 + Duration::from_millis(60);
         assert!(!digest_view.is_deleted_at(id.as_str(), after), "forgotten after the retention");
-        assert!(digest_view.record_at(digest(&id, &next, Some(inc), MemberStatus::ReadyForTraffic, 960), after), "after the retention the id is unknown, not deleted");
+        assert!(digest_view.record_at(digest(&id, &next, Some(inc), MemberStatus::Ready, 960), after), "after the retention the id is unknown, not deleted");
     }
 
     #[test]
@@ -6614,13 +6614,13 @@ mod tests {
         let digest_view = DigestView::default();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.depart(op(&id, &inc, "node.delete:mesh1.rpc.1")));
-        assert!(!digest_view.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(!digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));
         assert!(!digest_view.deleting(op(&id, &inc, "node.delete:mesh1.rpc.1")), "no overlay on a deleted node");
     }
 
     #[test]
     fn members_are_packed_into_frames_that_fit_one_gossip_message() {
-        let ds: Vec<MeshDigest> = (0..64).map(|i| digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, i)).collect();
+        let ds: Vec<MeshDigest> = (0..64).map(|i| digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, i)).collect();
         let in_flight: Vec<LifecycleOp> = (0..3).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "node.delete:mesh1.rpc.1")).collect();
         let deleted: Vec<LifecycleOp> = (0..5).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "node.delete:mesh1.rpc.1")).collect();
         let frame = |digests| mesh_topology("mesh1", "mesh1.admin.1", Some("mesh2.admin.1"), digests, in_flight.clone(), deleted.clone());
@@ -6648,7 +6648,7 @@ mod tests {
         assert_eq!(fact.validate(), Ok(()), "exactly at the bound");
         let ds: Vec<MeshDigest> = (0..40)
             .map(|i| {
-                let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, i);
+                let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, i);
                 d.node.runtime = Some(fact.clone());
                 d.data_dir = Some(format!("/var/lib/rafka/{}", "x".repeat(64)));
                 d
@@ -6670,13 +6670,13 @@ mod tests {
         let digest_view = DigestView::default();
         let (topo, heard, birth) = (NodeId::mint(), NodeId::mint(), IncarnationId::mint());
         let t0 = Instant::now();
-        assert!(digest_view.record_topology(digest(&topo, &birth, None, MemberStatus::ReadyForTraffic, 10)));
-        assert!(digest_view.record_at(digest(&heard, &birth, None, MemberStatus::ReadyForTraffic, 10), t0));
+        assert!(digest_view.record_topology(digest(&topo, &birth, None, MemberStatus::Ready, 10)));
+        assert!(digest_view.record_at(digest(&heard, &birth, None, MemberStatus::Ready, 10), t0));
         let far = t0 + Duration::from_secs(3600);
         assert_eq!(digest_view.get_at(topo.as_str(), far).unwrap().1, Duration::ZERO, "topology never ages");
         assert!(digest_view.current_at(digest_view.staleness_floor(), far).iter().any(|d| d.node.node_id == topo), "a topology member stays current");
         let before = digest_view.get_at(heard.as_str(), t0 + Duration::from_secs(10)).unwrap().1;
-        assert!(digest_view.record_topology(digest(&heard, &birth, None, MemberStatus::ReadyForTraffic, 10)), "an equal forwarded copy");
+        assert!(digest_view.record_topology(digest(&heard, &birth, None, MemberStatus::Ready, 10)), "an equal forwarded copy");
         assert!(digest_view.record_topology(digest(&heard, &birth, None, MemberStatus::ConnectionsDeleting, 11)), "a newer forwarded copy");
         let after = digest_view.get_at(heard.as_str(), t0 + Duration::from_secs(10)).unwrap().1;
         assert_eq!(before, after, "a forwarded copy does not refresh when the member was heard");
@@ -6693,7 +6693,7 @@ mod tests {
     fn a_member_known_only_from_topology_never_ages_whatever_status_it_is_listed_with() {
         let digest_view = DigestView::default();
         let t0 = Instant::now();
-        let listed: Vec<(NodeId, MemberStatus)> = [MemberStatus::ReadyForTraffic, MemberStatus::ConnectionsDeleting, MemberStatus::Leaving].into_iter().map(|s| (NodeId::mint(), s)).collect();
+        let listed: Vec<(NodeId, MemberStatus)> = [MemberStatus::Ready, MemberStatus::ConnectionsDeleting, MemberStatus::Leaving].into_iter().map(|s| (NodeId::mint(), s)).collect();
         for (id, status) in &listed {
             assert!(digest_view.record_topology_at(digest(id, &IncarnationId::mint(), None, *status, 10), t0));
         }
@@ -6711,8 +6711,8 @@ mod tests {
         let (id, birth) = (NodeId::mint(), IncarnationId::mint());
         let t0 = Instant::now();
         let later = t0 + Duration::from_millis(30);
-        assert!(digest_view.record_at(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200), t0));
-        assert!(digest_view.record_forwarded_at(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200), later), "an equal forwarded copy");
+        assert!(digest_view.record_at(digest(&id, &birth, None, MemberStatus::Ready, 200), t0));
+        assert!(digest_view.record_forwarded_at(digest(&id, &birth, None, MemberStatus::Ready, 200), later), "an equal forwarded copy");
         assert_eq!(digest_view.get_at(id.as_str(), later).unwrap().1, Duration::ZERO, "keeps the member heard");
         assert!(!digest_view.record_forwarded_at(digest(&id, &birth, None, MemberStatus::Pending, 100), later), "an older copy is not taken");
     }
@@ -6725,20 +6725,20 @@ mod tests {
         let digest_view = DigestView::default();
         let mut digests = digest_view.digest_changes();
         let (id, birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(digest_view.record(digest(&id, &birth, None, MemberStatus::Ready, 100)));
         assert!(digests.has_changed().unwrap(), "the first digest ticks");
         digests.borrow_and_update();
-        let mut renamed = digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 101);
+        let mut renamed = digest(&id, &birth, None, MemberStatus::Ready, 101);
         renamed.data_dir = Some("d".into());
         assert!(digest_view.record(renamed));
         assert!(digests.has_changed().unwrap(), "a fresher digest of the same birth and status ticks");
         digests.borrow_and_update();
-        assert!(!digest_view.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(!digest_view.record(digest(&id, &birth, None, MemberStatus::Ready, 100)));
         assert!(!digests.has_changed().unwrap(), "a refused older digest does not tick");
-        assert!(digest_view.record_forwarded(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 102)));
+        assert!(digest_view.record_forwarded(digest(&id, &birth, None, MemberStatus::Ready, 102)));
         assert!(digests.has_changed().unwrap(), "a forwarded fresher digest ticks");
         digests.borrow_and_update();
-        assert!(digest_view.record_topology(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 103)));
+        assert!(digest_view.record_topology(digest(&id, &birth, None, MemberStatus::Ready, 103)));
         assert!(digests.has_changed().unwrap(), "a topology copy that moved the held digest ticks");
     }
 
@@ -6750,7 +6750,7 @@ mod tests {
         assert!(digest_view.record(digest(&id, &first, None, MemberStatus::Pending, 100)));
         assert!(births.has_changed().unwrap(), "first held");
         births.borrow_and_update();
-        assert!(digest_view.record(digest(&id, &first, None, MemberStatus::ReadyForTraffic, 200)));
+        assert!(digest_view.record(digest(&id, &first, None, MemberStatus::Ready, 200)));
         assert!(!births.has_changed().unwrap(), "the same birth, fresher and with a new status");
         assert!(digest_view.record_forwarded(digest(&id, &second, Some(first.clone()), MemberStatus::Pending, 50)));
         assert!(births.has_changed().unwrap(), "the next birth");
@@ -6760,9 +6760,9 @@ mod tests {
     fn a_successor_birth_is_taken_and_its_predecessors_late_digests_are_not() {
         let digest_view = DigestView::default();
         let (id, first, second) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
-        assert!(digest_view.record(digest(&id, &first, None, MemberStatus::ReadyForTraffic, 500)));
-        assert!(digest_view.record(digest(&id, &second, Some(first.clone()), MemberStatus::ReadyForTraffic, 100)), "a new birth, whatever its clock");
-        assert!(!digest_view.record(digest(&id, &first, None, MemberStatus::ReadyForTraffic, 900)), "the superseded birth's late digest");
+        assert!(digest_view.record(digest(&id, &first, None, MemberStatus::Ready, 500)));
+        assert!(digest_view.record(digest(&id, &second, Some(first.clone()), MemberStatus::Ready, 100)), "a new birth, whatever its clock");
+        assert!(!digest_view.record(digest(&id, &first, None, MemberStatus::Ready, 900)), "the superseded birth's late digest");
         assert_eq!(digest_view.get(id.as_str()).unwrap().0.node.incarnation, second);
     }
 
@@ -6776,8 +6776,8 @@ mod tests {
         let floor = staleness_floor();
         let (direct, backbone) = (NodeId::mint(), NodeId::mint());
         let t0 = Instant::now();
-        digest_view.record_at(digest(&direct, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100), t0);
-        assert!(digest_view.record_forwarded_at(digest(&backbone, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100), t0));
+        digest_view.record_at(digest(&direct, &IncarnationId::mint(), None, MemberStatus::Ready, 100), t0);
+        assert!(digest_view.record_forwarded_at(digest(&backbone, &IncarnationId::mint(), None, MemberStatus::Ready, 100), t0));
         let within = t0 + floor;
         assert_eq!(digest_view.current_at(floor, within).len(), 2, "both are heard within the staleness floor");
         let past = t0 + floor + Duration::from_millis(1);
@@ -6832,7 +6832,7 @@ mod tests {
         let view = test_view("mesh1", "mesh1.admin.1");
         let fabric = FabricId::parse("fab000000001").unwrap();
         let id = NodeId::mint();
-        let d = digest(&id, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100);
+        let d = digest(&id, &IncarnationId::mint(), None, MemberStatus::Ready, 100);
         assert!(view.digest_view.record(d.clone()));
         let aggregate = mesh_topology("mesh1", "mesh1.admin.1", None, vec![d], vec![], vec![]);
         let _ = view.take_snapshot(&single_chunk(aggregate), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
@@ -6841,7 +6841,7 @@ mod tests {
         let _ = at;
         // A peer mesh's member in the same kind of mesh topology is forwarded.
         let peer = NodeId::mint();
-        let mut p = digest(&peer, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100);
+        let mut p = digest(&peer, &IncarnationId::mint(), None, MemberStatus::Ready, 100);
         p.node.name = "mesh2.rpc.1".parse().unwrap();
         let aggregate = mesh_topology("mesh2", "mesh2.admin.1", None, vec![p], vec![], vec![]);
         let _ = view.take_snapshot(&single_chunk(aggregate), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
@@ -6858,7 +6858,7 @@ mod tests {
         let id = NodeId::mint();
         let incarnation = IncarnationId::mint();
         let at = |n: u64| {
-            let mut d = digest(&id, &incarnation, None, MemberStatus::ReadyForTraffic, n);
+            let mut d = digest(&id, &incarnation, None, MemberStatus::Ready, n);
             d.node.name = "mesh2.rpc.1".parse().unwrap();
             d
         };
@@ -6947,12 +6947,12 @@ mod tests {
         let digest_view = DigestView::default();
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let mut d = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100);
+        let mut d = digest(&id, &inc, None, MemberStatus::Ready, 100);
         d.node.name = "mesh1.admin.2".parse().unwrap();
         let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
         assert!(digest_view.record_at(d.clone(), long_ago));
         assert_eq!(digest_view.unheard_unexplained("mesh1", "mesh1.admin.1").len(), 1, "a member silent with no event is unexplained");
-        let mut again = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 200);
+        let mut again = digest(&id, &inc, None, MemberStatus::Ready, 200);
         again.node.name = "mesh1.admin.2".parse().unwrap();
         assert!(digest_view.record(again), "heard again");
         assert!(digest_view.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty(), "heard: nothing unexplained");
@@ -6967,7 +6967,7 @@ mod tests {
     }
 
     fn born(mesh: &str, kind_ordinal: &str, mesh_id: Option<&MeshId>, at: u64) -> MeshDigest {
-        let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, at);
+        let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, at);
         d.node.name = format!("{mesh}.{kind_ordinal}").parse().unwrap();
         d.mesh_id = mesh_id.cloned();
         d
@@ -6984,7 +6984,7 @@ mod tests {
     /// only from each member's own state. A node that joins a peer mesh after those members said
     /// ConnectionsDeleting and Leaving installs their own states from its mesh primary's topology read (op
     /// `0x1E`) and forwarder replay, and selects none of them for new work; a member still saying
-    /// ReadyForTraffic is routed by that state alone, with no mesh-level hold.
+    /// Ready is routed by that state alone, with no mesh-level hold.
     #[test]
     fn a_node_joining_after_the_leaving_meshs_members_said_connections_deleting_and_leaving_installs_their_own_states_and_routes_none_of_them() {
         let fabric = FabricId::parse("fab000000001").unwrap();
@@ -7015,9 +7015,9 @@ mod tests {
         // leaving primary's next mesh topology carries its members' own ConnectionsDeleting and Leaving.
         let primary = test_view("mesh2", "mesh2.admin.1");
         primary.primary.store(true, Ordering::Relaxed);
-        // mesh1's primary published mesh1 ready-for-traffic before the leave; the joiner learns it
+        // mesh1's primary published mesh1 ready before the leave; the joiner learns it
         // from the replay.
-        primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }, &fabric, "backbone");
+        primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }, &fabric, "backbone");
         for (version, digests) in [(1, vec![admin.clone(), draining.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&draining, MemberStatus::ConnectionsDeleting), said(&leaving, MemberStatus::Leaving)])] {
             let taken = primary.take_snapshot(&mesh_topology(version, digests), &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
             let (mesh, from, v, full) = taken.source.expect("a complete source snapshot");
@@ -7063,12 +7063,12 @@ mod tests {
         let status = |d: &MeshDigest| joiner.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
         assert_eq!(
             (status(&admin), status(&draining), status(&leaving)),
-            (Some(MemberStatus::ReadyForTraffic), Some(MemberStatus::ConnectionsDeleting), Some(MemberStatus::Leaving)),
+            (Some(MemberStatus::Ready), Some(MemberStatus::ConnectionsDeleting), Some(MemberStatus::Leaving)),
             "the joiner installed each member at its address with the member's own state"
         );
         assert!(!joiner.digest_view.routable(draining.node.node_id.as_str()), "a member saying ConnectionsDeleting takes no new work");
         assert!(!joiner.digest_view.routable(leaving.node.node_id.as_str()), "a member saying Leaving takes no new work");
-        assert!(joiner.digest_view.routable(admin.node.node_id.as_str()), "a member still saying ReadyForTraffic, of a mesh the joiner holds ready-for-traffic, is selected");
+        assert!(joiner.digest_view.routable(admin.node.node_id.as_str()), "a member still saying Ready, of a mesh the joiner holds ready, is selected");
     }
 
     /// CONTRACT (gossip.md, "Snapshot, delta and top-up agreement": after mesh-left the mesh is absent
@@ -7100,9 +7100,9 @@ mod tests {
         if b < a {
             std::mem::swap(&mut a, &mut b);
         }
-        let mut lower = digest(&a, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 10);
+        let mut lower = digest(&a, &IncarnationId::mint(), None, MemberStatus::Ready, 10);
         lower.node.name = "mesh1.admin.2".parse().unwrap();
-        let mut higher = digest(&b, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 10);
+        let mut higher = digest(&b, &IncarnationId::mint(), None, MemberStatus::Ready, 10);
         higher.node.name = "mesh1.admin.1".parse().unwrap();
         assert!(digest_view.record_at(lower.clone(), at) && digest_view.record_at(higher.clone(), at));
         (lower, higher)
@@ -7291,7 +7291,7 @@ mod tests {
         let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
         let departure = op_at("mesh2.admin.1", &x, &x_inc, "node.delete:mesh2.admin.1");
         let status_at = |changed_at_rafka_ms: u64, status: &str| Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.admin.1".into(), forwarded_by: Some("mesh2.admin.2".into()), changed_at_rafka_ms };
-        let held = Some(MeshStatus { status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 5 });
+        let held = Some(MeshStatus { status: "ready".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 5 });
 
         let joiner = test_view("mesh2", "mesh2.admin.1");
         let member = test_view("mesh2", "mesh2.rpc.1");
@@ -7304,7 +7304,7 @@ mod tests {
         assert!(peer.digest_view.record(y_birth));
         for (view, via) in [(&joiner, "entry-answer"), (&member, "mesh-channel"), (&renamed, "mesh-channel"), (&peer, "mesh-channel")] {
             assert!(view.digest_view.depart(departure.clone()));
-            view.take(&status_at(5, "ready-for-traffic"), &fabric, via);
+            view.take(&status_at(5, "ready"), &fabric, via);
             assert_eq!(view.digest_view.statuses.mesh("mesh2"), held, "{}: the status is taken whatever its publisher's name resolves to", view.node);
             view.take(&status_at(3, "pending"), &fabric, via);
             assert_eq!(view.digest_view.statuses.mesh("mesh2"), held, "{}: an older change is not taken", view.node);
@@ -7378,7 +7378,7 @@ mod tests {
 
     /// A birth of `path` with a fresh NodeId and incarnation, ready, heartbeat `seq`.
     fn birth_at(path: &str, seq: u64) -> MeshDigest {
-        let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, seq);
+        let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, seq);
         d.node.name = path.parse().unwrap();
         d
     }
@@ -7469,10 +7469,10 @@ mod tests {
                 deleted: vec![],
             };
             assert!(matches!(reads(read), Taken::Installed(_)), "{mesh}: the read installs v5");
-            assert_eq!(status_of(&ready), Some(MemberStatus::ReadyForTraffic), "{mesh}: the read holds the member Ready");
+            assert_eq!(status_of(&ready), Some(MemberStatus::Ready), "{mesh}: the read holds the member Ready");
             let v4 = stamped(snapshot_of(mesh, &publisher_of(&publisher), None, 4, 4, vec![publisher.clone(), pending.clone()], vec![], vec![]), 40);
             assert!(!hears(&v4), "{mesh}: the backbone's v4 is older than the v5 the read installed: ignored");
-            assert_eq!(status_of(&ready), Some(MemberStatus::ReadyForTraffic), "{mesh}: the member never leaves Ready");
+            assert_eq!(status_of(&ready), Some(MemberStatus::Ready), "{mesh}: the member never leaves Ready");
             let ignored = spans.named("rdm.mesh.topology.reject.via-stale");
             assert!(
                 ignored.iter().any(|f| f["channel"] == "backbone" && f["frame"] == "mesh-topology" && f["subject"] == mesh && f["held_key"].ends_with("topology_version=5") && f["frame_key"] == "published_at_rafka_ms=40 topology_version=4"),
@@ -7480,9 +7480,9 @@ mod tests {
             );
             let v5 = stamped(snapshot_of(mesh, &publisher_of(&publisher), None, 5, 5, vec![publisher.clone(), ready.clone()], vec![], vec![]), 50);
             assert!(hears(&v5), "{mesh}: the backbone's v5 is not older than what is held");
-            assert_eq!(status_of(&ready), Some(MemberStatus::ReadyForTraffic), "{mesh}: the member never leaves Ready");
+            assert_eq!(status_of(&ready), Some(MemberStatus::Ready), "{mesh}: the member never leaves Ready");
         }
-        let left_ready: Vec<_> = spans.named("rdm.mesh.topology.update.via-projected-status").into_iter().chain(spans.named("rdm.mesh.topology.update.via-member-state")).filter(|f| f.get("status").is_some_and(|s| s != "ReadyForTraffic")).collect();
+        let left_ready: Vec<_> = spans.named("rdm.mesh.topology.update.via-projected-status").into_iter().chain(spans.named("rdm.mesh.topology.update.via-member-state")).filter(|f| f.get("status").is_some_and(|s| s != "Ready")).collect();
         assert!(left_ready.is_empty(), "no member status moves off Ready: {left_ready:#?}");
     }
 
@@ -7982,7 +7982,7 @@ mod tests {
     fn an_own_mesh_topology_read_overtaken_by_gossip_keeps_the_newer_projection_and_holds_the_mesh_primarys_digest() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let (mut primary, mut admin2) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.admin.2", 1));
-        primary.status = MemberStatus::ReadyForTraffic;
+        primary.status = MemberStatus::Ready;
         admin2.status = MemberStatus::Pending;
         let p = publisher_of(&primary);
 
@@ -8020,12 +8020,12 @@ mod tests {
         assert!(matches!(view.digest_view.seats.take(Seat::MeshPrimary, &primary_of(&primary, 1)), SeatTaken::Held { .. }));
         let resolved = view.digest_view.mesh_primary("mesh1").expect("the seat holder's digest from the own-mesh topology read is held in the digest view");
         assert_eq!(resolved.node.node_id, primary.node.node_id);
-        assert_eq!(resolved.status, MemberStatus::ReadyForTraffic, "the projected status from v1 is preserved");
+        assert_eq!(resolved.status, MemberStatus::Ready, "the projected status from v1 is preserved");
     }
 
     /// A birth of `name` at endpoint key `key`, digest number `seq`.
     fn digest_at(name: &str, key: &str, id: &NodeId, inc: &IncarnationId, seq: u64) -> MeshDigest {
-        let mut d = digest(id, inc, None, MemberStatus::ReadyForTraffic, seq);
+        let mut d = digest(id, inc, None, MemberStatus::Ready, seq);
         d.node.name = name.parse().unwrap();
         d.node.endpoint_id = EndpointId(key.into());
         d

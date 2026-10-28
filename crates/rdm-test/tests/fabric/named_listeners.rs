@@ -123,7 +123,7 @@ async fn a_gateways_listeners_are_bound_reported_at_join_and_published_on_its_ro
 }
 
 /// Cell 2 (Q151): two gateways launched at once bind with no conflict: each its three listeners, six
-/// distinct ports, both ready-for-traffic.
+/// distinct ports, both ready.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_gateways_launched_at_once_bind_their_listeners_with_no_conflict() {
     let test = "two_gateways_launched_at_once_bind_their_listeners_with_no_conflict";
@@ -134,7 +134,7 @@ async fn two_gateways_launched_at_once_bind_their_listeners_with_no_conflict() {
     estate.artifact("views.json", &json!(Estate::values(&views)));
     let mut ports: BTreeMap<SocketAddr, String> = BTreeMap::new();
     let gateways: Vec<&NodeView> = views.iter().filter(|n| n.kind == LISTENER_KIND).collect();
-    assert_eq!(gateways.len(), 2, "both gateways are ready-for-traffic");
+    assert_eq!(gateways.len(), 2, "both gateways are ready");
     for g in gateways {
         for (n, a) in published(&estate, g).await {
             if let Some(other) = ports.insert(a, format!("{}:{n}", g.name)) {

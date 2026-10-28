@@ -72,7 +72,7 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
         let root = rdm_node::store_root::StoreRoot::open(&dir, &fabric).unwrap();
         let writer = rdm_admin::storage::FileNodesStorage::open(&dir, &root, "mesh1", &rdm_node::store_log::LogWriter::mint()).await.expect("the mesh-primary's nodes storage opens");
         let broker: PathName = "mesh1.broker.1".parse().unwrap();
-        let mut row = NodeRow::new(broker.clone(), NodeId::mint(), NodeStatus::ReadyForTraffic);
+        let mut row = NodeRow::new(broker.clone(), NodeId::mint(), NodeStatus::Ready);
         row.config = [("listener.data".to_string(), "127.0.0.1:43001".to_string())].into();
         writer.put_node(&row).await.expect("broker1's row is written");
         let written = nodes_folds(&seen).len();

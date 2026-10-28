@@ -86,12 +86,12 @@ pub struct DriftHold {
 pub type ServeApp = Box<dyn FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder + Send>;
 
 /// What `on_fabric_ready` is told: the fabric, the accepted Build and attempt whose change made it
-/// ready-for-traffic, and that attempt's observability context (fabric-node-hooks.md, Q175).
+/// ready, and that attempt's observability context (fabric-node-hooks.md, Q175).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FabricReadyCtx {
     /// The fabric.
     pub fabric_id: rdm_core::FabricId,
-    /// The accepted Build whose change made the fabric ready-for-traffic.
+    /// The accepted Build whose change made the fabric ready.
     pub build_id: String,
     /// Its attempt.
     pub attempt: u32,
@@ -99,7 +99,7 @@ pub struct FabricReadyCtx {
     pub context: CallContext,
 }
 
-/// What `on_mesh_ready` is told: the fabric and the mesh that is ready-for-traffic (fabric-node-hooks.md,
+/// What `on_mesh_ready` is told: the fabric and the mesh that is ready (fabric-node-hooks.md,
 /// Q175).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshReadyCtx {
@@ -126,11 +126,11 @@ pub trait CommandFrameSeam: Send + Sync {
     async fn before_storage_switch(&self, _change_id: &rdm_core::ChangeId) {}
 }
 
-/// `on_fabric_ready`: the notice the fabric-primary calls once the fabric is ready-for-traffic. Fire
+/// `on_fabric_ready`: the notice the fabric-primary calls once the fabric is ready. Fire
 /// and forget: it gates nothing.
 pub type FabricReadyNotice = Arc<dyn Fn(FabricReadyCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-/// `on_mesh_ready`: the notice a mesh-primary calls once its mesh's ready-for-traffic is on its Mesh
+/// `on_mesh_ready`: the notice a mesh-primary calls once its mesh's ready is on its Mesh
 /// record. Fire and forget: it gates nothing.
 pub type MeshReadyNotice = Arc<dyn Fn(MeshReadyCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 

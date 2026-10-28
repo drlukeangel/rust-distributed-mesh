@@ -4,7 +4,7 @@
 //! Each shape runs on a fresh fabric: the first `rdm-node-admin` boots it,
 //! one `build.create` asks for the shape, and the test then checks, from
 //! the typed objects and the evidence only, that:
-//! - the Build completes and every desired node is `ready-for-traffic`;
+//! - the Build completes and every desired node is `ready`;
 //! - every cohort has exactly one `is_primary` and the fabric exactly one
 //!   `is_fabric_primary`, a node-admin that is its own mesh's admin primary;
 //! - the evidence links Build -> deployment -> lifecycle by parent span id,
@@ -12,7 +12,7 @@
 //!   `DeployRuntime` step that launched it, which runs under a reconcile of
 //!   the Build (an MM's second mesh's members run on that mesh's own primary,
 //!   a later attempt), which descends from the request that accepted it; and
-//!   every node's `Pending -> ReadyForTraffic` transition descends from it too.
+//!   every node's `Pending -> Ready` transition descends from it too.
 //!
 //! The shapes run one after another in one test, each on its own fabric.
 

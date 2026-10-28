@@ -81,11 +81,11 @@ pub(crate) fn deployed(launch: &Launch) -> Deployed {
 
 pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     let waited = async {
-        while digest().status != MemberStatus::ReadyForTraffic {
+        while digest().status != MemberStatus::Ready {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     };
-    tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published ReadyForTraffic"));
+    tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published Ready"));
 }
 
 /// The fabric's nodes store under `store`: `<store>/<fabric id>/nodes.jsonl`.
@@ -219,7 +219,7 @@ async fn start_launched(launch: &Launch) -> Result<Running, String> {
 /// the first line of the fabric's `fabric.jsonl` no longer matches its checksum, so no fold from byte 0
 /// reads it (mesh1.admin.1 has read past it), and mesh1.admin.2, launched by it, starts. Its start opens
 /// all four topology stores and folds no `fabric.jsonl` (its Fabric identity is its entry pull's, Q227):
-/// it comes up ReadyForTraffic, holding its own
+/// it comes up Ready, holding its own
 /// row from its mesh-primary's hydration sync; the folds its start makes are its reads', each folded:
 /// `meshes` and `nodes` by the recorded primaries' read (boot.rs, Q149) and `builds` by the current
 /// Build's (boot.rs, #3237's mesh ids). A reader's first read of `fabric.jsonl` then folds it and is

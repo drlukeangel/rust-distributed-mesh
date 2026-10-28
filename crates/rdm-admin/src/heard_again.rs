@@ -1,10 +1,10 @@
-//! A birth heard again (Q87, Luke 2026-10-20): every node coming to ready-for-traffic from any other
+//! A birth heard again (Q87, Luke 2026-10-20): every node coming to ready from any other
 //! state connects to its node-admin for its cert, its time and its cache, and the `pre_node_ready`
 //! hook is where it does that; node-admins included, the Day-0 fabric-primary excepted. When the
 //! tickle reaches a birth its authority holds off its mesh (node-recovery.md step 2, node-tickle.md
 //! "What follows"), the authority begins the birth's next cycle and commands `node.mesh.join` to it,
 //! back over its own call; the birth runs node.start steps 2 to 5 again on it and is published
-//! ready-for-traffic only once its hook has passed (node-mesh-join.md step 10). One function, run by
+//! ready only once its hook has passed (node-mesh-join.md step 10). One function, run by
 //! the mesh-primary's offline ladder for its members and by the fabric-primary's seat watch for a
 //! held seat holder; nothing re-publishes a presence by hand. `AdminRunner` registers the birth's
 //! join (as it does a stopped birth's) so the join door admits the report.
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-/// The births this process commanded back and has not heard ready-for-traffic since: one command
+/// The births this process commanded back and has not heard ready since: one command
 /// per silence. An admin looks at a silent birth every pass; the start it commanded takes the
 /// birth off its mesh for the length of that start, and a second command inside it would start
 /// it over.
@@ -38,7 +38,7 @@ pub struct HeardAgain {
     pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
     /// This admin's runner, once built: it registers the birth's join before the command.
     pub runner: Arc<OnceLock<Arc<crate::admin::runner::AdminRunner>>>,
-    /// This admin's digest view: whether the birth has been heard ready-for-traffic since.
+    /// This admin's digest view: whether the birth has been heard ready since.
     pub digest_view: DigestView,
 }
 
@@ -78,10 +78,10 @@ async fn command_mesh_join(
     if node.is_fabric_primary {
         return "fabric-primary: no authority above it".to_string();
     }
-    // Only a birth the view holds off ready-for-traffic re-enters (Luke: "coming from a state that is
-    // not ready-for-traffic"). What an admin just started has heard is not the birth's state (it holds every
+    // Only a birth the view holds off ready re-enters (Luke: "coming from a state that is
+    // not ready"). What an admin just started has heard is not the birth's state (it holds every
     // member from the projection, unheard until their digests reach it); the topology is.
-    if node.status == crate::model::NodeStatus::ReadyForTraffic {
+    if node.status == crate::model::NodeStatus::Ready {
         return "ready-in-view: on its mesh".to_string();
     }
     // A birth with a lifecycle command of its authority in flight (a stop, a start, a restart) is that
@@ -97,7 +97,7 @@ async fn command_mesh_join(
         return format!("create-in-flight: node.create:{}", node.name);
     }
     // Once per silence: a birth commanded back is commanded again only after a staleness floor, and
-    // only once this process has heard it ready-for-traffic since (the admin looks at it every pass
+    // only once this process has heard it ready since (the admin looks at it every pass
     // while its view still holds it silent).
     let key = (node.node_id.to_string(), incarnation.as_str().to_string());
     if let Some(at) = commanded().lock().unwrap().get(&key).copied() {
@@ -106,8 +106,8 @@ async fn command_mesh_join(
         }
         let heard_ready_since = digest_view
             .get(node.node_id.as_str())
-            .is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && d.status == rdm_core::MemberStatus::ReadyForTraffic && Instant::now().checked_sub(unheard).is_some_and(|heard_at| heard_at > at));
-        // Heard ready-for-traffic since, or unheard again (a commanded start that stopped at a step left the
+            .is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && d.status == rdm_core::MemberStatus::Ready && Instant::now().checked_sub(unheard).is_some_and(|heard_at| heard_at > at));
+        // Heard ready since, or unheard again (a commanded start that stopped at a step left the
         // birth off its mesh): a new silence, commanded again; else the one command stands.
         let unheard_again = !digest_view.get(node.node_id.as_str()).is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && unheard < digest_view.staleness_floor());
         if !heard_ready_since && !unheard_again {
@@ -119,7 +119,7 @@ async fn command_mesh_join(
     // Each command back is its own join (node-mesh-join.md step 10, Q97, Q99: one Pending per accepted
     // join report, per join and not per birth), so its operation names this command by the instant it
     // was reserved, fixed here: every resend of this one request carries it unchanged. The birth's
-    // ready-for-traffic declaration carries the operation, and an operation row survives every cycle
+    // ready declaration carries the operation, and an operation row survives every cycle
     // begin with no state in its key (`NodeOperationRow::key`): a second command back in one Build
     // attempt under the first one's operation would have its ready answered AlreadyApplied from the
     // first join's row, and the birth would stay Pending.
@@ -219,7 +219,7 @@ mod tests {
         n.incarnation_id = Some(IncarnationId::mint());
         n.mesh = name.split('.').next().unwrap().into();
         n.kind = kind;
-        n.status = NodeStatus::ReadyForTraffic;
+        n.status = NodeStatus::Ready;
         n.is_primary = primary;
         n.is_fabric_primary = fabric_primary;
         n
@@ -239,7 +239,7 @@ mod tests {
         let m2p = at("mesh2.admin.2", NodeKind::NodeAdmin, true, false);
         let broker = at("mesh2.broker.1", NodeKind::RpcNode, false, false);
         let view = Topology {
-            fabric: crate::model::Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            fabric: crate::model::Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
             meshes: Vec::new(),
             nodes: vec![fp.clone(), rpc.clone(), former.clone(), m2p.clone(), broker.clone()],
         };

@@ -145,7 +145,7 @@ records and applies every property that differs, each by its own operation. It d
 | `tags` | in place: the node's tag rows |
 | `storage`, `placement` | onto the row, effective at the node's next birth; with an executable change they ride that re-birth (Q157) |
 
-Only a resize or a replacement puts the fabric back to pending ([states.md](lifecycles/states.md#resize-and-executable-replacement)); a change of `config`, `tags`, `storage` or `placement` alone leaves it ready-for-traffic. A node's `config` and `tags` change at any time, between Builds and while one runs, through `node.config.update` and `node.tags.*`; the last write wins: a property a Build applied to a node, at its create's claim or by its own operation, is not applied again by a later attempt of that Build.
+Only a resize or a replacement puts the fabric back to pending ([states.md](lifecycles/states.md#resize-and-executable-replacement)); a change of `config`, `tags`, `storage` or `placement` alone leaves it ready. A node's `config` and `tags` change at any time, between Builds and while one runs, through `node.config.update` and `node.tags.*`; the last write wins: a property a Build applied to a node, at its create's claim or by its own operation, is not applied again by a later attempt of that Build.
 
 ~~~text
 B.topology:
@@ -512,9 +512,9 @@ Application work enters a lifecycle only through [Fabric and node hooks](fabric-
 
 SN/MN/MM are minimum proof rungs, not caps. Lifecycle eligibility should usually derive from the accepted Build rather than hard-coded `if shape == MM` branches.
 
-The Fabric leaves `pending` when every Mesh the accepted Build names is ready-for-traffic (every planned member ready), and only then ([States](lifecycles/states.md#states), Q174). A Build that put the fabric back to pending completes when its ready-for-traffic state is set, not with its last step ([States](lifecycles/states.md#resize-and-executable-replacement)).
+The Fabric leaves `pending` when every Mesh the accepted Build names is ready (every planned member ready), and only then ([States](lifecycles/states.md#states), Q174). A Build that put the fabric back to pending completes when its ready state is set, not with its last step ([States](lifecycles/states.md#resize-and-executable-replacement)).
 
-For a node-admin's `Pending -> ReadyForTraffic` transition, required generic hydration includes:
+For a node-admin's `Pending -> Ready` transition, required generic hydration includes:
 
 ```text
 the current Build and its accepted topology
@@ -629,7 +629,7 @@ Callers reach the current fabric-primary over Node RPC at the endpoint its diges
 
 A fabric-primary lost mid-Build and runtime drift after a Build completed both continue the current Build (§4.1).
 
-Leadership may recover before every application hook is complete. A resolved primary and Fabric ReadyForTraffic are distinct facts; election semantics are owned only by [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md).
+Leadership may recover before every application hook is complete. A resolved primary and Fabric Ready are distinct facts; election semantics are owned only by [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md).
 
 ---
 

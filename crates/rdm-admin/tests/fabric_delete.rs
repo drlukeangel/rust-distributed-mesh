@@ -129,7 +129,7 @@ impl View {
 
 fn node_record(name: &str, primary: bool, fabric_primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
     n.incarnation_id = Some(IncarnationId::mint());
@@ -157,7 +157,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
         let mut row = NodeRow { topology_storage_provider: None,
                 name: n.name.clone(),
                 node_id: n.node_id.clone(),
-                status: NodeStatus::ReadyForTraffic,
+                status: NodeStatus::Ready,
                 config: BTreeMap::from([("role".to_string(), n.name.to_string())]),
                 tags: Default::default(),
                 allocated: None,
@@ -209,10 +209,10 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(), ..Default::default() };
 
     let observed = Arc::new(RwLock::new(Topology {
-        fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![
-            Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-            Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::Ready },
+            Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::Ready },
         ],
         nodes: all_nodes.clone(),
     }));
@@ -404,13 +404,13 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // At fabric.deleted:
     // - No operations remain on the fabric.delete Build.
     // - The fabric name is released in fabric.storage (`fabric()` is None).
-    // - The fabric-primary `mesh1.admin.1` is STILL ALIVE (`ReadyForTraffic` row in nodes.storage,
+    // - The fabric-primary `mesh1.admin.1` is STILL ALIVE (`Ready` row in nodes.storage,
     //   runtime not terminated).
     let proj = builds.read_build(&build_id).await.unwrap();
     assert!(plan_for_build(&proj, &*observed.read().await).operations.is_empty(), "fabric.delete Build has no operations left at fabric.deleted");
     assert_eq!(fabric_storage.fabric().await.unwrap(), None, "fabric identity row is released at fabric.deleted");
     assert!(!fleet.terminated.lock().unwrap().contains(&"mesh1.admin.1".to_string()), "fabric-primary is still alive at fabric.deleted");
-    assert_eq!(nodes_storage.record_at(&m1_a1.name).await.unwrap().unwrap().status, NodeStatus::ReadyForTraffic, "fabric-primary's node row is still live at fabric.deleted");
+    assert_eq!(nodes_storage.record_at(&m1_a1.name).await.unwrap().unwrap().status, NodeStatus::Ready, "fabric-primary's node row is still live at fabric.deleted");
 
     // Step 4: a separate call from outside the fabric runs `node.delete` of the fabric-primary.
     assert!(cp.of_deleted_mesh(&m1_a1.name).await, "the fabric-primary's mesh is Dead after fabric.deleted");
@@ -480,10 +480,10 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             ..Default::default()
         };
         let view = Arc::new(RwLock::new(Topology {
-            fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![
-                Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-                Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::Ready },
+                Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ],
             nodes: vec![fp.clone(), m2_a1.clone(), m2_r1.clone()],
         }));
@@ -577,10 +577,10 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             ..Default::default()
         };
         let view = Arc::new(RwLock::new(Topology {
-            fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![
-                Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-                Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::Ready },
+                Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ],
             nodes: vec![fp.clone(), m2_a1.clone(), m2_r1.clone()],
         }));

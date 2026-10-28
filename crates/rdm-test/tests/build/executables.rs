@@ -180,7 +180,7 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     entry.tags = ["zone_a".to_string()].into();
     entry.config = zone.clone();
     let b = followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on: b_based_on, nodes: b_nodes }).await).await.build_id.to_string();
-    let created = estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic).cloned()).await;
+    let created = estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
     assert_eq!(exe_of(&estate, "mesh1.rpc.2").await, next.executable, "the created node runs the executable its request named");
     let row = record_of(&estate, created.node_id.as_str());
     assert_eq!(row["record"]["executable"]["sha256"], json!(next.sha256), "its row records it: {row}");
@@ -236,7 +236,7 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
 }
 
 /// A two-mesh fabric of the faulted node-admin with the role kinds bound, each mesh two node-admins, a
-/// broker, two gateways and a compute node, ready for traffic.
+/// broker, two gateways and a compute node, ready.
 async fn role_fabric(test: &str) -> Estate {
     let sha = candidate_sha();
     let estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set_with_roles(&sha), &sha, &["broker", "gateway", "compute"], &[]).await.expect("the faulted-admin binding set with the role kinds is accepted");
@@ -265,7 +265,7 @@ async fn untouched(estate: &Estate, before: &BTreeMap<String, NodeView>, build: 
     for (name, v) in before.iter().filter(|(n, v)| v.kind != NodeKind::Gateway && !except.contains(&n.as_str())) {
         let n = now.get(name).unwrap_or_else(|| panic!("{name} is still listed"));
         assert_eq!((&n.node_id, &n.incarnation_id), (&v.node_id, &v.incarnation_id), "{name}: the same node.id and incarnation");
-        assert_eq!(n.status, rdm_client::NodeStatus::ReadyForTraffic, "{name}");
+        assert_eq!(n.status, rdm_client::NodeStatus::Ready, "{name}");
         let touched: Vec<String> = steps.iter().filter(|r| r.operation.ends_with(&format!(":{name}"))).map(|r| format!("{} {}", r.operation, r.step)).collect();
         assert!(touched.is_empty(), "{name}: no operation of the Build acts on it: {touched:?}");
     }
@@ -275,11 +275,11 @@ async fn untouched(estate: &Estate, before: &BTreeMap<String, NodeView>, build: 
 /// entry's config and executable is not deleted, created or restarted because another node changes. A
 /// request that changes only the gateways' executables redeploys the gateways and leaves every broker,
 /// compute and admin running as it was"; rule 5: "a type's non-primary members before its primary"; Q154:
-/// the Build is Complete only once the fabric is ready-for-traffic again from it): a two-mesh fabric's request changes
+/// the Build is Complete only once the fabric is ready again from it): a two-mesh fabric's request changes
 /// only its gateways' executables. Every gateway comes back at its `path.name` as a new node.id and
 /// incarnation running the new executable, deleted once and created once; in each mesh its non-primary
 /// gateway before its primary. Every broker, compute node and node-admin is the same birth, and no
-/// operation of the Build acts on it. At `Complete` the fabric-primary holds the fabric ready-for-traffic
+/// operation of the Build acts on it. At `Complete` the fabric-primary holds the fabric ready
 /// under the Build. Must NOT happen: an untouched node stopped, restarted or re-created, or a gateway left on
 /// its old executable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -291,11 +291,11 @@ async fn a_request_changing_only_the_gateways_executables_replaces_every_gateway
     let (based_on, request) = gateways_on(&estate, &next).await;
     let build = followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await).await.build_id.to_string();
     let (fp, status, accepted) = fabric_at_its_primary(&estate).await;
-    assert_eq!((status, accepted.as_deref()), (ScopeStatus::ReadyForTraffic, Some(build.as_str())), "Complete only once the fabric is ready-for-traffic again under it ({fp})");
+    assert_eq!((status, accepted.as_deref()), (ScopeStatus::Ready, Some(build.as_str())), "Complete only once the fabric is ready again under it ({fp})");
 
     let steps = receipts(&estate, &build).await;
     for (name, v) in before.iter().filter(|(_, v)| v.kind == NodeKind::Gateway) {
-        let now = estate.until_node(name, &format!("{name} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && n.node_id != v.node_id).cloned()).await;
+        let now = estate.until_node(name, &format!("{name} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != v.node_id).cloned()).await;
         assert_ne!(now.incarnation_id, v.incarnation_id, "{name}: a new birth");
         assert_eq!(exe_of(&estate, name).await, next.executable, "{name} runs the new executable");
         assert_eq!(receipts_of(&steps, &format!("node.delete:{name}"), "NodeDeleted").len(), 1, "{name} is deleted once");
@@ -314,7 +314,7 @@ async fn a_request_changing_only_the_gateways_executables_replaces_every_gateway
 /// from the accepted topology, the current node rows, observed state and its receipts ... an attempt
 /// interrupted halfway finishes the remaining gateways the same way"): the executor of mesh2's gateways'
 /// replacement, mesh2's primary node-admin, is held by its fault door at the `Complete` of its first
-/// gateway's create (the successor ReadyForTraffic, its receipt not written) and killed. The next attempt
+/// gateway's create (the successor Ready, its receipt not written) and killed. The next attempt
 /// finishes the rest: every gateway runs the new executable, each deleted once, and the successor born
 /// before the kill is the one at its path when the Build completes, never replaced again. Every broker,
 /// compute node and node-admin but the killed one is the same birth. Must NOT happen: a gateway replaced
@@ -335,7 +335,7 @@ async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_
     let build = stream.build_id().to_string();
     let held = door.wait_held("gateway-created").await;
     assert_eq!((s(&held["hit"]["build_id"]), s(&held["hit"]["operation"])), (build.clone(), format!("node.create:{first}")), "{p} is held at {first}'s create Complete: {held}");
-    let successor = estate.until_node(&first, &format!("{first}'s successor ready"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && n.node_id != before[&first].node_id).cloned()).await;
+    let successor = estate.until_node(&first, &format!("{first}'s successor ready"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != before[&first].node_id).cloned()).await;
     let left: Vec<String> = before.values().filter(|v| v.kind == NodeKind::Gateway && v.name.to_string() != first && v.mesh == "mesh2").map(|v| v.name.to_string()).collect();
     assert_eq!(left.len(), 1);
     assert_eq!(estate.node_value(&left[0]).await["node_id"], json!(before[&left[0]].node_id), "halfway: mesh2's other gateway is not replaced yet");
@@ -344,7 +344,7 @@ async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_
     followed(&estate, stream).await;
     let steps = receipts(&estate, &build).await;
     for (name, v) in before.iter().filter(|(_, v)| v.kind == NodeKind::Gateway) {
-        estate.until_node(name, &format!("{name} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && n.node_id != v.node_id).map(|_| ())).await;
+        estate.until_node(name, &format!("{name} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != v.node_id).map(|_| ())).await;
         assert_eq!(exe_of(&estate, name).await, next.executable, "{name} runs the new executable");
         assert_eq!(receipts_of(&steps, &format!("node.delete:{name}"), "NodeDeleted").len(), 1, "{name} is deleted once");
     }
@@ -357,7 +357,7 @@ async fn an_executor_killed_halfway_through_the_gateways_replacement_leaves_the_
 /// be replaced first gets a second node-admin on the new executable at a new `path.name` of the node-admin
 /// type in that mesh (the next free one, `mesh1.admin.2`), whose entry the compiler adds to the accepted
 /// topology at acceptance, so every attempt and every read holds it and no attempt removes it as left out;
-/// it is created, ReadyForTraffic and mesh-primary ... before the original is replaced, and stays"; rule 1:
+/// it is created, Ready and mesh-primary ... before the original is replaced, and stays"; rule 1:
 /// "every node RDM originates ... appears in that read, so the next request lists it"): mesh2 has one
 /// node-admin, and the request names a new executable for it. The accepted Build's topology holds
 /// `mesh2.admin.2` from acceptance. Its executor, mesh2's admin, is held at the added admin's create
@@ -388,12 +388,12 @@ async fn a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_exec
     let accepted = build_log::build_value(&estate.carrier().await, &build).await;
     assert!(accepted["topology"]["meshes"]["mesh2"]["nodes"].as_array().is_some_and(|n| n.iter().any(|p| p == "mesh2.admin.2")), "the added admin is in the accepted topology from acceptance: {}", accepted["topology"]);
     door.wait_held("added-admin-created").await;
-    let added = estate.until_node("mesh2.admin.2", "mesh2.admin.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic).cloned()).await;
+    let added = estate.until_node("mesh2.admin.2", "mesh2.admin.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
     assert_eq!(estate.node_value("mesh2.admin.1").await["node_id"], json!(before["mesh2.admin.1"].node_id), "the original is not replaced before its second admin is created");
     estate.kill_node("mesh2.admin.1").await;
 
     followed(&estate, stream).await;
-    estate.until_node("mesh2.admin.1", "mesh2.admin.1 on the new executable", SETTLE + crate::node_recovery_due(), |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && n.node_id != before["mesh2.admin.1"].node_id && n.executable.as_ref() == Some(&next)).map(|_| ())).await;
+    estate.until_node("mesh2.admin.1", "mesh2.admin.1 on the new executable", SETTLE + crate::node_recovery_due(), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != before["mesh2.admin.1"].node_id && n.executable.as_ref() == Some(&next)).map(|_| ())).await;
     assert_eq!(exe_of(&estate, "mesh2.admin.1").await, next.executable, "the original's path runs the new executable");
     let read = fabric_nodes(&estate).await;
     assert_eq!(read["mesh2.admin.2"].node_id, added.node_id, "the added admin is kept: the same node");
@@ -421,7 +421,7 @@ async fn a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_exec
 /// before any step of mesh1's mesh.delete, and the same build_id completes at the new fabric-primary),
 /// then mesh1 is deleted. In that order: a request leaving out mesh3, a mesh that does not hold the
 /// fabric-primary, deletes it, its row Dead; then a request leaving out mesh1 moves the fabric-primary to
-/// mesh2's primary, "the other ReadyForTraffic mesh-primaries" (node-primary-update.md), and the new
+/// mesh2's primary, "the other Ready mesh-primaries" (node-primary-update.md), and the new
 /// fabric-primary does not plan mesh3's mesh.delete again. Must NOT happen: a mesh left out kept running,
 /// the fabric-primary's mesh deleted with the fabric-primary in it, the fabric-primary handed to the Dead
 /// mesh's final primary, or a deleted mesh planned again.
@@ -442,7 +442,7 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
     estate.settles_to(&[("mesh1", 2, 1), ("mesh2", 2, 1), ("mesh3", 1, 1)], SETTLE).await;
     for m in ["mesh2", "mesh3"] {
         let view = estate.mesh_view(m).await;
-        assert!(view.id.is_some() && view.status == ScopeStatus::ReadyForTraffic, "{m} is created with its first node-admin: {view:?}");
+        assert!(view.id.is_some() && view.status == ScopeStatus::Ready, "{m} is created with its first node-admin: {view:?}");
     }
 
     let mesh3_id = estate.mesh_view("mesh3").await.id.expect("mesh3 carries its id");
@@ -459,9 +459,9 @@ async fn a_mesh_named_first_is_created_with_its_first_admin_and_a_mesh_left_out_
         .unwrap_or_else(|end| panic!("{end}"));
 
     // mesh1, the fabric-primary's own mesh, left out: the fabric-primary moves first, inside mesh1's
-    // mesh.delete, to the other ReadyForTraffic mesh-primary, mesh2's (node-primary-update.md: "the lowest
-    // NodeId among the other ReadyForTraffic mesh-primaries"), never to the Dead mesh3's final primary.
-    let mesh2_admin = estate.mesh_node_views("mesh2").await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.status == rdm_client::NodeStatus::ReadyForTraffic).map(|n| n.name).expect("a ready mesh2 admin");
+    // mesh.delete, to the other Ready mesh-primary, mesh2's (node-primary-update.md: "the lowest
+    // NodeId among the other Ready mesh-primaries"), never to the Dead mesh3's final primary.
+    let mesh2_admin = estate.mesh_node_views("mesh2").await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.status == rdm_client::NodeStatus::Ready).map(|n| n.name).expect("a ready mesh2 admin");
     estate.enter(&mesh2_admin).await;
     let (based_on, request) = read_request(&estate).await;
     let without1: Vec<_> = request.into_iter().filter(|s| s.path.mesh != "mesh1").collect();
@@ -511,12 +511,12 @@ async fn every_path_on_another_build(estate: &Estate) -> (rdm_core::BuildId, Vec
     (based_on, request, next)
 }
 
-/// `name` at its `path.name` again, ReadyForTraffic as a new node (new node.id and incarnation), running
+/// `name` at its `path.name` again, Ready as a new node (new node.id and incarnation), running
 /// `next`; a `Persistent` path's successor (a node-admin's, a broker's: their kinds' default storage) over
 /// its predecessor's data dir with its endpoint key, an `Ephemeral` path's over a newly allocated data dir
 /// with a new endpoint key (build-deployment.md §3).
 async fn replaced(estate: &Estate, name: &str, was: &Member, next: &Binding) {
-    let now = estate.until_node(name, &format!("{name} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && n.node_id != was.view.node_id).cloned()).await;
+    let now = estate.until_node(name, &format!("{name} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != was.view.node_id).cloned()).await;
     assert_ne!(now.incarnation_id, was.view.incarnation_id, "{name}: a new birth");
     assert_eq!(exe_of(estate, name).await, next.executable, "{name} runs the executable its entry names");
     if matches!(NodeSpec::default_for(was.view.name.clone()).storage_persistence, rdm_core::meta::StorageMeta::Persistent { .. }) {
@@ -596,9 +596,9 @@ async fn follow_across_replacement(estate: &Estate, stream: rdm_client::BuildStr
 /// node.id and incarnation, in its order with its guards: a type's non-primary members before its primary,
 /// the primary's move first by node.primary.update, the fabric-primary's move ending the caller's stream
 /// `FabricPrimaryMoved` and the caller resubmitting the same build_id, a type's only node replaced with no
-/// update ... A Build that puts the fabric back to pending completes only after its own ready-for-traffic
+/// update ... A Build that puts the fabric back to pending completes only after its own ready
 /// state is set"; proposal executable-bindings-at-create.md §4: "a request replacing every node of a
-/// two-mesh fabric: Complete only after the ready-for-traffic state is set (Q154)"; "the fabric-primary's
+/// two-mesh fabric: Complete only after the ready state is set (Q154)"; "the fabric-primary's
 /// own replacement moving it once"; "a one-broker mesh's broker replaced: one `node.delete` then the
 /// create, no refusal at any step"): a fabric of two meshes, two node-admins and one rpc node in each, and a
 /// request naming another build for every path. Every node comes back at its `path.name` as a new node.id
@@ -606,19 +606,19 @@ async fn follow_across_replacement(estate: &Estate, stream: rdm_client::BuildStr
 /// endpoint key. In each mesh its non-primary node-admin is deleted before its primary one, and node-admins
 /// before its rpc node; each node is created once. mesh1 holds the fabric-primary: the caller's stream ends
 /// `FabricPrimaryMoved` once, and the same build_id completes at the new fabric-primary, which holds the
-/// fabric ready-for-traffic under the Build. Each mesh's only rpc node is replaced by its `node.delete`, the
+/// fabric ready under the Build. Each mesh's only rpc node is replaced by its `node.delete`, the
 /// whole stop inside it, with no standalone connections delete or mesh leave and no `no-secondary` refusal.
 /// Moved from the removed operation's `a_two_mesh_fabric_rolls_every_member_onto_the_set_at_its_path_over_its_kept_data_dir`
 /// and `a_mesh_with_one_admin_gains_a_second_first_and_its_only_rpc_node_is_replaced_with_no_update` (its
 /// one-admin half is `a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_executor_is_killed`).
 /// Must NOT happen: a node left on its old executable, a primary replaced before its type's other members,
 /// a type's only node refused for want of a successor, or the Build complete before the fabric is
-/// ready-for-traffic under it.
+/// ready under it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_request_replacing_every_nodes_executable_moves_the_fabric_primary_once_and_completes_after_ready_for_traffic() {
+async fn a_request_replacing_every_nodes_executable_moves_the_fabric_primary_once_and_completes_after_ready() {
     let sha = candidate_sha();
     let set = binding_set(&sha);
-    let test = "a_request_replacing_every_nodes_executable_moves_the_fabric_primary_once_and_completes_after_ready_for_traffic";
+    let test = "a_request_replacing_every_nodes_executable_moves_the_fabric_primary_once_and_completes_after_ready";
     let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let shape = [("mesh1", 2, 1), ("mesh2", 2, 1)];
     estate.reconcile_shape("fabric1", &shape).await;
@@ -634,7 +634,7 @@ async fn a_request_replacing_every_nodes_executable_moves_the_fabric_primary_onc
     let (frames, moves) = follow_across_replacement(&estate, stream, &["mesh2.admin.1", "mesh2.admin.2", "mesh1.admin.1", "mesh1.admin.2"]).await;
     assert_eq!(moves, 1, "the stream ended FabricPrimaryMoved once, at the fabric-primary's own replacement, and the same build_id completed at the new fabric-primary: {frames:?}");
     let (fp, status, accepted) = fabric_at_its_primary(&estate).await;
-    assert_eq!((status, accepted.as_deref()), (ScopeStatus::ReadyForTraffic, Some(build.as_str())), "Complete only once the fabric is ready-for-traffic under it ({fp})");
+    assert_eq!((status, accepted.as_deref()), (ScopeStatus::Ready, Some(build.as_str())), "Complete only once the fabric is ready under it ({fp})");
 
     for (name, m) in &before {
         replaced(&estate, name, m, &next[&m.view.kind]).await;
@@ -809,7 +809,7 @@ async fn a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_ex
     std::fs::copy(&outside.executable, &inside_path).unwrap();
     let inside = Binding { executable: inside_path, ..outside.clone() };
     followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: naming(request, "mesh2.rpc.1", Some(&inside)) }).await).await;
-    let created = estate.until_node("mesh2.rpc.1", "mesh2.rpc.1 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic).cloned()).await;
+    let created = estate.until_node("mesh2.rpc.1", "mesh2.rpc.1 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
     let row = record_of(&estate, created.node_id.as_str());
     assert_eq!(row["record"]["executable"]["executable"], json!(inside.executable.display().to_string()), "mesh2's launched admin launched the executable from the added directory: {row}");
     estate.shutdown().await;
@@ -827,7 +827,7 @@ async fn a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_ex
 /// mesh2: the gateway's replacement delete carries the birth the acceptance pinned, and mesh2's primary
 /// refuses it `birth-replaced` (span `rdm.node_admin.node.reject.via-birth-replaced`, naming the pinned
 /// and the observed birth). The recovered birth is untouched: the same node id and incarnation,
-/// ReadyForTraffic, on the executable it was recovered on. Must NOT happen: the delete resolving the
+/// Ready, on the executable it was recovered on. Must NOT happen: the delete resolving the
 /// birth now at the path and replacing it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_replacements_delete_of_a_birth_replaced_after_acceptance_is_refused_birth_replaced_and_the_new_birth_is_untouched() {
@@ -852,7 +852,7 @@ async fn a_replacements_delete_of_a_birth_replaced_after_acceptance_is_refused_b
 
     // The pinned birth is replaced outside the Build: killed, and recovered by mesh2's own primary.
     estate.kill_node(&target).await;
-    let recovered = estate.until_node(&target, &format!("{target} recovered under a new node id"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && n.node_id != pinned.node_id).cloned()).await;
+    let recovered = estate.until_node(&target, &format!("{target} recovered under a new node id"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != pinned.node_id).cloned()).await;
     door.release("mesh1-gateway-created").await;
 
     // The Build reaches mesh2: the replacement's delete carries the acceptance pin and is refused there.
@@ -868,7 +868,7 @@ async fn a_replacements_delete_of_a_birth_replaced_after_acceptance_is_refused_b
 
     // The recovered birth is untouched by the Build.
     let now = estate.until_node(&target, &format!("{target} as recovered"), SETTLE, |n| n.cloned()).await;
-    assert_eq!((&now.node_id, &now.incarnation_id, now.status), (&recovered.node_id, &recovered.incarnation_id, rdm_client::NodeStatus::ReadyForTraffic), "{target}: the recovered birth stands");
+    assert_eq!((&now.node_id, &now.incarnation_id, now.status), (&recovered.node_id, &recovered.incarnation_id, rdm_client::NodeStatus::Ready), "{target}: the recovered birth stands");
     assert_eq!(exe_of(&estate, &target).await, gateway.executable, "{target} runs the executable it was recovered on");
     let steps = receipts(&estate, &build).await;
     assert!(receipts_of(&steps, &format!("node.delete:{target}"), "NodeDeleting").is_empty(), "the Build began no delete of {target}: {:?}", receipts_of(&steps, &format!("node.delete:{target}"), "NodeDeleting"));

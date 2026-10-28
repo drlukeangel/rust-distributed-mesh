@@ -42,7 +42,7 @@ async fn rpc_node_restarts_as_the_same_birth_in_the_same_process_and_recovers_st
 /// writes finished, the row, the successor installed); `node.start` brings it back as a member.
 /// Stopping that admin moves the role back: the row names the first admin the successor, which installs
 /// itself and is its mesh's writer from that moment, and it writes the second admin's stop rows. Both
-/// stops and starts complete, each admin the same birth, ready for traffic. Must NOT happen: the second
+/// stops and starts complete, each admin the same birth, ready. Must NOT happen: the second
 /// stop not admitted, or the role not back on the first admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_rows() {
@@ -67,7 +67,7 @@ async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_ro
         operations.push(format!("node.stop:{path}"));
         let after = estate.until_node(&name(target), &format!("{path} ready again after its stop and start"), Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["stopped"] == false).then_some(n)
+            (n["status"] == "ready" && n["stopped"] == false).then_some(n)
         }).await;
         assert_eq!((&after["node_id"], &after["incarnation_id"]), (&target["node_id"], &target["incarnation_id"]), "{path} is the same birth after its stop and start: {after}");
     }

@@ -95,14 +95,14 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         assert_eq!(s(&own["id"]), fabric_id, "{} names the Fabric by the same id", admin["name"]);
     }
 
-    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node restart until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // A restart, node.stop then node.start (Q183), keeps NodeId, FabricId and the incarnation: the
     // process is stopped and started.
     let before = nodes.iter().find(|n| n["name"] == "mesh2.rpc.2").unwrap().clone();
     let (a, _) = estate.stop_then_start(&"mesh2.rpc.2".parse().unwrap()).await;
     let after = estate
-        .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).map(json_of))
+        .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).map(json_of))
         .await;
     assert_eq!(after["node_id"], before["node_id"], "restart keeps the node id");
     assert_eq!(after["incarnation_id"], before["incarnation_id"], "restart keeps the incarnation");
@@ -112,7 +112,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let (_, again) = estate.stop_then_start(&"mesh2.rpc.2".parse().unwrap()).await;
     assert_eq!(again.build_id, a.build_id, "a restart is an attempt of the accepted Build: {again:?}");
     let third = estate
-        .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).map(json_of))
+        .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).map(json_of))
         .await;
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
     assert_eq!(third["incarnation_id"], before["incarnation_id"], "and the incarnation");
@@ -124,7 +124,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .until_view_at(&"mesh1.admin.1".parse().unwrap(), "mesh1.admin.1 holds the restarted mesh2.rpc.2 ready, same node and incarnation", Duration::from_secs(30), |views| {
             views
                 .iter()
-                .find(|n| n.name.to_string() == "mesh2.rpc.2" && n.status == NodeStatus::ReadyForTraffic)
+                .find(|n| n.name.to_string() == "mesh2.rpc.2" && n.status == NodeStatus::Ready)
                 .map(json_of)
                 .filter(|n| n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"])
         })
@@ -149,7 +149,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let last = estate
         .until_view("mesh2's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
             let mesh2: Vec<String> = views.iter().filter(|n| n.mesh == "mesh2").map(|n| n.name.to_string()).collect();
-            let alive = views.iter().any(|n| n.mesh == "mesh2" && n.status == NodeStatus::ReadyForTraffic);
+            let alive = views.iter().any(|n| n.mesh == "mesh2" && n.status == NodeStatus::Ready);
             (mesh2.len() == 1 && alive).then(|| mesh2[0].clone())
         })
         .await;
@@ -194,7 +194,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     }
 
     // The second restart's return reached the peer mesh's admin. mesh2's primary authored the
-    // birth's ReadyForTraffic (`from-node-started`), and its next publication bumped mesh2's
+    // birth's Ready (`from-node-started`), and its next publication bumped mesh2's
     // topology_version (gossip.md §3.1, `MeshTopology`: "at once on a material change"). mesh1.admin.1
     // installed that version of mesh2's projection or a later one: a receiver holds the newest
     // version it installed, and a snapshot overtaken by a later one is ignored in the gossip receive
@@ -205,10 +205,10 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .into_iter()
         .filter(|sp| {
             let a = &sp["attributes"];
-            a["member"] == "mesh2.rpc.2" && a["incarnation_id"] == after["incarnation_id"] && a["status"] == "ReadyForTraffic"
+            a["member"] == "mesh2.rpc.2" && a["incarnation_id"] == after["incarnation_id"] && a["status"] == "Ready"
         })
         .max_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0))
-        .unwrap_or_else(|| panic!("mesh2's primary authored the restarted mesh2.rpc.2's ReadyForTraffic at incarnation {}", after["incarnation_id"]));
+        .unwrap_or_else(|| panic!("mesh2's primary authored the restarted mesh2.rpc.2's Ready at incarnation {}", after["incarnation_id"]));
     let returned_ns = returned_at["start_unix_nano"].as_u64().unwrap_or(0);
     let bumped = named(&spans, "rdm.mesh.backbone.update.via-topology-version")
         .into_iter()

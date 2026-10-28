@@ -33,16 +33,16 @@ fn node(name: &str, status: NodeStatus, primary: bool, fabric_primary: bool) -> 
 /// mesh2 with its admin.
 fn view(rpc1: NodeStatus) -> Topology {
     Topology {
-        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![
-            Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-            Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready },
+            Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready },
         ],
         nodes: vec![
-            node("mesh1.admin.1", NodeStatus::ReadyForTraffic, true, true),
+            node("mesh1.admin.1", NodeStatus::Ready, true, true),
             node("mesh1.rpc.1", rpc1, false, false),
-            node("mesh1.rpc.2", NodeStatus::ReadyForTraffic, false, false),
-            node("mesh2.admin.1", NodeStatus::ReadyForTraffic, true, false),
+            node("mesh1.rpc.2", NodeStatus::Ready, false, false),
+            node("mesh2.admin.1", NodeStatus::Ready, true, false),
         ],
     }
 }
@@ -158,7 +158,7 @@ async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_b
 /// Must NOT happen: the steps refused `unheard-mesh` by the later gate first.
 #[tokio::test]
 async fn a_step_on_no_node_is_refused_unknown_before_the_heard_gate() {
-    let r = rig(view(NodeStatus::ReadyForTraffic)).await;
+    let r = rig(view(NodeStatus::Ready)).await;
     let _ = r.cp.peer_mesh.set(Arc::new(|m: &str| (m == "mesh2").then_some(PeerMesh { unheard_ms: Some(40_000), recovery_decided: false, unreachable_decided: false })));
     let steps = vec![rdm_core::build::Step::Stop { node: "mesh2.rpc.9".parse().unwrap() }];
     let span = tracing::info_span!("gates-steps");
@@ -173,7 +173,7 @@ async fn a_step_on_no_node_is_refused_unknown_before_the_heard_gate() {
 /// Must NOT happen: the refused stop's context put over the attempt another action holds.
 #[tokio::test]
 async fn an_attempt_taken_refusal_writes_no_attempt_context() {
-    let r = rig(view(NodeStatus::ReadyForTraffic)).await;
+    let r = rig(view(NodeStatus::Ready)).await;
     let current = r.builds.current().await.unwrap().expect("the seeded Build is current");
     let theirs = rdm_core::context::CallContext { caller_system: Some("the racer".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), tracestate: None, baggage: None };
     // The number the stop asks for: the fabric lane's next.
@@ -260,7 +260,7 @@ impl BuildStateAdapter for ClaimedInTheOpen {
 /// attempt's context (its reconcile parented to another request's span).
 #[tokio::test]
 async fn a_claim_the_moment_the_open_lands_takes_the_opening_requests_context() {
-    let t = view(NodeStatus::ReadyForTraffic);
+    let t = view(NodeStatus::Ready);
     let contexts = Arc::new(AttemptContexts::on(Arc::new(MemoryBuildStateAdapter::new()) as Arc<dyn LocalBuildLog>));
     let builds = Arc::new(ClaimedInTheOpen { inner: MemoryBuildStateAdapter::new(), contexts: contexts.clone(), claims: Default::default(), claimed: Default::default() });
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
@@ -324,7 +324,7 @@ async fn delete_of(r: &Rig, path: &str) -> Result<rdm_admin::control_plane::Open
 /// Must NOT happen: a silence-derived Dead birth admitted as live or as exited.
 #[tokio::test]
 async fn a_dead_birth_with_no_exited_verdict_is_refused_node_not_live() {
-    let r = dead_rig(view(NodeStatus::ReadyForTraffic)).await;
+    let r = dead_rig(view(NodeStatus::Ready)).await;
     let before = r.builds.current().await.unwrap().map(|b| b.build_id);
     let out = delete_of(&r, "mesh1.rpc.1").await;
     assert!(matches!(&out, Err(Refusal::Reject(BuildReject::NodeNotLive { .. }))), "no investigation is held: refused node-not-live, not {}", reason(&out));
@@ -340,7 +340,7 @@ async fn a_dead_birth_with_no_exited_verdict_is_refused_node_not_live() {
 /// Must NOT happen: the exited birth refused, or its delete planned for another birth.
 #[tokio::test]
 async fn the_exact_runtimes_exited_verdict_admits_a_dead_births_delete() {
-    let t = view(NodeStatus::ReadyForTraffic);
+    let t = view(NodeStatus::Ready);
     let r = dead_rig(t.clone()).await;
     let _ = r.cp.investigation.set(Arc::new(Investigation { exited: Some(birth_of(&t, "mesh1.rpc.1")) }));
     let out = delete_of(&r, "mesh1.rpc.1").await;
@@ -357,7 +357,7 @@ async fn the_exact_runtimes_exited_verdict_admits_a_dead_births_delete() {
 /// Must NOT happen: exit evidence matched on the node id alone or the incarnation alone.
 #[tokio::test]
 async fn another_births_exit_evidence_admits_nothing() {
-    let t = view(NodeStatus::ReadyForTraffic);
+    let t = view(NodeStatus::Ready);
     let (node_id, incarnation) = birth_of(&t, "mesh1.rpc.1");
     for other in [(node_id.clone(), IncarnationId::mint()), (NodeId::mint(), incarnation.clone())] {
         let r = dead_rig(t.clone()).await;
@@ -374,7 +374,7 @@ async fn another_births_exit_evidence_admits_nothing() {
 /// Must NOT happen: a live birth refused, or planned as the delete of a stopped birth, which skips its stop.
 #[tokio::test]
 async fn a_live_births_delete_is_admitted_and_planned_to_stop_it_first() {
-    let t = view(NodeStatus::ReadyForTraffic);
+    let t = view(NodeStatus::Ready);
     let r = rig(t.clone()).await;
     let out = delete_of(&r, "mesh1.rpc.1").await;
     let opened = out.unwrap_or_else(|e| panic!("the live birth's delete is admitted, not {}", reason(&Err(e))));
@@ -392,8 +392,8 @@ async fn a_live_births_delete_is_admitted_and_planned_to_stop_it_first() {
 /// Must NOT happen: the Build accepted and held only later, at its drive.
 #[tokio::test]
 async fn a_build_on_a_node_of_an_unheard_mesh_is_refused_at_acceptance() {
-    let mut t = view(NodeStatus::ReadyForTraffic);
-    t.nodes.push(node("mesh2.rpc.1", NodeStatus::ReadyForTraffic, false, false));
+    let mut t = view(NodeStatus::Ready);
+    t.nodes.push(node("mesh2.rpc.1", NodeStatus::Ready, false, false));
     let r = rig(t).await;
     let _ = r.cp.peer_mesh.set(Arc::new(|m: &str| (m == "mesh2").then_some(PeerMesh { unheard_ms: Some(40_000), recovery_decided: false, unreachable_decided: false })));
     let before = r.builds.current().await.unwrap().map(|b| b.build_id);

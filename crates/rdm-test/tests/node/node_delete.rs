@@ -66,15 +66,15 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let found = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
     assert_eq!(resolution(&found), "found", "{found}");
     assert_eq!(found["reply"]["incarnation_id"], victim["incarnation_id"], "{found}");
-    // States.md "Routing": application routing selects a birth only while it is ready-for-traffic and its
-    // mesh is ready-for-traffic.
+    // States.md "Routing": application routing selects a birth only while it is ready and its
+    // mesh is ready.
     let meshes = estate.fabric_view().await.meshes;
-    assert!(before.iter().all(|n| n["status"] == "ready-for-traffic") && meshes.iter().all(|m| m.status == ScopeStatus::ReadyForTraffic), "every live node is routable before the delete: {before:#?} {meshes:?}");
+    assert!(before.iter().all(|n| n["status"] == "ready") && meshes.iter().all(|m| m.status == ScopeStatus::Ready), "every live node is routable before the delete: {before:#?} {meshes:?}");
     // The victim's data dir, read while an admin still advertises it.
     let victim_dir = std::path::PathBuf::from(estate.data_dir(VICTIM).await);
     assert!(victim_dir.join("node-key").is_file(), "the victim's data dir holds its endpoint key before the delete: {victim_dir:?}");
 
-    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses the removal of a node until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 1. The removal.
     let mut removal = estate.nodes_obj().await.delete(&VICTIM.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {VICTIM}: {e}"));
@@ -286,7 +286,7 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
     let shape = [("mesh1", 1, 1), ("mesh2", 2, 2)];
     estate.reconcile_shape("fabric1", &shape).await;
     estate.settles_to(&shape, Duration::from_secs(90)).await;
-    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses the removal of a node until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(SETTLE).await;
     let nodes = estate.node_values().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);

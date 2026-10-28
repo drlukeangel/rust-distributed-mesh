@@ -412,7 +412,7 @@ removal in `in_flight`:
         "supersedes": null,
         "runtime": null
       },
-      "status": "ready-for-traffic",
+      "status": "ready",
       "admin_api_base": null,
       "digest_seq": 42,
       "emitted_at_rafka_ms": 1718290000050,
@@ -857,7 +857,7 @@ stores and its raw projection under the one comparator, and the node installs th
 and pulled rows share one apply rule, so nothing gossiped during the pull is lost. Only then does the node mark
 itself ready (span `rafka.mesh.entry.update.via-projection-pulled`, with `entity_rows` and `raw_applied`).
 
-A pull that cannot be answered holds the node below `ready-for-traffic`. node-admin refuses a pull it cannot serve (it is not the primary that serves the snapshot, the snapshot will not encode, or it cannot serve the system org's own record) by name (`rafka.mesh.entry.reject.via-projection-refused`). The node names each failed attempt, refused, unreachable or cut short, on `rafka.mesh.entry.reject.via-projection-pull-failed` with its reason, backs off, re-resolves the current primary node-admin from the topology it holds on every attempt, and pulls again from that primary until an answer is applied; only then does it mark itself ready. A `not-born` answer before day 0 is a valid answer and does not hold the node. Every store reads through to the broker on a runtime miss; read-through never stands in for a refused pull. The durable topics remain the completeness backstop: the pull carries the hot working set node-admin holds, not a copy of every broker's whole set.
+A pull that cannot be answered holds the node below `ready`. node-admin refuses a pull it cannot serve (it is not the primary that serves the snapshot, the snapshot will not encode, or it cannot serve the system org's own record) by name (`rafka.mesh.entry.reject.via-projection-refused`). The node names each failed attempt, refused, unreachable or cut short, on `rafka.mesh.entry.reject.via-projection-pull-failed` with its reason, backs off, re-resolves the current primary node-admin from the topology it holds on every attempt, and pulls again from that primary until an answer is applied; only then does it mark itself ready. A `not-born` answer before day 0 is a valid answer and does not hold the node. Every store reads through to the broker on a runtime miss; read-through never stands in for a refused pull. The durable topics remain the completeness backstop: the pull carries the hot working set node-admin holds, not a copy of every broker's whole set.
 
 ---
 

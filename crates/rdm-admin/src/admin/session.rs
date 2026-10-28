@@ -106,7 +106,7 @@ pub fn take_over_blockers(held: &[MeshDigest], provider: &dyn crate::deployment:
 }
 
 /// Readiness, drain and admission seen through each member's own digest:
-/// a node publishes `ReadyForTraffic` once it serves, and `ConnectionsDeleting` right
+/// a node publishes `Ready` once it serves, and `ConnectionsDeleting` right
 /// after it starts refusing new work with the typed `ConnectionsDeleting` refusal (node-rpc §35).
 pub struct TopologyObserver {
     /// The digest view the observer reads.
@@ -195,7 +195,7 @@ impl NodeObserver for TopologyObserver {
             .map(|(d, _)| Publication { runtime: d.node.runtime, data_dir: d.data_dir })
     }
 
-    /// Ready once this admin's view holds the birth ready-for-traffic: the status its mesh-primary
+    /// Ready once this admin's view holds the birth ready: the status its mesh-primary
     /// set from the birth's node.started (this admin, as that primary, through its status authority;
     /// otherwise the primary's projection), never a heartbeat's. A refusal names the status the
     /// view's digest carries, the member status the digest view holds for the birth, and whether this
@@ -204,13 +204,13 @@ impl NodeObserver for TopologyObserver {
         let Some(d) = self.digest_of(node) else {
             return Err(format!("no digest from {} for this birth", node.name));
         };
-        if d.status == MemberStatus::ReadyForTraffic {
+        if d.status == MemberStatus::Ready {
             return Ok(());
         }
         // This admin's status authority took the birth's node.started: fabric recovery's executor, of
         // another mesh, writes the records of the node it re-creates there while that mesh has no
         // mesh-primary (build.md §5.3, Q122), and its view holds no member status of another mesh.
-        if self.authority.get().is_some_and(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation) == Some(rdm_core::status::NodeState::ReadyForTraffic)) {
+        if self.authority.get().is_some_and(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation) == Some(rdm_core::status::NodeState::Ready)) {
             return Ok(());
         }
         let member = match self.digest_view.member_status(&node.node_id, &d.node.incarnation) {
@@ -221,10 +221,10 @@ impl NodeObserver for TopologyObserver {
             None => "node.started is not known here: this admin holds no declared states yet".to_string(),
             Some(None) => "this admin holds no declared state of the birth: it took no node.started".to_string(),
             Some(Some(rdm_core::status::NodeState::Pending)) => "this admin holds the birth declared Pending: it took no node.started".to_string(),
-            Some(Some(rdm_core::status::NodeState::ReadyForTraffic)) => "this admin holds the birth declared ReadyForTraffic: it took node.started".to_string(),
+            Some(Some(rdm_core::status::NodeState::Ready)) => "this admin holds the birth declared Ready: it took node.started".to_string(),
             Some(Some(state)) => format!("this admin holds the birth declared {state:?}"),
         };
-        Err(format!("{} is held {:?}, not ready-for-traffic: {member}; {started}", node.name, d.status))
+        Err(format!("{} is held {:?}, not ready: {member}; {started}", node.name, d.status))
     }
 
     async fn ready_blocker(&self, node: &Node) -> Option<String> {
@@ -598,19 +598,19 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
     }
 
     async fn report(self: Box<Self>) {
-        let (set, d) = set_own_status(&self.digest, Some(MemberStatus::Pending), MemberStatus::ReadyForTraffic);
+        let (set, d) = set_own_status(&self.digest, Some(MemberStatus::Pending), MemberStatus::Ready);
         if set {
             // The Ready names the birth that became ready, as the first start's does.
             let incarnation = d.node.incarnation.clone();
             self.wake.wake.poke();
-            tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node = %self.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-topology").in_scope(|| tracing::info!("ready for traffic"));
+            tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node = %self.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-topology").in_scope(|| tracing::info!("ready"));
         }
     }
 }
 
 /// Set this node-admin's own status in `digest`, the digest it publishes, to `to` when it holds `from`
 /// (whatever it holds when `from` is `None`), under one hold of the digest: the one place a node-admin
-/// sets its own status (every status its `NodeSelf` sets, and its ReadyForTraffic, from Pending only,
+/// sets its own status (every status its `NodeSelf` sets, and its Ready, from Pending only,
 /// at its Ready gate and at a start's report). Answers whether it was set, and the digest as it stands.
 pub(crate) fn set_own_status(digest: &Mutex<MeshDigest>, from: Option<MemberStatus>, to: MemberStatus) -> (bool, MeshDigest) {
     let mut d = digest.lock().unwrap();
@@ -744,7 +744,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
             if let Some(res) = n.resolved() {
                 self.entry.resolver.apply(res, None);
             }
-            self.records.publish(n.as_node(if n.ready { NodeStatus::ReadyForTraffic } else { NodeStatus::PendingReconnect }, self.provider));
+            self.records.publish(n.as_node(if n.ready { NodeStatus::Ready } else { NodeStatus::PendingReconnect }, self.provider));
         }
         // The maker's stored ids are its meshes' rows on the shared root, written by each mesh's primary:
         // held in memory here, never written again by this admin. A mesh keeps its id through a
@@ -794,11 +794,11 @@ pub(crate) fn spawn_entry_sweep(
         // The entry read has told this admin what the mesh knows of its seats (or no one could).
         records.set_entering(false);
         // A reply proves a live exact birth: the view holds it (until the topology view speaks for
-        // it), settled as ReadyForTraffic, in transition as its source held it (a Leaving
+        // it), settled as Ready, in transition as its source held it (a Leaving
         // member that answers is alive and still leaving). A settled node that did not answer
         // stays in the map as not yet reached; one in transition is left to its own last digest.
         for n in &report.reached {
-            records.publish(n.as_node(n.transition.unwrap_or(NodeStatus::ReadyForTraffic), provider_kind));
+            records.publish(n.as_node(n.transition.unwrap_or(NodeStatus::Ready), provider_kind));
         }
         for (n, _) in report.not_reached.iter().filter(|(n, _)| n.transition.is_none()) {
             records.publish(n.as_node(NodeStatus::PendingReconnect, provider_kind));

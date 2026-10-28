@@ -67,13 +67,13 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
     let (id, facts_json) = capture.run(2, async move {
         let builds = MemoryBuildStateAdapter::new();
         let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
-        admin.status = NodeStatus::ReadyForTraffic;
+        admin.status = NodeStatus::Ready;
         admin.incarnation_id = Some(IncarnationId::mint());
         admin.is_primary = true;
         admin.is_fabric_primary = true;
         let observed = Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
             nodes: vec![admin],
         };
         AcceptedStore::seeded(&builds, observed.fabric.id.clone(), FabricTopology::of_observed(&observed), "mesh1.admin.1").await.unwrap();

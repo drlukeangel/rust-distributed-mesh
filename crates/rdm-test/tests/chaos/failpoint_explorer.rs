@@ -65,7 +65,7 @@ fn done_steps(build: &Value, operation: &str, attempt: Option<u64>) -> Vec<Strin
 
 /// The attempts a Build that put the fabric back to pending ends at when its one run ran every
 /// operation: that run, attempt 1, then the attempt claimed once the fabric changed to
-/// ready-for-traffic, which completes it and runs no step (Q154; states.md "Resize and executable replacement").
+/// ready, which completes it and runs no step (Q154; states.md "Resize and executable replacement").
 const RUN_THEN_CHANGE: u64 = 2;
 
 /// How many receipts of each step `operation` holds at `attempt`.
@@ -151,9 +151,9 @@ impl Run {
         Estate::complete(stream).await;
     }
 
-    /// `node` once the admin the estate asks lists it ready for traffic.
+    /// `node` once the admin the estate asks lists it ready.
     async fn node_ready(&self, node: &str) -> Value {
-        let ready = self.estate.until_node(node, &format!("{node} ready for traffic"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::ReadyForTraffic).cloned()).await;
+        let ready = self.estate.until_node(node, &format!("{node} ready"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
         serde_json::to_value(ready).expect("a view serializes")
     }
 
@@ -389,7 +389,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // A lone admin hears no other member and is cut off, so it executes nothing: the mesh holds two
     // admins before any cut is armed, and either may hold the seats.
     let shape = run.estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await.build_id.to_string();
-    // The initial fabric refuses a node delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node delete until it has first reached ready (states.md "The initial fabric before ready").
     run.estate.until_fabric_ready(Duration::from_secs(120)).await;
     run.estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
     run.note_build(&shape, RUN_THEN_CHANGE);
@@ -746,7 +746,7 @@ async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: V
     assert!(b["state"] != "complete", "`{id}`: the Build is not complete while the joining admin is held: {b}");
     let view = run.estate.node_value_opt(admin).await;
     if let Some(v) = &view {
-        assert_ne!(v["status"], "ready-for-traffic", "`{id}`: the held admin is not Ready: {v}");
+        assert_ne!(v["status"], "ready", "`{id}`: the held admin is not Ready: {v}");
     }
     let during = json!({"build_state": b["state"], "attempt": 1, "operation": op, "done_steps": done, "admin_in_view": view.map(|v| json!({"status": v["status"]})), "cut_still_held": door.cut(id).await["held"]});
     let h = Hold { arm_ack: ack, held, build_id: build_id.clone(), attempt: 1, during };

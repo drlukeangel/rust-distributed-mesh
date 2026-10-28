@@ -227,7 +227,7 @@ pub enum NodeCommandReply {
     NodeStopped,
     /// The accepted join and channel join completed; start gates remain.
     NodeJoined,
-    /// Every start gate completed; the receiver records ReadyForTraffic.
+    /// Every start gate completed; the receiver records Ready.
     NodeStarted,
     /// An accepted command failed at this named step.
     Failed {

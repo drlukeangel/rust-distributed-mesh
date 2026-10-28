@@ -101,7 +101,7 @@ async fn a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_wit
     wait_for(&format!("{victim}'s recovery completes after the heal"), floor * 2 + Duration::from_secs(90), || async { submits_of(&estate.spans(), &victim_id, killed_at).iter().any(completed).then_some(()) }).await;
     let recovered = wait_for(&format!("{victim} is ready under a new node id"), Duration::from_secs(60), || async {
         let v = estate.node_values_at(&fp).await;
-        v.iter().find(|n| n["name"] == victim.as_str() && n["status"] == "ready-for-traffic" && s(&n["node_id"]) != victim_id).map(|n| s(&n["node_id"]))
+        v.iter().find(|n| n["name"] == victim.as_str() && n["status"] == "ready" && s(&n["node_id"]) != victim_id).map(|n| s(&n["node_id"]))
     })
     .await;
     estate.stop().await;

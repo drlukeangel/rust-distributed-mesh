@@ -1,10 +1,10 @@
 //! A node-admin reports its node.started at every start (node-status.md "Status report": "A node
 //! reports to its mesh's primary, which sets its status"; states.md "Who sets each state": node
-//! ReadyForTraffic is set by "the node's mesh-primary" from "the node's node.started report, after every
+//! Ready is set by "the node's mesh-primary" from "the node's node.started report, after every
 //! start gate").
 //!
-//! CONTRACT (Q47): the first start owes a ReadyForTraffic declaration. A subsequent commanded
-//! start reports NodeJoined and NodeStarted on 0x22; its primary records ReadyForTraffic before
+//! CONTRACT (Q47): the first start owes a Ready declaration. A subsequent commanded
+//! start reports NodeJoined and NodeStarted on 0x22; its primary records Ready before
 //! returning the completion. The open start sends no separate readiness declaration.
 //!
 //! The mesh's primary is a real Day-0 node-admin in this process; it launches the second admin and
@@ -84,11 +84,11 @@ fn deployed(launch: &Launch, held: Option<&PathName>) -> Deployed {
 
 async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     let waited = async {
-        while digest().status != MemberStatus::ReadyForTraffic {
+        while digest().status != MemberStatus::Ready {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     };
-    tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published ReadyForTraffic"));
+    tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published Ready"));
 }
 
 fn command(launch: &Launch, start: bool) -> StatusRequest {
@@ -168,8 +168,8 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         until_ready("mesh1.admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
         tokio::time::timeout(DECLARED, spans.recorded("rdm.node_admin.node.update.via-command-frame", |f| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("frame").map(String::as_str) == Some("node-started"))).await.expect("the mesh-primary records NodeStarted on the open command stream");
         let authority = root.status_authority().unwrap();
-        assert_eq!(authority.declared.lock().unwrap().node(&launch.node_id, &launch.incarnation), Some(rdm_core::status::NodeState::ReadyForTraffic));
-        let ready_declarations: Vec<_> = own_declarations(&spans, "mesh1.admin.2").into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("ReadyForTraffic"))).collect();
+        assert_eq!(authority.declared.lock().unwrap().node(&launch.node_id, &launch.incarnation), Some(rdm_core::status::NodeState::Ready));
+        let ready_declarations: Vec<_> = own_declarations(&spans, "mesh1.admin.2").into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready"))).collect();
         assert_eq!(ready_declarations, first, "the open start reports readiness on its stream, with no second Ready declaration");
 
         admin.leave().await;

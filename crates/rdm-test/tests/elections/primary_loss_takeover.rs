@@ -156,8 +156,8 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     };
 
     // THE HAND-OFF, through the rectifier: one Build retiring the holder's mesh. A mesh.delete is refused
-    // until the initial fabric has first reached ready-for-traffic (states.md "The initial fabric before
-    // ready-for-traffic").
+    // until the initial fabric has first reached ready (states.md "The initial fabric before
+    // ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let started = now_ns();
     let build_id = estate.reconcile_shape("fabric1", &[mesh(&survivor_mesh)]).await.build_id.to_string();
@@ -167,7 +167,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let last = estate
         .until_view("the lost mesh's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
             let left: Vec<&NodeView> = views.iter().filter(|n| n.mesh == lost_mesh).collect();
-            (left.len() == 1 && left[0].status == NodeStatus::ReadyForTraffic).then(|| left[0].name.clone())
+            (left.len() == 1 && left[0].status == NodeStatus::Ready).then(|| left[0].name.clone())
         })
         .await;
     let mut delete = estate.nodes_obj().await.delete(&last).await.unwrap_or_else(|e| panic!("the node.delete of the lost mesh's last admin {last} was refused: {e}"));

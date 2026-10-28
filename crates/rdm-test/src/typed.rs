@@ -363,7 +363,7 @@ impl Estate {
     }
 
     /// The view the Build left: every `(mesh, node_admin, rpc_node)` cohort holds exactly its count of
-    /// nodes, every one ready-for-traffic, as `mesh.nodes.get` reads it at the admin the estate asks. A Build's
+    /// nodes, every one ready, as `mesh.nodes.get` reads it at the admin the estate asks. A Build's
     /// shape is counts, not paths: a shrink retires non-primaries, so which ordinals remain depends on
     /// where the seats are. The Build's terminal frame is the executor's: the answering admin learns the
     /// nodes of another mesh by gossip, so its view converges on the shape a moment after (a wait on the
@@ -372,30 +372,30 @@ impl Estate {
         self.settles_to(meshes, std::time::Duration::from_secs(60)).await
     }
 
-    /// Wait until the fabric the admin holds is ready-for-traffic: the fabric changes its states (sync, commit,
+    /// Wait until the fabric the admin holds is ready: the fabric changes its states (sync, commit,
     /// open traffic) after the nodes of a Build are ready, and writes its record at the commit. No stream
     /// announces it; `fabric.get` carries the state. The wait is where the estate records that its fabric
     /// has started: from then on a kill or terminate of one of its nodes is a test
     /// ([`crate::estate::FabricReady`], Q74). A read that happens to see the state does not record it, so
     /// whether a cell may kill never depends on when its last read landed.
     pub async fn until_fabric_ready(&self, within: std::time::Duration) {
-        crate::estate::wait_for("the fabric is ready-for-traffic", within, || async { self.try_fabric_view().await.is_ok_and(|f| f.status == rdm_client::ScopeStatus::ReadyForTraffic).then_some(()) }).await;
+        crate::estate::wait_for("the fabric is ready", within, || async { self.try_fabric_view().await.is_ok_and(|f| f.status == rdm_client::ScopeStatus::Ready).then_some(()) }).await;
         let _ = self.ready.set(crate::estate::FabricReady(()));
     }
 
     /// [`Self::until_fabric_ready`] read where the fabric's state is decided: `fabric.get` answered by
-    /// `fabric_primary`, the admin whose view names itself the fabric-primary, ready-for-traffic. Another
+    /// `fabric_primary`, the admin whose view names itself the fabric-primary, ready. Another
     /// admin's answer carries the FabricStatus it heard by gossip, which can lag the fabric-primary's own
     /// state. The wait records that the fabric has started, as [`Self::until_fabric_ready`] does.
     pub async fn until_fabric_ready_at(&self, fabric_primary: &PathName, within: std::time::Duration) {
-        crate::estate::wait_for(&format!("{fabric_primary}, the fabric-primary, answers fabric.get ready-for-traffic"), within, || async {
-            self.fabric_view_at(fabric_primary).await.filter(|f| f.status == rdm_client::ScopeStatus::ReadyForTraffic && f.fabric_primary.as_ref() == Some(fabric_primary)).map(|_| ())
+        crate::estate::wait_for(&format!("{fabric_primary}, the fabric-primary, answers fabric.get ready"), within, || async {
+            self.fabric_view_at(fabric_primary).await.filter(|f| f.status == rdm_client::ScopeStatus::Ready && f.fabric_primary.as_ref() == Some(fabric_primary)).map(|_| ())
         })
         .await;
         let _ = self.ready.set(crate::estate::FabricReady(()));
     }
 
-    /// The view the Build left, by name: exactly `names`, every one ready-for-traffic, as one `mesh.nodes.get` per
+    /// The view the Build left, by name: exactly `names`, every one ready, as one `mesh.nodes.get` per
     /// mesh reads it.
     pub async fn settled_named(&self, names: &std::collections::BTreeSet<String>) -> Vec<NodeView> {
         let meshes: std::collections::BTreeSet<String> = names.iter().map(|n| n.split('.').next().unwrap_or_default().to_string()).collect();
@@ -404,18 +404,18 @@ impl Estate {
             all.extend(self.mesh_node_views(&mesh).await);
         }
         let have: std::collections::BTreeSet<String> = all.iter().map(|n| n.name.to_string()).collect();
-        assert!(&have == names && all.iter().all(|n| n.status == NodeStatus::ReadyForTraffic), "the view does not hold the nodes the Build completed: wanted {names:?}, the admin lists {:?}", all.iter().map(|n| format!("{}={:?}", n.name, n.status)).collect::<Vec<_>>());
+        assert!(&have == names && all.iter().all(|n| n.status == NodeStatus::Ready), "the view does not hold the nodes the Build completed: wanted {names:?}, the admin lists {:?}", all.iter().map(|n| format!("{}={:?}", n.name, n.status)).collect::<Vec<_>>());
         all
     }
 
-    /// The view once it holds exactly `names`, every one ready-for-traffic, as `mesh.nodes.get` reads it at the
+    /// The view once it holds exactly `names`, every one ready, as `mesh.nodes.get` reads it at the
     /// admin the estate asks. The answering admin learns a node another admin created by gossip, so its
     /// view converges a moment after the Build's terminal frame (a wait on the view, bounded by `within`,
     /// naming the last view when it does not settle).
     pub async fn settles_to_named(&self, names: &std::collections::BTreeSet<String>, within: std::time::Duration) -> Vec<NodeView> {
-        self.until_view(&format!("the view holds exactly {names:?}, every node ready-for-traffic"), within, |views| {
+        self.until_view(&format!("the view holds exactly {names:?}, every node ready"), within, |views| {
             let have: std::collections::BTreeSet<String> = views.iter().map(|n| n.name.to_string()).collect();
-            (&have == names && views.iter().all(|n| n.status == NodeStatus::ReadyForTraffic)).then(|| views.to_vec())
+            (&have == names && views.iter().all(|n| n.status == NodeStatus::Ready)).then(|| views.to_vec())
         })
         .await
     }
@@ -426,7 +426,7 @@ impl Estate {
     }
 
     /// The view once the fabric has recovered to `meshes` after a fault: every `(mesh, node_admin, rpc_node)`
-    /// cohort holds exactly its count of nodes, every one ready-for-traffic. No stream announces it: the
+    /// cohort holds exactly its count of nodes, every one ready. No stream announces it: the
     /// recovery is the rectifier's (a later attempt of the accepted Build, or a person's admin on a former
     /// seat's data dir), where no call is held open. `within` bounds the wait and a view that does not settle
     /// is named.
@@ -434,27 +434,27 @@ impl Estate {
         let want: std::collections::BTreeMap<(String, NodeKind), usize> =
             meshes.iter().flat_map(|(m, a, r)| [((m.to_string(), NodeKind::NodeAdmin), *a as usize), ((m.to_string(), NodeKind::RpcNode), *r as usize)]).filter(|(_, n)| *n > 0).collect();
         let named: std::collections::BTreeSet<&str> = meshes.iter().map(|(m, _, _)| *m).collect();
-        self.until_view(&format!("the view settles on {want:?}, every node ready-for-traffic"), within, |views| {
+        self.until_view(&format!("the view settles on {want:?}, every node ready"), within, |views| {
             let views: Vec<NodeView> = views.iter().filter(|n| named.contains(n.mesh.as_str())).cloned().collect();
             let mut have: std::collections::BTreeMap<(String, NodeKind), usize> = std::collections::BTreeMap::new();
             for n in &views {
                 *have.entry((n.mesh.clone(), n.kind)).or_default() += 1;
             }
-            (have == want && views.iter().all(|n| n.status == NodeStatus::ReadyForTraffic)).then_some(views)
+            (have == want && views.iter().all(|n| n.status == NodeStatus::Ready)).then_some(views)
         })
         .await
     }
 
     /// The view once every `(mesh, kind)` cohort of the fabric holds exactly its count of nodes in `want`, every
-    /// one ready-for-traffic: the view of the whole fabric, every mesh and kind named, as `mesh.nodes.get` reads it at
+    /// one ready: the view of the whole fabric, every mesh and kind named, as `mesh.nodes.get` reads it at
     /// the admin the estate asks. `within` bounds the wait and a view that does not settle is named.
     pub async fn settles_to_counts(&self, want: std::collections::BTreeMap<(String, NodeKind), usize>, within: std::time::Duration) -> Vec<NodeView> {
-        self.until_view(&format!("the view settles on {want:?}, every node ready-for-traffic"), within, |views| {
+        self.until_view(&format!("the view settles on {want:?}, every node ready"), within, |views| {
             let mut have: std::collections::BTreeMap<(String, NodeKind), usize> = std::collections::BTreeMap::new();
             for n in views {
                 *have.entry((n.mesh.clone(), n.kind)).or_default() += 1;
             }
-            (have == want && views.iter().all(|n| n.status == NodeStatus::ReadyForTraffic)).then(|| views.to_vec())
+            (have == want && views.iter().all(|n| n.status == NodeStatus::Ready)).then(|| views.to_vec())
         })
         .await
     }
@@ -587,7 +587,7 @@ impl Estate {
     pub async fn advertised_data_dir(&self, node: &str) -> Option<String> {
         let entry = self.entry().await;
         let mut admins = vec![entry.clone()];
-        admins.extend(self.node_views().await.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic && n.name != entry).map(|n| n.name));
+        admins.extend(self.node_views().await.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::Ready && n.name != entry).map(|n| n.name));
         for admin in admins {
             let Some(views) = self.node_views_at(&admin).await else { continue };
             if let Some(dir) = views.into_iter().find(|n| n.name.to_string() == node).and_then(|n| n.data_dir) {

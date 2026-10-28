@@ -266,7 +266,7 @@ impl Nodes {
 
     /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` C2): command the
     /// fabric-primary holder at `holder` to move the fabric-primary seat (step 1 same-mesh successor
-    /// first, step 2 outside mesh primary when no same-mesh successor is ReadyForTraffic).
+    /// first, step 2 outside mesh primary when no same-mesh successor is Ready).
     pub async fn fabric_primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         crate::NodeRpc::new(self.carrier.client()).fabric_primary_update(fabric, holder, build_id, attempt, &CallOptions::default()).await
     }

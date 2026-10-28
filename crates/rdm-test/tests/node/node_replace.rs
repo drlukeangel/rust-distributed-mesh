@@ -30,12 +30,12 @@ fn s(v: &Value) -> String {
 }
 
 fn ready(node: &Value) -> bool {
-    node["status"] == "ready-for-traffic"
+    node["status"] == "ready"
 }
 
 /// A birth that holds or contends for a seat and serves (`NodeStatus::is_live`).
 fn live(node: &Value) -> bool {
-    matches!(node["status"].as_str(), Some("pending" | "ready-for-traffic" | "connections-deleting"))
+    matches!(node["status"].as_str(), Some("pending" | "ready" | "connections-deleting"))
 }
 
 /// Every admin's view at `admins` holds at most one live birth at `path`. An admin that does not answer
@@ -65,9 +65,9 @@ async fn until_new_birth(estate: &Estate, name: &str, before: &Value, within: Du
 }
 
 /// A fabric born at `shape` (each `(mesh, node_admin, rpc_node)`) by `build.create`, followed to its
-/// terminal frame, the view settled on it within `settle` and the fabric ready-for-traffic; the birth
+/// terminal frame, the view settled on it within `settle` and the fabric ready; the birth
 /// Build's id. The cells hold, kill and replace members: workflows the initial fabric refuses until it has
-/// first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+/// first reached ready (states.md "The initial fabric before ready").
 async fn fabric_of(test: &str, shape: &[(&str, u32, u32)], settle: Duration) -> (Estate, String) {
     born_at(Estate::bootstrap(owner(test), "fabric1", "mesh1").await, shape, settle).await
 }
@@ -82,7 +82,7 @@ async fn faulted_fabric_of(test: &str, shape: &[(&str, u32, u32)], settle: Durat
 }
 
 /// `estate`'s fabric born at `shape` by `build.create`, followed to its terminal frame, the view settled
-/// on it within `settle` and the fabric ready-for-traffic; the birth Build's id.
+/// on it within `settle` and the fabric ready; the birth Build's id.
 async fn born_at(estate: Estate, shape: &[(&str, u32, u32)], settle: Duration) -> (Estate, String) {
     let born = estate.reconcile_shape("fabric1", shape).await;
     estate.settles_to(shape, settle).await;
@@ -1022,7 +1022,7 @@ async fn a_replace_runs_as_one_build_of_node_primitives_in_order() {
     // The end state: the successor holds the name, ready; nothing at `.old`.
     let after = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]");
     let successor = after.iter().find(|n| n.name == path).cloned().expect("node.get lists the successor at the name");
-    assert!(successor.status == NodeStatus::ReadyForTraffic && !successor.stopped, "{successor:?}");
+    assert!(successor.status == NodeStatus::Ready && !successor.stopped, "{successor:?}");
     assert_ne!(successor.node_id, before.node_id, "a new node.id");
     assert_ne!(successor.endpoint_id, before.endpoint_id, "a new transport key");
     assert!(!after.iter().any(|n| n.name == path.renamed()), "nothing is listed at .old: {after:#?}");
@@ -1080,7 +1080,7 @@ async fn a_replace_runs_as_one_build_of_node_primitives_in_order() {
 /// makes, are refused at acceptance `unknown-node`, the detail naming step 2 and `mesh1.rpc.9`, under
 /// the fabric-primary's `rdm.node_admin.build.reject.via-unknown-node` span naming both. Nothing
 /// executes: the accepted Build opens no attempt and records no receipt, and `mesh1.rpc.1` is still
-/// the same birth in the same process, ready-for-traffic.
+/// the same birth in the same process, ready.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn steps_naming_an_unknown_node_are_refused_unknown_node_naming_the_step_and_execute_nothing() {
     let (mut estate, birth) = estate("steps_naming_an_unknown_node_are_refused_unknown_node_naming_the_step_and_execute_nothing").await;
@@ -1104,7 +1104,7 @@ async fn steps_naming_an_unknown_node_are_refused_unknown_node_naming_the_step_a
     let b1 = build_log::build_value(&estate.carrier().await, &birth).await;
     assert_eq!((&b1["attempt"], b1["steps"].as_array().map(Vec::len)), (&b0["attempt"], b0["steps"].as_array().map(Vec::len)), "the refusal opened no attempt and recorded no receipt: {b0:#} / {b1:#}");
     let after = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]").into_iter().find(|n| n.name == path).expect("node.get lists the node");
-    assert!(after.status == NodeStatus::ReadyForTraffic && !after.stopped, "step 1 never ran: {after:?}");
+    assert!(after.status == NodeStatus::Ready && !after.stopped, "step 1 never ran: {after:?}");
     assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth");
     assert_eq!(estate.pid_of(NODE).await, pid, "the same process");
 
@@ -1207,13 +1207,13 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
 /// node[2].delete releases `<name>` after exact runtime exit proof. 2. node[1].start rejoins the same
 /// stopped process with AfterStop under `<name>.old` ... 3. node[1]: node.connections.delete `{ scope:
 /// All }`, node.mesh.leave, then node.name.update to `<name>` ..., then node[1].stop and node[1].start
-/// under `<name>`. Its ready-for-traffic ends the rollback"): `mesh1.rpc.1` is replaced up to the
+/// under `<name>`. Its ready ends the rollback"): `mesh1.rpc.1` is replaced up to the
 /// successor's create (the predecessor stopped at `.old`), then the rollback runs as one Build of nine
 /// steps, each its own op's operation in order. The successor at `mesh1.rpc.1` has its connections
 /// deleted, leaves its mesh and is deleted on its exit proof; the predecessor starts as
 /// `mesh1.rpc.1.old` (the same process), has its connections deleted, leaves its mesh, takes
 /// `mesh1.rpc.1` live, and is stopped and started under it. At the end `mesh1.rpc.1` is the predecessor,
-/// the same node.id, incarnation and process, ready-for-traffic; nothing is listed at `.old`, and the
+/// the same node.id, incarnation and process, ready; nothing is listed at `.old`, and the
 /// successor's process exited. Both of the predecessor's renames are of a node off its mesh
 /// (`connections=deleted mesh=left`, applied), and no rename of a stopped node is decided.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1374,8 +1374,8 @@ async fn replacing_a_birth_absent_from_the_executors_view_deletes_the_runtime_re
     // mesh2's second admin is born after the stop: no digest of the stopped birth reaches its view.
     let grown = estate.reconcile_shape("fabric1", &GROWN).await;
     // The view holds the stopped `.old` beside the grown cohorts, so it is read by name.
-    wait_for("mesh2.admin.2 is ready for traffic", Duration::from_secs(90), || async {
-        estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.ok()?.into_iter().find(|n| n.name.to_string() == "mesh2.admin.2" && n.status == NodeStatus::ReadyForTraffic).map(|_| ())
+    wait_for("mesh2.admin.2 is ready", Duration::from_secs(90), || async {
+        estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.ok()?.into_iter().find(|n| n.name.to_string() == "mesh2.admin.2" && n.status == NodeStatus::Ready).map(|_| ())
     })
     .await;
     let nodes = objects(&estate).await;
@@ -1728,7 +1728,7 @@ async fn a_hung_mesh_primary_is_terminated_and_recovered_at_once_by_the_fabric_p
 /// CONTRACT (Q122; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" steps 1-4;
 /// node-recovery.md step 3): `mesh1.admin.1`, the fabric-primary and mesh1's primary, is hung (every task
 /// but the leader held by a tracer: the operating system shows it running). Unheard past the staleness
-/// floor, `mesh1.admin.2`, the lowest ReadyForTraffic node-admin of its mesh, takes no primary role: it
+/// floor, `mesh1.admin.2`, the lowest Ready node-admin of its mesh, takes no primary role: it
 /// runs fabric recovery. Node investigation reads the hung birth `running`; the recovery's first step is
 /// `TerminateRuntime`, then `mesh1.admin.1` is re-created as a new birth at the same path.name, and the
 /// workflow restores that node as mesh-primary and fabric-primary. Must NOT happen: the hung birth held,
@@ -2601,7 +2601,7 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_t
 /// (`rdm.node_admin.node.update.via-data-dir-lost`), and runs `node.delete -> node.create` over a
 /// newly allocated `data_dir`. The recovered birth has a NEW `node.id`, a NEW endpoint key
 /// (`endpoint_id != old_endpoint_id`), a NEW `data_dir != old_data_dir`, and reaches
-/// `ReadyForTraffic` with `rdm.mesh.node.update.via-pre-node-ready-attempt` (`inherited = false`).
+/// `Ready` with `rdm.mesh.node.update.via-pre-node-ready-attempt` (`inherited = false`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_whose_data_dir_is_removed_after_exit_recovers_over_a_fresh_dir_with_a_new_key_after_two_floors() {
     let (estate, _build) = fabric_of(
@@ -2739,7 +2739,7 @@ async fn a_member_whose_data_dir_is_unreadable_records_the_fact_and_holds_recove
 /// is restored after an unreadable hold, on the next tick the mesh-primary clears
 /// `data-dir-unreadable` (`rdm.node_admin.node.resolve.via-data-dir-repaired`), completes
 /// `node.create` over the SAME `data_dir` with the RETAINED endpoint key
-/// (`endpoint_id == old_endpoint_id`) and a new `node.id`, and the birth reaches `ReadyForTraffic`
+/// (`endpoint_id == old_endpoint_id`) and a new `node.id`, and the birth reaches `Ready`
 /// (`inherited = true`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_held_on_an_unreadable_data_dir_completes_recovery_with_its_retained_key_once_repaired() {

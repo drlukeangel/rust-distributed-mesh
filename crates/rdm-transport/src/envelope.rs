@@ -380,7 +380,7 @@ mod tests {
         Birth { fabric: FabricId::parse("1123456789ab").unwrap(), node: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse("yrz49j303yh4").unwrap() }
     }
     fn event() -> Frame {
-        Frame::MeshStatus { mesh: "m".into(), status: "ready-for-traffic".into(), publisher: "m.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 }.authored(&author(), 2, 1)
+        Frame::MeshStatus { mesh: "m".into(), status: "ready".into(), publisher: "m.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 }.authored(&author(), 2, 1)
     }
     fn parts() -> (Vec<(String, String)>, Vec<u8>) { wire::decode(&event().encode()).unwrap() }
     fn malformed(pairs: Vec<(String, String)>, body: Vec<u8>) {

@@ -424,10 +424,10 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
         Err(e) => panic!("pipeline failed: {e}"),
     };
 
-    // The node is live, published Pending then ReadyForTraffic, at the assigned endpoints.
+    // The node is live, published Pending then Ready, at the assigned endpoints.
     assert_eq!(provider.inspect(&created.handle).await, DeploymentStatus::Running);
     let published = sink.nodes.lock().unwrap().clone();
-    assert_eq!(published.iter().map(|n| n.status).collect::<Vec<_>>(), vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic]);
+    assert_eq!(published.iter().map(|n| n.status).collect::<Vec<_>>(), vec![NodeStatus::Pending, NodeStatus::Ready]);
     let reported = created.node.transport_addr.expect("a created node carries the address it reported");
     assert!(reported.port() != 0 && !reported.ip().is_unspecified(), "{reported} is not an address a peer can dial");
 

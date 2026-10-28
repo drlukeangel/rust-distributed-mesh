@@ -98,7 +98,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let mut estate = Estate::bootstrap_on(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)]).await;
     let before = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2", "mesh3"]), Duration::from_secs(30)).await);
-    // A mesh delete waits for the Build in progress (Q170): the fabric is ready-for-traffic under this
+    // A mesh delete waits for the Build in progress (Q170): the fabric is ready under this
     // Build before mesh1 goes.
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let fabric_id = estate.fabric_view().await.id.to_string();
@@ -125,7 +125,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // Control moves to mesh2 before mesh1 goes: its admins advertise it in the topology.
     let mesh2_admin = before
         .iter()
-        .find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["status"] == "ready-for-traffic")
+        .find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["status"] == "ready")
         .map(|n| Estate::path(&s(&n["name"])))
         .expect("a ready mesh2 admin");
     estate.enter(&mesh2_admin).await;
@@ -141,7 +141,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         let read = estate.try_node_views().await;
         let nodes = read.as_ref().map(|views| Estate::values(views)).unwrap_or_default();
         let ours: BTreeSet<String> = nodes.iter().filter(|n| n["mesh"] != "mesh1").filter_map(|n| n["name"].as_str().map(str::to_string)).collect();
-        let ready = nodes.iter().filter(|n| n["mesh"] != "mesh1").all(|n| n["status"] == "ready-for-traffic");
+        let ready = nodes.iter().filter(|n| n["mesh"] != "mesh1").all(|n| n["status"] == "ready");
         if read.is_ok() && ours == survivors_named && ready && nodes.iter().filter(|n| n["mesh"] == "mesh1").count() <= 1 {
             break nodes;
         }

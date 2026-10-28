@@ -38,7 +38,7 @@ is connected to it and nothing routes to it; it is stopped after. A stopped node
    Create step, so every admin that runs or resumes the step launches that one, and the row
    records it beside `config`. Its row inherits config and
    tags from the predecessor row (the retained `<name>.old` row, or the Deleted row at `<name>`),
-   whose labels leave the active tags index. Its ready-for-traffic is the cutover: `path.name` now
+   whose labels leave the active tags index. Its ready is the cutover: `path.name` now
    resolves to the successor. A claim that finds `<name>` held is refused `NameHeld { by: node[1] }`
    and the Build stops at this step by name.
 4. Rafka transfers its data as its own step. RDM interprets no application data.
@@ -55,7 +55,7 @@ While node[1] is stopped as `<name>.old` and its data remains available:
 3. node[1]: node.connections.delete `{ scope: All }`, node.mesh.leave, then
    [node.name.update](node-name-update.md) to `<name>` (its tag-index entries restored under its
    own id), then node[1].stop and node[1].start under `<name>`: its start's
-   [node.mesh.join](node-mesh-join.md) rejoins it, and its ready-for-traffic ends the rollback.
+   [node.mesh.join](node-mesh-join.md) rejoins it, and its ready ends the rollback.
 
 No general rollback is inferred from Build durability. A missing or failed receipt
 leaves the Build at the named step; resume or run the explicit compensation steps.
@@ -104,7 +104,7 @@ sequenceDiagram
     M->>N1: node[1].stop
     M-->>F: stop events
     Note over M: node.create(name): a re-birth, inheriting config and tags from the predecessor row
-    M-->>F: FirstStart events; ready-for-traffic is the cutover
+    M-->>F: FirstStart events; ready is the cutover
     Note over R: Rafka data-transfer step and commit boundary
     F-->>R: step frames, Complete
 ```

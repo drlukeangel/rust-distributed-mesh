@@ -76,7 +76,7 @@ impl TopologySink for NoView {
 
 fn primary() -> Node {
     let mut n = Node::allocated(HOLDER.parse().unwrap());
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = true;
     n.is_fabric_primary = true;

@@ -31,7 +31,7 @@ fn start_ns(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
 
-/// mesh1 {1 node-admin, 2 rpc nodes}, settled and ready for traffic; the rpc member that holds no
+/// mesh1 {1 node-admin, 2 rpc nodes}, settled and ready; the rpc member that holds no
 /// seat (its stop moves no seat first) and its exact runtime.
 async fn mesh_with_a_member(test: &str) -> (Estate, String, ExactRuntime) {
     let estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[]).await;
@@ -54,7 +54,7 @@ async fn node_where(estate: &Estate, node: &str, what: &str, within: Duration, f
 /// `exited`): a member the operating system holds suspended (SIGSTOP, acknowledged `T`) goes silent;
 /// its mesh-primary's ladder ends in the provider's inspection, verdict `os-stopped`, and the recovery
 /// is submitted on that verdict: the path is re-created with a new node.id over a newly allocated data
-/// dir, ready for traffic, and the suspended runtime is sent nothing: its node.delete's
+/// dir, ready, and the suspended runtime is sent nothing: its node.delete's
 /// `TerminateRuntime` reads it `os-stopped` at the step's instant and asks the provider nothing, and it
 /// stays suspended, using no CPU. Must NOT happen: the member held, a signal to the suspended runtime,
 /// or the new birth over the suspended runtime's data dir.
@@ -67,7 +67,7 @@ async fn an_os_stopped_member_is_recovered_at_once_over_a_new_data_dir_and_its_r
     let held = rt.apply(Fault::Stop).expect("the exact runtime is suspended");
     assert_eq!(held.state_after, Some('T'), "the OS holds the runtime: {held:?}");
     let ticks = rdm_test::process_faults::cpu_ticks(rt.pid);
-    let recovered = node_where(&estate, &member, &format!("{member} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["status"] == "ready-for-traffic" && n["node_id"] != before["node_id"]).await;
+    let recovered = node_where(&estate, &member, &format!("{member} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["status"] == "ready" && n["node_id"] != before["node_id"]).await;
     assert_ne!(recovered["node_id"], before["node_id"], "a new node.id at the path: {recovered}");
     assert_ne!(estate.data_dir(&member).await, old_dir, "a newly allocated data dir, never the suspended runtime's");
     assert_eq!(rdm_test::process_faults::proc_state(rt.pid), Some('T'), "the suspended runtime is sent nothing: still stopped");
@@ -107,7 +107,7 @@ async fn hold_until_recovered(estate: &Estate, path: &str) -> Held {
     let held = rt.apply(Fault::Stop).expect("the exact runtime is suspended");
     assert_eq!(held.state_after, Some('T'), "the OS holds {path}: {held:?}");
     let ticks = rdm_test::process_faults::cpu_ticks(rt.pid);
-    let recovered = node_where(estate, path, &format!("{path} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["status"] == "ready-for-traffic" && s(&n["node_id"]) != node_id).await;
+    let recovered = node_where(estate, path, &format!("{path} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["status"] == "ready" && s(&n["node_id"]) != node_id).await;
     assert_ne!(s(&recovered["node_id"]), node_id, "a new node.id at the path: {recovered}");
     assert_ne!(estate.data_dir(path).await, old_dir, "{path}: a newly allocated data dir, never the held runtime's");
     assert_eq!(rdm_test::process_faults::proc_state(rt.pid), Some('T'), "{path}: the held runtime is sent nothing by the recovery, its create included: still stopped");

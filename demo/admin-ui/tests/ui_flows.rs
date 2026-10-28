@@ -37,7 +37,7 @@ fn stubs(dir: &std::path::Path) -> std::collections::BTreeMap<rdm_core::NodeKind
 }
 
 /// A Day-0 node-admin in this process, and the UI's typed client entered at its birth once its view names
-/// it the fabric-primary of a ready-for-traffic fabric.
+/// it the fabric-primary of a ready fabric.
 async fn node_admin(dir: &std::path::Path) -> (Running, Arc<Admin>) {
     let d = dir.display().to_string();
     let cfg = AdminConfig::from_env(|k| match k {
@@ -51,16 +51,16 @@ async fn node_admin(dir: &std::path::Path) -> (Running, Arc<Admin>) {
     let birth = running.digest.lock().unwrap().node.clone();
     let admin = Arc::new(Admin::at(&birth).await.expect("the admin's birth").with_executables(stubs(dir)));
     // The admin takes the UI's commands once its view names it the fabric-primary and the Day-0 fabric
-    // reached ready-for-traffic (before that the Day-0 Build is in progress).
+    // reached ready (before that the Day-0 Build is in progress).
     let until = std::time::Instant::now() + Duration::from_secs(20);
     let day0 = loop {
         match admin.fabric().await {
-            Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::ReadyForTraffic => break f.build_id,
+            Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::Ready => break f.build_id,
             other => assert!(std::time::Instant::now() < until, "the Day-0 admin never named itself the fabric-primary: {other:?}"),
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    // The Day-0 Build is Complete from its own ready-for-traffic, one Build at a time: the UI's Builds are
+    // The Day-0 Build is Complete from its own ready, one Build at a time: the UI's Builds are
     // submitted once it is.
     if let Some(day0) = day0 {
         until_complete(&admin, "the Day-0 Build", &BuildId::parse(&day0).expect("the Day-0 Build's id")).await;
@@ -144,7 +144,7 @@ async fn topology_labels_mesh_primary_on_node_admins_only_and_serves_node_admins
 }
 
 /// How long a Build the UI submitted may take to be Complete: its births' launches and check-ins, and the
-/// fabric's change to ready-for-traffic.
+/// fabric's change to ready.
 const BOUND: Duration = Duration::from_secs(180);
 
 /// Poll `build.get` of `id` until it is Complete within [`BOUND`]; a Failed Build, or one not Complete in
@@ -172,23 +172,23 @@ async fn accepted(ui: &axum::Router, uri: &str, body: Option<Value>) -> BuildId 
     BuildId::parse(v["build_id"].as_str().expect("build_id")).expect("a Build id")
 }
 
-/// The fabric is ready-for-traffic, as `fabric.get` at the UI's admin says.
+/// The fabric is ready, as `fabric.get` at the UI's admin says.
 async fn ready(admin: &Admin, what: &str) {
     let until = std::time::Instant::now() + Duration::from_secs(60);
     loop {
         match admin.fabric().await {
-            Ok(f) if f.status == rdm_client::ScopeStatus::ReadyForTraffic => return,
-            other => assert!(std::time::Instant::now() < until, "{what}: the fabric is not ready-for-traffic: {other:?}"),
+            Ok(f) if f.status == rdm_client::ScopeStatus::Ready => return,
+            other => assert!(std::time::Instant::now() < until, "{what}: the fabric is not ready: {other:?}"),
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
 /// CONTRACT (states.md "Resize and executable replacement": only a resize or an executable replacement puts
-/// the fabric back to pending, and a Build that did is Complete once its own ready-for-traffic state is set;
+/// the fabric back to pending, and a Build that did is Complete once its own ready state is set;
 /// Q154, never blocked for ever): the UI's resubmit of the current topology, the Day-0 admin named on the
 /// executable its row records (day 0's entry names none), is one Build with nothing to execute, Complete
-/// within the bound with the fabric ready-for-traffic. Must NOT happen: that Build Pending at attempt 1
+/// within the bound with the fabric ready. Must NOT happen: that Build Pending at attempt 1
 /// with no step for ever (Rafka 141).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn resubmitting_the_current_topology_on_the_day0_admin_completes_with_the_fabric_ready() {
@@ -218,7 +218,7 @@ struct ConsumerEstate {
 impl ConsumerEstate {
     /// The consumer's executables, beside this test's own (`<target>/debug/deps/..`), copied under a new
     /// root, and the Day-0 admin started from there; the UI's admin entered at the birth it printed once
-    /// it names itself the fabric-primary of a ready-for-traffic fabric.
+    /// it names itself the fabric-primary of a ready fabric.
     async fn start(test: &str) -> (ConsumerEstate, Arc<Admin>) {
         let built = std::env::current_exe().unwrap().parent().and_then(|deps| deps.parent()).map(std::path::Path::to_path_buf).expect("the test's target directory");
         let root = dir(test);
@@ -266,12 +266,12 @@ impl ConsumerEstate {
         let until = std::time::Instant::now() + Duration::from_secs(60);
         let day0 = loop {
             match admin.fabric().await {
-                Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::ReadyForTraffic => break f.build_id,
+                Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::Ready => break f.build_id,
                 other => assert!(std::time::Instant::now() < until, "the Day-0 admin never named itself the fabric-primary of a ready fabric: {other:?}"),
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        // The Day-0 Build is Complete from its own ready-for-traffic, one Build at a time: the UI's Builds are
+        // The Day-0 Build is Complete from its own ready, one Build at a time: the UI's Builds are
         // submitted once it is.
         if let Some(day0) = day0 {
             until_complete(&admin, "the Day-0 Build", &BuildId::parse(&day0).expect("the Day-0 Build's id")).await;
@@ -309,7 +309,7 @@ impl Drop for ConsumerEstate {
 /// node's replacement, node.delete then node.create at the path; states.md "Resize and executable
 /// replacement"; Q154): on the consumer's own estate, the UI adds a gateway (Complete), resubmits the
 /// current topology (Complete, nothing executed) and replaces the gateway's executable with another build
-/// of it (Complete); after each the fabric is ready-for-traffic, and after the last the gateway's row
+/// of it (Complete); after each the fabric is ready, and after the last the gateway's row
 /// records the new executable. Must NOT happen: a Build the UI submitted never Complete.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn adding_resubmitting_and_replacing_a_gateway_through_the_ui_each_completes() {
@@ -327,7 +327,7 @@ async fn adding_resubmitting_and_replacing_a_gateway_through_the_ui_each_complet
     ready(&admin, "after the gateway's executable replaced").await;
     let sha = rdm_core::binding::sha256_file(&next).unwrap();
     let rows = admin.rows().await.expect("fabric.nodes.get");
-    let gateway = rows.iter().find(|n| n.name.to_string() == "mesh1.gateway.1" && n.status == rdm_client::NodeStatus::ReadyForTraffic).unwrap_or_else(|| panic!("mesh1.gateway.1 is ready-for-traffic: {rows:?}"));
+    let gateway = rows.iter().find(|n| n.name.to_string() == "mesh1.gateway.1" && n.status == rdm_client::NodeStatus::Ready).unwrap_or_else(|| panic!("mesh1.gateway.1 is ready: {rows:?}"));
     assert_eq!(gateway.executable.as_ref().map(|b| b.sha256.clone()), Some(sha), "the replaced gateway's row records the executable its request named: {gateway:?}");
     drop(estate);
 }

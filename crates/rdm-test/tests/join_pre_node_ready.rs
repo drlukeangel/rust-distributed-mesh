@@ -1,5 +1,5 @@
-//! A node is ready for traffic only after its exact birth was admitted by `JoinNode`
-//! (`lifecycles/node-ready-for-traffic.md` step 1; `node-birth.md` step 6).
+//! A node is ready only after its exact birth was admitted by `JoinNode`
+//! (`lifecycles/node-mesh-join.md` steps 2-6).
 
 use crate::common::{admin_side_deaf_to_joins};
 use rdm_core::launch::Launch;
@@ -9,8 +9,8 @@ use rdm_test::node;
 
 /// CONTRACT: a node whose launching admin answers every `JoinNode` with `NotReady` (the admin
 /// holds no join door) ends by name, the error naming the launching admin and the unreached cause.
-/// It never emits `rdm.mesh.node.update.via-ready` and the launcher never hears it ready for
-/// traffic. What must NOT happen: the node comes up on a "view fills from gossip" fallback.
+/// It never emits `rdm.mesh.node.update.via-ready` and the launcher never hears it ready.
+/// What must NOT happen: the node comes up on a "view fills from gossip" fallback.
 #[test]
 fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
@@ -54,13 +54,13 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
             Err(e) => Some(e.to_string()),
         };
         let node_id = launch.node_id.to_string();
-        let heard_ready = admin.observer.topology_view.digest_view.get(node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic);
+        let heard_ready = admin.observer.topology_view.digest_view.get(node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Ready);
         let ready_spans = spans.0.lock().unwrap().values().filter(|(name, _, _)| name == "rdm.mesh.node.update.via-ready").count();
         let _ = std::fs::remove_dir_all(&dir);
         let why = outcome.expect("a node whose join was never taken must end, not come up");
         assert!(why.contains("mesh1.admin.1") && why.contains("unreached"), "the end names the launcher and the cause: {why}");
         assert_eq!(ready_spans, 0, "no via-ready span is emitted");
-        assert!(!heard_ready, "ReadyForTraffic is never published");
+        assert!(!heard_ready, "Ready is never published");
     })
 }
 

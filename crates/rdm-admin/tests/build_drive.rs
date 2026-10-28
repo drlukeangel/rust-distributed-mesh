@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 
 fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
     n.incarnation_id = Some(IncarnationId::mint());
@@ -32,8 +32,8 @@ fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
 
 fn view() -> Topology {
     Topology {
-        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
         nodes: vec![node("mesh1.admin.1", false, true), node("mesh1.admin.2", true, false), node("mesh1.rpc.1", false, false)],
     }
 }
@@ -285,7 +285,7 @@ async fn a_moved_fabric_primary_is_refused_whatever_its_view_shows_and_names_the
 #[tokio::test]
 async fn the_callers_streams_name_the_successor_a_primary_update_installed_while_the_view_shows_the_old_fabric_primary() {
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     t.nodes.push(node("mesh2.admin.1", true, false));
     let r = rig_for(t, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
     assert_eq!(r.env.topology.read().await.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the view still shows the old seat");
@@ -352,7 +352,7 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once
     );
 }
 
-/// CONTRACT (#3016; elections §5: the seat goes to "the lowest ReadyForTraffic NodeId of its own mesh";
+/// CONTRACT (#3016; elections §5: the seat goes to "the lowest Ready NodeId of its own mesh";
 /// "Executor departure proof, never silence, is required before claiming the next attempt for its
 /// successor"): mesh2's seated admin, the claimed executor, is lost and proven exited; mesh2's other
 /// admin is held but silent, not yet seated. The fabric-primary of mesh1 does not take mesh2's
@@ -362,7 +362,7 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once
 #[tokio::test]
 async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_for_its_election() {
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     t.nodes.push(node("mesh2.admin.1", true, false));
     t.nodes.push(node("mesh2.admin.2", false, false));
     t.nodes.push(node("mesh2.rpc.1", true, false));
@@ -398,7 +398,7 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty() && r.ran.0.lock().unwrap().is_empty());
     // mesh2.admin.2 is seated: the next attempt is its own.
     for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.2") {
-        n.status = NodeStatus::ReadyForTraffic;
+        n.status = NodeStatus::Ready;
         n.is_primary = true;
     }
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
@@ -440,7 +440,7 @@ impl OperationRunner for Recovered {
 #[tokio::test]
 async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_then_only_its_first_admin() {
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     let mut lost = node("mesh2.admin.1", false, false);
     lost.status = NodeStatus::Dead;
     t.nodes.push(lost);
@@ -494,7 +494,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_th
 /// two; the investigation's state on mesh2 is the cell's.
 async fn crashed_rig() -> Rig {
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     for n in ["mesh2.admin.1", "mesh2.admin.2", "mesh2.rpc.1"] {
         let mut lost = node(n, false, false);
         lost.status = NodeStatus::Dead;
@@ -552,7 +552,7 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
 /// investigation holds mesh2 unheard with its recovery decided.
 async fn recovery_rig() -> Rig {
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     let mut lost = node("mesh2.admin.1", false, false);
     lost.status = NodeStatus::Dead;
     t.nodes.push(lost);
@@ -617,7 +617,7 @@ async fn a_recovery_the_fabric_primary_executes_in_another_mesh_releases_that_me
     use rdm_admin::accepted::AttemptAction;
     use rdm_admin::build_state::{AttemptOpened, AttemptReason, BuildAttemptClaim};
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     for (n, primary) in [("mesh2.admin.1", true), ("mesh2.rpc.1", false)] {
         t.nodes.push(node(n, primary, false));
     }
@@ -677,7 +677,7 @@ async fn held_successor_rig(lands: bool) -> Rig {
     for n in t.nodes.iter_mut() {
         n.is_primary = n.name.to_string() == "mesh1.admin.1";
     }
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     let mut lost = node("mesh2.admin.1", false, false);
     lost.status = NodeStatus::Dead;
     t.nodes.push(lost);
@@ -754,7 +754,7 @@ impl OperationRunner for Records {
 #[tokio::test]
 async fn a_remote_executors_completed_operation_is_never_dispatched_again_before_the_build_topic_carries_its_receipt() {
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     let mut lost = node("mesh2.admin.1", false, false);
     lost.status = NodeStatus::Dead;
     t.nodes.push(lost);
@@ -815,7 +815,7 @@ impl OperationRunner for LandsAndSeats {
             v.nodes.push(node(&p.to_string(), false, false));
             if p.to_string() == "mesh1.rpc.2" {
                 for n in v.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.2") {
-                    n.status = NodeStatus::ReadyForTraffic;
+                    n.status = NodeStatus::Ready;
                     n.is_primary = true;
                 }
             }
@@ -835,7 +835,7 @@ async fn a_run_handed_back_is_claimed_for_the_admin_the_view_names_for_what_is_l
     for n in t.nodes.iter_mut() {
         n.is_primary = n.name.to_string() == "mesh1.admin.1";
     }
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     let mut lost = node("mesh2.admin.1", false, false);
     lost.status = NodeStatus::Dead;
     t.nodes.push(lost);
@@ -946,7 +946,7 @@ impl Gate for SeatMoves {
 #[tokio::test]
 async fn a_mesh_delete_whose_fabric_primary_sits_inside_moves_the_fabric_primary_alone_in_its_own_attempt_handed_to_the_new_one() {
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     t.nodes.push(node("mesh2.admin.1", true, false));
     let r = rig_for(t, TopologyChange::RemoveMesh { mesh: "mesh1".into() }, |ran, _| ran).await;
     let gate = Arc::new(SeatMoves { inner: r.switch.clone(), topology: r.env.topology.clone(), moved: Mutex::new(Vec::new()) });
@@ -1027,7 +1027,7 @@ impl OperationRunner for MeshBirth {
 #[tokio::test]
 async fn a_run_that_creates_a_meshs_first_admin_hands_the_rest_of_the_mesh_to_it() {
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)]) };
     let r = rig_for(t, change, |ran, topology| Arc::new(MeshBirth { ran, topology })).await;
     let drive = Drive::detached(r.build.clone());
@@ -1247,7 +1247,7 @@ impl OperationRunner for LostLeaver {
 /// that removes it: the fabric-primary `mesh1.admin.1` executes the mesh's shutdown (`executor_for`).
 async fn removing_mesh2(ends: Option<rdm_admin::executor::RunEnd>) -> (Rig, Arc<LostLeaver>) {
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     t.nodes.push(node("mesh2.admin.1", true, false));
     t.nodes.push(node("mesh2.rpc.1", false, false));
     let held: Arc<Mutex<Option<Arc<LostLeaver>>>> = Arc::default();
@@ -2179,7 +2179,7 @@ async fn a_primarys_own_update_whose_successors_process_is_gone_after_the_row_fa
 #[tokio::test(start_paused = true)]
 async fn a_commanded_update_claims_the_attempt_first_and_when_it_ends_failed_fails_the_build_and_the_resubmit_opens_the_next_run() {
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     t.nodes.push(node("mesh2.admin.1", true, false));
     t.nodes.push(node("mesh2.admin.2", false, false));
     t.nodes.push(node("mesh2.admin.3", false, false));
@@ -2241,8 +2241,8 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         let boot: PathName = "mesh1.admin.9".parse().unwrap();
         let held: PathName = "mesh1.admin.1".parse().unwrap();
         let t = Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
             nodes: vec![node("mesh1.admin.1", true, true), node("mesh1.rpc.1", false, false)],
         };
         let fp_id = t.node(&held).expect("the renamed admin is in the view at its held name").node_id.clone();
@@ -2412,14 +2412,14 @@ fn a_build_whose_later_attempt_failed_claims_no_next_attempt_without_a_resubmit(
 /// attempt computes the remaining work from the accepted topology, the records and its receipts; Luke
 /// 2026-10-24: the plan reads mesh death from the Mesh record and the receipts, never from a view that has
 /// not caught up): mesh3 was deleted by an earlier Build, its Mesh record Dead, and this fabric-primary's
-/// view has not heard its Dead yet (it shows mesh3 ReadyForTraffic, its final primary still a member). A
+/// view has not heard its Dead yet (it shows mesh3 Ready, its final primary still a member). A
 /// Build whose topology leaves mesh3 out plans nothing for it: no mesh.delete is dispatched, and the Build
 /// completes. Must NOT happen: a deleted mesh's mesh.delete planned again.
 #[tokio::test]
 async fn a_mesh_the_mesh_records_hold_dead_is_never_planned_again_while_the_view_still_shows_it_live() {
     let mut t = view();
     let mesh3 = MeshId::mint();
-    t.meshes.push(Mesh { id: Some(mesh3.clone()), name: "mesh3".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(mesh3.clone()), name: "mesh3".into(), status: ScopeStatus::Ready });
     t.nodes.push(node("mesh3.admin.1", true, false));
     let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rdm_core::NodeKind::NodeAdmin, admins), (rdm_core::NodeKind::RpcNode, rpcs)]);
     let change = TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh1", 2, 1)] } };
@@ -2431,7 +2431,7 @@ async fn a_mesh_the_mesh_records_hold_dead_is_never_planned_again_while_the_view
     assert_eq!(end.ok(), Some(DriveEnd::Terminal), "the Build completes");
 }
 
-/// A gate whose fabric holds ready-for-traffic only once the cell sets it: the fabric's change a
+/// A gate whose fabric holds ready only once the cell sets it: the fabric's change a
 /// Build put it back to pending for.
 #[derive(Default)]
 struct FabricChange {
@@ -2454,14 +2454,14 @@ impl Gate for FabricChange {
 }
 
 /// CONTRACT (Q154; states.md "Resize and executable replacement": "Its Build is Complete only when the fabric is
-/// ready-for-traffic again from this Build's own change ... while the fabric changes, the Build reports
+/// ready again from this Build's own change ... while the fabric changes, the Build reports
 /// Blocked naming the change, never Complete"; build.md §1: every accepted Build is reconciled, "Every
 /// execution attempt re-reads the accepted topology and current realized/observed state and computes
-/// remaining work"; states.md "The fabric's ready-for-traffic": the fabric's change names the accepted Build's `attempt`):
+/// remaining work"; states.md "The fabric's ready": the fabric's change names the accepted Build's `attempt`):
 /// a Build whose topology put the fabric back to pending and whose work the view already holds (nothing
 /// left to execute) claims its first attempt, which hands back with nothing run, so the fabric's change
 /// has the attempt to name; it reports Blocked `fabric-change`, never Complete, while the fabric changes,
-/// and is Complete once the fabric holds ready-for-traffic. Must NOT happen: no attempt ever claimed, the
+/// and is Complete once the fabric holds ready. Must NOT happen: no attempt ever claimed, the
 /// fabric's change waiting on the attempt and the drive waiting on the fabric's change, for ever.
 #[tokio::test]
 async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_names_and_is_complete_after_it() {
@@ -2488,12 +2488,12 @@ async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_na
     let mut reader = drive.reader(1);
     for pass in 0..2 {
         match tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await {
-            Ok(DriveEnd::Stalled(why)) => assert!(why.contains("ready-for-traffic"), "pass {pass}: the drive waits for the fabric's change: {why}"),
+            Ok(DriveEnd::Stalled(why)) => assert!(why.contains("ready"), "pass {pass}: the drive waits for the fabric's change: {why}"),
             other => panic!("pass {pass}: the Build is never Complete while the fabric changes: {other:?}"),
         }
     }
     let p = r.builds.read_build(&r.build).await.unwrap();
-    assert!(p.attempt >= 1, "the fabric's change names the accepted Build's attempt (states.md, the fabric's ready-for-traffic): an attempt of the Build is claimed, not none ({:?} at attempt {})", p.state, p.attempt);
+    assert!(p.attempt >= 1, "the fabric's change names the accepted Build's attempt (states.md, the fabric's ready): an attempt of the Build is claimed, not none ({:?} at attempt {})", p.state, p.attempt);
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing is left to execute and nothing ran: {:?}", r.ran.0.lock().unwrap());
     let mut frames = Vec::new();
     while let Some(read) = next_within(&mut reader).await {
@@ -2501,11 +2501,11 @@ async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_na
     }
     assert!(frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, .. }) if step == "fabric-change")), "the Build reports Blocked naming the fabric's change: {frames:?}");
     assert!(!frames.iter().any(|f| matches!(f, Read::Terminal(_) | Read::Frame(BuildReply::Complete { .. } | BuildReply::Failed { .. }))), "never Complete while the fabric changes: {frames:?}");
-    // The fabric's change set ready-for-traffic: the Build is Complete.
+    // The fabric's change set ready: the Build is Complete.
     gate.ready.store(true, Ordering::SeqCst);
-    assert_eq!(tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await.expect("the drive ends once the fabric is ready-for-traffic"), DriveEnd::Terminal);
+    assert_eq!(tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await.expect("the drive ends once the fabric is ready"), DriveEnd::Terminal);
     let done = r.builds.read_build(&r.build).await.unwrap();
-    assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Build is Complete after its own ready-for-traffic: {done:?}");
+    assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Build is Complete after its own ready: {done:?}");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran: {:?}", r.ran.0.lock().unwrap());
 }
 
@@ -2513,10 +2513,10 @@ async fn a_build_with_nothing_to_execute_claims_the_attempt_the_fabric_change_na
 /// the entire check-in checklist"; build.md §1: node.stop is an attempt of the current Build, never a
 /// new Build; node-stop.md: the stop's completion is its stopped frame; Q154 holds the Build's own
 /// topology change, states.md "Resize and executable replacement"): a Build that put the fabric back
-/// to pending and completed once, after its own ready-for-traffic, takes a node.stop as its next
+/// to pending and completed once, after its own ready, takes a node.stop as its next
 /// attempt while the fabric is changing again. The stop runs, and its attempt ends `Complete` at the
 /// stop: the caller's stream ends there. Must NOT happen: the stop's attempt handed back and its
-/// stream left `Blocked` on `fabric-change`, waiting for a ready-for-traffic the stopped node itself
+/// stream left `Blocked` on `fabric-change`, waiting for a ready the stopped node itself
 /// keeps from being set.
 #[tokio::test]
 async fn a_stop_attempt_of_a_build_that_completed_ends_at_its_stop_while_the_fabric_changes() {
@@ -2537,7 +2537,7 @@ async fn a_stop_attempt_of_a_build_that_completed_ends_at_its_stop_while_the_fab
         verdicts: e.verdicts.clone(),
         turns: e.turns.clone(),
     });
-    // The Build's topology change ran and the fabric held ready-for-traffic from it: Complete.
+    // The Build's topology change ran and the fabric held ready from it: Complete.
     assert_eq!(tokio::time::timeout(Duration::from_secs(10), env.run(&Drive::detached(r.build.clone()))).await.expect("the Build's own change completes"), DriveEnd::Terminal);
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().state, rdm_admin::build_state::BuildState::Complete);
     // The fabric is changing again, and a node.stop opens the Build's next attempt.
@@ -2559,7 +2559,7 @@ async fn a_stop_attempt_of_a_build_that_completed_ends_at_its_stop_while_the_fab
     assert!(frames.iter().any(|f| matches!(f, Read::Terminal(BuildReply::Complete { attempt: 2, .. }))), "the stop's stream ends Complete for its attempt: {frames:?}");
 }
 
-/// The fixture's dispatcher, the fabric's change setting ready-for-traffic while the attempt it calls runs:
+/// The fixture's dispatcher, the fabric's change setting ready while the attempt it calls runs:
 /// after the drive planned the run and before it reads how the run ended.
 struct ReadyDuringTheRun {
     inner: Arc<crate::loopback::Loopback>,
@@ -2579,15 +2579,15 @@ impl rdm_admin::build_drive::Dispatcher for ReadyDuringTheRun {
 }
 
 /// CONTRACT (Q154, Q158; states.md "Resize and executable replacement": "Its Build is Complete only when the
-/// fabric is ready-for-traffic again from this Build's own change"; a Build is never blocked for ever): a
+/// fabric is ready again from this Build's own change"; a Build is never blocked for ever): a
 /// Build that put the fabric back to pending, nothing left to execute, claims its attempt, whose run hands
-/// back at the hold for the fabric's change; the fabric reaches ready-for-traffic while that run is in
+/// back at the hold for the fabric's change; the fabric reaches ready while that run is in
 /// flight. The run was held for the fabric's change, which is decided from the plan it ran, and the fabric's
 /// move is movement: the Build is Complete. Must NOT happen: the hand-back read as "ended incomplete with
 /// nothing moved" because the fabric was ready by the time it was read, the drive idle on a world that
 /// never moves, the Build Pending at attempt 1 for ever.
 #[tokio::test]
-async fn a_fabric_ready_for_traffic_while_the_held_run_is_in_flight_completes_the_build() {
+async fn a_fabric_ready_while_the_held_run_is_in_flight_completes_the_build() {
     let r = rig().await;
     {
         let mut v = r.env.topology.write().await;
@@ -2615,9 +2615,9 @@ async fn a_fabric_ready_for_traffic_while_the_held_run_is_in_flight_completes_th
             break;
         }
     }
-    assert_eq!(ends.last(), Some(&DriveEnd::Terminal), "the Build ends once the fabric is ready-for-traffic: {ends:?}");
+    assert_eq!(ends.last(), Some(&DriveEnd::Terminal), "the Build ends once the fabric is ready: {ends:?}");
     let done = r.builds.read_build(&r.build).await.unwrap();
-    assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Build is Complete after its own ready-for-traffic: {done:?}");
+    assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Build is Complete after its own ready: {done:?}");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran: {:?}", r.ran.0.lock().unwrap());
 }
 
@@ -2707,18 +2707,18 @@ impl BuildStateAdapter for LedgerBuilds {
 }
 
 /// CONTRACT (states.md "Resize and executable replacement": "Its Build is Complete only when the fabric is
-/// ready-for-traffic again from this Build's own change, as fabric.create's is"; fabric-create.md, Completion:
-/// "`fabric.created` when the fabric is ready-for-traffic"): the Day-0 Build (fabric.create's: the
+/// ready again from this Build's own change, as fabric.create's is"; fabric-create.md, Completion:
+/// "`fabric.created` when the fabric is ready"): the Day-0 Build (fabric.create's: the
 /// bootstrap admin alone, no change submitted) claims its first attempt, which the fabric's change names,
 /// and holds its terminal while the fabric is pending. Its `Converged` receipt is written once the fabric
-/// is ready-for-traffic, and the Build reads Complete. Must NOT happen: the Day-0 Build's terminal written
+/// is ready, and the Build reads Complete. Must NOT happen: the Day-0 Build's terminal written
 /// while the fabric is pending.
 #[tokio::test]
-async fn the_day0_build_writes_its_complete_only_after_its_own_ready_for_traffic() {
+async fn the_day0_build_writes_its_complete_only_after_its_own_ready() {
     let mesh_id = MeshId::mint();
     let t = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(mesh_id.clone()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        meshes: vec![Mesh { id: Some(mesh_id.clone()), name: "mesh1".into(), status: ScopeStatus::Ready }],
         nodes: vec![node("mesh1.admin.1", true, true)],
     };
     let inner = Arc::new(MemoryBuildStateAdapter::new());
@@ -2763,21 +2763,21 @@ async fn the_day0_build_writes_its_complete_only_after_its_own_ready_for_traffic
     }
     let while_pending: Vec<String> = ledger.written().into_iter().filter(|(_, state)| *state == "pending").map(|(what, _)| what).collect();
     assert!(
-        matches!(&held, DriveEnd::Stalled(why) if why.contains("ready-for-traffic")),
-        "the Day-0 Build waits for the fabric's ready-for-traffic, never Complete while pending: {held:?}; written while pending: {while_pending:?}; frames {frames:?}"
+        matches!(&held, DriveEnd::Stalled(why) if why.contains("ready")),
+        "the Day-0 Build waits for the fabric's ready, never Complete while pending: {held:?}; written while pending: {while_pending:?}; frames {frames:?}"
     );
     assert!(frames.iter().any(|f| matches!(f, Read::Frame(BuildReply::Blocked { step, .. }) if step == "fabric-change")), "the Day-0 Build reports Blocked naming the fabric's change: {frames:?}");
     assert!(!frames.iter().any(|f| matches!(f, Read::Terminal(_) | Read::Frame(BuildReply::Complete { .. } | BuildReply::Failed { .. }))), "never Complete while the fabric changes: {frames:?}");
-    // Every mesh is ready: the fabric is ready-for-traffic.
-    *ledger.state.lock().unwrap() = "ready-for-traffic";
+    // Every mesh is ready: the fabric is ready.
+    *ledger.state.lock().unwrap() = "ready";
     gate.ready.store(true, Ordering::SeqCst);
-    assert_eq!(tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await.expect("the drive ends once the fabric is ready-for-traffic"), DriveEnd::Terminal);
+    assert_eq!(tokio::time::timeout(Duration::from_secs(10), env.run(&drive)).await.expect("the drive ends once the fabric is ready"), DriveEnd::Terminal);
     let written = ledger.written();
     let terminals: Vec<&(String, &'static str)> = written.iter().filter(|(what, _)| what.starts_with("attempt:") && (what.ends_with(":converged") || what.ends_with(":failed"))).collect();
-    assert_eq!(terminals.iter().map(|(_, state)| *state).collect::<Vec<_>>(), vec!["ready-for-traffic"], "the Day-0 Build's one terminal is written after ready-for-traffic: {written:?}");
+    assert_eq!(terminals.iter().map(|(_, state)| *state).collect::<Vec<_>>(), vec!["ready"], "the Day-0 Build's one terminal is written after ready: {written:?}");
     eprintln!("written while the fabric was pending: {while_pending:?}");
     let done = builds.read_build(&day0).await.unwrap();
-    assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Day-0 Build is Complete after its own ready-for-traffic: {done:?}");
+    assert_eq!(done.state, rdm_admin::build_state::BuildState::Complete, "the Day-0 Build is Complete after its own ready: {done:?}");
     assert!(ran.0.lock().unwrap().is_empty(), "the Day-0 Build has nothing to execute: {:?}", ran.0.lock().unwrap());
 }
 
@@ -2883,7 +2883,7 @@ async fn a_fabric_primary_whose_attempt_another_admin_superseded_mid_run_sends_n
 #[tokio::test]
 async fn a_decided_recovery_admits_no_delete_of_a_node_admin_of_the_held_mesh() {
     let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     t.nodes.push(node("mesh2.admin.1", true, false));
     t.nodes.push(node("mesh2.admin.2", false, false));
     t.nodes.push(node("mesh2.rpc.1", false, false));
@@ -2914,7 +2914,7 @@ async fn the_drive_claims_an_unheard_mesh_primarys_recovery_for_the_mesh_primary
     for n in t.nodes.iter_mut() {
         n.is_primary = n.name.to_string() == "mesh1.admin.1";
     }
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     for (n, primary) in [("mesh2.admin.1", true), ("mesh2.admin.2", false), ("mesh2.rpc.1", false)] {
         t.nodes.push(node(n, primary, false));
     }

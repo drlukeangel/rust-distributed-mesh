@@ -331,7 +331,7 @@ impl AdminRunner {
                 .read()
                 .await
                 .members()
-                .filter(|n| n.mesh == mesh && matches!(n.status, NodeStatus::ReadyForTraffic | NodeStatus::PendingReconnect))
+                .filter(|n| n.mesh == mesh && matches!(n.status, NodeStatus::Ready | NodeStatus::PendingReconnect))
                 .filter_map(|n| Some((n.endpoint_id.as_ref()?.0.clone(), n.transport_addr?)))
                 .collect();
             for p in peers {
@@ -513,9 +513,9 @@ impl AdminRunner {
         out
     }
 
-    /// `Node: Pending -> ReadyForTraffic`, committed once the node reports ready.
+    /// `Node: Pending -> Ready`, committed once the node reports ready.
     pub(crate) async fn bring_into_traffic(&self, node: &Node) -> Result<(), String> {
-        let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
+        let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::Ready };
         let shape = ShapeFacts { desired_meshes: self.topology.read().await.meshes.len() as u32 };
         let ready = self.observer.ready(node).await;
         let birth = node.incarnation_id.as_ref().ok_or_else(|| format!("{} has no known birth", node.name))?;

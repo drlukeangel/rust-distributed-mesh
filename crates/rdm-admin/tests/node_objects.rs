@@ -181,7 +181,7 @@ impl TopologySink for Published {
 
 fn node(name: &str, primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.incarnation_id = Some(IncarnationId::mint());
     if n.kind == NodeKind::NodeAdmin {
@@ -197,8 +197,8 @@ fn node(name: &str, primary: bool) -> Node {
 /// asked to; a recovery of an exited birth moves no seat (`executor::seat_move`).
 fn mn() -> Topology {
     Topology {
-        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
         nodes: vec![node("mesh1.admin.1", true), node("mesh1.rpc.1", false), node("mesh1.rpc.2", true)],
     }
 }
@@ -525,7 +525,7 @@ const ATTEMPT_ONE_STEPS: [&str; 7] = [
 /// whose process starts and whose birth never reports where it bound (no `JoinNode` arrives) ends
 /// its stream `Started`, then `Failed { step: node.create, reason }` from `WaitForBind`.
 /// `node.created`, `node.joined` and `node.started` are never emitted, the node never reaches
-/// ready-for-traffic, and the call's span names the failed step.
+/// ready, and the call's span names the failed step.
 #[test]
 fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_after_it() {
     let cap = capture();
@@ -550,7 +550,7 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
     );
     assert!(end.is_none(), "a failed step ends the stream with its terminal frame, not a broken stream");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Created | NodeEvent::Joined | NodeEvent::Started) | Frame::Complete)), "nothing downstream of the failed step is emitted: {frames:?}");
-    assert!(published.iter().all(|n| n.status != NodeStatus::ReadyForTraffic), "the node never reached ready-for-traffic");
+    assert!(published.iter().all(|n| n.status != NodeStatus::Ready), "the node never reached ready");
 
     let spans = cap.spans();
     let call = spans_named(&spans, "rdm.node_admin.node.create.via-workflow");

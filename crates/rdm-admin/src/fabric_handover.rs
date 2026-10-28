@@ -117,7 +117,7 @@ pub struct HandoverDoor {
     /// What this admin holds of the digests (the election's inputs).
     pub digest_view: DigestView,
     /// The records the election's inputs come from, and whether the initial fabric first reached
-    /// ready-for-traffic.
+    /// ready.
     pub records: Arc<crate::admin::Records>,
     /// One update at a time at each side.
     pub locks: UpdateLocks,
@@ -246,7 +246,7 @@ impl HandoverDoor {
                 return rdm_core::reply::handover::bounded_not_primary(&reason);
             }
             let leaving = operation.contains("mesh.delete:");
-            let same_mesh_successor = !leaving && self.topology.read().await.members().any(|n| n.mesh == self.me.mesh && n.kind == crate::model::NodeKind::NodeAdmin && n.node_id != self.node_id && n.status == crate::model::NodeStatus::ReadyForTraffic);
+            let same_mesh_successor = !leaving && self.topology.read().await.members().any(|n| n.mesh == self.me.mesh && n.kind == crate::model::NodeKind::NodeAdmin && n.node_id != self.node_id && n.status == crate::model::NodeStatus::Ready);
             if mesh_primary && same_mesh_successor { Moving::BothSeats } else { Moving::FabricSeatOutside }
         } else {
             let view = self.topology.read().await.clone();
@@ -406,7 +406,7 @@ impl HandoverDoor {
 
     // ---- fabric recovery's restore (fabric-recovery.md step 4, Q122) ----
 
-    /// Fabric recovery's restore of `to`, the node-admin ReadyForTraffic at the lost fabric-primary's
+    /// Fabric recovery's restore of `to`, the node-admin Ready at the lost fabric-primary's
     /// path.name, as mesh-primary and fabric-primary: node.primary.update's call on it carrying both
     /// records at their next revisions, from `target` (the fabric record) and `mesh` (its mesh's record),
     /// installed here on its answer. The executor takes neither role: the node installs both,
@@ -632,7 +632,7 @@ impl HandoverDoor {
 
     /// node.primary.update of `holder`, the primary of a node type other than node-admin, at this admin
     /// as its mesh's mesh-primary, the commander and the writer: its pre-check (step 2) from its own view
-    /// names a ReadyForTraffic successor, none is `Failed` by name; then the command to the primary, which
+    /// names a Ready successor, none is `Failed` by name; then the command to the primary, which
     /// computes its successor by the same election and calls it, answered with the successor's
     /// node.primary.updated, installed here. The successor's row is recorded from its digest (step 5).
     pub async fn update_node_type_primary(&self, holder: &crate::model::Node, _expected: Option<u64>, build_id: &str, run: u32, operation: &str) -> Result<Vec<Entry>, Reply> {

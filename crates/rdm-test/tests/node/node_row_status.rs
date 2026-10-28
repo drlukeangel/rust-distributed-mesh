@@ -1,7 +1,7 @@
 //! product=mesh, feature=node-lifecycle, subfeature=node-row-status, rung=MN, provider=process.
 //!
 //! A node's status is the readiness on its durable row (node-identity-and-state.md §4: "its
-//! **status** — the readiness on its durable row: starting, pending, ready-for-traffic, ..."), set by
+//! **status** — the readiness on its durable row: starting, pending, ready, ..."), set by
 //! the node's mesh-primary at each transition states.md "Who sets each state" names, and durable before
 //! the reply (states.md "Setting a state"). The row is read where it is stored: the newest line for the
 //! node's id in the nodes store on the fabric's store root.
@@ -46,16 +46,16 @@ fn row_status(root: &Path, node_id: &str) -> String {
     row["record"]["status"].as_str().unwrap_or_else(|| panic!("the record of {node_id} carries no status: {row}")).to_string()
 }
 
-/// CONTRACT: every node of a ready-for-traffic fabric has `ready-for-traffic` on its durable row, as
+/// CONTRACT: every node of a ready fabric has `ready` on its durable row, as
 /// stored. Through `node.connections.delete { All }`, `node.stop`, `node.start` and `node.delete` of one
 /// rpc node, its row says, once each call completes, `connections-deleted`, `stopped`,
-/// `ready-for-traffic` and `deleted`; and its mesh-primary wrote on its row each status "Who sets each
+/// `ready` and `deleted`; and its mesh-primary wrote on its row each status "Who sets each
 /// state" names, from the node's frame or its own receipt (one
 /// `rdm.node_admin.node.update.via-row-status` span each, `written`; states.md and the paragraph after
-/// its table, Q233): pending and ready-for-traffic at its create; connections-deleting and
+/// its table, Q233): pending and ready at its create; connections-deleting and
 /// connections-deleted; then node.stop's frames, its acknowledgement setting stopping over the
 /// connections-deleted row: stopping, connections-deleting, connections-deleted, leaving, left, stopped;
-/// then starting from the start's acknowledgement, pending and ready-for-traffic; then deleting from
+/// then starting from the start's acknowledgement, pending and ready; then deleting from
 /// node.delete's claim and the frames of the stop it composes, stopping through stopped (delete is the
 /// mesh-primary's workflow). The node's Stopped declaration may reach the mesh-primary before a stop
 /// stream's last frames, whichever first is applied (node-stop.md step 5): each frame after it leaves
@@ -68,16 +68,16 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     estate.until_fabric_ready(SETTLE).await;
     let root = estate.fabric_store_root();
 
-    // Ready-for-traffic: every node's row says so.
+    // Ready: every node's row says so.
     let ready: Vec<(String, String)> = views.iter().map(|v| (v.name.to_string(), row_status(&root, v.node_id.as_str()))).collect();
-    assert!(ready.iter().all(|(_, s)| s == "ready-for-traffic"), "every node of a ready-for-traffic fabric is ready-for-traffic on its row: {ready:?}");
+    assert!(ready.iter().all(|(_, s)| s == "ready"), "every node of a ready fabric is ready on its row: {ready:?}");
 
     // The rpc node that is not its type's primary: a primary is stopped only after node.primary.update.
     let subject = views.iter().find(|v| v.name.kind == rdm_core::NodeKind::RpcNode && !v.is_primary).unwrap_or_else(|| panic!("mesh1 holds an rpc node that is not its type's primary: {views:?}"));
     let (path, node_id): (PathName, String) = (subject.name.clone(), subject.node_id.to_string());
     let nodes = estate.nodes_obj().await;
 
-    for (call, then) in [("node.connections.delete", "connections-deleted"), ("node.stop", "stopped"), ("node.start", "ready-for-traffic"), ("node.delete", "deleted")] {
+    for (call, then) in [("node.connections.delete", "connections-deleted"), ("node.stop", "stopped"), ("node.start", "ready"), ("node.delete", "deleted")] {
         let stream = match call {
             "node.connections.delete" => nodes.delete_connections(&path).await,
             "node.stop" => nodes.stop(&path).await,
@@ -97,7 +97,7 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let at = |sp: &Value| (sp["attributes"]["status"].as_str().unwrap_or_default().to_string(), sp["attributes"]["outcome"].as_str().unwrap_or_default().to_string());
     let all: Vec<(String, String)> = rows.iter().map(|sp| at(sp)).collect();
     let written = |statuses: &[&str]| statuses.iter().map(|s| (s.to_string(), "written".to_string())).collect::<Vec<_>>();
-    let (created, between) = (written(&["Pending", "ReadyForTraffic", "ConnectionsDeleting", "ConnectionsDeleted"]), written(&["Starting", "Pending", "ReadyForTraffic", "Deleting"]));
+    let (created, between) = (written(&["Pending", "Ready", "ConnectionsDeleting", "ConnectionsDeleted"]), written(&["Starting", "Pending", "Ready", "Deleting"]));
     let stops = crate::node_stop::stop_row_writes();
     assert!(
         stops.iter().any(|stop| stops.iter().any(|deleted| created.iter().chain(stop).chain(&between).chain(deleted).eq(all.iter()))),

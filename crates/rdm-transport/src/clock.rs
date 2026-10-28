@@ -22,7 +22,7 @@ pub trait Clock: Send + Sync + std::fmt::Debug {
 
     /// A stamp the process's authority published, offered as evidence of the authority's
     /// rafka-time. The caller has already proved the sample eligible (the authority's exact birth,
-    /// freshly admitted, ready-for-traffic); this decides what the clock does with it. A clock that
+    /// freshly admitted, ready); this decides what the clock does with it. A clock that
     /// is not disciplined from heartbeats, such as [`OsClock`], ignores every sample.
     fn observe(&self, _stamp_ms: u64) -> Observed {
         Observed::Ignored(Ignored::NotDisciplined)
@@ -165,7 +165,7 @@ impl Clock for OsClock {
 ///
 /// After its adoption the process keeps the clock on its authority's time from the stamps the
 /// authority already publishes ([`Clock::observe`]; the caller proves the sample eligible: the
-/// authority's exact birth, freshly admitted, ready-for-traffic, from the lineage only). This
+/// authority's exact birth, freshly admitted, ready, from the lineage only). This
 /// follows RFC 5905 §11.3 in separating three things:
 ///
 /// - **Offset.** One sample's offset is `stamp - reading at receipt`. A stamp is the authority's

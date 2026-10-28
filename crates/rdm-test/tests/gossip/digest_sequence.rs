@@ -110,10 +110,10 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         let b1 = Birth::first(&fabric, &node_id);
         for (label, seq, at, status, want) in [
             ("first heartbeat", 1u64, 1_000u64, MemberStatus::Pending, true),
-            ("clock frozen: same stamp, next seq", 2, 1_000, MemberStatus::ReadyForTraffic, true),
+            ("clock frozen: same stamp, next seq", 2, 1_000, MemberStatus::Ready, true),
             ("clock stepped back: lower stamp, next seq", 3, 900, MemberStatus::ConnectionsDeleting, true),
             ("a repeat of the held heartbeat", 3, 900, MemberStatus::ConnectionsDeleting, false),
-            ("an older heartbeat stamped far ahead", 2, 99_999_999, MemberStatus::ReadyForTraffic, false),
+            ("an older heartbeat stamped far ahead", 2, 99_999_999, MemberStatus::Ready, false),
             ("the oldest heartbeat stamped far ahead", 1, 99_999_999, MemberStatus::Pending, false),
             ("a newer heartbeat stamped at zero", 4, 0, MemberStatus::Leaving, true),
         ] {
@@ -130,8 +130,8 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         let fnode = NodeId::mint();
         let f1 = Birth::first(&fabric, &fnode);
         for (label, seq, at, status, want) in [
-            ("forwarded first", 5u64, 2_000u64, MemberStatus::ReadyForTraffic, true),
-            ("forwarded copy of the held heartbeat", 5, 2_000, MemberStatus::ReadyForTraffic, true),
+            ("forwarded first", 5u64, 2_000u64, MemberStatus::Ready, true),
+            ("forwarded copy of the held heartbeat", 5, 2_000, MemberStatus::Ready, true),
             ("forwarded lower sequence stamped far ahead", 4, 99_999_999, MemberStatus::Pending, false),
             ("forwarded higher sequence, same stamp", 6, 2_000, MemberStatus::ConnectionsDeleting, true),
         ] {
@@ -146,7 +146,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         let b2 = b1.successor();
         for (label, seq, at, status, want, new_inc) in [
             ("successor incarnation, sequence starts at 1, lower stamp", 1u64, 10u64, MemberStatus::Pending, true, true),
-            ("successor's next heartbeat", 2, 10, MemberStatus::ReadyForTraffic, true, true),
+            ("successor's next heartbeat", 2, 10, MemberStatus::Ready, true, true),
             ("a late digest of the replaced incarnation with a high sequence and a far stamp", 500, 99_999_999, MemberStatus::ConnectionsDeleting, false, false),
         ] {
             let d = if new_inc { b2.digest(seq, at, status) } else { b1.digest(seq, at, status) };
@@ -155,7 +155,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
             note(label, seq, at, status, taken, &digest_view, &node_id);
         }
         let (_, _) = digest_view.get(node_id.as_str()).unwrap();
-        assert_eq!(held(&digest_view, &node_id), (2, MemberStatus::ReadyForTraffic, 10));
+        assert_eq!(held(&digest_view, &node_id), (2, MemberStatus::Ready, 10));
         assert_eq!(digest_view.get(node_id.as_str()).unwrap().0.node.incarnation, b2.incarnation);
 
         // The sender, composed with a supplied clock: a real TopologyView stamps every heartbeat it
@@ -175,9 +175,9 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         let mut stamped: Vec<Value> = Vec::new();
         for (label, clock_ms, status) in [
             ("clock frozen at 5000", 5_000u64, MemberStatus::Pending),
-            ("clock still frozen", 5_000, MemberStatus::ReadyForTraffic),
+            ("clock still frozen", 5_000, MemberStatus::Ready),
             ("clock stepped back", 4_000, MemberStatus::ConnectionsDeleting),
-            ("clock jumped far ahead", 99_999_999, MemberStatus::ReadyForTraffic),
+            ("clock jumped far ahead", 99_999_999, MemberStatus::Ready),
             ("clock back at zero", 0, MemberStatus::Leaving),
         ] {
             hand.0.store(clock_ms, Ordering::SeqCst);

@@ -77,7 +77,7 @@ pub struct SigningCertDates {
 
 /// One birth's facts on its node's record (storage-whole-records.md, "The objects"), each kept by its
 /// full identity so no fact erases another: one declared entry per state (a late Pending never removes
-/// ReadyForTraffic; the reader takes the greatest), one effect per (build_id, attempt, operation).
+/// Ready; the reader takes the greatest), one effect per (build_id, attempt, operation).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BirthFacts {
     /// The birth.
@@ -329,7 +329,7 @@ impl NodeRow {
     /// already connections-deleted or left included: the node's `Stopped` declaration may reach the
     /// mesh-primary before the stop's own frames (node-stop.md step 5), and a stopped row stands. Every
     /// other status only moves forward along node.stop's frames (node-stop.md steps 1-4, Q205: starting,
-    /// pending, ready-for-traffic, deleting, stopping, connections-deleting, connections-deleted,
+    /// pending, ready, deleting, stopping, connections-deleting, connections-deleted,
     /// leaving, left, stopped), so each primitive's frame moves the row on from stopping, and the stop a
     /// delete composes moves it on from deleting to stopped before the delete writes it deleted.
     pub fn set_status(&mut self, birth: &IncarnationId, to: crate::model::NodeStatus) -> bool {
@@ -338,7 +338,7 @@ impl NodeRow {
             match s {
                 S::Starting => 0,
                 S::Pending => 1,
-                S::ReadyForTraffic | S::PendingReconnect | S::Dead | S::Reserved5 => 2,
+                S::Ready | S::PendingReconnect | S::Dead | S::Reserved5 => 2,
                 S::Deleting => 3,
                 S::Stopping => 4,
                 S::ConnectionsDeleting => 5,

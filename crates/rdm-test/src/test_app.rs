@@ -1,7 +1,7 @@
 //! The testkit's application: it takes the fabric's notices the way an embedding does.
 //!
 //! `on_mesh_ready` and `on_fabric_ready` (Q175) each only record a span. A scenario that holds a fabric
-//! short of ready-for-traffic holds a node's `pre_node_ready` (`crate::write_pre_node_ready_knob`), as an
+//! short of ready holds a node's `pre_node_ready` (`crate::write_pre_node_ready_knob`), as an
 //! application holds its own node.
 //!
 //! It declares one secret (Q150), [`DECLARED_SECRET`], set on the broker and the gateway only: a
@@ -163,7 +163,7 @@ pub fn declared() -> Vec<rdm_core::launch::DeclaredSecret> {
 pub fn hooks() -> FabricHooks {
     let on_mesh_ready: rdm_admin::wiring::MeshReadyNotice = Arc::new(|ready: MeshReadyCtx| {
         let span = tracing::info_span!("rdm.testkit.app.update.via-on-mesh-ready", fabric_id = %ready.fabric_id, mesh = %ready.mesh, mesh_id = %ready.mesh_id, "otel.kind" = "internal");
-        Box::pin(async move { tracing::info!("the application was told the mesh is ready-for-traffic") }.instrument(span))
+        Box::pin(async move { tracing::info!("the application was told the mesh is ready") }.instrument(span))
     });
     let on_fabric_ready: rdm_admin::wiring::FabricReadyNotice = Arc::new(|ready: FabricReadyCtx| {
         let span = tracing::info_span!("rdm.testkit.app.update.via-on-fabric-ready", fabric_id = %ready.fabric_id, build_id = %ready.build_id, attempt = ready.attempt, "otel.kind" = "internal");

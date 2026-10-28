@@ -584,7 +584,7 @@ mod tests {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(format!("key-{path}")), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
-            status: MemberStatus::ReadyForTraffic,
+            status: MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
             digest_seq: 1,
@@ -743,7 +743,7 @@ mod tests {
         let mut order = ReceiveOrder::default();
         let d = birth("mesh1.rpc.1");
         let deleted = Frame::NodeDeleted { op: op(&d, "delete-node"), forwarded_by: None };
-        let status = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 };
+        let status = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 };
         for _ in 0..2 {
             assert_eq!(order.admit(&deleted), Ok(()));
             assert_eq!(order.admit(&status), Ok(()));

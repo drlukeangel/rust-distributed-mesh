@@ -77,12 +77,12 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let views = estate.settles_to_named(&want, Duration::from_secs(30)).await;
 
     // Stop then start mesh1.rpc.1 through the Build: a new JoinNode of the same node.
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let before = estate.node_view("mesh1.rpc.1").await;
     let path: PathName = "mesh1.rpc.1".parse().unwrap();
     estate.stop_then_start(&path).await;
-    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 ready after its stop and start", SETTLE, |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped && n.incarnation_id == before.incarnation_id).map(|_| ())).await;
+    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 ready after its stop and start", SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped && n.incarnation_id == before.incarnation_id).map(|_| ())).await;
     let ca = estate.bootstrap_data_dir("mesh1").join("ca-secret");
     estate.stop().await;
     let spans = estate.spans();

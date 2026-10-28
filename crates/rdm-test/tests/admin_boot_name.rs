@@ -43,11 +43,11 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 
 async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     let waited = async {
-        while digest().status != MemberStatus::ReadyForTraffic {
+        while digest().status != MemberStatus::Ready {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     };
-    tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published ReadyForTraffic"));
+    tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published Ready"));
 }
 
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.

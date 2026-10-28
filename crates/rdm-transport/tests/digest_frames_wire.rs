@@ -36,14 +36,14 @@ const WIRE_DIGEST: &str = "0c 313132333435363738396162 \
 
 /// CONTRACT (gossip.md §3.1 frame catalog): a heartbeat (`Digest`, variant 0) is the digest's wire
 /// shape with the liveness `node_state` at position 2 and no status: a ConnectionsDeleting digest and a
-/// ready-for-traffic one encode alike. A member projection entry, in `MeshTopology` (variant 1) and
-/// `MeshTopologyDelta` (variant 2), is the digest's wire shape then its status (`ReadyForTraffic` = 1), and
+/// ready one encode alike. A member projection entry, in `MeshTopology` (variant 1) and
+/// `MeshTopologyDelta` (variant 2), is the digest's wire shape then its status (`Ready` = 1), and
 /// decodes to that status. What must NOT happen: a status on the heartbeat, a projection entry without
 /// its status, or a field moved.
 #[test]
 fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_its_status() {
     let heartbeat = format!("00 {WIRE_DIGEST}");
-    for status in ["connections-deleting", "ready-for-traffic"] {
+    for status in ["connections-deleting", "ready"] {
         let frame = Frame::Digest { digest: digest(status) };
         assert_eq!(frame.golden_encode(), golden(&frame, &bytes(&heartbeat)), "a {status} heartbeat");
     }
@@ -58,7 +58,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         snapshot_id: 9,
         chunk_index: 0,
         chunk_count: 1,
-        digests: vec![digest("ready-for-traffic")],
+        digests: vec![digest("ready")],
         in_flight: vec![],
         deleted: vec![],
     };
@@ -66,7 +66,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
     let mesh_topology_golden = golden(&members, &bytes(&mesh_topology_hex));
     assert_eq!(members.golden_encode(), mesh_topology_golden, "MeshTopology: one projection entry, digest then status");
     let Frame::MeshTopology { digests, .. } = Frame::decode(&mesh_topology_golden).expect("the MeshTopology frame decodes").into_data() else { panic!("not MeshTopology") };
-    assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::ReadyForTraffic], "the entry's status is the projection's");
+    assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::Ready], "the entry's status is the projection's");
 
     let delta = Frame::MeshTopologyDelta {
         mesh: "mesh1".into(),
@@ -74,7 +74,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         base_version: 2,
         topology_version: 3,
         published_at_rafka_ms: 5,
-        changed: vec![digest("ready-for-traffic")],
+        changed: vec![digest("ready")],
         removed: vec![],
         in_flight: vec![],
         deleted: vec![],
@@ -83,14 +83,14 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
     let delta_golden = golden(&delta, &bytes(&delta_hex));
     assert_eq!(delta.golden_encode(), delta_golden, "MeshTopologyDelta: one changed projection entry, digest then status");
     let Frame::MeshTopologyDelta { changed, .. } = Frame::decode(&delta_golden).expect("the MeshTopologyDelta frame decodes").into_data() else { panic!("not MeshTopologyDelta") };
-    assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::ReadyForTraffic], "the entry's status is the projection's");
+    assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::Ready], "the entry's status is the projection's");
 }
 
 /// The complete gossip message is the standard context list followed by opaque postcard data.
 #[test]
 fn a_gossip_message_has_standard_context_and_an_opaque_postcard_body() {
-    let frame = Frame::Digest { digest: digest("ready-for-traffic") };
-    let author = rdm_transport::envelope::Birth { fabric: digest("ready-for-traffic").fabric_id, node: digest("ready-for-traffic").node.node_id, incarnation: digest("ready-for-traffic").node.incarnation };
+    let frame = Frame::Digest { digest: digest("ready") };
+    let author = rdm_transport::envelope::Birth { fabric: digest("ready").fabric_id, node: digest("ready").node.node_id, incarnation: digest("ready").node.incarnation };
     let encoded = frame.authored(&author, 0, 9).encode();
     let (attributes, body): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&encoded).expect("CloudEvents binary metadata and opaque data");
     assert_eq!(attributes.iter().find(|(name, _)| name == "specversion").map(|(_, v)| v.as_str()), Some("1.0"));
@@ -103,7 +103,7 @@ fn a_gossip_message_has_standard_context_and_an_opaque_postcard_body() {
 /// Its long API address deliberately brings the complete message near the transport ceiling.
 #[test]
 fn the_largest_complete_message_golden_fits_max_frame() {
-    let mut d = digest("ready-for-traffic");
+    let mut d = digest("ready");
     d.admin_api_base = Some("x".repeat(3600));
     let frame = Frame::Digest { digest: d };
     // The existing literal digest prefix through node_state; Some API string has a two-byte
@@ -123,7 +123,7 @@ fn the_largest_complete_message_golden_fits_max_frame() {
 /// A body that fits by itself can overflow once its metadata and both prefixes are counted.
 #[test]
 fn members_chunks_are_sized_against_the_complete_message() {
-    let mut first = digest("ready-for-traffic"); first.admin_api_base = Some("x".repeat(1800));
+    let mut first = digest("ready"); first.admin_api_base = Some("x".repeat(1800));
     let mut second = first.clone(); second.node.node_id = rdm_core::NodeId::parse("1123456789ab").unwrap(); second.node.name = "mesh1.rpc.2".parse().unwrap();
     let author = crate::gossip_wire::author();
     let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: author.incarnation.clone(), node_id: author.node.clone() };
@@ -144,7 +144,7 @@ fn members_chunks_are_sized_against_the_complete_message() {
 fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling() {
     const PARENT: &str = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
     const STATE: &str = "rojo=00f067aa0ba902b7";
-    let mut d = digest("ready-for-traffic");
+    let mut d = digest("ready");
     d.admin_api_base = Some("x".repeat(3500));
     let frame = Frame::Digest { digest: d };
     // 3500 = postcard unsigned varint 0xac 0x1b. All other domain positions stand.
@@ -170,7 +170,7 @@ fn members_chunks_include_the_maximum_trace_context_in_their_complete_size() {
     let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: author.incarnation.clone(), node_id: author.node.clone() };
     let state = format!("a={},b={}", "x".repeat(256), "y".repeat(251));
     assert_eq!(state.len(), rdm_core::context::MAX_TRACESTATE_BYTES);
-    let mut d = digest("ready-for-traffic"); d.admin_api_base = Some("x".repeat(1600));
+    let mut d = digest("ready"); d.admin_api_base = Some("x".repeat(1600));
     let mut other = d.clone(); other.node.node_id = rdm_core::NodeId::mint(); other.node.name = "mesh1.rpc.2".parse().unwrap();
     let shape = |digests, in_flight, departed, chunk_index, chunk_count| {
         let mut f = Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted: departed }.authored(&author, 0, 1);

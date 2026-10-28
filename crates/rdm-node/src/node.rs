@@ -461,8 +461,8 @@ async fn start_booted(
     alpns: Vec<rdm_transport::connections::Alpn>,
     boot: &tracing::Span,
 ) -> Result<RunningNode> {
-    // An ordinary node is admitted by the admin that launched it (`node-ready-for-traffic.md`
-    // step 1): a launch naming no launcher has nothing to be admitted by.
+    // An ordinary node is admitted by the admin that launched it (`node-mesh-join.md`
+    // steps 2-3): a launch naming no launcher has nothing to be admitted by.
     let launcher = launch.launcher.as_ref().ok_or_else(|| anyhow!("{} was launched with no launcher: a node joins through the admin that deployed it and is refused without one", launch.name))?;
     let identity_exists = launch.data_dir.join("node-key").exists();
     let step = if identity_exists {
@@ -624,7 +624,7 @@ async fn start_booted(
             transport_addr: bound_addr,
             runtime: Some(runtime.clone()),
         },
-        status: MemberStatus::ReadyForTraffic,
+        status: MemberStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         // Stamped by `TopologyView::publish`: this birth's own sequence and the composed clock.
@@ -639,7 +639,7 @@ async fn start_booted(
     // The join: this node's first call after it binds. `JoinNode` carries the digest above to the
     // admin that deployed it; the admin verifies it against the deployment and answers what it
     // holds. A node whose join is not accepted ends by name, whether the admin refused the digest
-    // or could not take the join within the attempts: it is never ready for traffic.
+    // or could not take the join within the attempts: it is never ready.
     let launcher = launcher.clone();
     let resolve: Box<dyn FnOnce() -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> + Send> = {
         let (resolver, launch_name, launcher, seed) = (resolver.clone(), launch.name.clone(), launcher.clone(), seeds.first().cloned());
@@ -726,7 +726,7 @@ async fn start_booted(
                             topology_view.spawn_top_up(crate::topology_read::top_up_fetch(client.clone()));
                             // From here the node is on the mesh, Pending: it answers status and its node commands, and
                             // says Pending on the topology cadence while its `pre_node_ready` hook runs. It is
-                            // published ReadyForTraffic only once the hook has passed ("born full").
+                            // published Ready only once the hook has passed ("born full").
                             let cancel = rdm_transport::Retirement::new();
                             let addressed = crate::node_hooks::Addressed::new();
                             let owed_state: Arc<OwedDeclarations> = Arc::default();
@@ -938,7 +938,7 @@ async fn start_booted(
 
 /// Set this birth's own status, the one cell its digest cadence, its topology door and its answers
 /// read, to `to`, and hand back `digest` carrying it: the one place an rpc or role node sets its own
-/// status (every status its `NodeSelf` sets, and its ReadyForTraffic at node.started). The rule a set
+/// status (every status its `NodeSelf` sets, and its Ready at node.started). The rule a set
 /// applies before it is made is its caller's.
 fn set_own_status(status: &Mutex<MemberStatus>, digest: &MeshDigest, to: MemberStatus) -> MeshDigest {
     *status.lock().unwrap() = to;
@@ -1015,7 +1015,7 @@ impl crate::node_self::Session for NodeSession {
         // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
         // rides it, never the birth's frozen name (R-JN1).
         // The stopped cycle's declaration ends with it: the start begins the next cycle, whose states
-        // this birth declares from here (its ReadyForTraffic names the start).
+        // this birth declares from here (its Ready names the start).
         self.owed.clear();
         let held = self.topology_view.reported(&self.digest);
         let name = held.node.name.to_string();
@@ -1069,7 +1069,7 @@ struct AfterStop<'a> {
     retire: Option<rdm_transport::CancelToken>,
     /// The start's hold on this birth's connections rows, dropped once the handed name is held.
     rows: Option<crate::connections_writer::RowsHeld>,
-    /// The start's operation: the ReadyForTraffic this birth declares at the start's end names it.
+    /// The start's operation: the Ready this birth declares at the start's end names it.
     operation: rdm_core::status::DeclaredOperation,
     progress: Option<crate::node_self::CommandProgress>,
     /// Sent once this birth holds its mesh again: a commanded `node.mesh.join` answers on it.
@@ -1251,7 +1251,7 @@ impl crate::workflows::node_start::AfterHook for RpcAfterHook {
 
 
 
-/// What turns a Pending node whose hook passed into a ReadyForTraffic one: `via-ready` closes the
+/// What turns a Pending node whose hook passed into a Ready one: `via-ready` closes the
 /// boot trace, the status moves, its declaration is owed and the digest is published at once.
 struct Becoming {
     boot: tracing::Span,
@@ -1297,9 +1297,9 @@ impl Becoming {
             runtime_locator_fingerprint = %self.runtime.locator_fingerprint(),
             source = "self-published-topology"
         )
-        .in_scope(|| tracing::info!("ready for traffic"));
-        let d = set_own_status(&self.status, &self.digest, MemberStatus::ReadyForTraffic);
-        let ready: Declaration = (rdm_core::status::NodeState::ReadyForTraffic, self.operation.clone());
+        .in_scope(|| tracing::info!("ready"));
+        let d = set_own_status(&self.status, &self.digest, MemberStatus::Ready);
+        let ready: Declaration = (rdm_core::status::NodeState::Ready, self.operation.clone());
         // Owed before anything that follows it can be (Q210): a stop's declarations queue behind it.
         if self.progress.is_none() {
             drop(self.owed.owe(ready));
@@ -1724,7 +1724,7 @@ fn node_state_of(s: MemberStatus) -> rdm_core::status::NodeState {
     use rdm_core::status::NodeState as N;
     match s {
         MemberStatus::Pending => N::Pending,
-        MemberStatus::ReadyForTraffic => N::ReadyForTraffic,
+        MemberStatus::Ready => N::Ready,
         MemberStatus::ConnectionsDeleting => N::ConnectionsDeleting,
         MemberStatus::Leaving => N::Stopped,
     }

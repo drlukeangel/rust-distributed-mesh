@@ -114,8 +114,8 @@ pub trait Gate: Send + Sync {
     async fn mesh_rows(&self) -> Result<Vec<crate::storage::MeshRecord>, String> {
         Ok(Vec::new())
     }
-    /// Whether the fabric holds ready-for-traffic now: a Build that put the fabric back to pending is
-    /// `Complete` only once the fabric's ready-for-traffic state is set from its change (Q154; states.md
+    /// Whether the fabric holds ready now: a Build that put the fabric back to pending is
+    /// `Complete` only once the fabric's ready state is set from its change (Q154; states.md
     /// "Resize and executable replacement"). A gate with no fabric change holds it.
     fn fabric_ready(&self) -> bool {
         true
@@ -817,7 +817,7 @@ fn ended_incomplete(me: &PathName, executor: &PathName, to: &PathName, before: &
 
 /// What the next claim of a Build decides on: the first operation left, the receipts the Build
 /// holds, the members of the mesh that operation acts on, by birth, status and primary, and whether the
-/// fabric holds ready-for-traffic (`fabric_ready`, [`Gate::fabric_ready`]: a Build that put the fabric
+/// fabric holds ready (`fabric_ready`, [`Gate::fabric_ready`]: a Build that put the fabric
 /// back to pending is claimed again once it does). An attempt that ended with this unchanged would end
 /// the same way again.
 fn world(drive: &Drive, p: &BuildProjection, t: &Topology, fabric_ready: bool) -> String {
@@ -866,22 +866,22 @@ fn plans_replacements(p: &BuildProjection) -> bool {
     p.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::plans_replacements)
 }
 
-/// Whether `p`'s Build changes the fabric to ready-for-traffic (states.md "Resize and executable
-/// replacement": "Its Build is Complete only when the fabric is ready-for-traffic again from this Build's
+/// Whether `p`'s Build changes the fabric to ready (states.md "Resize and executable
+/// replacement": "Its Build is Complete only when the fabric is ready again from this Build's
 /// own change, as fabric.create's is"; Q154): the Day-0 Build, fabric.create's, which carries no submitted
 /// change and whose fabric is pending from its mint (fabric-create.md, Completion: "`fabric.created` when
-/// the fabric is ready-for-traffic"), and every Build a change was submitted for, a resize and an
-/// executable replacement alike, except fabric.delete, after which the fabric is never ready-for-traffic
+/// the fabric is ready"), and every Build a change was submitted for, a resize and an
+/// executable replacement alike, except fabric.delete, after which the fabric is never ready
 /// again. A Build whose topology the change left as it was puts nothing back, and the fabric it finds
-/// ready-for-traffic holds it.
+/// ready holds it.
 fn changes_the_fabric(p: &BuildProjection) -> bool {
     !p.submitted_change.as_ref().is_some_and(|c| matches!(c, crate::accepted::TopologyChange::DeleteFabric))
 }
 
-/// Whether `p`'s attempt waits for the fabric's ready-for-traffic before its Build is Complete: the
+/// Whether `p`'s attempt waits for the fabric's ready before its Build is Complete: the
 /// Build's own change of the fabric, Day 0's or a submitted topology change's (Q154; states.md "Resize and
 /// executable replacement"), up to the Build's
-/// first Complete, which comes only from its own ready-for-traffic. Every later attempt of the Build
+/// first Complete, which comes only from its own ready. Every later attempt of the Build
 /// (node.stop, node.start, a primary change, node recovery, drift: attempts of an
 /// unchanged topology, build.md §1) ends at its own completion and never waits on the fabric's change
 /// (states.md "The check-in checklist": "Individual lifecycle status changes do not wait for the entire
@@ -1176,7 +1176,7 @@ impl DriveEnv {
             plan.hand_off_to = Some(me.to_string());
         }
         // The last run of a Build that changes the fabric (Day 0's, or one that put it back to pending) hands back here rather than
-        // ending `Complete` while the fabric's ready-for-traffic state is not set (Q154; states.md "Resize
+        // ending `Complete` while the fabric's ready state is not set (Q154; states.md "Resize
         // and executable replacement"): the next pass waits for it. A later attempt of a Build that completed
         // once ends at its own completion ([`waits_for_the_fabric_change`]).
         let held = waits_for_the_fabric_change(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready();
@@ -1284,16 +1284,16 @@ impl DriveEnv {
                     return end;
                 }
                 // A Build that changes the fabric (Day 0's, or one that put it back to pending) and never completed, its
-                // work all done, is Complete only once the fabric's ready-for-traffic state is set from its change (Q154; states.md "Resize and
+                // work all done, is Complete only once the fabric's ready state is set from its change (Q154; states.md "Resize and
                 // executable replacement": "while the fabric changes, the Build reports Blocked naming the
                 // change, never Complete"): no further attempt is claimed until the fabric holds
-                // ready-for-traffic, and the reconcile loop drives the Build again. Its first attempt is
+                // ready, and the reconcile loop drives the Build again. Its first attempt is
                 // always claimed, even with nothing left to execute (build.md §1: every attempt "computes
                 // remaining work"): the fabric's change names the accepted Build's attempt
-                // (states.md, "The fabric's ready-for-traffic"), and that attempt's run hands back at the hold of `plan_dispatch`.
+                // (states.md, "The fabric's ready"), and that attempt's run hands back at the hold of `plan_dispatch`.
                 // Waiting is not failure.
                 if p.attempt > 0 && waits_for_the_fabric_change(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
-                    let why = format!("{me}: every operation of Build {id} is done, and the Build is Complete only once the fabric's ready-for-traffic state is set");
+                    let why = format!("{me}: every operation of Build {id} is done, and the Build is Complete only once the fabric's ready state is set");
                     self.blocked(drive, p.attempt, "", "fabric-change", &why);
                     return self.stalled(&me, drive, why);
                 }
@@ -1402,7 +1402,7 @@ impl DriveEnv {
                             // A run with nothing left, handed back by the hold of a Build that put the
                             // fabric back to pending ([`Self::plan_dispatch`]), did not end incomplete: it
                             // waits on the fabric's change, and the next pass reports it Blocked naming it,
-                            // or claims the next attempt once the fabric is ready-for-traffic. The hold is
+                            // or claims the next attempt once the fabric is ready. The hold is
                             // the one the run was planned with, never the fabric's state read after it.
                             let held_for_the_fabric_change = held && left(drive, &ended, &t).is_empty();
                             if !held_for_the_fabric_change && ended_incomplete(&me, &executor, &next, &before, &after) {

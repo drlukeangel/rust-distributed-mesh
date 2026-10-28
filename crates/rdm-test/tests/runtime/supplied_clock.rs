@@ -189,7 +189,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
 
     // The adversary: the very birth, an OLDER sequence, a stamp a year ahead, saying Leaving.
     let held_before = estate.node_view(NODE).await;
-    assert_eq!(held_before.status, NodeStatus::ReadyForTraffic);
+    assert_eq!(held_before.status, NodeStatus::Ready);
     let last = before.last().unwrap().1.clone();
     let mut forged = last.clone();
     // A heartbeat carries liveness and no status (gossip.md §3.1 Digest row): the forged one says the
@@ -203,7 +203,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     // Well past the silence window (3 s) and many heartbeats (500 ms): the live heartbeats are the control.
     tokio::time::sleep(Duration::from_secs(9)).await;
     let held_after = estate.node_view(NODE).await;
-    assert_eq!(held_after.status, NodeStatus::ReadyForTraffic, "the older heartbeat stamped ahead did not move the member, and its live heartbeats kept it heard past the silence window: {held_after:?}");
+    assert_eq!(held_after.status, NodeStatus::Ready, "the older heartbeat stamped ahead did not move the member, and its live heartbeats kept it heard past the silence window: {held_after:?}");
     assert_eq!(held_after.incarnation_id, held_before.incarnation_id, "the same birth");
     let live_after: Vec<(Seen, MeshDigest)> = observer.heartbeats_of(NODE).into_iter().filter(|h| h.0.heard_at_ms > forged_at_ms && h.1.node_state == NodeState::Alive).collect();
     assert!(live_after.len() >= 8, "the node kept publishing live heartbeats for the whole window ({} heard)", live_after.len());

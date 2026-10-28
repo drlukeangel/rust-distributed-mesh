@@ -1,7 +1,7 @@
-//! The fabric's states, run by the fabric-primary (states.md; lifecycles/states.md, "The fabric's ready-for-traffic").
+//! The fabric's states, run by the fabric-primary (states.md; lifecycles/states.md, "The fabric's ready").
 //!
-//! - The fabric-primary alone moves the fabric: `pending` → `ready-for-traffic` once every mesh the
-//!   accepted Build names is ready-for-traffic (Q174). The FabricStatus frame carrying each state is
+//! - The fabric-primary alone moves the fabric: `pending` → `ready` once every mesh the
+//!   accepted Build names is ready (Q174). The FabricStatus frame carrying each state is
 //!   authored by it only, by the status loop that reads the state it holds.
 //! - The application gets one notice, `on_fabric_ready`, gating nothing (Q175).
 //! - A new primary, through election or recovery, republishes the status it adopted only after the
@@ -187,7 +187,7 @@ impl FabricStates {
     /// runs on its own task.
     pub async fn change_step(self: &Arc<Self>, inputs: ChangeInputs<'_>) {
         let mut change = self.change.lock().await;
-        let heard_state = inputs.heard.and_then(|h| FabricState::parse(h).or_else(|| (h == "degraded").then_some(FabricState::ReadyForTraffic)));
+        let heard_state = inputs.heard.and_then(|h| FabricState::parse(h).or_else(|| (h == "degraded").then_some(FabricState::Ready)));
         if !inputs.is_fabric_primary {
             // A non-holder serves the state the holder published and runs nothing.
             *change = Change::default();
@@ -209,7 +209,7 @@ impl FabricStates {
             let before = self.env.records.fabric_state();
             match before {
                 FabricState::Pending => self.step_pending(&mut change, inputs.view, inputs.current).await,
-                FabricState::ReadyForTraffic => self.step_ready(&mut change, inputs.current).await,
+                FabricState::Ready => self.step_ready(&mut change, inputs.current).await,
             }
             if before == self.env.records.fabric_state() {
                 break;
@@ -310,7 +310,7 @@ impl FabricStates {
                 self.resized(change, build, &me).await;
             }
             Ok(None) => {}
-            Err(e) => self.block(change, &[unreadable(&e)], "ready-for-traffic reads the current Build", &me),
+            Err(e) => self.block(change, &[unreadable(&e)], "ready reads the current Build", &me),
         }
     }
 
@@ -367,7 +367,7 @@ impl FabricStates {
         let me = self.held_name_in(view);
         let accepted = match current {
             Ok(b) => b.as_ref(),
-            Err(e) => return self.block(change, &[unreadable(e)], "ready-for-traffic names the current Build", &me),
+            Err(e) => return self.block(change, &[unreadable(e)], "ready names the current Build", &me),
         };
         if accepted.is_some_and(|b| self.deleting(change, b, &me)) {
             return;
@@ -387,17 +387,17 @@ impl FabricStates {
             }
         }
         if !blockers.is_empty() {
-            self.block(change, &blockers, "ready-for-traffic waits for every mesh to be ready-for-traffic", &me);
+            self.block(change, &blockers, "ready waits for every mesh to be ready", &me);
             return;
         }
         let Some(build) = accepted else {
-            self.block(change, &[Missing { who: "build".into(), why: "no-accepted-build" }], "ready-for-traffic names the accepted Build", &me);
+            self.block(change, &[Missing { who: "build".into(), why: "no-accepted-build" }], "ready names the accepted Build", &me);
             return;
         };
         // The change names the accepted Build's attempt: a Build whose first attempt no executor has
         // claimed yet has none, and the change names the attempt that exists.
         if build.attempt == 0 {
-            self.block(change, &[Missing { who: "build".into(), why: "no-attempt-claimed" }], "ready-for-traffic names the accepted Build's attempt", &me);
+            self.block(change, &[Missing { who: "build".into(), why: "no-attempt-claimed" }], "ready names the accepted Build's attempt", &me);
             return;
         }
         if !self.may_advance() {
@@ -408,9 +408,9 @@ impl FabricStates {
         change.tracked_build = Some(build.build_id.clone());
         change.named = None;
         tracing::info_span!(parent: &root, "rdm.node_admin.fabric.update.via-every-mesh-ready", node = %me, build_id = %build.build_id.log(), attempt = build.attempt, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("every mesh is ready-for-traffic: the fabric is ready-for-traffic"));
+            .in_scope(|| tracing::info!("every mesh is ready: the fabric is ready"));
         change.root = Some(root.clone());
-        self.enter(change, FabricState::ReadyForTraffic, &me);
+        self.enter(change, FabricState::Ready, &me);
         if !change.notified {
             change.notified = true;
             self.notify_fabric_ready(build, root, me);
@@ -418,8 +418,8 @@ impl FabricStates {
         change.root = None;
     }
 
-    /// The meshes not ready-for-traffic and the mesh primaries that have not reported, named. Empty:
-    /// every mesh is ready-for-traffic (R-H1). A mesh's state is the one the view projects
+    /// The meshes not ready and the mesh primaries that have not reported, named. Empty:
+    /// every mesh is ready (R-H1). A mesh's state is the one the view projects
     /// (`Topology::mesh_unready` decides it); the nodes behind a mesh that is not ready are named
     /// from that same function.
     fn entry_blockers(&self, view: &Topology, accepted: Option<&FabricTopology>) -> Vec<Missing> {
@@ -438,7 +438,7 @@ impl FabricStates {
         out
     }
 
-    /// The one notice to the application: the fabric is ready-for-traffic (Q175, `on_fabric_ready`). It is
+    /// The one notice to the application: the fabric is ready (Q175, `on_fabric_ready`). It is
     /// fire and forget and gates nothing.
     fn notify_fabric_ready(&self, build: &crate::build_state::BuildProjection, parent: tracing::Span, me: PathName) {
         let (hook, contexts) = (self.env.hooks.on_fabric_ready.clone(), self.env.contexts.clone());
@@ -452,7 +452,7 @@ impl FabricStates {
                 };
                 let context = contexts.get(&build_id, attempt).await.ok().flatten().unwrap_or_default();
                 hook(FabricReadyCtx { fabric_id, build_id: build_id.to_string(), attempt, context }).await;
-                tracing::info!("the application was told the fabric is ready-for-traffic");
+                tracing::info!("the application was told the fabric is ready");
             }
             .instrument(span)
             .await
@@ -506,7 +506,7 @@ impl FabricStates {
     /// wait for their checklist; the answer says which checklists are complete now (so the publisher may
     /// republish). A checklist opens on its first step: its down op goes to every planned birth but this
     /// admin, and its checklist counts only the check-ins heard from then on. The mesh checklist's
-    /// check-in is a planned birth's digest heard ready-for-traffic after the checklist began; the
+    /// check-in is a planned birth's digest heard ready after the checklist began; the
     /// fabric checklist's is a report from the CURRENT mesh primary's birth. The fabric-primary clears
     /// `degraded` only on such a report, never on a topology reading.
     pub fn adopted_step(&self, awaiting: Announced, i: AdoptedInputs<'_>) -> Complete {
@@ -526,7 +526,7 @@ impl FabricStates {
             let missing = match &i.planned {
                 None => vec![Missing { who: mesh_name.clone(), why: "accepted-build-unreadable" }],
                 Some(planned) => {
-                    let me_ready = i.view.own(&self.env.node_id).is_some_and(|n| n.status == crate::model::NodeStatus::ReadyForTraffic);
+                    let me_ready = i.view.own(&self.env.node_id).is_some_and(|n| n.status == crate::model::NodeStatus::Ready);
                     let (heard, known) = (i.digest_view.heard_direct_since(checklist.began), i.digest_view.all());
                     missing_members(planned, &me, me_ready, &heard, &known, &|id| i.digest_view.is_deleted(id))
                 }
@@ -595,8 +595,8 @@ impl FabricStates {
     }
 }
 
-/// The notice to the application that a mesh is ready-for-traffic (Q175, `on_mesh_ready`): called by
-/// the mesh-primary once its mesh's ready-for-traffic is on its Mesh record (Q144), on its own task. It
+/// The notice to the application that a mesh is ready (Q175, `on_mesh_ready`): called by
+/// the mesh-primary once its mesh's ready is on its Mesh record (Q144), on its own task. It
 /// is fire and forget and gates nothing.
 pub(crate) fn notify_mesh_ready(hook: Option<crate::wiring::MeshReadyNotice>, ctx: crate::wiring::MeshReadyCtx) {
     tokio::spawn(async move {
@@ -607,7 +607,7 @@ pub(crate) fn notify_mesh_ready(hook: Option<crate::wiring::MeshReadyNotice>, ct
                 return;
             };
             hook(ctx).await;
-            tracing::info!("the application was told the mesh is ready-for-traffic");
+            tracing::info!("the application was told the mesh is ready");
         }
         .instrument(span)
         .await
@@ -650,7 +650,7 @@ fn send_down(me: &PathName, scope: &'static str, of: &str, targets: Vec<(String,
     }
 }
 
-/// The meshes among `meshes` that are not ready-for-traffic in `view`, with the nodes behind each. A
+/// The meshes among `meshes` that are not ready in `view`, with the nodes behind each. A
 /// mesh's state is the one the view projects (`Topology::mesh_unready` decides it).
 fn mesh_blockers(view: &Topology, meshes: &[String], planned: &std::collections::BTreeMap<String, std::collections::BTreeSet<PathName>>) -> Vec<Missing> {
     let mut out = Vec::new();
@@ -660,7 +660,7 @@ fn mesh_blockers(view: &Topology, meshes: &[String], planned: &std::collections:
                 let why = view.mesh_unready(mesh, planned.get(mesh));
                 if !why.is_empty() {
                     out.extend(why);
-                } else if m.status != crate::model::ScopeStatus::ReadyForTraffic {
+                } else if m.status != crate::model::ScopeStatus::Ready {
                     out.push(Missing { who: mesh.clone(), why: "not-ready" });
                 }
             }
@@ -692,7 +692,7 @@ mod tests {
     fn projected(nodes: Vec<Node>) -> Topology {
         let mut t = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process }, meshes: Vec::new(), nodes };
         for m in ["mesh1", "mesh2"] {
-            let status = if t.mesh_unready(m, None).is_empty() { ScopeStatus::ReadyForTraffic } else { ScopeStatus::Pending };
+            let status = if t.mesh_unready(m, None).is_empty() { ScopeStatus::Ready } else { ScopeStatus::Pending };
             t.meshes.push(Mesh { id: None, name: m.into(), status });
         }
         t
@@ -729,14 +729,14 @@ mod tests {
         builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
     }
 
-    /// The fabric-primary `mesh1.admin.1` and mesh2's primary, both ready-for-traffic.
+    /// The fabric-primary `mesh1.admin.1` and mesh2's primary, both ready.
     fn fabric_primary_and_mesh2() -> (Node, Node) {
-        let mut fp = node("mesh1.admin.1", NodeStatus::ReadyForTraffic, true);
+        let mut fp = node("mesh1.admin.1", NodeStatus::Ready, true);
         fp.is_fabric_primary = true;
-        (fp, node("mesh2.admin.1", NodeStatus::ReadyForTraffic, true))
+        (fp, node("mesh2.admin.1", NodeStatus::Ready, true))
     }
 
-    /// Every mesh is ready-for-traffic as the fabric-primary decides it: its own mesh declared ready,
+    /// Every mesh is ready as the fabric-primary decides it: its own mesh declared ready,
     /// `mesh2`'s primary reported, and pending went out.
     fn every_mesh_ready(records: &Records, mesh2: Option<&Node>) {
         records.set_declare_gate(true);
@@ -817,13 +817,13 @@ mod tests {
         }
     }
 
-    /// CONTRACT (states.md "The fabric's ready-for-traffic": "Once every member has checked in under the check-in
-    /// checklist, the fabric is ready-for-traffic"; the status loop reads the current Build once per turn,
+    /// CONTRACT (states.md "The fabric's ready": "Once every member has checked in under the check-in
+    /// checklist, the fabric is ready"; the status loop reads the current Build once per turn,
     /// `admin::boot`): one status turn of the fabric-primary reads the current Build once, at its start,
     /// and every step of the fabric's change it takes in that turn is decided on that read, however many
-    /// steps the turn takes: every mesh ready, then ready-for-traffic. On a Build store whose read
+    /// steps the turn takes: every mesh ready, then ready. On a Build store whose read
     /// costs ~100 ms (an application's own backend), each further read is that much longer between every
-    /// mesh ready and ready-for-traffic. Must NOT happen: a step, or the checklist a step
+    /// mesh ready and ready. Must NOT happen: a step, or the checklist a step
     /// runs, reading the current Build again inside the turn.
     #[tokio::test]
     async fn one_status_turn_reads_the_current_build_once_however_many_steps_of_the_change_it_takes() {
@@ -855,12 +855,12 @@ mod tests {
         };
         let mut reads = Vec::new();
         let until = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        // Turns until the fabric is ready-for-traffic: every mesh is ready, so the change enters it.
-        while records.fabric_state() != FabricState::ReadyForTraffic && tokio::time::Instant::now() < until {
+        // Turns until the fabric is ready: every mesh is ready, so the change enters it.
+        while records.fabric_state() != FabricState::Ready && tokio::time::Instant::now() < until {
             reads.push(turn().await);
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert_eq!(records.fabric_state(), FabricState::ReadyForTraffic, "the change entered ready-for-traffic: {:?}", records.fabric_blocker());
+        assert_eq!(records.fabric_state(), FabricState::Ready, "the change entered ready: {:?}", records.fabric_blocker());
         assert_eq!(capture.named("rdm.node_admin.fabric.update.via-every-mesh-ready").len(), 1, "every mesh ready is named once");
         assert!(reads.iter().all(|n| *n == 1), "each status turn reads the current Build once: reads per turn {reads:?}");
     }
@@ -873,30 +873,30 @@ mod tests {
     #[test]
     fn an_admin_finds_its_own_row_by_node_id_while_its_superseded_birth_is_still_in_the_view() {
         let retired = node("mesh1.admin.1", NodeStatus::ConnectionsDeleting, false);
-        let reborn = node("mesh1.admin.1", NodeStatus::ReadyForTraffic, false);
-        let view = projected(vec![retired.clone(), reborn.clone(), node("mesh1.admin.2", NodeStatus::ReadyForTraffic, true)]);
+        let reborn = node("mesh1.admin.1", NodeStatus::Ready, false);
+        let view = projected(vec![retired.clone(), reborn.clone(), node("mesh1.admin.2", NodeStatus::Ready, true)]);
         assert_eq!(view.members().filter(|n| n.name == reborn.name).count(), 2, "both births of mesh1.admin.1 are in the view");
         let me = view.own(&reborn.node_id).expect("this admin is in its view");
         assert_eq!(me.node_id, reborn.node_id, "the reborn admin's own row, not the retired birth's {}", retired.node_id);
     }
 
-    /// CONTRACT (R-H1): the fabric is ready-for-traffic only when every mesh is ready-for-traffic, and a
+    /// CONTRACT (R-H1): the fabric is ready only when every mesh is ready, and a
     /// mesh is ready only when every node of it is. A mesh with a primary and one node not ready blocks
     /// entry and names that node; the mesh whose nodes are all ready blocks nothing.
     #[test]
-    fn a_mesh_with_one_node_not_ready_blocks_the_fabric_from_being_ready_for_traffic() {
+    fn a_mesh_with_one_node_not_ready_blocks_the_fabric_from_being_ready() {
         let meshes = vec!["mesh1".to_string(), "mesh2".to_string()];
         let planned = std::collections::BTreeMap::new();
         let ready = projected(vec![
-            node("mesh1.admin.1", NodeStatus::ReadyForTraffic, true),
-            node("mesh1.rpc.1", NodeStatus::ReadyForTraffic, false),
-            node("mesh2.admin.1", NodeStatus::ReadyForTraffic, true),
+            node("mesh1.admin.1", NodeStatus::Ready, true),
+            node("mesh1.rpc.1", NodeStatus::Ready, false),
+            node("mesh2.admin.1", NodeStatus::Ready, true),
         ]);
         assert!(mesh_blockers(&ready, &meshes, &planned).is_empty(), "every node of both meshes is ready: nothing blocks entry");
         let one_pending = projected(vec![
-            node("mesh1.admin.1", NodeStatus::ReadyForTraffic, true),
+            node("mesh1.admin.1", NodeStatus::Ready, true),
             node("mesh1.rpc.1", NodeStatus::Pending, false),
-            node("mesh2.admin.1", NodeStatus::ReadyForTraffic, true),
+            node("mesh2.admin.1", NodeStatus::Ready, true),
         ]);
         assert!(one_pending.node_type_primary("mesh1", NodeKind::NodeAdmin).is_some(), "mesh1 has its primary");
         let blockers: Vec<String> = mesh_blockers(&one_pending, &meshes, &planned).iter().map(|m| m.to_string()).collect();
@@ -907,7 +907,7 @@ mod tests {
     /// puts the fabric back to pending; a primary change or a stop "leaves the topology unchanged"): an
     /// admin that held the current Build as heard on gossip (no executables) and, fabric-primary now, reads
     /// it from the store root (executables named) holds two copies of one Build's topology. The fabric
-    /// stays ready-for-traffic; a different Build that names a new executable puts it back to pending.
+    /// stays ready; a different Build that names a new executable puts it back to pending.
     /// Must NOT happen: the same Build read from another copy taken as "the accepted topology changed",
     /// the fabric reset to pending by a hand-over.
     #[tokio::test]
@@ -932,8 +932,8 @@ mod tests {
         let view = projected(vec![fp.clone()]);
         let records = Arc::new(Records::default());
         let states = states_of(&fp, view, builds.clone(), records.clone(), FabricId::mint()).await;
-        records.set_fabric_state(FabricState::ReadyForTraffic);
-        records.set_published_fabric_state(Some(FabricState::ReadyForTraffic));
+        records.set_fabric_state(FabricState::Ready);
+        records.set_published_fabric_state(Some(FabricState::Ready));
         {
             let mut change = states.change.lock().await;
             // As heard on gossip: the same Build, no executable on its entries.
@@ -941,7 +941,7 @@ mod tests {
             change.tracked_build = Some(a.clone());
             states.step_ready(&mut change, &states.env.builds.current().await).await;
         }
-        assert_eq!(records.fabric_state(), FabricState::ReadyForTraffic, "the same Build read from the store root is no resize: the fabric stays ready-for-traffic");
+        assert_eq!(records.fabric_state(), FabricState::Ready, "the same Build read from the store root is no resize: the fabric stays ready");
         let b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
         builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology(Some("bb")), submitted_change: None, submitted_at_ms: 2_000 }).await.unwrap();
         claim(&builds, &b, 1).await;
@@ -956,7 +956,7 @@ mod tests {
     /// fabric back to pending"; build-deployment.md §3: a member is replaced when its row records another
     /// executable than its entry names): day 0's entry for the Day-0 admin names no executable, and its row
     /// records the one it runs. A Build whose request names, for that path, the executable its row records
-    /// is neither a resize nor a replacement: the fabric stays ready-for-traffic and the change holds the
+    /// is neither a resize nor a replacement: the fabric stays ready and the change holds the
     /// new Build. A later Build naming another executable for it is a replacement and puts the fabric back
     /// to pending. Must NOT happen: a request naming what the admin already runs taken as "the accepted
     /// topology changed", the fabric reset to pending for a Build that has nothing to do.
@@ -980,7 +980,7 @@ mod tests {
         let (fp, _) = fabric_primary_and_mesh2();
         // The Day-0 admin's row records the executable it runs.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let mut row = crate::storage::NodeRow::new(admin.clone(), fp.node_id.clone(), NodeStatus::ReadyForTraffic);
+        let mut row = crate::storage::NodeRow::new(admin.clone(), fp.node_id.clone(), NodeStatus::Ready);
         row.executable = Some(exe("aa"));
         rows.write_record(&row).await.unwrap();
         let a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
@@ -990,8 +990,8 @@ mod tests {
         let records = Arc::new(Records::default());
         let _ = records.contacts.set(rows.clone());
         let states = states_of(&fp, view, builds.clone(), records.clone(), FabricId::mint()).await;
-        records.set_fabric_state(FabricState::ReadyForTraffic);
-        records.set_published_fabric_state(Some(FabricState::ReadyForTraffic));
+        records.set_fabric_state(FabricState::Ready);
+        records.set_published_fabric_state(Some(FabricState::Ready));
         {
             let mut change = states.change.lock().await;
             states.step_ready(&mut change, &states.env.builds.current().await).await;
@@ -1006,7 +1006,7 @@ mod tests {
             states.step_ready(&mut change, &states.env.builds.current().await).await;
             assert_eq!(change.tracked_build, Some(b.clone()), "the change holds the new Build's topology");
         }
-        assert_eq!(records.fabric_state(), FabricState::ReadyForTraffic, "the executable the row records is no replacement: the fabric stays ready-for-traffic");
+        assert_eq!(records.fabric_state(), FabricState::Ready, "the executable the row records is no replacement: the fabric stays ready");
         let c = crate::build::BuildId::parse("cprrv6tggykq").unwrap();
         builds.publish_accepted(&BuildAccepted { build_id: c.clone(), topology: topology(Some("cc")), submitted_change: None, submitted_at_ms: 3_000 }).await.unwrap();
         claim(&builds, &c, 1).await;
@@ -1019,7 +1019,7 @@ mod tests {
 
     fn member(name: &str, primary: bool, fabric_primary: bool) -> Node {
         let mut n = Node::allocated(name.parse().unwrap());
-        n.status = NS::ReadyForTraffic;
+        n.status = NS::Ready;
         n.incarnation_id = Some(IncarnationId::mint());
         n.is_primary = primary;
         n.is_fabric_primary = fabric_primary;
@@ -1030,7 +1030,7 @@ mod tests {
     fn view(nodes: Vec<Node>) -> Topology {
         Topology {
             fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Degraded, provider: ProviderKind::Process },
-            meshes: ["mesh1", "mesh2"].iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect(),
+            meshes: ["mesh1", "mesh2"].iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::Ready }).collect(),
             nodes,
         }
     }
@@ -1103,7 +1103,7 @@ mod tests {
         let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), digest_view: &digest_view };
         let held = || capture.named("rdm.node_admin.mesh.update.via-checklist-held").into_iter().map(|s| s.attributes.get("missing").cloned().unwrap_or_default()).collect::<Vec<_>>();
         // The member was heard before the checklist began: held, not checked in.
-        let mut heard = digest(&rpc.name, MemberStatus::ReadyForTraffic);
+        let mut heard = digest(&rpc.name, MemberStatus::Ready);
         assert!(digest_view.record(heard.clone()));
         assert!(!fabric_states.adopted_step(awaiting, inputs()).mesh, "a digest heard before the checklist is not a check-in");
         assert_eq!(held(), ["mesh1.rpc.1(not-heard-since-opening)"], "the hold names the planned birth that has not checked in");
@@ -1220,7 +1220,7 @@ mod tests {
         let planned = vec![me.name.clone(), rpc.name.clone()];
         let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), digest_view: &digest_view };
         // The member was heard before the checklist began (it is held, but it has not checked in).
-        let before = digest(&rpc.name, MemberStatus::ReadyForTraffic);
+        let before = digest(&rpc.name, MemberStatus::Ready);
         assert!(digest_view.record(before.clone()));
         let done = fabric_states.adopted_step(awaiting, inputs());
         assert!(!done.mesh, "a digest heard before the checklist is not a check-in");
@@ -1236,12 +1236,12 @@ mod tests {
         assert!(!done.mesh);
     }
 
-    /// What the pages say a Reconcile variant does to a ready-for-traffic fabric at its acceptance.
+    /// What the pages say a Reconcile variant does to a ready fabric at its acceptance.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Back {
         /// A resize or an executable replacement: back to pending (states.md "Resize and executable replacement").
         ToPending,
-        /// Neither: the fabric stays ready-for-traffic.
+        /// Neither: the fabric stays ready.
         Stays,
     }
 
@@ -1251,14 +1251,14 @@ mod tests {
     /// names): the Reconcile variant matrix's acceptance rows (the drive's rows, and why no cell held the gap,
     /// are tests/reconcile_variants.rs). Each request is compiled by the door's compiler against a Day-0
     /// fabric (the Day-0 admin's entry names no executable, its row records `aa`; mesh1.rpc.1's entry and row
-    /// name `rr`), accepted while the fabric is ready-for-traffic, and the fabric's state read after the
-    /// acceptance and after the ready-for-traffic step. A request naming the executable a row records, an
+    /// name `rr`), accepted while the fabric is ready, and the fabric's state read after the
+    /// acceptance and after the ready step. A request naming the executable a row records, an
     /// unchanged request, a tags-only and a placement-only request (`PlacementMeta` declares no constraint) are
-    /// neither a resize nor a replacement: the fabric stays ready-for-traffic. A path added or removed (a
+    /// neither a resize nor a replacement: the fabric stays ready. A path added or removed (a
     /// resize) and another executable (a replacement, the Day-0 admin's included) put it back to pending. A
     /// storage-only change of a held path is neither (proposal executable-bindings-at-create.md rule 5: a
     /// storage or placement change re-births a path only "with its executable"): the fabric stays
-    /// ready-for-traffic. Must NOT happen: a request naming what a node already runs, or changing only a
+    /// ready. Must NOT happen: a request naming what a node already runs, or changing only a
     /// held path's storage, reset the fabric to pending for a Build with nothing to do (Rafka 141).
     #[tokio::test]
     async fn a_reconcile_puts_the_fabric_back_to_pending_only_for_a_resize_or_an_executable_replacement() {
@@ -1310,7 +1310,7 @@ mod tests {
             let store = Arc::new(crate::storage::MemoryNodesStorage::default());
             let mut recorded = Recorded::new();
             for (path, node_id, sha, id) in [(&admin, fp.node_id.clone(), "aa", "node_admin"), (&rpc, NodeId::mint(), "rr", "rpc_node")] {
-                let mut row = crate::storage::NodeRow::new(path.clone(), node_id.clone(), NodeStatus::ReadyForTraffic);
+                let mut row = crate::storage::NodeRow::new(path.clone(), node_id.clone(), NodeStatus::Ready);
                 row.executable = Some(exe(id, sha));
                 store.write_record(&row).await.unwrap();
                 recorded.insert(path.clone(), RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id, sha256: Some(sha.into()) });
@@ -1319,8 +1319,8 @@ mod tests {
             let records = Arc::new(Records::default());
             let _ = records.contacts.set(store.clone());
             let states = states_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint()).await;
-            records.set_fabric_state(FabricState::ReadyForTraffic);
-            records.set_published_fabric_state(Some(FabricState::ReadyForTraffic));
+            records.set_fabric_state(FabricState::Ready);
+            records.set_published_fabric_state(Some(FabricState::Ready));
             {
                 let mut change = states.change.lock().await;
                 states.step_ready(&mut change, &states.env.builds.current().await).await;
@@ -1341,7 +1341,7 @@ mod tests {
             let changed = next != topology;
             let got = match (at_acceptance, now) {
                 (true, FabricState::Pending) => Back::ToPending,
-                (false, FabricState::ReadyForTraffic) => Back::Stays,
+                (false, FabricState::Ready) => Back::Stays,
                 other => {
                     red.push(format!("{what}: the acceptance said put-back={} and the fabric holds {:?}", other.0, other.1));
                     continue;

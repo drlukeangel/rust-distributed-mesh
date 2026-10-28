@@ -15,7 +15,7 @@ async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &TopologyView, 
     // Neighbor delivery passes identical heartbeat bytes to RDM without waiting for swarm dedup
     // retention. A following status on the same channel proves receipt has finished.
     sender.broadcast_neighbors(Frame::Digest { digest }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
-    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
+    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.expect("the following frame was applied on this channel");
@@ -43,7 +43,7 @@ fn story(story: Story) {
         let key = iroh::SecretKey::generate().public();
         let other_key = iroh::SecretKey::generate().public();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { node_id: node_id.clone(), name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
+        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { node_id: node_id.clone(), name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         if matches!(story, Story::ReadFloor) {
             let read = rdm_transport::snapshot::Chunk {
                 mesh: "mesh1".into(), publisher: rdm_transport::snapshot::PublisherId { node: "mesh1.admin.2".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
@@ -82,7 +82,7 @@ fn story(story: Story) {
             assert_eq!(held.digest_seq, offered.digest_seq);
             assert_eq!(held.node, offered.node);
             assert_eq!(*changes.borrow(), counts.0 + 1);
-            if matches!(story, Story::Newer) { assert_eq!(held.status, MemberStatus::ReadyForTraffic); }
+            if matches!(story, Story::Newer) { assert_eq!(held.status, MemberStatus::Ready); }
         } else {
             assert_eq!(receiver.digest_view.get(node_id.as_str()).unwrap().0, before, "refused or duplicate heartbeat changes no projection or held status");
             assert_eq!((*changes.borrow(), *births.borrow(), *overlays.borrow()), counts);

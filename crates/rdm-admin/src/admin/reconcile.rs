@@ -106,7 +106,7 @@ impl crate::build_drive::Gate for SeatGate {
     }
 
     fn fabric_ready(&self) -> bool {
-        self.handover.records.fabric_state() == crate::fabric_state::FabricState::ReadyForTraffic
+        self.handover.records.fabric_state() == crate::fabric_state::FabricState::Ready
     }
 
     /// The completed lifecycle receipts of the Build, taken into the fabric-primary's atlas
@@ -690,15 +690,15 @@ pub(crate) fn adopt_held_mesh_state(answer: &crate::wire::JoinAnswer, records: &
 }
 
 /// A held Mesh status word as the Mesh lifecycle state it names (states.md: pending ->
-/// ready-for-traffic -> leaving -> dead); any other word is refused by name.
+/// ready -> leaving -> dead); any other word is refused by name.
 pub(crate) fn mesh_state_of(status: &str) -> Result<rdm_core::status::MeshState, String> {
     use rdm_core::status::MeshState;
     match status {
         "pending" => Ok(MeshState::Pending),
-        "ready-for-traffic" => Ok(MeshState::ReadyForTraffic),
+        "ready" => Ok(MeshState::Ready),
         "leaving" => Ok(MeshState::Leaving),
         "dead" => Ok(MeshState::Dead),
-        other => Err(format!("mesh status {other:?} is no Mesh lifecycle state (pending, ready-for-traffic, leaving, dead)")),
+        other => Err(format!("mesh status {other:?} is no Mesh lifecycle state (pending, ready, leaving, dead)")),
     }
 }
 

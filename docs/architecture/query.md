@@ -33,7 +33,7 @@ nodes.get  [["mesh", ["mesh1"]], ["kind", ["gateway"]]]            pairs are AND
 nodes.get  [["kind", ["admin"]], ["is_primary", ["true"]]]         every mesh-primary
 nodes.get  [["is_fabric_primary", ["true"]]]
 nodes.get  [["tags", ["red"]], ["tags", ["eu"]]]                   a repeated property is AND (all of)
-nodes.get  [["config.region", ["eu-west"]], ["status", ["ready-for-traffic"]]]
+nodes.get  [["config.region", ["eu-west"]], ["status", ["ready"]]]
 nodes.get  [["id", ["<node id>"]]]                                 one node
 nodes.get  []                                                      no filter: the fabric's topology
 meshes.get [["name", ["mesh1"]]]
@@ -51,7 +51,7 @@ The matching rules:
 - **Property:** any public field of the row by its page name ([Node properties](node-rpc-envelope.md#node-properties)
   for a node; `MeshView`, `FabricView` and `ConnectionView` for the others).
   `config.<key>` reads into the application's config map; the key is everything after the first dot.
-- **Values:** strings. A boolean is `true` or `false`, an enum its page name (`ready-for-traffic`,
+- **Values:** strings. A boolean is `true` or `false`, an enum its page name (`ready`,
   `gateway`), a number its digits, an id or a name its canonical text.
 - **Match:** a set field (`tags`) matches when it contains the value; a string field matches exactly;
   `""` matches an empty string, never an absent one. A row without a property the schema has (a
@@ -63,11 +63,11 @@ The matching rules:
 - **Status:** a node's `status` is its row's as written: the state the row last took from the node's
   frame or the mesh-primary's receipt ([states.md](lifecycles/states.md#who-sets-each-state)). A
   command the node has not acknowledged moves it nowhere: a stop sent and not yet acknowledged reads
-  `ready-for-traffic`. The fabric-primary holds its own mesh's rows as its writer writes them; another
+  `ready`. The fabric-primary holds its own mesh's rows as its writer writes them; another
   mesh's operation states (stopping through deleted) reach its atlas with the operation, its receipt or
   the fill at its attempt's completion, and until each mesh-primary feeds the fabric-primary's atlas
   another mesh's node answers the topology's status for its create-time progress (starting, pending,
-  ready-for-traffic). Silence (`pending-reconnect`, `dead`) is observer-inferred
+  ready). Silence (`pending-reconnect`, `dead`) is observer-inferred
   ([node identity and state](node-identity-and-state.md)), answered while the row holds the node live.
 - **`connections.get`:** answered by the exact birth from its own connections log, not from the atlas:
   the node (id and incarnation) is the read's address, outside the filter; the filter matches that
@@ -80,7 +80,7 @@ the mesh and fabric statuses ([gossip.md](gossip.md)). It queries that view with
 the same matching rules, locally, with no call:
 
 ```text
-topology_view.nodes_get([["kind", ["broker"]], ["status", ["ready-for-traffic"]]])   the ready brokers I hear
+topology_view.nodes_get([["kind", ["broker"]], ["status", ["ready"]]])   the ready brokers I hear
 topology_view.nodes_get([["mesh", [my mesh]]])                                       my mesh as I hold it
 ```
 

@@ -17,7 +17,7 @@ use std::sync::Arc;
 async fn first_admin(spawn_type: Option<&str>) -> (Arc<MemoryBuildStateAdapter>, Arc<ControlPlane>) {
     let policy = FabricPolicy::bootstrap(spawn_type).expect("bootstrap");
     let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
-    admin.status = NodeStatus::ReadyForTraffic;
+    admin.status = NodeStatus::Ready;
     admin.is_primary = true;
     admin.is_fabric_primary = true;
     admin.admin_api_base = Some("http://127.0.0.1:18001".into());

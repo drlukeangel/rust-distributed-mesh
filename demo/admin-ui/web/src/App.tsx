@@ -16,7 +16,7 @@ const STATE_COLOR: Record<string, string> = {
   pending: "var(--warn)",
   "state-sync": "var(--warn)",
   "state-commit": "var(--accent)",
-  "ready-for-traffic": "var(--ok)",
+  "ready": "var(--ok)",
   "connections-deleting": "var(--warn)",
   retired: "var(--err)",
   degraded: "var(--err)",

@@ -86,13 +86,13 @@ pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, change: 
 
 /// A nodes store holding the record of every birth `t` names, each written as its create wrote it
 /// (`node_rows::write_record`: its name claimed, the record, its path index), its status
-/// `ReadyForTraffic`: the fabric-primary's node records, from which its door accepts an action on a
+/// `Ready`: the fabric-primary's node records, from which its door accepts an action on a
 /// birth (the atlas, R-FA1), never from the gossip view (Q197).
 pub async fn records_of(t: &rdm_admin::topology::Topology) -> std::sync::Arc<rdm_admin::storage::MemoryNodesStorage> {
     use rdm_admin::node_rows::WriteRecord as _;
     let rows = std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
     for n in &t.nodes {
-        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.node_id.clone(), rdm_admin::model::NodeStatus::ReadyForTraffic);
+        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.node_id.clone(), rdm_admin::model::NodeStatus::Ready);
         if let Some(incarnation) = &n.incarnation_id {
             row.birth_mut(incarnation, &n.name);
         }

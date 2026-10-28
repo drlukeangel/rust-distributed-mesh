@@ -3,7 +3,7 @@
 //!
 //! One fresh fabric; one `build.create` asks for `{node_admin: 1, broker: 1, gateway: 1,
 //! compute: 1}`; from public surfaces only:
-//! - the Build completes and every desired node is `ready-for-traffic` under its kind;
+//! - the Build completes and every desired node is `ready` under its kind;
 //! - every role cohort has exactly one primary; the fabric exactly one fabric primary;
 //! - every role's boot and ready spans name its kind, and each boot runs under the deployment
 //!   step that launched it;
@@ -52,7 +52,7 @@ async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, 
         let kind = name.split('.').nth(1).unwrap();
         let kind = if kind == "admin" { "node_admin" } else { kind };
         assert_eq!(n["kind"], kind, "{label}: {name} is born under its kind: {n}");
-        assert_eq!(n["status"], "ready-for-traffic", "{label}: {n}");
+        assert_eq!(n["status"], "ready", "{label}: {n}");
     }
     (build_id, nodes)
 }
@@ -118,7 +118,7 @@ async fn roles_are_born_by_build_under_their_kind() {
         ns.iter().map(|n| (n["name"].as_str().unwrap().to_string(), n["incarnation_id"].as_str().unwrap_or("").to_string())).collect()
     };
     let before = births(&nodes);
-    // The initial fabric refuses a shrink until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a shrink until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let (second, after) = build(&estate, "without-compute", &[("broker", 1), ("gateway", 1)]).await;
     let after = births(&after);

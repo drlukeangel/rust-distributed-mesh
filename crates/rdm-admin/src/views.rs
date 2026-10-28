@@ -31,7 +31,7 @@ pub(crate) fn node_status(s: crate::model::NodeStatus) -> NodeStatus {
     use crate::model::NodeStatus as S;
     match s {
         S::Pending => NodeStatus::Pending,
-        S::ReadyForTraffic => NodeStatus::ReadyForTraffic,
+        S::Ready => NodeStatus::Ready,
         S::ConnectionsDeleting => NodeStatus::ConnectionsDeleting,
         S::Leaving => NodeStatus::Leaving,
         S::PendingReconnect => NodeStatus::PendingReconnect,
@@ -54,7 +54,7 @@ fn scope_status(s: crate::model::ScopeStatus) -> ScopeStatus {
     use crate::model::ScopeStatus as S;
     match s {
         S::Pending => ScopeStatus::Pending,
-        S::ReadyForTraffic => ScopeStatus::ReadyForTraffic,
+        S::Ready => ScopeStatus::Ready,
         S::Leaving => ScopeStatus::Leaving,
         S::Dead => ScopeStatus::Dead,
         S::Degraded => ScopeStatus::Degraded,
@@ -125,7 +125,7 @@ fn data_dir_lost_of(records: &Atlas, n: &Node, row: Option<&crate::storage::Node
 }
 
 fn data_dir_unreadable_of(n: &Node, row: Option<&crate::storage::NodeRow>) -> Option<DataDirUnreadable> {
-    if n.status == crate::model::NodeStatus::ReadyForTraffic {
+    if n.status == crate::model::NodeStatus::Ready {
         return None;
     }
     let u = row?.birth(n.incarnation_id.as_ref()?)?.data_dir_unreadable.clone()?;

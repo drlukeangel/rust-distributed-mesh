@@ -14,10 +14,11 @@ pub use crate::{DeploymentId, EndpointId, FabricId, IncarnationId, MeshId, NodeI
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NodeStatus {
-    /// Created and not yet ready for traffic.
+    /// Created and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    ReadyForTraffic,
+    #[serde(alias = "ready-for-traffic")]
+    Ready,
     /// Connections-deleting: it takes no new work.
     ConnectionsDeleting,
     /// Leaving: it has announced its departure.
@@ -65,7 +66,7 @@ pub enum NodeStatus {
 impl NodeStatus {
     /// A node that may hold or contend for a cohort primary.
     pub fn is_live(self) -> bool {
-        matches!(self, Self::Pending | Self::ReadyForTraffic | Self::ConnectionsDeleting)
+        matches!(self, Self::Pending | Self::Ready | Self::ConnectionsDeleting)
     }
 }
 
@@ -73,10 +74,11 @@ impl NodeStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScopeStatus {
-    /// Created and not yet ready for traffic.
+    /// Created and not yet ready.
     Pending,
     /// Ready: it takes traffic.
-    ReadyForTraffic,
+    #[serde(alias = "ready-for-traffic")]
+    Ready,
     /// Leaving: a mesh whose shutdown was accepted; it is not selected for new work.
     Leaving,
     /// Dead: a mesh every one of whose births was proven exited; final, its id never reissued.
@@ -90,7 +92,7 @@ impl ScopeStatus {
     pub fn name(self) -> &'static str {
         match self {
             Self::Pending => "pending",
-            Self::ReadyForTraffic => "ready-for-traffic",
+            Self::Ready => "ready",
             Self::Leaving => "leaving",
             Self::Dead => "dead",
             Self::Degraded => "degraded",
@@ -143,7 +145,7 @@ pub struct Node {
     #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
     /// May application routing select this node (states.md "Routing"): only while it is
-    /// ready-for-traffic and its mesh is ready-for-traffic; anything else is a routing stop. The
+    /// ready and its mesh is ready; anything else is a routing stop. The
     /// resolver and the Node RPC client never read it.
     #[serde(default = "routable_default")]
     pub routable: bool,
@@ -157,7 +159,7 @@ pub struct Node {
 }
 
 /// A node read without the fact held is not selected (states.md "Routing": selection needs the
-/// held ready-for-traffic of the birth and its mesh).
+/// held ready of the birth and its mesh).
 fn routable_default() -> bool {
     false
 }
@@ -181,7 +183,7 @@ impl Node {
             admin_api_base: None,
             transport_addr: None,
             listeners: Vec::new(),
-            // Nothing realised yet: not ready-for-traffic, so not selected.
+            // Nothing realised yet: not ready, so not selected.
             routable: false,
             declared: None,
             stopped: false,
@@ -280,7 +282,7 @@ mod tests {
 
     #[test]
     fn view_spelling_matches_the_design_contract() {
-        assert_eq!(serde_json::to_value(NodeStatus::ReadyForTraffic).unwrap(), "ready-for-traffic");
+        assert_eq!(serde_json::to_value(NodeStatus::Ready).unwrap(), "ready");
         assert_eq!(serde_json::to_value(crate::views::NodeStatus::ConnectionsDeleting).unwrap(), "connections-deleting");
         assert_eq!(serde_json::to_value(crate::MemberStatus::ConnectionsDeleting).unwrap(), "connections-deleting");
         assert_eq!(serde_json::from_str::<crate::views::NodeStatus>("\"connections-deleting\"").unwrap(), crate::views::NodeStatus::ConnectionsDeleting);
@@ -303,7 +305,7 @@ mod tests {
 
     #[test]
     fn only_pending_ready_and_connections_deleting_are_live() {
-        assert!(NodeStatus::ReadyForTraffic.is_live());
+        assert!(NodeStatus::Ready.is_live());
         assert!(NodeStatus::ConnectionsDeleting.is_live());
         assert!(!NodeStatus::Leaving.is_live());
         assert!(!NodeStatus::PendingReconnect.is_live());

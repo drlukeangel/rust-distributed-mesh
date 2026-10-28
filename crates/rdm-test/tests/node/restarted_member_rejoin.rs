@@ -54,14 +54,14 @@ async fn restart_one_member(test: &str) -> (Value, Value, Value, u64, Vec<Value>
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     let nodes = estate.settled_views(&[("mesh1", 1, 2)]).await;
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let admin = nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").cloned().expect("the launching admin");
     let before = nodes.iter().find(|n| n.name.to_string() == NODE).cloned().expect("the member to restart");
     let restart_at = now_nano();
     estate.stop_then_start(&NODE.parse().unwrap()).await;
     let after = estate.node_view(NODE).await;
-    assert_eq!(after.status, NodeStatus::ReadyForTraffic, "the restarted birth is ready: {after:?}");
+    assert_eq!(after.status, NodeStatus::Ready, "the restarted birth is ready: {after:?}");
     assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "a restart is node.stop then node.start on the stopped process: it keeps the NodeId and the incarnation");
     estate.stop().await;
     let spans = estate.spans();

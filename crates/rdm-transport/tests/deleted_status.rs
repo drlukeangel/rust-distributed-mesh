@@ -117,9 +117,9 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         y.wait_for_neighbour().await;
 
         // mesh2's status as X published it, held by mesh2.admin.2.
-        let fact = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&rdm_transport::envelope::Birth { fabric: fabric(), node: x.clone(), incarnation: x_inc.clone() }, 1, 5);
+        let fact = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&rdm_transport::envelope::Birth { fabric: fabric(), node: x.clone(), incarnation: x_inc.clone() }, 1, 5);
         p.learn_statuses(&[fact]);
-        let held = Some(MeshStatus { status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 5 });
+        let held = Some(MeshStatus { status: "ready".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 5 });
         assert_eq!(p.mesh_status("mesh2"), held, "mesh2.admin.2 holds X's status");
 
         // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.

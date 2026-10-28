@@ -195,14 +195,14 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
     rt.block_on(async {
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let mut admin = Node::allocated(me.clone());
-        admin.status = NodeStatus::ReadyForTraffic;
+        admin.status = NodeStatus::Ready;
         admin.is_primary = true;
         admin.is_fabric_primary = true;
         admin.incarnation_id = Some(IncarnationId::mint());
         let me_id = admin.node_id.clone();
         let view = Arc::new(RwLock::new(Topology {
-            fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-            meshes: vec![Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+            fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
             nodes: vec![admin],
         }));
         let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(

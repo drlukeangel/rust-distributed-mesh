@@ -572,15 +572,15 @@ impl ControlPlane {
             let operations = crate::accepted::plan(&topology, &observed, None).operations;
             // A Build whose plan holds the fabric delete, the whole plan, is exempt from the
             // build-in-progress refusal, R-BI7 and R-PC1: it interrupts the Build in progress, and its own
-            // mesh.delete and node.delete steps, and only those, run before the first ready-for-traffic
-            // (build.md §1; states.md, "The initial fabric before ready-for-traffic").
+            // mesh.delete and node.delete steps, and only those, run before the first ready
+            // (build.md §1; states.md, "The initial fabric before ready").
             let interrupts = operations.iter().any(|op| matches!(op, crate::build::BuildOperation::DeleteFabric { .. }));
             if deletes && !interrupts {
                 settled(&current)?;
             }
             // The replacements the request owes act in their meshes as every topology operation does:
             // held by a mesh's open drift attempt (a recovery's), and refused before the initial fabric
-            // first reached ready-for-traffic. A replacement's own guards are the planner's (R4, R5), so
+            // first reached ready. A replacement's own guards are the planner's (R4, R5), so
             // the no-successor check below reads the topology's operations alone.
             let replacements = match &change {
                 TopologyChange::Reconcile { .. } => crate::accepted::replacement_operations(&topology, &observed, &recorded),
@@ -1560,7 +1560,7 @@ mod tests {
 
     fn node(name: &str, primary: bool, fabric: bool) -> Node {
         let mut n = Node::allocated(name.parse().unwrap());
-        n.status = NodeStatus::ReadyForTraffic;
+        n.status = NodeStatus::Ready;
         n.incarnation_id = Some(crate::model::IncarnationId::mint());
         n.is_primary = primary;
         n.is_fabric_primary = fabric;
@@ -1573,7 +1573,7 @@ mod tests {
     /// step of the Build that stops, deletes, restarts, replaces ..."; Q7, ruled: "`node.primary.update`
     /// for a type with no other node of that type in the mesh is refused by name, `cannot transfer: no
     /// secondary of type <node_type> in mesh <mesh>` ... the commanding workflow fails with that reason";
-    /// "a mesh's sole broker ... cannot be stopped or restarted until a secondary is ReadyForTraffic"):
+    /// "a mesh's sole broker ... cannot be stopped or restarted until a secondary is Ready"):
     /// mesh1.rpc.1 holds mesh1's rpc seat with mesh1.rpc.2 beside it, and mesh2.rpc.1 is mesh2's sole
     /// rpc node. The stop of mesh1.rpc.1 moves its seat first (`executor::seat_move` names it) and no
     /// admin executes the stop until it has; the stop of mesh1.rpc.2, which holds no seat, moves nothing
@@ -1585,10 +1585,10 @@ mod tests {
     #[test]
     fn an_rpc_node_type_primary_moves_before_its_stop_and_the_sole_node_of_its_type_is_refused_by_name() {
         let t = Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![
-                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready },
+                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ],
             nodes: vec![node("mesh1.admin.1", true, true), node("mesh1.rpc.1", true, false), node("mesh1.rpc.2", false, false), node("mesh2.admin.1", true, false), node("mesh2.rpc.1", true, false)],
         };
@@ -1629,10 +1629,10 @@ mod tests {
     #[test]
     fn the_delete_of_a_meshs_only_node_skips_the_update_on_every_delete_route() {
         let t = Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![
-                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready },
+                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ],
             nodes: vec![node("mesh1.admin.1", true, false), node("mesh2.admin.1", true, true), node("mesh2.rpc.1", true, false)],
         };
@@ -1652,21 +1652,21 @@ mod tests {
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C2
     /// "Successor search for the commanded transfer": "2. only when that mesh has none ... the lowest
-    /// NodeId among the other ReadyForTraffic mesh-primaries; 3. neither found: refused by name,
-    /// `cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh <mesh>, no other
-    /// mesh-primary ReadyForTraffic` ... the commanding workflow fails with that reason"; C1: "the
+    /// NodeId among the other Ready mesh-primaries; 3. neither found: refused by name,
+    /// `cannot transfer fabric-primary: no other node-admin Ready in mesh <mesh>, no other
+    /// mesh-primary Ready` ... the commanding workflow fails with that reason"; C1: "the
     /// delete of a mesh's only node skips the update"): the fabric primary `mesh2.admin.1` is mesh2's
     /// only node. Its retire and delete skip node.primary.update, and its fabric seat moves out of
-    /// mesh2: with mesh1's primary ReadyForTraffic the Build door admits them; with no other
-    /// mesh-primary ReadyForTraffic the door refuses them `last-admin` with C2 step 3's text.
+    /// mesh2: with mesh1's primary Ready the Build door admits them; with no other
+    /// mesh-primary Ready the door refuses them `last-admin` with C2 step 3's text.
     /// Must NOT happen: a Build admitted whose fabric seat has nowhere to go.
     #[test]
     fn the_delete_of_a_fabric_primary_that_is_its_meshs_only_node_needs_another_ready_mesh_primary() {
         let mut t = Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![
-                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready },
+                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ],
             nodes: vec![node("mesh1.admin.1", true, false), node("mesh1.rpc.1", true, false), node("mesh2.admin.1", true, true)],
         };
@@ -1679,22 +1679,22 @@ mod tests {
         }
         for action in ["retire", "delete"] {
             match last_admin(&fp, action, &t) {
-                Some(BuildReject::LastAdmin { refusal, .. }) => assert_eq!(refusal, "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh2, no other mesh-primary ReadyForTraffic", "{action}"),
-                other => panic!("{action}: no other mesh-primary is ReadyForTraffic: refused last-admin: {other:?}"),
+                Some(BuildReject::LastAdmin { refusal, .. }) => assert_eq!(refusal, "cannot transfer fabric-primary: no other node-admin Ready in mesh mesh2, no other mesh-primary Ready", "{action}"),
+                other => panic!("{action}: no other mesh-primary is Ready: refused last-admin: {other:?}"),
             }
         }
     }
 
     /// CONTRACT (fabric-atlas.md R-FA2: "execution progress writes it from each attempt's receipts as
     /// they stream up `build.attempt.run`, before the caller is answered `Complete`"; R-FA3: "a delayed
-    /// event never moves it backward"; node-start.md "Completion": the mesh-primary's ReadyForTraffic on
+    /// event never moves it backward"; node-start.md "Completion": the mesh-primary's Ready on
     /// the birth; build.md §4.4: a primary's stop has a successor, read from the fabric-primary's view):
     /// the fabric-primary took the `Complete` receipt of `node.start:mesh2.admin.2` (attempt 16) into
-    /// its atlas. Its view with the atlas applied holds mesh2.admin.2 ready for traffic, so a stop of
+    /// its atlas. Its view with the atlas applied holds mesh2.admin.2 ready, so a stop of
     /// mesh2's primary mesh2.admin.1 has a successor, both while the backbone projection still holds the
     /// birth stopped and once mesh2's projection published at the start's `node.joined` (Pending, the
     /// stop over) reaches it after the start's `Complete`, as #3224's spans show it (v32 installed at
-    /// +14469, the stop refused `last-admin` at +14485, v33 ReadyForTraffic at +14501). An observer's
+    /// +14469, the stop refused `last-admin` at +14485, v33 Ready at +14501). An observer's
     /// liveness mark on the birth after its start (`Dead`) stands. Must NOT happen: the stop refused
     /// `cannot transfer: no secondary of type node-admin in mesh mesh2` because the projection's
     /// Pending, published before the start completed, stood over the start's receipt.
@@ -1703,10 +1703,10 @@ mod tests {
         use crate::accepted::{AttemptAction, FabricTopology};
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let t = Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![
-                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready },
+                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ],
             nodes: vec![node("mesh1.admin.1", true, true), node("mesh2.admin.1", true, false), node("mesh2.admin.2", false, false)],
         };
@@ -1752,7 +1752,7 @@ mod tests {
         for (status, stopped, projection) in [(NodeStatus::Leaving, true, "the projection carrying its stop"), (NodeStatus::Pending, false, "the projection published at its node.joined, the stop over")] {
             let view = viewed(status, stopped);
             let n = view.node(&started).unwrap();
-            assert_eq!((n.status, n.stopped), (NodeStatus::ReadyForTraffic, false), "{projection}: the started birth is ready for traffic in the fabric-primary's view with the atlas applied");
+            assert_eq!((n.status, n.stopped), (NodeStatus::Ready, false), "{projection}: the started birth is ready in the fabric-primary's view with the atlas applied");
             assert!(last_admin(&primary, "stop", &view).is_none(), "{projection}: the stop of mesh2's primary has its successor: {:?}", last_admin(&primary, "stop", &view));
         }
         let view = viewed(NodeStatus::Dead, false);
@@ -1875,7 +1875,7 @@ mod tests {
     #[test]
     fn a_path_created_naming_no_executable_is_refused_by_name_whatever_the_change() {
         let current = crate::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
-        let observed = crate::topology::Topology { fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![] };
+        let observed = crate::topology::Topology { fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![] };
         let grown = crate::accepted::compile(&current, &crate::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, &observed).unwrap();
         assert_eq!(created_without_executable(&current, &grown), Some(BuildReject::ExecutableMissing { node: "mesh1.rpc.2".into() }));
         assert_eq!(created_without_executable(&current, &current), None, "held paths naming none are history");

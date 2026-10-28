@@ -90,11 +90,11 @@ fn deployed(launch: &Launch) -> Deployed {
 
 async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     let waited = async {
-        while digest().status != MemberStatus::ReadyForTraffic {
+        while digest().status != MemberStatus::Ready {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     };
-    tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published ReadyForTraffic"));
+    tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published Ready"));
 }
 
 /// Wait, bounded, for `what` to hold: gossip delivers on its own time.
@@ -132,7 +132,7 @@ async fn gossip_node() -> GossipNode {
 
 /// CONTRACT (gossip.md §3.3): a Day-0 node-admin (mesh1.admin.1, mesh1's primary) and mesh1.admin.2,
 /// launched by it, both ready. mesh1.admin.2 holds mesh1's projection from mesh1.admin.1's publications
-/// on mesh1's channel, among them the publication that carries its own ReadyForTraffic, and the Digest
+/// on mesh1's channel, among them the publication that carries its own Ready, and the Digest
 /// of the primary its seat record names. The gap is forged only then: a top-up read answered older than
 /// a full this node installed on another channel is refused (R-RX3), so a gap forged before the
 /// primary's Ready publication can be topped up from a read the backbone's full has overtaken (gate
@@ -196,16 +196,16 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let channel = TopologyView::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, "mesh1.rpc.9", rdm_transport::clock::os_clock(), vec![admin_addr], &[]).await.expect("the cell joins mesh1's channel");
         crate::declare_gossip_probe(&channel);
         until("the cell's endpoint to hold the primary's replayed full", WRONG, || channel.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
-        // mesh1.admin.2's own ReadyForTraffic moves the primary's projection, which the primary then
+        // mesh1.admin.2's own Ready moves the primary's projection, which the primary then
         // publishes on the backbone and on mesh1's channel. A top-up read older than a full installed on
         // another channel is refused, so the gap waits for mesh1.admin.2 to hold, on mesh1's channel,
         // the publication that carries its Ready: the cell's endpoint shows which version that is.
-        until("the primary to publish mesh1.admin.2's ReadyForTraffic on mesh1's channel", WRONG, || {
-            channel.projected_member_at(&admin_digest.node.endpoint_id.0).is_some_and(|d| d.status == MemberStatus::ReadyForTraffic)
+        until("the primary to publish mesh1.admin.2's Ready on mesh1's channel", WRONG, || {
+            channel.projected_member_at(&admin_digest.node.endpoint_id.0).is_some_and(|d| d.status == MemberStatus::Ready)
         })
         .await;
         let (_, ready_at) = channel.held_source_version("mesh1").expect("the cell's endpoint holds mesh1");
-        until("mesh1.admin.2 to hold the primary's publication of its ReadyForTraffic", WRONG, || {
+        until("mesh1.admin.2 to hold the primary's publication of its Ready", WRONG, || {
             admin.topology_view.held_source_version("mesh1").is_some_and(|(p, v)| p == root_publisher && v >= ready_at)
         })
         .await;

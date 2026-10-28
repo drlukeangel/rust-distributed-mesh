@@ -41,7 +41,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("rename-precondition-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -93,7 +93,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         // Both births are held ready by the admin, and the peer holds the renamed one.
         let digest_view = &admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
-        while [&renamed, &peer].iter().any(|l| digest_view.get(l.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic)) {
+        while [&renamed, &peer].iter().any(|l| digest_view.get(l.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready)) {
             heard.changed().await.unwrap();
         }
         let peer_view = &peer_node.topology_view.digest_view;
@@ -209,7 +209,7 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
     let cap = crate::common::capture("a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave");
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("rename-precondition-owed-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -250,7 +250,7 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name_and_its_leave() 
         let seams = seams.get().cloned().expect("the node handed its seams");
         let digest_view = &admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
-        while digest_view.get(renamed.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        while digest_view.get(renamed.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
             heard.changed().await.unwrap();
         }
         seams.connections.observations_landed().await;

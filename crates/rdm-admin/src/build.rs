@@ -612,7 +612,7 @@ pub enum BuildReject {
     /// cohort's seat, a node type other than node-admin, while no other node of its type is in its mesh
     /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The
     /// no-successor cases", Q7 ruled Luke 2026-10-12: "a mesh's sole broker ... cannot be stopped or
-    /// restarted until a secondary is ReadyForTraffic"): refused by name with Q7's exact text, the holder
+    /// restarted until a secondary is Ready"): refused by name with Q7's exact text, the holder
     /// stays primary and nothing is admitted.
     NoSecondary {
         /// The seat holder the Build would end.

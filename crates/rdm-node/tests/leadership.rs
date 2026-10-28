@@ -15,7 +15,7 @@ fn row(name: &str, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
         deployment_id: None,
         provider: None,
         data_dir: None,
-        status: NodeStatus::ReadyForTraffic,
+        status: NodeStatus::Ready,
         is_primary: primary,
         is_fabric_primary: fabric,
         admin_api_base: None,

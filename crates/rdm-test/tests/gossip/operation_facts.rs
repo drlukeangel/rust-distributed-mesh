@@ -31,7 +31,7 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
         let op = LifecycleOp { build_id: "deletion-build".into(), attempt: 1, operation: "node.delete:mesh1.rpc.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.2".parse().unwrap(), event_at_rafka_ms: 1 };
         assert!(receiver.digest_view.record(MeshDigest { held_hash: Default::default(),
             fabric_id: fabric.clone(), node: MeshNode { node_id: op.node_id.clone(), name: op.name.clone(), endpoint_id: EndpointId(sender_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None },
-            status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1,
+            status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1,
             data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }), "the exact birth is initially held");
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -39,7 +39,7 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the receiver joins the live mesh");
-        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
+        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-mesh-status" && s["attributes"]["taken"] == "true") {
                 tokio::time::sleep(Duration::from_millis(10)).await;

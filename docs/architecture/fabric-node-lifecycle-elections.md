@@ -44,12 +44,12 @@ does not license destructive recovery: [node investigation](lifecycles/node-reco
 For ordinary election/recomputation:
 
 ~~~text
-eligible = current MemberStatus::ReadyForTraffic
+eligible = current MemberStatus::Ready
 ~~~
 
-Eligibility is current ReadyForTraffic and nothing else.
+Eligibility is current Ready and nothing else.
 
-How a node becomes ReadyForTraffic is lifecycle policy, not election policy. A node-admin must satisfy
+How a node becomes Ready is lifecycle policy, not election policy. A node-admin must satisfy
 the hydration gates owned by [build.md](build.md) before lifecycle makes it Ready.
 
 A node that is starting, pending, connections-deleting, connections-deleted, stopping, stopped or
@@ -90,7 +90,7 @@ Restart of the same logical node preserves NodeId. Permanent logical replacement
 replacement does not inherit election rank. One exception, [fabric recovery](lifecycles/fabric-recovery.md)
 (Q122): while it restores the fabric-primary, no other node becomes fabric-primary or node-admin primary
 of that mesh; the fabric-primary stays assigned to the recovery target's path.name, and when the node
-re-created there is ReadyForTraffic the workflow restores it as mesh-primary and fabric-primary. The
+re-created there is Ready the workflow restores it as mesh-primary and fabric-primary. The
 recovery attempt supplies the target; nothing about a lower id or a matching name displaces a primary
 anywhere else.
 
@@ -107,9 +107,9 @@ mesh-primary records on its row.
 
 Ordinary nodes publish current facts. They do not author election outcomes.
 
-A primary unheard past the staleness floor is superseded by the lowest ReadyForTraffic node of its type
+A primary unheard past the staleness floor is superseded by the lowest Ready node of its type
 in its mesh; the mesh-primary announces and records it ([node.primary.update](lifecycles/node-primary-update.md)).
-For a node-admin the questions are, in order: am I a node-admin; am I the lowest ReadyForTraffic one;
+For a node-admin the questions are, in order: am I a node-admin; am I the lowest Ready one;
 was the former mesh-primary also the fabric-primary? No: I am mesh-primary now. Yes: I take no primary
 role and run [fabric recovery](lifecycles/fabric-recovery.md) (Q122).
 The mesh-primary then runs [node investigation](lifecycles/node-recovery.md) on the unheard node, whatever
@@ -131,19 +131,19 @@ The fabric-primary is the mesh-primary of one mesh, an explicit property of that
 together, under the same rule: lowest complete NodeId, a heard primary kept.
 
 ~~~text
-ReadyForTraffic node-admins of the fabric-primary's mesh
+Ready node-admins of the fabric-primary's mesh
     -> same election rule
     -> mesh primary, and fabric primary with it
 ~~~
 
 There is no MeshId/name/age scoring and no separate fabric-election algorithm. The fabric-primary hands
 over by [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate);
-nothing else moves it. Unheard past the staleness floor, nobody takes it: the lowest ReadyForTraffic
-node-admin of its mesh, or when the mesh has none the lowest ReadyForTraffic mesh-primary on the
+nothing else moves it. Unheard past the staleness floor, nobody takes it: the lowest Ready
+node-admin of its mesh, or when the mesh has none the lowest Ready mesh-primary on the
 backbone from [mesh investigation](lifecycles/mesh-investigation.md)'s decision step, runs
 [fabric recovery](lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives),
 the one mechanism in either case (Q122): the node-admin at the fabric-primary's path.name is re-created
-and is mesh-primary and fabric-primary again when it is ReadyForTraffic. The fabric is `degraded`
+and is mesh-primary and fabric-primary again when it is Ready. The fabric is `degraded`
 meanwhile.
 
 Only the elected fabric-primary may accept a Fabric topology change. The election chooses **who may
@@ -185,7 +185,7 @@ For every primary:
   it is commanded back as a member through node.mesh.join; anything else, it is re-created at its
   path.name with a new node.id (Q110), and an old birth that comes back is refused at admission and its
   runtime terminated;
-- a primary that hands over gives the primary to the lowest ReadyForTraffic NodeId of its type in its
+- a primary that hands over gives the primary to the lowest Ready NodeId of its type in its
   mesh;
 - restart preserves NodeId; a restarted node is a candidate for a later vacancy and never displaces the
   primary;
@@ -248,7 +248,7 @@ that a candidate is gone.
 
 1. This file is the only normative election specification.
 2. One election implementation exists.
-3. Ordinary election eligibility is current ReadyForTraffic.
+3. Ordinary election eligibility is current Ready.
 4. A heard primary stays primary; for a vacancy the complete canonical NodeId is the only ordering key.
 5. The `node-admin` winner of a mesh and its mesh-primary are one.
 6. The fabric-primary is a mesh-primary; its candidates are its mesh's node-admins, else the
@@ -283,7 +283,7 @@ fn elect<'a>(primary: Option<&Primary>, candidates: &'a [Node]) -> Option<&'a No
     candidates
         .iter()
         .filter(|n| primary.map_or(true, |p| n.mesh == p.mesh))
-        .filter(|n| n.status == MemberStatus::ReadyForTraffic)
+        .filter(|n| n.status == MemberStatus::Ready)
         .min_by_key(|n| n.node_id)
 }
 ~~~
@@ -294,13 +294,13 @@ Exact Rust names may differ. The contract does not:
 the recorded primary, heard -> that primary
 the recorded primary, not yet heard -> it waits
 vacant (handed over, unheard past the floor, or no record)
-       -> current ReadyForTraffic candidates of that type in that mesh
+       -> current Ready candidates of that type in that mesh
        -> lowest complete NodeId
        -> one elected primary
 the node-admin type of a mesh whose unheard mesh-primary was also the fabric-primary (Q122)
-       -> no node-admin is elected: the lowest ReadyForTraffic one runs fabric recovery instead;
+       -> no node-admin is elected: the lowest Ready one runs fabric recovery instead;
           the fabric-primary stays assigned to the target's path.name, and the workflow restores the
-          node re-created there as mesh-primary and fabric-primary when it is ReadyForTraffic;
+          node re-created there as mesh-primary and fabric-primary when it is Ready;
           the mesh's other types elect as above
 ~~~
 

@@ -75,11 +75,11 @@ Nothing more is commanded. In order:
    and incarnation, and its own member cert as its own maker.
 5. **Joins the live nodes** and adopts rafka-time from them. With no other node alive, its own clock is
    rafka-time.
-6. **Becomes fabric-primary and mesh-primary.** Once it is ReadyForTraffic, step 4 of fabric
+6. **Becomes fabric-primary and mesh-primary.** Once it is Ready, step 4 of fabric
    recovery restores it to both roles, and the attempt completes.
 7. **Heals the mesh by itself**, as mesh-primary:
    - A node that kept serving keeps its birth (node.id and incarnation) and stays
-     ready-for-traffic. It is never re-created.
+     ready. It is never re-created.
    - A node that is gone is recovered through node recovery, never waited for: node.delete of the
      exited birth, then node.create at the same path.name with a new node.id, over the inherited
      data dir when the provider found the runtime exited.
@@ -94,7 +94,7 @@ Nothing more is commanded. In order:
 | `rdm.node_admin.fabric.update.via-adoption-claim` | the claim; `outcome=won` and `lost_node_id` = the lost birth |
 | `rdm.node_admin.node.delete.via-node-row` with the lost `node_id` | the lost birth's name released, after the claim |
 | `rdm.mesh.entry.update.via-rafka-time-adopted` with `source=pull` | rafka-time adopted from a live node |
-| `rdm.node_rpc.status.update.via-declare-own` from the mesh's other nodes | each serving node stays ready-for-traffic |
+| `rdm.node_rpc.status.update.via-declare-own` from the mesh's other nodes | each serving node stays ready |
 
 `nodes.get` on the new node-admin then shows `is_fabric_primary` and `is_primary`.
 

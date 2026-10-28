@@ -40,7 +40,7 @@ pub struct ExactRuntime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
     /// SIGKILL: the runtime flushes nothing. It takes the witness that the fabric first reached
-    /// ready-for-traffic: a death during fabric start is not tested (Q74, [`crate::estate::FabricReady`]).
+    /// ready: a death during fabric start is not tested (Q74, [`crate::estate::FabricReady`]).
     Kill(crate::estate::FabricReady),
     /// SIGSTOP: the runtime is held, alive and silent.
     Stop,

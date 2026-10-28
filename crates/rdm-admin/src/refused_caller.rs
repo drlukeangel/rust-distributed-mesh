@@ -178,7 +178,7 @@ mod tests {
         n.incarnation_id = Some(IncarnationId::mint());
         n.mesh = n.name.mesh.clone();
         n.kind = kind;
-        n.status = NodeStatus::ReadyForTraffic;
+        n.status = NodeStatus::Ready;
         n
     }
 
@@ -203,8 +203,8 @@ mod tests {
         let caller = birth("mesh1.rpc.2", NodeKind::RpcNode);
         let caller_inc = caller.incarnation_id.clone().unwrap();
         let fabric_id = rdm_core::FabricId::mint();
-        let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process };
-        let mesh = crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: crate::model::ScopeStatus::ReadyForTraffic };
+        let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process };
+        let mesh = crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: crate::model::ScopeStatus::Ready };
         // The current Build names both paths: the deleted caller's path is still needed.
         let planned = Topology { fabric: fabric.clone(), meshes: vec![mesh.clone()], nodes: vec![admin.clone(), caller.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
@@ -213,7 +213,7 @@ mod tests {
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: vec![mesh], nodes: vec![admin.clone()] }));
         // The node records: the admin's live, the caller's deleted.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
-        for (n, status) in [(&admin, NodeStatus::ReadyForTraffic), (&caller, NodeStatus::Deleted)] {
+        for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
             let mut r = NodeRow::new(n.name.clone(), n.node_id.clone(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
             rows.put_node(&r).await.unwrap();

@@ -209,7 +209,7 @@ a mesh's own nodes arrive only through node.create calls for that mesh.
    first, mesh second).
 
 Ack before insert, exactly as every other projection in the system. A virtual topic per status
-is how a reader takes a subset (`pending`, `ready-for-traffic`).
+is how a reader takes a subset (`pending`, `ready`).
 
 A write to a broker does not move the projection. It changes on membership, reachability and role
 events, and at no other time.
@@ -238,7 +238,7 @@ In normal operation nothing reads `ops.nodes` back — the mesh-primary holds th
 is read only to rebuild, after a primary change or a recovery, before anything is written, each
 mesh-primary from its own mesh's rows.
 
-A status change — starting → pending → ready-for-traffic → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted — happens on a REAL membership,
+A status change — starting → pending → ready → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted — happens on a REAL membership,
 reachability or role event, the same boundary §4 and the owner principle draw, and is worth a
 durable write. Per-heartbeat metrics are not and never become one: **gossip converges with no
 broker alive at all**, and a durable heartbeat would destroy that property. Status is its own
@@ -256,12 +256,12 @@ entry answer's projections) and each time the fabric-primary changes.
 reader actually reads — one flat list, one row per thing, typed `node`, `mesh` or `fabric` ([States](lifecycles/states.md#states)):
 
 ```
-[ { "type": "fabric", "name": "<fabric name>", "path": "", "id": "9ab1234cd567", "status": "ready-for-traffic" },
+[ { "type": "fabric", "name": "<fabric name>", "path": "", "id": "9ab1234cd567", "status": "ready" },
   { "type": "mesh", "name": "mesh1", "path": "", "id": "cd123456789a", "channel": "<channel derived from the mesh id>",
-    "status": "ready-for-traffic" },
-  { "type": "broker", "name": "1", "path": "mesh1.broker", "id": "56789ab1234c", "status": "ready-for-traffic" },
+    "status": "ready" },
+  { "type": "broker", "name": "1", "path": "mesh1.broker", "id": "56789ab1234c", "status": "ready" },
   { "type": "node-admin", "name": "1", "path": "mesh1.admin", "id": "5cd16789ab23",
-    "status": "ready-for-traffic", "is_primary": true, "is_fabric_primary": true } ]
+    "status": "ready", "is_primary": true, "is_fabric_primary": true } ]
 ```
 
 Node rows come from the nodes store (this projection); a mesh's status is its mesh-primary's `MeshStatus` frame
@@ -316,7 +316,7 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
 - **It carries tags** as its own property (mesh.tags.get / create / delete, the same shape as a node's tags), so an application selector resolves a mesh by tag before it
   submits mesh.delete or any other Build intent.
 
-- **Its lifecycle states and who declares each are defined only in [States](lifecycles/states.md#states).** Each status has a virtual topic, so "which meshes are ready-for-traffic" is one filtered read.
+- **Its lifecycle states and who declares each are defined only in [States](lifecycles/states.md#states).** Each status has a virtual topic, so "which meshes are ready" is one filtered read.
 
 The row is `MeshRecord` (`rdm-admin/src/storage.rs`: `mesh_id`, `name`, `dead`); `Node.mesh_id`
 holds the minted `MeshId`. The mesh's channel is derived from its MeshId and its status is its
@@ -414,7 +414,7 @@ The projected kinds' topics, the projection frame and the pull a node makes at e
 
 A node has TWO kinds of state, and they answer different questions:
 
-- its **status** — the readiness on its durable row: starting, pending, ready-for-traffic,
+- its **status** — the readiness on its durable row: starting, pending, ready,
   connections-deleting, connections-deleted, stopping, stopped, deleting and deleted, each set by its workflow as
   [States](lifecycles/states.md#states) and [node status](lifecycles/node-status.md#node-status-change)
   define;
@@ -469,7 +469,7 @@ families that never share an enum or a type; an application's own entity lifecyc
 
 A node has no catch-up status. What an application copies to a returning node of its own kind
 (Rafka's per-topic broker re-sync, [`broker-re-sync.md`](/home/admin/rafka-v2/docs/architecture/broker-re-sync.md))
-runs after the node is ready-for-traffic, with the application's own routing keeping clients off it, and
+runs after the node is ready, with the application's own routing keeping clients off it, and
 grants no readiness of its own (Q69). Its admission is the [Join schema](node-rpc-envelope.md#join-op-0x1d-rdm).
 
 - **The mesh-primary is the one writer of its mesh's node rows**, its own
@@ -486,7 +486,7 @@ Fabric and mesh states, the checklists and traffic opening are
 ## 5. Readiness — when a node takes traffic
 
 Readiness is the end of [node start](lifecycles/node-start.md), reported by the node's
-`node.started` and set by its mesh-primary as ReadyForTraffic on that report.
+`node.started` and set by its mesh-primary as Ready on that report.
 
 1. **The gates are the start's.** The join (its cert and rafka-time, the mesh channel joined), the
    application's [`pre_node_ready` hook](fabric-node-hooks.md) returning Ok, complete topology
@@ -498,7 +498,7 @@ Readiness is the end of [node start](lifecycles/node-start.md), reported by the 
    name ([Outcomes and the gate](fabric-node-hooks.md#outcomes-and-the-gate)). A node with nothing to
    hold is trivially ready.
 3. **The node reports `node.started` once every gate holds** — not on listener-bind, not on a
-   timeout; its mesh-primary sets ReadyForTraffic on that report.
+   timeout; its mesh-primary sets Ready on that report.
 4. **Failure surfaces; nothing times out.** A failed hook fails the start by name
    (`Failed { step, reason }`); a blocked one answers `Blocked` until its retry event. The node stays
    pending. There is no timeout fallback: a flip that can fire with nothing held means nothing.
@@ -506,9 +506,9 @@ Readiness is the end of [node start](lifecycles/node-start.md), reported by the 
    served on one surface before the report would be a defect.
 
 **There is exactly ONE readiness mechanism**: the start's gates and the `node.started` report; a
-second path to ReadyForTraffic is a defect.
+second path to Ready is a defect.
 
-- **Internal node work begins when that node itself is ready-for-traffic**; node, mesh and fabric
+- **Internal node work begins when that node itself is ready**; node, mesh and fabric
   readiness are separate scopes ([States](lifecycles/states.md#states)), and what a start completes
   is [node start](lifecycles/node-start.md). An application's internal workers (Rafka: compute's
   job loop, [`jobs.md`](/home/admin/rafka-v2/docs/architecture/jobs.md)) wait on their own node's
@@ -614,7 +614,7 @@ defines.
 
 - **The shape is the accepted Build's.** A mesh may run N node-admins for HA; scaling up never
   implies a paired deletion.
-- **Every mesh always has a LISTENING node-admin**: ready-for-traffic and holding a live backbone
+- **Every mesh always has a LISTENING node-admin**: ready and holding a live backbone
   mesh topology it RECEIVED from every other mesh. No delete, stop or
   replace leaves a mesh without one; the separate node.delete of a mesh's last node-admin after
   mesh.deleted is the one exception ([mesh delete](lifecycles/mesh-delete.md)).
@@ -669,7 +669,7 @@ a member that is actually down is its mesh-primary's [node recovery](lifecycles/
 **The calling node stays in service, and it is `Degraded` while a peer is reached only through a
 forward**. A forward marks the peer, and the node publishes `Degraded` with a reason naming each
 such peer; the peer's next answered direct dial clears it, and the node returns to `Alive` when none
-is left. A `Degraded` node stays `ready-for-traffic`; the CPU/RAM over-budget state is `Overloaded`.
+is left. A `Degraded` node stays `ready`; the CPU/RAM over-budget state is `Overloaded`.
 
 ## 9. The event taxonomy
 

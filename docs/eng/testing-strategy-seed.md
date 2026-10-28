@@ -63,7 +63,7 @@ The parser's own cells are in `scenario.rs`'s `mod tests`.
 1. bootstraps an estate on the provider (the scenario's own, unless overridden), owned by the
    scenario's product, feature, subfeature and rung;
 2. submits one `build.create` that reconciles the fabric to the declared meshes
-   (`Scenario::desired`), and waits until every declared node is ready-for-traffic;
+   (`Scenario::desired`), and waits until every declared node is ready;
 3. runs each operation, then each assertion, through `rdm-rpc-probe` over real Node RPC against
    `path:<target>`: no in-process shortcut. An operation passes on a `Reply` (a `cas` also needs
    `swapped`); an assertion needs a `Reply` naming its executing node and the value, or its

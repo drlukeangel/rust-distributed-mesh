@@ -331,7 +331,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | A single call to the fabric-primary with a new root secret, the trust anchor; starts the root rotation's phases; refused `rotation-in-progress` or `root-already-trusted` by name; `fabrics.get` carries `roots { phase, expires_at }` and `ca { expires_at }` | fabric.root.updated | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | fabrics.get, fabric.update, fabric.config.get/update | fabrics.get answers the fabric the answering admin holds when it matches every pair (id, name, status, provider, fabric_primary): its id, name, state, provider, fabric-primary and meshes, [Status 0x1B](#status-op-0x1b-rdm) `Get { entity: Fabrics, filter }`, answered `Fabrics`; its nodes are nodes.get; fabric.update puts the full fabric meta as a blind put and never changes status; fabric.config.get/update hold the application's attributes on the fabric row; dedicated request mapping for fabric.update and fabric.config is open | read result / fabric.updated / fabric.config.updated | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
 | [mesh.delete](lifecycles/mesh-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [0x21](#primaryupdate-op-0x21-rdm) (node.fabric-primary.update) when the mesh's mesh-primary is the fabric-primary; [Status 0x1B DeleteMesh / MeshDeleted](#mesh-delete-command-pair); node.delete's ops per member | mesh.deleting, mesh.deleted | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [fabric.create](lifecycles/fabric-create.md) | The first node-admin, started with no mesh and no durable topology, is the executor and the fabric-primary; the accepted topology rides [build.create 0x20](#build-op-0x20-rdm) | fabric.created when the fabric is ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [fabric.create](lifecycles/fabric-create.md) | The first node-admin, started with no mesh and no durable topology, is the executor and the fabric-primary; the accepted topology rides [build.create 0x20](#build-op-0x20-rdm) | fabric.created when the fabric is ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [fabric.delete](lifecycles/fabric-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow, one Build the fabric-primary drives: every mesh removed leaf-inward, its own mesh last | fabric.deleted from the fabric-primary, still alive; its own node.delete is a separate call from outside the fabric | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.primary.update](lifecycles/node-primary-update.md) | [0x21 PrimaryUpdate / PrimaryUpdated](#primaryupdate-op-0x21-rdm), the primary to its successor's exact birth | node.primary.updated { revisions }; RejectedConflictingPayload; on the commanded arm, `Failed { step, reason }` when the update ends failed | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | the same call, the fabric-primary as the `fabric` entry of `primaries` | node.fabric-primary.updated; the fabric arm's no-successor refusal | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
@@ -361,7 +361,7 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 | `node.id`, `incarnation`, `endpoint`, `transport_addr`, the runtime handle | RDM at birth | nothing | — | — |
 | `status` | RDM | [node status](lifecycles/node-status.md) only | — | that status's own completion |
 | `path`, `mesh`, `node_type` | the create spec | nothing: immutable for the node's life. `node.name.update` carries the name only, so the path cannot move by construction | — | — |
-| `name` | the create spec | **`node.name.update { node_id, incarnation, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready-for-traffic (R-CR1) | `node.name.updated` |
+| `name` | the create spec | **`node.name.update { node_id, incarnation, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1) | `node.name.updated` |
 | `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the claim) and on replace (from the retained predecessor row at the cutover rename) | `node.tags.create { label \| [labels] }` adds; `node.tags.delete { All \| [labels] }` removes. Additive and removal commands on keyed label rows, not a replacement of a tags property | none | `node.tags.created` / `node.tags.deleted` |
 | `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own goes up through its mesh-primary; a Build whose spec names a different map applies it as a caller's, superseding the node's current map (build.md §1, Q236) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
 | `types` | the birth's [JoinNode](#join-op-0x1d-rdm): what it declared; empty for a node-admin | nothing: a different declaration is a restart. `nodes.get` answers it whole | — | — |
@@ -408,7 +408,7 @@ The router refuses every op, Ping included, with typed NotReady until the Node R
 is ready. A node-admin waits until its primary is filled and its view holds it;
 an rpc node waits until it joins its mesh. The rejection span is
 `rdm.node_rpc.request.reject.via-not-ready`. This door is the generic serving gate, not a
-fabric ready-for-traffic declaration. Source:
+fabric ready declaration. Source:
 `crates/rdm-transport/src/server.rs::with_ready_gate`.
 
 NotReady, on every op and from every handler, means one thing: the door or the handler cannot
@@ -717,8 +717,8 @@ The request and reply ceilings and the request and reply variants, in their posi
 
 Fabric and mesh lifecycle semantics are owned by [States](lifecycles/states.md#states).
 The [node stop pair](#node-stop-command-pair) and the
-[mesh delete pair](#mesh-delete-command-pair) specify the lifecycle calls; the fabric's ready-for-traffic
-has none ([the fabric's ready-for-traffic](lifecycles/states.md#the-fabrics-ready), Q174).
+[mesh delete pair](#mesh-delete-command-pair) specify the lifecycle calls; the fabric's ready
+has none ([the fabric's ready](lifecycles/states.md#the-fabrics-ready), Q174).
 The lifecycle op pairs in States are carried by 0x1B as separate down (command) and up (completion) variants; enum definitions live only here. Dead is never sent.
 
 Status remains admissible while connections-deleting. The generic guard MUST NOT reject it before variant-specific direction, authorization, exact-birth and transition checks. `node.connections.delete { scope: All }` is the sole path into connections-deleting. Lifecycle callers MUST NOT use ApplyNodeState(ConnectionsDeleting); ApplyNodeState carries the permitted transitions other than connections-deleting. ProbeNodeState answers Current, or Blocked { node_id, incarnation, reason, retry_on } while the subject's [pre_node_ready](fabric-node-hooks.md#outcomes-and-the-gate) hook is Blocked: the probe served the exact birth and found an active readiness blocker, answered before any republish so a polled blocked birth republishes nothing. Its `reason` is the hook's own text and `retry_on` the event the hook runs again on. Running and Passed hooks answer Current. NotReady is the [readiness gate's](#node-rpc-readiness-gate) answer and never a hook blocker; the executor's WaitForNodeReady frames `Blocked { WaitForNodeReady, reason }` only from Status Blocked. Declarations and mesh/fabric applies answer Applied or AlreadyApplied. ApplyNodeName, sent down by the node's mesh-primary after it wrote the renamed row ([node.name.update](lifecycles/node-name-update.md)), answers Applied once the node holds and publishes the name, AlreadyApplied for the name it already holds, and `BusyHoldingConnections { connections }` naming each connection it still holds. ConnectionsDeleting is a refusal, never the success of node.connections.delete. Idempotency is the natural key `(node_id, incarnation, state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name.
@@ -728,26 +728,26 @@ Nothing inside the mesh checks who sent a frame or call. `RejectedNotPrimary` sa
 ```rust
 pub enum NodeState {
     Pending,
-    ReadyForTraffic,
+    Ready,
     ConnectionsDeleting,
     Stopped,
 }
 
-// Positional postcard discriminants: Pending=0, ReadyForTraffic=1, Deleting=2, Deleted=3.
+// Positional postcard discriminants: Pending=0, Ready=1, Deleting=2, Deleted=3.
 pub enum MeshState {
     Pending,
-    ReadyForTraffic,
+    Ready,
     Deleting,
     Deleted,
 }
 
 pub enum FabricEvent {
-    ReadyForTraffic,
+    Ready,
     ShutdownInitiated { initiated_by: String },
 }
 
 // The operation that produced a declared state: a stop's Stopped, a start's Pending and
-// ReadyForTraffic; None for a state the node measured itself.
+// Ready; None for a state the node measured itself.
 pub struct DeclaredOperation { build_id: String, attempt: u32, operation: String }
 
 pub enum StatusRequest {
@@ -1081,7 +1081,7 @@ pub struct MeshNode {
 
 pub enum MemberStatus {
     Pending,
-    ReadyForTraffic,
+    Ready,
     ConnectionsDeleting,
     Stopped,
 }
@@ -1558,7 +1558,7 @@ or `Failed { step, reason, code }`, the Build carrier's terminal (R-BI4), when i
 used for a step that ended. The commander fails the step on that variant, retaining the code and never selecting it from the reason's text, and
 claims the attempt at the claim door before it commands.
 
-There is no take-over op. A fabric-primary unheard past the staleness floor is [fabric recovery](lifecycles/fabric-recovery.md)'s: the node-admin at its path.name is re-created and is mesh-primary and fabric-primary again when ReadyForTraffic; nobody takes the role meanwhile (Q122).
+There is no take-over op. A fabric-primary unheard past the staleness floor is [fabric recovery](lifecycles/fabric-recovery.md)'s: the node-admin at its path.name is re-created and is mesh-primary and fabric-primary again when Ready; nobody takes the role meanwhile (Q122).
 
 Lost replies: the successor keeps serving PrimaryUpdate and Status after the row. An identical retry
 answers the same PrimaryUpdated before any revision check. A different payload for the same operation is
@@ -1635,7 +1635,7 @@ lifecycle state: on a stop it makes the mesh-primary record stopping, on a leave
 completion carrying `Established` (`ConnectionsDeleted`, `StopConnectionsDeleted`) records
 connections-deleted; `Leaving` records leaving; `MeshLeft` and `StopMeshLeft` record left;
 `NodeStopped` records stopped, `NodeJoined`
-records pending, and `NodeStarted` records ReadyForTraffic after every start gate and before the
+records pending, and `NodeStarted` records Ready after every start gate and before the
 outer Build's Complete. Starting stays the executor's overlay. Nothing is written
 before CommandAccepted or for NotSent. There is no separate status declaration for an open start;
 the Q36 owed report remains when no stream is open. A stream lost after acceptance is incomplete.

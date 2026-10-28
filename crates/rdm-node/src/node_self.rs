@@ -174,7 +174,7 @@ pub trait Session: Send + Sync {
     /// the admin that answers is the hook's accepting authority. `rows` is the start's hold on this
     /// birth's connections rows: the session drops it once it holds the name its join answer handed,
     /// and no earlier, so the join's connection is recorded under that name (node-start.md step 2).
-    /// `operation` is the start's own: the ReadyForTraffic the rejoin declares names it (i146 Q36).
+    /// `operation` is the start's own: the Ready the rejoin declares names it (i146 Q36).
     /// `held_again` is sent once the start holds its mesh again (node-mesh-join.md step 9: back on its
     /// topic with a neighbour, its Pending presence published): what a commanded `node.mesh.join` answers on.
     async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), StartFailed>;
@@ -965,7 +965,7 @@ impl NodeSelf {
             *cycle = Cycle::Starting { outcome: outcome_rx.clone(), commander: Some(commander_tx), calls: vec![key] };
         }
         // The birth leaves the channels it is on and says Pending: its hook gates its app ops again,
-        // and it is published ReadyForTraffic only once the hook has passed.
+        // and it is published Ready only once the hook has passed.
         session.leave_channels().await;
         let _ = (self.set_status)(MemberStatus::Pending);
         self.server.resume();
@@ -976,7 +976,7 @@ impl NodeSelf {
         };
         // The command's completion is the mesh held again (node-mesh-join.md step 9): the start's
         // channel step re-subscribes the topic left above and says so once. No progress stream: the
-        // start owes its ReadyForTraffic declaration to its authority as a start after a stop does.
+        // start owes its Ready declaration to its authority as a start after a stop does.
         let (held_tx, held_again) = tokio::sync::oneshot::channel();
         let me = self.clone();
         tokio::spawn(async move {

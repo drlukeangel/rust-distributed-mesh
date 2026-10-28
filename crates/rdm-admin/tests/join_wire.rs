@@ -79,7 +79,7 @@ fn the_answers_member_cert_name_config_and_cert_policy_are_the_control_frames_la
 fn joined_statuses_keep_the_authored_context_and_committed_revision() {
     let mut answer = answer();
     let author = crate::gossip_wire::author();
-    let frame = rdm_transport::topology::Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: 1000 }.authored(&author, 2, 1000);
+    let frame = rdm_transport::topology::Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: 1000 }.authored(&author, 2, 1000);
     answer.statuses.push(frame.clone());
     let restored = answer_from_wire(&answer_to_wire(&answer).unwrap()).unwrap();
     assert_eq!(restored.statuses[0].encode(), frame.encode());

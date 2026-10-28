@@ -102,11 +102,11 @@ const fn p(name: &'static str, takes: Takes) -> Property {
 
 /// A node's lifecycle states, by their page names.
 pub const NODE_STATUSES: &[&str] = &[
-    "pending", "ready-for-traffic", "connections-deleting", "leaving", "pending-reconnect", "dead", "deleted", "starting",
+    "pending", "ready", "connections-deleting", "leaving", "pending-reconnect", "dead", "deleted", "starting",
     "connections-deleted", "stopping", "stopped", "deleting", "left",
 ];
 /// A mesh's or the fabric's lifecycle states, by their page names.
-pub const SCOPE_STATUSES: &[&str] = &["pending", "ready-for-traffic", "leaving", "dead", "degraded"];
+pub const SCOPE_STATUSES: &[&str] = &["pending", "ready", "leaving", "dead", "degraded"];
 /// The node kinds, by their `path.name` segment.
 pub const KINDS: &[&str] = &["admin", "rpc", "broker", "gateway", "compute"];
 /// The deployment providers.
@@ -212,7 +212,7 @@ pub trait Row {
     fn value(&self, property: &str) -> Value;
 }
 
-/// A serde-named enum's page name (`ready-for-traffic`).
+/// A serde-named enum's page name (`ready`).
 fn page_name(v: &impl Serialize) -> Option<String> {
     serde_json::to_value(v).ok()?.as_str().map(str::to_string)
 }
@@ -427,7 +427,7 @@ mod tests {
     fn node(name: &str, kind: NodeKind, tags: &[&str], config: &[(&str, &str)]) -> NodeView {
         let mut v: NodeView = serde_json::from_value(serde_json::json!({
             "name": name, "kind": kind, "mesh": name.split('.').next().unwrap(), "node_id": NodeId::mint(), "endpoint_id": null,
-            "incarnation_id": null, "deployment_id": null, "provider": "process", "data_dir": null, "status": "ready-for-traffic",
+            "incarnation_id": null, "deployment_id": null, "provider": "process", "data_dir": null, "status": "ready",
             "is_primary": false, "is_fabric_primary": false, "admin_api_base": null, "transport_addr": null, "listeners": [],
             "declared": null, "stopped": false, "load": null, "gossip": null, "tags": [], "config": {}, "data_dir_lost": null,
             "data_dir_unreadable": null, "types": [], "held": [], "held_hash": vec![0u8; 32], "cert": null, "executable": null,
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(names(&rows, &Filter::new().eq("tags", ["gold", "silver"])), ["mesh1.gateway.1", "mesh1.broker.1", "mesh2.gateway.1"], "one pair's values are any of");
         assert_eq!(names(&rows, &Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["gateway"])), ["mesh1.gateway.1"], "pairs are AND");
         assert!(names(&rows, &Filter::new().eq("mesh", ["mesh9"])).is_empty(), "a mesh no row is in matches nothing");
-        assert_eq!(names(&rows, &Filter::new().eq("status", ["ready-for-traffic"]).eq("is_primary", ["false"])).len(), 3);
+        assert_eq!(names(&rows, &Filter::new().eq("status", ["ready"]).eq("is_primary", ["false"])).len(), 3);
         assert_eq!(names(&rows, &Filter::new().eq("id", [silver.node_id.to_string()])), ["mesh1.broker.1"]);
         assert_eq!(names(&rows, &Filter::new().eq("path", ["mesh1.gateway"]).eq("name", ["1"])), ["mesh1.gateway.1"], "path and name are the page's two fields");
         assert!(names(&rows, &Filter::new().eq("incarnation", [NodeId::mint().to_string()])).is_empty(), "a row lacking the property does not match");
@@ -495,7 +495,7 @@ mod tests {
         refused(Entity::Connections, Filter::new().eq("logged_at_ms", ["12a"]), "a number is decimal digits");
         refused(Entity::Fabrics, Filter::new().eq("status", ["ready"]), "the pair (status, [ready])");
         assert_eq!(Filter::new().eq("config.anything.at.all", ["x"]).refusal(Entity::Nodes), None);
-        assert_eq!(Filter::new().eq("status", ["ready-for-traffic"]).eq("name", ["mesh1"]).refusal(Entity::Meshes), None);
+        assert_eq!(Filter::new().eq("status", ["ready"]).eq("name", ["mesh1"]).refusal(Entity::Meshes), None);
         assert_eq!(Filter::new().eq("state", ["connected"]).eq("kind", ["direct", "proxy"]).refusal(Entity::Connections), None);
     }
 
@@ -528,7 +528,7 @@ mod tests {
     }
 
     /// CONTRACT (query.md §2; Q232): a node's local query matches the digests it holds with the same
-    /// matcher and the node schema's names: `[kind: broker] [status: ready-for-traffic]` the ready
+    /// matcher and the node schema's names: `[kind: broker] [status: ready]` the ready
     /// broker alone, `[mesh: mesh1] [is_primary: true]` the mesh's primary, `[id: x]` that node; the
     /// gossiped properties pass the local check. A pair naming a row-only property (`tags`,
     /// `config.<key>`, `executable`) is refused naming the pair and `nodes.get`, whatever digests would
@@ -537,15 +537,15 @@ mod tests {
     #[test]
     fn a_local_query_matches_the_digests_held_and_refuses_a_row_only_property_naming_nodes_get() {
         use crate::MemberStatus as M;
-        let ready = digest("mesh1.broker.1", M::ReadyForTraffic, false);
+        let ready = digest("mesh1.broker.1", M::Ready, false);
         let pending = digest("mesh1.broker.2", M::Pending, false);
-        let admin = digest("mesh1.admin.1", M::ReadyForTraffic, true);
+        let admin = digest("mesh1.admin.1", M::Ready, true);
         let held = [ready.clone(), pending.clone(), admin.clone()];
         let local = |f: &Filter| -> Vec<String> {
             assert_eq!(f.local_refusal(), None, "{f:?}");
             held.iter().filter(|d| f.matches(*d)).map(|d| d.node.name.to_string()).collect()
         };
-        assert_eq!(local(&Filter::new().eq("kind", ["broker"]).eq("status", ["ready-for-traffic"])), ["mesh1.broker.1"]);
+        assert_eq!(local(&Filter::new().eq("kind", ["broker"]).eq("status", ["ready"])), ["mesh1.broker.1"]);
         assert_eq!(local(&Filter::new().eq("mesh", ["mesh1"]).eq("is_primary", ["true"])), ["mesh1.admin.1"]);
         assert_eq!(local(&Filter::new().eq("id", [pending.node.node_id.to_string()])), ["mesh1.broker.2"]);
         assert_eq!(local(&Filter::new().eq("path", ["mesh1.broker"]).eq("name", ["2"])), ["mesh1.broker.2"]);
@@ -569,10 +569,10 @@ mod tests {
     #[test]
     fn every_state_kind_and_provider_a_row_carries_is_a_value_its_schema_takes() {
         use NodeStatus as S;
-        for s in [S::Pending, S::ReadyForTraffic, S::ConnectionsDeleting, S::Leaving, S::PendingReconnect, S::Dead, S::Deleted, S::Starting, S::ConnectionsDeleted, S::Stopping, S::Stopped, S::Deleting, S::Left] {
+        for s in [S::Pending, S::Ready, S::ConnectionsDeleting, S::Leaving, S::PendingReconnect, S::Dead, S::Deleted, S::Starting, S::ConnectionsDeleted, S::Stopping, S::Stopped, S::Deleting, S::Left] {
             assert!(NODE_STATUSES.contains(&page_name(&s).unwrap().as_str()), "{s:?}");
         }
-        for s in [ScopeStatus::Pending, ScopeStatus::ReadyForTraffic, ScopeStatus::Leaving, ScopeStatus::Dead, ScopeStatus::Degraded] {
+        for s in [ScopeStatus::Pending, ScopeStatus::Ready, ScopeStatus::Leaving, ScopeStatus::Dead, ScopeStatus::Degraded] {
             assert!(SCOPE_STATUSES.contains(&page_name(&s).unwrap().as_str()), "{s:?}");
         }
         for k in NodeKind::ALL {

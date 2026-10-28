@@ -55,7 +55,7 @@
 //! | 16 a Direct Connected creates the retirement obligation | as F, G | `p:rpc/proxy_cutback` | F |
 //! | 17 failed retirement writes are retried | as H | `p:rpc/proxy_cutback` | - |
 //! | 18 incarnations make stale evidence refusable | as I | none | I |
-//! | 19 a failed attempt is not node-death proof | `c:reconnect::route_resolution_never_creates_or_moves_a_reconnect` | none | A (the destination stays ready-for-traffic in node.get) |
+//! | 19 a failed attempt is not node-death proof | `c:reconnect::route_resolution_never_creates_or_moves_a_reconnect` | none | A (the destination stays ready in node.get) |
 //! | 20 traffic does not probe Direct while a Proxy is active | as A | none | A |
 //! | 21 a sent invocation is never rerouted | as K | none | as K |
 //! | 22 independent of `orgs.topics` | as L | none | as L |
@@ -102,7 +102,7 @@
 //! | `issuer-mesh-mismatch` | `t:connections::an_inbound_connection_is_refused_by_name_on_issuer_mesh_mismatch` | none | - (as `ca-expired`) |
 //! | `bad-signature` | `t:connections::an_inbound_connection_is_refused_by_name_on_bad_signature` | none | - (as `ca-expired`) |
 //! | `expired` | `t:connections::an_inbound_connection_is_refused_by_name_on_expired`; `a:app_protocol_dials::an_admins_app_protocol_refuses_a_dialer_holding_no_cert_or_an_expired_one_by_name` | none | - (as `ca-expired`) |
-//! | Never: nothing inferred about the dialer | none | none | the refusal cells: the refused dialer's path.name stays ready-for-traffic |
+//! | Never: nothing inferred about the dialer | none | none | the refusal cells: the refused dialer's path.name stays ready |
 //! | `NoCerts` admits by name | `t:connections::a_no_certs_acceptor_admits_by_name`; `p:member_cert::a_mesh_primary_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and_says_so` | none | - |
 //! | a read the acceptor cannot complete writes nothing | `t:connections::a_dial_that_presents_nothing_within_the_floor_is_no_credential` (its reset arm) | none | - |
 //! | spans `via-admitted`, `via-refused`, `via-presented` | `t:connections::an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert`; `t:connections::a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_was_judged_on` | none | the refusal cells |
@@ -222,7 +222,7 @@ async fn carrier_edge(estate: &Estate) {
 /// source writes `Proxy Connected` naming the carrier and both births. A second open, another
 /// consumer's payload, goes through the held Proxy at once: its trace holds no Direct dial. The first
 /// tunnel, the cold discovery, names how long it took (`effective_route_cold_discovery_ms`); the
-/// second, over the held Proxy, discovered nothing. The destination stays ready-for-traffic: a failed
+/// second, over the held Proxy, discovered nothing. The destination stays ready: a failed
 /// direct attempt is source-local evidence (§15.19). Must NOT happen: a second Direct Failed from an
 /// open, a second Proxy Connected, or a stream answered by any node but the destination.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -259,7 +259,7 @@ async fn one_discovered_proxy_carries_every_later_open_with_no_direct_dial() {
     assert!(failed.first().is_some_and(|r| r["state"] == "Failed" && r["recovery"]["attempt_ordinal"] == 1), "the series starts at ordinal 1: {failed:?}");
     assert!(failed.iter().all(|r| r["state"] == "Failed"), "nothing but Failed toward the destination while blocked: {failed:?}");
     let still = estate.node_value(DEST).await;
-    assert_eq!(s(&still["status"]), "ready-for-traffic", "a failed direct attempt marks nothing on the destination: {still}");
+    assert_eq!(s(&still["status"]), "ready", "a failed direct attempt marks nothing on the destination: {still}");
     estate.stop().await;
 
     // 4. Spans: the two tunnels, the first a cold discovery that names its cost; no Direct dial in
@@ -533,7 +533,7 @@ async fn foreign_dialer(name: &str, target: &Value, cert: Vec<u8>) -> (rdm_trans
 
 /// Dial `target_name` presenting `cert` as `name`: the verdict's reason the dialer read, and the
 /// acceptor's `via-refused` span for the dialer's key once exported. The acceptor stays
-/// ready-for-traffic: nothing about the dialer is inferred beyond this one connection.
+/// ready: nothing about the dialer is inferred beyond this one connection.
 async fn refused_dial(estate: &Estate, name: &str, target_name: &str, cert: Vec<u8>) -> (String, Value) {
     let target = estate.node_value(target_name).await;
     let (registry, router, short) = foreign_dialer(name, &target, cert).await;
@@ -548,7 +548,7 @@ async fn refused_dial(estate: &Estate, name: &str, target_name: &str, cert: Vec<
     })
     .await;
     let acceptor = estate.node_value(target_name).await;
-    assert_eq!(s(&acceptor["status"]), "ready-for-traffic", "the refusal marks nothing on the acceptor: {acceptor}");
+    assert_eq!(s(&acceptor["status"]), "ready", "the refusal marks nothing on the acceptor: {acceptor}");
     (reason, span)
 }
 
@@ -558,7 +558,7 @@ async fn refused_dial(estate: &Estate, name: &str, target_name: &str, cert: Vec<
 /// acceptor", Never: "no status set, no frame published, no mark on any node"; connections.md §12): a
 /// dial on a live rpc node's registered app protocol presenting empty bytes is refused `no-credential`:
 /// the dialer reads the verdict by name, the acceptor's span names the reason, its own path.name and
-/// the alpn, and the acceptor stays ready-for-traffic. The dialer is a key the acceptor's topology view
+/// the alpn, and the acceptor stays ready. The dialer is a key the acceptor's topology view
 /// does not name, so the span names its key and no `Refused` row is written for it (admit.rs `refuse`;
 /// the row of a named dialer is `t:connections::a_refusal_is_a_refused_fact_on_the_acceptor_and_a_failed_row_on_the_dialer`).
 /// Must NOT happen: the connection admitted or served, or another reason.
@@ -609,7 +609,7 @@ async fn a_dial_presenting_another_fabrics_cert_is_refused_ca_bad_signature_on_t
 /// and to the destination, each listed by `node.connections.get` with its id. A delete naming the
 /// carrier's id and an id the node never opened closes that one, names the unknown id not open and
 /// leaves the other open; the drop is written under the source's name; the same id again is not open;
-/// an empty list sent to the mesh-primary is refused by name; the source stays ready-for-traffic.
+/// an empty list sent to the mesh-primary is refused by name; the source stays ready.
 /// Must NOT happen: a connection not named closed, a named id ignored, or the status changed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() {
@@ -656,7 +656,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     assert!(matches!(&empty, rdm_core::status::StatusReply::RejectedConnectionScope { reason } if reason.contains("at least one")), "an empty list is refused by name: {empty:?}");
     assert!(listed(&estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.expect("connections.get"), DEST).contains(&to_dest), "the refused scope cut nothing");
     let source = estate.node_value(SOURCE).await;
-    assert_eq!(s(&source["status"]), "ready-for-traffic", "a delete of named connections changes no status: {source}");
+    assert_eq!(s(&source["status"]), "ready", "a delete of named connections changes no status: {source}");
     estate.stop().await;
 }
 
@@ -787,7 +787,7 @@ async fn recovered(estate: &Estate, node: &str) -> Value {
     estate
         .until_node(node, &format!("{node} is recovered as a new node at its path.name"), crate::node_recovery_due(), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["node_id"] != before["node_id"]).then_some(n)
+            (n["status"] == "ready" && n["node_id"] != before["node_id"]).then_some(n)
         })
         .await
 }

@@ -59,7 +59,7 @@ async fn a_successor_manages_births_it_never_launched() {
     // Only now is the successor born: A is no longer active.
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     let nodes = estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
-    // The initial fabric refuses a node restart and a node delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node restart and a node delete until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let successor = nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.2").cloned().unwrap();
     let launcher = nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").cloned().unwrap();
@@ -90,7 +90,7 @@ async fn a_successor_manages_births_it_never_launched() {
     estate.stop_then_start(&restarted.name).await;
     // A stop then a start keep the birth (node-stop.md "Kept": "node.id, incarnation, endpoint key, port,
     // bin, path/name and storage"): the node is ready again as the same birth.
-    let after = estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).cloned()).await;
+    let after = estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation_id), (&restarted.node_id, &restarted.incarnation_id), "a restart keeps the node id and the birth");
     Estate::workflow("node.delete of mesh1.rpc.3", estate.nodes_obj().await.delete(&retired.name).await).await;
     wait_for("mesh1.rpc.3's runtime is gone", Duration::from_secs(30), || async { (!alive(retired_pid)).then_some(()) }).await;

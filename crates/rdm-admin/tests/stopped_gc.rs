@@ -25,7 +25,7 @@ const YOUNG: &str = "mesh1.rpc.2";
 
 fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
@@ -43,8 +43,8 @@ fn view(fabric: &str) -> Topology {
         nodes.push(n);
     }
     Topology {
-        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
         nodes,
     }
 }
@@ -87,7 +87,7 @@ fn desired(t: &Topology) -> FabricTopology {
     let mut live = t.clone();
     for n in live.nodes.iter_mut() {
         n.stopped = false;
-        n.status = NodeStatus::ReadyForTraffic;
+        n.status = NodeStatus::Ready;
     }
     FabricTopology::of_observed(&live)
 }
@@ -228,7 +228,7 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     period(&cp, &builds, &old, false, now(&cp)).await;
     cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == old.0).for_each(|n| {
         n.stopped = false;
-        n.status = NodeStatus::ReadyForTraffic;
+        n.status = NodeStatus::Ready;
     });
     let refused = cp.collect_stopped(&candidates[0], TTL).await;
     assert!(matches!(&refused, Err(Refusal::Reject(r)) if r.reason() == "node-not-stopped"), "{refused:?}");

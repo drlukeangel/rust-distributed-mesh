@@ -259,9 +259,9 @@ No conservative or optimistic Fabric status is manufactured from a partial set. 
 
 ```text
 expected = {mesh1, mesh2}
-observed = {mesh1 = ReadyForTraffic}
+observed = {mesh1 = Ready}
 
-WRONG: derive([ReadyForTraffic]) -> Fabric ReadyForTraffic
+WRONG: derive([Ready]) -> Fabric Ready
 RIGHT: mesh2 is unknown -> HOLD
 ```
 
@@ -310,7 +310,7 @@ fabric-primary accepts Build B21 naming mesh M
     B21 is the current Build
 ```
 
-M comes into being with the `node.create` of its first node-admin ([node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent)). The joining Mesh counts toward Fabric completeness from the moment the accepted Build names it, before its Mesh row exists. A mesh join is a resize: the fabric returns to pending and changes to ready-for-traffic again ([States](lifecycles/states.md#states)), and what a serving mesh does meanwhile is [States: Resize and executable replacement](lifecycles/states.md#resize-and-executable-replacement).
+M comes into being with the `node.create` of its first node-admin ([node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent)). The joining Mesh counts toward Fabric completeness from the moment the accepted Build names it, before its Mesh row exists. A mesh join is a resize: the fabric returns to pending and changes to ready again ([States](lifecycles/states.md#states)), and what a serving mesh does meanwhile is [States: Resize and executable replacement](lifecycles/states.md#resize-and-executable-replacement).
 
 ### 10.2 Removing Mesh
 

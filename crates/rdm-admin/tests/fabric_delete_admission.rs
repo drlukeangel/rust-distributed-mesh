@@ -1,4 +1,4 @@
-//! fabric.delete at the Build door before the initial fabric is ready-for-traffic (build.md §1: "The
+//! fabric.delete at the Build door before the initial fabric is ready (build.md §1: "The
 //! one exception is fabric.delete, which may interrupt the Build in progress because its target is
 //! nothing"; fabric-delete.md "Precondition"). Every cell reads the Build log it decides from: nothing
 //! here depends on timing.
@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
@@ -27,7 +27,7 @@ fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
 fn view(status: ScopeStatus) -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status, provider: ProviderKind::Process },
-        meshes: ["mesh1", "mesh2"].iter().map(|m| Mesh { id: Some(MeshId::mint()), name: m.to_string(), status: ScopeStatus::ReadyForTraffic }).collect(),
+        meshes: ["mesh1", "mesh2"].iter().map(|m| Mesh { id: Some(MeshId::mint()), name: m.to_string(), status: ScopeStatus::Ready }).collect(),
         nodes: vec![
             node("mesh1.admin.1", true, true),
             node("mesh1.admin.2", false, false),
@@ -46,7 +46,7 @@ struct Rig {
 }
 
 /// This admin (`mesh1.admin.1`, the fabric-primary) holds a settled accepted Build of the view; the
-/// fabric has not first reached ready-for-traffic.
+/// fabric has not first reached ready.
 async fn rig(status: ScopeStatus) -> Rig {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = view(status);
@@ -75,9 +75,9 @@ async fn running(r: &Rig, build: &rdm_admin::build::BuildId, attempt: u32) {
 /// beside it a standalone mesh.delete is still refused build-in-progress. What must NOT happen:
 /// fabric.delete refused, or a standalone mesh.delete or node.delete admitted beside a Build in progress.
 #[tokio::test]
-async fn a_fabric_delete_before_the_first_ready_for_traffic_interrupts_the_build_in_progress_and_standalone_deletes_stay_refused() {
+async fn a_fabric_delete_before_the_first_ready_interrupts_the_build_in_progress_and_standalone_deletes_stay_refused() {
     let r = rig(ScopeStatus::Pending).await;
-    let grow = r.cp.submit("test", crate::named_request(&r.cp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }).await).await.expect("growth is admitted before the first ready-for-traffic");
+    let grow = r.cp.submit("test", crate::named_request(&r.cp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }).await).await.expect("growth is admitted before the first ready");
     running(&r, &grow.build_id, 1).await;
     assert_eq!(r.builds.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(grow.build_id.clone()), "the growth Build is in progress");
     for change in [TopologyChange::RemoveMesh { mesh: "mesh2".into() }, TopologyChange::RemoveNode { node: "mesh1.rpc.1".parse().unwrap() }] {
@@ -87,7 +87,7 @@ async fn a_fabric_delete_before_the_first_ready_for_traffic_interrupts_the_build
         }
     }
     let before = r.facts().await;
-    let delete = r.cp.submit("test", TopologyChange::DeleteFabric).await.unwrap_or_else(|e| panic!("fabric.delete is admitted before the first ready-for-traffic while a Build is in progress: {e:?}"));
+    let delete = r.cp.submit("test", TopologyChange::DeleteFabric).await.unwrap_or_else(|e| panic!("fabric.delete is admitted before the first ready while a Build is in progress: {e:?}"));
     assert_ne!(delete.build_id, grow.build_id, "the delete is a Build of its own");
     assert_eq!((delete.attempt, delete.mesh.as_deref()), (1, None));
     assert_eq!(r.facts().await, before + 1, "the delete's acceptance is the one fact written");

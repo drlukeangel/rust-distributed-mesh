@@ -57,7 +57,7 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     assert_eq!(by_path["reply"]["executing_node"], broker_id, "{by_path}");
     assert_eq!(by_path["reply"]["result"], json!({"found": true, "value": "before-restart"}));
 
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 2. The broker restarts, node.stop then node.start (Q183): the same node, birth and port.
     let (restart, _) = estate.stop_then_start(&"mesh1.broker.1".parse().unwrap()).await;

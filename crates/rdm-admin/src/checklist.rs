@@ -50,7 +50,7 @@ pub(crate) fn missing_members(planned: &[PathName], me: &PathName, me_ready: boo
         }
         let live = |d: &&MeshDigest| &d.node.name == path && !departed(d.node.node_id.as_str());
         let here: Vec<&MeshDigest> = heard.iter().filter(live).collect();
-        if here.iter().any(|d| d.status == MemberStatus::ReadyForTraffic) {
+        if here.iter().any(|d| d.status == MemberStatus::Ready) {
             continue;
         }
         let held: Vec<&MeshDigest> = known.iter().filter(|d| &d.node.name == path).collect();
@@ -149,9 +149,9 @@ mod tests {
     fn checklist_names_every_planned_birth_that_has_not_checked_in_since_the_opening() {
         let (a1, r1, r2, r3) = (path("mesh1", NodeKind::NodeAdmin, 1), path("mesh1", NodeKind::RpcNode, 1), path("mesh1", NodeKind::RpcNode, 2), path("mesh1", NodeKind::RpcNode, 3));
         let planned = vec![a1.clone(), r1.clone(), r2.clone(), r3.clone()];
-        let ready = digest(&r1, MemberStatus::ReadyForTraffic);
+        let ready = digest(&r1, MemberStatus::Ready);
         let pending = digest(&r2, MemberStatus::Pending);
-        let before_opening = digest(&r3, MemberStatus::ReadyForTraffic);
+        let before_opening = digest(&r3, MemberStatus::Ready);
         let none = |_: &str| false;
         // r1 checked in ready; r2 checked in but is not ready; r3 was heard only before the checklist began.
         let m = missing_members(&planned, &a1, true, &[ready.clone(), pending.clone()], &[ready.clone(), pending.clone(), before_opening.clone()], &none);
@@ -164,7 +164,7 @@ mod tests {
         let m = missing_members(&[r1.clone()], &a1, true, &[ready.clone()], &[ready.clone()], &gone);
         assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1.rpc.1(departed)"]);
         // Every planned birth checked in: nothing is missing.
-        let all: Vec<MeshDigest> = [&r1, &r2, &r3].iter().map(|p| digest(p, MemberStatus::ReadyForTraffic)).collect();
+        let all: Vec<MeshDigest> = [&r1, &r2, &r3].iter().map(|p| digest(p, MemberStatus::Ready)).collect();
         assert!(missing_members(&planned, &a1, true, &all, &all, &none).is_empty());
     }
 

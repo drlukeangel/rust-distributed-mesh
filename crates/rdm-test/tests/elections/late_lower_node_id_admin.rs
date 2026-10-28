@@ -65,7 +65,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     let refused = estate.builds_obj().await.delete(&a).await;
     assert!(matches!(&refused, Err(CallEnd::Rejected { reason, .. }) if reason == "cannot-delete"), "the accepted Build is never history: {refused:?}");
 
-    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses the removal of a node until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Births until one draws a lower NodeId than the incumbent's.
     let mut late = None;
@@ -119,7 +119,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // It stops and starts one of A's births and retires the other.
     let (restarted, retired) = (a_births[0].clone(), a_births[1].clone());
     estate.stop_then_start(&restarted.name).await;
-    let after = estate.until_node(&restarted.name.to_string(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.stopped).cloned()).await;
+    let after = estate.until_node(&restarted.name.to_string(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).cloned()).await;
     assert_eq!(after.node_id, restarted.node_id, "a restart keeps the NodeId");
     Estate::workflow(&format!("node.delete of {}", retired.name), estate.nodes_obj().await.delete(&retired.name).await).await;
     estate

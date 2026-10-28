@@ -137,7 +137,7 @@ fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_pri
     node.endpoint_id = Some(EndpointId(key.public().to_string()));
     node.incarnation_id = Some(IncarnationId::mint());
     node.provider = Some(ProviderKind::Process);
-    node.status = NodeStatus::ReadyForTraffic;
+    node.status = NodeStatus::Ready;
     node.is_primary = is_primary;
     node.is_fabric_primary = is_fabric_primary;
     node.transport_addr = Some("127.0.0.1:1".parse().unwrap());
@@ -166,7 +166,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     let mut nodes = vec![me.node.clone()];
     nodes.extend(others.iter().map(|b| b.node.clone()));
     let topology = Arc::new(tokio::sync::RwLock::new(Topology {
-        fabric: Fabric { id: fabric.unwrap_or_else(rdm_core::FabricId::mint), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: fabric.unwrap_or_else(rdm_core::FabricId::mint), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: Vec::new(),
         nodes,
     }));
@@ -297,10 +297,10 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     assert_eq!(stale_reply, StatusReply::RejectedStaleMesh { held: mesh2.clone() });
     let wrong_sender = reply(&call(&rig, &not_primary, &pending, &CallOptions::default()).await);
     assert_eq!(wrong_sender, StatusReply::AlreadyApplied, "decided for the mesh it names, whoever sends it");
-    let forward = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::ReadyForTraffic };
+    let forward = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Ready };
     assert_eq!(reply(&call(&rig, &fabric_primary, &forward, &CallOptions::default()).await), StatusReply::Applied);
     let backward = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
-    assert!(matches!(backward, StatusReply::RejectedInvalidMeshTransition { current: MeshState::ReadyForTraffic }), "{backward:?}");
+    assert!(matches!(backward, StatusReply::RejectedInvalidMeshTransition { current: MeshState::Ready }), "{backward:?}");
     let forged = StatusRequest::DeclareNodeState { node_id: other.node.node_id.clone(), incarnation: other.node.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation: None };
     let forged_reply = reply(&call(&rig, &member, &forged, &CallOptions::default()).await);
     assert_eq!(forged_reply, StatusReply::Applied, "a declaration is decided for the birth it names, whoever sends it");
@@ -373,7 +373,7 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     // ApplyNodeState is not a drain command: refused with the held state, never admitted.
     let apply = StatusRequest::ApplyNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ConnectionsDeleting };
     let applied = call(&rig, &executor, &apply, &CallOptions::default()).await;
-    assert!(matches!(reply(&applied), StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "{applied:?}");
+    assert!(matches!(reply(&applied), StatusReply::RejectedInvalidNodeTransition { current: NodeState::Ready }), "{applied:?}");
     let apply_arm = command_admission(&applied);
     assert!(matches!(&apply_arm, CommandAdmission::Refused { reply , .. } if reply.contains("rejected-invalid-node-transition")), "{apply_arm:?}");
 
@@ -679,12 +679,12 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
         // A Fabric event: refused, then applied, then a repeat.
         let mesh1_primary = birth("mesh3.admin.1", NodeKind::NodeAdmin, "mesh3", true, false);
         let rig3 = rig_with(mesh1_primary, &[&fabric_primary], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
-        let event = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: rdm_core::status::FabricEvent::ReadyForTraffic };
+        let event = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: rdm_core::status::FabricEvent::Ready };
         let ev_refused = reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await);
         assert!(matches!(&ev_refused, StatusReply::NotReady { reason } if reason.contains("fabric.storage does not hold the Fabric event")), "{ev_refused:?}");
         assert!(rig3.authority.declared.lock().unwrap().fabric.is_empty());
         // The fabric-primary puts the fact on the fabric, then applies it.
-        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new() }); r.events.push("ready-for-traffic".into()); store.fabric.put_fabric(&r).await.unwrap(); }
+        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new() }); r.events.push("ready".into()); store.fabric.put_fabric(&r).await.unwrap(); }
         assert_eq!(reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await), StatusReply::Applied);
 
         // The authority restarts over the same facts: what it folds is what it applied.
@@ -719,8 +719,8 @@ fn mesh_primary_refuses_every_backward_move_by_name() {
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
-        let nodes = [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::ConnectionsDeleting, NodeState::Stopped];
-        let meshes = [MeshState::Pending, MeshState::ReadyForTraffic, MeshState::Leaving, MeshState::Dead];
+        let nodes = [NodeState::Pending, NodeState::Ready, NodeState::ConnectionsDeleting, NodeState::Stopped];
+        let meshes = [MeshState::Pending, MeshState::Ready, MeshState::Leaving, MeshState::Dead];
         let me = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let senders: Vec<Birth> = (0..4).map(|i| birth(&format!("mesh1.rpc.{}", i + 1), NodeKind::RpcNode, "mesh1", false, false)).collect();
         let fabric_primary = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
@@ -803,7 +803,7 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
             StatusReply::RejectedNotPrimary { why } => assert_eq!(why.as_str(), name, "{r:?}"),
             other => panic!("expected rejected-not-primary/{name}: {other:?}"),
         };
-        let decl_node = |b: &Birth| StatusRequest::DeclareNodeState { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
+        let decl_node = |b: &Birth| StatusRequest::DeclareNodeState { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
         // An ordinary node declares to a non-primary admin.
         let r = reply(&call(&rig, &rpc, &decl_node(&rpc), &CallOptions::default()).await);
         not_primary(&r, "receiver-not-primary");
@@ -813,10 +813,10 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary of mesh2"), "{r:?}");
         // A Mesh primary declares its Mesh to a non-fabric-primary.
         let mesh2 = MeshId::mint();
-        let r = reply(&call(&rig, &other_admin, &StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::ReadyForTraffic }, &CallOptions::default()).await);
+        let r = reply(&call(&rig, &other_admin, &StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::Ready }, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "fabric-primary"), "{r:?}");
         // The fabric-primary applies an event at an admin that is not a mesh primary.
-        let event = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: rdm_core::status::FabricEvent::ReadyForTraffic };
+        let event = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: rdm_core::status::FabricEvent::Ready };
         let r = reply(&call(&rig, &fp, &event, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
         // The fabric-primary applies a Mesh state at an admin of another mesh.
@@ -838,7 +838,7 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
         let ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), held.clone())].into_iter().collect();
         let rig2 = rig_with(mp_receiver, &[&fp], ids, Refusing::memory(), Declared::default(), None).await;
         let wrong_fabric = rdm_core::FabricId::mint();
-        let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyFabricEvent { fabric_id: wrong_fabric, event: rdm_core::status::FabricEvent::ReadyForTraffic }, &CallOptions::default()).await);
+        let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyFabricEvent { fabric_id: wrong_fabric, event: rdm_core::status::FabricEvent::Ready }, &CallOptions::default()).await);
         assert_eq!(r, StatusReply::RejectedStaleFabric { held: rig2.authority.fabric_id.clone() });
         let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh1".into(), state: MeshState::Pending }, &CallOptions::default()).await);
         assert_eq!(r, StatusReply::RejectedStaleMesh { held });
@@ -873,9 +873,9 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
         let fabric = rdm_core::FabricId::mint();
         let store = Refusing::memory();
         let rig = rig_with(receiver, &[&fp1, &fp2], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
-        let ready = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ReadyForTraffic };
+        let ready = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::Ready };
         // Each event is the fabric-primary's fact on the fabric before it applies it at a mesh-primary.
-        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new() }); r.events.push("ready-for-traffic".into()); store.fabric.put_fabric(&r).await.unwrap(); }
+        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new() }); r.events.push("ready".into()); store.fabric.put_fabric(&r).await.unwrap(); }
         assert_eq!(reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await), StatusReply::Applied);
         // The seat moves: fp2 holds it, fp1 does not.
         {
@@ -969,7 +969,7 @@ fn status_route_loss_never_synthesizes_dead() {
         let me = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let subject = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false);
         let rig = rig(me, &[&subject], BTreeMap::new()).await;
-        let decl = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
+        let decl = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
         // The healthy control, in the same capture.
         assert_eq!(reply(&call(&rig, &subject, &decl, &CallOptions::default()).await), StatusReply::Applied);
         let served_before = spans_where(&capture.spans(), DECLARATION, &[]).len();
@@ -981,9 +981,9 @@ fn status_route_loss_never_synthesizes_dead() {
         assert!(matches!(out, RpcOutcome::NotSent(_)), "no route is NotSent, nothing dispatched: {out:?}");
         assert!(out.proves_not_dispatched());
         let t = rig.authority.topology.read().await;
-        assert!(t.nodes.iter().all(|n| n.status == NodeStatus::ReadyForTraffic), "no node became Dead or Leaving: {:?}", t.nodes.iter().map(|n| (n.name.to_string(), n.status)).collect::<Vec<_>>());
+        assert!(t.nodes.iter().all(|n| n.status == NodeStatus::Ready), "no node became Dead or Leaving: {:?}", t.nodes.iter().map(|n| (n.name.to_string(), n.status)).collect::<Vec<_>>());
         drop(t);
-        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "the applied state is unchanged");
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "the applied state is unchanged");
         let spans = finish(&capture, &dir, json!({"cell": cell, "no_route": out.name(), "declaration_spans_before": served_before}));
         assert_eq!(spans_where(&spans, DECLARATION, &[]).len(), served_before, "the unsent call reached no handler");
         assert!(spans.iter().all(|s| !s["name"].as_str().unwrap_or("").contains("dead")), "no span names a death");
@@ -1037,10 +1037,10 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         let mesh_id = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id.clone())].into_iter().collect();
         let r2 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids).await;
-        let ahead = StatusRequest::ApplyMeshState { mesh_id: mesh_id.clone(), mesh_name: "mesh2".into(), state: MeshState::ReadyForTraffic };
+        let ahead = StatusRequest::ApplyMeshState { mesh_id: mesh_id.clone(), mesh_name: "mesh2".into(), state: MeshState::Ready };
         assert_eq!(reply(&call(&r2, &fp, &ahead, &CallOptions::default()).await), StatusReply::Applied);
-        let e2 = handoff(&r2, mesh_id.clone(), target_of(&r2)).await.expect_err("Pending after ReadyForTraffic is backward");
-        assert!(e2.contains("Pending is a backward move") && e2.contains("ReadyForTraffic"), "{e2}");
+        let e2 = handoff(&r2, mesh_id.clone(), target_of(&r2)).await.expect_err("Pending after Ready is backward");
+        assert!(e2.contains("Pending is a backward move") && e2.contains("Ready"), "{e2}");
 
         // Arm 3: applied, the reply lost. The hand-off makes ONE call: Indeterminate fails the step
         // typed (the rectifier is the retry), and the next hand-off of the same key is AlreadyApplied.
@@ -1154,11 +1154,11 @@ fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
             use rdm_admin::model::Mesh;
             let mut t = rig.authority.topology.write().await;
             t.meshes = vec![
-                Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-                Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::Ready },
+                Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ];
         }
-        let declare = |id: &MeshId| StatusRequest::DeclareMeshState { mesh_id: id.clone(), state: MeshState::ReadyForTraffic };
+        let declare = |id: &MeshId| StatusRequest::DeclareMeshState { mesh_id: id.clone(), state: MeshState::Ready };
         let applied = reply(&call(&rig, &mesh1_primary, &declare(&id1), &CallOptions::default()).await);
         assert_eq!(applied, StatusReply::Applied, "mesh1's primary, a Mesh this holder only heard of");
         let not_primary = reply(&call(&rig, &mesh1_other, &declare(&id1), &CallOptions::default()).await);
@@ -1341,7 +1341,7 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
         let rig = rig(mp, &[&member], BTreeMap::new()).await;
         let client = NodeRpcClient::new(rig.me.endpoint().await, resolver.clone()).with_caller_system("rdm");
         let _ = rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Default::default(), Arc::new(rdm_admin::node_rows::WrittenRows::default()))));
-        rig.authority.nodes_storage.put_node(&rdm_admin::storage::NodeRow::new(member.node.name.clone(), member.node.node_id.clone(), NodeStatus::ReadyForTraffic)).await.unwrap();
+        rig.authority.nodes_storage.put_node(&rdm_admin::storage::NodeRow::new(member.node.name.clone(), member.node.node_id.clone(), NodeStatus::Ready)).await.unwrap();
         let (node_id, incarnation) = (member.node.node_id.clone(), member.node.incarnation_id.clone().unwrap());
         let status = || async { rig.authority.nodes_storage.node(&node_id).await.unwrap().expect("the member's row").status };
 

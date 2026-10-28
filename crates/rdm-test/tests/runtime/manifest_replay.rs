@@ -306,7 +306,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     let get = estate.probe(&["get", "--target", "path:mesh1.broker.1", "--key", "7"]);
     assert_eq!((get["outcome"].as_str(), get["reply"]["result"]["value"].as_str()), (Some("Reply"), Some("bound")), "{get}");
 
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Restarts through the same binding: a role node, and the admin that launched the nodes.
     let mut restarts = Vec::new();
@@ -314,7 +314,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
         let before = estate.node_value(node).await;
         estate.stop_then_start(&node.parse().unwrap()).await;
         let after = estate.node_value(node).await;
-        assert_eq!(after["status"], "ready-for-traffic", "{node}: ready after the restart: {after}");
+        assert_eq!(after["status"], "ready", "{node}: ready after the restart: {after}");
         assert_eq!(after["node_id"], before["node_id"], "{node}: a restart keeps the NodeId");
         assert_eq!(after["incarnation_id"], before["incarnation_id"], "{node}: a restart is node.stop then node.start on the stopped process: the same birth");
         let o = observe_launch(&estate, node).await;

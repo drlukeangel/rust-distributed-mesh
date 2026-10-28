@@ -67,7 +67,7 @@ fn running(pid: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| !st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
 }
 
-/// A fabric at `shape`, settled and ready-for-traffic, entered at its bootstrap admin `mesh1.admin.1`,
+/// A fabric at `shape`, settled and ready, entered at its bootstrap admin `mesh1.admin.1`,
 /// the fabric-primary.
 async fn ready(test: &str, shape: &[(&str, u32, u32)]) -> (Estate, Vec<NodeView>) {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
@@ -295,7 +295,7 @@ async fn in_a_two_mesh_fabric_a_primarys_delete_with_no_successor_is_refused_by_
     let mp_refused = refused_by_name("node.delete of mesh2's primary, its mesh's only admin", "would-leave-mesh-without-admin", estate.nodes_obj().await.delete(&path(&primary)).await);
     assert!(mp_refused.contains("mesh2"), "the refusal names mesh2: {mp_refused}");
     for now in estate.mesh_node_views("mesh2").await.iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
-        assert!(now.name.to_string() == primary && now.is_primary && now.status == NodeStatus::ReadyForTraffic, "mesh2's primary stays mesh2's primary and runs: {now:?}");
+        assert!(now.name.to_string() == primary && now.is_primary && now.status == NodeStatus::Ready, "mesh2's primary stays mesh2's primary and runs: {now:?}");
     }
     estate.stop().await;
     estate.artifact("deletes.json", &json!({"fabric_primary_refused": fp_refused, "ordinary": replies, "mesh_primary_refused": mp_refused}));
@@ -344,7 +344,7 @@ async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, 
 
     let started = Estate::workflow("node.start of the former fabric-primary", estate.nodes_obj().await.start(&before.name).await).await;
     let back = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.name == before.name).expect("node.get lists the started admin");
-    assert!(!back.stopped && back.incarnation_id == before.incarnation_id && back.status == NodeStatus::ReadyForTraffic, "the same birth runs again: {back:?}");
+    assert!(!back.stopped && back.incarnation_id == before.incarnation_id && back.status == NodeStatus::Ready, "the same birth runs again: {back:?}");
     assert!(running(pid), "the start rejoined the same process {pid}");
 
     // node.stop then node.start of the fabric-primary it handed over to: it hands over first, and it is the
@@ -359,7 +359,7 @@ async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, 
     estate.enter(&now).await;
     Estate::workflow("node.start of the second fabric-primary", estate.nodes_obj().await.start(&fp).await).await;
     let after = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.name == fp).expect("node.get lists the started admin");
-    assert!(after.node_id == primary.node_id && after.status == NodeStatus::ReadyForTraffic, "the stopped and started fabric-primary is the same node, running: {after:?}");
+    assert!(after.node_id == primary.node_id && after.status == NodeStatus::Ready, "the stopped and started fabric-primary is the same node, running: {after:?}");
     estate.stop().await;
     let spans = estate.spans();
     let own: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-stop-quiesce").into_iter().filter(|sp| !attr(sp, "commanded_by").is_empty()).collect();

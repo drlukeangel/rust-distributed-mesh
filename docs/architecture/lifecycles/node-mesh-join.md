@@ -71,7 +71,7 @@ Those pages link here and restate nothing.
     read, the Build floor and rafka-time refreshed last, is
     [node.start](node-start.md#end-to-end-sequence) steps 3 to 5, inside a start and on the
     standalone command alike: a birth commanded back leaves its channels, runs the whole sequence
-    again on the commanding call and is published ready-for-traffic only once its hook has passed
+    again on the commanding call and is published ready only once its hook has passed
     (Q87). The command is answered `MeshJoined` at this step, while the rest of the start runs on.
 
 The report is only a report: it re-reads no topology for a held member, completes no start and
@@ -165,8 +165,8 @@ The primary's unary reply, `Joined` with its answer decoded (on the wire `answer
         "config": { "log_level": "info" }
       },
       "statuses": [
-        { "frame": "mesh-status", "mesh": "mesh1", "status": "ready-for-traffic", "publisher": "mesh1.admin.1", "changed_at_rafka_ms": 1718289990000 },
-        { "frame": "fabric-status", "fabric": "lab", "status": "ready-for-traffic", "publisher": "mesh1.admin.1", "changed_at_rafka_ms": 1718289990100 }
+        { "frame": "mesh-status", "mesh": "mesh1", "status": "ready", "publisher": "mesh1.admin.1", "changed_at_rafka_ms": 1718289990000 },
+        { "frame": "fabric-status", "fabric": "lab", "status": "ready", "publisher": "mesh1.admin.1", "changed_at_rafka_ms": 1718289990100 }
       ]
     }
   }
@@ -216,7 +216,7 @@ row's name and config from the answer:
 }
 ```
 
-ReadyForTraffic is set by the mesh-primary after `node.started` ([node status](node-status.md)),
+Ready is set by the mesh-primary after `node.started` ([node status](node-status.md)),
 never by the joiner. The mesh-primary's next backbone `MeshTopology` carries the digest as
 one entry of `digests` ([example](../gossip.md#examples)). A stopped node that rejoins keeps its
 `digest_seq` running and mints no incarnation.

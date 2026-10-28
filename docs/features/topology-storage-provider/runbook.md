@@ -52,11 +52,11 @@ Read which step's span is the last one recorded for the `build_id`.
 | `via-storage-switch` ending `no-answer` (`reason`), repeated | the new provider does not answer the insert or the read of the `commit` record | see [An unavailable provider](#an-unavailable-provider); never decide the change from a lost answer |
 | some meshes' `via-unblock` | a node that has not moved yet: see [A node that refuses its move](#a-node-that-refuses-its-move) | read that mesh's `via-storage-move` and `via-storage-move-lost` spans |
 
-While blocked, every node keeps serving, `node.get` answers every node ready-for-traffic, and a
+While blocked, every node keeps serving, `node.get` answers every node ready, and a
 caller's command is admitted and issued once its mesh-primary is unblocked. Any Build but
 `fabric.delete` is refused `build-in-progress` naming the change's Build.
 
-Cells: `every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change`,
+Cells: `every_serving_node_keeps_its_birth_and_ready_through_a_change`,
 `a_build_other_than_fabric_delete_is_refused_during_a_change`.
 
 ## An unavailable provider
@@ -193,7 +193,7 @@ What to read:
 - `rdm.node_admin.node.update.via-storage-move-lost`, `outcome = recreated`, `reason` naming why the old
   birth would not move, on the same trace as its mesh's `via-unblock`;
 - the mesh's `via-unblock`, `recreated` counting the paths re-created;
-- `mesh.nodes.get`: the path holds a new node id, ready-for-traffic, writing the new provider; the old
+- `mesh.nodes.get`: the path holds a new node id, ready, writing the new provider; the old
   birth's records stay where they were.
 
 Nothing to do when it completes. A path whose re-created births keep refusing (`via-storage-move-lost`

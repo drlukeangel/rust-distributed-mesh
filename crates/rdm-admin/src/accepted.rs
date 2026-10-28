@@ -1187,7 +1187,7 @@ pub fn with_mesh_rows(observed: &Topology, rows: &[crate::storage::MeshRecord]) 
         let status = match (r.dead, r.state()) {
             (true, _) | (_, Some(MeshState::Dead)) => crate::model::ScopeStatus::Dead,
             (_, Some(MeshState::Leaving)) => crate::model::ScopeStatus::Leaving,
-            (_, Some(MeshState::ReadyForTraffic)) => crate::model::ScopeStatus::ReadyForTraffic,
+            (_, Some(MeshState::Ready)) => crate::model::ScopeStatus::Ready,
             _ => crate::model::ScopeStatus::Pending,
         };
         t.meshes.push(crate::model::Mesh { id: Some(r.mesh_id.clone()), name: r.name.clone(), status });
@@ -1564,14 +1564,14 @@ mod tests {
 
     fn observed(nodes: Vec<Node>, meshes: &[&str]) -> Topology {
         Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-            meshes: meshes.iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect(),
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: meshes.iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::Ready }).collect(),
             nodes,
         }
     }
 
     fn mn() -> Topology {
-        use NodeStatus::ReadyForTraffic as R;
+        use NodeStatus::Ready as R;
         observed(vec![n("mesh1.admin.1", R, true), n("mesh1.admin.2", R, false), n("mesh1.rpc.1", R, true), n("mesh1.rpc.2", R, false), n("mesh1.rpc.3", R, false)], &["mesh1"])
     }
 
@@ -1658,7 +1658,7 @@ mod tests {
     // @feature: mesh-lifecycle
     #[test]
     fn a_fabric_delete_compiles_to_the_build_its_page_names() {
-        use NodeStatus::ReadyForTraffic as R;
+        use NodeStatus::Ready as R;
         let cur = t(&[("mesh1", 1, 1), ("mesh2", 1, 1), ("mesh3", 1, 1)]);
         let compiled = compile(&cur, &TopologyChange::DeleteFabric, &mn()).unwrap();
         assert_eq!((compiled.fabric.as_str(), compiled.meshes.len()), ("fabric1", 0), "the Fabric with no mesh");
@@ -1745,7 +1745,7 @@ mod tests {
         // runtime that still runs; a live node outside the topology is retired.
         let mut o = mn();
         o.nodes[3].status = NodeStatus::PendingReconnect;
-        o.nodes.push(n("mesh1.rpc.7", NodeStatus::ReadyForTraffic, false));
+        o.nodes.push(n("mesh1.rpc.7", NodeStatus::Ready, false));
         assert_eq!(
             plan(&pinned(cur.clone(), &o), &o, None).operations,
             vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), over: None, executable: None }, delete_of(&o, "mesh1.rpc.7")]
@@ -1759,7 +1759,7 @@ mod tests {
         // A mesh outside the topology is retired after everything else.
         let mut o2 = mn();
         let id2 = MeshId::mint();
-        o2.meshes.push(Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+        o2.meshes.push(Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::Ready });
         assert_eq!(plan(&cur, &o2, None).operations, vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2 }]);
     }
 
@@ -1774,7 +1774,7 @@ mod tests {
         let cur = t(&[("mesh1", 2, 3)]);
         let id2 = MeshId::mint();
         let mut o = mn();
-        o.nodes.push(n("mesh2.admin.1", NodeStatus::ReadyForTraffic, true));
+        o.nodes.push(n("mesh2.admin.1", NodeStatus::Ready, true));
         o.meshes.push(Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::Dead });
         assert_eq!(plan(&cur, &o, None).operations, vec![], "a deleted mesh with its last admin alive is planned by no Build");
         let open: BTreeSet<String> = ["mesh2".to_string()].into();
@@ -1797,7 +1797,7 @@ mod tests {
     fn a_delete_of_a_deleted_meshs_last_admin_is_the_ordinary_node_delete() {
         let cur = t(&[("mesh1", 2, 3)]);
         let mut o = mn();
-        let last = n("mesh2.admin.1", NodeStatus::ReadyForTraffic, true);
+        let last = n("mesh2.admin.1", NodeStatus::Ready, true);
         let birth = last.incarnation_id.clone().unwrap();
         let node_id = last.node_id.clone();
         o.nodes.push(last);
@@ -1876,7 +1876,7 @@ mod tests {
     #[test]
     fn a_renamed_predecessor_changes_no_plan() {
         let cur = t(&[("mesh1", 2, 3)]);
-        for status in [NodeStatus::ConnectionsDeleting, NodeStatus::Leaving, NodeStatus::Dead, NodeStatus::ReadyForTraffic] {
+        for status in [NodeStatus::ConnectionsDeleting, NodeStatus::Leaving, NodeStatus::Dead, NodeStatus::Ready] {
             let mut o = mn();
             let mut old = n("mesh1.rpc.2", status, false);
             old.name = old.name.renamed();
@@ -2389,7 +2389,7 @@ mod tests {
         assert_eq!(topology.validate(), Ok(()));
         // Grow and shrink keep the create specs in step with the paths.
         let observed = Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![],
             nodes: vec![],
         };
@@ -2445,7 +2445,7 @@ mod tests {
     #[test]
     fn a_replacements_plan_is_the_members_off_their_entries_in_order_and_resumes_from_its_receipts() {
         use crate::build_state::{BuildStepReceipt, StepOutcome};
-        use NodeStatus::ReadyForTraffic as R;
+        use NodeStatus::Ready as R;
         let cur = t(&[("mesh1", 2, 2), ("mesh2", 2, 1)]);
         let nodes = vec![n("mesh1.admin.1", R, true), n("mesh1.admin.2", R, false), n("mesh1.rpc.1", R, false), n("mesh1.rpc.2", R, true), n("mesh2.admin.1", R, true), n("mesh2.admin.2", R, false), n("mesh2.rpc.1", R, true)];
         let o = observed(nodes.clone(), &["mesh1", "mesh2"]);
@@ -2520,7 +2520,7 @@ mod tests {
     #[test]
     fn a_replacements_delete_without_its_node_deleted_receipt_is_resumed_from_its_receipts_and_its_row() {
         use crate::build_state::{BuildStepReceipt, StepOutcome};
-        use NodeStatus::ReadyForTraffic as R;
+        use NodeStatus::Ready as R;
         let cur = t(&[("mesh2", 2, 1)]);
         let nodes = vec![n("mesh2.admin.1", R, true), n("mesh2.admin.2", R, false), n("mesh2.rpc.1", R, true)];
         let o = observed(nodes, &["mesh2"]);
@@ -2772,7 +2772,7 @@ mod tests {
     /// replacement. Must NOT happen: a mesh's only admin replaced with no other admin listening.
     #[test]
     fn a_request_replacing_a_meshs_only_admin_adds_a_second_on_the_new_executable_at_acceptance() {
-        use NodeStatus::ReadyForTraffic as R;
+        use NodeStatus::Ready as R;
         let cur = t(&[("mesh1", 1, 1), ("mesh2", 2, 0)]);
         let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.rpc.1", R, true), n("mesh2.admin.1", R, true), n("mesh2.admin.2", R, false)], &["mesh1", "mesh2"]);
         let rows = rows_on(&o, "a");
@@ -2798,7 +2798,7 @@ mod tests {
     /// attempt 2 writing the node's config back to {} (rafka 141, Build 7fzjdqr1sh66).
     #[test]
     fn a_later_attempt_of_the_build_that_created_a_node_keeps_the_config_the_node_wrote_since() {
-        use NodeStatus::ReadyForTraffic as R;
+        use NodeStatus::Ready as R;
         let cur = t(&[("mesh1", 1, 1)]);
         let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
         let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.rpc.1", R, true)], &["mesh1"]);
@@ -2855,7 +2855,7 @@ mod tests {
     /// Must NOT happen: the delete pinned to whatever birth the view holds when the attempt is planned.
     #[test]
     fn a_replacements_delete_carries_the_birth_its_acceptance_pinned() {
-        use NodeStatus::ReadyForTraffic as R;
+        use NodeStatus::Ready as R;
         let desired = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Gateway, 1)]);
         let cur = FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&desired))].into() };
         let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.gateway.1", R, true)], &["mesh1"]);
@@ -2917,7 +2917,7 @@ mod tests {
     /// name. Must NOT happen: a broker, compute or admin replaced, or a gateway replaced twice.
     #[test]
     fn only_the_paths_whose_entry_differs_from_their_row_are_replaced_and_a_resume_finishes_the_rest() {
-        use NodeStatus::ReadyForTraffic as R;
+        use NodeStatus::Ready as R;
         let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 2), (NodeKind::Compute, 1)]);
         let cur = FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: ["mesh1", "mesh2"].iter().map(|m| (m.to_string(), MeshTopology::of(&mesh(m)))).collect() };
         let mut nodes = Vec::new();
@@ -2938,7 +2938,7 @@ mod tests {
         let all: Vec<BuildOperation> = ["mesh1.gateway.2", "mesh1.gateway.1", "mesh2.gateway.2", "mesh2.gateway.1"].iter().flat_map(|p| replace(p)).collect();
         assert_eq!(replacement_plan(&next, &o, &rows, vec![]), all, "the gateways alone, each type's non-primary first");
         assert_eq!(plan(&next, &o, None).operations, vec![], "a Build whose change plans no replacement replaces nothing");
-        assert_eq!(paths_owed_replacement(&next, &rows).iter().map(ToString::to_string).collect::<Vec<_>>(), ["mesh1.gateway.1", "mesh1.gateway.2", "mesh2.gateway.1", "mesh2.gateway.2"], "the fabric is ready-for-traffic again only once every gateway's row records its entry's");
+        assert_eq!(paths_owed_replacement(&next, &rows).iter().map(ToString::to_string).collect::<Vec<_>>(), ["mesh1.gateway.1", "mesh1.gateway.2", "mesh2.gateway.1", "mesh2.gateway.2"], "the fabric is ready again only once every gateway's row records its entry's");
         // Interrupted after mesh2.gateway.2's successor was created: the rest, never it again.
         let mut after = o.clone();
         let gone = birth("mesh2.gateway.2");
@@ -2965,7 +2965,7 @@ mod tests {
     /// or the replacement skipped because a create of the path is receipted.
     #[test]
     fn a_recovery_runs_on_the_rows_executable_and_the_replacement_is_the_next_attempts() {
-        use NodeStatus::ReadyForTraffic as R;
+        use NodeStatus::Ready as R;
         let cur = t(&[("mesh1", 2, 2)]);
         let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.admin.2", R, false), n("mesh1.rpc.1", R, false), n("mesh1.rpc.2", R, true)], &["mesh1"]);
         let rows = rows_on(&o, "a");

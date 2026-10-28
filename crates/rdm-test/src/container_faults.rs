@@ -442,7 +442,7 @@ pub fn labels_of(id: &str) -> Result<(String, String), String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
     /// `docker kill`: SIGKILL to the container's init; nothing is flushed. It takes the witness that the
-    /// fabric first reached ready-for-traffic: a death during fabric start is not tested (Q74,
+    /// fabric first reached ready: a death during fabric start is not tested (Q74,
     /// [`crate::estate::FabricReady`]).
     Kill(crate::estate::FabricReady),
     /// `docker pause`: the container's processes are frozen, alive and silent.

@@ -63,7 +63,7 @@ async fn rig() -> Rig {
             let (h, node_id, incarnation) = (h.clone(), node_id.clone(), incarnation.clone());
             async move {
                 h.fetch_add(1, Ordering::SeqCst);
-                Ok(StatusReply::Current { node_id, incarnation, state: NodeState::ReadyForTraffic })
+                Ok(StatusReply::Current { node_id, incarnation, state: NodeState::Ready })
             }
         })
         .build(served(&target))
@@ -115,7 +115,7 @@ async fn a_status_call_carried_by_a_node_admin_is_answered_by_the_target() {
     let r = rig().await;
     let (out, _) = r.origin.call_via::<Status>(&admin_target(&r), &r.target.node_id, &probe(&r.target), &CallOptions::default()).await;
     let reply = out.reply().unwrap_or_else(|| panic!("the target's reply through the admin carrier: {out:?}")).value().clone();
-    assert_eq!(reply, StatusReply::Current { node_id: r.target.node_id.clone(), incarnation: r.target.incarnation.clone(), state: NodeState::ReadyForTraffic });
+    assert_eq!(reply, StatusReply::Current { node_id: r.target.node_id.clone(), incarnation: r.target.incarnation.clone(), state: NodeState::Ready });
     assert_eq!(r.handled.load(Ordering::SeqCst), 1, "exactly one inner call");
 }
 

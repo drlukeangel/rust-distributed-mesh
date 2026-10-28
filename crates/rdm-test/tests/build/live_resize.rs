@@ -6,7 +6,7 @@
 //!
 //! After every step, from public surfaces only:
 //! - the Build completes and the view settles on exactly the desired count of
-//!   each cohort, all `ready-for-traffic` (which ordinals remain depends on
+//!   each cohort, all `ready` (which ordinals remain depends on
 //!   where the seats are: shrink retires non-primaries);
 //! - every seat is the one the election computes from the view's NodeIds
 //!   (one primary per cohort, the lowest ready NodeId; one fabric primary);
@@ -106,7 +106,7 @@ async fn mn_resizes_live_and_back_to_floor_without_flap_or_collision() {
         steps.push(step);
         nodes = now;
         // The steps after the first include shrinks, which the initial fabric refuses until it has first
-        // reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+        // reached ready (states.md "The initial fabric before ready").
         if steps.len() == 1 {
             estate.until_fabric_ready(Duration::from_secs(120)).await;
         }
@@ -132,7 +132,7 @@ async fn mm_meshes_grow_and_shrink_independently() {
         steps.push(step);
         nodes = now;
         // The steps after the first include shrinks, which the initial fabric refuses until it has first
-        // reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+        // reached ready (states.md "The initial fabric before ready").
         if steps.len() == 1 {
             estate.until_fabric_ready(Duration::from_secs(120)).await;
         }

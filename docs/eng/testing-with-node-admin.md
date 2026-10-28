@@ -28,11 +28,11 @@ Readiness is three separate scopes, none a substitute for another
 ([states.md](../architecture/lifecycles/states.md);
 [node-identity-and-state.md §5](../architecture/node-identity-and-state.md)):
 
-| scope | lifecycle | who sets ready-for-traffic, on what |
+| scope | lifecycle | who sets ready, on what |
 |---|---|---|
-| node | starting → pending → ready-for-traffic → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted | its mesh-primary, on the node's `node.started` report after every start gate, `pre_node_ready` among them |
-| mesh | pending → ready-for-traffic → deleting → deleted | the fabric-primary decides on the mesh-primary's report that every planned birth is ready; the mesh-primary records it |
-| fabric | pending → ready-for-traffic | the fabric-primary, once every mesh the accepted Build names is ready-for-traffic and the attempt is claimed |
+| node | starting → pending → ready → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted | its mesh-primary, on the node's `node.started` report after every start gate, `pre_node_ready` among them |
+| mesh | pending → ready → deleting → deleted | the fabric-primary decides on the mesh-primary's report that every planned birth is ready; the mesh-primary records it |
+| fabric | pending → ready | the fabric-primary, once every mesh the accepted Build names is ready and the attempt is claimed |
 
 - There is exactly one readiness mechanism: the start's gates and the `node.started` report.
   Nothing times out into ready; a failed hook fails the start by name, a blocked one answers
@@ -45,14 +45,14 @@ Readiness is three separate scopes, none a substitute for another
 
 | wait | what it reads |
 |---|---|
-| `estate.until_fabric_ready(within)` | the fabric's `ScopeStatus` reaching `ReadyForTraffic`; afterwards `estate.fabric_ready()` hands out the witness every kill takes |
+| `estate.until_fabric_ready(within)` | the fabric's `ScopeStatus` reaching `Ready`; afterwards `estate.fabric_ready()` hands out the witness every kill takes |
 | `estate.settles_to(&[(mesh, admins, rpc_nodes)], within)`, `settles_to_named(names, within)` | the node views until the fabric holds exactly that shape, every node ready |
 | `estate.until_node(name, what, within, check)`, `until_view(what, within, check)` | one node's view, or all of them, until `check` holds |
 | `Fabrics::fact(fact, within, holds)` | the fabric view until `holds` is true (`crates/rdm-client/src/objects.rs`) |
 | `rdm_client::await_fact` | a typed fact, awaited under a bound |
 
 A death during the fabric's first start is not tested: only an estate that has waited for its
-fabric to reach ready-for-traffic hands out the `FabricReady` witness a kill takes (Q74;
+fabric to reach ready hands out the `FabricReady` witness a kill takes (Q74;
 `crates/rdm-test/src/estate.rs`, `FabricReady`).
 
 ## 3. Acquiring a fabric, option 1: a Build
@@ -109,7 +109,7 @@ another run's.
 
 ## 6. Faults
 
-A fault is aimed at one node's runtime, after the fabric's first ready-for-traffic:
+A fault is aimed at one node's runtime, after the fabric's first ready:
 
 - `estate.kill_node(node)` sends SIGKILL to `node`'s runtime once `fabric_ready()` holds: the pid
   its data dir's `deployment.json` records (process provider) or its container's init (container
@@ -149,7 +149,7 @@ The fabric-primary is never aimed at by the demo admin UI's Chaos tab
 
 - A fixed sleep to wait for a node → a bounded wait on the view (`until_node`, `until_view`,
   `until_fabric_ready`) that names what it waited for.
-- Treating `pending` as ready → `ready-for-traffic` is the only ready status.
+- Treating `pending` as ready → `ready` is the only ready status.
 - Test-side retries of a command that did not converge → node-admin owns convergence; a command
   that never completes is a defect to read in its spans.
 - Reading an internal map to decide readiness in an e2e cell → the views are the contract.

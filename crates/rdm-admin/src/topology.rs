@@ -164,8 +164,8 @@ impl Topology {
         node.kind == NodeKind::NodeAdmin && self.nodes_of_type(&node.mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live())
     }
 
-    /// Why `mesh` is not ready-for-traffic: a mesh is ready when it has a primary node-admin and
-    /// every node of the mesh is ready-for-traffic (states.md). The nodes of the mesh are the
+    /// Why `mesh` is not ready: a mesh is ready when it has a primary node-admin and
+    /// every node of the mesh is ready (states.md). The nodes of the mesh are the
     /// accepted Build's planned births (`planned`), a planned birth the view does not hold yet
     /// counting as not ready; with no accepted Build held, the members the view holds. Empty: the
     /// mesh is ready. The one derivation of a mesh's state: the projection and the fabric's entry
@@ -183,7 +183,7 @@ impl Topology {
         for path in paths {
             match self.members().find(|n| n.name == path) {
                 None => out.push(Missing { who: path.to_string(), why: "no-birth-heard" }),
-                Some(n) if n.status != NodeStatus::ReadyForTraffic => out.push(Missing { who: path.to_string(), why: "not-ready" }),
+                Some(n) if n.status != NodeStatus::Ready => out.push(Missing { who: path.to_string(), why: "not-ready" }),
                 Some(_) => {}
             }
         }
@@ -372,10 +372,10 @@ mod tests {
     }
 
     fn mn() -> Topology {
-        use NodeStatus::ReadyForTraffic as R;
+        use NodeStatus::Ready as R;
         Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
             nodes: vec![
                 node("mesh1.admin.1", R, true, true),
                 node("mesh1.admin.2", R, false, false),
@@ -394,7 +394,7 @@ mod tests {
     /// (the Build's create and node recovery's) answering differently for one view.
     #[test]
     fn a_node_admin_is_the_first_admin_when_no_other_node_admin_of_its_mesh_is_live() {
-        use NodeStatus::{Dead, ReadyForTraffic as R};
+        use NodeStatus::{Dead, Ready as R};
         let mut t = mn();
         let admin1: PathName = "mesh1.admin.1".parse().unwrap();
         let admin2: PathName = "mesh1.admin.2".parse().unwrap();

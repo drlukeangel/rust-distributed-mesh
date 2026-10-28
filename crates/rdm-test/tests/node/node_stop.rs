@@ -71,7 +71,7 @@ async fn view_of(nodes: &Nodes, node: &PathName) -> NodeView {
 /// mesh reports, through its own held view, that it dropped the stopped birth and holds the stop
 /// overlay. `node.start` makes the same process rejoin through the mesh primary: the stream carries
 /// `node.joined`, `node.started` and ends `Complete`, `node.get` shows the same birth
-/// `ready-for-traffic`, and every other node reports it holds that birth again with the overlay gone.
+/// `ready`, and every other node reports it holds that birth again with the overlay gone.
 /// The mesh primary records the start's Pending once, while it accepts the start's join report and
 /// before it answers it, and takes the start's `NodeJoined` as already applied (node-mesh-join.md
 /// step 10). No runtime exits, no node is created, nothing is repaired.
@@ -83,7 +83,7 @@ async fn a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth() {
 /// CONTRACT: the same holds for a node-admin: a mesh's non-primary admin is stopped by its mesh primary
 /// (its tasks held, its gossip topics left, its connections cut), stays alive with its endpoint bound,
 /// and a start makes the same process rejoin: the same node id, incarnation, endpoint key and port,
-/// `ready-for-traffic` again, and every other node reports it held again.
+/// `ready` again, and every other node reports it held again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stopped_node_admin_keeps_its_process_and_a_start_rejoins_it_as_the_same_birth() {
     stop_then_start("a_stopped_node_admin_keeps_its_process_and_a_start_rejoins_it_as_the_same_birth", "mesh1.admin.2").await;
@@ -93,7 +93,7 @@ async fn stop_then_start(test: &str, node: &str) {
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let peers = estate.peers().await;
     let nodes = estate.nodes_obj().await;
@@ -135,7 +135,7 @@ async fn stop_then_start(test: &str, node: &str) {
             .await;
     }
     let after = view_of(&estate.nodes_obj().await, &path).await;
-    assert!(!after.stopped && after.status == NodeStatus::ReadyForTraffic, "node.get lists {node} ready again: {after:?}");
+    assert!(!after.stopped && after.status == NodeStatus::Ready, "node.get lists {node} ready again: {after:?}");
     assert_eq!((&after.node_id, &after.incarnation_id, &after.endpoint_id, &after.transport_addr), (&before.node_id, &before.incarnation_id, &before.endpoint_id, &before.transport_addr), "a start keeps the node id, incarnation, endpoint key and port");
     assert_eq!(estate.pid_of(node).await, pid, "the same process");
 
@@ -181,10 +181,10 @@ async fn stop_then_start(test: &str, node: &str) {
     let joined_frames: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "frame") == "node-joined" && attr(sp, "operation").starts_with("node.start:")).map(|sp| attr(sp, "outcome")).collect();
     assert_eq!(joined_frames, vec!["already-applied".to_string()], "{node}: the start's NodeJoined belongs to the join report's Pending and starts no other");
     // The start's node.started names the start (node-status.md "Status report": "a start's Pending and
-    // ReadyForTraffic"), applied by the mesh primary.
+    // Ready"), applied by the mesh primary.
     let ready: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "frame") == "node-started" && attr(sp, "operation").starts_with("node.start:")).collect();
     assert_eq!(ready.len(), 1, "{node}'s NodeStarted is recorded on its open start stream: {ready:#?}");
-    assert!(declared_of("ReadyForTraffic", "node.start:").is_empty(), "the open start sends no separate Ready declaration");
+    assert!(declared_of("Ready", "node.start:").is_empty(), "the open start sends no separate Ready declaration");
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["node"] == node && sp["attributes"]["command"] == "start-node").expect("the start command was sent");
     let call = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && attr(sp, "op") == "34").expect("the start call was made on 0x22");
     // The stop's transport cut closed its connection, so the start dials afresh or rides a connection
@@ -361,7 +361,7 @@ async fn a_stop_of_a_node_already_connections_deleted_and_left_answers_each_prim
 /// being the status a stopped birth is held at; `node.get` lists the stopped birth at `mesh1.rpc.1` and
 /// nothing at `mesh1.rpc.1.old`. `node.start` of `mesh1.rpc.1` makes the same process rejoin under its
 /// own name: `node.joined`, `node.started`, `Complete`; `node.get` lists the same birth
-/// `ready-for-traffic` at `mesh1.rpc.1`, and every other node holds it publishing that name. The
+/// `ready` at `mesh1.rpc.1`, and every other node holds it publishing that name. The
 /// mesh-primary's `via-writer` span says `rejected-admitting-connections` with `traffic=Stopped` and
 /// `connections=stopped`. What must NOT happen: `NameUpdated`, a row or a listing at `mesh1.rpc.1.old`,
 /// or the start admitting the birth under another name.
@@ -371,7 +371,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let peers = estate.peers().await;
     let nodes = estate.nodes_obj().await;
@@ -410,7 +410,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
             .await;
     }
     let after = view_of(&estate.nodes_obj().await, &path).await;
-    assert!(!after.stopped && after.status == NodeStatus::ReadyForTraffic, "node.get lists {path} ready: {after:?}");
+    assert!(!after.stopped && after.status == NodeStatus::Ready, "node.get lists {path} ready: {after:?}");
     assert_eq!((&after.node_id, &after.incarnation_id, &after.endpoint_id, &after.transport_addr), (&before.node_id, &before.incarnation_id, &before.endpoint_id, &before.transport_addr), "the same birth");
     assert_eq!(estate.pid_of(NODE).await, pid, "the same process");
 
@@ -436,7 +436,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
 /// on the row: the row at `mesh1.rpc.1` holds the whole config, and the stopped node is sent nothing
 /// (the via-config span says `apply=stopped`, no `answered`; no ApplyNodeConfig reaches it). Then
 /// `node.start` makes the same process rejoin: its join is handed the row's config
-/// (`via-join` `config_keys=1`), and `node.get` lists the same birth `ready-for-traffic` carrying it.
+/// (`via-join` `config_keys=1`), and `node.get` lists the same birth `ready` carrying it.
 /// What must NOT happen: `ConfigNotApplied` (`not-sent`) for a stopped node, or a call to it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carries_it() {
@@ -444,7 +444,7 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let nodes = estate.nodes_obj().await;
     let path: PathName = NODE.parse().unwrap();
@@ -477,12 +477,12 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
     let until = std::time::Instant::now() + rdm_transport::topology::staleness_floor();
     let after = loop {
         let v = view_of(&estate.nodes_obj().await, &path).await;
-        if (v.config == told && !v.stopped && v.status == NodeStatus::ReadyForTraffic) || std::time::Instant::now() >= until {
+        if (v.config == told && !v.stopped && v.status == NodeStatus::Ready) || std::time::Instant::now() >= until {
             break v;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    assert!(!after.stopped && after.status == NodeStatus::ReadyForTraffic, "node.get lists {path} ready: {after:?}");
+    assert!(!after.stopped && after.status == NodeStatus::Ready, "node.get lists {path} ready: {after:?}");
     assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth");
     assert_eq!(after.config, told, "the started node carries the config its join handed it");
     assert_eq!(estate.pid_of(NODE).await, pid, "the same process");
@@ -510,7 +510,7 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
 /// it (`via-join` `admitted_as`); the node installs the answer's name before it publishes
 /// (`via-join-admitted` `installed`, then `via-ready` under that name). The stream carries
 /// `node.joined`, `node.started` and ends `Complete`; every admin lists the same birth
-/// `ready-for-traffic` at `mesh1.admin.3.old`, and the rpc node holds it publishing that name. What must
+/// `ready` at `mesh1.admin.3.old`, and the rpc node holds it publishing that name. What must
 /// NOT happen: an admin listing the stopped birth at `mesh1.admin.3`, the start refused (`UnknownNode`,
 /// `JoinMismatch("name")`), or a span of the started node after its join naming `mesh1.admin.3`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -519,7 +519,7 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 3, 1)]).await;
     estate.settled_views(&[("mesh1", 3, 1)]).await;
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let peers = estate.peers().await;
     let nodes = estate.nodes_obj().await;
@@ -569,7 +569,7 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
     for admin in &admins {
         estate
             .until_view_at(&admin.name, &format!("{} lists the rejoined birth ready at {renamed}", admin.name), Duration::from_secs(10), |view| {
-                view.iter().find(|n| n.name == renamed && n.node_id == before.node_id && n.status == NodeStatus::ReadyForTraffic && !n.stopped).map(|_| ())
+                view.iter().find(|n| n.name == renamed && n.node_id == before.node_id && n.status == NodeStatus::Ready && !n.stopped).map(|_| ())
             })
             .await;
     }
@@ -600,7 +600,7 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     let birth_build = estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await.build_id.to_string();
     estate.settled_views(&[("mesh1", 2, 3)]).await;
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     let before = estate.node_value(NODE).await;
@@ -667,7 +667,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
     let mut estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 3)]).await;
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(SETTLE).await;
     let fp = views.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("a fabric-primary");
     let path: PathName = NODE.parse().unwrap();
@@ -737,7 +737,7 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
     let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[("RDM_STOPPED_NODE_TTL", "3s")]).await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let peers = estate.peers().await;
     let nodes = estate.nodes_obj().await;
@@ -785,7 +785,7 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
 /// the stopped birth is still listed stopped, the same birth and the same live process. The Build then
 /// ends Complete or waits, Blocked, on the fabric's change (states.md "Resize and executable
 /// replacement"); which of the two is Q238 (states.md "Setting a state" against the resize sentence's
-/// "meshes already serving stay ready-for-traffic") and is not asserted here.
+/// "meshes already serving stay ready") and is not asserted here.
 ///
 /// Must NOT happen (#3233, 141's estate): every attempt of the delete Build planning `node.create` at
 /// the stopped path, its check holding the stopped birth and the next attempt planning the create again,
@@ -796,7 +796,7 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 1, 3)]).await;
     estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 1, 3)]).await;
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(SETTLE).await;
     let nodes = estate.nodes_obj().await;
     const STOPPED: &str = "mesh2.rpc.1";
@@ -885,7 +885,7 @@ fn unix_nanos() -> u64 {
 }
 
 /// mesh1 {1 node-admin, 1 rpc node} and mesh2 {`admins` node-admins, 1 rpc node}, settled and
-/// ready-for-traffic, through the typed objects: the fabric-primary is mesh1.admin.1.
+/// ready, through the typed objects: the fabric-primary is mesh1.admin.1.
 async fn two_meshes(test: &str, admins: u32) -> (Estate, Vec<NodeView>) {
     settled_two_meshes(Estate::bootstrap(owner(test), "fabric1", "mesh1").await, admins).await
 }
@@ -893,7 +893,7 @@ async fn two_meshes(test: &str, admins: u32) -> (Estate, Vec<NodeView>) {
 async fn settled_two_meshes(estate: Estate, admins: u32) -> (Estate, Vec<NodeView>) {
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", admins, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 1, 1), ("mesh2", admins, 1)]).await;
-    // A seat move is refused until the initial fabric has first reached ready-for-traffic (R-PB1).
+    // A seat move is refused until the initial fabric has first reached ready (R-PB1).
     estate.until_fabric_ready(SETTLE).await;
     (estate, views)
 }
@@ -1019,13 +1019,13 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
 /// by name under Q7, no secondary, before anything moves. The stop path's via-seat-hand-over to=none
 /// is the defect: a refused transfer never erases the incumbent's seat and never yields to nobody, and
 /// the destructive stop does not continue"; the approved proposal Part C1 "The no-successor cases",
-/// Q7: "`node.fabric-primary.update` with no other node-admin ReadyForTraffic in the mesh and no other
-/// mesh-primary ReadyForTraffic is refused the same way, naming both searches ... a single-admin
-/// single-mesh fabric's primary ... cannot be stopped or restarted until a secondary is ReadyForTraffic";
+/// Q7: "`node.fabric-primary.update` with no other node-admin Ready in the mesh and no other
+/// mesh-primary Ready is refused the same way, naming both searches ... a single-admin
+/// single-mesh fabric's primary ... cannot be stopped or restarted until a secondary is Ready";
 /// Part C2 step 3's text): mesh1.admin.1 is the fabric's only node-admin, holding mesh1's seat and the
 /// fabric seat, beside one rpc node. Its `node.stop` and its `node.restart` are each refused
-/// `last-admin` with exactly `cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh
-/// mesh1, no other mesh-primary ReadyForTraffic`, one `rdm.node_admin.build.reject.via-last-admin` per
+/// `last-admin` with exactly `cannot transfer fabric-primary: no other node-admin Ready in mesh
+/// mesh1, no other mesh-primary Ready`, one `rdm.node_admin.build.reject.via-last-admin` per
 /// call. Every node keeps its birth and its primaries (node.get). The stop is not run: no stop-node
 /// served, no node.connections.delete, no node.primary.update commanded or run. Through the whole run,
 /// the estate's teardown included, no admin hands its primaries to nobody
@@ -1037,13 +1037,13 @@ async fn a_stop_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_mo
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
     let before = estate.settled_views(&[("mesh1", 1, 1)]).await;
-    // A seat move is refused until the initial fabric has first reached ready-for-traffic (R-PB1).
+    // A seat move is refused until the initial fabric has first reached ready (R-PB1).
     estate.until_fabric_ready(SETTLE).await;
     let nodes = estate.nodes_obj().await;
     let target: PathName = "mesh1.admin.1".parse().unwrap();
     let held = before.iter().find(|n| n.name == target).expect("node.get lists the only admin");
     assert!(held.is_primary && held.is_fabric_primary, "mesh1.admin.1 holds both seats: {held:?}");
-    let q7 = "cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic";
+    let q7 = "cannot transfer fabric-primary: no other node-admin Ready in mesh mesh1, no other mesh-primary Ready";
     for (action, refused) in [("stop", nodes.stop(&target).await.err())] {
         let refused = refused.unwrap_or_else(|| panic!("the {action} of the fabric's only node-admin was accepted"));
         let rdm_client::CallEnd::Rejected { reason, detail } = &refused else { panic!("the {action} ends Rejected: {refused:?}") };
@@ -1107,10 +1107,10 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
     let entry = estate.entry().await;
     let after = estate
         .until_view_at(&entry, "the entry holds the rejoined birth ready", Duration::from_secs(10), |view| {
-            view.iter().find(|n| n.name == stopped_node && n.status == NodeStatus::ReadyForTraffic).cloned()
+            view.iter().find(|n| n.name == stopped_node && n.status == NodeStatus::Ready).cloned()
         })
         .await;
-    assert_eq!((&after.node_id, &after.incarnation_id, after.status), (&stopped_birth.node_id, &stopped_birth.incarnation_id, NodeStatus::ReadyForTraffic), "the same birth rejoined: {after:?}");
+    assert_eq!((&after.node_id, &after.incarnation_id, after.status), (&stopped_birth.node_id, &stopped_birth.incarnation_id, NodeStatus::Ready), "the same birth rejoined: {after:?}");
 
     estate.stop().await;
     let spans = estate.spans();
@@ -1191,7 +1191,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     drift.arm("drift-pass", serde_json::json!({"kind": "drift-pass", "node": fp})).await;
     // The old holder holds the node's node.started at its status door: the declaration stays owed.
     let door = Door::at(&estate, &holder_s).await;
-    door.arm("declaration", serde_json::json!({"kind": "declaration", "node": node_s, "state": "ReadyForTraffic"})).await;
+    door.arm("declaration", serde_json::json!({"kind": "declaration", "node": node_s, "state": "Ready"})).await;
     let (based_on, request) = estate.create_node_request("mesh2", NodeKind::RpcNode).await;
     let restarted = frames(nodes.create_named(based_on, request).await.expect("the create was accepted")).await;
     assert!(
@@ -1207,7 +1207,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let v = view_of(&estate.nodes_obj().await, &node).await;
-        if v.status == NodeStatus::ReadyForTraffic {
+        if v.status == NodeStatus::Ready {
             break;
         }
         assert!(std::time::Instant::now() < until, "the new holder sets the node ready from its declaration within 30 s: {v:?}");
@@ -1244,7 +1244,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     let ready: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
         // A first start names no operation; its measured Ready remains owed without an open command stream.
-        .filter(|sp| attr(sp, "node") == node_s && attr(sp, "state") == "ReadyForTraffic" && attr(sp, "operation").is_empty())
+        .filter(|sp| attr(sp, "node") == node_s && attr(sp, "state") == "Ready" && attr(sp, "operation").is_empty())
         .collect();
     let applied: Vec<&&Value> = ready.iter().filter(|sp| attr(sp, "outcome") == "applied").collect();
     assert_eq!(applied.len(), 1, "the node.started is applied once: {ready:#?}");

@@ -99,30 +99,30 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         fabric_pub.set_role(true);
         let a = fabric_pub.observe("pending", None, true, base, 10).unwrap();
         let a2 = fabric_pub.due(base + ms(1000)).unwrap();
-        let b = fabric_pub.observe("ready-for-traffic", None, true, base + ms(1500), 20).unwrap();
+        let b = fabric_pub.observe("ready", None, true, base + ms(1500), 20).unwrap();
         let rest = sweep(&mut fabric_pub, base, ms(1500), Duration::from_secs(30), ms(100));
         assert_eq!((ts(&a), ts(&a2), ts(&b)), (10, 10, 20));
         assert_eq!(rest.len(), 4, "the new change is repeated four times after its first send");
-        assert!(rest.iter().all(|(_, f)| ts(f) == 20 && status_of(f) == "ready-for-traffic"), "no repeat of the replaced change follows");
+        assert!(rest.iter().all(|(_, f)| ts(f) == 20 && status_of(f) == "ready"), "no repeat of the replaced change follows");
 
         // Only the role holder authors: without the role nothing is sent; losing the role ends the sends still to come.
         let mut not_primary = StatusPublisher::new(peer, StatusScope::Mesh("mesh2".into()));
-        assert!(not_primary.observe("ready-for-traffic", None, true, base, 1).is_none(), "a node that is not the primary authors nothing");
+        assert!(not_primary.observe("ready", None, true, base, 1).is_none(), "a node that is not the primary authors nothing");
         not_primary.set_role(true);
-        assert!(not_primary.observe("ready-for-traffic", None, true, base, 2).is_some());
+        assert!(not_primary.observe("ready", None, true, base, 2).is_some());
         not_primary.set_role(false);
         assert!(sweep(&mut not_primary, base, ms(0), Duration::from_secs(10), ms(100)).is_empty(), "a primary that lost the role sends no more");
         // A successor that hears the status it observes adopts it: no transition is invented, so nothing
         // is sent until its checklist completes; then the adopted fact is sent, the old instant, five sends.
         let mut successor = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
         successor.set_role(true);
-        let heard = rdm_transport::topology::StatusFact { status: "ready-for-traffic".into(), changed_at_rafka_ms: 2 };
-        assert!(successor.observe("ready-for-traffic", Some(heard.clone()), false, base, 77).is_none(), "an adopted status is not sent before the checklist completes");
+        let heard = rdm_transport::topology::StatusFact { status: "ready".into(), changed_at_rafka_ms: 2 };
+        assert!(successor.observe("ready", Some(heard.clone()), false, base, 77).is_none(), "an adopted status is not sent before the checklist completes");
         assert!(successor.awaiting_checklist(), "the adopted status waits for its checklist");
         assert!(sweep(&mut successor, base, ms(0), Duration::from_secs(10), ms(100)).is_empty(), "no timer republishes an adopted status");
-        assert!(successor.observe("ready-for-traffic", Some(heard.clone()), false, base + ms(11_000), 78).is_none(), "an incomplete checklist still sends nothing");
-        let again = successor.observe("ready-for-traffic", Some(heard.clone()), true, base + ms(12_000), 79).expect("the completed checklist republishes the adopted status");
-        assert_eq!((ts(&again), status_of(&again), publisher_of(&again)), (2, "ready-for-traffic", me), "the old instant, the same status, under the new publisher");
+        assert!(successor.observe("ready", Some(heard.clone()), false, base + ms(11_000), 78).is_none(), "an incomplete checklist still sends nothing");
+        let again = successor.observe("ready", Some(heard.clone()), true, base + ms(12_000), 79).expect("the completed checklist republishes the adopted status");
+        assert_eq!((ts(&again), status_of(&again), publisher_of(&again)), (2, "ready", me), "the old instant, the same status, under the new publisher");
         assert!(!successor.awaiting_checklist());
         let rest = sweep(&mut successor, base, ms(12_000), Duration::from_secs(10), ms(100));
         assert_eq!(rest.len(), 4, "the republished fact is five identical sends: {rest:?}");
@@ -130,7 +130,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // A status that differs from the adopted one while the checklist is open is a change like any other.
         let mut moved_on = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
         moved_on.set_role(true);
-        assert!(moved_on.observe("ready-for-traffic", Some(heard.clone()), false, base, 80).is_none());
+        assert!(moved_on.observe("ready", Some(heard.clone()), false, base, 80).is_none());
         let changed = moved_on.observe("leaving", Some(heard), false, base, 81).expect("a different status is a change");
         assert_eq!((ts(&changed), status_of(&changed)), (81, "leaving"));
         assert!(!moved_on.awaiting_checklist());
@@ -151,7 +151,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         let status_view = StatusView::default();
         assert!(status_view.take(&fwd, &fabric));
         assert!(!status_view.take(&fwd, &fabric), "the same frame again is not taken twice");
-        let older = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 500 };
+        let older = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 500 };
         assert!(!status_view.take(&older, &fabric), "an older status is refused");
         assert_eq!(status_view.mesh("mesh1").unwrap().status, "pending");
         let replay = status_view.held_frames(&fabric, peer);
@@ -205,13 +205,13 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         topology_view.primaries().take(rdm_core::Seat::FabricPrimary, &holder);
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
-        backbone.announce_statuses("ready-for-traffic", "ready-for-traffic", true, true).await;
+        backbone.announce_statuses("ready", "ready", true, true).await;
         let (m, f) = (topology_view.mesh_status("mesh1").expect("the mesh status is held"), topology_view.fabric_status().expect("the fabric status is held"));
-        assert_eq!((m.publisher.as_str(), m.status.as_str()), (me, "ready-for-traffic"));
-        assert_eq!((f.publisher.as_str(), f.status.as_str()), (me, "ready-for-traffic"));
+        assert_eq!((m.publisher.as_str(), m.status.as_str()), (me, "ready"));
+        assert_eq!((f.publisher.as_str(), f.status.as_str()), (me, "ready"));
         // The real status sender runs on the real clock: its five sends are the spans below.
         tokio::time::sleep(Duration::from_millis(5_500)).await;
-        backbone.announce_statuses("ready-for-traffic", "ready-for-traffic", true, true).await;
+        backbone.announce_statuses("ready", "ready", true, true).await;
         assert_eq!(topology_view.mesh_status("mesh1").unwrap().changed_at_rafka_ms, m.changed_at_rafka_ms, "an unchanged status is not published again");
         tokio::time::sleep(Duration::from_millis(1_500)).await;
         backbone.set_mesh_primary(false);

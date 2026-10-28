@@ -107,22 +107,22 @@ async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
     .unwrap_or_else(|_| panic!("{node} never listed {want:?}"));
 }
 
-/// The fabric's own status, as the admin's `fabric.get` answers it, once it is ready-for-traffic: the
-/// initial fabric's first ready-for-traffic, until which the Day-0 Build is in progress (Q170). A node's
-/// own ready-for-traffic and a Build's `Complete` are not it: a
+/// The fabric's own status, as the admin's `fabric.get` answers it, once it is ready: the
+/// initial fabric's first ready, until which the Day-0 Build is in progress (Q170). A node's
+/// own ready and a Build's `Complete` are not it: a
 /// `node.create` changes the accepted topology, which takes the fabric's checklists back to pending
 /// before the fabric first reaches it.
 async fn until_fabric_ready(fabrics: &Fabrics) {
     tokio::time::timeout(WRONG, async {
         loop {
-            if rdm_test::typed::the_fabric(fabrics).await.unwrap_or_else(|e| panic!("fabrics.get: {e}")).status == ScopeStatus::ReadyForTraffic {
+            if rdm_test::typed::the_fabric(fabrics).await.unwrap_or_else(|e| panic!("fabrics.get: {e}")).status == ScopeStatus::Ready {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("the fabric never first reached ready-for-traffic"));
+    .unwrap_or_else(|_| panic!("the fabric never first reached ready"));
 }
 
 /// CONTRACT (i143 1b, Arch: "the single-admin memory estate (birth, node.create, node.stop,
@@ -130,7 +130,7 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 /// is removed, Q183: its node.stop then node.start is the stop and start below): a
 /// Day-0 node-admin started on the memory storage backend comes up ready in both seats, its storage
 /// step spanned `writes_to = "memory"`; `node.create` of two rpc nodes in mesh1 completes and lists
-/// them ready-for-traffic; once the fabric has first reached ready-for-traffic, `node.stop` of the
+/// them ready; once the fabric has first reached ready, `node.stop` of the
 /// first stops it (its cohort seat moving to the second) and `node.start` brings it back; before
 /// that, a Reconcile changing mesh1.rpc.1's config alone completes and the node carries the config
 /// (build.md §1, "The Build applies the diff": `config` in place, as `node.config.update` applies a
@@ -159,7 +159,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         let running = start_on(cfg, Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, rdm_admin::storage_backend::TopologyStorageProviders::new().register(MEMORY, Arc::new(MemoryBackend))).await.expect("the Day-0 admin comes up on the memory backend");
         let me = running.digest.lock().unwrap().clone();
         tokio::time::timeout(WRONG, async {
-            while !running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary) {
+            while !running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::Ready && n.is_primary && n.is_fabric_primary) {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
@@ -189,11 +189,11 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         };
         let (based_on, request) = one_more().await;
         let created = Estate::workflow("node.create of an rpc node in mesh1", nodes.create_named(based_on, request).await).await;
-        until_status(&nodes, &node, NodeStatus::ReadyForTraffic).await;
+        until_status(&nodes, &node, NodeStatus::Ready).await;
         // A stop moves the stopped node's cohort seat to a secondary of its type: a second rpc node.
         let (based_on, request) = one_more().await;
         Estate::workflow("node.create of a second rpc node in mesh1", nodes.create_named(based_on, request).await).await;
-        until_status(&nodes, &"mesh1.rpc.2".parse().unwrap(), NodeStatus::ReadyForTraffic).await;
+        until_status(&nodes, &"mesh1.rpc.2".parse().unwrap(), NodeStatus::Ready).await;
         until_fabric_ready(&fabrics).await;
         // A Reconcile that changes mesh1.rpc.1's config alone: the Build's `node.config.update` reads the
         // entry in the accepted Build the admin's own log holds, and the node carries it.
@@ -216,7 +216,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         .unwrap_or_else(|_| panic!("{node} never carried the config its entry names"));
         Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;
         Estate::workflow("node.start of mesh1.rpc.1", nodes.start(&node).await).await;
-        until_status(&nodes, &node, NodeStatus::ReadyForTraffic).await;
+        until_status(&nodes, &node, NodeStatus::Ready).await;
         let receipts = builds.get(&created.build_id).await.unwrap_or_else(|e| panic!("build.get of the create's Build {}: {e}", created.build_id));
         assert_eq!(receipts.phase, BuildPhase::Complete, "the create's Build is Complete: {receipts:#?}");
         assert!(!receipts.steps.is_empty(), "build.get answers the create's step receipts: {receipts:#?}");

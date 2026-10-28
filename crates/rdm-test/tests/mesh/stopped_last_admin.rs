@@ -91,17 +91,17 @@ async fn delete_mesh1(test: &str) -> Retired {
         pids.push((name, pid));
     }
     // The Build retires mesh1, a mesh.delete, which the initial fabric refuses until it has first reached
-    // ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    // ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Control moves to mesh2 before mesh1 goes.
-    let mesh2_admin = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic).map(|n| n.name.clone()).expect("a ready mesh2 admin");
+    let mesh2_admin = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::Ready).map(|n| n.name.clone()).expect("a ready mesh2 admin");
     estate.enter(&mesh2_admin).await;
     let b = estate.reconcile_shape("fabric1", &[mesh("mesh2")]).await.build_id.to_string();
     // mesh.deleted leaves mesh1's last admin alive; its end is its own node.delete.
     let left: Vec<NodeView> = estate
         .until_view("mesh1's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
             let mesh1: Vec<&NodeView> = views.iter().filter(|n| n.mesh == "mesh1").collect();
-            (mesh1.len() == 1 && mesh1[0].status == NodeStatus::ReadyForTraffic).then(|| vec![mesh1[0].clone()])
+            (mesh1.len() == 1 && mesh1[0].status == NodeStatus::Ready).then(|| vec![mesh1[0].clone()])
         })
         .await;
     let last = left[0].name.to_string();

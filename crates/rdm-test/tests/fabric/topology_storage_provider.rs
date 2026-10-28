@@ -64,7 +64,7 @@ fn two_mesh_names() -> BTreeSet<String> {
     ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|n| n.to_string()).collect()
 }
 
-/// The estate grown to [`two_meshes`], every node ready-for-traffic and the fabric ready-for-traffic.
+/// The estate grown to [`two_meshes`], every node ready and the fabric ready.
 async fn two_mesh_estate(test: &str, env: &[(&str, &str)]) -> (Estate, Vec<NodeView>) {
     let mut estate = estate_with(test, env).await;
     estate.reconcile(&two_meshes()).await;
@@ -320,7 +320,7 @@ async fn an_omitted_provider_preserves_the_current_provider() {
 }
 
 /// CONTRACT (i149 § Seed spec, `a_customer_changes_topology_storage_without_restarting_members`; storage.md
-/// §2 "Changing it": "a property Build: the fabric, every mesh and every node stay ready-for-traffic, no
+/// §2 "Changing it": "a property Build: the fabric, every mesh and every node stay ready, no
 /// node restarts, and no node changes state"; "Copy" ... "dead births' and deleted nodes' records among
 /// them"; "The previous provider is kept as it was at the switch ... written no more"): a
 /// two-mesh fabric with history (a deleted birth, a deleted mesh) is moved to `test-target` by one Build
@@ -330,7 +330,7 @@ async fn an_omitted_provider_preserves_the_current_provider() {
 /// node applies the map only once its mesh-primary's `mesh.unblock` began; the row carrying it is on
 /// `test-target` and not on `file`. The Build completes; the Fabric
 /// row names `test-target` with `file` previous; every node writes `test-target` and is the same birth,
-/// ready-for-traffic, carrying the config its last row names (the update and the Build's own config are
+/// ready, carrying the config its last row names (the update and the Build's own config are
 /// a serial order of the two, node-config-update.md); every line of the five stores is on
 /// `test-target` in source order, the deleted birth's and the deleted mesh's included; `file` is written
 /// no more; and each mesh-primary's `mesh.block` (its reply `blocked`), the copy, the switch and each
@@ -380,7 +380,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     estate.artifact("views.json", &json!(Estate::values(&after)));
     nodes_write(&after, TOPOLOGY_STORAGE_TARGET);
     assert_eq!(births(&after), before, "every node is the same birth: none restarted or replaced");
-    assert!(after.iter().all(|v| v.status == NodeStatus::ReadyForTraffic), "every node is ready-for-traffic: {after:?}");
+    assert!(after.iter().all(|v| v.status == NodeStatus::Ready), "every node is ready: {after:?}");
     let path: PathName = "mesh2.rpc.1".parse().unwrap();
     // The update and the Build's own config of the node are a serial order of the two
     // (node-config-update.md): whichever was written last on its row is the config the node carries.
@@ -541,7 +541,7 @@ fn foreign_line(target: &Path) {
     std::fs::write(target.join(rdm_admin::store_root::LAYOUT), format!("{}\n", rdm_admin::store_root::LAYOUT_VALUE)).unwrap();
     let op = rdm_admin::store_log::Op { node_id: "zzzzzzzzzzz1".into(), incarnation_id: "zzzzzzzzzzz2".into(), seq: 1 };
     // A whole node record (`node-record/1`), as a writer of that store writes one.
-    let record = serde_json::to_vec(&rdm_admin::storage::NodeRow::new("mesh9.rpc.1".parse().unwrap(), rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), rdm_core::model::NodeStatus::ReadyForTraffic)).unwrap();
+    let record = serde_json::to_vec(&rdm_admin::storage::NodeRow::new("mesh9.rpc.1".parse().unwrap(), rdm_core::NodeId::parse("zzzzzzzzzzz1").unwrap(), rdm_core::model::NodeStatus::Ready)).unwrap();
     let line = rdm_admin::store_log::encode_line(&op, "node-record/1", "zzzzzzzzzzz1", &record);
     use std::io::Write;
     std::fs::OpenOptions::new().create(true).append(true).open(target.join(rdm_admin::store_root::NODES_FILE)).unwrap().write_all(&line).unwrap();
@@ -579,7 +579,7 @@ async fn role_node_restart(test: &str, ends: Ends) {
     hold.release("switch").await;
     let frames = terminal(&estate, stream).await;
     estate.artifact("frames.json", &json!(format!("{frames:?}")));
-    let restarted = estate.until_node(ROLE, "the role node re-created at its path.name", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::ReadyForTraffic).cloned()).await;
+    let restarted = estate.until_node(ROLE, "the role node re-created at its path.name", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::Ready).cloned()).await;
     let new_id = restarted.node_id.to_string();
     assert_eq!(estate.data_dir(ROLE).await, data_dir, "the restart is over the same data dir: a new birth over a new one is not restart coverage");
     let (chosen, other, previous): (&str, &Path, &[&str]) = match ends {
@@ -951,7 +951,7 @@ async fn a_connection_event_during_a_change_lands_once_after_the_unblock() {
 /// so it leaves its move unanswered past the staleness floor. Its mesh-primary re-creates it at
 /// mesh2.rpc.1 under a new node id, launched on `test-target`, steps of its unblock attempt, then replies
 /// `unblocked` and the Build completes: the new birth writes
-/// `test-target`, is ready-for-traffic, its records are on `test-target` and none on `file`; the old
+/// `test-target`, is ready, its records are on `test-target` and none on `file`; the old
 /// birth never moves; the Fabric row names `test-target` with `file` previous. Must NOT happen: the
 /// Build waiting on the frozen birth forever, the old birth moving, or the new birth launched on `file`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -967,7 +967,7 @@ async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
     hold.release("switch").await;
     let done = estate.follow(stream).await;
     estate.artifact("frames.json", &json!(format!("{:?}", done.frames)));
-    let renewed = estate.until_node(ROLE, "the role node re-created at its path.name", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::ReadyForTraffic).cloned()).await;
+    let renewed = estate.until_node(ROLE, "the role node re-created at its path.name", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::Ready).cloned()).await;
     let new_id = renewed.node_id.to_string();
     assert_eq!(renewed.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET), "the re-created birth is launched on the new provider: {renewed:?}");
     assert!(!lines_naming(&target_root, &new_id).is_empty() && lines_naming(&file_root, &new_id).is_empty(), "the re-created birth's records are on {TOPOLOGY_STORAGE_TARGET} and none on {FILE}");
@@ -990,7 +990,7 @@ async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
 /// gossiping. Its mesh-primary re-creates it at mesh2.rpc.1 under a new node id launched on
 /// `test-target`, node.delete then node.create, steps of its unblock attempt of the change's own Build
 /// (lead decision D1), and replies `unblocked` only once it is re-created: when the Build
-/// completes the path holds the new birth, ready-for-traffic, writing `test-target`, its records on
+/// completes the path holds the new birth, ready, writing `test-target`, its records on
 /// `test-target` and none on `file`; the old birth never moves; `file` holds nothing the copy did not
 /// carry to `test-target`. Must NOT happen: `unblocked` with the refusing birth standing, the old birth
 /// left writing `file` after the switch, or the new birth launched on `file`.
@@ -1011,7 +1011,7 @@ async fn a_node_that_refuses_its_move_is_recreated_on_the_new_provider() {
     // At the Build's completion, with no wait: the path holds the re-created birth.
     let at_completion = estate.node_view(ROLE).await;
     assert_ne!(at_completion.node_id.to_string(), old_id, "mesh2's mesh-primary replied unblocked only once the refusing birth was re-created: {at_completion:?}");
-    let renewed = estate.until_node(ROLE, "the role node re-created at its path.name, ready-for-traffic", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::ReadyForTraffic).cloned()).await;
+    let renewed = estate.until_node(ROLE, "the role node re-created at its path.name, ready", SETTLE, |v| v.filter(|v| v.node_id.to_string() != old_id && v.status == NodeStatus::Ready).cloned()).await;
     let new_id = renewed.node_id.to_string();
     assert_eq!(renewed.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET), "the re-created birth is launched on the new provider: {renewed:?}");
     assert!(!lines_naming(&target_root, &new_id).is_empty() && lines_naming(&file_root, &new_id).is_empty(), "the re-created birth's records are on {TOPOLOGY_STORAGE_TARGET} and none on {FILE}");
@@ -1083,7 +1083,7 @@ const NODES: &str = rdm_admin::store_root::NODES_FILE;
 const GROWN: &str = "mesh1.rpc.2";
 
 /// A fabric of the faulted node-admin and the testkit rpc node on the deployment provider `provider`
-/// (`process` or `container`), grown to [`two_meshes`], every node ready-for-traffic.
+/// (`process` or `container`), grown to [`two_meshes`], every node ready.
 async fn two_mesh_estate_on(test: &str, provider: &str) -> (Estate, Vec<NodeView>) {
     let sha = candidate_sha();
     let mut set = binding_set(&sha);
@@ -1121,12 +1121,12 @@ async fn node_gets(estate: &Estate, views: &[NodeView]) -> BTreeMap<String, (Str
     out
 }
 
-/// Every birth of `before` is the node `node.get` answers at its `path.name` in `got`, ready-for-traffic.
+/// Every birth of `before` is the node `node.get` answers at its `path.name` in `got`, ready.
 fn serving(got: &BTreeMap<String, (String, Option<String>, NodeStatus)>, before: &BTreeMap<String, (String, Option<String>)>, when: &str) {
     for (name, (id, incarnation)) in before {
         let (got_id, got_incarnation, status) = got.get(name).unwrap_or_else(|| panic!("{when}: node.get answers no {name}: {got:?}"));
         assert_eq!((got_id, got_incarnation), (id, incarnation), "{when}: {name} is the same birth (node id, incarnation)");
-        assert_eq!(*status, NodeStatus::ReadyForTraffic, "{when}: {name} is ready-for-traffic");
+        assert_eq!(*status, NodeStatus::Ready, "{when}: {name} is ready");
     }
 }
 
@@ -1205,9 +1205,9 @@ async fn every_node_serves_through_a_change(test: &str, provider: &str) {
 }
 
 /// CONTRACT (storage.md §2 "Changing it": a storage change "is a property Build: the fabric, every mesh
-/// and every node stay ready-for-traffic, no node restarts, and no node changes state"; i149 R13):
+/// and every node stay ready, no node restarts, and no node changes state"; i149 R13):
 /// on a two-mesh fabric, `node.get` of every node by its id answers the same birth (node id and
-/// incarnation), ready-for-traffic, before the change to `test-target`, while every mesh-primary has
+/// incarnation), ready, before the change to `test-target`, while every mesh-primary has
 /// replied `blocked` and the change is held before its copy, and after the Build completes; every row of a
 /// serving node written during the change, on either provider, records the same node at its path.name
 /// with the status its row held before the change, the last naming `test-target`; each birth's process started once, before the
@@ -1215,8 +1215,8 @@ async fn every_node_serves_through_a_change(test: &str, provider: &str) {
 /// change. Must NOT happen: a node restarted, re-born or replaced, a read unanswered while blocked, or a
 /// row recording another status. The fast gate's cell of this stem.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change() {
-    every_node_serves_through_a_change("every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change", "process").await;
+async fn every_serving_node_keeps_its_birth_and_ready_through_a_change() {
+    every_node_serves_through_a_change("every_serving_node_keeps_its_birth_and_ready_through_a_change", "process").await;
 }
 
 /// CONTRACT (storage.md §2 "Changing it": "The previous provider is kept as it was at the switch, named on
@@ -1289,7 +1289,7 @@ async fn returns_to_a_previous_provider(test: &str, provider: &str) {
     fabric_names(&estate.fabric_view().await, FILE, &[FILE, TOPOLOGY_STORAGE_TARGET]);
     let after = estate.node_views().await;
     assert_eq!(births(&after), before, "every node is the same birth through both changes");
-    assert!(after.iter().all(|v| v.status == NodeStatus::ReadyForTraffic), "every node is ready-for-traffic: {after:?}");
+    assert!(after.iter().all(|v| v.status == NodeStatus::Ready), "every node is ready: {after:?}");
     nodes_write(&after, FILE);
     // The fabric serves on `file`: a Build that omits the provider creates a node, written there alone.
     estate.reconcile(&grown()).await;
@@ -1314,7 +1314,7 @@ async fn returns_to_a_previous_provider(test: &str, provider: &str) {
 /// the fabric left, in order"; i149 R14): a change to `test-target` completes and mesh1.rpc.1's connection
 /// event is written there alone; a later Build naming `file` completes: `file`'s lines at the first switch
 /// stand, then every line of `test-target` follows in source order, the event once; the Fabric row names
-/// `file` with `file` and `test-target` previous; every node is the same birth, ready-for-traffic, writing
+/// `file` with `file` and `test-target` previous; every node is the same birth, ready, writing
 /// `file`; a Build that omits the provider then creates mesh1.rpc.2, written on `file` and none on
 /// `test-target`, which is written no more. Must NOT happen: a line of `file` rewritten, reordered or
 /// copied twice, or a write after the return landing on `test-target`.
@@ -1340,14 +1340,14 @@ mod container {
     }
 
     /// CONTRACT (i149 R13, R15; container provider): every serving node keeps its birth and
-    /// ready-for-traffic through a change, as the process provider's cell states it.
+    /// ready through a change, as the process provider's cell states it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "i149 e5 (R15): the testkit registers test-target beside RDM_STORE_DIR, a place no role node container mounts; a role node refuses its move, and each birth its mesh-primary re-creates on test-target refuses to start (store-test-target not in its container), so the unblock re-creates it without end (storage_change.rs move_until)"]
-    async fn every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change_containers() {
+    async fn every_serving_node_keeps_its_birth_and_ready_through_a_change_containers() {
         if !opted_in("topology storage provider") {
             return;
         }
-        super::every_node_serves_through_a_change("every_serving_node_keeps_its_birth_and_ready_for_traffic_through_a_change_containers", "container").await;
+        super::every_node_serves_through_a_change("every_serving_node_keeps_its_birth_and_ready_through_a_change_containers", "container").await;
     }
 
     /// CONTRACT (i149 R14, R15; container provider): a later Build naming the previous provider returns

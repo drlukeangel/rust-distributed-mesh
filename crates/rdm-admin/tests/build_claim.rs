@@ -42,7 +42,7 @@ fn birth(name: &str, fabric_primary: bool) -> Birth {
     node.endpoint_id = Some(EndpointId(key.public().to_string()));
     node.incarnation_id = Some(IncarnationId::mint());
     node.provider = Some(ProviderKind::Process);
-    node.status = NodeStatus::ReadyForTraffic;
+    node.status = NodeStatus::Ready;
     node.is_primary = fabric_primary;
     node.is_fabric_primary = fabric_primary;
     node.transport_addr = Some("127.0.0.1:1".parse().unwrap());
@@ -51,7 +51,7 @@ fn birth(name: &str, fabric_primary: bool) -> Birth {
 
 fn view(nodes: Vec<Node>) -> Arc<RwLock<Topology>> {
     Arc::new(RwLock::new(Topology {
-        fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: Vec::new(),
         nodes,
     }))
@@ -346,7 +346,7 @@ async fn a_claim_by_a_deleted_birth_is_refused_by_name_and_takes_nothing() {
     let p = builds.read_build(&id).await.unwrap();
     assert_eq!((p.attempt, p.executor.as_deref()), (1, None), "nothing of the refused claim is on the Build log: attempt 2 stays unclaimed: {p:?}");
 
-    rows.put_node(&NodeRow::new(me.clone(), me_id.clone(), NodeStatus::ReadyForTraffic)).await.unwrap();
+    rows.put_node(&NodeRow::new(me.clone(), me_id.clone(), NodeStatus::Ready)).await.unwrap();
     let won = build_claim::decide_claim(&me, &builds, &claims, &contexts, &claim, "mesh1", Some((&rows, &me_id))).await;
     assert!(matches!(won, BuildClaimReply::Won { .. }), "the live birth's claim wins: {won:?}");
 }

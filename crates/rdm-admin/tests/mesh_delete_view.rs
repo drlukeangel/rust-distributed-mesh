@@ -37,7 +37,7 @@ fn digest(fabric: &FabricId, name: &str, mesh_id: &MeshId) -> MeshDigest {
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::ReadyForTraffic,
+        status: MemberStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,
@@ -127,7 +127,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
     println!("cell={cell} trace_id={trace_id} spans={}", dir.join("spans.json").display());
     let mine = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<Value>>();
 
-    assert_eq!(live_before, Some(ScopeStatus::ReadyForTraffic), "before the receipt the view names mesh1 live");
+    assert_eq!(live_before, Some(ScopeStatus::Ready), "before the receipt the view names mesh1 live");
     assert_eq!(after_receipt, Some(ScopeStatus::Dead), "the view installed at the receipt holds mesh1 deleted");
     let event = mine("rdm.mesh.topology.update.via-status-event").into_iter().find(|s| attr(s, "subject") == LAST && attr(s, "frame") == "node-stopped");
     let event = event.unwrap_or_else(|| panic!("the stop of {LAST} was published as a status event in the cell's trace {trace_id}"));

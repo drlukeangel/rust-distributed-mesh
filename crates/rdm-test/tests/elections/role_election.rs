@@ -38,7 +38,7 @@ async fn settle(estate: &Estate, label: &str) -> Vec<Value> {
     estate
         .until_view(&format!("{label}: the view settles on the computed seats"), Duration::from_secs(30), |views| {
             let nodes = live(&Estate::values(views));
-            (!nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && primaries_as_expected(&nodes).is_ok()).then_some(nodes)
+            (!nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready") && primaries_as_expected(&nodes).is_ok()).then_some(nodes)
         })
         .await
 }
@@ -88,7 +88,7 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     let view = estate
         .until_view("the view's one broker primary is the announced successor and the killed birth is gone", rdm_transport::topology::staleness_floor() + Duration::from_secs(30), |view| {
             let advertised: Vec<_> = view.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::Broker && n.is_primary).collect();
-            let killed_gone = !view.iter().any(|n| n.node_id.to_string() == killed_id && n.status == NodeStatus::ReadyForTraffic);
+            let killed_gone = !view.iter().any(|n| n.node_id.to_string() == killed_id && n.status == NodeStatus::Ready);
             (advertised.len() == 1 && advertised[0].node_id.to_string() == succ_id && killed_gone).then(|| view.to_vec())
         })
         .await;

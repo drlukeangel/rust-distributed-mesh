@@ -204,8 +204,8 @@ async fn estate() -> Estate {
     }
     rdm_admin::election::resolve(&mut nodes);
     let view = Arc::new(RwLock::new(Topology {
-        fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: SHAPE.iter().map(|(m, _, _)| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect(),
+        fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: SHAPE.iter().map(|(m, _, _)| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::Ready }).collect(),
         nodes,
     }));
     let builds = Arc::new(MemoryBuildStateAdapter::new());
@@ -222,7 +222,7 @@ fn birth(world: &World, digest_view: &DigestView, fabric_id: &FabricId, path: &s
     n.node_id = NodeId::mint();
     n.incarnation_id = Some(IncarnationId::mint());
     n.endpoint_id = Some(EndpointId(iroh::SecretKey::generate().public().to_string()));
-    n.status = NodeStatus::ReadyForTraffic;
+    n.status = NodeStatus::Ready;
     let pid = world.add(path, n.node_id.as_str());
     digest_view.record(MeshDigest { held_hash: Default::default(),
         fabric_id: fabric_id.clone(),
@@ -235,7 +235,7 @@ fn birth(world: &World, digest_view: &DigestView, fabric_id: &FabricId, path: &s
             supersedes,
             runtime: Some(fact(pid)),
         },
-        status: MemberStatus::ReadyForTraffic,
+        status: MemberStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,
         emitted_at_rafka_ms: 0,
@@ -360,7 +360,7 @@ async fn hear(world: &World, view: &RwLock<Topology>) {
     let mut changed = false;
     for n in v.nodes.iter_mut().filter(|n| n.status == NodeStatus::PendingReconnect && forwarded.contains(&n.mesh)) {
         if world.of(n.node_id.as_str()).is_some_and(|r| matches!(r.status, DeploymentStatus::Running) && r.answers) {
-            n.status = NodeStatus::ReadyForTraffic;
+            n.status = NodeStatus::Ready;
             changed = true;
         }
     }
@@ -473,7 +473,7 @@ impl Estate {
         let mut v = self.view.write().await;
         for n in v.nodes.iter_mut() {
             if n.name.to_string() == path {
-                n.status = NodeStatus::ReadyForTraffic;
+                n.status = NodeStatus::Ready;
             } else if n.name.to_string() == lost {
                 n.status = NodeStatus::Dead;
             }
@@ -483,7 +483,7 @@ impl Estate {
 
     /// The fabric-primary's first drive pass after a peer mesh lost its primary while its other
     /// node-admin `survivor` is held silent (R-D1; R-A2 "cross-mesh only when the whole cohort is
-    /// proven lost"; elections §5: the seat goes to the lowest ReadyForTraffic NodeId of its own mesh): the
+    /// proven lost"; elections §5: the seat goes to the lowest Ready NodeId of its own mesh): the
     /// drive stalls naming the mesh and `survivor`, nothing is dispatched and nothing is born; then
     /// `survivor` is seated by its own mesh and is the executor from there.
     async fn stalls_until_elected(&self, lost_mesh: &str, lost: &str) -> String {
@@ -1603,7 +1603,7 @@ mod fully_crashed_mesh {
     /// the new mesh-primary after that moment: not by the recovered mesh's view alone, not by a report of a
     /// node-admin the proof found, only by a birth the proof did not find reporting after the claim
     /// ("Only on that report, the fabric-primary clears the degraded health observation"). Must NOT
-    /// happen: a create of a node-admin that leaves the fabric `ready-for-traffic`, or `degraded` that
+    /// happen: a create of a node-admin that leaves the fabric `ready`, or `degraded` that
     /// never clears.
     #[tokio::test]
     async fn the_fabric_primary_authors_degraded_when_it_claims_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it() {
@@ -1641,7 +1641,7 @@ mod fully_crashed_mesh {
                 n.is_primary = n.name.to_string() == admins[0];
                 if n.is_primary {
                     n.incarnation_id = Some(recovered.clone());
-                    n.status = NodeStatus::ReadyForTraffic;
+                    n.status = NodeStatus::Ready;
                 }
             }
             let clear = || rdm_admin::investigate::restore_peer_recovery(&me, &records, &view);

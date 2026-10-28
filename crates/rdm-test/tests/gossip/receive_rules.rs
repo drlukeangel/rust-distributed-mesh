@@ -38,7 +38,7 @@ fn an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_i
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the receiver joins the live mesh");
-        crate::forward_gossip_probe(&sender, &frame("ready-for-traffic")).await.unwrap();
+        crate::forward_gossip_probe(&sender, &frame("ready")).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while receiver.mesh_status("mesh1").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.expect("the receiver holds the initial status");
@@ -50,7 +50,7 @@ fn an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_i
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the conflicting frame reaches the receiver");
-        assert_eq!(receiver.mesh_status("mesh1").unwrap().status, "ready-for-traffic");
+        assert_eq!(receiver.mesh_status("mesh1").unwrap().status, "ready");
         sender_ep.close().await;
         receiver_ep.close().await;
     });
@@ -82,7 +82,7 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the receiver joins the live mesh");
-        let initial = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
+        let initial = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
         crate::forward_gossip_probe(&sender, &initial).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-mesh-status" && s["attributes"]["taken"] == "true") { tokio::time::sleep(Duration::from_millis(10)).await; }
@@ -100,7 +100,7 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
         }).await.expect("RDM receives the offered status exactly once");
         assert_eq!(*changes.borrow(), changes_before, "a refused or duplicate status emits no projection-change notification");
         let held = receiver.mesh_status("mesh1").unwrap();
-        assert_eq!((held.status.as_str(), held.publisher.as_str(), held.changed_at_rafka_ms), ("ready-for-traffic", "mesh1.admin.1", 100), "the held projection does not move");
+        assert_eq!((held.status.as_str(), held.publisher.as_str(), held.changed_at_rafka_ms), ("ready", "mesh1.admin.1", 100), "the held projection does not move");
         sender_ep.close().await;
         receiver_ep.close().await;
     });
@@ -125,7 +125,7 @@ fn an_older_mesh_status_is_refused_with_a_named_stale_span() {
 /// with via-duplicate naming its identity; forwarding metadata cannot create another status fact.
 #[test]
 fn an_identical_mesh_status_is_ignored_with_a_named_duplicate_span() {
-    let spans = mesh_status_receipt("rdm-mesh-status-duplicate", "ready-for-traffic", 100);
+    let spans = mesh_status_receipt("rdm-mesh-status-duplicate", "ready", 100);
     assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-duplicate"
         && s["attributes"]["frame"] == "mesh-status" && s["attributes"]["identity"] == "mesh1 mesh1.admin.1 changed_at_rafka_ms=100"
         && s["attributes"]["outcome"] == "ignored"), "a duplicate must name the frame and identity and record ignored");
@@ -152,7 +152,7 @@ fn fabric_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serd
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the receiver joins the live mesh");
-        let initial = Frame::FabricStatus { fabric: fabric.clone(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
+        let initial = Frame::FabricStatus { fabric: fabric.clone(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
         crate::forward_gossip_probe(&sender, &initial).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-fabric-status" && s["attributes"]["taken"] == "true") { tokio::time::sleep(Duration::from_millis(10)).await; }
@@ -169,7 +169,7 @@ fn fabric_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serd
         let receipts = capture.spans().unwrap();
         assert!(receipts.iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-fabric-status" && s["attributes"]["forwarded_by"] == "mesh2.admin.1" && s["attributes"]["taken"] == "false"), "the offered fabric status has no apply effect");
         let held = receiver.fabric_status().unwrap();
-        assert_eq!((held.status.as_str(), held.publisher.as_str(), held.changed_at_rafka_ms), ("ready-for-traffic", "mesh1.admin.1", 100), "the held projection does not move");
+        assert_eq!((held.status.as_str(), held.publisher.as_str(), held.changed_at_rafka_ms), ("ready", "mesh1.admin.1", 100), "the held projection does not move");
         sender_ep.close().await;
         receiver_ep.close().await;
     });
@@ -195,7 +195,7 @@ fn an_older_fabric_status_is_refused_with_a_named_stale_span() {
 /// ignored with a named duplicate span; forwarding metadata does not create a new status fact.
 #[test]
 fn an_identical_fabric_status_is_ignored_with_a_named_duplicate_span() {
-    let spans = fabric_status_receipt("rdm-fabric-status-duplicate", "ready-for-traffic", 100);
+    let spans = fabric_status_receipt("rdm-fabric-status-duplicate", "ready", 100);
     assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-duplicate"
         && s["attributes"]["frame"] == "fabric-status" && s["attributes"]["identity"] == "fab000000001 mesh1.admin.1 changed_at_rafka_ms=100"
         && s["attributes"]["outcome"] == "ignored"), "a fabric duplicate must name its identity and record ignored");
@@ -234,7 +234,7 @@ fn delayed_status_predecessors_lose_by_committed_revision() {
             } else {
                 Frame::MeshStatus { mesh: "mesh1".into(), status: status.into(), publisher: publisher.into(), forwarded_by: None, changed_at_rafka_ms }
             };
-            crate::forward_gossip_probe(&sender, &frame("ready-for-traffic", "mesh1.admin.2", 1000).authored(&successor, 2, 1000)).await.unwrap();
+            crate::forward_gossip_probe(&sender, &frame("ready", "mesh1.admin.2", 1000).authored(&successor, 2, 1000)).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while if fabric_scope { receiver.fabric_status().is_none() } else { receiver.mesh_status("mesh1").is_none() } { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.unwrap();
@@ -244,7 +244,7 @@ fn delayed_status_predecessors_lose_by_committed_revision() {
                 while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == kind) { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.unwrap();
             let held = if fabric_scope { receiver.fabric_status().map(|h| (h.status, h.publisher, h.changed_at_rafka_ms)) } else { receiver.mesh_status("mesh1").map(|h| (h.status, h.publisher, h.changed_at_rafka_ms)) };
-            assert_eq!(held, Some(("ready-for-traffic".into(), "mesh1.admin.2".into(), 1000)));
+            assert_eq!(held, Some(("ready".into(), "mesh1.admin.2".into(), 1000)));
             assert!(capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == kind && s["attributes"]["held_key"] == "00000000000000000002.00000000000000001000" && s["attributes"]["frame_key"] == "00000000000000000001.00000000000000009000"));
         }
         sender_ep.close().await; receiver_ep.close().await;

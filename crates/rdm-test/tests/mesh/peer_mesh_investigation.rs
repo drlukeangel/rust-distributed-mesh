@@ -61,7 +61,7 @@ fn values(views: &[NodeView]) -> Vec<Value> {
     views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect()
 }
 
-/// The fabric's lifecycle state as `fabric.get` words it (`ready-for-traffic`, `degraded`, ...).
+/// The fabric's lifecycle state as `fabric.get` words it (`ready`, `degraded`, ...).
 fn status_word(status: ScopeStatus) -> String {
     s(&serde_json::to_value(status).expect("a status serializes"))
 }
@@ -98,15 +98,15 @@ async fn fixture(cell: &str) -> Fixture {
     // Control goes through the fabric primary's advertised API, which no fault here touches.
     estate.enter(&Estate::path(&fabric_primary)).await;
     // The fault falls on an established fabric, so the cells that assert the fabric stays ready start
-    // from ready-for-traffic.
+    // from ready.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    // The fault falls on a mesh whose status is published: the fabric is ready-for-traffic at the
+    // The fault falls on a mesh whose status is published: the fabric is ready at the
     // fabric-primary's apply of the mesh's ready, the moment the mesh's primary sends it (states.md), so
     // the fixture waits for that send and its first repeat in the primary's own spans.
     let primary = before.iter().find(|n| n["mesh"] == lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("the lost mesh has a primary node-admin");
-    wait_for("the lost mesh's primary has sent its ready-for-traffic status and repeated it", Duration::from_secs(60), || {
+    wait_for("the lost mesh's primary has sent its ready status and repeated it", Duration::from_secs(60), || {
         let spans = estate.spans();
-        let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "scope") == format!("mesh:{lost}") && attr(sp, "node") == primary && attr(sp, "status") == "ready-for-traffic").count();
+        let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "scope") == format!("mesh:{lost}") && attr(sp, "node") == primary && attr(sp, "status") == "ready").count();
         async move { (sends >= 2).then_some(()) }
     })
     .await;
@@ -186,12 +186,12 @@ impl Fixture {
     }
 }
 
-/// The changed_at of the first MeshStatus `ready-for-traffic` of `mesh` sent before `before_ms`.
+/// The changed_at of the first MeshStatus `ready` of `mesh` sent before `before_ms`.
 fn mesh_status_change_before(spans: &[Value], mesh: &str, before_ms: u64) -> Option<String> {
     let scope = format!("mesh:{mesh}");
     named(spans, "rdm.mesh.fabric.update.via-status-send")
         .into_iter()
-        .filter(|sp| attr(sp, "scope") == scope && attr(sp, "status") == "ready-for-traffic" && at_ns(sp) / 1_000_000 < before_ms)
+        .filter(|sp| attr(sp, "scope") == scope && attr(sp, "status") == "ready" && at_ns(sp) / 1_000_000 < before_ms)
         .min_by_key(|sp| at_ns(sp))
         .map(|sp| attr(sp, "changed_at_rafka_ms"))
 }
@@ -288,10 +288,10 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     })
     .await;
     let after = values(&f.estate.settles_to(&[("mesh1", 2, 3), ("mesh2", 2, 3)], Duration::from_secs(90)).await);
-    wait_for("the fabric is ready again", Duration::from_secs(30), || async { (f.fabric_status().await == "ready-for-traffic").then_some(()) }).await;
+    wait_for("the fabric is ready again", Duration::from_secs(30), || async { (f.fabric_status().await == "ready").then_some(()) }).await;
     // The sampler polls on its own cadence: stop it only once it has recorded the return to ready.
     wait_for("the sampler records the return to ready", Duration::from_secs(10), || {
-        let seen = statuses.lock().unwrap().last().is_some_and(|(st, _)| st == "ready-for-traffic");
+        let seen = statuses.lock().unwrap().last().is_some_and(|(st, _)| st == "ready");
         async move { seen.then_some(()) }
     })
     .await;
@@ -305,9 +305,9 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     let seat_lost_or_five = |spans: &[Value]| {
         let sent = named(spans, "rdm.mesh.fabric.update.via-status-send")
             .into_iter()
-            .filter(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready-for-traffic" && at_ns(sp) / 1_000_000 > degraded_ms)
+            .filter(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready" && at_ns(sp) / 1_000_000 > degraded_ms)
             .count();
-        let any_sent = named(spans, "rdm.mesh.fabric.update.via-status-send").into_iter().any(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready-for-traffic" && at_ns(sp) / 1_000_000 > degraded_ms);
+        let any_sent = named(spans, "rdm.mesh.fabric.update.via-status-send").into_iter().any(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready" && at_ns(sp) / 1_000_000 > degraded_ms);
         let seat_lost = any_sent && named(spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().any(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "role") == "stop" && at_ns(sp) / 1_000_000 > degraded_ms);
         (sent, seat_lost)
     };
@@ -384,7 +384,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     // FabricStatus: never degraded before the verdict; degraded from it; ready again after.
     let degraded_at = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or_else(|| panic!("the fabric primary showed degraded: {statuses:?}"));
     assert!(degraded_at >= at_ns(verdict) / 1_000_000 - 200, "degraded is authored at the verdict, not before: {statuses:?}");
-    assert!(statuses.last().is_some_and(|(st, _)| st == "ready-for-traffic"), "the fabric is ready again: {statuses:?}");
+    assert!(statuses.last().is_some_and(|(st, _)| st == "ready"), "the fabric is ready again: {statuses:?}");
 
     // The mark sends nothing and the fabric primary never authors the peer mesh's status; the
     // fabric's two changes are five identical sends each.
@@ -410,7 +410,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     };
     let degraded_sent = sent_by("degraded", last_heard_ms, true);
     assert!(!degraded_sent.is_empty() && degraded_sent.values().all(|n| *n == 5), "degraded is one change sent five identical times: {degraded_sent:?}");
-    let ready_sent = sent_by("ready-for-traffic", degraded_ms, !seat_moved);
+    let ready_sent = sent_by("ready", degraded_ms, !seat_moved);
     assert!(!ready_sent.is_empty(), "the return to ready was sent: {ready_sent:?}");
     if seat_moved {
         assert!(ready_sent.values().all(|n| (1..=5).contains(n)), "one change, sent while its author held the seat: {ready_sent:?}");
@@ -491,7 +491,7 @@ async fn an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stop
     let probes = f.probes_before(&spans, story_end);
     assert_eq!(probes.len(), 1, "an answering node-admin stops the investigation after probe 1: {probes:#?}");
     assert!(f.admin_creates(&spans).is_empty(), "no node.create for a node-admin that answers");
-    assert_eq!(fabric, "ready-for-traffic", "the fabric is never degraded for an admin that is alive");
+    assert_eq!(fabric, "ready", "the fabric is never degraded for an admin that is alive");
     let verdicts = f.verdicts(&spans);
     assert!(verdicts.iter().any(|v| attr(v, "outcome") == "admin-alive"), "the verdict names admin-alive: {verdicts:#?}");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "cut_unix_ms": cut_ms, "probe": first["attributes"]}));
@@ -544,7 +544,7 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     let spans = f.estate.spans();
     assert_eq!(f.probes_before(&spans, story_end).len(), 1, "a mesh heard again is not probed a second time: {:#?}", f.probes(&spans));
     assert!(f.admin_creates(&spans).is_empty(), "no node.create for a mesh that is heard again");
-    assert_eq!(fabric, "ready-for-traffic");
+    assert_eq!(fabric, "ready");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probes": f.probes(&spans).iter().map(|p| p["attributes"].clone()).collect::<Vec<_>>(), "verdict": verdict["attributes"]}));
 }
 
@@ -671,7 +671,7 @@ async fn an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones
     assert_eq!(f.probes_before(&spans, story_end).len(), 2, "no third probe: {:#?}", f.probes(&spans));
     assert!(f.admin_creates(&spans).is_empty(), "the latest probe decides: no node.create");
     assert!(f.verdicts(&spans).iter().any(|v| attr(v, "outcome") == "admin-alive"));
-    assert_eq!(fabric, "ready-for-traffic");
+    assert_eq!(fabric, "ready");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probe_1": first["attributes"], "probe_2": second["attributes"]}));
 }
 
@@ -869,11 +869,11 @@ async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degra
         let (estate, frozen, frozen_id) = (&f.estate, frozen.clone(), frozen_id.clone());
         async move {
             let nodes = estate.node_values().await;
-            nodes.iter().any(|n| s(&n["name"]) == frozen && n["status"] == "ready-for-traffic" && s(&n["node_id"]) != frozen_id).then_some(())
+            nodes.iter().any(|n| s(&n["name"]) == frozen && n["status"] == "ready" && s(&n["node_id"]) != frozen_id).then_some(())
         }
     })
     .await;
-    wait_for("the fabric is ready again", Duration::from_secs(120), || async { (f.fabric_status().await == "ready-for-traffic").then_some(()) }).await;
+    wait_for("the fabric is ready again", Duration::from_secs(120), || async { (f.fabric_status().await == "ready").then_some(()) }).await;
     // Continued, the old birth comes back as a deleted birth: its mesh-primary reports it.
     signal(frozen_pid, "-CONT");
     wait_for("the continued old birth is reported as a deleted birth", Duration::from_secs(120), || {

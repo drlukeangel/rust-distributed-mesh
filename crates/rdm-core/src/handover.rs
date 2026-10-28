@@ -8,7 +8,7 @@
 //! successor, revision)`, the fabric-primary a second entry of node type `fabric`. The successor
 //! installs it in its own view and answers [`NodePrimaryUpdateReply::PrimaryUpdated`]
 //! (node.primary.updated); the primary hands that answer up to its commander. The receiver refuses
-//! only a conflicting payload for the same operation and a fabric not first ready-for-traffic; it never
+//! only a conflicting payload for the same operation and a fabric not first ready; it never
 //! refuses a call for the birth it names (R-UC1a, R-RX5). No row and no frame of its own record the
 //! change: the successor's digest carries it and the mesh-primary records it on the node's row. The
 //! family's outcomes sit on the framework's six: `NotReady`, `Malformed`, `PeerUnresolved`, `Busy`,

@@ -79,8 +79,8 @@ async fn lose_mesh1_unproven(estate: &Estate, nodes: &[Value]) -> Vec<u64> {
 
 /// CONTRACT (Q122; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2,
 /// "Outside its mesh": "No answer from any of them by the decision step starts fabric recovery at the
-/// lowest ReadyForTraffic mesh-primary, exactly as in the own-mesh arm"; "It takes no primary role";
-/// step 4: the node at the fabric-primary's path.name, ReadyForTraffic, is restored as mesh-primary and
+/// lowest Ready mesh-primary, exactly as in the own-mesh arm"; "It takes no primary role";
+/// step 4: the node at the fabric-primary's path.name, Ready, is restored as mesh-primary and
 /// fabric-primary): mesh1 is the fabric-primary's mesh. mesh2's admins cannot inspect mesh1's runtimes
 /// (the provider-unproven cut: their inspection answers `Unknown`), and every process of mesh1 is killed. mesh2's primary probes mesh1's admins,
 /// each `unreachable`. Fabric recovery does not start before the decision step (twice the floor); at
@@ -109,7 +109,7 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from
             let ns = Estate::values(views);
             let holders: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
             assert!(holders.iter().all(|h| h == fp), "only the node at {fp} is ever fabric-primary: {holders:?}");
-            ns.iter().find(|n| n["name"] == fp && s(&n["node_id"]) != old_node_id && n["status"] == "ready-for-traffic" && n["is_fabric_primary"] == true && n["is_primary"] == true).map(|_| ())
+            ns.iter().find(|n| n["name"] == fp && s(&n["node_id"]) != old_node_id && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true).map(|_| ())
         })
         .await;
     estate.stop().await;
@@ -164,7 +164,7 @@ async fn a_lost_fabric_primary_whose_runtime_lives_in_another_control_domain_is_
 async fn new_birth_within(estate: &Estate, node: &str, old: &str, within: Duration) -> Option<rdm_core::views::NodeView> {
     let until = std::time::Instant::now() + within;
     while std::time::Instant::now() < until {
-        let found = estate.node_views().await.into_iter().find(|n| n.name.to_string() == node && n.node_id.to_string() != old && n.status == rdm_core::views::NodeStatus::ReadyForTraffic);
+        let found = estate.node_views().await.into_iter().find(|n| n.name.to_string() == node && n.node_id.to_string() != old && n.status == rdm_core::views::NodeStatus::Ready);
         if found.is_some() {
             return found;
         }
@@ -187,10 +187,10 @@ fn spans_where(spans: &[Value], name: &str, key: &str, value: &str) -> Vec<Strin
 /// CONTRACT (Q122; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 3:
 /// node recovery re-creates the lost node "over a newly allocated data dir, `inherited = false`" when
 /// the investigation's provider step did not find the old runtime exited (`R-FM2`); step 4: the node
-/// at the fabric-primary's path.name, ReadyForTraffic, is restored as mesh-primary and fabric-primary):
+/// at the fabric-primary's path.name, Ready, is restored as mesh-primary and fabric-primary):
 /// mesh1 is the fabric-primary's mesh and is lost, its runtimes uninspectable from mesh2. mesh2's admin
 /// runs fabric recovery from the backbone: its node.delete of the lost birth writes the old row
-/// `Deleted`, and its node.create makes a new node.id at mesh1.admin.1, ready for traffic, over a data
+/// `Deleted`, and its node.create makes a new node.id at mesh1.admin.1, ready, over a data
 /// dir that is not the old birth's, with a newly minted endpoint key, told `RDM_INHERITED_DATA_DIR=0`;
 /// the old birth's data dir is left as it was. The workflow restores that node as mesh-primary and
 /// fabric-primary, and it installs the roles. Must NOT happen: the old birth's data dir or endpoint
@@ -252,7 +252,7 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
 /// node-recovery.md "Retained": "the inherited data dir and endpoint key when the verdict is
 /// `exited`"): mesh1 holds the fabric-primary and is lost; mesh2's admin can inspect it, so the old birth's
 /// node.delete reads its runtime exited at its `TerminateRuntime`, and mesh2's primary re-creates
-/// mesh1.admin.1 over the old birth's data dir: a new node.id at mesh1.admin.1, ready for traffic, with
+/// mesh1.admin.1 over the old birth's data dir: a new node.id at mesh1.admin.1, ready, with
 /// the old birth's endpoint key, told `RDM_INHERITED_DATA_DIR=1`. Must NOT happen: a newly allocated
 /// data dir or a newly minted key for an admin whose runtime exited.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -412,7 +412,7 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
             let v = estate.node_values_at(admin).await;
             let fps: Vec<String> = v.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
             let primaries: Vec<String> = v.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).collect();
-            let ready = mesh1.iter().all(|name| v.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic"));
+            let ready = mesh1.iter().all(|name| v.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready"));
             let same = v.iter().any(|n| n["name"] == fp && s(&n["node_id"]) == fp_id && s(&n["incarnation_id"]) == fp_inc && n["is_primary"] == true && n["is_fabric_primary"] == true);
             (ready && same && fps == vec![fp.to_string()] && primaries == vec![fp.to_string()]).then_some(())
         })
@@ -489,7 +489,7 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
 
 /// CONTRACT (fabric-recovery.md step 3: "A runtime the executor can inspect running but cannot reach is
 /// unreachable from the executor, not lost; a running fabric-primary its own mesh cannot reach is the
-/// own-mesh arm's (Q153)"): mesh1's other node-admin, the lowest ReadyForTraffic one in its own view once
+/// own-mesh arm's (Q153)"): mesh1's other node-admin, the lowest Ready one in its own view once
 /// the fabric-primary is unheard, hears and is heard by no node (every datagram to or from its port
 /// dropped) while the fabric-primary mesh1.admin.1 runs and the rest of mesh1 reaches it. The own-mesh arm's
 /// node investigation of the fabric-primary has no eligible peer to tickle through, goes to the provider and
@@ -570,7 +570,7 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
     assert!(opened.is_empty(), "no recovery was opened for the running fabric-primary: {opened:#?}");
     // The isolated admin's ladder went to the provider reached through no carrier: `via-unreached` is the
     // ladder nobody answered, direct or through a peer. Its `carriers` are the peers it asked (offline.rs
-    // `carriers`: node-tickle.md step 3's eligible live peers, which its view may still hold ready-for-traffic
+    // `carriers`: node-tickle.md step 3's eligible live peers, which its view may still hold ready
     // in the cut's first floor), never ones that reached it. The fabric-primary's process runs, so the
     // provider reads it `running` (the arm's own span, which names the verdict, stays open while it looks
     // again a floor on).
@@ -587,14 +587,14 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
 /// with its own node.id ... Before any recovery mutation other than the claim itself, it claims the
 /// fabric-recovery attempt of the current Build for that mesh ... Otherwise the claimed attempt releases
 /// the name, re-creates the birth as itself, adopts rafka-time from live members, and restores it as
-/// fabric-primary by step 4 once ReadyForTraffic"): a one-mesh fabric's sole node-admin, the
+/// fabric-primary by step 4 once Ready"): a one-mesh fabric's sole node-admin, the
 /// fabric-primary, is killed while its two members serve. A person launches a node-admin at
 /// mesh1.admin.1 over a new data dir, handed the fabric id, mesh1, the store root and the custody in its
 /// environment. It claims the attempt before it writes anything else, releases the lost birth's name,
 /// takes it under a new node.id, joins the members, adopts rafka-time from one of them and is the
 /// fabric-primary and mesh1's primary; its attempt closed, it then grows mesh1 by a Build. Must NOT happen: a second fabric (a new fabric or mesh id on the
 /// store), a write of the lost birth's row before the claim, a member re-created, or a member declaring
-/// anything but ready-for-traffic after the loss.
+/// anything but ready after the loss.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_its_path_name_that_becomes_fabric_primary() {
     let test = "the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_its_path_name";
@@ -636,7 +636,7 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     })
     .await;
     for (name, inc) in &members {
-        assert!(after.iter().any(|n| s(&n["name"]) == *name && s(&n["incarnation_id"]) == *inc && n["status"] == "ready-for-traffic"), "{name} keeps its birth {inc}, ready for traffic: {after:#?}");
+        assert!(after.iter().any(|n| s(&n["name"]) == *name && s(&n["incarnation_id"]) == *inc && n["status"] == "ready"), "{name} keeps its birth {inc}, ready: {after:#?}");
     }
     assert_eq!(estate.mesh_view("mesh1").await.id.map(|i| i.to_string()), mesh_id, "mesh1 keeps its MeshId");
     // The adoption's attempt closed at its Ready: the adopted fabric-primary runs the next Build on mesh1.
@@ -658,8 +658,8 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     assert!(pulled.len() == 1 && attr(pulled[0], "source") == "pull", "rafka-time adopted from a live member: {pulled:#?}");
     let left: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
-        .filter(|sp| at(sp) >= lost_at && members.iter().any(|(m, _)| attr(sp, "node") == *m) && !attr(sp, "state").contains("ReadyForTraffic"))
+        .filter(|sp| at(sp) >= lost_at && members.iter().any(|(m, _)| attr(sp, "node") == *m) && !attr(sp, "state").contains("Ready"))
         .collect();
-    assert!(left.is_empty(), "no member left ready-for-traffic: {left:#?}");
+    assert!(left.is_empty(), "no member left ready: {left:#?}");
     println!("trace_id={}", claims[0]["trace_id"].as_str().unwrap_or(""));
 }

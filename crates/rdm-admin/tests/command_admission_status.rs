@@ -65,7 +65,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     assert!(topology_view.digest_view.started(&rpc.node.node_id, &rpc.node.incarnation, &rpc.node.name), "node.started of the member");
     let status = |d: &MeshDigest| topology_view.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
     let projected = |d: &MeshDigest| backbone.own_members(&topology_view).into_iter().find(|m| m.node.node_id == d.node.node_id).map(|m| m.status);
-    assert_eq!(status(&rpc), Some(MemberStatus::ReadyForTraffic));
+    assert_eq!(status(&rpc), Some(MemberStatus::Ready));
 
     assert!(topology_view.digest_view.reported(&rpc.node.node_id, &rpc.node.incarnation, MemberStatus::ConnectionsDeleting), "the member's report of connections-deleting is recorded");
     assert_eq!(status(&rpc), Some(MemberStatus::ConnectionsDeleting), "the node's report of connections-deleting sets the member connections-deleting");
@@ -85,7 +85,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
 /// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets its
 /// status"; gossip.md §3.1: a Digest "carries no status"): a member's `DeclareNodeState` applied by its
 /// mesh-primary's status authority sets the member's status in that primary's view, which its member
-/// projection carries: its ReadyForTraffic (node.started), then its ConnectionsDeleting (a node-admin frozen by the
+/// projection carries: its Ready (node.started), then its ConnectionsDeleting (a node-admin frozen by the
 /// fabric shutdown says it so, and the shutdown's freeze barrier reads it from the projection). A
 /// refused report sets nothing. Must NOT happen: a member's reported state applied to its declared row
 /// and nowhere else, so every other node holds it as it was.
@@ -112,7 +112,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
         n.node_id = id;
         n.incarnation_id = Some(inc);
         n.provider = Some(ProviderKind::Process);
-        n.status = NodeStatus::ReadyForTraffic;
+        n.status = NodeStatus::Ready;
         n.is_primary = primary;
         n.is_fabric_primary = primary;
         n
@@ -120,7 +120,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     let me = node("mesh1.admin.1", true, NodeId::mint(), IncarnationId::mint());
     let subject = node("mesh1.admin.2", false, member.node.node_id.clone(), member.node.incarnation.clone());
     let topology = Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {
-        fabric: Fabric { id: fabric.clone(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: fabric.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: Vec::new(),
         nodes: vec![me.clone(), subject.clone()],
     }));
@@ -159,8 +159,8 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     let status = || topology_view.digest_view.get(member.node.node_id.as_str()).map(|(h, _)| h.status);
     let declare = |state| StatusRequest::DeclareNodeState { node_id: member.node.node_id.clone(), incarnation: member.node.incarnation.clone(), state, operation: None };
     assert_eq!(status(), Some(MemberStatus::Pending));
-    assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::ReadyForTraffic)).await, StatusReply::Applied);
-    assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "its node.started sets it ready-for-traffic");
+    assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::Ready)).await, StatusReply::Applied);
+    assert_eq!(status(), Some(MemberStatus::Ready), "its node.started sets it ready");
     assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::ConnectionsDeleting)).await, StatusReply::Applied);
     assert_eq!(status(), Some(MemberStatus::ConnectionsDeleting), "its reported ConnectionsDeleting sets it ConnectionsDeleting");
     let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: me.incarnation_id.clone().unwrap(), node_id: me.node_id.clone() }, vec![]).await.unwrap();

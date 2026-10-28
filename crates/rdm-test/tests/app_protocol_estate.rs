@@ -148,34 +148,34 @@ impl Day0 {
         Estate::until_complete(&mut stream).await;
     }
 
-    /// `node` listed ready-for-traffic by the admin's `mesh.nodes.get` of its mesh.
+    /// `node` listed ready by the admin's `mesh.nodes.get` of its mesh.
     async fn until_ready(&self, node: &PathName) {
         tokio::time::timeout(WRONG, async {
             loop {
                 let listed = rdm_test::typed::mesh_nodes(&self.nodes, &node.mesh).await.unwrap_or_else(|e| panic!("nodes.get [mesh: {}]: {e}", node.mesh));
-                if listed.iter().any(|n| &n.name == node && n.status == NodeStatus::ReadyForTraffic) {
+                if listed.iter().any(|n| &n.name == node && n.status == NodeStatus::Ready) {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("{node} never listed ready-for-traffic"));
+        .unwrap_or_else(|_| panic!("{node} never listed ready"));
     }
 
-    /// The fabric's own status ready-for-traffic: a node.restart and a new mesh are run once the fabric
-    /// first reached it (states.md, "The initial fabric before ready-for-traffic").
+    /// The fabric's own status ready: a node.restart and a new mesh are run once the fabric
+    /// first reached it (states.md, "The initial fabric before ready").
     async fn until_fabric_ready(&self) {
         tokio::time::timeout(WRONG, async {
             loop {
-                if rdm_test::typed::the_fabric(&self.fabrics).await.is_ok_and(|f| f.status == rdm_client::ScopeStatus::ReadyForTraffic) {
+                if rdm_test::typed::the_fabric(&self.fabrics).await.is_ok_and(|f| f.status == rdm_client::ScopeStatus::Ready) {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
         .await
-        .expect("the fabric never first reached ready-for-traffic");
+        .expect("the fabric never first reached ready");
     }
 
     /// The birth `node` holds now, as the Day-0 admin's resolver resolves it.

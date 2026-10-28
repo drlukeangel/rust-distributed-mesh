@@ -37,7 +37,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
             return;
         }
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
         let dir = std::env::temp_dir().join(format!("stop-start-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
@@ -66,7 +66,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
 
         let digest_view = &admin.observer.topology_view.digest_view;
         let mut heard = digest_view.heard_changes();
-        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+        while digest_view.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Ready) {
             heard.changed().await.unwrap();
         }
         let (born, _) = digest_view.get(launch.node_id.as_str()).unwrap();
@@ -84,7 +84,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 2, operation: "node.start:mesh1.rpc.1".into() };
 
         // A live node refuses a start: only a stopped one starts.
-        assert!(matches!(call(&admin, &target, &start).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "a start of a live node is refused naming its state");
+        assert!(matches!(call(&admin, &target, &start).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Ready }), "a start of a live node is refused naming its state");
 
         // The stop is answered Stopped on its own call, with the drain's receipt.
         let left = call(&admin, &target, &stop).await;
@@ -105,7 +105,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         assert_eq!(call(&admin, &target, &start).await, StatusReply::Started);
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         loop {
-            if matches!(call(&admin, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
+            if matches!(call(&admin, &target, &probe).await, StatusReply::Current { state: NodeState::Ready, .. }) {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "the started node never reported ready");
@@ -136,7 +136,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         let reissued = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 3, operation: "node.start:mesh1.rpc.1".into() };
         assert_eq!(call(&admin, &target, &reissued).await, StatusReply::AlreadyApplied, "the reissued start settles as already applied");
         let other = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7kq2m9vx4pzr".into(), attempt: 1, operation: "node.start:mesh1.rpc.1".into() };
-        assert!(matches!(call(&admin, &target, &other).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "another Build's start of the live node is refused naming its state");
+        assert!(matches!(call(&admin, &target, &other).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Ready }), "another Build's start of the live node is refused naming its state");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

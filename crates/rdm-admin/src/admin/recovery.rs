@@ -906,13 +906,13 @@ mod superseded_tests {
     fn birth(path: &str) -> Node {
         let mut n = Node::allocated(path.parse().unwrap());
         n.incarnation_id = Some(IncarnationId::mint());
-        n.status = NodeStatus::ReadyForTraffic;
+        n.status = NodeStatus::Ready;
         n
     }
 
     fn view(nodes: Vec<Node>) -> Topology {
         Topology {
-            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
             meshes: Vec::new(),
             nodes,
         }
@@ -937,7 +937,7 @@ mod superseded_tests {
         let ops = superseded_births(&me, &view(vec![first.clone(), second.clone(), alone.clone()]), "mesh1", &storage, &written, "b1").await;
         assert_eq!(ops.iter().map(|o| (o.node_id.clone(), o.operation.clone())).collect::<Vec<_>>(), vec![(second.node_id.clone(), "node.delete:mesh1.admin.1".to_string())], "only the second birth is answered");
         assert_eq!(storage.node(&second.node_id).await.unwrap().unwrap().status, NodeStatus::Deleted, "the second birth's row is written deleted");
-        assert_eq!(storage.node(&first.node_id).await.unwrap().unwrap().status, NodeStatus::ReadyForTraffic, "the claim's birth stands");
+        assert_eq!(storage.node(&first.node_id).await.unwrap().unwrap().status, NodeStatus::Ready, "the claim's birth stands");
         assert_eq!(storage.name_claim(&first.name).await.unwrap(), Some(first.node_id.clone()), "the name stays the first birth's");
         let unclaimed = birth("mesh1.rpc.2");
         let other = birth("mesh1.rpc.2");

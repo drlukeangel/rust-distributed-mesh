@@ -91,8 +91,8 @@ mod tests {
 
     fn view(nodes: Vec<Node>) -> Topology {
         Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
             nodes,
         }
     }
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn a_silent_birth_counts_short_only_once_its_exact_runtime_is_inspected_exited() {
-        use NodeStatus::{Dead, PendingReconnect, ReadyForTraffic as R};
+        use NodeStatus::{Dead, PendingReconnect, Ready as R};
         let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R), node("mesh1.rpc.2", PendingReconnect), node("mesh1.rpc.3", R)]);
         let d = desired(1, 3);
         assert_eq!(unheard(&t).len(), 1);
@@ -122,7 +122,7 @@ mod tests {
     /// present.
     #[test]
     fn a_renamed_predecessor_is_neither_unheard_nor_a_birth_of_its_node_type() {
-        use NodeStatus::{Dead, ReadyForTraffic as R};
+        use NodeStatus::{Dead, Ready as R};
         let mut old = node("mesh1.rpc.1", Dead);
         old.name = old.name.renamed();
         let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R), old.clone()]);
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn a_node_type_short_with_no_exited_birth_is_not_drift() {
-        use NodeStatus::ReadyForTraffic as R;
+        use NodeStatus::Ready as R;
         // A failed grow leaves the cohort short: that is the Build's outcome,
         // not runtime drift, and must not start Build after Build.
         let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R)]);

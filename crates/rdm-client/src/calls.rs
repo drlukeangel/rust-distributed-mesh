@@ -542,7 +542,7 @@ impl<'a> NodeRpc<'a> {
 
     /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` "The fabric-primary"):
     /// command the fabric-primary at `holder` to move the fabric-primary: its own mesh first, so both
-    /// move together when a same-mesh node-admin is ReadyForTraffic, else another mesh's mesh-primary.
+    /// move together when a same-mesh node-admin is Ready, else another mesh's mesh-primary.
     pub async fn fabric_primary_update(&self, _fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {

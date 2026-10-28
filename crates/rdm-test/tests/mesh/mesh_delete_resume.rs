@@ -105,7 +105,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let mut want: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh2.rpc.1", "mesh2.rpc.2"].iter().map(|n| n.to_string()).collect();
     want.extend((1..=mesh2_admins).map(|i| format!("mesh2.admin.{i}")));
     let before = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
-    // A mesh delete waits for the Build in progress (Q170): the fabric is ready-for-traffic before mesh2
+    // A mesh delete waits for the Build in progress (Q170): the fabric is ready before mesh2
     // goes, so the admin seated after the primary's loss reads mesh2 deleting from its mesh's own rows.
     estate.until_fabric_ready(Duration::from_secs(90)).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).unwrap_or_else(|| panic!("mesh2 has a minted id"));
@@ -116,7 +116,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     // Held in tier 1: rpc.2's stop answered `stopped` (its node.connections.delete { All } and its
     // transport cut done, its process alive) and its StopNode receipt is not yet durable, so a resumed
     // attempt sends its stop-node again and the stopped birth answers the same receipt; the other
-    // admin (form a) is still ready for traffic.
+    // admin (form a) is still ready.
     let cut = "leave:rpc2-StopNode";
     // A member's end is its node.delete, under node.delete's own operation (mesh-delete.md step 3).
     door.arm(cut, json!({"kind": "receipt", "step": "StopNode", "operation": "node.delete:mesh2.rpc.2"})).await;
@@ -178,7 +178,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
             // The lost primary's exit is recorded, not published deleted: it may still be held
             // unheard until mesh-left. The final primary is the one mesh2 birth that is alive.
             let nodes = estate.try_node_views().await.map(|v| Estate::values(&v)).unwrap_or_default();
-            let mesh2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+            let mesh2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["status"] == "ready").map(|n| s(&n["name"])).collect();
             let deleting: Vec<&Value> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node").collect();
             if mesh2.len() == 1 && deleting.is_empty() {
                 last = mesh2.into_iter().next();

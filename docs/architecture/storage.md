@@ -46,7 +46,7 @@ Rules:
 - **Defaults are the application's.** Rafka's per-kind defaults (broker and node-admin persistent,
   gateway and compute ephemeral) belong to its ingress adapter; normalization happens before Build
   acceptance, and an accepted Build carries the explicit value for every path.
-- **A change of `storage_persistence` alone is a property Build**: the fabric stays ready-for-traffic
+- **A change of `storage_persistence` alone is a property Build**: the fabric stays ready
   ([states.md](lifecycles/states.md), "Resize and executable replacement").
 
 A caller reads it as a field of the node's row, `nodes.get [storage_persistence: persistent]`.
@@ -92,7 +92,7 @@ value is the intent, the node's is the fact, and during a change they differ, wh
 A storage change is a Build that carries the complete topology with the same meshes and the new
 `topology_storage_provider` ([build.md §1](build.md#1-build-is-the-only-topology-mutation-engine)). It
 is admitted and refused as any Build is, one in progress at a time, and it is a property Build: the
-fabric, every mesh and every node stay ready-for-traffic, no node restarts, and no node changes
+fabric, every mesh and every node stay ready, no node restarts, and no node changes
 state. Acceptance refuses by name a provider the fabric-primary's wiring does not register or cannot
 open. The change has a durable `change_id`, recorded with its Build before its first command; its
 commands carry it, and a node refuses by name a command of an older one (`rejected-stale-change`).

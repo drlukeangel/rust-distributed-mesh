@@ -187,7 +187,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     assert_eq!(stopped.state_after, Some('T'));
     ev.primitive = Some(Primitive { armed: true, ack: serde_json::to_value(&stopped).unwrap() });
     let silent_view = estate
-        .until_node(&hold, &format!("{hold} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |n| n.filter(|n| n.status != NodeStatus::ReadyForTraffic).map(|n| serde_json::to_value(n).expect("a view serializes")))
+        .until_node(&hold, &format!("{hold} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |n| n.filter(|n| n.status != NodeStatus::Ready).map(|n| serde_json::to_value(n).expect("a view serializes")))
         .await;
     let mut reads = Vec::new();
     let mut outcomes = Vec::new();
@@ -213,7 +213,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let back = estate
         .until_node(&hold, &format!("{hold} back as its own birth"), floor * 2 + Duration::from_secs(30), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["incarnation_id"] == hold_n["incarnation_id"] && n["status"] == "ready-for-traffic").then_some(n)
+            (n["incarnation_id"] == hold_n["incarnation_id"] && n["status"] == "ready").then_some(n)
         })
         .await;
     let kept = estate.probe(&["get", "--target", &hold_exact, "--key", "83"]);
@@ -249,7 +249,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let replacement = estate
         .until_node(&kill, "a new logical node holds the path", Duration::from_secs(120), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["node_id"] != kill_n["node_id"]).then_some(n)
+            (n["status"] == "ready" && n["node_id"] != kill_n["node_id"]).then_some(n)
         })
         .await;
     let replacement_rt = published(&estate, &kill).await;
@@ -275,7 +275,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let admin_new = estate
         .until_node(&admin, "a new logical node holds the admin's path", Duration::from_secs(120), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready-for-traffic" && n["node_id"] != admin_n["node_id"]).then_some(n)
+            (n["status"] == "ready" && n["node_id"] != admin_n["node_id"]).then_some(n)
         })
         .await;
     assert_ne!(admin_new["incarnation_id"], admin_n["incarnation_id"], "a new incarnation: {admin_new}");

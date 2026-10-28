@@ -15,7 +15,7 @@
 //!   (elections §5: "silence past the staleness floor supersedes it").
 //! - A holder whose record names a birth this view has not heard keeps its seat vacant for it.
 //! - A holder that yields, is known gone or is unheard past the floor hands the seat to its own
-//!   mesh: the lowest `ReadyForTraffic` NodeId among that mesh's nodes of its type fills it. A
+//!   mesh: the lowest `Ready` NodeId among that mesh's nodes of its type fills it. A
 //!   canonical NodeId is a fixed-width Crockford value, so comparing the strings compares the values;
 //!   the id is random and its order means nothing but itself.
 //! - One exception, fabric recovery (§3, Q122): while the fabric record names a birth that is not a
@@ -113,7 +113,7 @@ pub fn fabric_recovery_target<'a>(nodes: &[Node], inc: &'a Incumbency) -> Option
 }
 
 /// Who runs fabric recovery for `target` in its own mesh (fabric-recovery.md step 2, Q122): the lowest
-/// ReadyForTraffic node-admin of `target`'s mesh other than the target's birth and the node at its
+/// Ready node-admin of `target`'s mesh other than the target's birth and the node at its
 /// path.name `at`, the one the workflow re-creates. `None` when the mesh has no such admin: the backbone
 /// arm, run from mesh investigation's decision step. The executor takes no primary role.
 pub fn fabric_recovery_executor<'a>(nodes: &'a [Node], inc: &Incumbency, target: &Primary, at: Option<&PathName>) -> Option<&'a Node> {
@@ -123,7 +123,7 @@ pub fn fabric_recovery_executor<'a>(nodes: &'a [Node], inc: &Incumbency, target:
 
 /// The lowest Ready node among `members` that is not known gone.
 fn lowest_ready(nodes: &[Node], members: &[usize], inc: &Incumbency) -> Option<usize> {
-    let c: Vec<Candidate<'_>> = members.iter().map(|&i| Candidate { node_id: &nodes[i].node_id, ready: nodes[i].status == NodeStatus::ReadyForTraffic && !inc.is_lost(&nodes[i]) }).collect();
+    let c: Vec<Candidate<'_>> = members.iter().map(|&i| Candidate { node_id: &nodes[i].node_id, ready: nodes[i].status == NodeStatus::Ready && !inc.is_lost(&nodes[i]) }).collect();
     elect(&c).map(|k| members[k])
 }
 
@@ -198,13 +198,13 @@ fn elected_fabric_primary(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTree
     // with): its mesh keeps priority while any node-admin birth of it is not known gone or Leaving.
     let survives = |n: &Node| n.kind == NodeKind::NodeAdmin && n.mesh == h.mesh && !inc.is_lost(n) && n.status != NodeStatus::Leaving;
     if nodes.iter().any(survives) {
-        return mesh_primary.get(&h.mesh).copied().filter(|&i| nodes[i].status == NodeStatus::ReadyForTraffic && !inc.is_lost(&nodes[i]) && !(nodes[i].node_id == h.node_id && nodes[i].incarnation_id.as_ref() == Some(&h.incarnation)));
+        return mesh_primary.get(&h.mesh).copied().filter(|&i| nodes[i].status == NodeStatus::Ready && !inc.is_lost(&nodes[i]) && !(nodes[i].node_id == h.node_id && nodes[i].incarnation_id.as_ref() == Some(&h.incarnation)));
     }
     lowest_primary(Some(h.mesh.as_str()))
 }
 
 /// The fabric-primary the leadership calculation seats once `mesh` is excluded from it (proposal Part
-/// C2 search step 2: "the lowest NodeId among the other ReadyForTraffic mesh-primaries"): the excluded
+/// C2 search step 2: "the lowest NodeId among the other Ready mesh-primaries"): the excluded
 /// mesh holds no candidate, and the fabric record is the one the update vacates, so the lowest Ready
 /// mesh primary of another mesh wins. `None` when no other mesh has an eligible Ready mesh primary.
 pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) -> Option<Node> {
@@ -215,8 +215,8 @@ pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) 
 }
 
 /// The fabric-primary's successor after a fabric-primary is lost (Q89, elections §4.3: "the lowest
-/// ReadyForTraffic node-admin of the fabric-primary's own mesh while it has one, else the lowest
-/// ReadyForTraffic mesh-primary on the backbone"): the lowest Ready node-admin of `lost`'s mesh other than
+/// Ready node-admin of the fabric-primary's own mesh while it has one, else the lowest
+/// Ready mesh-primary on the backbone"): the lowest Ready node-admin of `lost`'s mesh other than
 /// `lost`, not known gone; else [`fabric_successor_excluding`] with `lost`'s mesh excluded.
 pub fn fabric_successor_after(nodes: &[Node], inc: &Incumbency, lost: &rdm_core::handover::HandoverBirth) -> Option<Node> {
     let own: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == lost.mesh && n.kind == NodeKind::NodeAdmin && n.node_id != lost.node_id).map(|(i, _)| i).collect();
@@ -228,17 +228,17 @@ pub fn fabric_successor_after(nodes: &[Node], inc: &Incumbency, lost: &rdm_core:
 
 /// The fabric seat's successor its holder names (elections §4.4: "or the successor the holder names
 /// (the re-created node-admin of the mesh that lost the seat, §4.3)"): `named`, when the fabric-successor
-/// resolution with the holder's mesh excluded holds it as a ReadyForTraffic node-admin that holds its own
+/// resolution with the holder's mesh excluded holds it as a Ready node-admin that holds its own
 /// mesh's primary seat. Refused by name otherwise: in the holder's own mesh, unknown to the view, not
 /// Ready, or holding no mesh-primary seat.
 pub fn named_fabric_successor(nodes: &[Node], inc: &Incumbency, holder: &Node, named: &PathName) -> Result<Node, String> {
     // The named successor may be in the holder's own mesh (Q89: the hand-back to the node at the lost
-    // fabric-primary's path.name): a ReadyForTraffic node-admin there is the one the row makes primary.
+    // fabric-primary's path.name): a Ready node-admin there is the one the row makes primary.
     let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| named.mesh == holder.mesh || n.mesh != holder.mesh).cloned().collect();
     let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), cohorts: inc.cohorts.clone(), lost: inc.lost.clone() };
     resolve_with(&mut hypothetical, &vacated);
     match hypothetical.into_iter().find(|n| n.name == *named) {
-        Some(n) if n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic => Ok(n),
+        Some(n) if n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::Ready => Ok(n),
         Some(n) => Err(format!("cannot hand the fabric seat to {named}: {}'s view holds it {:?}", holder.name, n.status)),
         None => Err(format!("cannot hand the fabric seat to {named}: {}'s view holds no such node-admin", holder.name)),
     }
@@ -246,7 +246,7 @@ pub fn named_fabric_successor(nodes: &[Node], inc: &Incumbency, holder: &Node, n
 
 /// The successor a yielding holder computes for its cohort seat (R-MT1, node.primary.update: "the MP
 /// determines who is the next MP"; fabric-node-lifecycle-elections.md §4.1 and §5: "a holder that yields
-/// ... hands the seat to the lowest ReadyForTraffic NodeId of its own mesh"): the lowest Ready node of
+/// ... hands the seat to the lowest Ready NodeId of its own mesh"): the lowest Ready node of
 /// `holder`'s (mesh, kind) cohort other than `holder`, not known gone. `None` when no other node of
 /// its type can take the seat.
 pub fn node_type_successor(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Option<Node> {
@@ -274,7 +274,7 @@ pub fn node_type_of(kind: crate::model::NodeKind) -> &'static str {
 
 /// The successor the mesh-primary's pre-check names for a commanded node.primary.update of `holder`'s
 /// cohort seat, a cohort that is not node-admin (proposal Part C1 step 2: "the cohort election over the
-/// holder's cohort with the holder excluded names a ReadyForTraffic successor"): the lowest Ready node of
+/// holder's cohort with the holder excluded names a Ready successor"): the lowest Ready node of
 /// `holder`'s (mesh, kind) cohort other than `holder`. `Err` is Q7's exact text naming its type and mesh.
 pub fn commanded_node_type_successor(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Result<Node, String> {
     node_type_successor(nodes, inc, holder).ok_or_else(|| no_secondary(node_type_of(holder.kind), &holder.mesh))
@@ -314,17 +314,17 @@ impl Moving {
 }
 
 /// The fabric-primary's refusal, naming both searches (lifecycles/node-primary-update.md "The
-/// fabric-primary", search step 3): `cannot transfer fabric-primary: no other node-admin ReadyForTraffic
-/// in mesh <mesh>, no other mesh-primary ReadyForTraffic`.
+/// fabric-primary", search step 3): `cannot transfer fabric-primary: no other node-admin Ready
+/// in mesh <mesh>, no other mesh-primary Ready`.
 pub fn no_fabric_successor(mesh: &str) -> String {
-    format!("cannot transfer fabric-primary: no other node-admin ReadyForTraffic in mesh {mesh}, no other mesh-primary ReadyForTraffic")
+    format!("cannot transfer fabric-primary: no other node-admin Ready in mesh {mesh}, no other mesh-primary Ready")
 }
 
 /// The successor the writer's pre-check names for a commanded transfer of `holder`'s seats (proposal
 /// Part C1 step 2: "the cohort election over the holder's cohort with the holder excluded names a
-/// ReadyForTraffic successor"; C2 "Successor search for the commanded transfer": "1. the holder's own
-/// mesh: the lowest ReadyForTraffic node-admin NodeId there ... 2. only when that mesh has none, or it
-/// is the departing mesh under mesh.delete: the lowest NodeId among the other ReadyForTraffic
+/// Ready successor"; C2 "Successor search for the commanded transfer": "1. the holder's own
+/// mesh: the lowest Ready node-admin NodeId there ... 2. only when that mesh has none, or it
+/// is the departing mesh under mesh.delete: the lowest NodeId among the other Ready
 /// mesh-primaries; 3. neither found: refused by name"). `Err` is the refusal's exact text (Q7): the
 /// mesh seat with no secondary names its type and mesh; the fabric seat with neither search finding
 /// one names both. A holder of both seats whose mesh has no secondary while another mesh's primary is
@@ -344,7 +344,7 @@ pub fn commanded_successor(nodes: &[Node], inc: &Incumbency, holder: &Node, movi
 
 /// [`commanded_successor`] over the members of the view `t`: the search a commanded transfer runs
 /// (node-primary-update.md "Successor search for the commanded transfer"). Another mesh's members are
-/// candidates only while that mesh is neither Dead nor Leaving (step 2: "the other ReadyForTraffic
+/// candidates only while that mesh is neither Dead nor Leaving (step 2: "the other Ready
 /// mesh-primaries"): a deleted mesh's final primary lives on until its own node.delete (mesh-delete.md
 /// step 7), and a mesh whose mesh.delete runs is leaving; neither mesh's primary takes a primary.
 pub fn commanded_successor_in(t: &Topology, inc: &Incumbency, primary: &Node, moving: Moving) -> Result<Node, String> {
@@ -415,7 +415,7 @@ impl ElectionLog {
                 continue;
             }
             let candidates = t.nodes_of_type(&mesh, *kind).count();
-            let eligible = t.nodes_of_type(&mesh, *kind).filter(|n| n.status == NodeStatus::ReadyForTraffic).count();
+            let eligible = t.nodes_of_type(&mesh, *kind).filter(|n| n.status == NodeStatus::Ready).count();
             // The exact inputs: every candidate as this view holds it. Two observers that name
             // different winners differ here, never in the function.
             let inputs: Vec<String> = t.nodes_of_type(&mesh, *kind).map(|n| format!("{}={}:{:?}", n.name, n.node_id, n.status)).collect();
@@ -519,7 +519,7 @@ mod tests {
     fn node(path: &str, node_id: &str, ready: bool) -> Node {
         let mut n = Node::allocated(path.parse().unwrap());
         n.node_id = id(node_id);
-        n.status = if ready { NodeStatus::ReadyForTraffic } else { NodeStatus::Pending };
+        n.status = if ready { NodeStatus::Ready } else { NodeStatus::Pending };
         n
     }
 
@@ -539,7 +539,7 @@ mod tests {
         old.name = old.name.renamed();
         let successor = node("mesh1.rpc.1", "000000000009", true);
         let view = crate::topology::Topology {
-            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "f".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "f".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
             meshes: vec![],
             nodes: vec![old, successor, node("mesh1.admin.1", "000000000005", true)],
         };
@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(primaries(&nodes), ["mesh1.admin.3", "mesh2.admin.1"]);
         assert_eq!(fabric(&nodes), ["mesh2.admin.1"], "the fabric candidates are the mesh primaries only");
         // The same node back under its NodeId retakes both seats once ready.
-        nodes[1].status = NodeStatus::ReadyForTraffic;
+        nodes[1].status = NodeStatus::Ready;
         resolve(&mut nodes);
         assert_eq!(fabric(&nodes), ["mesh1.admin.2"]);
     }
@@ -696,7 +696,7 @@ mod tests {
         nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.kind == NodeKind::NodeAdmin).map(|n| n.name.to_string())
     }
 
-    use NodeStatus::{ConnectionsDeleting, Leaving, Pending, PendingReconnect, ReadyForTraffic as Ready};
+    use NodeStatus::{ConnectionsDeleting, Leaving, Pending, PendingReconnect, Ready as Ready};
 
     /// CONTRACT (R-A2 cell 1): an admin with a lower NodeId appearing in another mesh leaves the
     /// fabric primary where it is. Must NOT happen: the lower id taking the seat.
@@ -840,7 +840,7 @@ mod tests {
     }
 
     /// CONTRACT (fabric-recovery.md step 2, its own mesh; Q122): fabric recovery's executor is the lowest
-    /// ReadyForTraffic node-admin of the fabric-primary's mesh other than the target birth and the node at
+    /// Ready node-admin of the fabric-primary's mesh other than the target birth and the node at
     /// the target's path.name; none when the mesh has no such admin (the backbone arm, from mesh
     /// investigation's decision step). It takes no primary role.
     #[test]
@@ -975,7 +975,7 @@ mod tests {
     }
 
     /// CONTRACT (elections §5: "a holder that yields or whose exact birth is known gone hands the seat
-    /// to the lowest ReadyForTraffic NodeId of its own mesh"; "restart preserves NodeId; a restarted
+    /// to the lowest Ready NodeId of its own mesh"; "restart preserves NodeId; a restarted
     /// node ... never displaces the holder"): the recorded rpc holder known gone, or replaced by a later
     /// birth of its NodeId, hands the seat to the cohort's lowest Ready NodeId.
     #[test]

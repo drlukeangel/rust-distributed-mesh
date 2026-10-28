@@ -11,7 +11,7 @@
 //!
 //! Every estate runs the testkit's faulted node-admin (`faults::binding_set`), so a cell holds an
 //! executor at a cut through its fault door; a cell that needs a fabric that never reaches
-//! ready-for-traffic holds a planned node's `pre_node_ready` (`rdm_test::write_pre_node_ready_knob`).
+//! ready holds a planned node's `pre_node_ready` (`rdm_test::write_pre_node_ready_knob`).
 
 use crate::build_log;
 use rdm_client::{BuildFrame, BuildId, BuildStream, CallEnd, Change, LaunchKind as NodeKind, MeshDesired, PathName, ScopeStatus};
@@ -50,7 +50,7 @@ async fn estate_with(test: &str) -> Estate {
     Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted")
 }
 
-/// A fabric at `shape` that reached ready-for-traffic.
+/// A fabric at `shape` that reached ready.
 async fn ready_fabric(test: &str, shape: &[(&str, u32, u32)]) -> Estate {
     let estate = estate_with(test).await;
     estate.reconcile_shape("fabric1", shape).await;
@@ -181,7 +181,7 @@ fn torn_down(receipts: &rdm_client::BuildReceipts, meshes: usize) {
 }
 
 /// CONTRACT (build.md §1: "The one exception is fabric.delete, which may interrupt the Build in progress";
-/// fabric-delete.md "Receipts"; fabric-node-hooks.md "A node never reaches ReadyForTraffic while its hook
+/// fabric-delete.md "Receipts"; fabric-node-hooks.md "A node never reaches Ready while its hook
 /// has not returned `Ok`"; build.md §1: operations admitted before the delete "finish or fail within their
 /// existing bounds and their launch evidence is retained", Q179): a Build adding mesh1.rpc.1, whose
 /// `pre_node_ready` never passes, puts the fabric back to pending and keeps it there; mesh1.rpc.1 is
@@ -189,7 +189,7 @@ fn torn_down(receipts: &rdm_client::BuildReceipts, meshes: usize) {
 /// mesh1.admin.1 are refused build-in-progress naming that Build; fabric.delete is admitted, and a second
 /// fabric.delete answers the same Build. The held Build reads `Failed` naming the delete; the teardown
 /// deletes mesh1, the held node with it, reports fabric.deleted, and leaves no runtime the fabric
-/// launched running; the fabric is never made ready-for-traffic after the acceptance. What must NOT
+/// launched running; the fabric is never made ready after the acceptance. What must NOT
 /// happen: the stalled fabric left undeletable, the fabric made ready for the delete, or a runtime left
 /// running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -241,14 +241,14 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
 
     let spans = estate.spans();
     let ready: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-every-mesh-ready").into_iter().filter(|sp| start(sp) >= accepted_ns).collect();
-    assert!(ready.is_empty(), "the fabric is never made ready-for-traffic after the delete's acceptance: {ready:?}");
+    assert!(ready.is_empty(), "the fabric is never made ready after the delete's acceptance: {ready:?}");
 }
 
 /// CONTRACT (build.md §1: "Operations already admitted at an executor finish or fail within their
 /// existing bounds and their launch evidence is retained ... When every open attempt of the interrupted
 /// Build has ended, its run receives `Failed { step, reason }` naming the delete"): on a fabric the Day-0
-/// Build brought to ready-for-traffic (the Day-0 Build launches no node, and no other Build is accepted
-/// before its ready-for-traffic), a Build growing mesh1 by two rpc nodes is held by the fabric-primary's
+/// Build brought to ready (the Day-0 Build launches no node, and no other Build is accepted
+/// before its ready), a Build growing mesh1 by two rpc nodes is held by the fabric-primary's
 /// fault door inside the launch of the first, and fabric.delete is accepted. Released, the launch ends
 /// within its bound and its create's receipts stand; the second rpc node is never launched; the growth's
 /// run receives `Failed` naming the delete, and the teardown deletes the launched runtime with the rest.
