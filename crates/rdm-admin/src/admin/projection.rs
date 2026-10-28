@@ -632,20 +632,49 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     topology
 }
 
-/// How often the view is rebuilt when no routing fact moved: the projection also reads the clock
-/// (a member silent past the staleness floor).
-pub(crate) const VIEW_POLL: Duration = Duration::from_millis(200);
+/// What makes the view's rebuild due: every input the projection reads, each moved where it changes
+/// (Q254: no timer, no poll; a sleep is a timer). The digest view's routing watch (a birth's status, an
+/// overlay, a departure taken or forgotten, a mesh status: states.md "Routing", applied on receipt;
+/// and a birth silent past the staleness floor, marked by the pruner's sweep, the one clock the
+/// projection reads), the records' inputs ([`Records::inputs`]) and the primary records the election
+/// reads ([`rdm_transport::topology::PrimaryView::subscribe`]).
+pub(crate) struct ViewWake {
+    facts: rdm_transport::topology::RoutingWatch,
+    records: tokio::sync::watch::Receiver<u64>,
+    primaries: tokio::sync::watch::Receiver<u64>,
+}
 
-/// The view's next rebuild is due: at once when a routing fact the digest view holds moved since the last
-/// rebuild read it (a birth's status, an overlay, a departure, a mesh status: states.md "Routing",
-/// applied on receipt), else after `poll`; and only while the admin's gate is open. A stopped admin's
-/// rebuild is held here, holding nothing, and is due the moment the gate opens. Answers the
-/// rebuild's turn, which the caller ends before it waits here again, and what made it due: the
-/// routing watch that moved, or `poll`.
-pub(crate) async fn view_rebuild_due(facts: &mut rdm_transport::topology::RoutingWatch, poll: Duration, gate: &crate::stop_gate::StopGate) -> (crate::stop_gate::Turn, &'static str) {
-    let woken = tokio::select! {
-        _ = tokio::time::sleep(poll) => "poll",
-        which = facts.moved() => which,
-    };
+impl ViewWake {
+    /// The inputs of the projection over `digest_view` and `records`, watched.
+    pub(crate) fn new(digest_view: &DigestView, records: &Records) -> Self {
+        Self { facts: digest_view.routing_watch(), records: records.subscribe_inputs(), primaries: digest_view.seats.subscribe() }
+    }
+
+    /// Every input moved so far is seen: called right before a rebuild reads them, so one moved
+    /// while it reads makes the next one due.
+    pub(crate) fn seen(&mut self) {
+        self.facts.seen();
+        self.records.borrow_and_update();
+        self.primaries.borrow_and_update();
+    }
+
+    /// Returns when an input moved since [`Self::seen`], naming it: the routing watch's own name, or
+    /// `records`, or `primaries`.
+    async fn moved(&mut self) -> &'static str {
+        tokio::select! {
+            which = self.facts.moved() => which,
+            Ok(()) = self.records.changed() => "records",
+            Ok(()) = self.primaries.changed() => "primaries",
+        }
+    }
+}
+
+/// The view's next rebuild is due: when an input of the projection moved since the last rebuild
+/// read it ([`ViewWake`]), and only while the admin's gate is open; never on a clock of its own. A
+/// stopped admin's rebuild is held here, holding nothing, and is due the moment the gate opens.
+/// Answers the rebuild's turn, which the caller ends before it waits here again, and what made it
+/// due.
+pub(crate) async fn view_rebuild_due(wake: &mut ViewWake, gate: &crate::stop_gate::StopGate) -> (crate::stop_gate::Turn, &'static str) {
+    let woken = wake.moved().await;
     (gate.turn("view-rebuild").await, woken)
 }

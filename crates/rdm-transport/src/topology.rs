@@ -2847,6 +2847,10 @@ impl TopologyView {
                     tracing::info_span!("rdm.mesh.topology.update.via-member-stale", node = %node, member = %name, member_id = %id, silent_ms, staleness_ms = digest_view.staleness_floor().as_millis() as u64)
                         .in_scope(|| tracing::info!("a member is no longer heard within the staleness floor: held, not current"));
                 }
+                // Q254: this sweep is the one clock of a held birth's silence. A birth crossing the
+                // staleness floor, either way, or a departure past its retention, moves the routing
+                // watch here, so the view is rebuilt on the mark and on no poll.
+                digest_view.mark_silence();
                 heard = now_heard;
                 let now: BTreeSet<String> = current.into_iter().map(|d| d.node.name.mesh).collect();
                 for m in now.difference(&held) {
@@ -4157,6 +4161,15 @@ pub struct DigestView {
     /// config, load or `digest_seq` moved): what a local waiter on "that node published again"
     /// wakes on. A local observation of the view; nothing is sent.
     digests: Arc<tokio::sync::watch::Sender<u64>>,
+    /// Ticks when the pruner's sweep ([`DigestView::mark_silence`]) finds the births held silent past
+    /// the staleness floor moved: one fell silent, or one held silent is no longer (heard again,
+    /// left, or its silence restarted). The one clock of a held birth's silence (Q254): what the view
+    /// rebuild waits on in place of a poll. A local observation; nothing is sent.
+    silence: Arc<tokio::sync::watch::Sender<u64>>,
+    /// The births, by `(node id, incarnation)`, the pruner's last sweep found silent past the
+    /// staleness floor: held directly or on the backbone and unheard since, or held only from the
+    /// mesh-primary's projection since it was first held.
+    silent: Arc<Mutex<BTreeSet<(String, String)>>>,
     /// Proven departures by NodeId, with when this view accepted each: held
     /// for `retention` of local age, then forgotten.
     deleted: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
@@ -4241,8 +4254,9 @@ impl Default for DigestView {
 }
 
 /// The routing facts a view holds, watched: a held member first held, its birth or status changed,
-/// heard again after silence; a lifecycle overlay opened or closed; a departure; a mesh status
-/// taken. What application
+/// heard again after silence; a held birth silent past the staleness floor, marked by the pruner's
+/// sweep ([`DigestView::mark_silence`]); a lifecycle overlay opened or closed; a departure taken or
+/// forgotten; a mesh status taken. What application
 /// routing's view rebuild wakes on, so a fact is applied on receipt (states.md "Routing"). A local
 /// observation of the view; nothing is sent.
 pub struct RoutingWatch {
@@ -4250,6 +4264,7 @@ pub struct RoutingWatch {
     births: tokio::sync::watch::Receiver<u64>,
     overlays: tokio::sync::watch::Receiver<u64>,
     meshes: tokio::sync::watch::Receiver<u64>,
+    silence: tokio::sync::watch::Receiver<u64>,
 }
 
 impl RoutingWatch {
@@ -4260,16 +4275,19 @@ impl RoutingWatch {
         self.births.borrow_and_update();
         self.overlays.borrow_and_update();
         self.meshes.borrow_and_update();
+        self.silence.borrow_and_update();
     }
 
     /// Returns when a fact moved since [`RoutingWatch::seen`], naming the watch that moved (`heard`,
-    /// `births`, `overlays`, `meshes`). A view that is gone moves nothing: this never returns then.
+    /// `births`, `overlays`, `meshes`, `silence`). A view that is gone moves nothing: this never
+    /// returns then.
     pub async fn moved(&mut self) -> &'static str {
         let (ok, which) = tokio::select! {
             r = self.heard.changed() => (r.is_ok(), "heard"),
             r = self.births.changed() => (r.is_ok(), "births"),
             r = self.overlays.changed() => (r.is_ok(), "overlays"),
             r = self.meshes.changed() => (r.is_ok(), "meshes"),
+            r = self.silence.changed() => (r.is_ok(), "silence"),
         };
         if !ok {
             std::future::pending::<()>().await;
@@ -4365,6 +4383,8 @@ impl DigestView {
             heard: Arc::new(tokio::sync::watch::Sender::new(0)),
             overlays: Arc::new(tokio::sync::watch::Sender::new(0)),
             digests: Arc::new(tokio::sync::watch::Sender::new(0)),
+            silence: Arc::new(tokio::sync::watch::Sender::new(0)),
+            silent: Arc::default(),
             deleted: Arc::default(),
             executed_deletions: Arc::default(),
             refused_departures: Arc::default(),
@@ -4398,10 +4418,20 @@ impl DigestView {
         self.expire_deleted_at(Instant::now())
     }
 
+    /// Forget each departure held longer than the retention at `now`. A departure forgotten moves the
+    /// overlays watch where the retention's clock is read: the view no longer holds the birth
+    /// deleted, which its rebuild reads.
     fn expire_deleted_at(&self, now: Instant) {
-        let mut deleted = self.deleted.lock().unwrap();
-        deleted.retain(|_, (_, at)| now.duration_since(*at) < self.retention);
-        self.refused_departures.lock().unwrap().retain(|id, _| deleted.contains_key(id));
+        let expired = {
+            let mut deleted = self.deleted.lock().unwrap();
+            let before = deleted.len();
+            deleted.retain(|_, (_, at)| now.duration_since(*at) < self.retention);
+            self.refused_departures.lock().unwrap().retain(|id, _| deleted.contains_key(id));
+            deleted.len() < before
+        };
+        if expired {
+            self.overlays.send_modify(|v| *v += 1);
+        }
     }
 
     /// Has this node been accepted as deleted, within the retention?
@@ -5485,7 +5515,7 @@ impl DigestView {
 
     /// The routing facts this view holds, watched ([`RoutingWatch`]).
     pub fn routing_watch(&self) -> RoutingWatch {
-        RoutingWatch { heard: self.heard.subscribe(), births: self.births.subscribe(), overlays: self.overlays.subscribe(), meshes: self.statuses.mesh_changes() }
+        RoutingWatch { heard: self.heard.subscribe(), births: self.births.subscribe(), overlays: self.overlays.subscribe(), meshes: self.statuses.mesh_changes(), silence: self.silence.subscribe() }
     }
 
     /// Ticks each time a member is first held, changes its birth or its status, or is heard again
@@ -5631,6 +5661,48 @@ impl DigestView {
             .filter(|(d, _)| d.status != rdm_core::MemberStatus::Leaving && !self.is_deleted_at(d.node.node_id.as_str(), now))
             .map(|(d, silent)| (d.node.node_id.to_string(), d.node.name.to_string(), silent.as_millis() as u64))
             .collect()
+    }
+
+    /// The pruner's sweep of silence ([`Self::mark_silence_at`] now).
+    pub fn mark_silence(&self) -> bool {
+        self.mark_silence_at(Instant::now())
+    }
+
+    /// The pruner's sweep at `now` (Q254: one clock, the pruner's; its mark is a view change): every
+    /// departure past the retention is forgotten ([`Self::expire_deleted_at`]), and the births held
+    /// silent past the staleness floor are read, each held birth by its unheard time and each birth
+    /// held only from its mesh-primary's projection by the time since it was first held. When they
+    /// differ from the last sweep's, the silence watch moves ([`RoutingWatch`]): the view is rebuilt on
+    /// the mark, never on a poll. `true` when it moved.
+    pub fn mark_silence_at(&self, now: Instant) -> bool {
+        self.expire_deleted_at(now);
+        let floor = self.staleness_floor;
+        let mut silent: BTreeSet<(String, String)> = self
+            .inner
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|(_, at, fw)| unheard(at, *fw, now) > floor)
+            .map(|(d, _, _)| (d.node.node_id.to_string(), d.node.incarnation.as_str().to_string()))
+            .collect();
+        let projected: Vec<String> = self.projected.lock().unwrap().keys().cloned().collect();
+        for id in projected {
+            if let Some((d, _)) = self.projected_at(&id, now).filter(|(_, unheard)| *unheard > floor) {
+                silent.insert((d.node.node_id.to_string(), d.node.incarnation.as_str().to_string()));
+            }
+        }
+        let moved = {
+            let mut held = self.silent.lock().unwrap();
+            let moved = *held != silent;
+            if moved {
+                *held = silent;
+            }
+            moved
+        };
+        if moved {
+            self.silence.send_modify(|v| *v += 1);
+        }
+        moved
     }
 
     /// Every digest held.
@@ -6639,6 +6711,69 @@ mod tests {
         let after = t0 + Duration::from_millis(60);
         assert!(!digest_view.is_deleted_at(id.as_str(), after), "forgotten after the retention");
         assert!(digest_view.record_at(digest(&id, &next, Some(inc), MemberStatus::Ready, 960), after), "after the retention the id is unknown, not deleted");
+    }
+
+    /// Which routing watch moved, without waiting: `None` when none did.
+    async fn moved_named(w: &mut RoutingWatch) -> Option<&'static str> {
+        tokio::select! {
+            biased;
+            which = w.moved() => Some(which),
+            _ = std::future::ready(()) => None,
+        }
+    }
+
+    /// CONTRACT (Q254, Luke 2026-10-28: "One clock, the pruner's: its member-stale mark is a view
+    /// change"): the pruner's sweep (`DigestView::mark_silence_at`) moves the routing watch, naming
+    /// `silence`, when a held birth goes unheard past the staleness floor, when a silent birth is
+    /// heard again, and when a birth held only from its mesh-primary's projection goes unheard past the
+    /// floor since it was first held; a departure forgotten at the sweep, past its retention, moves
+    /// `overlays`. A sweep that finds the same silence moves nothing. Must NOT happen: a birth falling
+    /// silent that moves no watch (the view then shows it only on a poll), or a sweep that moves the
+    /// watch on every pass (a poll by another name).
+    #[tokio::test]
+    async fn the_pruners_sweep_moves_the_routing_watch_when_a_birth_crosses_the_staleness_floor_and_on_nothing_else() {
+        let floor = Duration::from_millis(100);
+        let t0 = Instant::now();
+
+        let digest_view = DigestView::with_floor(Duration::from_secs(3600), floor);
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(digest_view.record_at(digest(&id, &inc, None, MemberStatus::Ready, 100), t0));
+        let mut w = digest_view.routing_watch();
+        w.seen();
+        assert!(!digest_view.mark_silence_at(t0 + floor / 2), "heard within the floor: no birth is silent");
+        assert_eq!(moved_named(&mut w).await, None, "a sweep that finds no silence moves nothing");
+        assert!(digest_view.mark_silence_at(t0 + floor * 2), "unheard past the floor: the sweep marks the birth");
+        assert_eq!(moved_named(&mut w).await, Some("silence"), "the mark moves the routing watch");
+        w.seen();
+        assert!(!digest_view.mark_silence_at(t0 + floor * 3), "still silent: the same mark");
+        assert_eq!(moved_named(&mut w).await, None, "a sweep that finds the same silence moves nothing");
+        let t1 = t0 + floor * 4;
+        assert!(digest_view.record_at(digest(&id, &inc, None, MemberStatus::Ready, 101), t1));
+        w.seen();
+        assert!(digest_view.mark_silence_at(t1), "heard again: the birth is silent no more");
+        assert_eq!(moved_named(&mut w).await, Some("silence"), "the silence ending moves the routing watch at the sweep");
+
+        let digest_view = DigestView::with_floor(Duration::from_secs(3600), floor);
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        digest_view.hold_projected_at(&digest(&id, &inc, None, MemberStatus::Ready, 1), t0);
+        let mut w = digest_view.routing_watch();
+        w.seen();
+        assert!(!digest_view.mark_silence_at(t0 + floor / 2), "held from the projection within the floor");
+        assert_eq!(moved_named(&mut w).await, None);
+        assert!(digest_view.mark_silence_at(t0 + floor * 2), "held only from the projection, unheard past the floor since first held");
+        assert_eq!(moved_named(&mut w).await, Some("silence"));
+
+        let digest_view = DigestView::with_floor(Duration::from_millis(40), floor);
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(digest_view.record_at(digest(&id, &inc, None, MemberStatus::Ready, 100), t0));
+        assert!(digest_view.depart_at(op(&id, &inc, "node.delete:mesh1.rpc.1"), t0));
+        let mut w = digest_view.routing_watch();
+        w.seen();
+        digest_view.mark_silence_at(t0 + Duration::from_millis(20));
+        assert_eq!(moved_named(&mut w).await, None, "the departure is held within its retention");
+        digest_view.mark_silence_at(t0 + Duration::from_millis(60));
+        assert_eq!(moved_named(&mut w).await, Some("overlays"), "the departure forgotten past its retention, at the sweep, moves the routing watch");
+        assert!(!digest_view.is_deleted_at(id.as_str(), t0 + Duration::from_millis(60)));
     }
 
     #[test]

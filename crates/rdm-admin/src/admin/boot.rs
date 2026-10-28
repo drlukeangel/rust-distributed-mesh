@@ -2564,6 +2564,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // Held here while the admin is stopped: its own wait, outside every lock.
                                                 let turn = stop.turn("offline-tickle").await;
                                                 heard_changes.borrow_and_update();
+                                                // The births held true offline are shown `Dead` by the projection: a change of
+                                                // them this tick makes the view's rebuild due where it is made (Q254).
+                                                let offline_before = records.offline.lock().unwrap().clone();
                                                 let view = topology.read().await.clone();
                                                 let holds_seat = view.is_mesh_primary(&mesh, &me_id);
                                                 // The births only a durable runtime row names: the mesh-primary's alone, from its mesh's
@@ -2735,6 +2738,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                 }
                                                 clear_unwatched(&watched, &mut records.offline.lock().unwrap(), &mut written);
+                                                if *records.offline.lock().unwrap() != offline_before {
+                                                    records.inputs_moved();
+                                                }
                                                 // node-recovery.md step 3: on TRUE OFFLINE the mesh primary asks the provider about the
                                                 // exact runtime of each member of its own mesh, its secondary node-admins included
                                                 // (mesh-recovery.md:8-9), and the verdict opens the recovery at once, keyed on the
@@ -2969,7 +2975,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // that has no member left keeps no recorded id (a name added again is a new mesh).
                                                 if let Some(Some(b)) = current {
                                                     topology_view.digest_view.set_accepted_meshes(b.topology.meshes.keys().cloned().collect());
-                                                    records.meshes.lock().unwrap().retain(|name, _| b.topology.meshes.contains_key(name) || t.members().any(|n| &n.mesh == name));
+                                                    let forgot = {
+                                                        let mut meshes = records.meshes.lock().unwrap();
+                                                        let before = meshes.len();
+                                                        meshes.retain(|name, _| b.topology.meshes.contains_key(name) || t.members().any(|n| &n.mesh == name));
+                                                        meshes.len() < before
+                                                    };
+                                                    if forgot {
+                                                        records.inputs_moved();
+                                                    }
                                                 }
                                                 let mesh_primary = t.is_mesh_primary(&mesh, &seat_node_id);
                                                 // The mesh's rows on the shared root follow its mesh-primary, and a mesh with no
@@ -3179,16 +3193,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let rebuild_gate = stop_gate.clone();
                                         tasks.push(tokio::spawn(async move {
                                             let mut held: BTreeSet<PathName> = BTreeSet::new();
-                                            let mut facts = digest_view.routing_watch();
+                                            let mut wake = ViewWake::new(&digest_view, &records);
                                             let mut turn = rebuild_gate.turn("view-rebuild").await;
                                             let mut woken = "start";
                                             loop {
-                                                facts.seen();
+                                                wake.seen();
                                                 let me_now = digest_view.held_path_name().unwrap_or_else(|| me.clone());
                                                 let installed = *records.view_tick.borrow();
                                                 let t = records.install_read(&me_now, &topology, &digest_view, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &digest_view, &records, reads)).await;
                                                 // Each rebuild names what made it due: the count of these per admin is the
-                                                // rebuild's work, and one with no event before it is a poll.
+                                                // rebuild's work, and every one has an event before it (Q254).
                                                 tracing::info_span!("rdm.node_admin.topology.update.via-view-rebuild", node = %me_now, woken, changed = *records.view_tick.borrow() != installed)
                                                     .in_scope(|| tracing::info!("the view is rebuilt from the digest view and the records"));
                                                 elections.observe_as(&me_now, &t);
@@ -3201,7 +3215,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 held = now;
                                                 drop(turn);
-                                                (turn, woken) = view_rebuild_due(&mut facts, VIEW_POLL, &rebuild_gate).await;
+                                                (turn, woken) = view_rebuild_due(&mut wake, &rebuild_gate).await;
                                             }
                                         }));
                                     }
