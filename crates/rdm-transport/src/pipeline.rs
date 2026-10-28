@@ -148,10 +148,20 @@ where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
     use opentelemetry::trace::TracerProvider as _;
+    tracer_export_layer(provider.tracer(service.to_string()))
+}
+
+/// [`span_export_layer`] in front of `tracer`, any tracer the SDK's spans come from.
+pub(crate) fn tracer_export_layer<S, T>(tracer: T) -> impl tracing_subscriber::Layer<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    T: opentelemetry::trace::Tracer + 'static,
+    T::Span: Send + Sync,
+{
     use tracing_subscriber::filter::{filter_fn, FilterExt};
     use tracing_subscriber::Layer;
     let filter = crate::span_export_filter().and(filter_fn(crate::export::admits_source));
-    tracing_opentelemetry::OpenTelemetryLayer::new(provider.tracer(service.to_string())).with_filter(filter)
+    tracing_opentelemetry::OpenTelemetryLayer::new(tracer).with_filter(filter)
 }
 
 /// Spans captured into a test's exporter through the product pipeline, installed as the process's

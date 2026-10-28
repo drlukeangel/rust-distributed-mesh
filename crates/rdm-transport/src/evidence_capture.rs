@@ -11,16 +11,21 @@
 //!
 //! The capture owns its provider. Its `Drop` flushes the provider and then shuts it down, waiting
 //! as long as [`crate::export::bounded`] allows (an unreachable collector never holds a cell), before
-//! the dispatcher guard drops.
+//! the dispatcher guard drops; it then takes the provider's tracer out of the dispatcher
+//! ([`CaptureTracer`]), so the provider's end runs on the cell's thread and the dispatcher holds
+//! nothing whose drop runs telemetry code. tracing-core drops a dispatcher wherever its last
+//! reference goes, which can be inside its own dispatcher lock while another cell registers a
+//! dispatcher (tracing-core 0.1.36 `callsite.rs:572`); a provider ended there emits an event whose
+//! callsite registration waits on that lock, and every cell of the process waits with it (rdm#106).
 //!
 //! A held capture ([`EvidenceCapture::start_held`]) is for a cell that makes more calls than its
 //! evidence can carry (a flood): each trace's spans wait until the cell decides the trace, and only
 //! the traces it keeps reach the file and the collector.
 
-use crate::pipeline::{span_export_layer, span_processor, CountingBatchProcessor, SpanLoss};
+use crate::pipeline::{span_processor, tracer_export_layer, CountingBatchProcessor, SpanLoss};
 use opentelemetry::trace::TraceId;
 use opentelemetry_sdk::error::OTelSdkResult;
-use opentelemetry_sdk::trace::{SdkTracerProvider, Span, SpanData, SpanProcessor};
+use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider, Span, SpanData, SpanProcessor};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -124,9 +129,52 @@ impl SpanProcessor for HeldTraces {
     }
 }
 
+/// The tracer a capture's dispatcher holds: the capture provider's tracer until the capture's `Drop`
+/// takes it out ([`CaptureTracer::take`]), then the tracer of a process-lifetime provider with no
+/// processor, so a span opened on a thread still defaulting to the dispatcher goes nowhere.
+///
+/// Once taken, the dispatcher's drop runs no telemetry code: its registry holds no span then, since
+/// every `tracing::Span` handle holds a reference to its dispatcher, so the last reference going
+/// means no handle (and no started SDK span, which holds its own tracer) is left.
+#[derive(Debug, Clone)]
+struct CaptureTracer(Arc<std::sync::RwLock<Option<SdkTracer>>>);
+
+impl CaptureTracer {
+    fn new(tracer: SdkTracer) -> Self {
+        Self(Arc::new(std::sync::RwLock::new(Some(tracer))))
+    }
+
+    /// The capture provider's tracer, leaving the dispatcher the provider-less one.
+    fn take(&self) -> Option<SdkTracer> {
+        self.0.write().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// The tracer of a provider with no processor, built once and never dropped.
+    fn taken() -> &'static SdkTracer {
+        static TAKEN: std::sync::OnceLock<SdkTracer> = std::sync::OnceLock::new();
+        TAKEN.get_or_init(|| {
+            use opentelemetry::trace::TracerProvider as _;
+            SdkTracerProvider::builder().build().tracer("rdm-evidence-capture-taken")
+        })
+    }
+}
+
+impl opentelemetry::trace::Tracer for CaptureTracer {
+    type Span = opentelemetry_sdk::trace::Span;
+
+    fn build_with_context(&self, builder: opentelemetry::trace::SpanBuilder, parent_cx: &opentelemetry::Context) -> Self::Span {
+        match &*self.0.read().unwrap_or_else(|e| e.into_inner()) {
+            Some(tracer) => tracer.build_with_context(builder, parent_cx),
+            None => Self::taken().build_with_context(builder, parent_cx),
+        }
+    }
+}
+
 /// A test cell's span capture; see the module docs.
 pub struct EvidenceCapture {
     provider: SdkTracerProvider,
+    /// The tracer the dispatcher holds; `Drop` takes the provider's tracer out of it.
+    tracer: CaptureTracer,
     evidence: SharedEvidence,
     loss: SpanLoss,
     path: PathBuf,
@@ -188,7 +236,11 @@ impl EvidenceCapture {
             None
         };
         let provider = builder.build();
-        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(span_export_layer(&provider, service)).with(
+        let tracer = CaptureTracer::new({
+            use opentelemetry::trace::TracerProvider as _;
+            provider.tracer(service.to_string())
+        });
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(tracer_export_layer(tracer.clone())).with(
             // Test tooling (Luke, 2026-10-19): with RDM_DEBUG_GOSSIP set, iroh-gossip's own DEBUG lines (the dial,
             // accept and close of every gossip connection) go to stderr on one clock with RDM's spans.
             std::env::var("RDM_DEBUG_GOSSIP").ok().map(|_| {
@@ -197,7 +249,7 @@ impl EvidenceCapture {
             }),
         ));
         let default = tracing::dispatcher::set_default(&dispatch);
-        Ok(Self { provider, evidence, loss, path, dispatch, held, _default: default })
+        Ok(Self { provider, tracer, evidence, loss, path, dispatch, held, _default: default })
     }
 
     /// Send the spans of `trace` (its hex id) on to the file and the collector, and every span of it
@@ -274,5 +326,9 @@ impl Drop for EvidenceCapture {
                 }
             })],
         );
+        // The provider's tracer leaves the dispatcher here, on the cell's thread, so its end (with
+        // the `provider` field, or the shutdown's thread past the bound) never runs where
+        // tracing-core drops the dispatcher; see the module docs.
+        drop(self.tracer.take());
     }
 }
