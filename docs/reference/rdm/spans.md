@@ -43,7 +43,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.entry.reject.via-topology-pull-failed` | `crates/rdm-node/src/join.rs` | 103 |
 | `rdm.mesh.entry.resolve.via-fabric-primary-changed` | `crates/rdm-admin/src/rafka_time.rs` | 73 |
 | `rdm.mesh.entry.resolve.via-recovery-pull` | `crates/rdm-admin/src/rafka_time.rs` | 143 |
-| `rdm.mesh.entry.serve.via-pull` | `crates/rdm-admin/src/join.rs` | 524 |
+| `rdm.mesh.entry.serve.via-pull` | `crates/rdm-admin/src/join.rs` | 530 |
 | `rdm.mesh.entry.update.via-pull-attempt` | `crates/rdm-node/src/join.rs` | 59 |
 | `rdm.mesh.entry.update.via-rafka-time-adopted` | `crates/rdm-admin/src/rafka_time.rs` | 20 |
 | `rdm.mesh.entry.update.via-rafka-time-adopted` | `crates/rdm-node/src/rafka_time.rs` | 140 |
@@ -556,7 +556,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.reject.via-filter` | `crates/rdm-node/src/node_self.rs` | 1584 |
 | `rdm.node_admin.node.reject.via-join-mismatch` | `crates/rdm-admin/src/join.rs` | 398 |
 | `rdm.node_admin.node.reject.via-join-mismatch` | `crates/rdm-admin/src/join.rs` | 430 |
-| `rdm.node_admin.node.reject.via-join-unknown` | `crates/rdm-admin/src/join.rs` | 507 |
+| `rdm.node_admin.node.reject.via-join-unknown` | `crates/rdm-admin/src/join.rs` | 513 |
 | `rdm.node_admin.node.reject.via-no-birth` | `crates/rdm-admin/src/offline.rs` | 718 |
 | `rdm.node_admin.node.reject.via-no-birth` | `crates/rdm-admin/src/offline.rs` | 828 |
 | `rdm.node_admin.node.reject.via-no-current-build` | `crates/rdm-admin/src/stopped_gc.rs` | 331 |
@@ -639,7 +639,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.update.via-rebuilt-birth` | `crates/rdm-admin/src/admin/runner.rs` | 1065 |
 | `rdm.node_admin.node.update.via-records-filled` | `crates/rdm-admin/src/node_rows.rs` | 906 |
 | `rdm.node_admin.node.update.via-recovery-start` | `crates/rdm-admin/src/admin/boot.rs` | 834 |
-| `rdm.node_admin.node.update.via-refused-caller` | `crates/rdm-admin/src/refused_caller.rs` | 57 |
+| `rdm.node_admin.node.update.via-refused-caller` | `crates/rdm-admin/src/refused_caller.rs` | 58 |
 | `rdm.node_admin.node.update.via-returned-reported` | `crates/rdm-admin/src/admin/recovery.rs` | 722 |
 | `rdm.node_admin.node.update.via-row-status` | `crates/rdm-admin/src/status_rpc.rs` | 1487 |
 | `rdm.node_admin.node.update.via-row-status` | `crates/rdm-admin/src/status_rpc.rs` | 2254 |
