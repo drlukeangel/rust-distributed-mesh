@@ -5,8 +5,10 @@
 # Every `up` names a new fabric and new meshes (fabric-<tag>, mesh-<tag>-1, mesh-<tag>-2, the tag minted
 # per run), recorded in <root>/names, so no run reuses another's names; Day 0 is the fabric-primary and
 # its own mesh, and the second mesh comes from the bootstrap Build (Q170).
-# Every process exports to the collector OTEL_EXPORTER_OTLP_ENDPOINT names (default: the .99 collector);
-# the UI reads flames from JAEGER_QUERY_URL (default: Jaeger on .99).
+# Every process exports to the collector OTEL_EXPORTER_OTLP_ENDPOINT names (default: the local collector,
+# http://localhost:4318, as every node binary defaults to);
+# the UI reads flames from JAEGER_QUERY_URL (default: the local Jaeger that collector feeds,
+# http://localhost:16686, the admin UI's own default).
 #
 #   scripts/demo-estate.sh up     [<root dir>]   bring it up; prints the UI's URL; the root holds the logs,
 #                                                evidence and store
@@ -39,8 +41,8 @@ BIN=${RDM_DEMO_BIN:?set RDM_DEMO_BIN to the directory holding the consumer execu
 PROBE=${RDM_DEMO_PROBE:-$HERE/target/debug/rdm-rpc-probe}
 WEB=${RDM_DEMO_WEB:-$HERE/demo/admin-ui/web/dist}
 UI_BIND=${RDM_DEMO_UI_BIND:-127.0.0.1:0}
-export OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://192.168.68.99:5318}
-JAEGER=${JAEGER_QUERY_URL:-http://192.168.68.99:16687}
+export OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}
+JAEGER=${JAEGER_QUERY_URL:-http://localhost:16686}
 CURRENT=$HERE/target/demo-estate.current
 
 # The port the UI put on `$1`'s row config (admin_ui_port): the row's latest line in the store root's nodes.jsonl.

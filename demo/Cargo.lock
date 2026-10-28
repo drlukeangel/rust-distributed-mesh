@@ -2804,7 +2804,7 @@ dependencies = [
 [[package]]
 name = "rdm-admin"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=7bb668eab696af8c4b3a1d088c1c2d481eb70704#7bb668eab696af8c4b3a1d088c1c2d481eb70704"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=d1b1be612148e66be2402f42065415499a8eabed#d1b1be612148e66be2402f42065415499a8eabed"
 dependencies = [
  "async-trait",
  "blake3",
@@ -2830,7 +2830,7 @@ dependencies = [
 [[package]]
 name = "rdm-client"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=7bb668eab696af8c4b3a1d088c1c2d481eb70704#7bb668eab696af8c4b3a1d088c1c2d481eb70704"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=d1b1be612148e66be2402f42065415499a8eabed#d1b1be612148e66be2402f42065415499a8eabed"
 dependencies = [
  "iroh",
  "rdm-core",
@@ -2844,7 +2844,7 @@ dependencies = [
 [[package]]
 name = "rdm-core"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=7bb668eab696af8c4b3a1d088c1c2d481eb70704#7bb668eab696af8c4b3a1d088c1c2d481eb70704"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=d1b1be612148e66be2402f42065415499a8eabed#d1b1be612148e66be2402f42065415499a8eabed"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -2860,7 +2860,7 @@ dependencies = [
 [[package]]
 name = "rdm-node"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=7bb668eab696af8c4b3a1d088c1c2d481eb70704#7bb668eab696af8c4b3a1d088c1c2d481eb70704"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=d1b1be612148e66be2402f42065415499a8eabed#d1b1be612148e66be2402f42065415499a8eabed"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2881,7 +2881,7 @@ dependencies = [
 [[package]]
 name = "rdm-test"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=7bb668eab696af8c4b3a1d088c1c2d481eb70704#7bb668eab696af8c4b3a1d088c1c2d481eb70704"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=d1b1be612148e66be2402f42065415499a8eabed#d1b1be612148e66be2402f42065415499a8eabed"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2904,7 +2904,7 @@ dependencies = [
 [[package]]
 name = "rdm-transport"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=7bb668eab696af8c4b3a1d088c1c2d481eb70704#7bb668eab696af8c4b3a1d088c1c2d481eb70704"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=d1b1be612148e66be2402f42065415499a8eabed#d1b1be612148e66be2402f42065415499a8eabed"
 dependencies = [
  "anyhow",
  "async-trait",

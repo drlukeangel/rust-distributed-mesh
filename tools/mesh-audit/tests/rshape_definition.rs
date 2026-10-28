@@ -292,7 +292,8 @@ fn check_root_excludes_consumer(root_toml: &str) -> Vec<String> {
 
 fn consumer_sources() -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let mut stack = vec![root().join(CONSUMER).join("src"), root().join(UI_DIR).join("src")];
+    // The consumer's examples (`demo/examples`) compose the same way its entry points do.
+    let mut stack = vec![root().join(CONSUMER).join("src"), root().join(UI_DIR).join("src"), root().join(CONSUMER).join("examples")];
     while let Some(d) = stack.pop() {
         for e in std::fs::read_dir(&d).unwrap() {
             let p = e.unwrap().path();

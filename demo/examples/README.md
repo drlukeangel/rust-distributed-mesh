@@ -1,0 +1,51 @@
+# Examples
+
+One small program per feature an application calls or registers, each on RDM's public crates only
+(`rdm-client`, `rdm-admin`, `rdm-node`, `rdm-core`, `rdm-transport`) and each building with the
+consumer:
+
+```text
+cd demo && cargo build --examples          # every example, into demo/target/debug/examples/
+cargo build --example node_tags            # one
+```
+
+`scripts/i143-rshape-build-consumer.sh` builds them with the consumer's binaries, so none goes stale.
+
+There are two kinds:
+
+- **Callers** enter at a node-admin's birth, the JSON a node-admin prints after `RDM_NODE_BIRTH=`
+  (`scripts/demo-estate.sh up` keeps the Day-0 admin's in `<root>/birth.json`), and make their calls
+  there:
+
+  ```text
+  scripts/demo-estate.sh up
+  export RDM_NODE_ADMIN_BIRTH="$(cat "$(cat target/demo-estate.current)/birth.json")"
+  demo/target/debug/examples/node_tags <mesh>.broker.1 gold
+  ```
+
+- **Executables** are a node-admin (and, for two of them, a node kind too) that registers something in
+  its `Wiring`. They run in place of `rshape-node-admin`: as the Day-0 admin, and named by a Build for
+  the paths of the kinds they serve.
+
+Every program exports its spans to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`).
+
+| Example | Kind | Feature | What it shows |
+|---|---|---|---|
+| [on_mesh_ready.rs](on_mesh_ready.rs) | executable | `on_mesh_ready` | The notice a mesh-primary calls once its mesh is ready: registered in `FabricHooks`, fire and forget, here a counted log line. |
+| [on_build_started_ended.rs](on_build_started_ended.rs) | executable | `on_build_started`, `on_build_ended` | The fabric-primary's notices of each Build: the started notice with its attempt's reason, the ended notice with `Complete` or `Failed { step, reason, code }`; the application keeps the Builds in flight. |
+| [node_name_update.rs](node_name_update.rs) | caller | `node.name.update` | A live node's rename: its connections deleted and its mesh left as one Build of steps (the precondition), the call to its mesh-primary for its exact birth, then a stop under the new name. |
+| [node_tags.rs](node_tags.rs) | caller | `node.tags.create`, `node.tags.delete` | Labels on a node's row, written by its mesh-primary; nodes found by label with a `tags` filter pair; the label removed. |
+| [forward.rs](forward.rs) | caller | Forward `0x1A` | `node.config.update` sent `Direct` and, when that ends `NotSent`, the same call through a carrier (`RouteChoice::ViaPeer`); `--via` names the carrier. |
+| [named_listeners.rs](named_listeners.rs) | executable | `RDM_LISTENERS` | The gateway's `client` listener declared in the admin's `Wiring`; the launched gateway takes its bound listener from the running node and serves on the port the operating system picked, which its row publishes. |
+| [declared_secrets.rs](declared_secrets.rs) | executable | `RDM_DECLARED_SECRETS` | A secret declared for brokers only: read once from the bootstrap admin's environment, set only in brokers' environments, never written to a row, record or span; the broker reads it. |
+| [build_reattach.rs](build_reattach.rs) | caller | Build reattach | A Build whose stream the caller drops after `Started`, then `BuildCarrier::reattach` by its id (the receipts, the stream again, never a second Build) and `BuildCarrier::follow` to its terminal. |
+| [node_topology_get.rs](node_topology_get.rs) | caller | `node.topology.get` | The topology a node holds, mesh by mesh, and the read after a reconnect: `since` the version held answers `Unchanged`. |
+| [fabric_atlas_read.rs](fabric_atlas_read.rs) | caller | `fabrics.get`, `fabrics.atlas.get` | The fabric-wide reads: the fabric, its meshes and their primaries; the fabric-primary's atlas, each node's status as the operations left it, the operation still running on it, and the gossip view's status as context only. |
+| [node_primary_update.rs](node_primary_update.rs) | caller | `node.primary.update` | A planned move of a mesh's primary before maintenance: the election names the successor, which installs itself and answers with the revisions. |
+| [fabric_primary_update.rs](fabric_primary_update.rs) | caller | `node.fabric-primary.update` | A planned move of the fabric-primary: its own mesh's successor first, else another mesh's mesh-primary. |
+| [node_mesh_leave.rs](node_mesh_leave.rs) | caller | `node.mesh.leave` | A node taken off its mesh on its own (connections deleted, then the leave, as one Build of steps), its row read while left, then a stop and a start that bring the same birth back. |
+| [executable_dirs.rs](executable_dirs.rs) | caller | `RDM_EXECUTABLE_DIRS` | A node's executable replaced by a Build naming a binding inside the directories the fabric runs with, checked and hashed before anything is sent; a refusal printed by name. |
+
+The examples that change the fabric (`node_name_update`, `node_mesh_leave`, `forward`, `node_tags`,
+`build_reattach`, `node_primary_update`, `fabric_primary_update`, `executable_dirs`) act on the node
+they are given; run them against a demo estate, not a fabric that carries traffic.

@@ -11,7 +11,8 @@
 # The fixture is demo (its own Cargo.toml and Cargo.lock; excluded from
 # the RDM root workspace). Its RDM dependencies are git dependencies pinned to ONE rev. The
 # workspace is a clean copy of the fixture with that rev set to the candidate in Cargo.toml and
-# Cargo.lock, then `cargo build --locked --bins`. A lockfile the candidate's dependency set no
+# Cargo.lock, then `cargo build --locked --bins --tests --examples` (the examples in demo/examples
+# build with the binaries, so none goes stale). A lockfile the candidate's dependency set no
 # longer satisfies fails `--locked`: the fixture's lock is refreshed deliberately, never here.
 #
 # `--skip-ui-tests` builds the immutable consumer binaries before the gate starts its
@@ -66,7 +67,7 @@ materialize_and_build() {
     for db in "${CARGO_HOME:-$HOME/.cargo}"/git/db/rust-distributed-mesh-*; do
         [ -d "$db" ] && git -C "$db" fetch -q "$ROOT" "+$CANDIDATE:refs/commit/$CANDIDATE" 2>/dev/null || true
     done
-    cargo build --locked --message-format=json --manifest-path "$WORKSPACE/Cargo.toml" --workspace --bins --tests > "$OUTPUT/artifacts.json" || return 1
+    cargo build --locked --message-format=json --manifest-path "$WORKSPACE/Cargo.toml" --workspace --bins --tests --examples > "$OUTPUT/artifacts.json" || return 1
     # The admin UI's own tests (its flows run against node-admin's real control router).
     if [ "$SKIP_UI_TESTS" != 1 ]; then
         python3 - "$OUTPUT/artifacts.json" <<'PYTESTS' || return 1
