@@ -441,8 +441,8 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.issuer.update.via-installed` | `crates/rdm-admin/src/cert_renewal.rs` | 453 |
 | `rdm.node_admin.issuer.update.via-installed` | `crates/rdm-admin/src/status_rpc.rs` | 1312 |
 | `rdm.node_admin.issuer.update.via-renewal` | `crates/rdm-admin/src/cert_renewal.rs` | 440 |
-| `rdm.node_admin.lifecycle.update.via-transition` | `crates/rdm-admin/src/lifecycle.rs` | 408 |
-| `rdm.node_admin.lifecycle_hook.update.via-transition` | `crates/rdm-admin/src/lifecycle.rs` | 363 |
+| `rdm.node_admin.lifecycle.update.via-transition` | `crates/rdm-admin/src/lifecycle.rs` | 409 |
+| `rdm.node_admin.lifecycle_hook.update.via-transition` | `crates/rdm-admin/src/lifecycle.rs` | 364 |
 | `rdm.node_admin.mesh.create.via-mesh-row` | `crates/rdm-admin/src/admin/rows_writer.rs` | 249 |
 | `rdm.node_admin.mesh.create.via-receipt` | `crates/rdm-admin/src/admin/rows_writer.rs` | 382 |
 | `rdm.node_admin.mesh.create.via-recovery` | `crates/rdm-admin/src/admin/records.rs` | 677 |

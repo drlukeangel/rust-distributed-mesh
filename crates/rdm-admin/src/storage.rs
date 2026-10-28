@@ -1248,6 +1248,62 @@ mod tests {
         NodeRow::new(name.parse().unwrap(), NodeId::mint(), crate::model::NodeStatus::Ready)
     }
 
+    /// CONTRACT (Q176, states.md: a node, a mesh and the fabric are pending, then ready; "there is no
+    /// ready-for-traffic, there is ready"): a store root a build before Q176 wrote, its node row's
+    /// status `ready-for-traffic`, its birth's declared state and operation effect and its mesh
+    /// record's state `ReadyForTraffic` and its Fabric record's event `ready-for-traffic`, opens and
+    /// reads back every one as `Ready`, the event as `ready`. Must NOT happen: a line refused as
+    /// unrecognised, or a record read back other than as it was written.
+    #[tokio::test]
+    async fn a_store_root_written_before_the_ready_rename_reads_back_ready() {
+        use crate::fabric_storage::{FabricStorage, FileFabricStorage};
+        use rdm_core::status::{DeclaredOperation, FabricEvent, MeshState, NodeState};
+        let d = crate::test_support::tempdir("ready-rename");
+        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let (data, writer) = (d.join("mesh1.admin.1"), crate::store_log::LogWriter::mint());
+        let mut mesh = MeshRecord::new(MeshId::mint(), "mesh1");
+        mesh.states.extend([MeshState::Pending, MeshState::Ready]);
+        let mut node = row("mesh1.rpc.1");
+        let birth = IncarnationId::mint();
+        let facts = node.birth_mut(&birth, &node.name.clone());
+        facts.declared.extend([NodeState::Pending, NodeState::Ready]);
+        facts.apply_operation(&DeclaredOperation { build_id: "b1".into(), attempt: 1, operation: "node.start:mesh1.rpc.1".into() }, NodeState::Ready);
+        let identity = crate::fabric_storage::FabricIdentity { fabric_id: crate::model::FabricId::mint(), name: "fabric1".into() };
+        let mut fabric = crate::fabric_storage::FabricRecord::new(identity.clone());
+        fabric.events.push(crate::status_rpc::event_key(&FabricEvent::Ready));
+        {
+            let (m, n, f) = (FileMeshStorage::open(&root, &writer).await.unwrap(), FileNodesStorage::open(&data, &root, "mesh1", &writer).await.unwrap(), FileFabricStorage::open(&root, &writer).await.unwrap());
+            m.put_mesh(&mesh).await.unwrap();
+            n.put_node(&node).await.unwrap();
+            crate::fabric_storage::claim_identity(&f, &identity).await.unwrap();
+            f.put_fabric(&fabric).await.unwrap();
+        }
+        // Every line again as the build before Q176 wrote it: each record's text with its old names,
+        // checksummed and framed by the store log's own encoder.
+        for file in [crate::store_root::MESHES_FILE, crate::store_root::NODES_FILE, crate::store_root::FABRIC_FILE] {
+            let path = root.dir().join(file);
+            let old: Vec<u8> = crate::store_log::read_file(&path).unwrap().iter().flat_map(|l| {
+                let text = serde_json::to_string(&l.record).unwrap().replace("\"ready\"", "\"ready-for-traffic\"").replace("\"Ready\"", "\"ReadyForTraffic\"");
+                crate::store_log::encode_line(l.op.as_ref().expect("a line read from the store carries its op"), &l.format, &l.key, text.as_bytes())
+            }).collect();
+            std::fs::write(&path, &old).unwrap();
+        }
+        let text = |file: &str| std::fs::read_to_string(root.dir().join(file)).unwrap();
+        assert!(text(crate::store_root::MESHES_FILE).contains("\"ReadyForTraffic\""), "the mesh record holds the old name");
+        assert!(text(crate::store_root::NODES_FILE).contains("\"status\":\"ready-for-traffic\"") && text(crate::store_root::NODES_FILE).contains("\"ReadyForTraffic\""), "the node row holds the old names");
+        assert!(text(crate::store_root::FABRIC_FILE).contains("\"ready-for-traffic\""), "the Fabric record holds the old event");
+        let (m, n, f) = (FileMeshStorage::open(&root, &writer).await.unwrap(), FileNodesStorage::open(&data, &root, "mesh1", &writer).await.unwrap(), FileFabricStorage::open(&root, &writer).await.unwrap());
+        let read = m.mesh(&mesh.mesh_id).await.unwrap().expect("the mesh record reads back");
+        assert_eq!((read.state(), &read), (Some(MeshState::Ready), &mesh), "the mesh record reads back ready");
+        let read = n.node(&node.node_id).await.unwrap().expect("the node row reads back");
+        assert_eq!(read.status, crate::model::NodeStatus::Ready, "the node row's status reads back ready");
+        assert_eq!(read, node, "the birth's declared state and operation effect read back ready");
+        let read = f.fabric().await.unwrap().expect("the Fabric record reads back");
+        assert_eq!(read.events, ["ready"], "the Fabric record's event reads back as the ready event's key");
+        assert_eq!(read, fabric);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// CONTRACT (node-name-update.md, "Claim and move"; node-delete.md: a delete releases the node's
     /// name): each node's name is a claim beside its record, `NameHeld { by: node.id }` naming another
     /// node's live claim, and the `path.name` index names the record last written at a name, a

@@ -2147,7 +2147,7 @@ A Fabric event the fabric-primary applies at a mesh primary.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
-| 0 | **`Ready`** |  |  | `name() = "ready"` | The fabric is ready. |
+| 0 | **`Ready`** |  | `alias = "ReadyForTraffic"` | `name() = "ready"` | The fabric is ready. |
 | 1 | **`ShutdownInitiated`** |  |  | `name() = "shutdown-initiated"` | A fabric shutdown was initiated by the named admin. |
 | 1.0 | `initiated_by` | `String` |  |  | The admin that initiated the shutdown. |
 
@@ -2367,7 +2367,7 @@ serde: `rename_all = "kebab-case"`
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Pending`** |  |  | The node has not yet declared itself ready. |
-| 1 | **`Ready`** |  |  | The node takes traffic. |
+| 1 | **`Ready`** |  | `alias = "ready-for-traffic"` | The node takes traffic. |
 | 2 | **`ConnectionsDeleting`** |  | `rename = "connections-deleting"` | The node takes no new work: its connections are being deleted. |
 | 3 | **`Leaving`** |  |  | The node has announced its departure. |
 
@@ -2404,7 +2404,7 @@ A Mesh's status, as declared.
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Pending`** |  |  | Created and not yet ready. |
-| 1 | **`Ready`** |  |  | Ready: it takes traffic. |
+| 1 | **`Ready`** |  | `alias = "ReadyForTraffic"` | Ready: it takes traffic. |
 | 2 | **`Leaving`** |  |  | Leaving: it is closing. |
 | 3 | **`Dead`** |  |  | Dead: every member is gone. |
 
@@ -2570,7 +2570,7 @@ A node birth's lifecycle state, as declared.
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Pending`** |  |  | Born and not yet ready. |
-| 1 | **`Ready`** |  |  | Ready: it takes traffic. |
+| 1 | **`Ready`** |  | `alias = "ReadyForTraffic"` | Ready: it takes traffic. |
 | 2 | **`ConnectionsDeleting`** |  |  | Connections-deleting: it takes no new work. |
 | 3 | **`Stopped`** |  |  | Stopped: declared at node.stop's end, after its connections are deleted and its transport cut |
 
@@ -2587,7 +2587,7 @@ serde: `rename_all = "kebab-case"`
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Pending`** |  |  | Born and not yet ready. |
-| 1 | **`Ready`** |  |  | Ready: it takes traffic. |
+| 1 | **`Ready`** |  | `alias = "ready-for-traffic"` | Ready: it takes traffic. |
 | 2 | **`ConnectionsDeleting`** |  | `rename = "connections-deleting"` | Connections-deleting: it takes no new work while it finishes what it holds. |
 | 3 | **`Leaving`** |  |  | Leaving: it has announced its departure and is closing. |
 | 4 | **`PendingReconnect`** |  |  | Unheard past the staleness floor: held, never death, and never a reason to restart or |
@@ -2957,7 +2957,7 @@ serde: `rename_all = "kebab-case"`
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
 | 0 | **`Pending`** |  |  | `name() = "pending"` | Created and not yet ready. |
-| 1 | **`Ready`** |  |  | `name() = "ready"` | Ready: it takes traffic. |
+| 1 | **`Ready`** |  | `alias = "ready-for-traffic"` | `name() = "ready"` | Ready: it takes traffic. |
 | 2 | **`Leaving`** |  |  | `name() = "leaving"` | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
 | 3 | **`Dead`** |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final. |
 | 4 | **`Degraded`** |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |
