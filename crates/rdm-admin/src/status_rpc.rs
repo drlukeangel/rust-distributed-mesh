@@ -1647,8 +1647,17 @@ impl StatusAuthority {
                     None => continue,
                 },
             };
-            // The birth's declared states and operation effects leave its node record in one write.
-            let (outcome, error) = match self.remove_declared(&node_id, &incarnation, true).await {
+            // The birth's declared states and operation effects leave its node record in one write, by
+            // its mesh's writer only: "The mesh-primary is the one writer of its mesh's node rows ... No
+            // other process writes a Node row" (node-identity-and-state.md §4.3). Any other admin forgets
+            // them in memory and writes nothing: its copy of another mesh's row is not that row.
+            let writer = {
+                let view = self.topology.read().await;
+                let mesh = name.as_ref().map(|n| n.mesh.clone()).or_else(|| view.births().find(|n| n.node_id == node_id).map(|n| n.name.mesh.clone()));
+                mesh.is_none_or(|mesh| crate::node_rows::writes_for(&view, &self.node_id, &mesh))
+            };
+            let removed = if writer { self.remove_declared(&node_id, &incarnation, true).await } else { Ok(()) };
+            let (outcome, error) = match removed {
                 Ok(()) => {
                     let mut declared = self.declared.lock().unwrap();
                     declared.operations.retain(|_, r| r.node_id != node_id || r.incarnation_id != incarnation);

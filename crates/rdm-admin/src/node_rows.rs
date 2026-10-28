@@ -671,9 +671,9 @@ impl NodeRows {
         self.deleted_as(record, operation, false).await
     }
 
-    /// [`Self::deleted`] of an unreached birth (node-recovery.md step 3): a node-admin's row the
-    /// fabric-primary writes when it executes the delete (R-OW1: the writer of a mesh whose unheard
-    /// primary it deletes).
+    /// [`Self::deleted`] of an unreached birth (node-recovery.md step 3): a node-admin's row is written by
+    /// its mesh's elected primary, the mesh's one writer, and by the fabric-primary only as acting primary
+    /// of a mesh with no primary (node-identity-and-state.md §4.3; R-OW1).
     pub async fn deleted_unreached(&self, record: &Node, operation: &str) -> Result<(), RowRefused> {
         self.deleted_as(record, operation, record.kind == NodeKind::NodeAdmin).await
     }
@@ -731,9 +731,14 @@ impl NodeRows {
         }
         let r = tracing::Instrument::instrument(
             async {
+                // "The fabric-primary writes a row only as acting primary of a mesh with no primary. No
+                // other process writes a Node row" (node-identity-and-state.md §4.3): the fabric-primary
+                // writes the deleted node-admin's row itself only while its mesh holds no primary but that
+                // node; a mesh with an elected primary has its row written by that primary, its one writer.
                 let me = if fabric_recovery {
                     let t = self.view.read().await;
-                    if t.is_fabric_primary(&self.me_id) {
+                    let elected = t.node_type_primary(&name.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id != *node_id);
+                    if t.is_fabric_primary(&self.me_id) && !elected {
                         self.held_name_in(&t)
                     } else {
                         drop(t);

@@ -1730,13 +1730,17 @@ impl DriveEnv {
         // which the ladder told when it decided): the mesh this claim gives a node-admin.
         let crash_mesh = first.as_ref().filter(|_| recover).and_then(|op| self.unheard_peer(op)).filter(|(_, _, decided)| !*decided).map(|(node, _, _)| node.mesh);
         let from = std::time::Instant::now();
-        // An unheard mesh-primary's delete is this admin's (node-recovery.md); the create over its birth is the admin its
-        // mesh seats in the birth's place once one is seated (mesh-investigation.md step 6: the
-        // fabric-primary claims on its own log, the executor adopts the won claim; commands go down), and
-        // this admin's only while no admin of that mesh executes it.
+        // An unheard mesh-primary's recovery, its delete and the create over its birth, is claimed for the
+        // admin its mesh seats in the birth's place once one is seated: "the fabric-primary opens the
+        // attempt ...; the mesh-primary claims it through BuildClaim, and the fabric-primary calls
+        // build.attempt.run naming the mesh; the mesh-primary runs it and reports each receipt up that
+        // stream, and the fabric-primary writes every Build record" (node-recovery.md "Execution"), and
+        // "The fabric-primary writes a row only as acting primary of a mesh with no primary. No other
+        // process writes a Node row" (node-identity-and-state.md §4.3). It is this admin's only while no
+        // admin of that mesh executes it: the acting primary of a mesh with no primary.
         let seated = first
             .as_ref()
-            .filter(|op| matches!(op, BuildOperation::CreateNode { .. }) && mesh_primary_recovery_admits(p, op))
+            .filter(|op| matches!(op, BuildOperation::CreateNode { .. } | BuildOperation::RetireNode { .. }) && mesh_primary_recovery_admits(p, op))
             .and_then(|op| crate::executor::executor_for(op, &view))
             .filter(|to| to != me);
         let forced = match seated {

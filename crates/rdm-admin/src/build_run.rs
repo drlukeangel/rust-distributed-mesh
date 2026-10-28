@@ -1000,8 +1000,9 @@ pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, d
         Ok(p) => p.in_lane(lane),
         Err(e) => return Err(RecoveryNotRun::Broke { why: format!("{me}: Build {} could not be read to plan attempt {} of {}'s lane: {e}; the attempt holds its mesh", opened.build_id, opened.attempt, lane.unwrap_or("the fabric")), opened }),
     };
-    // A drift attempt acts in its lane's mesh. A fabric-lane recovery is a hung mesh-primary's, which
-    // the fabric-primary recovers (R-FM1, node-recovery.md): it acts in the mesh of the birth its open names.
+    // A drift attempt acts in its lane's mesh. A fabric-lane recovery is an unheard mesh-primary's, which
+    // the fabric-primary opens (node-recovery.md "Execution"; its mesh's elected primary runs it): it acts
+    // in the mesh of the birth its open names.
     let mesh = match (&opened.mesh, p.attempt_actions.get(&opened.attempt)) {
         (Some(mesh), _) => mesh.clone(),
         (None, Some(crate::accepted::AttemptAction::Recover { path, .. })) => path.mesh.clone(),
@@ -1009,6 +1010,13 @@ pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, d
     };
     let observed = control.topology.read().await.clone();
     let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed).operations, hand_off_to: None };
+    // An unheard mesh-primary's recovery the fabric-primary opened and claimed for its mesh's elected
+    // primary (`ControlPlane::open_recovery`, node-recovery.md "Execution") is run by that primary, on
+    // the fabric-primary's build.attempt.run: nothing of it runs here, and its terminal is that run's.
+    if let Some(executor) = p.attempt_executors.get(&opened.attempt).filter(|e| **e != me.to_string()) {
+        let terminal = BuildReply::HandedOff { build_id: opened.build_id.to_string(), attempt: opened.attempt, to: executor.clone() };
+        return Ok(Recovered::Ran { opened, terminal });
+    }
     let context = crate::build_claim::current_context();
     let terminal = match door.attempt_run_in(lane, &opened.build_id, opened.attempt, &me.to_string(), &context, &[], &plan).await {
         Attached::Refused(reply) => return Err(RecoveryNotRun::RunRefused { opened, reply }),

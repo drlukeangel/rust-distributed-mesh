@@ -179,15 +179,31 @@ async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_an
         assert!(stopped.is_empty(), "{}: the recovery's create stops no runtime as a lost executor's launch: {stopped:#?}", held.path);
         let claimed: Vec<&Value> = named(&spans, "rdm.node_admin.node.resolve.via-claimed-allocation").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id).collect();
         assert!(claimed.is_empty(), "{}: the deleted birth's row stands Deleted, so the recovery's create finds no claim of it: {claimed:#?}", held.path);
-        let create = named(&spans, "rdm.node_admin.build.update.via-reconcile")
+        // The fabric-primary opened the recovery of the unheard mesh-primary and claimed it for the
+        // admin the mesh seats in its place (node-recovery.md "Execution"): its own spans name both, as the
+        // held birth's executor is killed by this cell before its spans are flushed.
+        let opened = named(&spans, "rdm.node_admin.build.update.via-recovery")
             .into_iter()
-            .find(|sp| attr(sp, "operations").split(',').any(|o| o == format!("node.create:{}", held.path)) && attr(sp, "action").contains(&held.node_id))
-            .unwrap_or_else(|| panic!("{}: the recovery's create runs", held.path));
-        creators.push((held.path.clone(), attr(create, "executor")));
+            .find(|sp| attr(sp, "node_id") == held.node_id && attr(sp, "route") == "node-recovery" && attr(sp, "outcome") == "admitted")
+            .unwrap_or_else(|| panic!("{}: the fabric-primary opens the recovery", held.path));
+        let claimed = named(&spans, "rdm.node_admin.build.update.via-claim-decision")
+            .into_iter()
+            .find(|sp| attr(sp, "node") == fp_name && attr(sp, "lane") == "fabric" && attr(sp, "attempt") == attr(opened, "attempt") && attr(sp, "outcome") == "won")
+            .unwrap_or_else(|| panic!("{}: the fabric-primary claims the recovery's attempt {}", held.path, attr(opened, "attempt")));
+        creators.push((held.path.clone(), attr(claimed, "executor")));
+        let deleted = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| attr(sp, "node_id") == held.node_id && attr(sp, "outcome") == "row-deleted").map(|sp| attr(sp, "node")).collect::<Vec<_>>();
+        assert!(!deleted.iter().any(|w| *w == fp_name), "{}: the fabric-primary writes no row of a mesh with a primary: {deleted:?}", held.path);
     }
     println!("recovery creates: {creators:?}");
-    assert_eq!(creators[0].1, second.path, "mesh2.admin.1's recovery's create is run by the other node-admin of mesh2: {creators:?}");
-    assert_eq!(creators[1].1, first.path, "mesh2.admin.2's recovery's create is run by the re-created mesh2.admin.1: {creators:?}");
+    assert_eq!(creators[0].1, second.path, "mesh2.admin.1's recovery is run by the other node-admin of mesh2, its elected mesh-primary: {creators:?}");
+    assert_eq!(creators[1].1, first.path, "mesh2.admin.2's recovery is run by the re-created mesh2.admin.1: {creators:?}");
+    // The delete written by mesh2's primary, and the held runtime left as it was: the second recovery's
+    // trace, whose executor this cell does not kill.
+    let written = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().find(|sp| attr(sp, "node_id") == second.node_id && attr(sp, "outcome") == "row-deleted").cloned().unwrap_or_else(|| panic!("{}: its Deleted row is written", second.path));
+    assert_eq!(attr(&written, "node"), first.path, "the Deleted row of {} is written by mesh2's primary: {written}", second.path);
+    let left = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| attr(sp, "node_id") == second.node_id && attr(sp, "caller") == "terminate").cloned().expect("the second recovery's TerminateRuntime reads its runtime");
+    println!("delete written by mesh2's primary: http://192.168.68.99:16687/trace/{}", s(&written["trace_id"]));
+    println!("held runtime left os-stopped: http://192.168.68.99:16687/trace/{}", s(&left["trace_id"]));
     let trace = s(&inspection["trace_id"]);
     println!("fabric-primary inspection: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);

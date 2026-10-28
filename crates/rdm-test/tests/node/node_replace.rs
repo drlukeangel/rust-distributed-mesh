@@ -2433,9 +2433,11 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
 /// node.deleted not yet published). Once NA2's own Build log holds that attempt running with P its
 /// executor and its NodeDeleting receipt, P is killed while the cut holds it (claimed, mid-run, no
 /// verdict). FP ends that attempt Failed only on P's proven departure, naming it; mesh2's other admin
-/// NA2 is elected mesh2's primary, and FP, which runs an unheard mesh-primary's recovery
+/// NA2 is elected mesh2's primary, and FP, which opens an unheard mesh-primary's recovery
 /// (node-recovery.md step 2 and sequence step 1), claims the next attempt of the fabric lane for P's
-/// recovery (`build.update.via-claim-decision`, FP, won) after the lost attempt ended. P comes back as a
+/// recovery for NA2, which runs it (node-recovery.md "Execution": "the mesh-primary claims it ... the
+/// mesh-primary runs it"; `build.update.via-claim-decision` at FP, executor NA2, won) after the lost
+/// attempt ended. P comes back as a
 /// new node, and the member's recovery, owed again from the Failed attempt, completes through NA2 in
 /// mesh2's lane. Must NOT happen: mesh2's lane held for good by the lost executor, or an admin other
 /// than the fabric-primary deciding a claim in mesh2's lane.
@@ -2547,9 +2549,10 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_t
     );
     assert_eq!(
         (s(&claim["attributes"]["lane"]), s(&claim["attributes"]["executor"]), s(&claim["attributes"]["outcome"])),
-        ("fabric".to_string(), fp.clone(), "won".to_string()),
-        "FP claimed the fabric lane for P's recovery: {claim}"
+        ("fabric".to_string(), na2.clone(), "won".to_string()),
+        "FP claimed the fabric lane for P's recovery for NA2, mesh2's elected primary, which runs it (node-recovery.md \"Execution\"): {claim}"
     );
+    assert_eq!(s(&claim["attributes"]["node"]), fp, "FP decides the claim: {claim}");
     assert!(
         end(&ended) <= start(&claim),
         "the lost attempt ended before the next was claimed"

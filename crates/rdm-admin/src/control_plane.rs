@@ -1148,8 +1148,20 @@ impl ControlPlane {
             if let Some(claimant) = recoverer.filter(|_| reported) {
                 return Ok(Recovery::Reported { opened, claimant });
             }
-            let claim = crate::build_state::BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: me.to_string(), claimant: Some(me.to_string()), mesh: opened.mesh.clone() };
-            let own = self.node_rows.get().zip(self.node_id.get()).map(|(rows, id)| (&**rows, id));
+            // An unheard mesh-primary's recovery opened here in the fabric lane is claimed for the admin its
+            // mesh seats in the birth's place, once one is seated, and the fabric-primary's drive calls
+            // build.attempt.run on it: "the fabric-primary opens the attempt ...; the mesh-primary claims it
+            // through BuildClaim, and the fabric-primary calls build.attempt.run naming the mesh; the
+            // mesh-primary runs it and reports each receipt up that stream, and the fabric-primary writes
+            // every Build record" (node-recovery.md "Execution"); "The fabric-primary writes a row only as
+            // acting primary of a mesh with no primary" (node-identity-and-state.md §4.3). A mesh with no
+            // other admin keeps this admin, its acting primary, as the executor.
+            let executor = match (unheard_mesh_primary && fabric_recovery.is_none() && lane.is_none(), crate::executor::node_admin_recoverer(&path, &t)) {
+                (true, Some(elected)) if elected != me => elected,
+                _ => me.clone(),
+            };
+            let claim = crate::build_state::BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: executor.to_string(), claimant: Some(me.to_string()), mesh: opened.mesh.clone() };
+            let own = self.node_rows.get().zip(self.node_id.get()).filter(|_| executor == me).map(|(rows, id)| (&**rows, id));
             match crate::build_claim::decide_claim(&me, &*self.builds, &*self.claims, &self.contexts, &claim, &path.mesh, own).await {
                 rdm_core::build_claim::BuildClaimReply::Won { .. } => Ok(Recovery::Opened(opened)),
                 // Another attempt took the mesh's row between the read above and this claim: the
