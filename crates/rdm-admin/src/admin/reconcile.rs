@@ -80,6 +80,15 @@ impl crate::build_drive::Gate for SeatGate {
         self.control.claims.meshes().await.map_err(|e| format!("{}: the Mesh rows could not be read: {e}", self.handover.me))
     }
 
+    /// The birth this fabric-primary's atlas row holds at `path` (fabric-atlas.md R-FA1): the birth the
+    /// path's node row names current as the ops left it, the record Build acceptance read, never the
+    /// gossip view; `None` inside when no row is written at the path or an op deleted the birth.
+    async fn atlas_birth(&self, path: &crate::model::PathName, observed: &crate::topology::Topology) -> Result<Option<crate::accepted::AtlasBirth>, String> {
+        let row = self.control.atlas_row(path, observed).await.map_err(|r| format!("{}: {r:?}", self.handover.me))?;
+        let birth = row.filter(|r| r.status != crate::model::NodeStatus::Deleted).and_then(|r| r.incarnation.map(|incarnation| crate::build::PinnedBirth { node_id: r.node_id, incarnation }));
+        Ok(Some(crate::accepted::AtlasBirth(birth)))
+    }
+
     async fn recorded_executables(&self, topology: &crate::accepted::FabricTopology) -> Result<crate::accepted::Recorded, String> {
         let Some(rows) = self.handover.records.contacts.get().cloned() else {
             return Err(format!("{}: no nodes.storage is open yet to read the node rows from", self.handover.me));

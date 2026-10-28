@@ -114,6 +114,13 @@ pub trait Gate: Send + Sync {
     async fn mesh_rows(&self) -> Result<Vec<crate::storage::MeshRecord>, String> {
         Ok(Vec::new())
     }
+    /// The birth the fabric-primary's atlas row holds at `path` now, the record Build acceptance read
+    /// (fabric-atlas.md R-FA1, R-FA3), for the plan of a Build whose attempt carries a standalone stop,
+    /// start, connections delete or delete of it: planned from the atlas, never from the gossip view.
+    /// `Ok(None)` for a gate with no atlas: the view's birth is planned.
+    async fn atlas_birth(&self, _path: &PathName, _observed: &Topology) -> Result<Option<crate::accepted::AtlasBirth>, String> {
+        Ok(None)
+    }
     /// Whether the fabric holds ready now: a Build that put the fabric back to pending is
     /// `Complete` only once the fabric's ready state is set from its change (Q154; states.md
     /// "Resize and executable replacement"). A gate with no fabric change holds it.
@@ -327,6 +334,10 @@ pub struct Drive {
     /// The Mesh rows the store held when this drive's pass last read them, for a fabric.delete's plan
     /// ([`Gate::mesh_rows`]); `None` for any other Build.
     mesh_rows: Mutex<Option<Vec<crate::storage::MeshRecord>>>,
+    /// The birth the fabric-primary's atlas row held at the path of the Build's standalone action when
+    /// this drive's pass last read it ([`Gate::atlas_birth`]); `None` for any other attempt, or a gate
+    /// with no atlas.
+    atlas: Mutex<Option<crate::accepted::AtlasBirth>>,
 }
 
 fn frame_key(f: &BuildReply) -> Option<String> {
@@ -346,7 +357,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), atlas: Mutex::new(None) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -853,10 +864,9 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
     // A fabric.delete plans every mesh the store holds a row of beside the view's ([`Gate::mesh_rows`]).
     let stored = drive.mesh_rows.lock().unwrap().as_ref().map(|rows| crate::accepted::with_mesh_rows(t, rows));
     let t = stored.as_ref().unwrap_or(t);
-    let plan = match drive.recorded.lock().unwrap().as_ref() {
-        Some(recorded) => crate::accepted::plan_with_replacements(p, t, recorded),
-        None => crate::accepted::plan_for_build(p, t),
-    };
+    // A standalone action plans from the birth the atlas row held at this pass ([`Gate::atlas_birth`]).
+    let atlas = drive.atlas.lock().unwrap().clone();
+    let plan = crate::accepted::plan_for_build_with(p, t, drive.recorded.lock().unwrap().as_ref(), atlas.as_ref());
     plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a))).collect()
 }
 
@@ -1262,6 +1272,16 @@ impl DriveEnv {
                     Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id} is a fabric.delete and the Mesh rows could not be read for the meshes it deletes: {e}")),
                 }
             }
+            // A standalone stop, start, connections delete or delete plans from the birth the atlas row
+            // holds at its path (fabric-atlas.md R-FA1, R-FA3): read at every pass, before it plans.
+            let atlas = match crate::accepted::action_path(&p) {
+                Some(path) => match self.gate.atlas_birth(&path, &observed).await {
+                    Ok(birth) => birth,
+                    Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id}: the atlas row at {path} could not be read for its action's birth: {e}")),
+                },
+                None => None,
+            };
+            *drive.atlas.lock().unwrap() = atlas;
             let crashed = self.unanswered_meshes(&p);
             // The claim's holder was proven exited by this pass: the next attempt is claimed without
             // calling the lost holder again.
