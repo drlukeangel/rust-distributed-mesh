@@ -734,8 +734,9 @@ impl NodeConfigs {
         if view.is_fabric_primary(me_id) || !view.is_mesh_primary(mesh, me_id) {
             return;
         }
+        // A row whose name was released (`Deleted`, `Withdrawn`) names no node to hydrate or diff a Build against.
         for r in self.written.rows_of(mesh) {
-            if r.status != crate::model::NodeStatus::Withdrawn {
+            if !matches!(r.status, crate::model::NodeStatus::Withdrawn | crate::model::NodeStatus::Deleted) {
                 self.owe_push(me, me_id, view, mesh, &r.node_id, &r.config, r.revision);
             }
         }

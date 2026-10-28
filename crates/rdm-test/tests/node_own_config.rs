@@ -140,10 +140,11 @@ async fn a_nodes_own_config_update_is_on_its_mesh_primarys_row_before_the_fabric
     let written = rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-config").into_iter().find(|sp| attr(sp, "node") == "mesh2.admin.1" && attr(sp, "subject") == "mesh2.rpc.1" && attr(sp, "apply") == "own").unwrap_or_else(|| panic!("mesh2.admin.1's via-config of mesh2.rpc.1, apply=own"));
     assert_eq!((attr(written, "push"), attr(written, "outcome")), ("owed".to_string(), "config-updated".to_string()), "{written}");
     let pushed = rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-config-pushed").into_iter().find(|sp| attr(sp, "node") == "mesh1.admin.1" && attr(sp, "subject") == "mesh2.rpc.1" && attr(sp, "atlas") == "installed").unwrap_or_else(|| panic!("mesh1.admin.1's via-config-pushed of mesh2.rpc.1, installed"));
-    let (written_end, pushed_start) = (written["end_unix_nano"].as_u64().unwrap_or(u64::MAX), pushed["start_unix_nano"].as_u64().unwrap_or(0));
-    assert!(written_end <= pushed_start, "the mesh-primary's row and atlas hold the map before the fabric-primary's atlas: {written_end} > {pushed_start}");
     let push = rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-config-push").into_iter().find(|sp| attr(sp, "node") == "mesh2.admin.1" && attr(sp, "subject") == "mesh2.rpc.1").unwrap_or_else(|| panic!("mesh2.admin.1's via-config-push"));
     assert_eq!((attr(push, "fabric_primary"), attr(push, "outcome")), ("mesh1.admin.1".to_string(), "applied".to_string()), "{push}");
+    // The causal chain: the push is owed from the row write, and the fabric-primary's install is the push's call.
+    assert!(rdm_test::estate::descends_from(&spans, push, written), "the push is owed by the row write: {push}");
+    assert!(rdm_test::estate::descends_from(&spans, pushed, push), "the fabric-primary's atlas takes the row from the push: {pushed}");
     assert!(rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-apply-node-config").iter().all(|sp| attr(sp, "node") != "mesh2.rpc.1"), "the node is sent no ApplyNodeConfig");
     assert!(rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-fabric-primary").is_empty(), "nothing goes to the fabric-primary first");
     for (what, sp) in [("written", written), ("push", push), ("pushed", pushed)] {
