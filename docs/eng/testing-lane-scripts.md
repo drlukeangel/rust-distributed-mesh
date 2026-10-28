@@ -41,7 +41,7 @@ target was built (`target/.lane-path`) and cleans the workspace crates once on a
 | Hand the unit over | lead | `scripts/lane-dispatch.sh --lane <n> --issue <N> --name <name> --title <title> --design <file> [--model opus\|sonnet]`. Refuses a lane not prepped, a lane on another branch, a lane that already has an agent type (prep it again), or an issue that is not open. It writes `plan.md` (a header naming the issue, lane, branch and base commit, then the design file), writes `seat-rules.md` (the standing rules the agent reads first; item 7: the agent ends its unit with its own evidence), writes the agent type `i143-<issue>` with the model, and comments the issue with the lane and branch. |
 | Launch the agent | lead | Only after `lane-dispatch.sh` returns: the Agent tool with `subagent_type: i143-<issue>` and `description: "lane <n> i143-<issue>-<name>"`, as its `SEAT TYPE` line prints. A type it calls `registered` launches at once; a `NEW` type launches only after Claude Code's "New agent types are now available" notice names it (no notice after 2 min: `touch` the file and wait again). Never headless, never in a terminal multiplexer. |
 | Send the agent a note | lead | `scripts/lane-note.sh <lane> <note-file\|->`: the one way an update reaches the agent. Each note is its own numbered file `inbox/NNNN.md` (the next number after the highest), headed `# LEAD update NNNN — <date>`, written to a temporary file and moved into place. An empty note, or a lane not prepped, is refused. The agent reads every inbox file above the last one it acted on and names that number in its `STATUS` line. |
-| Run cells | agent in the lane | `flock -o /tmp/rdm-gate-turn.lock scripts/cells.sh <package> lib\|main -- <filter>` (§3). Never `cargo test -p` in a lane, never an exported `CARGO_TARGET_DIR`. |
+| Run cells | agent in the lane | `scripts/cells.sh <package> lib\|main -- <filter>` (§3), with no lock; independent runs go in parallel. Never `cargo test -p` in a lane, never an exported `CARGO_TARGET_DIR`. A unit's proof is its cells and the fast gate: no release, chaos, export or consumer-build run per unit. |
 | Check names before committing | agent in the lane | `python3 scripts/name-check.py origin/main HEAD` (§5). |
 | Prove the tip | agent in the lane | `bash $HOME/rdm-lanes/<lane>/scripts/post-land-gate.sh <lane>` (§2), not under the turn lock, at the end of its unit. Its `GREEN` line is the landing's proof. |
 | Land and close the issue | lead | `scripts/lane-land.sh <lane> <branch> <issue> <close-comment-file>` (§2). `LAND_NOCLOSE=1` comments on the issue instead of closing it. |
@@ -106,9 +106,9 @@ builds (every workspace member, `cargo build --tests --bins`, one feature resolu
 the one test executable named, from that build:
 
 ```bash
-flock -o /tmp/rdm-gate-turn.lock scripts/cells.sh rdm-test main -- node_stop::
-flock -o /tmp/rdm-gate-turn.lock scripts/cells.sh rdm-admin lib -- status_declare::
-flock -o /tmp/rdm-gate-turn.lock scripts/cells.sh rdm-transport main -- delivery::
+scripts/cells.sh rdm-test main -- node_stop::
+scripts/cells.sh rdm-admin lib -- status_declare::
+scripts/cells.sh rdm-transport main -- delivery::
 ```
 
 - Why: each `-p` selection resolves its own features, so a different selection compiles the whole
@@ -122,9 +122,9 @@ flock -o /tmp/rdm-gate-turn.lock scripts/cells.sh rdm-transport main -- delivery
   `RDM_BACKBONE_INTERVAL_MS=500`.
 - It exports no `OTEL_EXPORTER_OTLP_ENDPOINT`: a cell run through it exports to the collector only
   if the caller's environment names one ([test-otlp-capture.md](test-otlp-capture.md)).
-- `/tmp/rdm-gate-turn.lock` is the box's turn: `i143-export-run.sh` takes the same lock for each
-  batch, so cells, export batches and landings take turns. Always `flock -o`, so no process a cell
-  starts inherits the lock.
+- Cells take no lock (Luke, 2026-10-27 and 2026-10-28: "remove the lock"; "land the lanes on the fast
+  path, merge the code, then run them"). `/tmp/rdm-gate-turn.lock` is taken only by
+  `i143-export-run.sh`'s batches, always `flock -o`.
 
 ## 4. The gate: `scripts/rdm-gate-at.sh <lane dir> fast|release`
 
@@ -155,7 +155,8 @@ The gate builds once and runs every check and stem in parallel, each from a preb
 | green record | a fast gate with no `FAIL` appends the commit's content hash to `green-trees` | line 506 |
 
 A red gate is read, never run again (CLAUDE.md). A landing runs the fast gate only; the release
-suite is a separate run.
+suite, the export run and the soaks run once at the merged tip (`rdm-gate-at.sh <lane dir> release`, then
+`i143-export-run.sh`, then `i143-export-run.sh --soaks`), never per unit.
 
 ## 5. The name check: `scripts/name-check.py <base> <head>`
 
