@@ -321,7 +321,13 @@ fn a_launched_admin_is_ready_with_every_topology_store_unreadable() {
         let of_admin = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans.0.lock().unwrap().values().filter(|(n, _, f)| n == name && f.get("node").map(String::as_str) == Some("mesh1.admin.2")).map(|(_, _, f)| f.clone()).collect() };
         let fetched = of_admin("rdm.node_admin.build.update.via-fetch-facts");
         assert!(fetched.iter().any(|f| f.get("outcome").map(String::as_str) == Some("absorbed")), "the floor's Build is fetched from a node-admin and absorbed: {fetched:?}");
-        let ready = of_admin("rdm.mesh.node.update.via-ready");
+        // The admin's digest goes Ready before its Ready span is emitted (admin/boot.rs: set_own_status, then
+        // the held Build read, then `via-ready`): the span is waited for, never read at the digest's instant.
+        let ready = rdm_test::estate::wait_for("mesh1.admin.2's Ready span", Duration::from_secs(10), || {
+            let ready = of_admin("rdm.mesh.node.update.via-ready");
+            async move { (!ready.is_empty()).then_some(ready) }
+        })
+        .await;
         assert!(ready.iter().any(|f| f.get("build_id").is_some_and(|b| !b.is_empty() && !b.starts_with("unreadable"))), "the Ready names the current Build its log holds, read from no store: {ready:?}");
         assert!(since.is_empty(), "mesh1.admin.2's start reads none of the stores it takes from its pulls: {since:?}");
 
