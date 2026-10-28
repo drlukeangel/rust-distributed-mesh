@@ -423,8 +423,8 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.fabric.update.via-atlas-receipt` | `crates/rdm-admin/src/atlas.rs` | 867 |
 | `rdm.node_admin.fabric.update.via-blocked` | `crates/rdm-admin/src/fabric_status.rs` | 351 |
 | `rdm.node_admin.fabric.update.via-change` | `crates/rdm-admin/src/fabric_status.rs` | 406 |
-| `rdm.node_admin.fabric.update.via-checklist-complete` | `crates/rdm-admin/src/fabric_status.rs` | 582 |
-| `rdm.node_admin.fabric.update.via-checklist-held` | `crates/rdm-admin/src/fabric_status.rs` | 588 |
+| `rdm.node_admin.fabric.update.via-checklist-complete` | `crates/rdm-admin/src/fabric_status.rs` | 584 |
+| `rdm.node_admin.fabric.update.via-checklist-held` | `crates/rdm-admin/src/fabric_status.rs` | 590 |
 | `rdm.node_admin.fabric.update.via-every-mesh-ready` | `crates/rdm-admin/src/fabric_status.rs` | 410 |
 | `rdm.node_admin.fabric.update.via-executables-recorded` | `crates/rdm-admin/src/fabric_status.rs` | 258 |
 | `rdm.node_admin.fabric.update.via-fabric-recovery` | `crates/rdm-admin/src/fabric_recovery.rs` | 307 |
@@ -477,8 +477,8 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.mesh.serve.via-get` | `crates/rdm-admin/src/views.rs` | 378 |
 | `rdm.node_admin.mesh.update.via-applied` | `crates/rdm-admin/src/admin/boot.rs` | 1557 |
 | `rdm.node_admin.mesh.update.via-block` | `crates/rdm-admin/src/storage_change.rs` | 310 |
-| `rdm.node_admin.mesh.update.via-checklist-complete` | `crates/rdm-admin/src/fabric_status.rs` | 536 |
-| `rdm.node_admin.mesh.update.via-checklist-held` | `crates/rdm-admin/src/fabric_status.rs` | 542 |
+| `rdm.node_admin.mesh.update.via-checklist-complete` | `crates/rdm-admin/src/fabric_status.rs` | 538 |
+| `rdm.node_admin.mesh.update.via-checklist-held` | `crates/rdm-admin/src/fabric_status.rs` | 544 |
 | `rdm.node_admin.mesh.update.via-dead-row` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 940 |
 | `rdm.node_admin.mesh.update.via-dead-row` | `crates/rdm-admin/src/mesh_delete.rs` | 937 |
 | `rdm.node_admin.mesh.update.via-entry-sweep` | `crates/rdm-admin/src/reenter.rs` | 290 |
@@ -493,7 +493,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.mesh.update.via-leaving-row` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 785 |
 | `rdm.node_admin.mesh.update.via-mesh-deleted-receipt` | `crates/rdm-admin/src/mesh_delete.rs` | 297 |
 | `rdm.node_admin.mesh.update.via-mesh-left-receipt` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 714 |
-| `rdm.node_admin.mesh.update.via-on-mesh-ready` | `crates/rdm-admin/src/fabric_status.rs` | 603 |
+| `rdm.node_admin.mesh.update.via-on-mesh-ready` | `crates/rdm-admin/src/fabric_status.rs` | 605 |
 | `rdm.node_admin.mesh.update.via-pending-handoff` | `crates/rdm-admin/src/admin/runner.rs` | 1754 |
 | `rdm.node_admin.mesh.update.via-pending-reachability` | `crates/rdm-admin/src/admin/runner.rs` | 1722 |
 | `rdm.node_admin.mesh.update.via-probe` | `crates/rdm-admin/src/investigate.rs` | 591 |
@@ -502,7 +502,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.mesh.update.via-recovered` | `crates/rdm-admin/src/investigate.rs` | 537 |
 | `rdm.node_admin.mesh.update.via-roster-amended` | `crates/rdm-admin/src/mesh_delete.rs` | 428 |
 | `rdm.node_admin.mesh.update.via-shutdown` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 82 |
-| `rdm.node_admin.mesh.update.via-state-down` | `crates/rdm-admin/src/fabric_status.rs` | 628 |
+| `rdm.node_admin.mesh.update.via-state-down` | `crates/rdm-admin/src/fabric_status.rs` | 630 |
 | `rdm.node_admin.mesh.update.via-state-handoff` | `crates/rdm-admin/src/admin/runner.rs` | 1770 |
 | `rdm.node_admin.mesh.update.via-unblock` | `crates/rdm-admin/src/storage_change.rs` | 405 |
 | `rdm.node_admin.mesh.update.via-unheard` | `crates/rdm-admin/src/investigate.rs` | 653 |
