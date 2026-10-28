@@ -320,6 +320,7 @@ impl std::fmt::Display for CreateMeshError {
 pub(crate) fn hold_mesh_id(records: &Records, mesh: &str, mesh_id: &MeshId) {
     records.meshes.lock().unwrap().insert(mesh.to_string(), mesh_id.clone());
     records.wake.poke();
+    records.inputs_moved();
 }
 
 /// The claim `create-mesh:<mesh>` makes at the fabric-primary `me` (lifecycles/node-create.md "Mesh absent
