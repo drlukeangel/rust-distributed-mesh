@@ -513,6 +513,9 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
         self.inner.append_attempt_receipt(receipt).await
     }
+    async fn note_blocked(&self, build_id: &rdm_admin::build::BuildId, lane: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str) {
+        self.inner.note_blocked(build_id, lane, attempt, operation, step, reason).await
+    }
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }

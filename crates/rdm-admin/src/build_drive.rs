@@ -1367,7 +1367,7 @@ impl DriveEnv {
             match inner {
                 Inner::Terminal(t @ BuildReply::Complete { .. }) => {
                     dspan.record("outcome", "complete");
-                    self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await;
+                    self.verdict(&me, &executor, BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }, None).await;
                     self.release_mesh(&id, attempt, &executor).await;
                     self.gate.attempt_completed(&id, attempt).await;
                     drive.finish(t);
@@ -1375,9 +1375,12 @@ impl DriveEnv {
                 }
                 Inner::Terminal(t @ BuildReply::Failed { .. }) => {
                     dspan.record("outcome", "failed");
-                    if let BuildReply::Failed { operation, reason, code, .. } = &t {
-                        if !operation.is_empty() && !reason.contains("(reason cut:") {
-                            self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: reason.clone(), code: *code } }).await;
+                    if let BuildReply::Failed { operation, step, reason, code, .. } = &t {
+                        let receipt = BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: reason.clone(), code: *code } };
+                        if executor != me {
+                            self.verdict(&me, &executor, receipt, Some((operation, step, reason, *code))).await;
+                        } else if !operation.is_empty() && !reason.contains("(reason cut:") {
+                            self.verdicts.record(receipt).await;
                         }
                     }
                     self.release_mesh(&id, attempt, &executor).await;
@@ -1387,7 +1390,7 @@ impl DriveEnv {
                 }
                 Inner::Terminal(BuildReply::HandedOff { to, .. }) => {
                     dspan.record("outcome", "handed-off");
-                    self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } }).await;
+                    self.verdict(&me, &executor, BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } }, None).await;
                     self.release_mesh(&id, attempt, &executor).await;
                     let Some(next) = parse_path(&to) else {
                         return self.stalled(&me, drive, format!("attempt {attempt} of Build {id} handed off to {to:?}, which is not a path.name"));
@@ -1448,7 +1451,7 @@ impl DriveEnv {
                     match self.departure.proven(&executor).await {
                         Ok(()) => {
                             tracing::info_span!("rdm.node_admin.build.update.via-departure-proven", build_id = %id.log(), attempt, executor = %executor, node = %me)
-                                .in_scope(|| tracing::info!("the executor's exact runtime is proven exited: the next attempt may be claimed"));
+                                .in_scope(|| tracing::info!("the executor's exact runtime is proven exited or os-stopped: the next attempt may be claimed"));
                             deleted = Some(executor.to_string());
                         }
                         Err(not_proven) => {
@@ -1877,6 +1880,55 @@ impl DriveEnv {
         }
     }
 
+    /// The verdict of a run that ended: an executor on another admin reported it, and this
+    /// fabric-primary writes it, with the step receipt of the step it failed at (Q118; build.md: the
+    /// fabric-primary writes every Build record); this admin's own run wrote it and it is taken here.
+    async fn verdict(&self, me: &PathName, executor: &PathName, receipt: BuildAttemptReceipt, failed: Option<(&String, &String, &String, rdm_core::outcome::Code)>) {
+        if executor == me {
+            self.verdicts.record(receipt).await;
+            return;
+        }
+        if let Some((operation, step, reason, code)) = failed.filter(|(operation, ..)| !operation.is_empty()) {
+            let failed = crate::build_state::BuildStepReceipt { build_id: receipt.build_id.clone(), attempt: receipt.attempt, operation: operation.clone(), step: step.clone(), outcome: crate::build_state::StepOutcome::Failed { reason: reason.clone(), code }, output: None, executor: Some(executor.to_string()), mesh: None };
+            if let Err(e) = self.builds.append_step_receipt(&failed).await {
+                tracing::info!(error = %e, operation = %operation, step = %step, "the failed step's reported receipt could not be written");
+            }
+        }
+        if let Err(e) = self.builds.append_attempt_receipt(&receipt).await {
+            tracing::info!(error = %e, attempt = receipt.attempt, "the reported verdict could not be written: the attempt holds no verdict until the next pass decides it");
+        }
+    }
+
+    /// Write the step receipt `bytes` an executor reported for attempt `attempt` of `id` (Q118): only
+    /// while the claim record this admin holds names that attempt and `executor` (build.md: "a call
+    /// carrying a claim that is not the current folded attempt of the receiver's projection is refused
+    /// `StaleClaim`"); a receipt of any other attempt is refused by name and written nowhere.
+    async fn write_reported(&self, id: &BuildId, attempt: u32, executor: &PathName, operation: &str, step: &str, bytes: &[u8]) {
+        let me = self.held_name().await;
+        let r = match serde_json::from_slice::<crate::build_state::BuildStepReceipt>(bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::info!(error = %e, operation, step, "a reported step receipt does not decode: a later attempt runs the step again");
+                return;
+            }
+        };
+        let p = match self.builds.read_build(id).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::info!(error = %e, operation, step, "the Build could not be read to decide a reported step receipt: a later attempt runs the step again");
+                return;
+            }
+        };
+        if p.attempt != attempt || p.executor.as_deref() != Some(executor.to_string().as_str()) {
+            tracing::info_span!("rdm.node_admin.build.reject.via-stale-claim", node = %me, build_id = %id.log(), attempt, held_attempt = p.attempt, held_executor = p.executor.as_deref().unwrap_or(""), executor = %executor, operation, step)
+                .in_scope(|| tracing::info!("a reported receipt of an attempt the claim record does not hold is written nowhere"));
+            return;
+        }
+        if let Err(e) = self.builds.append_step_receipt(&crate::build_state::BuildStepReceipt { build_id: id.clone(), attempt, mesh: None, ..r }).await {
+            tracing::info!(error = %e, operation, step, "a reported step receipt could not be written: a later attempt runs the step again");
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn run_inner(&self, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &PathName, context: CallContext, plan: RunPlan) -> Inner {
         let intent = self.intent_of(id).await;
@@ -1909,13 +1961,20 @@ impl DriveEnv {
             };
             match item {
                 InnerItem::Frame(f) => match f {
-                    BuildReply::Step { ref operation, ref step, attempt: a, .. } => {
+                    BuildReply::Step { ref operation, ref step, attempt: a, ref receipt, .. } => {
+                        // A reported receipt (Q118): this fabric-primary writes it, decided by the claim
+                        // record it holds, never by the view (build.md, Q239).
+                        if let Some(bytes) = receipt {
+                            self.write_reported(id, a, executor, operation, step, bytes).await;
+                        }
+                        stream.accepted().await;
                         if step == "Complete" {
                             self.gate.receipt_streamed(id, a, operation).await;
                         }
-                        self.step(drive, f).await
+                        self.step(drive, BuildReply::Step { build_id: id.to_string(), attempt: a, operation: operation.clone(), step: step.clone(), receipt: None }).await
                     }
                     BuildReply::Blocked { .. } => {
+                        stream.accepted().await;
                         drive.push(f);
                     }
                     // Past the fence this admin decides nothing of the attempt: the executor, now the

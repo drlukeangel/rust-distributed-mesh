@@ -1222,7 +1222,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // The Build state every consumer after the fetch shares: the control routes, the executor, the
                 // pipelines and the drift check.
                 let runs = Arc::new(crate::build_run::AttemptRuns::default());
-                let builds_dyn: Arc<dyn BuildStateAdapter> = Arc::new(crate::build_run::FramedBuilds::new(crate::wiring::apply(wiring.builds.take(), builds.clone()), runs.clone()));
+                // An application's wrap of the Build state sees every write before the run decides
+                // whether it writes it or reports it up its stream (Q118).
+                let framed: Arc<dyn BuildStateAdapter> = Arc::new(crate::build_run::FramedBuilds::new(builds.clone(), runs.clone()));
+                let builds_dyn: Arc<dyn BuildStateAdapter> = crate::wiring::apply(wiring.builds.take(), framed);
 
                 // Fabric policy and the first view. The bootstrap admin takes its policy
                 // from MESH_SPAWN_TYPE. A launched admin takes its entry from the admin

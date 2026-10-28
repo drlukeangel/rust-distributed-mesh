@@ -626,6 +626,14 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_has_every_
     let held = estate.node_value(SUSPENDED).await;
     assert_eq!((s(&held["node_id"]), s(&held["status"])), (s(&recovered["node_id"]), "ready-for-traffic".to_string()), "the re-created birth holds its path.name: {held}");
     assert_eq!(estate.node_value(&node.to_string()).await["status"], "ready-for-traffic", "the started node stands");
+    // The resumed birth's own row as the store holds it: Deleted, as its recovery's delete wrote it.
+    let stored = {
+        use rdm_admin::storage::NodesStorage as _;
+        let root = rdm_node::store_root::StoreRoot::open(&estate.store_dir(), &rdm_core::FabricId::parse(&estate.fabric_id).unwrap()).expect("the fabric's store root opens");
+        let rows = rdm_admin::storage::FileNodesStorage::open(&estate.store_dir(), &root, "mesh2", &rdm_node::store_log::LogWriter::mint()).await.expect("the nodes storage opens");
+        rows.node(&rdm_core::NodeId::parse(&node_id).unwrap()).await.expect("the row reads")
+    };
+    assert_eq!(stored.as_ref().map(|r| r.status), Some(rdm_core::model::NodeStatus::Deleted), "the resumed birth's stored row stands Deleted: {stored:?}");
     // The journal: nothing of the superseded attempt from its executor.
     let facts = crate::build_log::log_read(&carrier, &build).await.unwrap_or_else(|e| panic!("the Build log of {fp}: {e}"));
     let landed: Vec<&BuildFact> = facts
@@ -637,7 +645,7 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_has_every_
         })
         .collect();
     let projection = crate::build_log::projection(&facts, &build).expect("the Build's acceptance");
-    let completed_at = projection.completed_at;
+    let reported = projection.reported.clone();
 
     estate.stop().await;
     let spans = estate.spans();
@@ -651,12 +659,13 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_has_every_
         }
     }
     println!("the resumed birth's spans after its resume ({} in all): {seen:#?}", after.len());
-    let refusals: Vec<Value> = spans.iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= resumed_at && (attr(sp, "build_id") == build || attr(sp, "node_id") == node_id) && s(&sp["name"]).contains(".reject.")).cloned().collect();
+    let refusals: Vec<Value> = spans.iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= resumed_at && (attr(sp, "build_id") == build || attr(sp, "node_id") == node_id) && (s(&sp["name"]).contains(".reject.") || attr(sp, "outcome") == "deleted-stands")).cloned().collect();
     for sp in &refusals {
-        println!("refusal after the resume: {} at {} attempt {} trace http://192.168.68.99:16687/trace/{}", s(&sp["name"]), attr(sp, "node"), attr(sp, "attempt"), s(&sp["trace_id"]));
+        println!("refusal after the resume: {} {} at {} attempt {} subject {} trace http://192.168.68.99:16687/trace/{}", s(&sp["name"]), attr(sp, "outcome"), attr(sp, "node"), attr(sp, "attempt"), attr(sp, "subject"), s(&sp["trace_id"]));
     }
     assert!(landed.is_empty(), "nothing of the superseded attempt {superseded} lands in the Build's journal: {landed:#?}");
-    assert!(completed_at.is_some_and(|a| a > superseded), "the Build is decided by the next attempt's Complete, never the superseded one's: {projection:?}");
+    let next: u32 = attr(&claim, "attempt").parse().unwrap();
+    assert!(reported.contains(&next) && !reported.contains(&superseded), "the next attempt {next}'s verdict is the Build's, and the superseded attempt {superseded} has none: {reported:?}");
     println!("next attempt claimed: http://192.168.68.99:16687/trace/{}", s(&claim["trace_id"]));
     estate.record_trace_url(&s(&claim["trace_id"]));
 }

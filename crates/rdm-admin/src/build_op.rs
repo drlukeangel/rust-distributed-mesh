@@ -578,12 +578,17 @@ impl BuildDoor {
                 Err(e) => return Ok(rdm_core::reply::build::rejected("operation-undecodable".into(), format!("{me}: operation {i} of the run of attempt {attempt} of Build {id} does not decode: {e}"))),
             }
         }
-        // A drift attempt is run in its mesh, numbered there; served to a remote fabric-primary, its
-        // receipts go up this stream and the fabric-primary writes them (Q118).
+        // Served to a remote fabric-primary, a run's receipts go up this stream and the fabric-primary
+        // writes them, a topology attempt's as a mesh's drift attempt's (build.md: the fabric-primary
+        // writes every Build record; Q118), while this admin is not the fabric-primary: a run whose
+        // own node.primary.update seats this admin writes its own from then on. A drift attempt is run
+        // in its mesh, numbered there.
         let served = match mesh.as_deref() {
-            Some(lane) if !held_at_start => {
+            lane if !held_at_start => {
+                let (seats, node_id, incarnation) = (self.seats.clone(), self.env.door.node_id.clone(), self.incarnation.clone());
+                let not_seated: crate::build_run::NotSeated = Arc::new(move || !seats.fabric().is_some_and(|h| h.is_birth(&node_id, &incarnation)));
                 self.run
-                    .attempt_run_reporting(lane, &id, attempt, &executor, &context, &intent, &plan)
+                    .attempt_run_reporting(lane, &id, attempt, &executor, &context, &intent, &plan, not_seated)
                     .await
             }
             lane => {
@@ -868,19 +873,10 @@ impl RpcDispatcher {
             .call_stream::<Build>(&NodeTarget::ExactNode(node_id), &req, &opts)
             .await
         {
-            // The executor records each frame's receipt before it sends the frame (a step's receipt
-            // before its Step, the verdict before the terminal: `build_run.rs` `append_step_receipt`,
-            // `HeldRun::finish`): the drive records nothing it needs to recover them, and reading a
-            // frame is its recovery (node-rpc.md §43, a read-only consumer).
-            // A drift attempt's executor reports its receipts up the stream instead (Q118): a frame
-            // is acked once this fabric-primary wrote its receipt.
-            Ok((stream, _)) => Dispatched::Stream(Box::new(RemoteStream {
-                stream: if lane.is_some() {
-                    stream
-                } else {
-                    stream.read_only()
-                },
-            })),
+            // An executor on another admin reports its receipts up the stream, a topology attempt's
+            // as a drift attempt's (Q118; build.md: the fabric-primary writes every Build record): a
+            // frame is acked once this fabric-primary wrote its receipt.
+            Ok((stream, _)) => Dispatched::Stream(Box::new(RemoteStream { stream })),
             Err((RpcOutcome::Reply(r), _)) => Dispatched::Refused(r.value().clone()),
             Err((RpcOutcome::Unserved(u), _)) => Dispatched::Refused(rdm_core::reply::build::not_ready(format!("{executor} does not serve the Build family: {u:?}"))),
             Err((other, _)) => Dispatched::Unreached(format!("the call to {executor} ended {}: {other:?}", other.name())),
