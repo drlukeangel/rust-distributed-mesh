@@ -1412,7 +1412,7 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
             .cloned()
             .collect();
         assert!(unadmitted.is_empty(), "the next attempt's stop of {node_s} was never admitted: the birth held its stop in Stopping on its owed declaration: {unadmitted:#?}");
-        let receipts = estate.builds_obj().await.get(&build).await;
+        let receipts = estate.carrier().await.build(&build).await;
         let complete = receipts.as_ref().is_ok_and(|b| b.phase == rdm_core::build::BuildPhase::Complete);
         let v = view_of(&estate.nodes_obj().await, &node).await;
         if complete && v.stopped {

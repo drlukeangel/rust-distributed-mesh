@@ -128,7 +128,7 @@ fn receipts_of<'a>(receipts: &'a [rdm_core::build::StepReceipt], operation: &str
 }
 
 async fn receipts(estate: &Estate, build: &str) -> Vec<rdm_core::build::StepReceipt> {
-    estate.carrier().await.get(&rdm_client::BuildId::parse(build).unwrap()).await.unwrap_or_else(|e| panic!("build.get {build}: {e}")).steps
+    estate.carrier().await.build(&rdm_client::BuildId::parse(build).unwrap()).await.unwrap_or_else(|e| panic!("builds.get [id: {build}]: {e}")).steps
 }
 
 /// The fabric-primary now, the fabric's status as it holds it, and the Build whose topology it accepted.

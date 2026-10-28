@@ -10,7 +10,7 @@
 //! read the node refuses ends `Rejected`, naming the refusal (`rejected-filter` naming the pair). Calls whose request is valid but that no op carries
 //! yet end `NotBackedToday`, naming why; no request is invented for them.
 
-use crate::build_stream::{BuildCarrier, BuildReceipts};
+use crate::build_stream::{Build, BuildCarrier};
 use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeOp};
 use crate::workflow::{WorkflowKind, WorkflowStream};
 use crate::{Accepted, AtlasView, BuildId, CallEnd, ConnectionsView, ExactBirth, FabricView, MeshView, NodeView};
@@ -431,9 +431,20 @@ impl Builds {
         r
     }
 
-    /// `build.get`: the Build with its attempts and step receipts, for reattachment after a cut.
-    pub async fn get(&self, id: &BuildId) -> Result<BuildReceipts, CallEnd> {
-        self.call(BuildOp::Get, self.carrier.get(id)).await
+    /// `builds.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
+    /// of `filter` (`id`, `current`, `phase`, `attempt`, `executor`), newest first, each whole: header,
+    /// topology (`nodes`) and receipts (`steps`), the current one marked. `[id: x]` is one Build, the
+    /// empty list when the fabric-primary holds none of that id; `[current: true]` the current Build.
+    pub async fn get(&self, filter: &Filter) -> Result<Vec<Build>, CallEnd> {
+        let span = BuildOp::Get.span();
+        span.record("properties", filter.properties().as_str());
+        let r = tracing::Instrument::instrument(self.carrier.builds(filter), span.clone()).await;
+        span.record("outcome", match &r {
+            Ok(_) => "ok",
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = BuildOp::Get.name(), "a build call ended"));
+        r
     }
 
     /// `build.delete`: drop a finished Build from history.

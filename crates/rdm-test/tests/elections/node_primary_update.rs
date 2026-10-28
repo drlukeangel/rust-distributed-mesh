@@ -59,7 +59,7 @@ struct Followed {
     broke: Option<String>,
     /// The frames of each stream resubmitted after a `FabricPrimaryMoved`, and the Build's receipts read at the
     /// admin that ended it; the reason when the caller could not follow.
-    onward: Result<(Vec<Vec<rdm_client::Frame>>, rdm_client::BuildReceipts), String>,
+    onward: Result<(Vec<Vec<rdm_client::Frame>>, rdm_client::Build), String>,
     kind: rdm_client::WorkflowKind,
     accepted: rdm_client::Accepted,
 }
@@ -76,9 +76,9 @@ impl Caller {
     /// The Build followed to its terminal after `first`, the stream that ended `FabricPrimaryMoved`: the same
     /// `build_id` is resubmitted at the admin each `FabricPrimaryMoved` names the moment it is named, never a
     /// second Build, until a stream ends with a terminal frame. Returns the frames of each resubmitted
-    /// stream and the Build's receipts (`build.get`) read at the admin that ended it.
-    async fn follow(&self, first: &[rdm_client::Frame]) -> Result<(Vec<Vec<rdm_client::Frame>>, rdm_client::BuildReceipts), String> {
-        use rdm_client::{Builds, Frame, Nodes};
+    /// stream and the Build's receipts (`builds.get`) read at the admin that ended it.
+    async fn follow(&self, first: &[rdm_client::Frame]) -> Result<(Vec<Vec<rdm_client::Frame>>, rdm_client::Build), String> {
+        use rdm_client::{Frame, Nodes};
         let mut moved = fabric_primary_moved_to(first);
         let mut streams = Vec::new();
         let mut at = None;
@@ -106,7 +106,7 @@ impl Caller {
             at = Some(carrier);
         }
         let carrier = at.ok_or_else(|| format!("the first stream did not end FabricPrimaryMoved: {first:?}"))?;
-        let receipts = Builds::new(carrier).get(&self.accepted.build_id).await.map_err(|e| format!("build.get of {} failed: {e}", self.accepted.build_id))?;
+        let receipts = carrier.build(&self.accepted.build_id).await.map_err(|e| format!("builds.get [id: {}] failed: {e}", self.accepted.build_id))?;
         Ok((streams, receipts))
     }
 }
@@ -532,7 +532,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     // The fabric is ready once its planned births are all ready, set by the new
     // fabric-primary.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    // The Build is complete when the caller's last stream ends `Complete` and `build.get` says no step
+    // The Build is complete when the caller's last stream ends `Complete` and `builds.get` says no step
     // is left, never when a span says so; the fabric is stopped only after.
     let Followed { first, broke, onward, kind, accepted } = tokio::time::timeout(Duration::from_secs(120), outer).await.expect("the caller read the Build to its terminal within 120 s").expect("the caller's stream task");
     // Step 5: H, the mesh's writer from its answer on, records both primaries on its own row.
@@ -610,14 +610,14 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     // The Build runs as attempts of the accepted Build and completes once.
     let (followed, receipts) = onward.unwrap_or_else(|why| panic!("the caller could not follow the Build past FabricPrimaryMoved: {why}"));
     assert!(matches!(followed.last().and_then(|frames| frames.last()), Some(rdm_client::Frame::Complete)), "the caller's resubmitted stream ends Complete: {followed:?}");
-    assert_eq!(receipts.phase, rdm_core::build::BuildPhase::Complete, "build.get: the steps' Build is complete: {receipts:?}");
+    assert_eq!(receipts.phase, rdm_core::build::BuildPhase::Complete, "builds.get: the steps' Build is complete: {receipts:?}");
     let resume = rdm_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the Build's steps");
     let step_keys: Vec<String> = {
         let p = p.parse::<rdm_core::PathName>().unwrap();
         vec![format!("node.connections.delete:{p}"), format!("node.mesh.leave:{p}"), format!("node.update:{p}"), format!("node.stop:{p_old}"), format!("node.create:{p}"), format!("node.delete:{p_old}")]
     };
     for key in &step_keys {
-        assert!(resume.completed.iter().any(|(op, step)| op == key && step == "Complete"), "build.get holds the Complete receipt of {key}: {resume:?}");
+        assert!(resume.completed.iter().any(|(op, step)| op == key && step == "Complete"), "builds.get holds the Complete receipt of {key}: {resume:?}");
     }
     // Step 3: P issues no write once it finished its issued writes: it decides no claim after.
     let late: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "node") == p && at_ns(sp) > sp_end(&finished) && matches!(attr(sp, "outcome").as_str(), "won" | "lost" | "not-open")).collect();

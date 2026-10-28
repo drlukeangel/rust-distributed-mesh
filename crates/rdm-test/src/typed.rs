@@ -597,9 +597,9 @@ impl Estate {
         None
     }
 
-    /// The attempt the accepted Build `build_id` has reached, as `build.get` reads it.
+    /// The attempt the accepted Build `build_id` has reached, as `builds.get` reads it.
     pub async fn attempt_of_build(&self, build_id: &str) -> u64 {
-        u64::from(self.builds_obj().await.get(&BuildId::parse(build_id).unwrap_or_else(|e| panic!("build.get of {build_id}: {e}"))).await.unwrap_or_else(|e| panic!("build.get of {build_id}: {e}")).attempt)
+        u64::from(self.carrier().await.build(&BuildId::parse(build_id).unwrap_or_else(|e| panic!("builds.get [id: {build_id}]: {e}"))).await.unwrap_or_else(|e| panic!("builds.get [id: {build_id}]: {e}")).attempt)
     }
 
     /// `build.create` of `spec`, accepted: the stream of the Build that runs it. The harness names every

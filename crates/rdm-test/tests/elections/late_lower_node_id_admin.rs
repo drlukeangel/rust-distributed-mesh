@@ -113,7 +113,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     }
     estate.kill_bootstrap();
     estate.until_node(&late_name.to_string(), "the late admin fills the mesh and the fabric seats", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
-    let unknown = estate.builds_obj().await.get(&a).await;
+    let unknown = estate.carrier().await.build(&a).await;
     assert!(matches!(&unknown, Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-build"), "A's history is nowhere: {unknown:?}");
 
     // It stops and starts one of A's births and deletes the other.

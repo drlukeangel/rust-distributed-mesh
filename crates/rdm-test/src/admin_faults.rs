@@ -476,6 +476,9 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rdm_admin::build_state::BuildStateError> {
         self.inner.newest_accepted_at_ms().await
     }
+    async fn accepted_newest_first(&self) -> Result<Vec<BuildId>, BuildStateError> {
+        self.inner.accepted_newest_first().await
+    }
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.inner.list_active().await
     }

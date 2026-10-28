@@ -1,7 +1,7 @@
 //! The typed client of the Build family on op `0x20` (node-rpc-envelope.md "Build, op `0x20`").
 //!
 //! A [`BuildCarrier`] opens one call to the fabric-primary: `build.create` (a change, or a re-submit
-//! by build id), `build.get` and `build.delete`. A call that changes something is a stream
+//! by build id), `builds.get` and `build.delete`. A call that changes something is a stream
 //! ([`BuildStream`]): `Started`, then a frame per step as its `Complete` receipt becomes durable on
 //! the executor that wrote it, then `Complete` or `Failed { step, reason }`. The caller waits on the
 //! stream and reads no Build and no gossip.
@@ -16,7 +16,10 @@ use crate::{BuildId, CallEnd};
 use rdm_core::PathName;
 use rdm_transport::stream::{ReplyStream, StreamFailure, StreamItem};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
-use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt};
+use rdm_core::build::{Build as BuildFamily, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt};
+use rdm_core::filter::Filter;
+use rdm_core::streaming::StreamingProtocol as _;
+use rdm_core::meta::NodeSpec;
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::protocol::NodeProtocol;
 use std::collections::{BTreeSet, HashSet};
@@ -114,7 +117,7 @@ pub enum BuildFrame {
 
 /// One accepted Build call: its `Started` and the frames after it.
 pub struct BuildStream {
-    stream: ReplyStream<Build>,
+    stream: ReplyStream<BuildFamily>,
     /// The carrier the call was opened over. A QUIC connection does not keep its endpoint: the
     /// last handle of the endpoint ends its runtime and with it every stream it carries. The stream
     /// holds the carrier, so a caller that keeps only the stream reads it to its terminal.
@@ -250,10 +253,10 @@ pub struct Followed {
 }
 
 /// What one reattachment read and opened (node-rpc-envelope.md "Frames, durable receipts and
-/// reattachment": "`build.get` for the receipts, then the outer stream again, resuming from the
+/// reattachment": "`builds.get [id: build_id]` for the receipts, then the outer stream again, resuming from the
 /// receipts").
 pub struct Reattached {
-    /// The receipts `build.get` read, every attempt's, in order.
+    /// The receipts `builds.get` read, every attempt's, in order.
     pub receipts: Vec<StepReceipt>,
     /// The outer stream, opened again from the current attempt the receipts name.
     pub stream: BuildStream,
@@ -314,11 +317,11 @@ impl BuildCarrier {
     }
 
     /// One reattachment by `build_id` (node-rpc-envelope.md "Frames, durable receipts and
-    /// reattachment"): `build.get` for the receipts, then the outer stream again, a re-submit from the
-    /// current attempt the receipts name. Never a new execution: the re-submit of a Build already held
-    /// carries its frames.
+    /// reattachment"): `builds.get [id: build_id]` for the receipts, then the outer stream again, a
+    /// re-submit from the current attempt the receipts name. Never a new execution: the re-submit of a
+    /// Build already held carries its frames.
     pub async fn reattach(&self, build_id: &BuildId) -> Result<Reattached, CallEnd> {
-        let got = self.get(build_id).await?;
+        let got = self.build(build_id).await?;
         let stream = self.resubmit(build_id, got.attempt).await?;
         Ok(Reattached { receipts: got.steps, stream })
     }
@@ -343,6 +346,14 @@ impl BuildCarrier {
     /// Open `req` at the fabric-primary: follow the redirect of a node that is not it, once for each
     /// admin named, and read the `Started` frame.
     async fn open(&self, req: BuildRequest) -> Result<BuildStream, CallEnd> {
+        let (stream, build_id, attempt, disposition) = self.open_started(req).await?;
+        let build_id = BuildId::parse(&build_id)
+            .map_err(|e| CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("the fabric-primary started a Build under an id that is not a Crockford id: {e}") })?;
+        Ok(BuildStream { stream, _carrier: self.clone(), build_id, attempt, disposition, seen: HashSet::new(), ended: false })
+    }
+
+    /// [`Self::open`]'s redirect and `Started` read, the stream and the `Started` frame's fields as sent.
+    async fn open_started(&self, req: BuildRequest) -> Result<(ReplyStream<BuildFamily>, String, u32, Disposition), CallEnd> {
         let mut asked: BTreeSet<PathName> = BTreeSet::new();
         let mut target = self.fabric_primary.clone();
         loop {
@@ -352,23 +363,19 @@ impl BuildCarrier {
             // of the stream (`Started`, or the handler's own refusal).
             // The frames are the executor's receipts, recorded before they are sent; this client records
             // nothing of them: reading a frame is its recovery (node-rpc.md §43).
-            let (first, stream) = match self.client.call_stream::<Build>(&NodeTarget::CurrentPath(target.clone()), &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
+            let (first, stream) = match self.client.call_stream::<BuildFamily>(&NodeTarget::CurrentPath(target.clone()), &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
                 Err((RpcOutcome::Reply(r), _)) => (r.into_value(), None),
                 Err((other, _)) => return Err(ended(other).err().unwrap_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Internal, reason: "an early reply that is no refusal".into() })),
                 Ok((mut stream, _)) => match stream.next().await {
                     Some(StreamItem::Frame(_, f)) => (f, Some(stream)),
                     // A node that does not serve the op answers 421: nothing was dispatched.
-                    Some(StreamItem::Failed(StreamFailure::Unserved(_))) => return Err(CallEnd::Unserved { op: Build::OP }),
+                    Some(StreamItem::Failed(StreamFailure::Unserved(_))) => return Err(CallEnd::Unserved { op: BuildFamily::OP }),
                     Some(StreamItem::Failed(f)) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the stream broke before its Started frame: {f:?}") }),
                     None => return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the stream ended before its Started frame".into() }),
                 },
             };
             match (first, stream) {
-                (BuildReply::Started { build_id, attempt, disposition }, Some(stream)) => {
-                    let build_id = BuildId::parse(&build_id)
-                        .map_err(|e| CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("the fabric-primary started a Build under an id that is not a Crockford id: {e}") })?;
-                    return Ok(BuildStream { stream, _carrier: self.clone(), build_id, attempt, disposition, seen: HashSet::new(), ended: false });
-                }
+                (BuildReply::Started { build_id, attempt, disposition }, Some(stream)) => return Ok((stream, build_id, attempt, disposition)),
                 (BuildReply::NotFabricPrimary { fabric_primary: Some(named) }, _) => match named.parse::<PathName>() {
                     Ok(next) if !asked.contains(&next) => target = next,
                     Ok(_) => return Err(CallEnd::Rejected { reason: "not-fabric-primary".into(), detail: format!("{target} is not the fabric-primary and names {named}, which was already asked ({asked:?})") }),
@@ -390,25 +397,67 @@ impl BuildCarrier {
         self.open(BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: build_id.to_string(), from_attempt } }).await
     }
 
-    /// `build.get`: the Build and its receipts, for reattachment after a cut.
-    pub async fn get(&self, build_id: &BuildId) -> Result<BuildReceipts, CallEnd> {
-        let mut stream = self.open(BuildRequest::Get { build_id: build_id.to_string() }).await?;
-        let mut steps = Vec::new();
-        let mut header = None;
-        while let Some(frame) = stream.next().await {
-            match frame? {
-                BuildFrame::Steps(chunk) => steps.extend(chunk),
-                BuildFrame::Got { phase, attempt, executor, reason, last_failure, steps: n, chunks } => header = Some((phase, attempt, executor, reason, last_failure, n, chunks)),
-                other => return Err(CallEnd::Rejected { reason: "unexpected-frame".into(), detail: format!("a build.get stream carried {other:?}") }),
+    /// `builds.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
+    /// of `filter` (`id`, `current`, `phase`, `attempt`, `executor`), newest first, each whole: its
+    /// header, its topology and its receipts, the current one marked. Only `End` completes the read: a
+    /// stream that ends before it, or whose chunks do not add up to the headers that close them, is an
+    /// incomplete read (`Indeterminate`), never a list.
+    pub async fn builds(&self, filter: &Filter) -> Result<Vec<Build>, CallEnd> {
+        let (mut stream, _current, _attempt, _disposition) = self.open_started(BuildRequest::GetBuilds { filter: filter.clone() }).await?;
+        let incomplete = |reason: String| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("an incomplete builds.get read: {reason}") };
+        let mut out: Vec<Build> = Vec::new();
+        // The Build whose chunks are arriving: its id, its topology chunks and nodes, its receipt chunks and receipts.
+        let mut open: Option<(String, u32, Vec<NodeSpec>, u32, Vec<StepReceipt>)> = None;
+        loop {
+            let reply = match stream.next().await {
+                Some(StreamItem::Frame(_, r)) => r,
+                Some(StreamItem::Failed(f)) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the builds.get stream broke before its End: {f:?}") }),
+                None => return Err(incomplete("the stream ended before its End".into())),
+            };
+            match reply {
+                BuildReply::Topology { build_id, chunk_index, chunk_count: _, nodes } => {
+                    let o = open.get_or_insert_with(|| (build_id.clone(), 0, Vec::new(), 0, Vec::new()));
+                    if o.0 != build_id || o.1 != chunk_index {
+                        return Err(incomplete(format!("topology chunk {chunk_index} of Build {build_id} arrived where chunk {} of Build {} was owed", o.1, o.0)));
+                    }
+                    o.1 += 1;
+                    o.2.extend(nodes);
+                }
+                BuildReply::Steps { build_id, chunk_index, chunk_count: _, steps } => {
+                    let o = open.get_or_insert_with(|| (build_id.clone(), 0, Vec::new(), 0, Vec::new()));
+                    if o.0 != build_id || o.3 != chunk_index {
+                        return Err(incomplete(format!("receipt chunk {chunk_index} of Build {build_id} arrived where chunk {} of Build {} was owed", o.3, o.0)));
+                    }
+                    o.3 += 1;
+                    o.4.extend(steps);
+                }
+                BuildReply::Build { build_id, phase, attempt, executor, reason, last_failure, current, steps, chunks } => {
+                    let (id, _topology_chunks, nodes, receipt_chunks, receipts) = open.take().unwrap_or_else(|| (build_id.clone(), 0, Vec::new(), 0, Vec::new()));
+                    if id != build_id || receipt_chunks != chunks || receipts.len() != steps as usize {
+                        return Err(incomplete(format!("Build {build_id}'s header counts {steps} receipts in {chunks} chunks, and {} in {receipt_chunks} chunks of Build {id} arrived", receipts.len())));
+                    }
+                    let build_id = BuildId::parse(&build_id).map_err(|e| CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("builds.get answered a Build id that is not a Crockford id: {e}") })?;
+                    out.push(Build { build_id, phase, attempt, executor, reason, last_failure, current, nodes, steps: receipts });
+                }
+                BuildReply::End { builds } => {
+                    if let Some((id, ..)) = open {
+                        return Err(incomplete(format!("End arrived with Build {id}'s chunks unclosed by its header")));
+                    }
+                    if builds as usize != out.len() {
+                        return Err(incomplete(format!("End counts {builds} Builds and {} arrived", out.len())));
+                    }
+                    return Ok(out);
+                }
+                other if matches!(BuildFamily::frame_kind(&other), rdm_core::streaming::FrameKind::Refusal(_)) => return Err(refusal(other)),
+                other => return Err(CallEnd::Rejected { reason: "unexpected-frame".into(), detail: format!("a builds.get stream carried {other:?}") }),
             }
         }
-        let Some((phase, attempt, executor, reason, last_failure, n, _chunks)) = header else {
-            return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the build.get stream ended without its header".into() });
-        };
-        if n as usize != steps.len() {
-            return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Internal, reason: format!("the build.get header counts {n} receipts and {} arrived", steps.len()) });
-        }
-        Ok(BuildReceipts { build_id: build_id.clone(), phase, attempt, executor, reason, last_failure, steps })
+    }
+
+    /// `builds.get [id: build_id]`: the one Build named, whole; refused `unknown-build` when the
+    /// fabric-primary holds none of that id.
+    pub async fn build(&self, build_id: &BuildId) -> Result<Build, CallEnd> {
+        self.builds(&Filter::new().eq("id", [build_id.to_string()])).await?.into_iter().next().ok_or_else(|| refusal(BuildReply::UnknownBuild { build_id: build_id.to_string() }))
     }
 
     /// `build.delete`: a finished Build leaves history.
@@ -423,9 +472,9 @@ impl BuildCarrier {
     }
 }
 
-/// What `build.get` reads: the Build's header and its receipts.
+/// One Build as `builds.get` reads it whole (Q167 R-RD5): its header, its topology and its receipts.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuildReceipts {
+pub struct Build {
     /// The Build.
     pub build_id: BuildId,
     /// Where the Build is in its life.
@@ -438,6 +487,10 @@ pub struct BuildReceipts {
     pub reason: String,
     /// Why the last attempt failed, when one did.
     pub last_failure: Option<String>,
+    /// Whether this is the current Build, selected once for the read.
+    pub current: bool,
+    /// Its topology: every node's create spec, in `path.name` order.
+    pub nodes: Vec<NodeSpec>,
     /// The receipts of every attempt, in order.
     pub steps: Vec<StepReceipt>,
 }
@@ -460,7 +513,7 @@ mod tests {
         let go = Arc::new(tokio::sync::Notify::new());
         let g = go.clone();
         let server = ServerBuilder::new()
-            .serve_stream::<Build, _, _>(OpOwner::Product("rdm".into()), move |_peer, _req: BuildRequest, sink| {
+            .serve_stream::<BuildFamily, _, _>(OpOwner::Product("rdm".into()), move |_peer, _req: BuildRequest, sink| {
                 let g = g.clone();
                 async move {
                     let gone = |e| HandlerFault::invariant_broken(format!("{e:?}"));

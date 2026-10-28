@@ -1,7 +1,7 @@
 //! A node-admin's own Build log as a caller reads it: the one shared read of every cell that asks
 //! "the Build as the admin at X holds it".
 //!
-//! The Build family (`build.get`) is the fabric-primary's alone. Every node-admin keeps its own Build
+//! The Build family (`builds.get`) is the fabric-primary's alone. Every node-admin keeps its own Build
 //! journal and serves it over `FetchBuildFacts` (op `0x1F`; `BuildFactsDoor::serve`, build.md "Each
 //! node-admin keeps its own Build journal"), so a cell that asks what one exact admin holds reads that
 //! admin's log here: [`log_read`] is the one read, [`log_fact`] awaits a typed fact of it through the

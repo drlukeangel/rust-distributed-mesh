@@ -175,6 +175,19 @@ const CONNECTION: &[Property] = &[
     p("logged_at_ms", Takes::Number),
 ];
 
+/// A Build's phases, by their page names (`BuildPhase`, lowercase).
+pub const BUILD_PHASES: &[&str] = &["pending", "running", "complete", "failed"];
+
+/// The Build header's properties (Q167 R-RD5): what `builds.get` filters on. Its topology and receipts
+/// are the Build's content, never a property.
+const BUILD_HEADER: &[Property] = &[
+    p("id", Takes::Id),
+    p("current", Takes::Bool),
+    p("phase", Takes::OneOf(BUILD_PHASES)),
+    p("attempt", Takes::Number),
+    p("executor", Takes::Text),
+];
+
 /// The node properties the topology a node holds carries for every node it hears, the gossiped digest
 /// (query.md §2; Q203: gossip carries what routing needs and nothing else): what a node's local
 /// `nodes_get` may name. Every other node property is the row's, read with `nodes.get`.
@@ -311,6 +324,19 @@ impl Row for FabricView {
     }
 }
 
+impl Row for crate::build::BuildHeader {
+    fn value(&self, property: &str) -> Value {
+        match property {
+            "id" => Value::One(self.build_id.clone()),
+            "current" => Value::bool(self.current),
+            "phase" => Value::One(self.phase.page_name().to_string()),
+            "attempt" => Value::One(self.attempt.to_string()),
+            "executor" => Value::of(self.executor.as_ref()),
+            _ => Value::Absent,
+        }
+    }
+}
+
 impl Row for ConnectionView {
     fn value(&self, property: &str) -> Value {
         match property {
@@ -355,7 +381,18 @@ impl Filter {
     /// Why this filter is refused for `entity`, naming the pair, or `None` when every pair names a
     /// property of the entity's row and values it can take. Read against the schema, never a row.
     pub fn refusal(&self, entity: Entity) -> Option<String> {
-        self.pairs.iter().find_map(|(property, values)| pair_refusal(entity, property, values).map(|why| format!("{}: the pair {} {why}", entity.read(), pair(property, values))))
+        self.refusal_in(&entity.of())
+    }
+
+    /// Why this filter is refused for `builds.get` (Q167 R-RD5), naming the pair, or `None` when every
+    /// pair names a property of the Build header ([`BUILD_HEADER`]: `id`, `current`, `phase`,
+    /// `attempt`, `executor`) and values it can take. Read against the schema, never a Build.
+    pub fn builds_refusal(&self) -> Option<String> {
+        self.refusal_in(&BUILDS)
+    }
+
+    fn refusal_in(&self, schema: &Schema) -> Option<String> {
+        self.pairs.iter().find_map(|(property, values)| pair_refusal(schema, property, values).map(|why| format!("{}: the pair {} {why}", schema.read, pair(property, values))))
     }
 
     /// Why this filter is refused for a node's local query of the topology it holds (query.md §2,
@@ -391,18 +428,36 @@ fn pair(property: &str, values: &[String]) -> String {
     format!("({property}, [{}])", values.join(", "))
 }
 
-fn pair_refusal(entity: Entity, property: &str, values: &[String]) -> Option<String> {
+/// What a filter is validated against: the read's name, its row's name in refusals, the row's
+/// properties and its one map.
+struct Schema {
+    read: &'static str,
+    row: &'static str,
+    properties: &'static [Property],
+    map: Option<&'static str>,
+}
+
+impl Entity {
+    fn of(self) -> Schema {
+        Schema { read: self.read(), row: self.row(), properties: self.schema(), map: self.map() }
+    }
+}
+
+/// The Build header's schema (Q167 R-RD5): what a `builds.get` pair (Build 0x20 `GetBuilds`) may name.
+const BUILDS: Schema = Schema { read: "builds.get", row: "Build header", properties: BUILD_HEADER, map: None };
+
+fn pair_refusal(schema: &Schema, property: &str, values: &[String]) -> Option<String> {
     if values.is_empty() {
         return Some("names no value: a pair needs at least one".into());
     }
-    if let Some(map) = entity.map() {
+    if let Some(map) = schema.map {
         if property.strip_prefix(map).is_some_and(|rest| rest.starts_with('.')) {
             return None;
         }
     }
-    let Some(prop) = entity.schema().iter().find(|p| p.name == property) else {
-        let map = entity.map().map(|m| format!(", nor {m}.<key>")).unwrap_or_default();
-        return Some(format!("names no property of a {} row (its properties: {}{map})", entity.row(), entity.schema().iter().map(|p| p.name).collect::<Vec<_>>().join(", ")));
+    let Some(prop) = schema.properties.iter().find(|p| p.name == property) else {
+        let map = schema.map.map(|m| format!(", nor {m}.<key>")).unwrap_or_default();
+        return Some(format!("names no property of a {} row (its properties: {}{map})", schema.row, schema.properties.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")));
     };
     values.iter().find_map(|v| value_refusal(prop.takes, v).map(|why| format!("names {v:?}, which {property} cannot take: {why}")))
 }

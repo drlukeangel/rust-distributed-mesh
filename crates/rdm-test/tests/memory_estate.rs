@@ -134,7 +134,7 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 /// first stops it (its cohort seat moving to the second) and `node.start` brings it back; before
 /// that, a Reconcile changing mesh1.rpc.1's config alone completes and the node carries the config
 /// (build.md §1, "The Build applies the diff": `config` in place, as `node.config.update` applies a
-/// map; the executor reads the entry in the accepted Build the memory log holds); `build.get` of the
+/// map; the executor reads the entry in the accepted Build the memory log holds); `builds.get [id]` of the
 /// first create's Build answers it Complete with its step receipts. Through all of it the admin
 /// writes nothing of its own to disk:
 /// its data dir holds no store (no `nodes/`, no `attempt-context/`), and every file under the fabric's
@@ -217,9 +217,9 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;
         Estate::workflow("node.start of mesh1.rpc.1", nodes.start(&node).await).await;
         until_status(&nodes, &node, NodeStatus::Ready).await;
-        let receipts = builds.get(&created.build_id).await.unwrap_or_else(|e| panic!("build.get of the create's Build {}: {e}", created.build_id));
+        let receipts = carrier.build(&created.build_id).await.unwrap_or_else(|e| panic!("builds.get [id] of the create's Build {}: {e}", created.build_id));
         assert_eq!(receipts.phase, BuildPhase::Complete, "the create's Build is Complete: {receipts:#?}");
-        assert!(!receipts.steps.is_empty(), "build.get answers the create's step receipts: {receipts:#?}");
+        assert!(!receipts.steps.is_empty(), "builds.get answers the create's step receipts: {receipts:#?}");
         running.leave().await;
     });
     eprintln!("memory estate: boot to leave in {} ms", started.elapsed().as_millis());

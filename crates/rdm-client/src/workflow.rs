@@ -16,11 +16,11 @@
 //! one streams from where it is.
 //!
 //! [`fold`] is the one place a Build's receipt step keys meet the canonical names; the keys
-//! themselves are untouched. It maps the receipts `build.get` reads to the frames they justify,
+//! themselves are untouched. It maps the receipts `builds.get` reads to the frames they justify,
 //! for a caller that reattaches by reading rather than by re-submitting.
 
 use rdm_core::names::{NodeEvent, NodeOp, NodeStep};
-use crate::build_stream::{BuildFrame, BuildReceipts, BuildStream};
+use crate::build_stream::{Build, BuildFrame, BuildStream};
 use crate::{Accepted, BuildId, BuildView, CallEnd, StepView};
 use rdm_core::PathName;
 use rdm_core::build::{Step, StepResult};
@@ -336,8 +336,8 @@ pub fn fold(kind: &WorkflowKind, view: &BuildView, from_attempt: u32) -> Result<
     fold_steps(kind, &view.steps, from_attempt)
 }
 
-/// [`fold`] over the receipts `build.get` read.
-pub fn fold_receipts(kind: &WorkflowKind, receipts: &BuildReceipts, from_attempt: u32) -> Result<Folded, CallEnd> {
+/// [`fold`] over the receipts `builds.get` read.
+pub fn fold_receipts(kind: &WorkflowKind, receipts: &Build, from_attempt: u32) -> Result<Folded, CallEnd> {
     let steps: Vec<StepView> = receipts
         .steps
         .iter()
@@ -429,13 +429,13 @@ pub struct Resume {
 }
 
 impl Resume {
-    /// What `build.get`'s `view` says of `kind` for the call that opened `from_attempt`.
+    /// What `builds.get`'s `view` says of `kind` for the call that opened `from_attempt`.
     pub fn from_view(kind: &WorkflowKind, view: &BuildView, from_attempt: u32) -> Result<Self, CallEnd> {
         Self::of(fold(kind, view, from_attempt)?)
     }
 
-    /// What `build.get`'s `receipts` say of `kind` for the call that opened `from_attempt`.
-    pub fn from_receipts(kind: &WorkflowKind, receipts: &BuildReceipts, from_attempt: u32) -> Result<Self, CallEnd> {
+    /// What `builds.get`'s `receipts` say of `kind` for the call that opened `from_attempt`.
+    pub fn from_receipts(kind: &WorkflowKind, receipts: &Build, from_attempt: u32) -> Result<Self, CallEnd> {
         Self::of(fold_receipts(kind, receipts, from_attempt)?)
     }
 

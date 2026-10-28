@@ -104,16 +104,16 @@ async fn node_row(estate: &Estate, path: &str) -> (Value, NodeView) {
 
 /// One Build of the matrix: `request` submitted on `based_on`, Complete within [`BOUND`], and the fabric
 /// ready after it. A Build with no terminal frame within the bound is the defect, named with
-/// what `build.get` and `fabric.get` say of it then.
+/// what `builds.get` and `fabric.get` say of it then.
 async fn row(estate: &Estate, what: &str, based_on: rdm_client::BuildId, request: Vec<NodeSpec>, back: Back, rows: &mut Vec<(String, String, Back)>) {
     let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await;
     let id = stream.build_id().clone();
     let done = match tokio::time::timeout(BOUND, estate.follow(stream)).await {
         Ok(done) => done,
         Err(_) => {
-            let got = estate.carrier().await.get(&id).await;
+            let got = estate.carrier().await.build(&id).await;
             let fabric = estate.try_fabric_view().await;
-            panic!("{what}: Build {id} is not Complete within {BOUND:?}: build.get {got:?}; fabric.get {fabric:?}");
+            panic!("{what}: Build {id} is not Complete within {BOUND:?}: builds.get [id] {got:?}; fabric.get {fabric:?}");
         }
     };
     assert!(matches!(done.frames.last(), Some(BuildFrame::Complete { .. })), "{what}: Build {id} ends Complete: {:?}", done.frames.last());

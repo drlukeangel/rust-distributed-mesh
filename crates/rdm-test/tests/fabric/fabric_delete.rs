@@ -153,20 +153,20 @@ fn nothing_recreated_under_the_delete(spans: &[Value], accepted_ns: u64, fp: &st
 }
 
 /// The receipts of Build `id` as the fabric-primary `admin` holds them.
-async fn receipts_at(estate: &Estate, admin: &str, id: &str) -> rdm_client::BuildReceipts {
-    estate.carrier_at(&path(admin)).await.get(&BuildId::parse(id).unwrap()).await.unwrap_or_else(|e| panic!("build.get {id} at {admin}: {e}"))
+async fn receipts_at(estate: &Estate, admin: &str, id: &str) -> rdm_client::Build {
+    estate.carrier_at(&path(admin)).await.build(&BuildId::parse(id).unwrap()).await.unwrap_or_else(|e| panic!("builds.get [id: {id}] at {admin}: {e}"))
 }
 
-fn count(receipts: &rdm_client::BuildReceipts, operation: impl Fn(&str) -> bool, step: &str) -> usize {
+fn count(receipts: &rdm_client::Build, operation: impl Fn(&str) -> bool, step: &str) -> usize {
     receipts.steps.iter().filter(|r| operation(&r.operation) && r.step == step).count()
 }
 
-fn listed(receipts: &rdm_client::BuildReceipts) -> Vec<String> {
+fn listed(receipts: &rdm_client::Build) -> Vec<String> {
     receipts.steps.iter().map(|r| format!("{} {} #{}", r.operation, r.step, r.attempt)).collect()
 }
 
 /// The interrupted Build reads `Failed`, its last failure naming the delete.
-fn failed_naming(receipts: &rdm_client::BuildReceipts, delete: &str) {
+fn failed_naming(receipts: &rdm_client::Build, delete: &str) {
     assert_eq!(receipts.phase, rdm_core::build::BuildPhase::Failed, "the interrupted Build {} is failed: {:?}", receipts.build_id, receipts.last_failure);
     let why = receipts.last_failure.clone().unwrap_or_default();
     assert!(why.contains(delete), "the interrupted Build's failure names the delete {delete}: {why}");
@@ -174,7 +174,7 @@ fn failed_naming(receipts: &rdm_client::BuildReceipts, delete: &str) {
 
 /// The teardown's receipts: every mesh's mesh.delete reported `MeshDeleted`, mesh2's primary has its
 /// node.delete receipt, and fabric.deleted was reported.
-fn torn_down(receipts: &rdm_client::BuildReceipts, meshes: usize) {
+fn torn_down(receipts: &rdm_client::Build, meshes: usize) {
     assert_eq!(count(receipts, |o| o.starts_with("mesh.delete:"), rdm_admin::mesh_delete::STEP_MESH_DELETED), meshes, "every mesh is deleted once: {:?}", listed(receipts));
     assert_eq!(count(receipts, |o| o == "node.delete:mesh2.admin.1", "Complete"), 1, "mesh2's primary has its node.delete receipt: {:?}", listed(receipts));
     assert_eq!(count(receipts, |o| o.starts_with("fabric.delete:"), "Complete"), 1, "fabric.deleted is reported: {:?}", listed(receipts));

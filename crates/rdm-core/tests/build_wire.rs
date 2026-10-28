@@ -78,19 +78,23 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
         (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default(), intent: vec![], operations: vec![], hand_off_to: None, mesh: Some("m".into()) }, "01 01 62 02 01 65 00 00 00 00 00 00 00 01 01 6d"),
         (BuildRequest::Get { build_id: "b".into() }, "02 01 62"),
         (BuildRequest::Delete { build_id: "b".into() }, "03 01 62"),
+        // builds.get (Q167 R-RD5), appended: no pair, then one pair (phase, [failed]).
+        (BuildRequest::GetBuilds { filter: rdm_core::filter::Filter::new() }, "04 00"),
+        (BuildRequest::GetBuilds { filter: rdm_core::filter::Filter::new().eq("phase", ["failed"]) }, "04 01 05 7068617365 01 06 6661696c6564"),
     ];
     for (q, hex) in fixtures {
         assert_eq!(Build::encode_request(&q).unwrap(), bytes(hex), "{q:?}");
         assert_eq!(Build::decode_request(&bytes(hex)).unwrap(), q);
     }
-    assert_eq!(Build::REQUEST_VARIANTS, 4);
-    assert_eq!(Build::decode_request(&[4]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(Build::REQUEST_VARIANTS, 5);
+    assert_eq!(Build::decode_request(&[5]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]
-fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
+fn replies_match_the_frozen_thirty_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use BuildReply::*;
+    use rdm_core::build::Build;
     let b = || "b".to_string();
     let s = |v: &str| v.to_string();
     let fixtures = [
@@ -239,6 +243,11 @@ fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
         (FabricPrimaryMoved { build_id: b(), fabric_primary: Some(s("p")) }, "18 01 62 01 01 70"),
         (FabricPrimaryMoved { build_id: b(), fabric_primary: None }, "18 01 62 00"),
         (NotClaimant { mesh: Some(s("m")), fabric_primary: Some(s("p")), mesh_primary: None }, "19 01 01 6d 01 01 70 00"),
+        // builds.get's frames (Q167 R-RD5), appended after NotClaimant.
+        (Topology { build_id: b(), chunk_index: 0, chunk_count: 1, nodes: vec![] }, "1a 01 62 00 01 00"),
+        (BuildReply::Build { build_id: b(), phase: BuildPhase::Failed, attempt: 2, executor: None, reason: s("r"), last_failure: Some(s("x")), current: true, steps: 1, chunks: 1 }, "1b 01 62 03 02 00 01 72 01 01 78 01 01 01"),
+        (End { builds: 3 }, "1c 03"),
+        (RejectedFilter { reason: s("r") }, "1d 01 72"),
     ];
     for (r, hex) in fixtures {
         variants.insert(Build::encode_reply(&r).unwrap()[0]);
@@ -246,8 +255,8 @@ fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
         assert_eq!(Build::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(Build::decode_reply(&bytes(hex)).unwrap(), r);
     }
-    assert_eq!(Build::REPLY_VARIANTS, 26);
-    assert_eq!(Build::decode_reply(&[26]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(Build::REPLY_VARIANTS, 30);
+    assert_eq!(Build::decode_reply(&[30]), Err(DecodeFailure::UnknownVariant));
     assert_eq!(variants.len(), Build::REPLY_VARIANTS as usize);
     crate::outcome_codes::check_malformed::<Build>();
 }
@@ -255,6 +264,7 @@ fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
 #[test]
 fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable() {
     use BuildReply::*;
+    use rdm_core::build::Build;
     assert!(!Build::FORWARDABLE);
     assert_eq!(Build::OP, 0x20);
     assert_eq!(Build::frame_kind(&Started { build_id: "b".into(), attempt: 1, disposition: Disposition::Created }), FrameKind::Started);
@@ -279,6 +289,9 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
             chunk_count: 1,
             steps: vec![],
         },
+        Topology { build_id: "b".into(), chunk_index: 0, chunk_count: 1, nodes: vec![] },
+        // builds.get's Build header closes one Build of several: data, never the read's terminal.
+        BuildReply::Build { build_id: "b".into(), phase: BuildPhase::Complete, attempt: 1, executor: None, reason: "requested".into(), last_failure: None, current: true, steps: 0, chunks: 1 },
     ] {
         assert_eq!(Build::frame_kind(&data), FrameKind::Data, "{data:?}");
     }
@@ -289,6 +302,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
         FabricPrimaryMoved { build_id: "b".into(), fabric_primary: Some("p".into()) },
         Got { build_id: "b".into(), phase: BuildPhase::Pending, attempt: 0, executor: None, reason: "requested".into(), last_failure: None, steps: 0, chunks: 0 },
         Deleted { build_id: "b".into() },
+        End { builds: 0 },
     ] {
         assert_eq!(Build::frame_kind(&terminal), FrameKind::Terminal, "{terminal:?}");
     }
@@ -303,6 +317,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
         AttemptTaken { detail: "d".into() },
         SeatYielded { node: "n".into(), by: "b".into() },
         CannotDelete { build_id: "b".into(), reason: "r".into() },
+        RejectedFilter { reason: "builds.get: the pair (zone, [eu]) names no property of a Build header row".into() },
     ] {
         assert!(matches!(Build::frame_kind(&refusal), FrameKind::Refusal(_)), "{refusal:?}");
         crate::outcome_codes::check::<Build>(&refusal);
@@ -329,7 +344,7 @@ fn a_failed_step_reason_within_the_senders_bound_fits_the_reply_frame_ceiling() 
 
 #[test]
 fn every_reply_variant_of_build_classifies_to_one_code() {
-    replies_match_the_frozen_twenty_six_variant_wire_schema();
+    replies_match_the_frozen_thirty_variant_wire_schema();
 }
 
 /// The failed-state field is appended in place on both receipt and terminal, with no old decoder.

@@ -645,7 +645,7 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
 /// How the driver reads Build `id` as the fabric-primary's Build log holds it, as the JSON the Build projection
 /// serializes to (`attempt`, `state`, `last_failure`, `steps` with each receipt's `output`). The read is the test
 /// binary's: the receipts' outputs travel on `FetchBuildFacts` (op `0x1F`, `build_state::fold`), a read the
-/// scenario crate's shipped code cannot link (`tools/mesh-audit/src/deps.rs`, rule 4), and `build.get` carries no
+/// scenario crate's shipped code cannot link (`tools/mesh-audit/src/deps.rs`, rule 4), and `builds.get` carries no
 /// output.
 pub type BuildRead = for<'a> fn(&'a Estate, &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send + 'a>>;
 

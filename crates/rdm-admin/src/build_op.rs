@@ -221,6 +221,7 @@ impl BuildDoor {
                         let route = match call {
                             "create" => "build.create",
                             "get" => "build.get",
+                            "builds.get" => "builds.get",
                             _ => "build.delete",
                         };
                         let named = match &refusal {
@@ -241,6 +242,7 @@ impl BuildDoor {
                             Ok(id) => self.delete(id, sink).await,
                             Err(refused) => Ok(refused),
                         },
+                        BuildRequest::GetBuilds { filter } => serve_builds(&me, &*self.control.builds, filter, sink).await,
                         BuildRequest::AttemptRun { .. } => unreachable!("handled above"),
                     }
                 }
@@ -629,6 +631,12 @@ impl BuildDoor {
             }
         }
     }
+}
+
+/// `builds.get` (Q167 R-RD5), served by the fabric-primary from its own Build log.
+pub async fn serve_builds(_me: &PathName, _builds: &dyn crate::build_state::BuildStateAdapter, _filter: rdm_core::filter::Filter, _sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+    // Not served yet: answered as a build that does not know the variant.
+    Ok(rdm_core::reply::build::malformed(rdm_core::outcome::MalformedKind::UnknownVariant))
 }
 
 fn gone(e: rdm_transport::stream::SinkError) -> HandlerFault {

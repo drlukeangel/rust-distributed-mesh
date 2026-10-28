@@ -842,7 +842,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
             named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().any(|c| c["attributes"]["build_id"] == fabric_build.as_str() && attr(c, "attempt").parse::<u64>().ok() == Some(next) && attr(c, "executor") == to && attr(c, "outcome") == "won").then_some(next)
         })
         .collect();
-    // Like with like: the spans cover the whole run, the build.get read (`attempt_after`) one moment of
+    // Like with like: the spans cover the whole run, the builds.get read (`attempt_after`) one moment of
     // it, so only the attempts that read saw are counted; an attempt opened or claimed after it is the
     // next read's. Every attempt the Build gained after the cut, up to that read, is a hand-back's or
     // the returning holder's continuation of one.
@@ -1014,7 +1014,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     let done = wait_for("the accepted Build completes a later attempt and every lost birth is re-born", Duration::from_secs(300), || {
         let (estate, accepted, lost_births) = (&estate, accepted.clone(), lost_births.clone());
         async move {
-            let b = estate.builds_obj().await.get(&rdm_client::BuildId::parse(&accepted).ok()?).await.ok()?;
+            let b = estate.carrier().await.build(&rdm_client::BuildId::parse(&accepted).ok()?).await.ok()?;
             let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let re_born = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(n).is_some_and(|old| old != i)).count() == lost_births.len();
             // A node recovery runs in its mesh's lane of the Build (R-BI7): none still running.

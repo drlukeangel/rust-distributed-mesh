@@ -8,6 +8,7 @@
 //! AttemptRun fabric-primary -> executor one claimed attempt, start-or-reattach on (build_id, attempt)
 //! Get        caller -> fabric-primary   the Build and its receipts, for reattachment after a cut
 //! Delete     caller -> fabric-primary   a finished Build leaves history
+//! GetBuilds  caller -> fabric-primary   builds.get: every Build the filter matches, each whole
 //! ```
 //!
 //! A stream is one refusal, or `Started`, then `Step`/`Blocked`/`Steps` frames, then one terminal:
@@ -22,6 +23,8 @@
 //!                                                  AttemptRun: the executor took the fabric-primary
 //!                                                  seat during the run and names itself)
 //! Got | Deleted                                    the terminal of Get / Delete
+//! End                                              the terminal of GetBuilds, after per Build its
+//!                                                  Topology and Steps chunks and its Build header
 //! ```
 //!
 //! Every progress frame carries `(build_id, attempt, operation, step)`; a receiver drops a frame
@@ -325,6 +328,15 @@ pub enum BuildRequest {
         /// The Build.
         build_id: String,
     },
+    /// `builds.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
+    /// of `filter` (`id`, `current`, `phase`, `attempt`, `executor`), newest first, each whole: its
+    /// topology in `Topology` chunks, its receipts in `Steps` chunks, then its `Build` header; then
+    /// `End`. The current Build is selected once per read and its header marked. Appended last: the
+    /// Build wire is positional.
+    GetBuilds {
+        /// The pairs the Build header must match.
+        filter: crate::filter::Filter,
+    },
 }
 
 impl BuildRequest {
@@ -335,6 +347,7 @@ impl BuildRequest {
             Self::AttemptRun { .. } => "attempt.run",
             Self::Get { .. } => "get",
             Self::Delete { .. } => "delete",
+            Self::GetBuilds { .. } => "builds.get",
         }
     }
 }
@@ -394,6 +407,38 @@ pub enum BuildPhase {
     Complete,
     /// The last attempt failed.
     Failed,
+}
+
+impl BuildPhase {
+    /// The phase's page name, what a `builds.get` pair names it by (`running`).
+    pub fn page_name(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// A Build's header as `builds.get` matches and streams it (Q167 R-RD5): `Got`'s fields with the
+/// `current` mark.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildHeader {
+    /// The Build.
+    pub build_id: String,
+    /// Where the Build is in its life.
+    pub phase: BuildPhase,
+    /// The current attempt.
+    pub attempt: u32,
+    /// The executor of the current attempt, when one is.
+    pub executor: Option<String>,
+    /// Why the current attempt exists.
+    pub reason: String,
+    /// Why the last attempt failed, when one did.
+    pub last_failure: Option<String>,
+    /// Whether this is the current Build, selected once for the read.
+    pub current: bool,
 }
 
 /// One frame of a Build stream.
@@ -619,6 +664,51 @@ pub enum BuildReply {
         /// The mesh's mesh-primary the receiver sees, when it sees one.
         mesh_primary: Option<String>,
     },
+    /// A chunk of one Build's topology `GetBuilds` reads: its nodes' create specs, in `path.name`
+    /// order. A topology no reply frame holds takes several chunks.
+    Topology {
+        /// The Build.
+        build_id: String,
+        /// This chunk's index.
+        chunk_index: u32,
+        /// The number of chunks.
+        chunk_count: u32,
+        /// The create specs in this chunk.
+        nodes: Vec<crate::meta::NodeSpec>,
+    },
+    /// The header that closes one Build of a `GetBuilds` stream, after its `Topology` and `Steps`
+    /// chunks: `Got`'s fields with the `current` mark. A data frame: `End` ends the read.
+    Build {
+        /// The Build.
+        build_id: String,
+        /// Where the Build is in its life.
+        phase: BuildPhase,
+        /// The current attempt.
+        attempt: u32,
+        /// The executor of the current attempt, when one is.
+        executor: Option<String>,
+        /// Why the current attempt exists.
+        reason: String,
+        /// Why the last attempt failed, when one did.
+        last_failure: Option<String>,
+        /// Whether this is the current Build, selected once for the read.
+        current: bool,
+        /// The number of receipts sent for it.
+        steps: u32,
+        /// The number of `Steps` chunks sent for it.
+        chunks: u32,
+    },
+    /// Terminal of `GetBuilds`: the read is complete. A stream that ends before it is an incomplete
+    /// read, never a list.
+    End {
+        /// The number of Builds streamed.
+        builds: u32,
+    },
+    /// Refusal: a `GetBuilds` pair the Build header's schema refuses (Q167 R-RD2), naming the pair.
+    RejectedFilter {
+        /// Why, naming the pair.
+        reason: String,
+    },
 }
 
 impl BuildReply {
@@ -651,6 +741,10 @@ impl BuildReply {
             Self::Unauthorized { .. } => "unauthorized",
             Self::FabricPrimaryMoved { .. } => "fabric-primary-moved",
             Self::NotClaimant { .. } => "not-claimant",
+            Self::Topology { .. } => "topology",
+            Self::Build { .. } => "build",
+            Self::End { .. } => "end",
+            Self::RejectedFilter { .. } => "rejected-filter",
         }
     }
 
@@ -687,8 +781,8 @@ impl NodeProtocol for Build {
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
     /// A stream, decided by the fabric-primary itself or not at all.
     const FORWARDABLE: bool = false;
-    const REQUEST_VARIANTS: u32 = 4;
-    const REPLY_VARIANTS: u32 = 26;
+    const REQUEST_VARIANTS: u32 = 5;
+    const REPLY_VARIANTS: u32 = 30;
 
     type Request = BuildRequest;
     type Reply = BuildReply;
@@ -730,6 +824,10 @@ impl NodeProtocol for Build {
             BuildReply::Unauthorized { .. } => "unauthorized",
             BuildReply::FabricPrimaryMoved { .. } => "fabric-primary-moved",
             BuildReply::NotClaimant { .. } => "not-claimant",
+            BuildReply::Topology { .. } => "topology",
+            BuildReply::Build { .. } => "build",
+            BuildReply::End { .. } => "end",
+            BuildReply::RejectedFilter { .. } => "rejected-filter",
         }
     }
 
@@ -762,6 +860,10 @@ impl NodeProtocol for Build {
             BuildReply::Unauthorized { .. } => ReplyKind::Unauthorized,
             BuildReply::FabricPrimaryMoved { .. } => ReplyKind::Success,
             BuildReply::NotClaimant { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            BuildReply::Topology { .. } => ReplyKind::Success,
+            BuildReply::Build { .. } => ReplyKind::Success,
+            BuildReply::End { .. } => ReplyKind::Success,
+            BuildReply::RejectedFilter { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
         }
     }
 
@@ -789,8 +891,8 @@ impl StreamingProtocol for Build {
     fn frame_kind(frame: &BuildReply) -> FrameKind {
         match frame {
             BuildReply::Started { .. } => FrameKind::Started,
-            BuildReply::Step { .. } | BuildReply::Blocked { .. } | BuildReply::Steps { .. } => FrameKind::Data,
-            BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. } | BuildReply::FabricPrimaryMoved { .. } | BuildReply::Got { .. } | BuildReply::Deleted { .. } => FrameKind::Terminal,
+            BuildReply::Step { .. } | BuildReply::Blocked { .. } | BuildReply::Steps { .. } | BuildReply::Topology { .. } | BuildReply::Build { .. } => FrameKind::Data,
+            BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. } | BuildReply::FabricPrimaryMoved { .. } | BuildReply::Got { .. } | BuildReply::Deleted { .. } | BuildReply::End { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Build::classify_reply(other)),
         }
     }

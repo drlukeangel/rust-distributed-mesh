@@ -656,6 +656,9 @@ impl crate::build_state::BuildStateAdapter for Through {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.newest_accepted_at_ms().await
     }
+    async fn accepted_newest_first(&self) -> Result<Vec<crate::build::BuildId>, crate::build_state::BuildStateError> {
+        self.read().stores().boundaries.builds.accepted_newest_first().await
+    }
     async fn current(&self) -> Result<Option<crate::build_state::BuildProjection>, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.current().await
     }

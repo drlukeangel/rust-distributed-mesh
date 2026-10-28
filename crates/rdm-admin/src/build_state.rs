@@ -1119,6 +1119,19 @@ pub trait BuildStateAdapter: Send + Sync {
     }
     /// Builds that are neither complete nor failed.
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
+    /// Every Build accepted, newest first: the acceptance-order index (R-BI3) read whole, each Build by
+    /// its own acceptance stamp `(submitted_at_ms, build_id)`. What `builds.get` streams in order (Q167
+    /// R-RD5). RDM's adapters answer it from their index (or delegate to the adapter they decorate); an
+    /// adapter that keeps none answers it from its facts' acceptances.
+    async fn accepted_newest_first(&self) -> Result<Vec<BuildId>, BuildStateError> {
+        let mut accepted: Vec<(u64, BuildId)> = self.facts().await?.into_iter().filter_map(|f| match f {
+            BuildFact::Accepted(a) => Some((a.submitted_at_ms, a.build_id)),
+            _ => None,
+        }).collect();
+        accepted.sort();
+        accepted.dedup();
+        Ok(accepted.into_iter().rev().map(|(_, id)| id).collect())
+    }
     /// The accepted Build `build_id` as builds.storage records it (the fabric's shared store root, build.md
     /// §5.3), read there whoever reads it: the one record that carries each entry's executable, which a Build
     /// message does not carry (proposal executable-bindings-at-create.md rule 7). A log whose own facts are
@@ -1953,6 +1966,11 @@ fn current_build(log: &Mutex<FactLog>) -> CurrentBuild {
     newest_first.iter().find_map(|id| read_own(log, id).ok().as_ref().and_then(current_of)).unwrap_or(CurrentBuild::None)
 }
 
+/// The point read of [`BuildStateAdapter::accepted_newest_first`]: the index, newest first.
+fn accepted_newest_first(log: &Mutex<FactLog>) -> Vec<BuildId> {
+    log.lock().unwrap().accepted_order.iter().rev().map(|(_, id)| id.clone()).collect()
+}
+
 /// The point read of [`BuildStateAdapter::newest_accepted_at_ms`]: the index's head.
 fn newest_accepted_at_ms(log: &Mutex<FactLog>) -> Option<u64> {
     log.lock().unwrap().accepted_order.last().map(|(at, _)| *at)
@@ -2172,6 +2190,10 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
 
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
         Ok(newest_accepted_at_ms(&self.log))
+    }
+
+    async fn accepted_newest_first(&self) -> Result<Vec<BuildId>, BuildStateError> {
+        Ok(accepted_newest_first(&self.log))
     }
 
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
@@ -2634,6 +2656,11 @@ impl BuildStateAdapter for FileJournal {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
         self.sync_for_read("newest_accepted_at_ms").await?;
         Ok(newest_accepted_at_ms(&self.log))
+    }
+
+    async fn accepted_newest_first(&self) -> Result<Vec<BuildId>, BuildStateError> {
+        self.sync_for_read("accepted_newest_first").await?;
+        Ok(accepted_newest_first(&self.log))
     }
 
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {

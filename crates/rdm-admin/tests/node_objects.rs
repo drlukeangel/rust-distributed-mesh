@@ -665,7 +665,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
 /// CONTRACT (ops-naming acceptance 2, "A broken stream is not a failure"): the transport between
 /// the caller and the fabric-primary is cut while the create waits for its birth's report (the
 /// `JoinNode` that completes `WaitForBind` and `WaitForMeshJoin`, node-create.md step 5). The
-/// caller's stream ends `Indeterminate`, never `Failed`. The cut cancels nothing: `build.get` over a
+/// caller's stream ends `Indeterminate`, never `Failed`. The cut cancels nothing: `builds.get [id]` over a
 /// new transport returns the receipts of exactly the steps that completed, `Resume` names the bind
 /// wait as the first step without a `Complete` receipt, and the re-submit by the Build id streams
 /// the same Build (never a second one) to its end once the birth is heard: no completed step runs
@@ -702,7 +702,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         // Re-attach over a new transport to the same fabric-primary.
         let again = serve(door).await;
         let builds = Builds::new(again.carrier.clone());
-        let receipts_after_cut = builds.get(&accepted.build_id).await.unwrap();
+        let receipts_after_cut = builds.get(&rdm_client::Filter::new().eq("id", [accepted.build_id.to_string()])).await.unwrap().remove(0);
         let resume = Resume::from_receipts(&WorkflowKind::Create, &receipts_after_cut, accepted.attempt).unwrap();
         // The birth is heard this time: the Build the cut did not cancel goes on to its end, and the
         // re-submit streams it.
@@ -714,17 +714,17 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         });
         let (final_frames, resumed_end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(resumed_end.is_none(), "the resumed stream ends with its terminal frame: {resumed_end:?}");
-        let receipts_after = builds.get(&accepted.build_id).await.unwrap();
+        let receipts_after = builds.get(&rdm_client::Filter::new().eq("id", [accepted.build_id.to_string()])).await.unwrap().remove(0);
         (frames, end, receipts_after_cut, resume, receipts_after, final_frames, disposition)
     });
     assert!(matches!(end, CallEnd::Indeterminate { .. }), "a cut stream is Indeterminate, not {end:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Failed { .. } | Frame::Complete)), "no step is inferred failed or complete from a broken stream: {frames:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Joined | NodeEvent::Started | NodeEvent::Created))), "no event past the join was delivered: {frames:?}");
 
-    let completed_steps = |r: &rdm_client::BuildReceipts, attempt: u32| -> Vec<String> {
+    let completed_steps = |r: &rdm_client::Build, attempt: u32| -> Vec<String> {
         r.steps.iter().filter(|s| s.attempt == attempt && s.result == rdm_core::build::StepResult::Complete).map(|s| s.step.clone()).collect()
     };
-    assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "build.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
+    assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "builds.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
     assert_eq!(completed_steps(&receipts_after_cut, 1), ATTEMPT_ONE_STEPS);
     assert_eq!(resume.from, Some(("node.create".to_string(), "WaitForBind".to_string())), "the resume starts at the first step without a Complete receipt");
     assert_eq!(resume.completed.len(), ATTEMPT_ONE_STEPS.len());

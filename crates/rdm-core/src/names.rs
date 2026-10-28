@@ -149,7 +149,7 @@ impl FabricOp {
 pub enum BuildOp {
     /// `build.create`, including a preset.
     Create,
-    /// `build.get`.
+    /// `builds.get` (Q167 R-RD5).
     Get,
     /// `build.delete`.
     Delete,
@@ -160,7 +160,7 @@ impl BuildOp {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Create => "build.create",
-            Self::Get => "build.get",
+            Self::Get => "builds.get",
             Self::Delete => "build.delete",
         }
     }
@@ -169,7 +169,7 @@ impl BuildOp {
     pub fn span(self) -> tracing::Span {
         match self {
             Self::Create => tracing::info_span!("rdm.node_admin.build.create.via-call", op = "build.create", outcome = tracing::field::Empty),
-            Self::Get => tracing::info_span!("rdm.node_admin.build.resolve.via-call", op = "build.get", outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.build.resolve.via-call", op = "builds.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
             Self::Delete => tracing::info_span!("rdm.node_admin.build.delete.via-call", op = "build.delete", outcome = tracing::field::Empty),
         }
     }

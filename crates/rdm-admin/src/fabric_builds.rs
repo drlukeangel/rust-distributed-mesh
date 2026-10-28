@@ -241,6 +241,10 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
         self.local.newest_accepted_at_ms().await
     }
 
+    async fn accepted_newest_first(&self) -> Result<Vec<BuildId>, BuildStateError> {
+        self.local.accepted_newest_first().await
+    }
+
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.local.list_active().await
     }
