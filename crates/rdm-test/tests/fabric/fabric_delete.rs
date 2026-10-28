@@ -249,9 +249,10 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
 /// Build has ended, its run receives `Failed { step, reason }` naming the delete"): on a fabric the Day-0
 /// Build brought to ready (the Day-0 Build launches no node, and no other Build is accepted
 /// before its ready), a Build growing mesh1 by two rpc nodes is held by the fabric-primary's
-/// fault door inside the launch of the first, and fabric.delete is accepted. Released, the launch ends
-/// within its bound and its create's receipts stand; the second rpc node is never launched; the growth's
-/// run receives `Failed` naming the delete, and the teardown deletes the launched runtime with the rest.
+/// fault door inside the launch of the first, and fabric.delete is accepted. The second rpc node's create
+/// was admitted with the first (Q245: a mesh's member creates run at once). Released, the launch ends
+/// within its bound and its create's receipts stand; no create opens after the acceptance; the growth's
+/// run receives `Failed` naming the delete, and the teardown deletes the launched runtimes with the rest.
 /// What must NOT happen: a launch opened after the acceptance, the growth resumed, or its runtime left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after() {
@@ -265,6 +266,7 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
     assert_eq!(held["hit"]["build_id"].as_str(), Some(grow_id.as_str()), "the growth is held inside mesh1.rpc.1's launch: {held}");
 
     let mut delete = delete_admitted(&estate).await;
+    let accepted_ns = now_ns();
     let id = delete.build_id().to_string();
     door.release("launch").await;
     let ended = terminal_of("the interrupted growth", &mut grow, SETTLE).await;
@@ -279,12 +281,16 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
     failed_naming(&grown, &id);
     assert_eq!(count(&grown, |o| o == "node.create:mesh1.rpc.1", "DeployRuntime"), 1, "the admitted launch's evidence is retained: {:?}", listed(&grown));
     assert_eq!(count(&grown, |o| o == "node.create:mesh1.rpc.1", "Complete"), 1, "the admitted launch ended within its bound: {:?}", listed(&grown));
-    assert_eq!(count(&grown, |o| o == "node.create:mesh1.rpc.2", "AllocateIdentity"), 0, "nothing is launched after the acceptance: {:?}", listed(&grown));
     let receipts = receipts_at(&estate, "mesh1.admin.1", &id).await;
     assert_eq!(count(&receipts, |o| o.starts_with("mesh.delete:"), rdm_admin::mesh_delete::STEP_MESH_DELETED), 1, "mesh1 is deleted: {:?}", listed(&receipts));
     assert_eq!(count(&receipts, |o| o.starts_with("fabric.delete:"), "Complete"), 1, "fabric.deleted is reported: {:?}", listed(&receipts));
-    assert_eq!(estate.live_runtimes(), vec![], "the launched runtime is deleted with the fabric");
+    assert_eq!(estate.live_runtimes(), vec![], "the launched runtimes are deleted with the fabric");
     estate.stop().await;
+    let spans = estate.spans();
+    let creates = named(&spans, "rdm.node_admin.node.create.via-build");
+    assert!(["mesh1.rpc.1", "mesh1.rpc.2"].iter().all(|n| creates.iter().any(|sp| sp["attributes"]["node"] == *n)), "both creates were opened, before the acceptance: {creates:?}");
+    let opened: Vec<&Value> = creates.into_iter().filter(|sp| start(sp) >= accepted_ns).collect();
+    assert!(opened.is_empty(), "no create opens after the acceptance: {opened:?}");
 }
 
 /// CONTRACT (build.md §1: "its acceptance record is the durable intent ... a successor fabric-primary
