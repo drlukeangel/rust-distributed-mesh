@@ -39,16 +39,23 @@ pub(crate) fn fabric_seat_source(digest_view: &DigestView, records: &Arc<Records
 /// Whether this birth reads the Build records now ([`crate::build_state::LocalBuildLog::read_records_while`];
 /// Q227: "only FP reads the builds"): its held path.name while the fabric-primary record `digest_view`
 /// holds names this exact birth, or while fabric recovery names it the executor that restores the
-/// fabric-primary in its place (build.md §5.3, Q122: it writes that attempt's Build records); `None`
-/// otherwise, and the admin answers from what reached it. `view` is this admin's view once it is built.
-pub(crate) fn build_records_reader(digest_view: &DigestView, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::build_state::RecordsReader {
+/// fabric-primary in its place (build.md §5.3, Q122: it writes that attempt's Build records), or, for an
+/// admin started with no launcher (`unlaunched`: Day 0, a start again from its own data dir, an adoption
+/// launch; Q227's first or re-born fabric-primary), while that record names no birth or a birth proven
+/// gone; `None` otherwise, and the admin answers from what reached it. `view` is this admin's view once
+/// it is built.
+pub(crate) fn build_records_reader(digest_view: &DigestView, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, unlaunched: bool, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::build_state::RecordsReader {
     let (digest_view, records, me_name) = (digest_view.clone(), records.clone(), me_name.to_string());
     Arc::new(move || {
         let held_name = digest_view.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone());
-        if digest_view.seats.fabric().is_some_and(|h| h.is_birth(&me.0, &me.1)) {
+        let record = digest_view.seats.fabric();
+        if record.as_ref().is_some_and(|h| h.is_birth(&me.0, &me.1)) {
             return Some(held_name);
         }
         let incumbency = incumbency_of(&digest_view, &records);
+        if unlaunched && record.as_ref().is_none_or(|h| incumbency.lost.contains(&h.incarnation)) {
+            return Some(held_name);
+        }
         let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &digest_view))).is_some_and(|fr| fr.executor.as_ref().is_some_and(|e| e.to_string() == held_name) && incumbency.fabric.as_ref() == Some(&fr.target));
         executes.then_some(held_name)
     })

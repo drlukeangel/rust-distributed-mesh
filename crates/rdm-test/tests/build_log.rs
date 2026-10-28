@@ -1,12 +1,12 @@
-//! A node-admin's own Build log as a caller reads it: the one shared read of every cell that asks
-//! "the Build as the admin at X holds it".
+//! The Build log as a caller reads it: the one shared read of every cell that asks "the Build as the
+//! fabric holds it".
 //!
-//! The Build family (`builds.get`) is the fabric-primary's alone. Every node-admin keeps its own Build
-//! journal and serves it over `FetchBuildFacts` (op `0x1F`; `BuildFactsDoor::serve`, build.md "Each
-//! node-admin keeps its own Build journal"), so a cell that asks what one exact admin holds reads that
-//! admin's log here: [`log_read`] is the one read, [`log_fact`] awaits a typed fact of it through the
-//! client's `await_fact`, and [`build_fact`] awaits a fact of the Build the log folds to
-//! (`build_state::fold` over the same log).
+//! The Build family (`builds.get`) is the fabric-primary's alone, and so are the Build records: only
+//! the fabric-primary reads them (Q227; build.md §5.3), and every other node-admin holds only what
+//! reached it. So the read is at the fabric-primary the carrier's admin names (`fabrics.get`), over
+//! `FetchBuildFacts` (op `0x1F`; `BuildFactsDoor::serve`): [`log_read`] is the one read, [`log_fact`]
+//! awaits a typed fact of it through the client's `await_fact`, and [`build_fact`] awaits a fact of
+//! the Build the log folds to (`build_state::fold` over the same log).
 //!
 //! It lives in the test binary every cell links, not in `src/typed.rs`: the facts' types and the read
 //! are the node-admin core's, and the scenario crate's shipped code reaches RDM only through the public
@@ -30,10 +30,14 @@ fn log_read_ended(failure: FetchFailure) -> CallEnd {
     }
 }
 
-/// The facts the node-admin `carrier` starts at holds of Build `id` now, in one `FetchBuildFacts` read.
+/// The facts the fabric-primary holds of Build `id` now, in one `FetchBuildFacts` read at the
+/// fabric-primary `carrier`'s admin names.
 /// An admin that holds no fact of the Build ends the call `Indeterminate` (`unknown build`), naming it.
 pub async fn log_read(carrier: &BuildCarrier, id: &str) -> Result<Vec<BuildFact>, CallEnd> {
-    let target = NodeTarget::CurrentPath(carrier.fabric_primary().clone());
+    // The fabric-primary the carrier's admin names, the one admin that reads the Build records (Q227);
+    // the carrier's own admin while it names none.
+    let named = rdm_client::Fabrics::new(carrier.clone()).get(&rdm_client::Filter::new()).await.ok().and_then(|f| f.into_iter().next()).and_then(|f| f.fabric_primary);
+    let target = NodeTarget::CurrentPath(named.unwrap_or_else(|| carrier.fabric_primary().clone()));
     fetch_build_facts(carrier.client(), &target, &BuildId::parse(id).unwrap()).await.map(|fetched| fetched.facts).map_err(log_read_ended)
 }
 

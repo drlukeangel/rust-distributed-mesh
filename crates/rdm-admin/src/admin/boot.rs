@@ -1234,9 +1234,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 records.set_status(nodes_storage.clone(), mesh_storage.clone(), fabric_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
                 records.set_digest_view(topology_view.digest_view.clone());
                 let builds = Arc::new(FabricBuildStateAdapter::new(journal.clone(), &topology_view.location_view(), name.to_string(), fabric_seat_source(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, view_slot.clone())));
-                // Only the fabric-primary, or fabric recovery's executor in its place, reads the Build
-                // records from here on (Q227); this admin's start read none (Q242).
-                journal.read_records_while(build_records_reader(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, view_slot.clone())).await;
+                // Only the fabric-primary, fabric recovery's executor in its place, or an admin started with
+                // no launcher while no live birth holds the fabric-primary record reads the Build records
+                // from here on (Q227); a launched admin's start reads none (Q242).
+                journal.read_records_while(build_records_reader(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()).is_none(), view_slot.clone())).await;
                 // The Build state every consumer after the fetch shares: the control routes, the executor, the
                 // pipelines and the drift check.
                 let runs = Arc::new(crate::build_run::AttemptRuns::default());
