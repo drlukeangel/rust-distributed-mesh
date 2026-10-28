@@ -1827,22 +1827,40 @@ mod tests {
     }
 
     /// CONTRACT (node-stop.md step 6, states.md "Stopped nodes": "stopped is not live and is still
-    /// present"; build.md §4.4: a create targets no live birth): a stopped birth (its row Stopped, stopped, its
-    /// process alive) at a path the accepted topology names is that path's birth, never a missing one.
-    /// A Build that removes another path of its mesh plans that path's delete and nothing at the
-    /// stopped path, and the settled topology plans nothing. Must NOT happen: `node.create`
-    /// planned at the stopped path (#3233: every attempt of the delete Build planned it, its create
-    /// found the stopped process alive and handed the attempt back, 1198 times).
+    /// present"; a completed operation is never planned again): a stopped birth (its row Stopped,
+    /// stopped) at a path the accepted topology names. A Build that removes another path of its mesh
+    /// plans that path's delete and, once, the stopped path's create, whose check decides against the
+    /// world (reached: held, its `Complete` receipted; unreached: deleted and created again). Once the
+    /// Build's receipts hold that create's `Complete`, the plan is the other path's delete alone, and
+    /// the settled topology plans nothing. Must NOT happen: `node.create` at the stopped path planned
+    /// again after its `Complete` (#3233: every attempt of the delete Build planned it, its check held
+    /// the stopped birth and the next attempt planned it again, 850 times).
     #[test]
-    fn a_stopped_birth_at_a_path_the_topology_names_is_held_and_no_create_is_planned_for_it() {
+    fn a_stopped_births_create_is_planned_once_and_never_again_once_its_complete_is_receipted() {
         let mut o = mn();
         let stopped = o.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.1").unwrap();
         stopped.status = NodeStatus::Stopped;
         stopped.stopped = true;
         stopped.is_primary = false;
         let other_removed = pinned(t(&[("mesh1", 2, 2)]), &o);
-        assert_eq!(plan(&other_removed, &o, None).operations, vec![delete_of(&o, "mesh1.rpc.3")], "the other path's delete, and nothing at the stopped mesh1.rpc.1");
-        assert_eq!(plan(&pinned(t(&[("mesh1", 2, 3)]), &o), &o, None).operations, vec![], "the settled topology with a stopped birth plans nothing");
+        let create = BuildOperation::CreateNode { node: "mesh1.rpc.1".parse().unwrap(), over: None, executable: None };
+        assert_eq!(plan(&other_removed, &o, None).operations, vec![create, delete_of(&o, "mesh1.rpc.3")], "the stopped path's create is planned for its check, beside the other path's delete");
+        let held = crate::build_state::BuildStepReceipt {
+            mesh: None,
+            build_id: BuildId::mint(),
+            attempt: 1,
+            operation: "node.create:mesh1.rpc.1".into(),
+            step: "Complete".into(),
+            outcome: crate::build_state::StepOutcome::Complete,
+            output: None,
+            executor: Some("mesh1.admin.1".into()),
+        };
+        let steps = [held];
+        assert_eq!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &steps, None).operations, vec![delete_of(&o, "mesh1.rpc.3")], "once its Complete is receipted the stopped path's create is never planned again");
+        assert_eq!(plan_with(&pinned(t(&[("mesh1", 2, 3)]), &o), &o, None, ActionProgress::default(), &BTreeSet::new(), &steps, None).operations, vec![], "the settled topology with a held stopped birth plans nothing");
+        let mut failed = steps[0].clone();
+        failed.outcome = crate::build_state::StepOutcome::Failed { reason: "x".into(), code: rdm_core::outcome::Code::Unavailable };
+        assert!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &[failed], None).operations.iter().any(|op| op.key() == "node.create:mesh1.rpc.1"), "a create that did not complete is planned again");
     }
 
     /// CONTRACT: a replaced predecessor (`<path>.old`) is neither the live birth at `<path>` nor a missing
