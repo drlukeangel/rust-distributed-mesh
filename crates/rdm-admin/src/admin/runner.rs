@@ -1311,7 +1311,12 @@ impl crate::seat_revision::PathProbe for AdminRunner {
     async fn investigate(&self, node: &Node) -> crate::node_investigation::Finding {
         let view = self.topology.read().await.clone();
         let calls = crate::offline::TickleClient { client: self.node_rpc.client.clone(), me_id: self.node_id.clone(), me: self.held_name().to_string(), connections: self.connections.clone(), commands: None };
-        let inspect = async { crate::node_investigation::Finding::from(crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.digest_view, self.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), node).await.0) };
+        // node.runtime.inspect's span is the evidence (node-runtime-inspect.md "Observability contract").
+        let inspect = async {
+            let (inspected, handle) = crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.digest_view, self.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), node).await;
+            crate::node_investigation::span_inspection(&self.held_name().to_string(), node, &inspected, handle.as_ref(), "the path check's investigation asked the provider about the unreached previous birth's exact runtime");
+            crate::node_investigation::Finding::from(inspected)
+        };
         crate::node_investigation::investigate(node, &view, &calls, inspect).await
     }
 }
