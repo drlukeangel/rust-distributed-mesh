@@ -180,12 +180,20 @@ pub struct Ladder {
     meshes: BTreeMap<String, State>,
     /// The last investigation ticket issued; never reused, across a cleared or forgotten mesh too.
     issued: u64,
+    /// Moves each time what this ladder holds of a mesh moves (tracked, its decision, forgotten): what
+    /// the reconcile loop waits on, whose drift check and drive read it.
+    moved: tokio::sync::watch::Sender<u64>,
 }
 
 impl Ladder {
     /// A ladder over `rungs` with no mesh tracked.
     pub fn new(rungs: Rungs) -> Self {
-        Self { rungs, meshes: BTreeMap::new(), issued: 0 }
+        Self { rungs, meshes: BTreeMap::new(), issued: 0, moved: tokio::sync::watch::Sender::new(0) }
+    }
+
+    /// What this ladder holds as it moves: a waiter arms on it to see a mesh tracked, decided or forgotten.
+    pub fn subscribe_moved(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.moved.subscribe()
     }
 
     /// The meshes held now.
@@ -256,7 +264,7 @@ impl Ladder {
     /// a probe is in flight the ladder still tracks and marks, and asks for no other probe and no
     /// decision.
     pub fn step(&mut self, mesh: &str, unheard: Duration) -> Vec<Step> {
-        let Ladder { rungs: r, meshes, issued } = self;
+        let Ladder { rungs: r, meshes, issued, .. } = self;
         let r = *r;
         let st = meshes.entry(mesh.to_string()).or_default();
         let mut out = Vec::new();
@@ -1596,5 +1604,44 @@ mod tests {
         );
         assert_eq!((found.outcome, found.carrier.as_str()), (CarrierEdgeLost, "mesh2.rpc.1"));
         assert_eq!(carriers.lock().unwrap().get("mesh2").map(ToString::to_string).as_deref(), Some("mesh2.rpc.1"), "the carrier this probe went through is held for the next");
+    }
+
+    /// CONTRACT (Q253 amended, rdm#164: the reconcile loop's drift check and drive read what this ladder
+    /// holds of a peer mesh and wait on its moves, never on a tick): the ladder's watch moves when a mesh
+    /// is tracked, decided, heard again or forgotten, and never on a step that moves none of those (a mark,
+    /// a probe asked or recorded, a step below the track rung, a forget of a mesh it holds nothing of).
+    /// Must NOT happen: a decision the reconcile loop never hears of, or a move per interval.
+    #[test]
+    fn the_ladder_moves_its_watch_when_a_mesh_is_tracked_decided_heard_again_or_forgotten_and_never_otherwise() {
+        let mut l = ladder();
+        let rx = l.subscribe_moved();
+        let probe = |steps: Vec<Step>| steps.into_iter().find_map(|s| if let Step::Probe { n, ticket, .. } = s { Some((n, ticket)) } else { None }).expect("a probe is asked");
+        l.step("mesh2", tick(1));
+        assert_eq!(*rx.borrow(), 0, "below the track rung nothing moves");
+        l.step("mesh2", tick(2));
+        assert_eq!(*rx.borrow(), 1, "tracked");
+        let (n, ticket) = probe(l.step("mesh2", tick(10)));
+        l.probed("mesh2", ticket, n, Unreachable, ms(10));
+        l.step("mesh2", tick(15));
+        let (n, ticket) = probe(l.step("mesh2", tick(20)));
+        l.probed("mesh2", ticket, n, CarrierEdgeLost, ms(20));
+        assert_eq!(*rx.borrow(), 1, "probes asked and recorded and the mark move nothing the reconcile loop reads");
+        l.step("mesh2", tick(30));
+        assert!(l.recovery_decided("mesh2"));
+        assert_eq!(*rx.borrow(), 2, "decided");
+        l.step("mesh2", tick(31));
+        assert_eq!(*rx.borrow(), 2, "a step after the decision moves nothing");
+        l.step("mesh2", tick(1));
+        assert_eq!(*rx.borrow(), 3, "heard again: the decision and the tracking are gone");
+        l.step("mesh2", tick(2));
+        l.forget("mesh2");
+        assert_eq!(*rx.borrow(), 5, "tracked again, then forgotten");
+        l.forget("mesh2");
+        l.step("mesh3", tick(1));
+        l.clear();
+        assert_eq!(*rx.borrow(), 5, "forgetting or clearing what holds nothing tracked or decided moves nothing");
+        l.step("mesh3", tick(2));
+        l.clear();
+        assert_eq!(*rx.borrow(), 7, "tracked, then cleared");
     }
 }

@@ -277,6 +277,65 @@ pub(crate) fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepR
     surplus.iter().map(|item| t.members().find(|n| n.name.to_string() == *item).map(birth).unwrap_or_else(|| item.clone())).collect::<Vec<_>>().join("; ")
 }
 
+/// What woke the reconcile loop for its next pass ([`ReconcileWake::next`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Woken {
+    /// The loop's first pass, as it starts.
+    First,
+    /// A Build accepted or an attempt opened (`ControlPlane::build_submitted`).
+    Submitted,
+    /// The installed view changed (`Records::subscribe_view`).
+    ViewInstalled,
+    /// The fabric state changed (`Records::subscribe_fabric_state`).
+    FabricState,
+    /// The peer-mesh investigation moved what it holds of a mesh (`Ladder::subscribe_moved`).
+    PeerMesh,
+    /// A drive ended its Build (`Drives::subscribe_ended`).
+    DriveEnded,
+    /// The loop's 300 ms arm.
+    Tick,
+}
+
+/// The reconcile loop's wait between two passes: the loop is `loop { wake.next().await; <pass> }`.
+pub struct ReconcileWake {
+    submitted: Arc<tokio::sync::Notify>,
+    started: bool,
+    #[allow(dead_code)]
+    view: tokio::sync::watch::Receiver<u64>,
+    #[allow(dead_code)]
+    fabric_state: tokio::sync::watch::Receiver<crate::fabric_state::FabricState>,
+    #[allow(dead_code)]
+    peer_mesh: tokio::sync::watch::Receiver<u64>,
+    #[allow(dead_code)]
+    drive_ended: tokio::sync::watch::Receiver<u64>,
+}
+
+impl ReconcileWake {
+    /// The wait over a Build submitted (`submitted`), a view installed (`view`), a fabric state change
+    /// (`fabric_state`), a move of the peer-mesh investigation (`peer_mesh`) and a drive's end
+    /// (`drive_ended`).
+    pub fn new(
+        submitted: Arc<tokio::sync::Notify>,
+        view: tokio::sync::watch::Receiver<u64>,
+        fabric_state: tokio::sync::watch::Receiver<crate::fabric_state::FabricState>,
+        peer_mesh: tokio::sync::watch::Receiver<u64>,
+        drive_ended: tokio::sync::watch::Receiver<u64>,
+    ) -> Self {
+        Self { submitted, started: false, view, fabric_state, peer_mesh, drive_ended }
+    }
+
+    /// Wait for the next pass: the first returns at once.
+    pub async fn next(&mut self) -> Woken {
+        if !std::mem::replace(&mut self.started, true) {
+            return Woken::First;
+        }
+        tokio::select! {
+            _ = self.submitted.notified() => Woken::Submitted,
+            _ = tokio::time::sleep(Duration::from_millis(300)) => Woken::Tick,
+        }
+    }
+}
+
 /// The durable runtime rows of every mesh the fabric-primary's drift check reads ([`reconcile_drift`]'s
 /// `durable`): the births at a path its view holds nothing at ([`durable_births`]), and the exact runtime
 /// of an unheard birth whose digest its view holds none of. Read once, at the first executor pass that

@@ -355,6 +355,10 @@ pub struct Records {
     /// The fabric state this admin projects: the fabric-primary's own, the last
     /// published state on every other admin (`crate::fabric_status`).
     pub(crate) fabric_state: Mutex<crate::fabric_state::FabricState>,
+    /// Moves each time the fabric state this admin projects changes ([`Self::set_fabric_state`]): what
+    /// the reconcile loop waits on (its pass reads whether the fabric holds ready), apart from the
+    /// declarer's wake.
+    pub(crate) fabric_state_watch: tokio::sync::watch::Sender<crate::fabric_state::FabricState>,
     /// What keeps the fabric in its state, named (`None`: nothing, or not the fabric-primary).
     pub(crate) fabric_blocker: Mutex<Option<String>>,
     /// The fabric state the fabric-primary last put in a FabricStatus frame. The change enters the
@@ -540,6 +544,11 @@ impl Records {
     /// The tick a waiter arms on to see the view change.
     pub fn subscribe_view(&self) -> tokio::sync::watch::Receiver<u64> {
         self.view_tick.subscribe()
+    }
+
+    /// The fabric state as it changes: a waiter arms on it to see the state change.
+    pub fn subscribe_fabric_state(&self) -> tokio::sync::watch::Receiver<crate::fabric_state::FabricState> {
+        self.fabric_state_watch.subscribe()
     }
 
     /// Hold which meshes were last heard ready.

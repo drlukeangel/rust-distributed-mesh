@@ -3683,3 +3683,281 @@ async fn a_primary_update_whose_attempt_is_not_claimed_stalls_the_drive_and_fram
     assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing ran or was dispatched");
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the claim's refusal frames no Blocked to the caller");
 }
+
+// The reconcile loop's wait (Q253, amended by Luke 2026-10-28: "I hate timers; make this event
+// driven", rdm#164): every pass of the fabric-primary's reconcile loop is woken by an event (a view
+// install, a Build submitted, a fabric state change, the peer-mesh investigation's move, a drive's
+// end), never by a tick. The loop below is the admin's (boot.rs): `wake.next()`, then one pass, whose
+// drive part is `ensure_active`.
+
+/// What wakes the loop under test, each the admin's own source: the control plane's
+/// `build_submitted`, the admin's records (a view installed, the fabric state), the peer-mesh
+/// investigation's ladder and the drives.
+struct Wakes {
+    submitted: Arc<tokio::sync::Notify>,
+    records: Arc<rdm_admin::admin::Records>,
+    ladder: Arc<Mutex<rdm_admin::investigate::Ladder>>,
+    drives: Arc<rdm_admin::build_drive::Drives>,
+}
+
+impl Wakes {
+    fn new() -> Self {
+        Self { submitted: Arc::new(tokio::sync::Notify::new()), records: Arc::new(rdm_admin::admin::Records::default()), ladder: Arc::new(Mutex::new(rdm_admin::investigate::Ladder::new(Self::rungs()))), drives: Arc::new(rdm_admin::build_drive::Drives::default()) }
+    }
+
+    /// The ladder's rungs at the gate's cadence (3 s floor, 500 ms backbone interval).
+    fn rungs() -> rdm_admin::investigate::Rungs {
+        rdm_admin::investigate::Rungs::at(Duration::from_secs(3), Duration::from_millis(500))
+    }
+
+    fn wake(&self) -> rdm_admin::admin::ReconcileWake {
+        rdm_admin::admin::ReconcileWake::new(self.submitted.clone(), self.records.subscribe_view(), self.records.subscribe_fabric_state(), self.ladder.lock().unwrap().subscribe_moved(), self.drives.subscribe_ended())
+    }
+}
+
+/// The reconcile loop as the admin runs it, over `env` and the drives of `wakes`, inside the cell's
+/// root span: what woke each pass, in order. With `hold`, each pass waits at its start for one permit
+/// the cell gives.
+fn reconciler(env: &Arc<DriveEnv>, wakes: &Wakes, hold: Option<Arc<tokio::sync::Semaphore>>) -> (Arc<Mutex<Vec<rdm_admin::admin::Woken>>>, tokio::task::JoinHandle<()>) {
+    use tracing::Instrument;
+    let passes: Arc<Mutex<Vec<rdm_admin::admin::Woken>>> = Arc::default();
+    let (env, drives, mut wake, seen) = (env.clone(), wakes.drives.clone(), wakes.wake(), passes.clone());
+    let task = tokio::spawn(
+        async move {
+            loop {
+                let woken = wake.next().await;
+                seen.lock().unwrap().push(woken);
+                if let Some(hold) = &hold {
+                    hold.acquire().await.unwrap().forget();
+                }
+                rdm_admin::build_op::ensure_active(&drives, &env).await;
+            }
+        }
+        .instrument(tracing::Span::current()),
+    );
+    (passes, task)
+}
+
+/// How long the cell leaves the loop and its drive to settle after an event: far past a pass and a
+/// drive's run over the in-memory rig, and past three of the 300 ms arms the loop had.
+const SETTLE: Duration = Duration::from_millis(1000);
+
+/// The `rdm.node_admin.build.update.via-drive` spans of `trace_id`: one per pass that drove the Build.
+fn drive_passes(spans: &[serde_json::Value], trace_id: &str) -> usize {
+    spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-drive" && s["trace_id"] == trace_id).count()
+}
+
+/// CONTRACT (Q253 amended: "the wake-up is an event, never a tick"): a fabric-primary whose drive waits
+/// after an attempt handed back with nothing moved, and to which nothing happens, runs no reconcile pass:
+/// over 2 s the loop's first pass is its only one, and the Build was driven once.
+/// Must NOT happen: a pass every 300 ms, each driving the waiting Build again.
+#[test]
+fn an_idle_fabric_primary_with_a_waiting_drive_runs_no_reconcile_pass_without_an_event() {
+    use rdm_admin::admin::Woken;
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, passes, attempt) = cap.run(async {
+        let root = tracing::info_span!("cell.reconcile-idle-runs-no-pass");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, _mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        let wakes = Wakes::new();
+        let (passes, task) = reconciler(&r.env, &wakes, None);
+        tokio::time::sleep(SETTLE + Duration::from_secs(2)).await;
+        task.abort();
+        let passes = passes.lock().unwrap().clone();
+        (trace_id, passes, r.builds.read_build(&r.build).await.unwrap().attempt)
+    });
+    let spans = cap.spans();
+    println!("trace_id={trace_id}");
+    assert_eq!(passes, vec![Woken::First], "the loop's first pass is its only one while nothing happens: {passes:?}");
+    assert_eq!(drive_passes(&spans, &trace_id), 1, "the waiting Build is driven once");
+    assert_eq!(attempt, 1, "attempt 1 was handed back and no other is claimed");
+}
+
+/// CONTRACT (Q253 amended: "a view install (`Records::view_tick`) ... runs one reconcile pass, which
+/// recomputes the world from the live view and claims the next attempt the first time it differs"): one
+/// view install that moves what the waiting drive decides on (the leaving mesh's primary) runs exactly
+/// one pass, which claims attempt 2.
+/// Must NOT happen: the install unseen until a tick, or passes beyond the one it woke.
+#[test]
+fn one_view_install_runs_one_reconcile_pass_which_claims_the_next_attempt() {
+    use rdm_admin::admin::Woken;
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, passes, attempt, dispatched) = cap.run(async {
+        let root = tracing::info_span!("cell.reconcile-view-install-runs-one-pass");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, _mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        let wakes = Wakes::new();
+        let (passes, task) = reconciler(&r.env, &wakes, None);
+        tokio::time::sleep(SETTLE).await;
+        let mut moved = r.env.topology.read().await.clone();
+        for n in moved.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1") {
+            n.status = NodeStatus::PendingReconnect;
+            n.is_primary = false;
+        }
+        wakes.records.install_projected(&r.env.topology, || moved).await;
+        tokio::time::sleep(SETTLE).await;
+        task.abort();
+        let passes = passes.lock().unwrap().clone();
+        let dispatched = r.dispatch.dispatched.lock().unwrap().len();
+        (trace_id, passes, r.builds.read_build(&r.build).await.unwrap().attempt, dispatched)
+    });
+    let spans = cap.spans();
+    println!("trace_id={trace_id}");
+    assert_eq!(passes, vec![Woken::First, Woken::ViewInstalled], "one install, one pass: {passes:?}");
+    assert_eq!(drive_passes(&spans, &trace_id), 2, "the Build is driven by the first pass and the install's");
+    assert_eq!((attempt, dispatched), (2, 2), "the install's pass claims and dispatches attempt 2");
+}
+
+/// CONTRACT (Q253 amended: "a Build accepted or an attempt opened (`build_submitted`)" runs one pass):
+/// one submit, notified as the control plane notifies it, runs exactly one pass; the waiting drive's
+/// world did not move, so it claims nothing.
+/// Must NOT happen: passes beyond the one the submit woke.
+#[test]
+fn one_submit_runs_one_reconcile_pass() {
+    use rdm_admin::admin::Woken;
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, passes, attempt) = cap.run(async {
+        let root = tracing::info_span!("cell.reconcile-submit-runs-one-pass");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, _mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        let wakes = Wakes::new();
+        let (passes, task) = reconciler(&r.env, &wakes, None);
+        tokio::time::sleep(SETTLE).await;
+        wakes.submitted.notify_waiters();
+        tokio::time::sleep(SETTLE).await;
+        task.abort();
+        let passes = passes.lock().unwrap().clone();
+        (trace_id, passes, r.builds.read_build(&r.build).await.unwrap().attempt)
+    });
+    let spans = cap.spans();
+    println!("trace_id={trace_id}");
+    assert_eq!(passes, vec![Woken::First, Woken::Submitted], "one submit, one pass: {passes:?}");
+    assert_eq!(drive_passes(&spans, &trace_id), 2);
+    assert_eq!(attempt, 1, "nothing the drive decides on moved: no attempt is claimed");
+}
+
+/// CONTRACT (Q253 amended: "a fabric state change (a watch set in `set_fabric_state`)" runs one pass):
+/// the fabric state set by `Records::set_fabric_state` runs exactly one pass, and setting the same
+/// state again runs none.
+/// Must NOT happen: the change unseen until a tick, or a pass for a state that did not change.
+#[test]
+fn one_fabric_state_change_runs_one_reconcile_pass() {
+    use rdm_admin::admin::Woken;
+    use rdm_admin::fabric_state::FabricState;
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, passes) = cap.run(async {
+        let root = tracing::info_span!("cell.reconcile-fabric-state-runs-one-pass");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, _mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        let wakes = Wakes::new();
+        let (passes, task) = reconciler(&r.env, &wakes, None);
+        tokio::time::sleep(SETTLE).await;
+        wakes.records.set_fabric_state(FabricState::Ready);
+        tokio::time::sleep(SETTLE).await;
+        wakes.records.set_fabric_state(FabricState::Ready);
+        tokio::time::sleep(SETTLE).await;
+        task.abort();
+        let passes = passes.lock().unwrap().clone();
+        (trace_id, passes)
+    });
+    let spans = cap.spans();
+    println!("trace_id={trace_id}");
+    assert_eq!(passes, vec![Woken::First, Woken::FabricState], "one change, one pass; the same state again, none: {passes:?}");
+    assert_eq!(drive_passes(&spans, &trace_id), 2);
+}
+
+/// CONTRACT (Q253 amended: anything the 300 ms arm silently carried is carried by an event; the drift
+/// check and the drive read the peer-mesh investigation's hold and decision, R-D1): the ladder moving
+/// (a peer mesh tracked as unheard) runs exactly one pass.
+/// Must NOT happen: the investigation's move unseen until an unrelated event.
+#[test]
+fn a_move_of_the_peer_mesh_investigation_runs_one_reconcile_pass() {
+    use rdm_admin::admin::Woken;
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, passes) = cap.run(async {
+        let root = tracing::info_span!("cell.reconcile-peer-mesh-move-runs-one-pass");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, _mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        let wakes = Wakes::new();
+        let (passes, task) = reconciler(&r.env, &wakes, None);
+        tokio::time::sleep(SETTLE).await;
+        let track = Wakes::rungs().track;
+        let steps = wakes.ladder.lock().unwrap().step("mesh2", track);
+        assert!(matches!(steps.as_slice(), [rdm_admin::investigate::Step::Track { .. }]), "the ladder tracks mesh2: {steps:?}");
+        tokio::time::sleep(SETTLE).await;
+        task.abort();
+        let passes = passes.lock().unwrap().clone();
+        (trace_id, passes)
+    });
+    let spans = cap.spans();
+    println!("trace_id={trace_id}");
+    assert_eq!(passes, vec![Woken::First, Woken::PeerMesh], "one move of the ladder, one pass: {passes:?}");
+    assert_eq!(drive_passes(&spans, &trace_id), 2);
+}
+
+/// CONTRACT (Q253 amended; the drift check opens no attempt while a Build is in progress, so the end
+/// of the Build is what it waits on): a drive that ends its Build runs exactly one more pass.
+/// Must NOT happen: the Build's end unseen until an unrelated event.
+#[test]
+fn a_drive_that_ends_its_build_runs_one_more_reconcile_pass() {
+    use rdm_admin::admin::Woken;
+    use rdm_admin::build_state::BuildState;
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, passes, state) = cap.run(async {
+        let root = tracing::info_span!("cell.reconcile-drive-end-runs-one-pass");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let r = rig().await;
+        let wakes = Wakes::new();
+        let (passes, task) = reconciler(&r.env, &wakes, None);
+        tokio::time::sleep(SETTLE).await;
+        task.abort();
+        let passes = passes.lock().unwrap().clone();
+        (trace_id, passes, r.builds.read_build(&r.build).await.unwrap().state)
+    });
+    let spans = cap.spans();
+    println!("trace_id={trace_id}");
+    assert_eq!(state, BuildState::Complete, "the first pass's drive completes the Build");
+    assert_eq!(passes, vec![Woken::First, Woken::DriveEnded], "the Build's end runs one more pass: {passes:?}");
+    assert_eq!(drive_passes(&spans, &trace_id), 1, "the completed Build is not driven again");
+}
+
+/// CONTRACT (Q253 amended: "a change during the hand-back is read at the next event, never missed"): a
+/// submit notified while a pass runs (`notify_waiters`, as the control plane notifies) runs the next
+/// pass once that one ends.
+/// Must NOT happen: an event during a pass lost because the loop was not yet waiting.
+#[test]
+fn a_submit_during_a_reconcile_pass_runs_the_next_pass() {
+    use rdm_admin::admin::Woken;
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, passes) = cap.run(async {
+        let root = tracing::info_span!("cell.reconcile-submit-during-pass");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, _mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        let wakes = Wakes::new();
+        let hold = Arc::new(tokio::sync::Semaphore::new(0));
+        let (passes, task) = reconciler(&r.env, &wakes, Some(hold.clone()));
+        // The first pass is held at its start; the submit lands while it runs.
+        while passes.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        wakes.submitted.notify_waiters();
+        hold.add_permits(1);
+        tokio::time::sleep(SETTLE).await;
+        hold.add_permits(1);
+        tokio::time::sleep(SETTLE).await;
+        task.abort();
+        let passes = passes.lock().unwrap().clone();
+        (trace_id, passes)
+    });
+    let spans = cap.spans();
+    println!("trace_id={trace_id}");
+    assert_eq!(passes, vec![Woken::First, Woken::Submitted], "the submit during the first pass runs the second, and nothing else runs: {passes:?}");
+    assert_eq!(drive_passes(&spans, &trace_id), 2);
+}

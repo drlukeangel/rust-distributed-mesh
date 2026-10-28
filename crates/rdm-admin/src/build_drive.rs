@@ -741,9 +741,17 @@ pub struct Drives {
     /// The task making each drive's frames, by Build, and whether this admin drives Builds no longer
     /// ([`Self::stop`]): one lock, so no drive's task starts after the stop.
     tasks: Mutex<(HashMap<BuildId, tokio::task::JoinHandle<()>>, bool)>,
+    /// Moves each time a drive's task ends its Build ([`DriveEnd::Terminal`]): what the reconcile loop
+    /// waits on, whose drift check opens nothing while a Build is in progress.
+    ended: tokio::sync::watch::Sender<u64>,
 }
 
 impl Drives {
+    /// The drives' ends as they happen: a waiter arms on it to see a Build ended by its drive.
+    pub fn subscribe_ended(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.ended.subscribe()
+    }
+
     /// The drive of `build_id` for `attempt` (the attempt opened, or
     /// [`BuildProjection::attempt_to_drive`] of the caller's read), with a task making its frames
     /// running: the one held, or a new one. A drive that stalled or paused is picked up again here.
