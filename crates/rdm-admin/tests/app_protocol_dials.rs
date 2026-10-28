@@ -172,9 +172,9 @@ async fn peer(name: &str, expiry_ms: Option<u64>, admin: &MeshNode) -> Peer {
         Some(expiry) => {
             let now = now_ms();
             let ca = CaKey::mint(&root(), certs::CA_CERT_TTL_SECS, now);
-            let issuing = IssuingKey::mint(&ca, "mesh1", now + certs::ISSUING_CERT_TTL_SECS * 1000).expect("within the CA's life");
+            let issuing = IssuingKey::mint(&ca, "mesh1", now, now + certs::ISSUING_CERT_TTL_SECS * 1000).expect("within the CA's life");
             let identity = BirthIdentity { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: birth.name.clone(), mesh: "mesh1".into(), endpoint_key: birth.endpoint_id.clone() };
-            certs::cert_to_bytes(&certs::issue(&issuing, &identity, expiry).expect("a member cert under the root"))
+            certs::cert_to_bytes(&certs::issue(&issuing, &identity, now, expiry).expect("a member cert under the root"))
         }
     };
     let resolver = Arc::new(StaticResolver::new());

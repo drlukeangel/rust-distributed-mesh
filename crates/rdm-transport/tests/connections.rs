@@ -2653,7 +2653,7 @@ impl Chain {
     fn minted(mesh: &str, ttl_secs: u64, at_ms: u64) -> Self {
         let root = rdm_core::certs::mint_key();
         let ca = rdm_core::certs::CaKey::mint(&root, rdm_core::certs::CA_CERT_TTL_SECS, at_ms);
-        let issuer = rdm_core::certs::IssuingKey::mint(&ca, mesh, at_ms + ttl_secs * 1000).expect("within the CA's life");
+        let issuer = rdm_core::certs::IssuingKey::mint(&ca, mesh, at_ms, at_ms + ttl_secs * 1000).expect("within the CA's life");
         Self { root, ca, issuer }
     }
 
@@ -2666,7 +2666,7 @@ impl Chain {
             name: peer.birth.name.clone(),
             endpoint_key: rdm_core::EndpointId(peer.resolved.endpoint_id.to_string()),
         };
-        rdm_core::certs::issue(&self.issuer, &birth, expiry_ms).expect("the testkit chain issues the member cert")
+        rdm_core::certs::issue(&self.issuer, &birth, self.issuer.cert().cert.issued_ms, expiry_ms).expect("the testkit chain issues the member cert")
     }
 }
 
@@ -2783,7 +2783,7 @@ async fn an_inbound_connection_is_refused_by_name_on_ca_bad_signature() {
 async fn an_inbound_connection_is_refused_by_name_on_ca_expired() {
     let reason = refusal_of(|chain, dialer| {
         let ca = rdm_core::certs::CaKey::mint(&chain.root, 1, CHAIN_NOW_MS - 2 * floor_ms() - 1_000);
-        let lapsed = Chain { root: chain.root.clone(), issuer: rdm_core::certs::IssuingKey::mint(&ca, "mesh1", ca.expiry_ms()).expect("within the CA's life"), ca };
+        let lapsed = Chain { root: chain.root.clone(), issuer: rdm_core::certs::IssuingKey::mint(&ca, "mesh1", CHAIN_NOW_MS - 2 * floor_ms() - 1_000, ca.expiry_ms()).expect("within the CA's life"), ca };
         lapsed.member(dialer, lapsed.issuer.expiry_ms())
     })
     .await;
@@ -2797,7 +2797,7 @@ async fn an_inbound_connection_is_refused_by_name_on_ca_expired() {
 async fn an_inbound_connection_is_refused_by_name_on_issuer_bad_signature() {
     let reason = refusal_of(|chain, dialer| {
         let stranger = rdm_core::certs::CaKey::mint(&rdm_core::certs::mint_key(), rdm_core::certs::CA_CERT_TTL_SECS, CHAIN_NOW_MS);
-        let signed_by_stranger = rdm_core::certs::IssuingKey::mint(&stranger, "mesh1", CHAIN_NOW_MS + 3_600_000).expect("within the CA's life");
+        let signed_by_stranger = rdm_core::certs::IssuingKey::mint(&stranger, "mesh1", CHAIN_NOW_MS, CHAIN_NOW_MS + 3_600_000).expect("within the CA's life");
         let mut forged = signed_by_stranger.cert().clone();
         forged.ca = chain.ca.cert().clone();
         let forged = Chain { root: chain.root.clone(), ca: chain.ca.clone(), issuer: rdm_core::certs::IssuingKey::from_parts(signed_by_stranger.secret().clone(), forged) };
@@ -2863,7 +2863,7 @@ fn a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_wa
 #[tokio::test]
 async fn an_inbound_connection_is_refused_by_name_on_issuer_expired() {
     let reason = refusal_of(|chain, dialer| {
-        let lapsed = Chain { root: chain.root.clone(), ca: chain.ca.clone(), issuer: rdm_core::certs::IssuingKey::mint(&chain.ca, "mesh1", CHAIN_NOW_MS - 2 * floor_ms()).expect("within the CA's life") };
+        let lapsed = Chain { root: chain.root.clone(), ca: chain.ca.clone(), issuer: rdm_core::certs::IssuingKey::mint(&chain.ca, "mesh1", chain.issuer.cert().cert.issued_ms, CHAIN_NOW_MS - 2 * floor_ms()).expect("within the CA's life") };
         lapsed.member(dialer, lapsed.issuer.expiry_ms())
     })
     .await;

@@ -50,26 +50,21 @@ pub fn dates_of(issue: &MemberIssue) -> CertDates {
 }
 
 /// The member cert dates a mesh-primary writes on its own record when it installs the cert `req`
-/// (`RenewCert`) carried to it, judged on `receiver`, its own issuer (node-cert-renew.md Row: "A
-/// mesh-primary's own cert, issued by the fabric-primary, it writes on its own record when it installs
-/// it"; Q141: "that cert's `issued_at`, `expires_at` and `renew_at`"); nothing for another request or a
-/// cert that does not decode.
+/// (`RenewCert`) carried to it, under `receiver`'s policy (node-cert-renew.md Row: "A mesh-primary's
+/// own cert, issued by the fabric-primary, it writes on its own record when it installs it"; Q141,
+/// Q241): the cert's own dates, never the receiver's clock; nothing for another request or a cert
+/// that does not decode.
 pub fn installed_dates(req: &StatusRequest, receiver: &CertIssuer) -> Option<CertDates> {
     let StatusRequest::RenewCert { cert, .. } = req else { return None };
-    // The birth is the cert's, which the install checked is this one (`NodeSelf::renew_cert`).
     let signed = rdm_core::certs::cert_from_bytes(cert).ok()?;
-    let issued_at = receiver.now_ms().unwrap_or(0);
-    let expires_at = signed.cert.expiry_ms;
-    Some(CertDates { issued_at, expires_at, issuer_expires_at: signed.issuer.cert.expiry_ms, renew_at: rdm_core::certs::renew_at(&signed.cert.node_id, &signed.cert.incarnation, issued_at, expires_at, receiver.policy().renew_at_permille) })
+    Some(crate::certs::member_cert_dates(&signed, receiver.policy().renew_at_permille))
 }
 
 /// The signing cert dates an admin's record holds once it installs the issuing cert `signed` that a
-/// `node.issuer.update` carried to it, judged on `receiver`, the writing admin's issuer
-/// (node-issuer-update.md step 4; Q141: the dates of the cert the birth holds).
+/// `node.issuer.update` carried to it, under `receiver`'s policy (node-issuer-update.md step 4; Q141,
+/// Q241): the cert's own dates, never the receiver's clock.
 pub fn installed_signing_dates(signed: &rdm_core::certs::SignedIssuingCert, receiver: &CertIssuer) -> SigningCertDates {
-    let issued_at = receiver.now_ms().unwrap_or(0);
-    let expires_at = signed.cert.expiry_ms;
-    SigningCertDates { issued_at, expires_at, renew_at: crate::certs::issuer_renew_at(&signed.cert.mesh, issued_at, expires_at, receiver.policy().renew_at_permille) }
+    crate::certs::signing_cert_dates(signed, receiver.policy().renew_at_permille)
 }
 
 /// The signing cert dates of the issuing key `mint` minted.

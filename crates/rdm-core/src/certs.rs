@@ -140,6 +140,9 @@ pub struct IssuingCert {
     pub mesh: String,
     /// The issuing key's public half.
     pub issuer_pub: VerifyingKey,
+    /// When the issuing cert was issued, rafka-time ms (X.509's notBefore; Q241): the issue date its
+    /// signing cert row records. A record of issuance only: no verifier refuses on it.
+    pub issued_ms: u64,
     /// When the issuing cert expires, rafka-time ms.
     pub expiry_ms: u64,
 }
@@ -170,14 +173,15 @@ impl std::fmt::Debug for IssuingKey {
 }
 
 impl IssuingKey {
-    /// A fresh issuing key for `mesh`, its cert signed by `ca` and expiring at `expiry_ms`. The minting
-    /// admin cuts the expiry to its CA's first; one that still outlives it is refused.
-    pub fn mint(ca: &CaKey, mesh: &str, expiry_ms: u64) -> Result<IssuingKey, CertError> {
+    /// A fresh issuing key for `mesh`, its cert signed by `ca`, issued at `issued_ms` and expiring at
+    /// `expiry_ms`. The minting admin cuts the expiry to its CA's first; one that still outlives it is
+    /// refused.
+    pub fn mint(ca: &CaKey, mesh: &str, issued_ms: u64, expiry_ms: u64) -> Result<IssuingKey, CertError> {
         if expiry_ms > ca.expiry_ms() {
             return Err(CertError::IssuerOutlivesCa);
         }
         let secret = mint_key();
-        let cert = IssuingCert { mesh: mesh.to_string(), issuer_pub: secret.verifying_key(), expiry_ms };
+        let cert = IssuingCert { mesh: mesh.to_string(), issuer_pub: secret.verifying_key(), issued_ms, expiry_ms };
         let sig = ca.secret.sign(&issuing_cert_bytes(&cert));
         Ok(IssuingKey { secret, cert: SignedIssuingCert { cert, sig, ca: ca.cert.clone() } })
     }
@@ -221,6 +225,9 @@ pub struct NodeCert {
     pub incarnation: IncarnationId,
     /// The birth's fabric endpoint key.
     pub endpoint: EndpointId,
+    /// When the cert was issued, rafka-time ms (X.509's notBefore; Q241): the issue date its cert row
+    /// records. A record of issuance only: no verifier refuses on it.
+    pub issued_ms: u64,
     /// When the cert expires, rafka-time ms.
     pub expiry_ms: u64,
 }
@@ -299,16 +306,17 @@ pub fn ca_cert_bytes(cert: &CaCert) -> Vec<u8> {
     postcard::to_allocvec(cert).expect("a CA cert encodes")
 }
 
-/// The member cert for the exact birth `birth`, signed by `issuer`, expiring at `expiry_ms`. The
-/// issuing admin cuts the expiry to its issuer's first; one that still outlives it is refused.
-pub fn issue(issuer: &IssuingKey, birth: &BirthIdentity, expiry_ms: u64) -> Result<SignedCert, CertError> {
+/// The member cert for the exact birth `birth`, signed by `issuer`, issued at `issued_ms` and expiring
+/// at `expiry_ms`. The issuing admin cuts the expiry to its issuer's first; one that still outlives it
+/// is refused.
+pub fn issue(issuer: &IssuingKey, birth: &BirthIdentity, issued_ms: u64, expiry_ms: u64) -> Result<SignedCert, CertError> {
     if birth.mesh != issuer.mesh() || birth.name.mesh != issuer.mesh() {
         return Err(CertError::IssuerMeshMismatch);
     }
     if expiry_ms > issuer.expiry_ms() {
         return Err(CertError::MemberOutlivesIssuer);
     }
-    let cert = NodeCert { name: birth.name.clone(), mesh: birth.mesh.clone(), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), endpoint: birth.endpoint_key.clone(), expiry_ms };
+    let cert = NodeCert { name: birth.name.clone(), mesh: birth.mesh.clone(), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), endpoint: birth.endpoint_key.clone(), issued_ms, expiry_ms };
     let sig = issuer.secret.sign(&cert_bytes(&cert));
     Ok(SignedCert { cert, sig, issuer: issuer.cert.clone() })
 }
@@ -515,7 +523,7 @@ mod tests {
 
     /// `mesh`'s issuing key under `root`'s CA, valid `ttl_secs` from `now_ms`.
     fn issuer_under(root_key: &SigningKey, mesh: &str, ttl_secs: u64, now_ms: u64) -> IssuingKey {
-        IssuingKey::mint(&ca_of(root_key), mesh, now_ms.saturating_add(ttl_secs.saturating_mul(1000))).expect("within the CA's life")
+        IssuingKey::mint(&ca_of(root_key), mesh, now_ms, now_ms.saturating_add(ttl_secs.saturating_mul(1000))).expect("within the CA's life")
     }
 
     fn sample_issuer(root_key: &SigningKey) -> IssuingKey {
@@ -529,7 +537,7 @@ mod tests {
 
     /// The member cert of `name`, `ttl_secs` from `now_ms`.
     fn issue_cert(issuer: &IssuingKey, name: &str, ttl_secs: u64, now_ms: u64) -> Result<SignedCert, CertError> {
-        issue(issuer, &birth(name), now_ms.saturating_add(ttl_secs.saturating_mul(1000)))
+        issue(issuer, &birth(name), now_ms, now_ms.saturating_add(ttl_secs.saturating_mul(1000)))
     }
 
     fn verify_cert_sig_expiry(signed: &SignedCert, root_pub: &VerifyingKey, now_ms: u64) -> Result<(), CertError> {
@@ -578,8 +586,8 @@ mod tests {
             assert_eq!(verify(&signed, &both, 2000, 0), Ok(()));
         }
         let short_ca = CaKey::mint(&old, 20, 0); // expiry 20_000
-        let issuer = IssuingKey::mint(&short_ca, "mesh1", 20_000).expect("within the CA's life");
-        let signed = issue(&issuer, &birth("mesh1.broker.1"), 20_000).expect("issue");
+        let issuer = IssuingKey::mint(&short_ca, "mesh1", 1_000, 20_000).expect("within the CA's life");
+        let signed = issue(&issuer, &birth("mesh1.broker.1"), 1_000, 20_000).expect("issue");
         assert_eq!(verify(&signed, &both, 23_000, 3_000), Ok(()), "within the floor past the CA's expiry");
         assert_eq!(verify(&signed, &both, 23_001, 3_000), Err(CertError::CaExpired));
     }
@@ -592,11 +600,11 @@ mod tests {
     fn the_chain_verifies_member_issuer_ca_root_and_each_level_never_outlives_the_one_above() {
         let root_key = root();
         let ca = CaKey::mint(&root_key, 100, 1000); // CA expiry 101_000
-        assert_eq!(IssuingKey::mint(&ca, "mesh1", 101_001).map(|_| ()), Err(CertError::IssuerOutlivesCa));
-        let issuer = IssuingKey::mint(&ca, "mesh1", ca.expiry_ms()).expect("cut to the CA's expiry");
+        assert_eq!(IssuingKey::mint(&ca, "mesh1", 1_000, 101_001).map(|_| ()), Err(CertError::IssuerOutlivesCa));
+        let issuer = IssuingKey::mint(&ca, "mesh1", 1_000, ca.expiry_ms()).expect("cut to the CA's expiry");
         assert_eq!(issuer.cert().ca, *ca.cert(), "the issuing cert carries its CA cert");
-        assert_eq!(issue(&issuer, &birth("mesh1.rpc.1"), 101_001).map(|_| ()), Err(CertError::MemberOutlivesIssuer));
-        let member = issue(&issuer, &birth("mesh1.rpc.1"), 101_000).expect("cut to the issuer's expiry");
+        assert_eq!(issue(&issuer, &birth("mesh1.rpc.1"), 1_000, 101_001).map(|_| ()), Err(CertError::MemberOutlivesIssuer));
+        let member = issue(&issuer, &birth("mesh1.rpc.1"), 1_000, 101_000).expect("cut to the issuer's expiry");
         assert_eq!(verify(&member, &[root_key.verifying_key()], 101_000, 0), Ok(()), "member → issuer → CA → root");
         assert_eq!(verify_issuer(&member.issuer, &[root_key.verifying_key()]), Ok(()));
         assert_eq!(verify_issuer(&member.issuer, &[SigningKey::from_bytes(&[29u8; 32]).verifying_key()]), Err(CertError::CaBadSignature));
@@ -693,7 +701,7 @@ mod tests {
         let root_key = root();
         let issuer = sample_issuer(&root_key);
         let b = birth("mesh1.broker.1");
-        let signed = issue(&issuer, &b, 3_601_000).expect("issue");
+        let signed = issue(&issuer, &b, 1_000, 3_601_000).expect("issue");
         assert_eq!((&signed.cert.name, &signed.cert.mesh, &signed.cert.node_id, &signed.cert.incarnation, &signed.cert.endpoint), (&b.name, &b.mesh, &b.node_id, &b.incarnation, &b.endpoint_key));
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Ok(()));
     }
@@ -792,8 +800,8 @@ mod tests {
     fn a_member_cert_never_outlives_its_issuer() {
         let root_key = root();
         let issuer = issuer_under(&root_key, "mesh1", 100, 1000); // expiry 101_000
-        assert_eq!(issue(&issuer, &birth("mesh1.rpc.1"), 101_001), Err(CertError::MemberOutlivesIssuer));
-        let cut = issue(&issuer, &birth("mesh1.rpc.1"), issuer.expiry_ms()).expect("cut to the issuer's expiry");
+        assert_eq!(issue(&issuer, &birth("mesh1.rpc.1"), 1_000, 101_001), Err(CertError::MemberOutlivesIssuer));
+        let cut = issue(&issuer, &birth("mesh1.rpc.1"), 1_000, issuer.expiry_ms()).expect("cut to the issuer's expiry");
         assert_eq!(cut.cert.expiry_ms, issuer.cert().cert.expiry_ms);
         assert_eq!(verify(&cut, &[root_key.verifying_key()], 101_000, 0), Ok(()));
     }

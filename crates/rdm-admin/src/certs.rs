@@ -370,15 +370,9 @@ impl CertIssuer {
         let (issuer, minted) = self.issuer_for(&birth.mesh, issued_at)?;
         let wanted = issued_at.saturating_add(policy.member_ttl_secs.saturating_mul(1000));
         let expiry_ms = wanted.min(issuer.expiry_ms());
-        let signed = rdm_core::certs::issue(&issuer, birth, expiry_ms).map_err(|error| IssueFailure::Refused { error, detail: format!("the member cert of {} ({} {})", birth.name, birth.node_id, birth.incarnation.as_str()) })?;
-        Ok(MemberIssue {
-            bytes: rdm_core::certs::cert_to_bytes(&signed),
-            issued_at,
-            expires_at: signed.cert.expiry_ms,
-            issuer_expires_at: issuer.expiry_ms(),
-            renew_at: rdm_core::certs::renew_at(&birth.node_id, &birth.incarnation, issued_at, signed.cert.expiry_ms, policy.renew_at_permille),
-            minted,
-        })
+        let signed = rdm_core::certs::issue(&issuer, birth, issued_at, expiry_ms).map_err(|error| IssueFailure::Refused { error, detail: format!("the member cert of {} ({} {})", birth.name, birth.node_id, birth.incarnation.as_str()) })?;
+        let dates = member_cert_dates(&signed, policy.renew_at_permille);
+        Ok(MemberIssue { bytes: rdm_core::certs::cert_to_bytes(&signed), issued_at: dates.issued_at, expires_at: dates.expires_at, issuer_expires_at: dates.issuer_expires_at, renew_at: dates.renew_at, minted })
     }
 
     /// The issuing key this admin holds for `mesh`, if any.
@@ -417,8 +411,9 @@ impl CertIssuer {
     fn mint_issuer(&self, ca: &CaKey, mesh: &str, now_ms: u64) -> Result<(IssuingKey, IssuerMint), IssueFailure> {
         let policy = self.policy();
         let expiry_ms = now_ms.saturating_add(policy.issuing_ttl_secs.saturating_mul(1000)).min(ca.expiry_ms());
-        let key = IssuingKey::mint(ca, mesh, expiry_ms).map_err(|error| IssueFailure::Refused { error, detail: format!("mesh {mesh}'s issuing cert under the fabric CA expiring at {}", ca.expiry_ms()) })?;
-        let mint = IssuerMint { mesh: mesh.to_string(), issued_at: now_ms, expires_at: key.expiry_ms(), renew_at: issuer_renew_at(mesh, now_ms, key.expiry_ms(), policy.renew_at_permille) };
+        let key = IssuingKey::mint(ca, mesh, now_ms, expiry_ms).map_err(|error| IssueFailure::Refused { error, detail: format!("mesh {mesh}'s issuing cert under the fabric CA expiring at {}", ca.expiry_ms()) })?;
+        let dates = signing_cert_dates(key.cert(), policy.renew_at_permille);
+        let mint = IssuerMint { mesh: mesh.to_string(), issued_at: dates.issued_at, expires_at: dates.expires_at, renew_at: dates.renew_at };
         Ok((key, mint))
     }
 
@@ -480,6 +475,23 @@ impl CertIssuer {
         let Material::Root(root, ca) = &self.material else { unreachable!("a no-certs issuer hands no issuing material") };
         Ok((Some(IssuingMaterial::of(&key, root, ca)), minted))
     }
+}
+
+/// The dates of the member cert `signed` its cert row records (fabric-certs.md §Tracking; Q141, Q241):
+/// issued and expiring as the cert says, its issuer's expiry, and the renew point derived from those
+/// and the fabric's `renew_at_permille` alone, so its issuer, its installer and any successor hold one
+/// value. Never a clock's reading.
+pub fn member_cert_dates(signed: &rdm_core::certs::SignedCert, renew_at_permille: u32) -> crate::storage::CertDates {
+    let (issued_at, expires_at) = (signed.cert.issued_ms, signed.cert.expiry_ms);
+    crate::storage::CertDates { issued_at, expires_at, issuer_expires_at: signed.issuer.cert.expiry_ms, renew_at: rdm_core::certs::renew_at(&signed.cert.node_id, &signed.cert.incarnation, issued_at, expires_at, renew_at_permille) }
+}
+
+/// The dates of the issuing cert `signed` an admin's signing cert row records (node-issuer-update.md
+/// step 4; Q241): issued and expiring as the cert says, and the renew point derived from those and the
+/// fabric's `renew_at_permille` alone. Never a clock's reading.
+pub fn signing_cert_dates(signed: &rdm_core::certs::SignedIssuingCert, renew_at_permille: u32) -> crate::storage::SigningCertDates {
+    let (issued_at, expires_at) = (signed.cert.issued_ms, signed.cert.expiry_ms);
+    crate::storage::SigningCertDates { issued_at, expires_at, renew_at: issuer_renew_at(&signed.cert.mesh, issued_at, expires_at, renew_at_permille) }
 }
 
 /// When the fabric-primary renews `mesh`'s issuer minted at `issued_at`, expiring at `expires_at`:
@@ -658,7 +670,7 @@ mod tests {
     fn a_member_due_near_the_issuers_expiry_is_cut_to_it() {
         let root = rdm_core::certs::mint_key();
         let ca = rdm_core::certs::CaKey::mint(&root, rdm_core::certs::CA_CERT_TTL_SECS, 1_000);
-        let issuer = rdm_core::certs::IssuingKey::mint(&ca, "mesh1", 16_000).expect("within the CA's life");
+        let issuer = rdm_core::certs::IssuingKey::mint(&ca, "mesh1", 1_000, 16_000).expect("within the CA's life");
         let policy = rdm_core::certs::CertPolicy { member_ttl_secs: 12, ..Default::default() };
         let in_window = |issue: &MemberIssue| {
             let life = issue.expires_at - issue.issued_at;

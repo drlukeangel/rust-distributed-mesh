@@ -590,9 +590,9 @@ async fn a_dial_presenting_another_fabrics_cert_is_refused_ca_bad_signature_on_t
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
     let root = rdm_core::certs::mint_key();
     let ca = rdm_core::certs::CaKey::mint(&root, rdm_core::certs::CA_CERT_TTL_SECS, now);
-    let issuer = rdm_core::certs::IssuingKey::mint(&ca, "mesh1", now + 3_600_000).expect("within the CA's life");
+    let issuer = rdm_core::certs::IssuingKey::mint(&ca, "mesh1", now, now + 3_600_000).expect("within the CA's life");
     let birth = rdm_core::certs::BirthIdentity { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), name: "mesh1.rpc.9".parse().unwrap(), mesh: "mesh1".into(), endpoint_key: rdm_core::EndpointId(iroh::SecretKey::generate().public().to_string()) };
-    let cert = rdm_core::certs::cert_to_bytes(&rdm_core::certs::issue(&issuer, &birth, now + 600_000).expect("the foreign chain issues"));
+    let cert = rdm_core::certs::cert_to_bytes(&rdm_core::certs::issue(&issuer, &birth, now, now + 600_000).expect("the foreign chain issues"));
     let (reason, refused) = refused_dial(&estate, "mesh1.rpc.9", DEST, cert).await;
     assert_eq!(reason, "ca-bad-signature", "{refused}");
     assert_eq!(s(&refused["attributes"]["reason"]), "ca-bad-signature", "{refused}");

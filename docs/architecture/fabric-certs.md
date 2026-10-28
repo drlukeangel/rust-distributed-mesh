@@ -21,8 +21,14 @@ passes in and what the cert means outward, to clients and other systems. The who
 |---|---|---|
 | fabric root | every node-admin, from the app at bootstrap (`CertChoice::Ca`) or minted on day 0; the trust anchor every verifier holds | the fabric CA, nothing else |
 | fabric CA `CaCert { ca_pub, expiry_ms }` | every node-admin, kept as `fabric-ca` beside its data dir; minted under the root by the bootstrap admin, the fabric-primary, on day 0 (`fabric.ca.create`, step 1 of fabric.create) and rotated internally (`fabric.ca.renew`) | each mesh's issuing cert |
-| mesh issuing cert `IssuingCert { mesh, issuer_pub, expiry_ms }` | that mesh's node-admins, in memory | member certs whose path.name is in that mesh |
-| member cert `SignedCert { cert: NodeCert, sig, issuer: SignedIssuingCert }` | the birth it was issued to | nothing |
+| mesh issuing cert `IssuingCert { mesh, issuer_pub, issued_ms, expiry_ms }` | that mesh's node-admins, in memory | member certs whose path.name is in that mesh |
+| member cert `SignedCert { cert: NodeCert { name, mesh, node_id, incarnation, endpoint, issued_ms, expiry_ms }, sig, issuer: SignedIssuingCert }` | the birth it was issued to | nothing |
+
+A cert's issue date (`issued_ms`, X.509's notBefore) is signed with the rest and records its issuance
+only: no verifier refuses a cert on it. Every cert row takes its dates from the cert it records
+(`issued_ms`, `expiry_ms`), never from its writer's clock, and its `renew_at` is derived from those and
+the fabric's policy alone, so the issuer, the installer and any successor hold one value
+([tracking](#tracking)).
 
 The chain verifies member → issuer → CA → root against the fabric's root set, the anchors every
 node holds (one, or two during a root rotation). A node-admin never issues a member cert that

@@ -229,10 +229,10 @@ fn a_node_admits_on_the_root_set_its_launch_carries() {
         assert!(dialing.probe_direct(&birth_of(&acceptor), &alpn.name).await.is_ok(), "the join's cert chains to the launch's root: admitted");
 
         let other = rdm_core::certs::mint_key();
-        let issuer = IssuingKey::mint(&CaKey::mint(&other, certs::CA_CERT_TTL_SECS, AUTHORITY_REFERENCE_MS), "mesh1", AUTHORITY_REFERENCE_MS + certs::ISSUING_CERT_TTL_SECS * 1000).expect("within the CA's life");
+        let issuer = IssuingKey::mint(&CaKey::mint(&other, certs::CA_CERT_TTL_SECS, AUTHORITY_REFERENCE_MS), "mesh1", AUTHORITY_REFERENCE_MS, AUTHORITY_REFERENCE_MS + certs::ISSUING_CERT_TTL_SECS * 1000).expect("within the CA's life");
         let own = certs::cert_from_bytes(&dialer.member_cert).unwrap().cert;
         let birth = certs::BirthIdentity { node_id: own.node_id, incarnation: own.incarnation, mesh: own.mesh, name: own.name, endpoint_key: own.endpoint };
-        let foreign = certs::issue(&issuer, &birth, AUTHORITY_REFERENCE_MS + 3_600_000).unwrap();
+        let foreign = certs::issue(&issuer, &birth, AUTHORITY_REFERENCE_MS, AUTHORITY_REFERENCE_MS + 3_600_000).unwrap();
         dialing.set_member_cert(certs::cert_to_bytes(&foreign));
         match dialing.probe_direct(&birth_of(&acceptor), &alpn.name).await {
             Err(rdm_transport::connections::ConnectError::Refused { reason }) => assert_eq!(reason, "ca-bad-signature"),
