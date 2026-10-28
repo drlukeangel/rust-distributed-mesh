@@ -55,6 +55,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing::Instrument;
 
 // ---------------------------------------------------------------------------------------------------
 // 1. The protocols: what a product changes.
@@ -428,7 +429,11 @@ pub fn register(b: ServerBuilder, service: Arc<ExampleService>, gate: PreNodeRea
                             Submitted::Conflict => WorkReply::Conflict { operation },
                         })
                     }
-                    WorkRequest::Get { operation } => Ok(svc.get(&operation)),
+                    WorkRequest::Get { operation } => {
+                        let reply = svc.get(&operation);
+                        tracing::info!(target: "rshape", %operation, state = ExampleWork::reply_detail(&reply), "an operation's state read by its id");
+                        Ok(reply)
+                    }
                 }
             }
         })
@@ -543,10 +548,18 @@ impl OnNodeReady for Caller {
         if ctx.birth.kind != CALLING_KIND {
             return;
         }
-        tokio::select! {
-            () = ctx.cancel.cancelled() => {}
-            () = self.calls(ctx) => {}
-        }
+        // The calls are the application's own task, ended by the birth's stop, and outside the
+        // hook's span: each call is the root of its own trace, not a child of the node's boot.
+        let (caller, ctx) = (Caller { dir: self.dir.clone() }, ctx.clone());
+        tokio::spawn(
+            async move {
+                tokio::select! {
+                    () = ctx.cancel.cancelled() => {}
+                    () = caller.calls(&ctx) => {}
+                }
+            }
+            .instrument(tracing::Span::none()),
+        );
     }
 }
 
@@ -557,9 +570,11 @@ impl Caller {
         let mut unserved: BTreeSet<NodeId> = BTreeSet::new();
         let mut copied: BTreeMap<PathName, u64> = BTreeMap::new();
         let mut tick = tokio::time::interval(CALL_EVERY);
+        // A tick missed while a call waited out its budget is not made up in a burst.
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         for n in 1u64.. {
             tick.tick().await;
-            owed.insert(format!("{}-{}-{n}", ctx.birth.name, ctx.birth.incarnation.as_str()), (format!("operation {n} of {}", ctx.birth.name), Owed::ToSend));
+            owed.insert(format!("{}-{}-{n:06}", ctx.birth.name, ctx.birth.incarnation.as_str()), (format!("operation {n} of {}", ctx.birth.name), Owed::ToSend));
             // Target selection: the serving kind's ready nodes in this node's mesh, as the topology
             // this node holds names them; a node that answered Unserved is passed over.
             let serving: Vec<_> = match ctx.topology_view.nodes_get(&Filter::new().eq("mesh", [ctx.birth.name.mesh.clone()]).eq("kind", [SERVING_KIND.segment()]).eq("status", ["ready-for-traffic"])) {
@@ -619,7 +634,7 @@ impl Caller {
                 }
             }
             owed.retain(|_, (_, state)| !matches!(state, Owed::Done));
-            if let Some(target) = &chosen {
+            if let Some(target) = chosen.as_ref().filter(|t| !unserved.contains(&t.node_id)) {
                 self.copy(&client, target.node_id.clone(), &target.name, &mut copied, &mut unserved).await;
             }
         }

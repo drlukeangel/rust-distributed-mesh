@@ -10,7 +10,9 @@ Rafka has no op of its own on Node RPC yet: Node RPC was built so it can, and it
 ledger (`0x10`, `0x12`–`0x19`, `0x24`–`0x30`) reserve its codes. The worked examples that exist are
 the testkit's: `rdm-test/src/families.rs` (`BrokerData`, a unary op) and
 `rdm-test/src/originate.rs` (`Originate`), and Rafka's one serve today, `Ping`, in
-`rafka-node-base/src/node_rpc.rs`. The code below is shaped like a Rafka op would be.
+`rafka-node-base/src/node_rpc.rs`. The code below is compiled, whole, in
+[the consumer example](../../demo/src/consumer_example.rs): a product copies it and changes its
+protocols (the enums and the constants beside them).
 
 ## Before writing an op: choose its completion contract
 
@@ -322,13 +324,17 @@ harness is available: `rdm_test::conformance::unary::<P>` and `rdm_test::conform
 run a protocol by naming its type, given its registration and the requests it answers (named
 refusals, frame limits, duplicate delivery, ordering, backpressure, cancellation, loss of the reply,
 and for a stream the consumer's acknowledgement after its record); `BrokerData` and `Count` run it as
-their own cells. These are proposed RDM improvements, not available APIs or prerequisites for using
-Node RPC:
+their own cells. The compiled consumer example is available:
+[`demo/src/consumer_example.rs`](../../demo/src/consumer_example.rs) holds an application service in an
+`Arc`, registration through `run_with` (its ledger rows, a unary op and a streaming op), target
+selection from the topology, calls through the process's client with all five outcomes handled, a
+mutating handler that records then accepts, and a restart that resumes the pending work; its ops run
+the harness as their cells ([`demo/tests/consumer_example.rs`](../../demo/tests/consumer_example.rs),
+in the release gate), and `scripts/demo-estate.sh example` runs it on the demo estate. This is a
+proposed RDM improvement, not an available API or a prerequisite for using Node RPC:
 
 - Recovery integration helpers with application-provided persistence, making acceptance and
   response recovery explicit without moving domain transactions into the transport.
-- A standalone, compiled consumer example with an application service, registration, target
-  selection, calls and crash recovery, checked in CI. The sketches in this page do not yet supply it.
 
 The consumer acceptance test is a Rafka developer adding, calling, diagnosing and recovering one
 real operation without reading transport internals. The examples and helpers should be built to

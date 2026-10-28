@@ -12,6 +12,13 @@
 #                                                evidence and store
 #   scripts/demo-estate.sh stream [<root dir>]   the data-plane proof: five `demo/echo` streams, four across
 #                                                the meshes, through the originate door (rdm-rpc-probe stream)
+#   scripts/demo-estate.sh example [<root dir>]  the consumer guide's compiled example (demo/src/consumer_example.rs):
+#                                                <mesh 2>.broker.3 and <mesh 2>.compute.1 replaced by a Build onto
+#                                                $BIN/rshape-example; the compute submits an operation to a broker
+#                                                it selects from the topology every 10 s and copies its record
+#   scripts/demo-estate.sh example-crash [<root dir>]  the example broker's process ended by SIGKILL while it holds
+#                                                pending work: node recovery starts it again over its data dir,
+#                                                and its pre_node_ready resumes the work
 #   scripts/demo-estate.sh down   [<root dir>]   the fabric's teardown (fabric-delete.md): fabric.delete at the
 #                                                Day-0 admin, then the fabric-primary's own node.delete from
 #                                                outside (rdm-rpc-probe fabric-delete, node-delete), its
@@ -134,6 +141,36 @@ d=json.load(sys.stdin); print({k: d.get(k) for k in ("outcome","streamed","kind"
   one "$M1.gateway.1" "$M1.broker.2"  "same mesh, gateway to broker"
 }
 
+# Replace each named node by a Build onto $BIN/rshape-example, one Build at a time.
+example() {
+  ROOT=${ROOT:-$(cat "$CURRENT")}
+  # shellcheck disable=SC1091
+  . "$ROOT/names"
+  local ui acc n; ui=$(cat "$ROOT/ui_bind")
+  for n in "$M2.broker.3" "$M2.compute.1"; do
+    for _ in $(seq 1 120); do
+      acc=$(curl -s -X POST "http://$ui/api/nodes/$n/replace" -H 'content-type: application/json' -d "{\"executable\":\"$BIN/rshape-example\"}")
+      echo "$acc" | grep -q '"build-in-progress"' || break; sleep 1
+    done
+    echo "replace $n onto rshape-example: $acc"
+  done
+  echo "the example's lines (target rshape) are in each node's stderr.log under $ROOT/<path.name>-<node id>/"
+}
+
+# The example broker's process, found by the path.name in its environment, ended by SIGKILL.
+example_crash() {
+  ROOT=${ROOT:-$(cat "$CURRENT")}
+  # shellcheck disable=SC1091
+  . "$ROOT/names"
+  local p
+  for p in $(pgrep -f "$BIN/rshape-example" || true); do
+    if tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | grep -qx "RDM_NODE_NAME=$M2.broker.3"; then
+      kill -9 "$p" && echo "$M2.broker.3 (pid $p) ended by SIGKILL at $(date -u +%H:%M:%S.%N)"; return
+    fi
+  done
+  echo "no rshape-example process holds $M2.broker.3"; return 1
+}
+
 down() {
   ROOT=${ROOT:-$(cat "$CURRENT")}
   export RDM_EVIDENCE_DIR=$ROOT/evidence
@@ -168,4 +205,4 @@ except Exception as e: print("no answer", e)')"
   echo "estate at $ROOT stopped; left: $(pgrep -fc "$BIN/rshape-" || true)"
 }
 
-case "$CMD" in up) up ;; stream) stream ;; down) down ;; *) echo "usage: $0 up|stream|down [<root dir>]" >&2; exit 2 ;; esac
+case "$CMD" in up) up ;; stream) stream ;; example) example ;; example-crash) example_crash ;; down) down ;; *) echo "usage: $0 up|stream|example|example-crash|down [<root dir>]" >&2; exit 2 ;; esac
