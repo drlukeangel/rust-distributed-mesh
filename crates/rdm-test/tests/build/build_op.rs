@@ -493,7 +493,7 @@ async fn started_to_the_end(stream: &mut WorkflowStream, why: &str) {
 /// `path` re-created as a new birth (a node id other than `old`), ready for traffic, within the bound of
 /// a node recovery.
 async fn re_created(estate: &Estate, path: &str, old: &str) -> Value {
-    wait_for(&format!("{path} re-created as a new birth"), crate::node_recovery_due() * 2, || async { estate.node_value_opt(path).await.filter(|n| n["status"] == "ready-for-traffic" && s(&n["node_id"]) != old) }).await
+    wait_for(&format!("{path} re-created as a new birth"), crate::node_recovery_due() * 2, || async { estate.node_value_opt(path).await.filter(|n| n["status"] == "ready" && s(&n["node_id"]) != old) }).await
 }
 
 /// The spans one process of the estate wrote, by its pid: the evidence file `<service>.<pid>-*.spans.jsonl`.
@@ -620,7 +620,7 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_has_every_
     assert_ne!(resumed.state_after, Some('T'), "{resumed:?}");
     door.release("held").await;
     let at_resume = estate.node_value_opt(SUSPENDED).await;
-    assert!(at_resume.as_ref().is_none_or(|n| s(&n["node_id"]) == node_id || n["status"] != "ready-for-traffic"), "the resume falls while the recovery still runs: {at_resume:?}");
+    assert!(at_resume.as_ref().is_none_or(|n| s(&n["node_id"]) == node_id || n["status"] != "ready"), "the resume falls while the recovery still runs: {at_resume:?}");
     assert_eq!(attr(&claim, "executor"), "mesh2.admin.2", "{claim}");
     wait_for("the resumed run of the superseded attempt ended", crate::node_recovery_due(), || async {
         spans_of_pid(&estate, rt.pid).iter().any(|sp| sp["name"] == "rdm.node_rpc.stream.serve.via-terminal" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= resumed_at).then_some(())
@@ -635,8 +635,8 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_has_every_
     // terminates its runtime.
     wait_for("the resumed birth's runtime ended", crate::node_recovery_due() * 2, || async { rt.check().is_err().then_some(()) }).await;
     let held = estate.node_value(SUSPENDED).await;
-    assert_eq!((s(&held["node_id"]), s(&held["status"])), (s(&recovered["node_id"]), "ready-for-traffic".to_string()), "the re-created birth holds its path.name: {held}");
-    assert_eq!(estate.node_value(&node.to_string()).await["status"], "ready-for-traffic", "the started node stands");
+    assert_eq!((s(&held["node_id"]), s(&held["status"])), (s(&recovered["node_id"]), "ready".to_string()), "the re-created birth holds its path.name: {held}");
+    assert_eq!(estate.node_value(&node.to_string()).await["status"], "ready", "the started node stands");
     // The resumed birth's own row as the store holds it: Deleted, as its recovery's delete wrote it.
     let stored = {
         use rdm_admin::storage::NodesStorage as _;

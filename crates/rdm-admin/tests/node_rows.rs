@@ -1934,10 +1934,10 @@ async fn a_writer_whose_copy_predates_a_delete_leaves_the_stored_deleted_record_
     let id = NodeId::mint();
     let name: PathName = "mesh2.admin.1".parse().unwrap();
     let deleter = rdm_admin::node_rows::WrittenRows::default();
-    deleter.update(&storage, &id, Some(NodeRow::new(name.clone(), id.clone(), NodeStatus::ReadyForTraffic)), |_| ()).await.unwrap();
+    deleter.update(&storage, &id, Some(NodeRow::new(name.clone(), id.clone(), NodeStatus::Ready)), |_| ()).await.unwrap();
     // The resumed writer's copy, taken while the record was live.
     let resumed = rdm_admin::node_rows::WrittenRows::default();
-    assert_eq!(resumed.known_row(&storage, &id).await.unwrap().map(|r| r.status), Some(NodeStatus::ReadyForTraffic));
+    assert_eq!(resumed.known_row(&storage, &id).await.unwrap().map(|r| r.status), Some(NodeStatus::Ready));
     deleter.update(&storage, &id, None, |r| r.status = NodeStatus::Deleted).await.unwrap();
     let (exporter, capture) = {
         let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();

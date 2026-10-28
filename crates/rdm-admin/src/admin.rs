@@ -1591,10 +1591,10 @@ mod tests {
         use crate::build_drive::DepartureProof as _;
         use crate::deployment::provider::DeploymentStatus;
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-verdicts")).unwrap();
-        let mut executor = digest("mesh2.admin.1", MemberStatus::ReadyForTraffic);
+        let mut executor = digest("mesh2.admin.1", MemberStatus::Ready);
         executor.node.runtime = Some(fact.clone());
         let digest_view = DigestView::default();
-        for d in [executor.clone(), digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic)] {
+        for d in [executor.clone(), digest("mesh2.rpc.1", MemberStatus::Ready)] {
             digest_view.record(d);
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
