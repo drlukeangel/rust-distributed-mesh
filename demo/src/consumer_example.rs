@@ -683,7 +683,7 @@ impl Caller {
                 // The node does not serve the op: chosen no more, as an open that ends Unserved.
                 if let Err(ReadFailure::Unserved) = ended {
                     unserved.insert(node);
-                    return tracing::info!(target: "rshape", node = %path, outcome = "Unserved", detail = "unserved-op", "the record copy did not open");
+                    return tracing::info!(target: "rshape", node = %path, outcome = "Unserved", detail = "unserved-op", "the record copy's stream opened and its first item is Unserved: the node does not serve the op");
                 }
                 tracing::info!(target: "rshape", node = %path, from, next, ended = ?ended, "a serving node's record copied");
             }
