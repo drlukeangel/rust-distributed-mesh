@@ -585,8 +585,12 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
     let past_ready = matches!(own_mesh_held, Some(MeshState::Leaving | MeshState::Dead));
     if i_am_mesh_primary && mesh_checklist_done && !past_ready {
         if let (Some(mesh), Some(id)) = (view.meshes.iter().find(|m| m.name == me.mesh), mesh_ids.get(&me.mesh)) {
-            if mesh.status == crate::model::ScopeStatus::Ready {
-                d.owe(Key::Mesh(id.clone(), MeshState::Ready), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: match crate::model::MeshId::parse(id) { Ok(m) => m, Err(_) => return }, state: MeshState::Ready, changed_at_rafka_ms: own_mesh_changed_at(MeshState::Ready) });
+            // Declared with the instant its own MeshStatus holds for Ready, which its publisher stamps in
+            // the same turn: until that fact is held there is no instant to declare, and its arrival is a
+            // view change that runs this again (mesh-investigation.md step 7).
+            let at = own_mesh_changed_at(MeshState::Ready);
+            if mesh.status == crate::model::ScopeStatus::Ready && at > 0 {
+                d.owe(Key::Mesh(id.clone(), MeshState::Ready), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: match crate::model::MeshId::parse(id) { Ok(m) => m, Err(_) => return }, state: MeshState::Ready, changed_at_rafka_ms: at });
             }
         }
     }
@@ -1045,7 +1049,7 @@ mod tests {
         owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, false, None, |_| 0, &v, &ids);
         let own: Vec<Key> = d.due(&NodeId::mint(), &v, &none).into_iter().map(|(p, _)| p.key).collect();
         assert_eq!(own, vec![Key::OwnState(INC.into(), NodeState::Ready)], "own readiness owes its birth");
-        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, true, None, |_| 0, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Ready, true, None, |_| 7, &v, &ids);
         let both = d.due(&NodeId::mint(), &v, &none).len();
         assert_eq!(both, 2, "the gate opening owes the Mesh declaration");
     }
@@ -1111,7 +1115,7 @@ mod tests {
         // mesh, handed Leaving) reports the state it holds, never ready: a backward
         // declaration the fabric-primary can only refuse.
         let d = Declarer::new();
-        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, Some(MeshState::Leaving), |_| 0, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, Some(MeshState::Leaving), |_| 7, &v, &ids);
         let keys: Vec<Key> = d.due(&id_of(&me.to_string()), &v, &none).into_iter().map(|(p, _)| p.key).collect();
         assert_eq!(keys, vec![Key::Mesh(mesh2.to_string(), MeshState::Leaving)], "a primary holding Leaving owes no ready declaration");
         let other: PathName = "mesh1.admin.2".parse().unwrap();
@@ -1140,7 +1144,7 @@ mod tests {
         assert_eq!(v.fabric_primary().map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds the fabric seat in this view");
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
-        owed_from_view(&d, &me, &re_born.node_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, None, |_| 0, &v, &ids);
+        owed_from_view(&d, &me, &re_born.node_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, None, |_| 7, &v, &ids);
         assert_eq!(d.owed(), 0, "the deleted birth's seats owe this admin nothing: {:?}", d.pending.lock().unwrap().keys().collect::<Vec<_>>());
         d.owe(mesh_key(), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 });
         d.withdraw_unowned(&me, &re_born.node_id, &v);
