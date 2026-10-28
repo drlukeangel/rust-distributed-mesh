@@ -384,7 +384,9 @@ async fn delete_connections_command(
 
 /// Row 1 — `false Proxy establishment`:
 /// Carrier admission alone, application bytes, EOF, a wrong birth and a handshake lapse each
-/// create **no** `Proxy Connected`; the destination's `Opened` at the exact birth does.
+/// create **no** `Proxy Connected`; the destination's `Opened` at the exact birth does. With the
+/// Direct not sent and gateway.1 the one carrier, an open no carrier carries ends with no active
+/// route, naming the Direct's reason (connections.md §6, Q227).
 #[test]
 fn false_proxy_establishment_creates_no_proxy_connected_until_the_destinations_exact_birth_answers_opened() {
     let _serial = CELL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -459,8 +461,8 @@ fn false_proxy_establishment_creates_no_proxy_connected_until_the_destinations_e
         block_direct(&gw1, &rpc2_name, alpn1);
         let err1 = rpc1_conns[0].open(&rpc2_birth).await.unwrap_err();
         assert!(
-            matches!(err1, ConnectError::NotSent { .. }),
-            "carrier admission alone without reaching destination must fail before Opened, got: {err1:?}"
+            matches!(err1, ConnectError::NoActiveRoute { direct: Some(_) }),
+            "carrier admission alone without reaching destination must fail before Opened, with no active route once the one carrier carried nothing, got: {err1:?}"
         );
         assert!(
             read_row(&proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", alpn1)).is_none(),
@@ -477,8 +479,8 @@ fn false_proxy_establishment_creates_no_proxy_connected_until_the_destinations_e
         );
         let err2 = rpc1_conns[1].open(&rpc2_birth).await.unwrap_err();
         assert!(
-            matches!(err2, ConnectError::NotSent { .. }),
-            "application bytes before Opened must fail handshake, got: {err2:?}"
+            matches!(err2, ConnectError::NoActiveRoute { direct: Some(_) }),
+            "application bytes before Opened must fail handshake, with no active route once the one carrier carried nothing, got: {err2:?}"
         );
         assert!(
             read_row(&proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", alpn2)).is_none(),
@@ -490,8 +492,8 @@ fn false_proxy_establishment_creates_no_proxy_connected_until_the_destinations_e
         fault_pre_opened_once(&rpc2, alpn3, PreOpenedFault::Eof);
         let err3 = rpc1_conns[2].open(&rpc2_birth).await.unwrap_err();
         assert!(
-            matches!(err3, ConnectError::NotSent { .. }),
-            "EOF before Opened must fail handshake, got: {err3:?}"
+            matches!(err3, ConnectError::NoActiveRoute { direct: Some(_) }),
+            "EOF before Opened must fail handshake, with no active route once the one carrier carried nothing, got: {err3:?}"
         );
         assert!(
             read_row(&proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", alpn3)).is_none(),
@@ -523,8 +525,8 @@ fn false_proxy_establishment_creates_no_proxy_connected_until_the_destinations_e
         fault_pre_opened_once(&rpc2, alpn5, PreOpenedFault::HandshakeLapse);
         let err5 = rpc1_conns[4].open(&rpc2_birth).await.unwrap_err();
         assert!(
-            matches!(err5, ConnectError::NotSent { .. }),
-            "handshake lapse before Opened must fail handshake, got: {err5:?}"
+            matches!(err5, ConnectError::NoActiveRoute { direct: Some(_) }),
+            "handshake lapse before Opened must fail handshake, with no active route once the one carrier carried nothing, got: {err5:?}"
         );
         assert!(
             read_row(&proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", alpn5)).is_none(),
@@ -1307,11 +1309,13 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
     });
 }
 
-/// Row 6 — `restart resets reconnect`:
-/// Restart the source before its persisted `next_due`: no early attempt; the right ALPN resumes
-/// its obligation with no duplicate attempt.
+/// Row 6 — `restart resets reconnect` (connections.md §9.3, §13 C, Q227):
+/// Restart the source before its persisted `next_due`: the restarted birth reads no row back and
+/// holds no reconnect series, so it makes no attempt before that due time or after it; its next
+/// failed dial is a new series at attempt 1 on the ALPN it dialled, and once Direct is reachable its
+/// own reconciler dials that ALPN once.
 #[test]
-fn source_restart_before_persisted_next_due_makes_no_early_or_duplicate_attempt_and_resumes_the_right_alpn() {
+fn source_restart_before_persisted_next_due_holds_no_series_and_its_next_failure_starts_at_attempt_one_on_the_right_alpn() {
     let _serial = CELL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("demo-conn-row6-{}", NodeId::mint()));
     let capture =
@@ -1458,7 +1462,8 @@ fn source_restart_before_persisted_next_due_makes_no_early_or_duplicate_attempt_
         )
         .await;
         let _rpc1_a2 = rpc1_restarted.connections(ALPN_A).unwrap();
-        let _rpc1_b2 = rpc1_restarted.connections(ALPN_B).unwrap();
+        let rpc1_b2 = rpc1_restarted.connections(ALPN_B).unwrap();
+        let restarted_birth = birth_of(&rpc1_restarted);
 
         let now_after_boot = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1469,50 +1474,95 @@ fn source_restart_before_persisted_next_due_makes_no_early_or_duplicate_attempt_
             "restart completed well before persisted next_due (now={now_after_boot}, due={due_ms})"
         );
 
-        // Wait 250 ms (still well before `due_ms`): no early reconnect attempt may occur!
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        let history_before_due = read_history(&fabric_root, "mesh1.rpc.1");
-        let direct_events_before_due = history_before_due
+        // The restarted birth holds no reconnect series (§9.3, §13 C): nothing dials rpc.2 on ALPN_B
+        // before the persisted `next_due`, nor through it and two reconciler ticks (500 ms) past it.
+        let quiet = Duration::from_millis(due_ms - now_after_boot + 1_000);
+        assert!(
+            tokio::time::timeout(quiet, rpc2_b.accept()).await.is_err(),
+            "the restarted source must make no attempt from the first birth's Direct Failed row, before or after its next_due"
+        );
+        let direct_events_past_due = read_history(&fabric_root, "mesh1.rpc.1")
             .iter()
             .filter(|r| r.destination.name == rpc2_name && r.kind == CoreKind::Direct)
             .count();
         assert_eq!(
-            direct_events_before_due, direct_events_before,
-            "restarting before persisted next_due must not trigger an early reconnect attempt"
+            direct_events_past_due, direct_events_before,
+            "no Direct row toward rpc.2 is written from the first birth's series after the restart"
         );
 
-        // Now wait until `due_ms` arrives: the scheduler fires once on ALPN_B (the right ALPN) and
-        // establishes Direct Connected with no duplicate attempt.
+        // Its next failed dial on ALPN_B starts a new series at attempt 1, naming the restarted birth,
+        // and its carrier is proved again (§13 B).
+        block_direct(&rpc1_restarted, &rpc2_name, ALPN_B);
+        let (proxy_again, proxy_again_server) = open_pair(&rpc1_b2, &mut rpc2_b, &rpc2_birth).await;
+        assert_eq!(
+            proxy_again.kind(),
+            ConnectionKind::Proxy {
+                via: gw1_birth.clone()
+            }
+        );
+        let new_series = tokio::time::timeout(BOUND, async {
+            loop {
+                if let Some(row) = read_row(&direct_b_file) {
+                    if row.state == ConnectionState::Failed
+                        && row.source.incarnation.as_ref() == Some(&restarted_birth.incarnation)
+                    {
+                        break row;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the restarted birth's failed dial on ALPN_B writes its own Direct Failed row");
+        assert_eq!(new_series.alpn, ALPN_B, "the new series is on ALPN_B, the ALPN it dialled");
+        assert_eq!(
+            new_series.recovery.map(|r| r.attempt_ordinal),
+            Some(1),
+            "the restarted birth's first failure is attempt 1 of a new series, never the first birth's ordinal 4"
+        );
+        assert!(
+            read_row(&direct_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", ALPN_A)).is_none(),
+            "a reconnect on ALPN_B writes nothing on ALPN_A (§9.4)"
+        );
+
+        // Direct reachable again: the restarted birth's own reconciler dials ALPN_B once at its due.
+        unblock_direct(&rpc1_restarted, &rpc2_name, ALPN_B);
         let accepted_on_b = tokio::time::timeout(BOUND, rpc2_b.accept())
             .await
-            .expect("the reconnect scheduler must dial on ALPN_B once next_due is reached")
+            .expect("the restarted birth's reconciler dials ALPN_B once its own series falls due")
             .unwrap();
+        assert_eq!(accepted_on_b.kind(), ConnectionKind::Direct);
+        let direct_after = wait_for_row(&direct_b_file, ConnectionState::Connected).await;
+        assert_eq!(direct_after.alpn, ALPN_B);
+        assert_eq!(
+            direct_after.source.incarnation.as_ref(),
+            Some(&restarted_birth.incarnation),
+            "the Direct Connected row names the restarted birth"
+        );
+
+        // No duplicate attempt: one Failed (attempt 1) and one Connected from the restarted birth.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1_000), rpc2_b.accept()).await.is_err(),
+            "the reconciler dials once, with no duplicate attempt"
+        );
+        let restarted_directs: Vec<ConnectionState> = read_history(&fabric_root, "mesh1.rpc.1")
+            .into_iter()
+            .filter(|r| {
+                r.destination.name == rpc2_name
+                    && r.kind == CoreKind::Direct
+                    && r.source.incarnation.as_ref() == Some(&restarted_birth.incarnation)
+            })
+            .map(|r| r.state)
+            .collect();
+        assert_eq!(
+            restarted_directs,
+            vec![ConnectionState::Failed, ConnectionState::Connected],
+            "the restarted birth's Direct history toward rpc.2 is its one failure and its one reconnect"
+        );
+
         drop(accepted_on_b);
-
-        let direct_after = wait_for_row(
-            &direct_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", ALPN_B),
-            ConnectionState::Connected,
-        )
-        .await;
-        assert_eq!(direct_after.state, ConnectionState::Connected);
-        assert_eq!(
-            direct_after.alpn, ALPN_B,
-            "the resumed reconnect attempt must dial on ALPN_B, the ALPN recorded on the persisted Direct Failed row"
-        );
-
-        // Hold for 200 ms more and verify exactly ONE Direct Connected was appended after restart (no duplicate attempt).
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let history_after = read_history(&fabric_root, "mesh1.rpc.1");
-        let direct_events_after = history_after
-            .iter()
-            .filter(|r| r.destination.name == rpc2_name && r.kind == CoreKind::Direct)
-            .count();
-        assert_eq!(
-            direct_events_after,
-            direct_events_before + 1,
-            "exactly one reconnect attempt must fire at next_due with no duplicate attempt"
-        );
-
+        drop(proxy_again);
+        drop(proxy_again_server);
         rpc1_restarted.stop().await;
         rpc2.stop().await;
         gw1.stop().await;
