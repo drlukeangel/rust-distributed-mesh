@@ -439,6 +439,10 @@ impl Prepared {
             .env("RDM_EVIDENCE_DIR", &self.dir)
             .env("MESH_SPAWN_TYPE", "process")
             .env("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0");
+        // The collector the run exports to (the gate's), as an estate passes it: the admin's boot reads in Jaeger.
+        if let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+            cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint);
+        }
         let child = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rdm-node-admin starts");
         let pid = child.id();
         Running { child, pid }
