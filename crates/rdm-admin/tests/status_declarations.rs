@@ -3090,3 +3090,69 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
     assert_eq!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).len(), 1);
     assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Stopped));
 }
+
+/// A start of mesh1.rpc.2 carried by its mesh-primary on a real command stream, answered the way a
+/// birth answers a start an earlier attempt of the same Build completed (`AlreadyApplied`: the
+/// acknowledgement, then `NodeStarted`, no `NodeJoined`; node_self.rs `Cycle::Live`). The view holds a
+/// stop of the node's birth `marked` (the command's own birth, or another). Answers whether the view
+/// still holds that birth stopped once the start is carried.
+fn replayed_start_leaves_stopped(marked_other_birth: bool) -> bool {
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest};
+    let cap = capture();
+    cap.run(async move {
+        let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let _gossip_router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+        let fabric = FabricId::mint();
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(5_000_000);
+        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        topology_view.set_mesh_primary(true);
+        let digest_view = topology_view.digest_view.clone();
+        let (rig, b) = rig_with_digest_view(Some(digest_view.clone())).await;
+        let rpc = &b["rpc2"];
+        let incarnation = rpc.node.incarnation_id.clone().unwrap();
+        let marked = if marked_other_birth { IncarnationId::mint() } else { incarnation.clone() };
+        assert!(digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
+            fabric_id: fabric,
+            node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: marked.clone(), supersedes: None, runtime: None },
+            status: rdm_core::MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
+        }));
+        let stop = rdm_core::LifecycleOp { node_id: rpc.node.node_id.clone(), incarnation: marked.clone(), name: rpc.node.name.clone(), build_id: "b-stop".into(), attempt: 1, operation: format!("node.stop:{}", rpc.node.name), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        assert!(digest_view.stopped(stop), "the view holds the stop of the marked birth");
+        assert!(digest_view.holds_stopped(rpc.node.node_id.as_str(), &marked));
+        let server = ServerBuilder::new().serve_stream::<NodeCommand, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_, req: NodeCommandRequest, sink| async move {
+            let NodeCommandRequest::StartNode { node_id, incarnation, .. } = req else { panic!("expected StartNode") };
+            let _ = sink.started(N::CommandAccepted { node_id, incarnation }).await.unwrap();
+            Ok(N::NodeStarted)
+        }).build(ServedBirth { node_id: rpc.node.node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
+        let node_ep = rdm_transport::endpoint::bind(rpc.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = node_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+        let _router = Router::builder(node_ep).accept(rdm_transport::ALPN, server).spawn();
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(ResolvedNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: rpc.key.public(), transport_addr: addr, incarnation: incarnation.clone() });
+        let admin_ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(admin_ep, resolver).with_caller_system("rdm"));
+        assert!(rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(client, rig.authority.configure.clone(), Default::default()))).is_ok());
+        let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), attempt: 2, operation: format!("node.start:{}", rpc.node.name) };
+        let answer = rig.authority.carry_lifecycle(&rpc.node, true, &context).await;
+        assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");
+        digest_view.holds_stopped(rpc.node.node_id.as_str(), &marked)
+    })
+}
+
+/// CONTRACT (node-start.md step 2, Q249): a start an earlier attempt completed, reissued by the next
+/// attempt's executor, is answered without a `NodeJoined`; the mesh-primary whose overlay holds that
+/// exact birth stopped clears the mark at that answer, as at the join it did not see. Must NOT happen:
+/// the birth held stopped after its start completed, every view refusing its digests.
+#[test]
+fn a_replayed_start_answered_already_applied_clears_its_births_stop_mark() {
+    assert!(!replayed_start_leaves_stopped(false), "the replayed start's answer clears the birth's stop mark");
+}
+
+/// CONTRACT (Q249): the clear is the exact birth's: a stop mark of another birth of the node is left
+/// as it is by a start answered for this one.
+#[test]
+fn a_replayed_start_clears_no_other_births_stop_mark() {
+    assert!(replayed_start_leaves_stopped(true), "another birth's stop mark is left");
+}

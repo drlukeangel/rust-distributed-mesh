@@ -452,6 +452,13 @@ struct Suspended {
 }
 
 async fn suspended_executor(test: &str) -> Suspended {
+    suspended_executor_withholding(test, false).await
+}
+
+/// [`suspended_executor`], with `withhold`: the executor publishes none of its mesh's topology, on the
+/// backbone or into its mesh, from before the start (the door's `aggregate` cut), so the clear of the birth's stop mark
+/// it makes at the start's join is never published before it is held.
+async fn suspended_executor_withholding(test: &str, withhold: bool) -> Suspended {
     let sha = candidate_sha();
     let set = binding_set(&sha);
     let estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
@@ -466,6 +473,9 @@ async fn suspended_executor(test: &str) -> Suspended {
     let data_dir = estate.data_dir(SUSPENDED).await;
     let rt = rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&data_dir)).unwrap_or_else(|r| panic!("{SUSPENDED}: no exact runtime published in {data_dir}: {r:?}"));
     let door = Door::at(&estate, SUSPENDED).await;
+    if withhold {
+        door.arm("unpublished", json!({"kind": "announcement", "announcement": "aggregate", "channel": "any"})).await;
+    }
     door.arm("held", json!({"kind": "receipt", "step": "StartNode", "operation": "node.start", "node": node.to_string()})).await;
     let stream = caller.nodes(&carrier).start(&node).await.expect("the fabric-primary accepts the start");
     let accepted = stream.accepted().clone();
@@ -476,6 +486,34 @@ async fn suspended_executor(test: &str) -> Suspended {
     assert_eq!(stop.state_after, Some('T'), "the OS holds {SUSPENDED}: {stop:?}");
     let ticks = rdm_test::process_faults::cpu_ticks(rt.pid);
     Suspended { estate, carrier, node, accepted, stream, door, rt, node_id, data_dir, ticks }
+}
+
+/// CONTRACT (node-start.md step 2, Q249): mesh2's primary carries a start of the stopped mesh2 rpc node,
+/// clears the birth's stop mark at the start's join, and is held before it publishes the clear (it
+/// withholds its mesh's topology while it carries the start), then os-stopped. The next attempt's
+/// executor, mesh2.admin.2, reissues the start; the birth answers it `AlreadyApplied` (no `NodeJoined`),
+/// and the executor, whose overlay holds the birth stopped, clears the mark at that answer and publishes
+/// it as the mesh's primary: the birth's digests are taken again, the start completes, and the Build
+/// with it. Must NOT happen: the birth held stopped by every view but the held executor's, its digests
+/// refused `via-stopped-birth` until the start fails waiting for one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replayed_start_clears_the_stop_mark_its_held_executor_never_published() {
+    let test = "a_replayed_start_clears_the_stop_mark_its_held_executor_never_published";
+    let Suspended { mut estate, mut stream, rt, node, .. } = suspended_executor_withholding(test, true).await;
+    started_to_the_end(&mut stream, "the replayed start completes at the next executor").await;
+    rt.apply(rdm_test::process_faults::Fault::Kill(estate.fabric_ready())).expect("the cell kills the suspended runtime it made");
+    estate.stop().await;
+    let spans = estate.spans();
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let cleared = spans_named(&spans, "rdm.node_admin.node.update.via-command-frame")
+        .into_iter()
+        .find(|sp| attr(sp, "recorder") == "mesh2.admin.2" && attr(sp, "node") == node.to_string() && attr(sp, "outcome") == "stop-mark-cleared")
+        .cloned()
+        .unwrap_or_else(|| panic!("mesh2.admin.2 clears {node}'s stop mark at the replayed start's answer"));
+    let birth = attr(&cleared, "incarnation_id");
+    let at = cleared["start_unix_nano"].as_u64().unwrap_or(0);
+    let late: Vec<&Value> = spans_named(&spans, "rdm.mesh.topology.reject.via-stopped-birth").into_iter().filter(|sp| attr(sp, "incarnation_id") == birth && sp["start_unix_nano"].as_u64().unwrap_or(0) > at + 5_000_000_000).collect();
+    assert!(late.is_empty(), "no view refuses {node}'s digests as a stopped birth once the clear is published: {late:#?}");
 }
 
 /// The caller's stream of the start read to its end within the bound of a node recovery: `Complete`,

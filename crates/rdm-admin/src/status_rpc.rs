@@ -1744,6 +1744,9 @@ impl StatusAuthority {
             }
         };
         let mut accepted = false;
+        // Whether this stream carried the start's NodeJoined: a start an earlier attempt completed is
+        // answered without one (`AlreadyApplied`, node_self.rs `Cycle::Live`).
+        let mut joined = false;
         let mut closure = None;
         while let Some(item) = frames.next().await {
             let mut joined_outcome: Option<&'static str> = None;
@@ -1811,6 +1814,7 @@ impl StatusAuthority {
                     let applied = self.node_joined(&op, node, &incarnation).await;
                     if !matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { return A::Indeterminate { code: <Status as NodeProtocol>::classify_reply(&applied).code(), reason: format!("NodeJoined not recorded: {applied:?}") }; }
                     joined_outcome = Some(applied.name());
+                    joined = true;
                     None
                 }
                 R::NodeStopped if !start => {
@@ -1820,6 +1824,20 @@ impl StatusAuthority {
                     Some(match closure.clone() { Some(receipt) => A::Stopped { receipt }, None => A::Indeterminate { code: Code::Internal, reason: "NodeStopped without StopConnectionsDeleted".into() } })
                 }
                 R::NodeStarted if start => {
+                    // A start an earlier attempt of the same Build completed, reissued by this one, is
+                    // answered NodeStarted with no NodeJoined: the birth joined when that start ran, at
+                    // its executor then, which may never have published the clear. A mesh-primary whose
+                    // overlay holds that exact birth stopped takes the answer as the join it did not see:
+                    // the stop mark clears in its overlay
+                    // and the birth is held ready again; no row is written for it and no join is made
+                    // (node-start.md step 2, Q249).
+                    if !joined {
+                        if let Some(digest_view) = self.digest_view.as_ref().filter(|v| v.holds_stopped(op.node_id.as_str(), &op.incarnation)) {
+                            if matches!(set_member_status(digest_view, MemberStatusReceipt::NodeJoined { op: &op, already: Some(NodeState::Ready) }), Ok(true)) {
+                                joined_outcome = Some("stop-mark-cleared");
+                            }
+                        }
+                    }
                     let row = crate::status_rpc::Declaration { node_id: node.node_id.clone(), incarnation_id: incarnation.clone(), name: node.name.clone(), state: NodeState::Ready };
                     let operation = DeclaredOperation { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() };
                     let applied = self.persist_then_commit(Effect::Node(row, NodeState::Ready, Some(operation))).await;

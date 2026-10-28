@@ -3476,7 +3476,9 @@ pub struct Backbone {
 /// - `stopping-aggregate`: the mesh topology a node-admin that publishes its mesh's topology sends
 ///   once more before its stop's transport cut, itself stopping (node-stop.md step 4);
 /// - `aggregate-in-flight`: a publication's mesh topology of this admin's own mesh while it
-///   carries a lifecycle operation in flight.
+///   carries a lifecycle operation in flight;
+/// - `aggregate`: every publication's mesh topology of this admin's own mesh, on the backbone and
+///   into its own mesh (`mesh`).
 pub type Withhold = Arc<dyn Fn(&'static str, &'static str) -> bool + Send + Sync>;
 
 impl Backbone {
@@ -3741,7 +3743,11 @@ impl Backbone {
             self.topology_view.view.order.lock().unwrap().published(&self.mesh, &publisher, version);
             let snapshot_id = v.next_snapshot_id();
             *self.own.lock().unwrap() = Some((version, full.clone()));
-            let sent = if self.full_due.swap(false, Ordering::Relaxed) {
+            // Test seam: the projection withheld from its own mesh's channel ([`Withhold`] `aggregate`,
+            // `mesh`): nothing is put into the mesh.
+            let sent = if self.withholds("aggregate", "mesh") {
+                topology_view.clock.now_rafka_ms()
+            } else if self.full_due.swap(false, Ordering::Relaxed) {
                 self.forward_fulls_now()
             } else {
                 self.topology_view.forward_path.source_with_clock(&me_name, &self.mesh, &publisher, version, &full, || topology_view.clock.now_rafka_ms())
@@ -3753,7 +3759,7 @@ impl Backbone {
                 .in_scope(|| tracing::info!("the normalized projection of this mesh changed: its topology_version bumped"));
         }
         let mesh = self.mesh.clone();
-        let withheld = !full.in_flight().is_empty() && self.withholds("aggregate-in-flight", "backbone");
+        let withheld = (!full.in_flight().is_empty() && self.withholds("aggregate-in-flight", "backbone")) || self.withholds("aggregate", "backbone");
         for frame in crate::snapshot::chunks_of(&full, |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology {
             mesh: mesh.clone(),
             publisher: publisher.clone(),
@@ -5012,6 +5018,11 @@ impl DigestView {
         )
         .in_scope(|| tracing::info!("an own-mesh member's status taken from its mesh-primary's projection; its liveness stays its own heartbeat's"));
         true
+    }
+
+    /// Whether this view's overlay holds the exact birth `incarnation` of `node_id` stopped (its stop mark).
+    pub fn holds_stopped(&self, node_id: &str, incarnation: &IncarnationId) -> bool {
+        self.stopped_marks.lock().unwrap().get(node_id).is_some_and(|m| &m.incarnation == incarnation)
     }
 
     /// The last digest this view held of each stopped birth: a node-admin keeps showing the birth,
