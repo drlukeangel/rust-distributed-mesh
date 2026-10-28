@@ -867,6 +867,41 @@ mod tests {
         StorageScope { data_dir, fabric_id: FabricId::mint(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint() }
     }
 
+    /// CONTRACT (rdm-node/src/blocking.rs: a disk call "runs on tokio's blocking pool. No worker thread
+    /// waits on the disk"): the file backend's open makes the fabric's store root (its directory and
+    /// layout marker, fsynced) on the blocking pool. On a runtime whose one blocking thread is held,
+    /// the open waits and the root is not there yet; once the thread is let go the open completes and
+    /// the root stands. Must NOT happen: the root made, its fsyncs run, on the thread polling the open
+    /// (seen as a node-admin's main thread in `jbd2_log_wait_commit` at its boot, rdm#117).
+    #[cfg(feature = "file-backend")]
+    #[test]
+    fn the_file_backend_makes_the_fabrics_store_root_on_the_blocking_pool() {
+        let (store, data) = (crate::test_support::tempdir("open-on-pool-store"), crate::test_support::tempdir("open-on-pool-data"));
+        let scope = scope_in(data);
+        let root = store.join(scope.fabric_id.to_string());
+        let rt = tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).enable_all().build().unwrap();
+        rt.block_on(async move {
+            let (held_tx, held_rx) = tokio::sync::oneshot::channel::<()>();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let holder = tokio::task::spawn_blocking(move || {
+                let _ = held_tx.send(());
+                let _ = release_rx.recv();
+            });
+            held_rx.await.unwrap();
+            let backend = FileBackend::at(&store);
+            let open = tokio::spawn(async move { backend.open(&scope).await.map(|_| ()) });
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert!(!open.is_finished(), "the open waits on the held blocking pool");
+            assert!(!root.exists(), "the fabric's store root {} was made on the thread polling the open, not on the blocking pool", root.display());
+            release_tx.send(()).unwrap();
+            holder.await.unwrap();
+            open.await.unwrap().unwrap_or_else(|e| panic!("the open completes once the pool's thread is let go: {e}"));
+            assert!(root.is_dir(), "the fabric's store root stands once the open completes");
+        });
+    }
+
     /// CONTRACT (storage.md §2, "Changing it", Unblock: "Each node moves to the new provider"; i149 R4:
     /// "Every active reader and writer uses the same replaceable provider handle on its node"): what a
     /// node-admin's boot took from its handle, each of the five stores and its own connections rows,
