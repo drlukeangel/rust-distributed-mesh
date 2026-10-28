@@ -90,6 +90,65 @@ async fn an_os_stopped_member_is_recovered_at_once_over_a_new_data_dir_and_its_r
     estate.record_trace_url(&s(&submit["trace_id"]));
 }
 
+/// CONTRACT (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs it"; step 3:
+/// "Any other verdict (`running`, `os-stopped`, `exited`, `unproven`): the recovery below, at once" and
+/// TerminateRuntime "never skipped for what it reads, except `os-stopped`, which recovery leaves as it
+/// is"; node-investigation.md "Spans": node.runtime.inspect's own; node-runtime-inspect.md "Its span is
+/// the evidence"): two meshes, the fabric-primary in mesh1, mesh2 with two node-admins and one rpc node.
+/// mesh2's mesh-primary is held by the operating system (SIGSTOP, acknowledged `T`) and stays held
+/// through the fabric-primary's investigation of it: the investigation ends `os-stopped`
+/// (`rdm.node_admin.primary.update.via-investigation`), the fabric-primary's own inspection of the held
+/// runtime is a `rdm.node_admin.node.resolve.via-provider-inspection` span naming `os-stopped`, and the
+/// path is re-created as a new birth over a newly allocated data dir while the held runtime is sent
+/// nothing: still `T`, no CPU used, its TerminateRuntime reading `os-stopped`. Must NOT happen: a
+/// `running` finding of the held runtime, an investigation with no inspection span, a signal to the held
+/// runtime, or the new birth over its data dir.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_and_its_runtime_is_sent_nothing() {
+    let test = "an_os_stopped_mesh_primary_is_found_os_stopped_by_the_fabric_primary_and_its_runtime_is_sent_nothing";
+    let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[]).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
+    estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    estate.enter_fabric_primary().await;
+    let views = estate.node_views().await;
+    let fp = views.iter().find(|n| n.is_fabric_primary).cloned().unwrap_or_else(|| panic!("a fabric-primary: {views:#?}"));
+    assert_eq!(fp.mesh, "mesh1", "the fabric-primary is mesh1's: {fp:?}");
+    let mp = views.iter().find(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).cloned().unwrap_or_else(|| panic!("mesh2's mesh-primary: {views:#?}"));
+    let (fp_name, mp_name, mp_id) = (fp.name.to_string(), mp.name.to_string(), mp.node_id.to_string());
+    let old_dir = estate.data_dir(&mp_name).await;
+    let rt = ExactRuntime::published(Path::new(&old_dir)).unwrap_or_else(|r| panic!("{mp_name}: no exact runtime published in {old_dir}: {r:?}"));
+    let held = rt.apply(Fault::Stop).expect("the mesh-primary's exact runtime is suspended");
+    assert_eq!(held.state_after, Some('T'), "the OS holds the mesh-primary: {held:?}");
+    let ticks = rdm_test::process_faults::cpu_ticks(rt.pid);
+    let recovered = node_where(&estate, &mp_name, &format!("{mp_name} re-created as a new birth"), crate::node_recovery_due() * 2, |n| n["status"] == "ready-for-traffic" && s(&n["node_id"]) != mp_id).await;
+    assert_ne!(s(&recovered["node_id"]), mp_id, "a new node.id at the path: {recovered}");
+    assert_ne!(estate.data_dir(&mp_name).await, old_dir, "a newly allocated data dir, never the held runtime's");
+    assert_eq!(rdm_test::process_faults::proc_state(rt.pid), Some('T'), "the held runtime is sent nothing: still stopped");
+    assert_eq!(rdm_test::process_faults::cpu_ticks(rt.pid), ticks, "the held runtime used no CPU");
+    // The cell's own cleanup: the held runtime the recovery left is no estate's.
+    rt.apply(Fault::Kill(estate.fabric_ready())).expect("the cell kills the held runtime it made");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let investigations: Vec<Value> = named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(|sp| attr(sp, "node") == fp_name && attr(sp, "suspect_node_id") == mp_id).cloned().collect();
+    let investigation = investigations.first().cloned().unwrap_or_else(|| panic!("the fabric-primary investigates the unheard mesh-primary: {investigations:#?}"));
+    assert_eq!(attr(&investigation, "finding"), "os-stopped", "the fabric-primary's investigation finds the held mesh-primary os-stopped: {investigation}");
+    let inspections: Vec<Value> = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(|sp| attr(sp, "node_id") == mp_id).cloned().collect();
+    let inspection = inspections
+        .iter()
+        .find(|sp| attr(sp, "inspector") == fp_name && attr(sp, "caller").is_empty() && sp["trace_id"] == investigation["trace_id"])
+        .cloned()
+        .unwrap_or_else(|| panic!("the fabric-primary's investigation inspects the held runtime under its own span: {inspections:#?}"));
+    assert_eq!(attr(&inspection, "verdict"), "os-stopped", "{inspection}");
+    assert!(attr(&inspection, "handle").contains(&rt.pid.to_string()), "the inspection names the exact runtime handle: {inspection}");
+    let at_delete = inspections.iter().find(|sp| attr(sp, "caller") == "terminate").cloned().unwrap_or_else(|| panic!("the recovery's TerminateRuntime reads the exact runtime at its instant: {inspections:#?}"));
+    assert_eq!(attr(&at_delete, "verdict"), "os-stopped", "{at_delete}");
+    let trace = s(&inspection["trace_id"]);
+    println!("fabric-primary inspection: http://192.168.68.99:16687/trace/{trace}");
+    estate.record_trace_url(&trace);
+}
+
 /// What the operating system shows of one process, strace-free: its state letter, its pending signal
 /// masks (thread and process-wide, hex) and its CPU ticks; `None` once it is gone.
 /// One sample of a member after its terminate (`os_view`: state, pending and shared-pending signal
