@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """The gate's discovery check (rdm#96): every rdm-test test is selected by exactly one module job.
 
-usage: gate-module-coverage.py <jobs-file> <rdm-test main executable>
+usage: gate-module-coverage.py <jobs-file> <rdm-test main executable> [module ...]
+
+The modules named after the executable are the ones the gate keeps out of its module jobs on purpose
+(the gate's SCENARIO_SKIP stems that are not SCENARIOS: acceptance, release and soak stems with their own runs);
+they are not checked.
 
 Reads the gate's jobs file, simulates libtest's selection (a positional filter is a substring of the
 full test name, or equal to it under --exact; a --skip likewise) for every job that runs the
@@ -35,8 +39,9 @@ def selected(names, args):
     return {n for n in names if (not filters or any(hit(f, n) for f in filters)) and not any(hit(s, n) for s in skips)}
 
 
-def main(jobs_path, binary):
+def main(jobs_path, binary, elsewhere=()):
     names = [l.rsplit(": ", 1)[0] for l in subprocess.run([binary, "--list"], capture_output=True, text=True).stdout.splitlines() if l.endswith(": test")]
+    names = [n for n in names if n.split("::", 1)[0] not in set(elsewhere)]
     module_runs = {n: [] for n in names}
     named_runs = {n: [] for n in names}
     for line in open(jobs_path):
@@ -70,4 +75,4 @@ def main(jobs_path, binary):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], sys.argv[2]))
+    sys.exit(main(sys.argv[1], sys.argv[2], sys.argv[3:]))

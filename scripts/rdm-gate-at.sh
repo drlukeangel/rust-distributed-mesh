@@ -285,7 +285,7 @@ for t in $SCENARIOS; do
         if [ -n "$m" ]; then
             # Exact names (rdm#96): libtest filters and skips are substrings, so `status::` also matched
             # node_row_status::; a module's job names its own tests whole and `--exact` matches nothing else.
-            e="$m --test-threads=8 --exact $("$m" --list 2>/dev/null | sed -n "s/^\($t::.*\): test\$/\1/p" | tr '\n' ' ')"
+            e="$m --test-threads=8 --exact $("$m" --list 2>/dev/null | sed -n "s/^\($t::.*\): test\$/\1/p" | paste -sd' ')"
         fi
     fi
     if [ -n "$e" ]; then echo "$t $e${FP_KILL_SKIP_ARGS:+ $FP_KILL_SKIP_ARGS}" >> $D/jobs; else echo "FAIL $t 0s" | tee -a $O; echo "FAIL scenario stem $t missing from $SCENARIO_PKG" >> $O.detail; fi
@@ -425,7 +425,7 @@ echo "address-lookup run:address-lookup" >> $D/jobs
 # rdm#96: every rdm-test test is selected by exactly one module job; a test no job selects, or two select, fails the gate by name.
 mainbin=$(exe $SCENARIO_PKG main)
 if [ -n "$mainbin" ]; then
-    if python3 scripts/gate-module-coverage.py $D/jobs "$mainbin" >> $O.detail 2>&1; then echo "ok module-coverage 0s" | tee -a $O; else echo "FAIL module-coverage 0s" | tee -a $O; fi
+    if python3 scripts/gate-module-coverage.py $D/jobs "$mainbin" $(for s in $SCENARIO_SKIP; do case "$s" in --skip) ;; *) m=${s%::}; case " $SCENARIOS " in *" $m "*) ;; *) printf "%s " "$m";; esac;; esac; done) >> $O.detail 2>&1; then echo "ok module-coverage 0s" | tee -a $O; else echo "FAIL module-coverage 0s" | tee -a $O; fi
 fi
 
 one(){
