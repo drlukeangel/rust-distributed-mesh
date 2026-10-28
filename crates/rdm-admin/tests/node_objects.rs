@@ -75,7 +75,7 @@ impl Capture {
 }
 
 /// A cell that panics leaves its trace: every span its capture holds (name, ids, attributes) goes to
-/// `target/i143-testkit/node_objects/<cell>.<pid>.spans.json`, so a red reads from its own spans
+/// `$TMPDIR/i143-testkit/node_objects/<cell>.<pid>.spans.json`, so a red reads from its own spans
 /// (did the admin accept the connection, how did the call end) and never from a rerun.
 impl Drop for Capture {
     fn drop(&mut self) {
@@ -102,7 +102,7 @@ impl Drop for Capture {
             })
             .collect();
         let cell = std::thread::current().name().unwrap_or("unnamed").replace("::", "__");
-        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/node_objects");
+        let dir = std::env::temp_dir().join("i143-testkit/node_objects");
         let path = dir.join(format!("{cell}.{}.spans.json", std::process::id()));
         let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(&spans).unwrap()));
         eprintln!("node_objects: the panicking cell's {} spans -> {} (flush: {flushed:?}, write: {written:?})", spans.len(), path.display());

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 /// A bootstrap `rdm-node-admin` run on `env` until it exits: its exit status, its stderr and the
 /// spans of its evidence file.
 fn boot(name: &str, env: &[(&str, String)]) -> (std::process::ExitStatus, String, Vec<serde_json::Value>, std::path::PathBuf) {
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(name);
+    let dir = std::env::temp_dir().join("i143-testkit").join(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let data_dir = dir.join("mesh1.admin.1");
@@ -111,7 +111,7 @@ impl Drop for Running {
 
 impl Day0 {
     fn at(name: &str) -> Self {
-        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(name);
+        let dir = std::env::temp_dir().join("i143-testkit").join(name);
         let _ = std::fs::remove_dir_all(&dir);
         let store = dir.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -291,7 +291,7 @@ impl Prepared {
         use rdm_admin::fabric_storage::FabricStorage as _;
         use rdm_admin::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId};
         use rdm_admin::storage::NodesStorage as _;
-        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(name);
+        let dir = std::env::temp_dir().join("i143-testkit").join(name);
         let _ = std::fs::remove_dir_all(&dir);
         let store = dir.join("store");
         std::fs::create_dir_all(&store).unwrap();

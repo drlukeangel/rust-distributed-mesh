@@ -52,4 +52,13 @@ PY
 [ -n "${exe:-}" ] || { echo "cells: no test executable '$target' in $pkg from this build" >&2; exit 2; }
 # Every executable runs at the gate's cadence, as the gate exports it for every executable (tools/test-runner lib.rs).
 export RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 RAFKA_BACKBONE_INTERVAL_MS=500
-cd "$dir" && CARGO_MANIFEST_DIR=$dir exec "$exe" "$@"
+# Test stores in RAM: every temp dir a cell makes (each estate's store root and data dirs, each testkit
+# span directory) is under this run's own directory on tmpfs, made here and removed when the run ends.
+# 2026-10-28, rdm#117's fsync measurement: a Day-0 admin makes ~30 serial fsyncs before it is Ready, and
+# with several lanes' gates writing to one ext4 journal each took 0.5-3 s, so a 0.5 s boot passed its
+# 10 s bound. Each cells.sh run has its own directory: parallel runs in one lane never remove another's.
+export TMPDIR=/dev/shm/rdm-lane-$(basename "$lane")/cells-$$
+rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
+cd "$dir" && CARGO_MANIFEST_DIR=$dir "$exe" "$@"; rc=$?
+rm -rf "$TMPDIR"
+exit $rc

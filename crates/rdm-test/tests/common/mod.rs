@@ -209,7 +209,7 @@ thread_local! {
 /// threads, goes to two layers of one subscriber: [`Spans`] (the name/parent/field map the cell's
 /// assertions read) and the product span pipeline (`rdm_transport::span_capture`: product's
 /// filter and its `BatchSpanProcessor`) in front of the JSONL evidence exporter, at
-/// `target/i143-testkit/<cell>/testkit.<pid>-<ns>.spans.jsonl`. A process the cell launches
+/// `$TMPDIR/i143-testkit/<cell>/testkit.<pid>-<ns>.spans.jsonl`. A process the cell launches
 /// through [`template`] writes its own JSONL into the same dir. The capture is flushed (bounded) when
 /// it drops, so a cell that panics leaves its trace.
 pub struct Capture {
@@ -221,7 +221,7 @@ pub struct Capture {
 
 /// The capture of the cell named `cell` (its test function's name).
 pub fn capture(cell: &str) -> Capture {
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell);
+    let dir = std::env::temp_dir().join("i143-testkit").join(cell);
     let exporter = rdm_transport::jsonl_span_exporter(&dir, "testkit").unwrap_or_else(|e| panic!("the span artifact dir {} is unusable: {e}", dir.display()));
     let spans = Spans::default();
     let (capture, layer) = rdm_transport::span_capture(cell, exporter);

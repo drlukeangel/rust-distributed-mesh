@@ -385,7 +385,7 @@ fn a_failing_child_leaves_no_trace_of_a_secret(test: &str, spawn_type: &'static 
         }
     }
     let cap = crate::common::capture(test);
-    let spans_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(test);
+    let spans_dir = std::env::temp_dir().join("i143-testkit").join(test);
     let value = format!("sentinel,value={}\nsecond={}", NodeId::mint(), NodeId::mint());
     let secret = |what: &str| SecretHex(rdm_core::launch::encode_hex(format!("{what}-{}", NodeId::mint()).as_bytes()));
     let issuing = IssuingMaterial { key: secret("issuing-key"), cert: "00abff".into(), root: secret("root"), ca_key: secret("ca-key") };

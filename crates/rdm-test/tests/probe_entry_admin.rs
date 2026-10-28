@@ -30,7 +30,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let data = std::env::temp_dir().join(format!("rdm-probe-entry-data-{}", std::process::id()));
     // The probe's span files stay after the cell, in the cell's own directory: its trace is the proof.
-    let evidence = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_node_rpc");
+    let evidence = std::env::temp_dir().join("i143-testkit/a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_node_rpc");
     let _ = std::fs::remove_dir_all(&data);
     let _ = std::fs::remove_dir_all(&evidence);
     std::fs::create_dir_all(&data).unwrap();

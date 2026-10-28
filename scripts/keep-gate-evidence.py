@@ -12,7 +12,7 @@ import tempfile
 
 def failed_cells(job_log: Path) -> list:
     """The function names of the cells a job's libtest log reports failed: each is the name of the
-    cell's testkit span directory (`target/i143-testkit/<cell>`)."""
+    cell's testkit span directory (`$TMPDIR/i143-testkit/<cell>`)."""
     if not job_log.is_file():
         return []
     names = re.findall(r"^(?:test )?([A-Za-z0-9_:]+)(?: \.\.\.)? (?:--- )?FAILED$", job_log.read_text(errors="replace"), re.MULTILINE)

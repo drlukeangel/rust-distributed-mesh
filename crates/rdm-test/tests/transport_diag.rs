@@ -25,7 +25,7 @@ const DIAG: &str = "transport-diag.log";
 
 /// The directory a cell owns: both of its processes compute the same one.
 fn cell_dir(cell: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell)
+    std::env::temp_dir().join("i143-testkit").join(cell)
 }
 
 fn line_with<'a>(file: &'a str, parts: &[&str]) -> Option<&'a str> {

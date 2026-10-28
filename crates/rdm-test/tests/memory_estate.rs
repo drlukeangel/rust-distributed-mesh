@@ -143,7 +143,7 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 #[test]
 fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing_to_the_file_store() {
     let cell = "a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing_to_the_file_store";
-    let artifacts = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell);
+    let artifacts = std::env::temp_dir().join("i143-testkit").join(cell);
     let exporter = rdm_transport::jsonl_span_exporter(&artifacts, "testkit").unwrap_or_else(|e| panic!("the span artifact dir {} is unusable: {e}", artifacts.display()));
     let (capture, layer) = rdm_transport::span_capture(cell, exporter);
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));

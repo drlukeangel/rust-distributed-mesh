@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 /// abandoned boot holding the exit past a Graceful stop's 5 s grace.
 #[test]
 fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_flush() {
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_flush");
+    let dir = std::env::temp_dir().join("i143-testkit/a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_flush");
     std::fs::create_dir_all(&dir).unwrap();
     let data_dir = std::env::temp_dir().join(format!("rdm-boot-stop-{}", NodeId::mint()));
     std::fs::create_dir_all(&data_dir).unwrap();

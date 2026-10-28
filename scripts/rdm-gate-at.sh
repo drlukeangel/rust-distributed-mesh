@@ -254,6 +254,15 @@ if [ "$GATE" = release ] && [ -f demo/Cargo.toml ] && [ -x scripts/i143-rshape-b
 fi
 
 
+# Test stores in RAM: every temp dir a job makes (each estate's store root and data dirs, each testkit span
+# directory) is under this lane's gate directory on tmpfs, made here, after every build (a compiler or an
+# sccache server started above never holds a directory this gate removes), and removed when the gate ends,
+# after the evidence of its reds is kept. 2026-10-28, rdm#117's fsync measurement: a Day-0 admin makes ~30
+# serial fsyncs before it is Ready, and with several lanes' gates writing to one ext4 journal each took
+# 0.5-3 s, so a 0.5 s boot passed its 10 s bound. The leftovers check below is unchanged.
+export TMPDIR=/dev/shm/rdm-lane-$(basename "$(pwd)")/gate
+rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"; trap 'rm -rf "$TMPDIR"' EXIT
+
 # 2. Every check and every scenario, in parallel, each a prebuilt test binary.
 exe(){ python3 - "$D/artifacts.json" "$@" <<'PY'
 import json,sys,os
@@ -512,7 +521,7 @@ if [ -n "$leaked" ]; then echo "FAIL leaked-processes $(echo $leaked | wc -w)" |
 # concurrent batch multiply every artifact by every red and perform disk work inside other
 # cells' bounds. Each refused job instead points at this gate's one immutable snapshot.
 if grep -q '^FAIL' "$O"; then
-    step evidence-keep 'python3 scripts/keep-gate-evidence.py "$O" "crates/$SCENARIO_PKG/tests/artifacts" "$DEPLOY/kept" "target/i143-testkit"'
+    step evidence-keep 'python3 scripts/keep-gate-evidence.py "$O" "crates/$SCENARIO_PKG/tests/artifacts" "$DEPLOY/kept" "$TMPDIR/i143-testkit"'
 fi
 # A fast gate with no FAIL records its tree: the land script does not gate an identical tree again.
 [ "$GATE" = fast ] && ! grep -q "^FAIL" $O && echo "$(git rev-parse HEAD^{tree}) $(date -Is) $SHA" >> $DEPLOY/green-trees

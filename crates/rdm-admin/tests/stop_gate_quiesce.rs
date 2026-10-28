@@ -170,7 +170,7 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
     });
 
     let spans = cap.spans();
-    let artifact = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell);
+    let artifact = std::env::temp_dir().join("i143-testkit").join(cell);
     std::fs::create_dir_all(&artifact).unwrap();
     std::fs::write(artifact.join("spans.jsonl"), spans.iter().map(|s| s.to_string() + "\n").collect::<String>()).unwrap();
     let me = "mesh1.admin.1";

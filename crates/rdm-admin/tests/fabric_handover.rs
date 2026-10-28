@@ -334,14 +334,14 @@ fn refusals(spans: &Spans) -> Vec<(String, String, String)> {
 }
 
 /// A captured cell leaves its spans whether it passed or panicked: every line of [`Spans::lines`]
-/// goes to `target/i143-testkit/fabric_handover/<cell>.<pid>.spans.txt`, so a red reads from its own
+/// goes to `$TMPDIR/i143-testkit/fabric_handover/<cell>.<pid>.spans.txt`, so a red reads from its own
 /// spans and never from a rerun.
 struct SpanFile(Spans);
 
 impl Drop for SpanFile {
     fn drop(&mut self) {
         let cell = std::thread::current().name().unwrap_or("unnamed").replace("::", "__");
-        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/fabric_handover");
+        let dir = std::env::temp_dir().join("i143-testkit/fabric_handover");
         let path = dir.join(format!("{cell}.{}.spans.txt", std::process::id()));
         let lines = self.0.lines();
         let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, lines.join("\n")));
@@ -428,7 +428,7 @@ impl TraceCapture {
 }
 
 /// A traced cell leaves its trace whether it passed or panicked: every span its capture holds
-/// (name, trace, attributes) goes to `target/i143-testkit/fabric_handover/<cell>.<pid>.spans.json`,
+/// (name, trace, attributes) goes to `$TMPDIR/i143-testkit/fabric_handover/<cell>.<pid>.spans.json`,
 /// so a red reads from its own spans and never from a rerun.
 impl Drop for TraceCapture {
     fn drop(&mut self) {
@@ -444,7 +444,7 @@ impl Drop for TraceCapture {
             })
             .collect();
         let cell = std::thread::current().name().unwrap_or("unnamed").replace("::", "__");
-        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/fabric_handover");
+        let dir = std::env::temp_dir().join("i143-testkit/fabric_handover");
         let path = dir.join(format!("{cell}.{}.spans.json", std::process::id()));
         let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(&spans).unwrap()));
         eprintln!("fabric_handover: the cell's {} spans -> {} (flush: {flushed:?}, write: {written:?})", spans.len(), path.display());

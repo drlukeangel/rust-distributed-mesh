@@ -765,7 +765,7 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
             serde_json::json!({"name": s.name, "trace_id": s.span_context.trace_id().to_string(), "span_id": s.span_context.span_id().to_string(), "parent_span_id": s.parent_span_id.to_string(), "attributes": attrs})
         })
         .collect();
-    let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/connections_writer");
+    let out_dir = std::env::temp_dir().join("i143-testkit/connections_writer");
     let _ = std::fs::create_dir_all(&out_dir).and_then(|_| std::fs::write(out_dir.join(format!("due_time_reconnect.{}.spans.json", std::process::id())), serde_json::to_vec_pretty(&spans).unwrap()));
     crate::assert_own_story(spans.iter().filter_map(|s| s["name"].as_str()));
     let named = |n: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == n).collect() };

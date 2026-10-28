@@ -265,7 +265,7 @@ impl Capture {
 }
 
 /// A cell leaves its trace: every span its capture holds (name, ids, attributes) goes to
-/// `target/i143-testkit/build_facts_read/<cell>.<pid>.spans.json`, whether the cell passed or panicked, so a red
+/// `$TMPDIR/i143-testkit/build_facts_read/<cell>.<pid>.spans.json`, whether the cell passed or panicked, so a red
 /// reads from its own spans (did the fetch complete on the transport, did the facts arrive and the Build stay
 /// unreadable) and never from a rerun.
 impl Drop for Capture {
@@ -286,7 +286,7 @@ impl Drop for Capture {
             })
             .collect();
         let cell = std::thread::current().name().unwrap_or("unnamed").replace("::", "__");
-        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/build_facts_read");
+        let dir = std::env::temp_dir().join("i143-testkit/build_facts_read");
         let path = dir.join(format!("{cell}.{}.spans.json", std::process::id()));
         let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(&spans).unwrap()));
         eprintln!("build_facts_read: the cell's {} spans -> {} (flush: {flushed:?}, write: {written:?})", spans.len(), path.display());

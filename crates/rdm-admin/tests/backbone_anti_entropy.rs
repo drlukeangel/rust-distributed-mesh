@@ -238,7 +238,7 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
     });
 
     let spans = cap.spans();
-    let artifact = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell);
+    let artifact = std::env::temp_dir().join("i143-testkit").join(cell);
     std::fs::create_dir_all(&artifact).unwrap();
     std::fs::write(artifact.join("spans.jsonl"), spans.iter().map(|s| s.to_string() + "\n").collect::<String>()).unwrap();
     let receipts: Vec<(u64, String)> = spans
