@@ -1566,6 +1566,7 @@ impl DriveEnv {
                     self.release_mesh(&id, attempt, &executor).await;
                     self.gate.attempt_completed(&id, attempt).await;
                     // The Build's Complete is recorded: the ending's last step (Q256).
+                    self.notices.ended(&me, &self.door.contexts, &id, attempt, p.reason, crate::wiring::BuildEndedState::Complete, &dspan);
                     drive.finish(t);
                     return DriveEnd::Terminal;
                 }
@@ -1582,6 +1583,7 @@ impl DriveEnv {
                     self.release_mesh(&id, attempt, &executor).await;
                     self.gate.attempt_failed(&id, attempt).await;
                     // The Build's Failed is recorded: the ending's last step (Q256).
+                    self.notices.ended(&me, &self.door.contexts, &id, attempt, p.reason, ended_state(&t), &dspan);
                     drive.finish(t);
                     return DriveEnd::Terminal;
                 }
@@ -1744,6 +1746,7 @@ impl DriveEnv {
                     Ok(ended) if ended.state == BuildState::Failed && ended.failed_at == Some(p.attempt) => {
                         span.in_scope(|| tracing::info!(%reason, "the interrupted Build's attempt ran at this fabric-primary with no run live here: it ends Failed naming the fabric.delete"));
                         // The Build's Failed is recorded: the ending's last step (Q256).
+                        self.notices.ended(me, &self.door.contexts, id, p.attempt, p.reason, state, &span);
                         Interrupted::Ended { attempt: p.attempt, reason }
                     }
                     Ok(other) => Interrupted::Open(format!("{me}: the terminal of attempt {} of Build {id}, which fabric.delete {} interrupts, was not recorded: the Build reads {:?} at attempt {}", p.attempt, delete.build_id, other.state, other.attempt)),
@@ -1783,6 +1786,7 @@ impl DriveEnv {
         // The Build's Failed is recorded: the ending's last step (Q256). An attempt claimed here only to
         // end it opened nothing, and sends no on_build_started.
         let state = crate::wiring::BuildEndedState::Failed { step: "fabric.delete".into(), reason: crate::build_run::bounded_reason(reason.clone()), code: rdm_core::outcome::Code::Aborted };
+        self.notices.ended(me, &self.door.contexts, id, attempt, p.reason, state, &span);
         Interrupted::Ended { attempt, reason }
     }
 
@@ -1824,6 +1828,7 @@ impl DriveEnv {
         let id = &drive.build_id;
         let context = match self.door.claim(&me.to_string(), id, attempt).await {
             BuildClaimReply::Won { context } => {
+                self.started_if_opening(me, p, attempt, &context).await;
                 context
             }
             other => {
@@ -1879,6 +1884,7 @@ impl DriveEnv {
             dspan.record("outcome", "failed").record("reason", why.as_str());
             // The Build's Failed is recorded: the ending's last step (Q256).
             if recorded {
+                self.notices.ended(me, &self.door.contexts, id, attempt, p.reason, ended_state(&terminal), &dspan);
             }
             drive.finish(terminal);
             return Err(DriveEnd::Terminal);
@@ -2028,6 +2034,7 @@ impl DriveEnv {
                 if let Some(mesh) = crash_mesh {
                     self.departure.mesh_given_node_admin(&mesh, id, attempt, from).await;
                 }
+                self.started_if_opening(me, p, attempt, &context).await;
                 Ok((attempt, lead, context))
             }
             BuildClaimReply::Lost { holder } => match parse_path(&holder) {

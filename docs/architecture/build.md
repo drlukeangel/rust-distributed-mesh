@@ -262,7 +262,7 @@ current executor/attempt evidence
 completed step receipts and outputs
 ```
 
-A primary or executor change during that active Build keeps the same `build_id`. A primary change is not a topology mutation and never mints a Build. An attempt lost with its executor (no terminal receipt, the executor unheard) leaves the Build in progress (`Running`), and a successor or drift pass claims the next attempt (`attempt + 1`); only an attempt that ends with a named terminal failure (`Failed { step, reason }`) makes the Build failed.
+A primary or executor change during that active Build keeps the same `build_id`. A primary change is not a topology mutation and never mints a Build. An attempt lost with its executor (no terminal receipt, the executor unheard) leaves the Build in progress (`Running`), and a successor or drift pass claims the next attempt (`attempt + 1`); only an attempt that ends with a named terminal failure (`Failed { step, reason }`) makes the Build failed. An opening's first step is the fabric-primary's [`on_build_started`](fabric-node-hooks.md#on_build_started) notice, sent after the claim of the opening's first attempt is recorded; it writes no receipt and gates nothing. The ending's last step is the fabric-primary's [`on_build_ended`](fabric-node-hooks.md#on_build_ended) notice to the application, sent after the terminal (`Complete` or `Failed { step, reason }`) is recorded; it writes no receipt and gates nothing.
 
 ```text
 Build B123 in progress (the current Build)
@@ -286,7 +286,7 @@ Build B123 completed (the current Build)
 later exact runtime death of a node
     -> node recovery: node.delete of the lost node, node.create at the same path.name
     -> accepted topology unchanged
-    -> the mesh-primary of the member's mesh runs the next attempt of B123; the fabric-primary records it
+    -> the mesh-primary of the member's mesh opens the next attempt of B123 on its mesh's rows, claims and runs it itself (R-BI7); the Build stays completed, and the fabric-primary reads the attempt's verdict from the Build journal
     -> perform only unsatisfied work
     -> append receipts to B123 in builds.storage
     -> B123 converged again
