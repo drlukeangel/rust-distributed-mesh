@@ -616,7 +616,7 @@ async fn wait_for_renewal(estate: &rdm_test::estate::Estate, moved_at_ns: u64, w
 // @feature: node-lifecycle
 /// CONTRACT (mesh-issuer-renew.md; node-issuer-update.md; node-cert-renew.md "members renewed from then
 /// on carry the new issuer, and members not yet due keep the old one until their own turn";
-/// fabric-certs.md §chain): under a 24 s issuing TTL the fabric-primary re-mints mesh1's issuer at its
+/// fabric-certs.md §chain): under a 48 s issuing TTL the fabric-primary re-mints mesh1's issuer at its
 /// row's point (`rdm.node_admin.issuer.create.via-renewal`) and carries it to mesh1.admin.2
 /// (`UpdateIssuer`, its `via-renewal` `installed`, the admin's `via-installed`). A member that admin
 /// deploys afterwards is signed by the new issuer; a member that joined before holds the old one's
@@ -630,7 +630,7 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        const ISSUING_TTL_SECS: u64 = 24;
+        const ISSUING_TTL_SECS: u64 = 48;
         let dir = cell_dir("rotation");
         let root = boot_root(&dir, &policy(&[(certs::ENV_ISSUING_CERT_TTL_SECS, ISSUING_TTL_SECS), (certs::ENV_MEMBER_CERT_TTL_SECS, 120)])).await;
         // The mesh's first join mints its issuer (`mesh.issuer.create`) and puts the issuer row.
@@ -638,9 +638,12 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         let (admin2, env) = launched_admin(&root, &dir).await;
         let old = certs::decode_issuing_cert(&env[rdm_core::launch::ENV_ISSUING_CERT]).expect("mesh1's issuing cert");
         let minted_at = old.cert.expiry_ms - ISSUING_TTL_SECS * 1000;
-        // The holder of the old issuer's cert joins late in its issuer's life, so its own renewal falls
-        // well after the rotation.
-        until("rafka-time is 60 % into the old issuer's life", BOUND, async || (root.rafka_time.now_ms() >= minted_at + ISSUING_TTL_SECS * 600).then_some(())).await;
+        // The holder of the old issuer's cert joins halfway through its issuer's life. The issuer is
+        // re-minted at 67-72 % of its life (RDM_CERT_RENEW_AT plus a jitter of up to 5 %), so the join
+        // has 17-22 % of 48 s (8-10 s) to finish under the old issuer. The holder's own cert, capped at
+        // the issuer's expiry, is renewed at 67-72 % of what is left (84-86 % of the issuer's life),
+        // after its calls are cut below.
+        until("rafka-time is 50 % into the old issuer's life", BOUND, async || (root.rafka_time.now_ms() >= minted_at + ISSUING_TTL_SECS * 500).then_some(())).await;
         let holder = member(&root, &dir, "mesh1.rpc.1").await;
         assert_eq!(signed(&holder.member_cert).issuer, old, "it joined under the old issuer");
 
