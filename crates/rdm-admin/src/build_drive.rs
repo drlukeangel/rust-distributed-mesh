@@ -784,6 +784,11 @@ impl Drives {
                 async move {
                     let end = env.run(&d).await;
                     d.running.store(false, Ordering::SeqCst);
+                    // The Build's end is what the drift check waits on: the reconcile loop runs its next
+                    // pass on it.
+                    if end == DriveEnd::Terminal {
+                        drives.ended.send_modify(|v| *v += 1);
+                    }
                     // A Build that completed keeps its drive: the frames it recorded are what a
                     // re-submit is answered from.
                     if matches!(end, DriveEnd::Terminal | DriveEnd::SeatLost(_)) && !d.completed() {

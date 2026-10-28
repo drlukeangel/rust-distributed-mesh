@@ -427,6 +427,9 @@ impl BuildDoor {
                 tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id.log(), lane = %mesh, attempt, mesh = %mesh, node = %me, error = %e)
                     .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
             }
+            // The verdict and the released row are what a drive refused for this mesh's in-flight row
+            // waits on (R-BI7): the reconcile loop runs its next pass on them.
+            self.control.build_submitted.notify_waiters();
             terminal
         }
         .instrument(span.clone())

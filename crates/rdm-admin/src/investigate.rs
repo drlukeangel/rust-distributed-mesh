@@ -203,12 +203,31 @@ impl Ladder {
 
     /// Forget everything: this node is not the fabric primary.
     pub fn clear(&mut self) {
+        let held = self.meshes.keys().any(|m| self.held(m) != (false, None));
         self.meshes.clear();
+        if held {
+            self.moved.send_modify(|v| *v += 1);
+        }
     }
 
     /// Forget `mesh`: it has no backbone receipt held at all.
     pub fn forget(&mut self, mesh: &str) {
+        let before = self.held(mesh);
         self.meshes.remove(mesh);
+        self.moved_since(mesh, before);
+    }
+
+    /// What the R-D1 target, the drift check and the drive read of `mesh` from this ladder: whether it
+    /// is tracked and its decision, `(false, None)` for a mesh it holds nothing of.
+    fn held(&self, mesh: &str) -> (bool, Option<bool>) {
+        self.meshes.get(mesh).map(|st| (st.tracked, st.verdict)).unwrap_or((false, None))
+    }
+
+    /// Move the watch when what this ladder holds of `mesh` differs from `before`.
+    fn moved_since(&self, mesh: &str, before: (bool, Option<bool>)) {
+        if self.held(mesh) != before {
+            self.moved.send_modify(|v| *v += 1);
+        }
     }
 
     /// Has this ladder decided the recovery of `mesh`'s node-admins? A fabric primary holds that
@@ -264,6 +283,14 @@ impl Ladder {
     /// a probe is in flight the ladder still tracks and marks, and asks for no other probe and no
     /// decision.
     pub fn step(&mut self, mesh: &str, unheard: Duration) -> Vec<Step> {
+        let before = self.held(mesh);
+        let out = self.stepped(mesh, unheard);
+        self.moved_since(mesh, before);
+        out
+    }
+
+    /// [`Self::step`]'s ladder, without the watch.
+    fn stepped(&mut self, mesh: &str, unheard: Duration) -> Vec<Step> {
         let Ladder { rungs: r, meshes, issued, .. } = self;
         let r = *r;
         let st = meshes.entry(mesh.to_string()).or_default();

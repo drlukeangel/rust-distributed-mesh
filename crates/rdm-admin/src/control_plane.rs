@@ -60,7 +60,8 @@ pub struct ControlPlane {
     /// owns the digest view). Load is served beside the view, never inside it: it changes every
     /// digest and never moves the topology.
     pub loads: std::sync::OnceLock<Arc<dyn Fn() -> std::collections::BTreeMap<String, (Option<rdm_core::NodeLoad>, Option<rdm_core::GossipStats>)> + Send + Sync>>,
-    /// Woken on every accepted Build so the executor re-plans.
+    /// Woken on every accepted Build, every attempt opened and every mesh drift attempt's end on this
+    /// admin: the reconcile loop runs its next pass on it (`ReconcileWake`).
     pub build_submitted: Arc<Notify>,
     /// The fabric's change told of a Build this admin accepted, before the door answers it: a resize or
     /// an executable replacement puts the fabric back to pending inside the acceptance (states.md,

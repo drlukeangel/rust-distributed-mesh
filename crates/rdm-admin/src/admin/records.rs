@@ -615,11 +615,13 @@ impl Records {
         *self.fabric_state.lock().unwrap()
     }
 
-    /// Hold the fabric state; the view follows at its next projection.
+    /// Hold the fabric state; the view follows at its next projection. A change wakes the declarer and
+    /// moves the watch the reconcile loop waits on.
     pub fn set_fabric_state(&self, state: crate::fabric_state::FabricState) {
         let changed = std::mem::replace(&mut *self.fabric_state.lock().unwrap(), state) != state;
         if changed {
             self.wake.poke();
+            self.fabric_state_watch.send_replace(state);
         }
     }
 

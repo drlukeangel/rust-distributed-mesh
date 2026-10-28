@@ -282,31 +282,35 @@ pub(crate) fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepR
 pub enum Woken {
     /// The loop's first pass, as it starts.
     First,
-    /// A Build accepted or an attempt opened (`ControlPlane::build_submitted`).
+    /// A Build accepted, an attempt opened, or a mesh's drift attempt ended on this admin
+    /// (`ControlPlane::build_submitted`).
     Submitted,
-    /// The installed view changed (`Records::subscribe_view`).
+    /// The installed view changed (`Records::subscribe_view`): births, status, primaries,
+    /// verdicts, deleted meshes, the fabric-primary.
     ViewInstalled,
     /// The fabric state changed (`Records::subscribe_fabric_state`).
     FabricState,
-    /// The peer-mesh investigation moved what it holds of a mesh (`Ladder::subscribe_moved`).
+    /// The peer-mesh investigation moved what it holds of a mesh: tracked, decided, heard again,
+    /// forgotten (`Ladder::subscribe_moved`).
     PeerMesh,
     /// A drive ended its Build (`Drives::subscribe_ended`).
     DriveEnded,
-    /// The loop's 300 ms arm.
-    Tick,
 }
 
-/// The reconcile loop's wait between two passes: the loop is `loop { wake.next().await; <pass> }`.
+/// The reconcile loop's wait between two passes (Q253, amended by Luke 2026-10-28: "I hate timers;
+/// make this event driven"): the loop is `loop { wake.next().await; <pass> }`, and a pass runs on an
+/// event, never on a tick. Each event the pass decides on wakes it: a Build submitted, a view installed,
+/// the fabric state changed, the peer-mesh investigation moved, a drive ended its Build. An event during
+/// a pass (the pass's own install among them) is held for the next: every source is marked seen as a
+/// pass begins, and the submit's notification is armed then, so a `notify_waiters` while the pass runs
+/// is not lost. The wait touches no lock.
 pub struct ReconcileWake {
     submitted: Arc<tokio::sync::Notify>,
-    started: bool,
-    #[allow(dead_code)]
+    /// The submit's notification armed as the last pass began; `None` before the first pass.
+    armed: Option<std::pin::Pin<Box<tokio::sync::futures::OwnedNotified>>>,
     view: tokio::sync::watch::Receiver<u64>,
-    #[allow(dead_code)]
     fabric_state: tokio::sync::watch::Receiver<crate::fabric_state::FabricState>,
-    #[allow(dead_code)]
     peer_mesh: tokio::sync::watch::Receiver<u64>,
-    #[allow(dead_code)]
     drive_ended: tokio::sync::watch::Receiver<u64>,
 }
 
@@ -321,18 +325,31 @@ impl ReconcileWake {
         peer_mesh: tokio::sync::watch::Receiver<u64>,
         drive_ended: tokio::sync::watch::Receiver<u64>,
     ) -> Self {
-        Self { submitted, started: false, view, fabric_state, peer_mesh, drive_ended }
+        Self { submitted, armed: None, view, fabric_state, peer_mesh, drive_ended }
     }
 
-    /// Wait for the next pass: the first returns at once.
+    /// Wait for the next pass's event: the first pass begins at once. Every source is marked seen and
+    /// the submit armed before this returns, so the pass that follows reads everything that happened
+    /// before it and the next wait wakes on anything after. A source whose sender is gone wakes nothing.
     pub async fn next(&mut self) -> Woken {
-        if !std::mem::replace(&mut self.started, true) {
-            return Woken::First;
-        }
-        tokio::select! {
-            _ = self.submitted.notified() => Woken::Submitted,
-            _ = tokio::time::sleep(Duration::from_millis(300)) => Woken::Tick,
-        }
+        let woken = match self.armed.take() {
+            None => Woken::First,
+            Some(mut armed) => tokio::select! {
+                _ = armed.as_mut() => Woken::Submitted,
+                Ok(()) = self.view.changed() => Woken::ViewInstalled,
+                Ok(()) = self.fabric_state.changed() => Woken::FabricState,
+                Ok(()) = self.peer_mesh.changed() => Woken::PeerMesh,
+                Ok(()) = self.drive_ended.changed() => Woken::DriveEnded,
+            },
+        };
+        let mut armed = Box::pin(self.submitted.clone().notified_owned());
+        armed.as_mut().enable();
+        self.armed = Some(armed);
+        self.view.mark_unchanged();
+        self.fabric_state.mark_unchanged();
+        self.peer_mesh.mark_unchanged();
+        self.drive_ended.mark_unchanged();
+        woken
     }
 }
 

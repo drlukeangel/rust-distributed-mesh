@@ -3234,7 +3234,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // The reconcile loop: the drift check, and the fabric-primary's drive of every active Build
                                     // (`build_drive`). Only the fabric-primary drives; an executor runs what it is called with
                                     // (`build_run`) and picks nothing up from its projection. A launched admin starts it only after
-                                    // its entry pull, so its first view is its launcher's.
+                                    // its entry pull, so its first view is its launcher's. Each pass after the first runs on an
+                                    // event, never a tick (Q253 amended, `ReconcileWake`).
                                     {
                                         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
                                         let (digest_view, records, fabric, fabric_id, provider) = (digest_view.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
