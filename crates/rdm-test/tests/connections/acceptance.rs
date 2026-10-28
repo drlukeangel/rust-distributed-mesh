@@ -442,14 +442,18 @@ async fn a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects
     wait_for("the Proxy is held", Duration::from_secs(15), || async { (snapshot(&estate, SOURCE)["own_active_proxies"].as_array().map(Vec::len) == Some(1)).then_some(()) }).await;
 
     // 1. The carrier loses its edge: its Direct toward the destination is closed by id, its
-    // Disconnected landed (a drop is no reconnect series: nothing re-dials it, §5.1).
+    // Disconnected landed and held by the carrier (a drop is no reconnect series: nothing re-dials it, §5.1).
     let edge = rows(&estate.connection_history(CARRIER), DEST, "Direct").into_iter().rev().find(|r| r["state"] == "Connected").cloned().expect("the carrier's edge");
     let closed = connections_delete_ids(&estate, CARRIER, &[s(&edge["id"])]).await;
     assert!(matches!(&closed, rdm_core::status::StatusReply::ConnectionsDeleted { closed, .. } if closed.iter().any(|c| c.to_string() == s(&edge["id"]))), "the carrier's edge is closed by id: {closed:?}");
-    wait_for("the carrier's Disconnected landed", Duration::from_secs(15), || async {
-        rows(&estate.connection_history(CARRIER), DEST, "Direct").last().is_some_and(|r| r["state"] != "Connected").then_some(())
+    // The carrier refuses from what it holds (§8), and it holds the drop only once its write lands
+    // (Q169); the drop's line is in the store file before its write lands (the write is then
+    // fsynced), so the wait reads the carrier's held projection, never the file.
+    wait_for("the carrier holds its Disconnected", Duration::from_secs(15), || async {
+        snapshot(&estate, CARRIER)["own_latest_directs"].as_array().into_iter().flatten().any(|d| d["destination"]["name"] == DEST && d["alpn"] == edge["alpn"] && d["state"] == "Disconnected").then_some(())
     })
     .await;
+    assert_eq!(rows(&estate.connection_history(CARRIER), DEST, "Direct").last().map(|r| r["state"].clone()), Some(serde_json::json!("Disconnected")), "the carrier's Disconnected is its latest Direct row");
 
     // 2. The source's next open: refused by the carrier by name; the Proxy is disconnected with it.
     let refused = stream(&estate, SOURCE, DEST, "after-edge-lost");
