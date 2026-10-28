@@ -8,26 +8,8 @@
 use crate::common::admin_view::{node, serve_on_own_runtime};
 use rdm_core::{IncarnationId, NodeId};
 
-/// The probe's `via-probe` root span is in its span file, or its exit ended its evidence flush at its
-/// bound with the loss named whole (i146 Q42: the bound is the contract, a named, bounded loss). The span
-/// file is opened by its first export, so a flush that ended before any export left none.
 fn root_span_or_named_loss(evidence: &std::path::Path, stderr: &str) {
-    let files: Vec<std::path::PathBuf> = std::fs::read_dir(evidence)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rdm-rpc-probe.") && n.to_string_lossy().ends_with(".spans.jsonl")))
-        .collect();
-    let spans: String = files.iter().map(|p| std::fs::read_to_string(p).unwrap_or_default()).collect();
-    if spans.contains("rdm.node_rpc.proof_store.resolve.via-probe") {
-        return;
-    }
-    let written = spans.lines().filter(|l| !l.trim().is_empty()).count();
-    match crate::common::loss_named_whole(stderr, written) {
-        Some((unwritten, handed)) => println!("the probe's exit flush ended at its bound: {written} written and {unwritten} named unwritten of {handed} handed"),
-        None => panic!("the probe left no via-probe span and named no loss whole: {written} spans in {files:?}: {spans:?}; stderr: {stderr}"),
-    }
+    let _ = crate::common::probe_root_span_or_named_loss(evidence, stderr);
 }
 
 /// CONTRACT: a probe asked to carry a call through a resolvable carrier to an exact node its view

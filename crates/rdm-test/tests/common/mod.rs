@@ -32,6 +32,69 @@ pub fn loss_named_whole(stderr: &str, written: usize) -> Option<(usize, usize)> 
     named_loss(stderr).filter(|(unwritten, handed)| *unwritten > 0 && written + unwritten >= *handed)
 }
 
+/// The probe's `via-probe` root span from its span files in `evidence`, or `None` when the probe's exit
+/// ended its evidence flush at its bound with the loss named whole on `stderr` (i146 Q42, Q60: the bound is
+/// the contract, a named, bounded loss; the span file is opened by its first export, so a flush that ended
+/// before any export left none). Any other absence panics with what the directory held.
+pub fn probe_root_span_or_named_loss(evidence: &std::path::Path, stderr: &str) -> Option<serde_json::Value> {
+    let files: Vec<std::path::PathBuf> = std::fs::read_dir(evidence)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rdm-rpc-probe.") && n.to_string_lossy().ends_with(".spans.jsonl")))
+        .collect();
+    let spans: Vec<serde_json::Value> = files.iter().flat_map(|p| std::fs::read_to_string(p).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect::<Vec<_>>()).collect();
+    if let Some(root) = spans.iter().find(|s| s["name"] == "rdm.node_rpc.proof_store.resolve.via-probe") {
+        return Some(root.clone());
+    }
+    match loss_named_whole(stderr, spans.len()) {
+        Some((unwritten, handed)) => {
+            println!("the probe's exit flush ended at its bound: {} written and {unwritten} named unwritten of {handed} handed", spans.len());
+            None
+        }
+        None => panic!("the probe left no via-probe span and named no loss whole: {} spans in {files:?}: {spans:?}; stderr: {stderr}", spans.len()),
+    }
+}
+
+#[cfg(test)]
+mod probe_root_span_tests {
+    use super::probe_root_span_or_named_loss as read;
+
+    fn empty_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("rdm-probe-root-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A probe whose exit flush ended at its bound before its first export left no span file and named the loss.
+    #[test]
+    fn exit_flush_ended_at_its_bound_before_any_export_is_a_named_loss() {
+        let d = empty_dir("loss");
+        let stderr = "telemetry: the evidence flush ended at its bound (2000 ms): 3 of 3 spans not confirmed written to the evidence file\n";
+        assert!(read(&d, stderr).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// No span file and no loss named is still a failure.
+    #[test]
+    #[should_panic(expected = "named no loss whole")]
+    fn no_span_file_and_no_loss_named_is_refused() {
+        let d = empty_dir("none");
+        read(&d, "");
+    }
+
+    /// The root span in a span file is returned.
+    #[test]
+    fn root_span_in_the_file_is_returned() {
+        let d = empty_dir("root");
+        std::fs::write(d.join("rdm-rpc-probe.1.spans.jsonl"), "{\"name\":\"rdm.node_rpc.proof_store.resolve.via-probe\",\"trace_id\":\"t\"}\n").unwrap();
+        assert_eq!(read(&d, "").unwrap()["trace_id"], "t");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_admin::accepted::{FabricTopology, MeshTopology};
 use rdm_admin::build::BuildId;

@@ -14,7 +14,8 @@ use rdm_core::{IncarnationId, NodeId};
 /// CONTRACT: a probe whose admin view holds a node with an `endpoint_id` that is not an Iroh key
 /// refuses the whole call: exit status 2, one `Refused` line whose reason names that node's id, the
 /// field `endpoint_id`, the value it held and the parse error the key type gives, and the probe's
-/// `via-probe` span carries the same refusal. The probe closes its endpoint before it refuses (it was
+/// `via-probe` span carries the same refusal, or its exit ended its evidence flush at its bound with the loss
+/// named whole (i146 Q42, Q60). The probe closes its endpoint before it refuses (it was
 /// bound to read the view). What must NOT happen: a `NotSent`/`Resolve` outcome, exit status 0, a
 /// refusal that makes the reader open the view to learn which node failed, or the ungraceful-abort line.
 #[test]
@@ -40,16 +41,12 @@ fn probe_with_unreadable_endpoint_refuses_naming_the_node() {
         assert!(reason.contains(part), "the refusal names {part:?}: {reason:?}");
     }
     assert!(!stderr.contains("dropped without calling"), "the probe's endpoint was dropped open: {stderr}");
-    let spans: Vec<serde_json::Value> = std::fs::read_dir(&evidence)
-        .unwrap()
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("rdm-rpc-probe.") && e.file_name().to_string_lossy().ends_with(".spans.jsonl"))
-        .flat_map(|e| std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect::<Vec<serde_json::Value>>())
-        .collect();
-    let probe = spans
-        .iter()
-        .find(|s| s["name"] == "rdm.node_rpc.proof_store.resolve.via-probe")
-        .unwrap_or_else(|| panic!("the probe left no via-probe span; evidence dir holds: {spans:?}"));
+    let Some(probe) = crate::common::probe_root_span_or_named_loss(&evidence, &stderr) else {
+        // The exit's evidence flush ended at its bound, the loss named whole (i146 Q42): the printed refusal above is the proof.
+        rt.block_on(admin.shutdown());
+        let _ = std::fs::remove_dir_all(&evidence);
+        return;
+    };
     let refused = probe["events"].as_array().into_iter().flatten().find(|e| e["name"] == "the probe refused the call");
     assert_eq!(refused.map(|e| e["attributes"]["refusal"].as_str()), Some(Some(reason)), "the via-probe span carries the refusal the probe printed: {probe}");
     eprintln!("probe_view_entry trace_id={} span={} refusal={reason}", probe["trace_id"].as_str().unwrap_or_default(), probe["name"].as_str().unwrap_or_default());
