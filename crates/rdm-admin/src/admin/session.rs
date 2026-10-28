@@ -769,7 +769,12 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
                 self.records.meshes.lock().unwrap().entry(d.node.name.mesh.clone()).or_insert_with(|| id.clone());
             }
         }
-        if map.iter().any(|n| n.name.mesh == self.mesh && n.node_id != self.me_id) {
+        // The mesh exists when the maker names another birth its primary, though its answer lists none
+        // of the mesh's nodes (a maker that has published no snapshot of its own mesh yet answers it
+        // absent, node-rpc-envelope.md's Stored, yet its Primaries frame names the mesh's primary):
+        // this admin enters an existing mesh, never waits for a Pending that is not its own (rdm#130).
+        let primary_elsewhere = read.seats.iter().any(|(seat, p, gone)| *seat == rdm_core::Seat::MeshPrimary && p.mesh == self.mesh && p.node_id != self.me_id && !gone);
+        if primary_elsewhere || map.iter().any(|n| n.name.mesh == self.mesh && n.node_id != self.me_id) {
             self.entering.store(true, std::sync::atomic::Ordering::SeqCst);
             let sweep = spawn_entry_sweep(&self.gate, self.entry.clone(), "maker", map, self.sweep.clone(), self.records.clone(), self.provider);
             self.start_tasks.lock().unwrap().push(sweep);
