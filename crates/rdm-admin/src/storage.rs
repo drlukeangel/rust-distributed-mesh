@@ -1639,9 +1639,11 @@ mod tests {
     /// CONTRACT (node-identity-and-state.md §4; states.md "Who sets each state" and the paragraph after
     /// it, Q233): a node's status on its record follows states.md's order through a stop and a start, a
     /// declaration inside node.stop leaves it stopping, a superseded birth moves nothing, and a `Deleted`
-    /// record stands. delete is the mesh-primary's workflow: deleting from its claim, over a live or a
-    /// stopped node; the frames of the stop it composes move the row as a stop's do, stopping through
-    /// stopped; then deleted. A ready, a pending or a starting moves a deleting row nowhere.
+    /// record stands. A stop's acknowledgement sets stopping over any status but stopped, a node already
+    /// connections-deleted or left included. delete is the mesh-primary's workflow: deleting from its
+    /// claim, over a live or a stopped node; the frames of the stop it composes move the row as a stop's
+    /// do, stopping through stopped; then deleted. A ready, a pending or a starting moves a deleting row
+    /// nowhere.
     // @feature: node-lifecycle
     #[test]
     fn a_node_records_status_follows_the_order_states_md_names() {
@@ -1653,12 +1655,17 @@ mod tests {
         let walk = |r: &mut NodeRow, steps: &[(S, S)]| for (to, then) in steps { r.set_status(&birth, *to); assert_eq!(r.status, *then, "after {to:?}"); };
         walk(&mut r, &[(S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic), (S::Starting, S::ReadyForTraffic), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
         // A stop (Q205): stopping from its admission, then each primitive's frame, then stopped.
-        walk(&mut r, &[(S::Stopping, S::Stopping), (S::ReadyForTraffic, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::ConnectionsDeleting, S::Left), (S::Stopped, S::Stopped), (S::Left, S::Stopped)]);
+        // The node's Stopped declaration may reach the mesh-primary before the stream's last frames
+        // (node-stop.md step 5): a stopped row stands, and no stopping takes it.
+        walk(&mut r, &[(S::Stopping, S::Stopping), (S::ReadyForTraffic, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::ConnectionsDeleting, S::Left), (S::Stopped, S::Stopped), (S::Left, S::Stopped), (S::Stopping, S::Stopped)]);
         walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
         walk(&mut r, &[(S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::ConnectionsDeleting, S::ConnectionsDeleted)]);
-        // A stop of a node already connections-deleted and left: its admission and its primitives'
-        // frames find the row past them, and its stopped moves it.
-        walk(&mut r, &[(S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopping, S::Left), (S::ConnectionsDeleting, S::Left), (S::ConnectionsDeleted, S::Left), (S::Leaving, S::Left), (S::Stopped, S::Stopped)]);
+        // A stop of a node already connections-deleted: its acknowledgement sets stopping (Q233), and
+        // its primitives' frames move the row on to stopped.
+        walk(&mut r, &[(S::Stopping, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopped, S::Stopped)]);
+        walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
+        // A stop of a node already left: the same.
+        walk(&mut r, &[(S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopping, S::Stopping), (S::ConnectionsDeleting, S::ConnectionsDeleting), (S::ConnectionsDeleted, S::ConnectionsDeleted), (S::Leaving, S::Leaving), (S::Left, S::Left), (S::Stopped, S::Stopped)]);
         walk(&mut r, &[(S::Starting, S::Starting), (S::Pending, S::Pending), (S::ReadyForTraffic, S::ReadyForTraffic)]);
         // A delete of the live node: deleting from its claim, then the composed stop's frames.
         walk(&mut r, &[(S::Deleting, S::Deleting), (S::ReadyForTraffic, S::Deleting), (S::Pending, S::Deleting), (S::Starting, S::Deleting)]);
