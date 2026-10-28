@@ -754,10 +754,16 @@ impl BuildNotices {
     }
 
     /// `on_build_ended` of attempt `attempt` of `build_id`, whose terminal `state` is recorded, under its
-    /// own span (`rdm.node_admin.build.update.via-on-build-ended`), a child of `parent`.
+    /// own span (`rdm.node_admin.build.update.via-on-build-ended`) in the trace of `parent`, the attempt's
+    /// span: parented through its trace context, never as a local child, so a notice not yet sent holds
+    /// the attempt's span open for nothing.
     fn ended(&self, me: &PathName, contexts: &Arc<crate::build_claim::AttemptContexts>, build_id: &BuildId, attempt: u32, reason: crate::build_state::AttemptReason, state: crate::wiring::BuildEndedState, parent: &tracing::Span) {
         let hook = self.fabric_id.clone().zip(self.on_build_ended.clone());
-        let span = tracing::info_span!(parent: parent, "rdm.node_admin.build.update.via-on-build-ended", node = %me, build_id = %build_id.log(), attempt, reason = reason.as_str(), state = state.as_str(), outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
+        let span = tracing::info_span!(parent: None, "rdm.node_admin.build.update.via-on-build-ended", node = %me, build_id = %build_id.log(), attempt, reason = reason.as_str(), state = state.as_str(), outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
+        let under = parent.in_scope(crate::build_claim::current_context);
+        if let Some(tp) = &under.traceparent {
+            rdm_transport::set_remote_parent(&span, tp, under.tracestate.as_deref());
+        }
         let (contexts, build_id) = (contexts.clone(), build_id.clone());
         tokio::spawn(
             async move {
