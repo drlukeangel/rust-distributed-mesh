@@ -283,8 +283,9 @@ for t in $SCENARIOS; do
     if [ -z "$e" ] && [ -f crates/$SCENARIO_PKG/tests/main.rs ] && grep -qs "^mod $t;" crates/$SCENARIO_PKG/tests/main.rs; then
         m=$(exe $SCENARIO_PKG main)
         if [ -n "$m" ]; then
-            skips=$(sed -n "s/^mod \(..*$t\);/ --skip \1::/p" crates/$SCENARIO_PKG/tests/main.rs | tr -d '\n')
-            e="$m --test-threads=8$skips $t::"
+            # Exact names (rdm#96): libtest filters and skips are substrings, so `status::` also matched
+            # node_row_status::; a module's job names its own tests whole and `--exact` matches nothing else.
+            e="$m --test-threads=8 --exact $("$m" --list 2>/dev/null | sed -n "s/^\($t::.*\): test\$/\1/p" | tr '\n' ' ')"
         fi
     fi
     if [ -n "$e" ]; then echo "$t $e${FP_KILL_SKIP_ARGS:+ $FP_KILL_SKIP_ARGS}" >> $D/jobs; else echo "FAIL $t 0s" | tee -a $O; echo "FAIL scenario stem $t missing from $SCENARIO_PKG" >> $O.detail; fi
@@ -340,11 +341,12 @@ for x in names:
     count[m]=count.get(m,0)+1
 shards=[[0,[]] for _ in range(n)]
 for m,k in sorted(count.items(),key=lambda kv:-kv[1]):
-    s=min(shards,key=lambda s:s[0]); s[0]+=k; s[1].append(m+"::")
+    s=min(shards,key=lambda s:s[0]); s[0]+=k; s[1].append(m)
 for s in shards:
-    if s[1]: print(" ".join(s[1]))
+    # Whole test names under --exact (rdm#96): a `m::` substring filter also selected every module whose name ends in m.
+    if s[1]: print("--exact "+" ".join(x for x in names if x.split("::",1)[0] in s[1]))
 PY
-                echo "$name:$b$i sh:${c%)} --test-threads=8 $SCENARIO_SKIP $filters)" >> $D/jobs
+                echo "$name:$b$i sh:${c%)} --test-threads=8 $filters)" >> $D/jobs
                 i=$((i+1))
             done
         else
@@ -419,6 +421,12 @@ PYUI
 fi
 echo "dep-rules run:dep-rules" >> $D/jobs
 echo "address-lookup run:address-lookup" >> $D/jobs
+
+# rdm#96: every rdm-test test is selected by exactly one module job; a test no job selects, or two select, fails the gate by name.
+mainbin=$(exe $SCENARIO_PKG main)
+if [ -n "$mainbin" ]; then
+    if python3 scripts/gate-module-coverage.py $D/jobs "$mainbin" >> $O.detail 2>&1; then echo "ok module-coverage 0s" | tee -a $O; else echo "FAIL module-coverage 0s" | tee -a $O; fi
+fi
 
 one(){
     name=$1; shift; what="$*"; log=$D/$name.log; s=$(date +%s)

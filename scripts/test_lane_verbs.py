@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import sys
 import subprocess
 import time
 import tempfile
@@ -304,6 +305,41 @@ class Verbs(unittest.TestCase):
                 if p is not None and p.poll() is None:
                     os.killpg(os.getpgid(p.pid), signal.SIGKILL)
                     p.wait()
+
+
+class ModuleCoverage(unittest.TestCase):
+    """rdm#96: the gate's discovery check that every rdm-test test is selected by exactly one module job."""
+    LIST = ['status::a', 'status::b', 'node_row_status::a', 'status_probe_apply::a', 'other::a', 'container_kill::a']
+
+    def check(self, jobs):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        exe = d / 'main'
+        exe.write_text('#!/bin/sh\n' + ''.join(f'echo "{n}: test"\n' for n in self.LIST))
+        exe.chmod(0o755)
+        (d / 'jobs').write_text(''.join(l.replace('BIN', str(exe)) + '\n' for l in jobs))
+        return subprocess.run([sys.executable, str(SCRIPTS / 'gate-module-coverage.py'), str(d / 'jobs'), str(exe)],
+                              capture_output=True, text=True)
+
+    CELL = 'container-proof sh:(BIN -q container_kill::)'
+
+    def test_substring_skips_leave_node_row_status_in_no_job(self):
+        # Today's shapes: the scenario job skips node_row_status:: by name, the shard skips status:: by substring.
+        r = self.check(['status BIN --test-threads=8 --skip node_row_status:: status::',
+                        'rdm-test:main0 sh:(BIN --test-threads=8 --skip status:: node_row_status:: other:: status_probe_apply::)', self.CELL])
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn('node_row_status::a: run by no job', r.stdout)
+
+    def test_exact_names_run_every_module_in_exactly_one_job(self):
+        r = self.check(['status BIN --test-threads=8 --exact status::a status::b',
+                        'rdm-test:main0 sh:(BIN --test-threads=8 --exact node_row_status::a other::a status_probe_apply::a)', self.CELL])
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_a_test_in_two_module_jobs_is_named(self):
+        r = self.check(['status BIN --exact status::a status::b node_row_status::a',
+                        'rdm-test:main0 sh:(BIN --exact node_row_status::a other::a status_probe_apply::a)', self.CELL])
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn('node_row_status::a: run by 2 module jobs', r.stdout)
 
 
 if __name__ == '__main__':
