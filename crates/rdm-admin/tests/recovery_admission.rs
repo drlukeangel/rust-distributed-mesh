@@ -291,7 +291,7 @@ fn recovery_receipts(lane: Option<&str>, build: &rdm_admin::build::BuildId, atte
 #[allow(clippy::too_many_arguments)]
 fn deletion_receipts(lane: Option<&str>, kind: &str, build: &rdm_admin::build::BuildId, attempt: u32, path: &PathName, node_id: &NodeId, birth: &IncarnationId, executor: &str) -> Vec<BuildStepReceipt> {
     let operation = format!("{kind}:{path}");
-    let op = rdm_core::LifecycleOp { build_id: build.to_string(), attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+    let op = rdm_core::LifecycleOp { build_id: build.to_string(), attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
     let receipt = |step: &str, output: Option<serde_json::Value>| BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build.clone(), attempt, operation: operation.clone(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor.into()) };
     vec![
         receipt("NodeDeleting", Some(serde_json::to_value(&op).unwrap())),

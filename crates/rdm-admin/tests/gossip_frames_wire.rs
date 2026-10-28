@@ -79,7 +79,7 @@ fn container_runtime() -> RuntimeFact {
 }
 
 fn op(operation: &str) -> LifecycleOp {
-    LifecycleOp { build_id: "3qcfk1kq47m9".into(), attempt: 2, operation: operation.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 7 }
+    LifecycleOp { build_id: "3qcfk1kq47m9".into(), attempt: 2, operation: operation.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 7, traceparent: None, tracestate: None }
 }
 
 fn publisher() -> PublisherId {

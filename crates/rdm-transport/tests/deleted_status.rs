@@ -123,7 +123,7 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         assert_eq!(p.mesh_status("mesh2"), held, "mesh2.admin.2 holds X's status");
 
         // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.
-        let departure = LifecycleOp { build_id: "dnd82kmawp3h".into(), attempt: 1, operation: "node.delete:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7 };
+        let departure = LifecycleOp { build_id: "dnd82kmawp3h".into(), attempt: 1, operation: "node.delete:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7, traceparent: None, tracestate: None };
         p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }).await.unwrap();
         until("Y and the member to hold X deleted", || y.digest_view.is_deleted(x.as_str()) && m.digest_view.is_deleted(x.as_str())).await;
         assert!(y.digest_view.all().iter().all(|d| d.node.name.to_string() != "mesh2.admin.1"), "Y has not published: no live birth holds the name in Y's view");
@@ -163,5 +163,64 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
             lines.push_str(&format!("{what} {} {} observer={} node={} via={} publisher={} taken={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "observer"), attr(s, "node"), attr(s, "via"), attr(s, "publisher"), attr(s, "taken")));
         }
         std::fs::write(dir.join("trace-ids.txt"), lines).unwrap();
+    });
+}
+
+/// The trace id of a W3C `traceparent`.
+fn trace_id_of(traceparent: Option<&str>) -> Option<String> {
+    traceparent.and_then(|tp| tp.split('-').nth(1)).map(str::to_string)
+}
+
+/// CONTRACT (telemetry.md §3, the deletion operation; Q231): through real gossip on mesh2's channel,
+/// the executor mesh2.admin.2 publishes X's `NodeDeleted` inside the delete's span, its caller's
+/// context carried in the envelope (gossip.md §3.4). The member mesh2.rpc.1's `DigestView::deleted()`
+/// hands the application the operation with that context, and so does the executor's own view: an
+/// application span made from the `LifecycleOp` is the delete's child and shares its trace, its
+/// `tracestate` as it was. Before Q231 the operation carried none and Rafka's repair span was a root
+/// of its own (e855b1df1a47d686aa2e13c23d5ff0d5; the delete's trace e30533ffcb6aab5cd4090817b7383144).
+#[test]
+fn an_application_span_made_from_a_deleted_operation_shares_the_deletes_trace() {
+    let dir = crate::evidence_dir();
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-deleted-operation-trace").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        let (p_node, m_node) = (node().await, node().await);
+        let p_addr = addr_of(&p_node.ep);
+        learn_addresses(&m_node.ep, &[p_addr.clone()]).unwrap();
+        let mesh_id = MeshId::mint();
+        let clock = rdm_transport::clock::os_clock;
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![], &[]).await.unwrap();
+        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr], &[]).await.unwrap();
+        p.set_author(&rdm_core::PublisherId { node: "mesh2.admin.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() });
+        m.wait_for_neighbour().await;
+
+        // The delete's span: the Build step's, its caller's tracestate carried in.
+        let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
+        let request = tracing::info_span!("app.node.delete.request");
+        let delete = tracing::info_span!("app.node.delete", node = "mesh2.admin.1");
+        rdm_transport::set_remote_parent(&delete, &rdm_transport::traceparent_of(&request).expect("the capture's layer gives the request a context"), Some("rafka=delete-1"));
+        let deleted_in = rdm_transport::traceparent_of(&delete);
+        let departure = LifecycleOp { build_id: "dnd82kmawp3h".into(), attempt: 1, operation: "node.delete:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7, traceparent: None, tracestate: None };
+        tracing::Instrument::instrument(p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }), delete.clone()).await.unwrap();
+        until("the member to hold X deleted", || m.digest_view.is_deleted(x.as_str())).await;
+
+        let mut lines = String::new();
+        for (at, view) in [("member", &m), ("executor", &p)] {
+            let op = view.digest_view.deleted().into_iter().find(|o| o.node_id == x).unwrap_or_else(|| panic!("the {at} hands out X's deletion"));
+            assert_eq!(op, departure, "the {at}'s operation is the one deleted");
+            let repair = tracing::info_span!("app.node.repair", at);
+            if let Some(tp) = op.traceparent.as_deref() {
+                rdm_transport::set_remote_parent(&repair, tp, op.tracestate.as_deref());
+            }
+            repair.in_scope(|| tracing::info!("the application reacts to the deletion"));
+            let repaired_in = rdm_transport::traceparent_of(&repair);
+            assert_eq!(trace_id_of(repaired_in.as_deref()), trace_id_of(deleted_in.as_deref()), "the application's span made from the {at}'s LifecycleOp shares the delete's trace: the operation carried {:?}", op.traceparent);
+            assert_eq!(op.tracestate.as_deref(), Some("rafka=delete-1"), "the delete's tracestate reaches the {at}'s operation as it was");
+            lines.push_str(&format!("{at} {}\n", trace_id_of(deleted_in.as_deref()).unwrap_or_default()));
+        }
+
+        for n in [&p_node, &m_node] {
+            n.ep.close().await;
+        }
+        std::fs::write(dir.join("deleted-operation-trace-ids.txt"), lines).unwrap();
     });
 }

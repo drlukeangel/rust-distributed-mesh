@@ -973,7 +973,7 @@ mod tests {
     use rdm_core::IncarnationId;
 
     fn op(operation: &str, node_id: &rdm_core::NodeId, incarnation: &IncarnationId) -> LifecycleOp {
-        LifecycleOp { build_id: "b1".into(), attempt: 1, operation: operation.into(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: "mesh1.rpc.2".parse().unwrap(), event_at_rafka_ms: 1 }
+        LifecycleOp { build_id: "b1".into(), attempt: 1, operation: operation.into(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: "mesh1.rpc.2".parse().unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
     }
 
     /// CONTRACT (gossip.md §3.1 NodeStopped: "stays in the in-flight overlay until the next lifecycle

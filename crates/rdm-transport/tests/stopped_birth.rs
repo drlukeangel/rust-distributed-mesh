@@ -71,6 +71,8 @@ fn stop_op(d: &MeshDigest) -> LifecycleOp {
         incarnation: d.node.incarnation.clone(),
         name: d.node.name.clone(),
         event_at_rafka_ms: 7,
+        traceparent: None,
+        tracestate: None,
     }
 }
 

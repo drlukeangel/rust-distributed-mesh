@@ -333,6 +333,8 @@ mod tests {
             incarnation: crate::model::IncarnationId::mint(),
             name: "mesh1.rpc.1".parse().unwrap(),
             event_at_rafka_ms: 4_242,
+            traceparent: None,
+            tracestate: None,
         };
         let receipt = |operation: &str| BuildStepReceipt {
             mesh: None,

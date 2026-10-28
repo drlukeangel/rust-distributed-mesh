@@ -945,6 +945,7 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
                     ctrl_send,
                     ctrl_recv,
                     closed_rx,
+                    Trace::default(),
                 );
                 if let Some(tx) = self.registry.inner.accept_txs.get(&self.alpn.name) {
                     let _ = tx.send(conn);
@@ -981,6 +982,7 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
                     ctrl_send,
                     ctrl_recv,
                     closed_rx,
+                    Trace::default(),
                 );
                 if let Some(tx) = self.registry.inner.accept_txs.get(&self.alpn.name) {
                     let _ = tx.send(conn);
@@ -1719,6 +1721,7 @@ impl Dialer {
                     ctrl_send,
                     ctrl_recv,
                     closed_rx,
+                    Trace::default(),
                 ))
             }
         }
@@ -1926,6 +1929,7 @@ impl Dialer {
                     ctrl_send,
                     ctrl_recv,
                     closed_rx,
+                    Trace::default(),
                 ))
             }
         }
@@ -2066,6 +2070,14 @@ struct ConnectionInner {
     _ctrl_send: Mutex<iroh::endpoint::SendStream>,
     _ctrl_recv: Mutex<iroh::endpoint::RecvStream>,
     closed_rx: watch::Receiver<Option<Closed>>,
+    trace: Trace,
+}
+
+/// The opener's W3C trace context a connection carries (telemetry.md §3, the accepted connection).
+#[derive(Debug, Clone, Default)]
+struct Trace {
+    traceparent: Option<String>,
+    tracestate: Option<String>,
 }
 
 impl std::fmt::Debug for Connection {
@@ -2088,6 +2100,7 @@ impl Connection {
         ctrl_send: iroh::endpoint::SendStream,
         ctrl_recv: iroh::endpoint::RecvStream,
         closed_rx: watch::Receiver<Option<Closed>>,
+        trace: Trace,
     ) -> Self {
         Self {
             inner: Arc::new(ConnectionInner {
@@ -2099,6 +2112,7 @@ impl Connection {
                 _ctrl_send: Mutex::new(ctrl_send),
                 _ctrl_recv: Mutex::new(ctrl_recv),
                 closed_rx,
+                trace,
             }),
         }
     }
@@ -2112,6 +2126,7 @@ impl Connection {
         ctrl_send: iroh::endpoint::SendStream,
         ctrl_recv: iroh::endpoint::RecvStream,
         closed_rx: watch::Receiver<Option<Closed>>,
+        trace: Trace,
     ) -> Self {
         Self {
             inner: Arc::new(ConnectionInner {
@@ -2123,6 +2138,7 @@ impl Connection {
                 _ctrl_send: Mutex::new(ctrl_send),
                 _ctrl_recv: Mutex::new(ctrl_recv),
                 closed_rx,
+                trace,
             }),
         }
     }
@@ -2145,6 +2161,18 @@ impl Connection {
     /// Whether this connection is `Direct` or `Proxy { via }`.
     pub fn kind(&self) -> ConnectionKind {
         self.inner.kind.clone()
+    }
+
+    /// The opener's W3C `traceparent`, as the connection's present frame carried it: the opener's span
+    /// around `open` (a Proxy's, the carrier's tunnel span, that span's child). An application span made
+    /// from it is the open's child and shares the opener's trace (telemetry.md §3). Observability only.
+    pub fn traceparent(&self) -> Option<&str> {
+        self.inner.trace.traceparent.as_deref()
+    }
+
+    /// The opener's W3C `tracestate`, beside [`Self::traceparent`].
+    pub fn tracestate(&self) -> Option<&str> {
+        self.inner.trace.tracestate.as_deref()
     }
 
     /// Open a new bidirectional stream on this connection.

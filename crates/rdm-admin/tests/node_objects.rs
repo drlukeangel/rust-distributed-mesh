@@ -974,7 +974,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         // The recovery's receipts as its two workflows write them, in the lane its door opened it in
         // (R-BI7: the member's mesh's lane): the delete's NodeDeleted names the exited birth, and
         // each operation's Complete commits no output; the create is the last.
-        let deleted = rdm_core::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+        let deleted = rdm_core::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         for (operation, step, output) in [("node.delete", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("node.delete", "Complete", None), ("node.create", "Complete", None)] {
             rig.builds
                 .append_step_receipt(&BuildStepReceipt { mesh: recovering.mesh.clone(), build_id: b0.clone(), attempt: recovering.attempt, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })

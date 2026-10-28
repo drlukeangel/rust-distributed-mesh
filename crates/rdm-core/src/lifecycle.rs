@@ -12,7 +12,10 @@ use crate::path::PathName;
 use serde::{Deserialize, Serialize};
 
 /// One lifecycle operation on one exact birth, as its events name it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Its equality is its fields but the trace context: two copies of one operation heard through
+/// different carriers are the same operation (telemetry.md §2, trace context decides nothing).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LifecycleOp {
     /// The Build the operation belongs to.
@@ -31,7 +34,32 @@ pub struct LifecycleOp {
     /// reads it: a standalone stop's receipted op is the age of the birth's stopped period, which
     /// the stopped-node garbage collector compares with `stopped_node_ttl` (R-GC1).
     pub event_at_rafka_ms: u64,
+    /// The operation's W3C `traceparent`, its caller's context (telemetry.md §3, the deletion
+    /// operation): taken from the envelope of the lifecycle frame that brought the operation (gossip.md
+    /// §3.4), so an application span made from it is the operation's child. Observability only. Never
+    /// written: it is no part of the frame's body or of a receipt, and an operation learned only from a
+    /// `MeshTopology` carries none.
+    #[serde(skip)]
+    pub traceparent: Option<String>,
+    /// The operation's W3C `tracestate`, beside [`Self::traceparent`] and as it is.
+    #[serde(skip)]
+    pub tracestate: Option<String>,
 }
+
+impl PartialEq for LifecycleOp {
+    fn eq(&self, other: &Self) -> bool {
+        let Self { build_id, attempt, operation, node_id, incarnation, name, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;
+        *build_id == other.build_id
+            && *attempt == other.attempt
+            && *operation == other.operation
+            && *node_id == other.node_id
+            && *incarnation == other.incarnation
+            && *name == other.name
+            && *event_at_rafka_ms == other.event_at_rafka_ms
+    }
+}
+
+impl Eq for LifecycleOp {}
 
 /// The fields the reserved gossip positions `Reserved15` to `Reserved18` keep (gossip.md, "Reserved
 /// lifecycle frame positions"): the state hooks of the removed state-commit (Q171) and open-traffic
@@ -63,6 +91,11 @@ impl LifecycleOp {
         self.operation.starts_with("node.stop:")
     }
 
+    /// This operation carrying the trace context `traceparent` and `tracestate` (the carrier's).
+    pub fn traced(self, traceparent: Option<String>, tracestate: Option<String>) -> Self {
+        Self { traceparent, tracestate, ..self }
+    }
+
     /// The operation's identity: the same for its `NodeDeleting` and `NodeDeleted`.
     pub fn key(&self) -> (String, u32, String) {
         (self.build_id.clone(), self.attempt, self.operation.clone())
@@ -89,6 +122,8 @@ mod tests {
             incarnation: IncarnationId::mint(),
             name: "mesh2.rpc.2".parse().unwrap(),
             event_at_rafka_ms: 7,
+            traceparent: None,
+            tracestate: None,
         };
         let back: LifecycleOp = serde_json::from_str(&serde_json::to_string(&op).unwrap()).unwrap();
         assert_eq!(back, op);

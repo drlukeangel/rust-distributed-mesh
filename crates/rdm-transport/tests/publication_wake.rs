@@ -130,6 +130,8 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
             incarnation: stopped.node.incarnation.clone(),
             name: stopped.node.name.clone(),
             event_at_rafka_ms: 2_000,
+            traceparent: None,
+            tracestate: None,
         };
         let stopped_at = std::time::Instant::now();
         src_bb.publish_status_event(StatusEvent::Stopped, &op).await;

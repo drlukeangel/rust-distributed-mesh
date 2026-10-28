@@ -498,6 +498,8 @@ fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overla
             incarnation: retiring.node.incarnation.clone(),
             name: retiring.node.name.clone(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         };
         let mut s = snap("mesh3", &publisher("mesh3.admin.1"), 4, members.clone());
         s.in_flight = vec![op.clone()];
@@ -536,6 +538,8 @@ fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
             incarnation: stopped.node.incarnation.clone(),
             name: stopped.node.name.clone(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         };
         // The mesh primary's snapshot after the stop: the stopped birth's digest is dropped, its overlay stays.
         let kept: Vec<MeshDigest> = members.iter().filter(|d| d.node.node_id != stopped.node.node_id).cloned().collect();

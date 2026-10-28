@@ -3042,3 +3042,85 @@ fn an_unknown_key_presenting_an_unknown_birth_writes_no_row_only_the_span() {
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
     assert_eq!(refused_sources(&spans).len(), 1, "the refusal is its span");
 }
+
+/// The trace id of a W3C `traceparent`.
+fn trace_id_of(traceparent: Option<&str>) -> Option<String> {
+    traceparent.and_then(|tp| tp.split('-').nth(1)).map(str::to_string)
+}
+
+/// CONTRACT (telemetry.md §3, the accepted connection; Q231): the accepted `Connection` hands the
+/// application its opener's W3C context, from the connection's present frame, Direct and Proxy alike.
+/// An application span made from it is the open's child: it shares the opener's trace, and the
+/// opener's `tracestate` comes through as it was. Before Q231 the accepted connection carried none and
+/// Rafka's accept span was a root of its own (be010064f578409b97250f412d17066a, the tunnel's trace
+/// 72a69346726c83a3aea26343b613c88a).
+#[test]
+fn an_application_span_made_from_an_accepted_connection_shares_the_openers_trace() {
+    let dir = crate::evidence_dir();
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-connection-accepted-trace").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        // The opener's span carries a tracestate of its own: an application's request carried in.
+        let opener = |route: &'static str| {
+            let request = tracing::info_span!("app.connection.request", route);
+            let open = tracing::info_span!("app.connection.open", route);
+            rdm_transport::set_remote_parent(&open, &rdm_transport::traceparent_of(&request).expect("the capture's layer gives the request a context"), Some("rafka=open-1"));
+            open
+        };
+        let accepted_span = |conn: &rdm_transport::connections::Connection, route: &'static str| {
+            let span = tracing::info_span!("app.connection.accept", route);
+            if let Some(tp) = conn.traceparent() {
+                rdm_transport::set_remote_parent(&span, tp, conn.tracestate());
+            }
+            span.in_scope(|| tracing::info!("the application takes the accepted connection"));
+            span
+        };
+        let mut lines = String::new();
+
+        // Direct.
+        let a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
+        let b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+        a.know(&b);
+        b.know(&a);
+        let (dialer_a, _) = a.registry.connections(ALPN_A).unwrap().split();
+        let (_, mut acceptor_b) = b.registry.connections(ALPN_A).unwrap().split();
+        let accept_b = tokio::spawn(async move { acceptor_b.accept().await.unwrap() });
+        let open_direct = opener("direct");
+        let opened_direct = rdm_transport::traceparent_of(&open_direct);
+        let _conn_a = tracing::Instrument::instrument(dialer_a.open(&b.birth), open_direct.clone()).await.expect("the Direct open");
+        let conn_b = accept_b.await.unwrap();
+        assert_eq!(conn_b.kind(), ConnectionKind::Direct);
+        let app_direct = accepted_span(&conn_b, "direct");
+        let app_direct_tp = rdm_transport::traceparent_of(&app_direct);
+        assert_eq!(trace_id_of(app_direct_tp.as_deref()), trace_id_of(opened_direct.as_deref()), "the application's span at the accepted Direct connection shares the opener's trace: the connection carried {:?}", conn_b.traceparent());
+        assert_eq!(conn_b.tracestate(), Some("rafka=open-1"), "the opener's tracestate reaches the accepted Direct connection as it was");
+        lines.push_str(&format!("direct {}\n", trace_id_of(opened_direct.as_deref()).unwrap_or_default()));
+
+        // Proxy, through the carrier.
+        let alpns = [gateway_alpn(ALPN_B)];
+        let s = TestPeer::bind("mesh1.rpc.3", &alpns).await;
+        let g = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+        let d = TestPeer::bind("mesh1.rpc.4", &alpns).await;
+        s.know(&g);
+        g.know(&d);
+        seed_carrier_direct_edge(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_B).await;
+        let (dialer_s, _) = s.registry.connections(ALPN_B).unwrap().split();
+        let (_, mut acceptor_d) = d.registry.connections(ALPN_B).unwrap().split();
+        let accept_d = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+        let open_proxy = opener("proxy");
+        let opened_proxy = rdm_transport::traceparent_of(&open_proxy);
+        let _conn_s = tracing::Instrument::instrument(dialer_s.open(&d.birth), open_proxy.clone()).await.expect("the Proxy open");
+        let conn_d = accept_d.await.unwrap();
+        assert_eq!(conn_d.kind(), ConnectionKind::Proxy { via: g.birth.clone() });
+        let app_proxy = accepted_span(&conn_d, "proxy");
+        let app_proxy_tp = rdm_transport::traceparent_of(&app_proxy);
+        assert_eq!(trace_id_of(app_proxy_tp.as_deref()), trace_id_of(opened_proxy.as_deref()), "the application's span at the accepted Proxy connection shares the opener's trace: the connection carried {:?}", conn_d.traceparent());
+        assert_eq!(conn_d.tracestate(), Some("rafka=open-1"), "the opener's tracestate reaches the accepted Proxy connection through the carrier as it was");
+        lines.push_str(&format!("proxy {}\n", trace_id_of(opened_proxy.as_deref()).unwrap_or_default()));
+
+        drop((app_direct, app_proxy, open_direct, open_proxy));
+        for p in [a, b, s, g, d] {
+            p.shutdown().await;
+        }
+        std::fs::write(dir.join("connection-accepted-trace-ids.txt"), lines).unwrap();
+    });
+}

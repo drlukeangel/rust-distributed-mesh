@@ -1488,7 +1488,7 @@ async fn a_durable_runtime_row_of_a_deleted_birth_opens_no_attempt() {
     for d in e.digest_view.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
         heard.record(d);
     }
-    heard.depart(rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: format!("node.delete:{lost}"), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1 });
+    heard.depart(rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: format!("node.delete:{lost}"), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None });
     let mut t = e.view.read().await.clone();
     t.nodes.retain(|n| n.name.to_string() != lost);
     rdm_admin::election::resolve(&mut t.nodes);
@@ -1950,6 +1950,8 @@ async fn a_birth_whose_delete_the_build_receipted_is_not_surplus() {
                 incarnation: extra.incarnation_id.clone().unwrap(),
                 name: extra.name.clone(),
                 event_at_rafka_ms: 0,
+                traceparent: None,
+                tracestate: None,
             };
             e.builds
                 .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: current.build_id.clone(), attempt: current.attempt, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: serde_json::to_value(&op).ok(), executor: None })

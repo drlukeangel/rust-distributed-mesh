@@ -2165,6 +2165,8 @@ impl DeploymentPipeline<'_> {
                 incarnation: birth,
                 name: PathName { old: false, ..name.clone() },
                 event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
+                traceparent: None,
+                tracestate: None,
             };
             let op = self.step(&mut run, RetireStep::NodeDeleting.name(), Box::pin(self.deleting_row(&req.node, op.clone()))).await?;
             self.lifecycle.deleting(&op).await;
@@ -2237,6 +2239,8 @@ impl DeploymentPipeline<'_> {
             incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?,
             name: name.clone(),
             event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
+            traceparent: None,
+            tracestate: None,
         };
         // The receipt first, then the publish: the Build facts carry the overlay from the
         // moment it is announced, so a successor derives it from the same facts.
@@ -2319,6 +2323,8 @@ impl DeploymentPipeline<'_> {
                 incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth"), code: rdm_core::outcome::Code::FailedPrecondition })?,
                 name: name.clone(),
                 event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
+                traceparent: None,
+                tracestate: None,
             };
             let op = self.step(&mut run, RetireStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone()))).await?;
             self.lifecycle.deleting(&op).await;
@@ -2357,6 +2363,8 @@ impl DeploymentPipeline<'_> {
             incarnation: node.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", node.name))?,
             name: node.name.clone(),
             event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
+            traceparent: None,
+            tracestate: None,
         })
     }
 

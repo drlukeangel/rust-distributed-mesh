@@ -285,7 +285,7 @@ fn sorted(mut v: Vec<RosterBirth>) -> Vec<RosterBirth> {
 /// roster receipt (mesh-delete.md "Resume after the primary's loss" step 1).
 async fn node_delete_receipts(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, executor: &str, terminal: &TerminalReceipt) {
     let operation = format!("node.delete:{}", terminal.node);
-    let op = LifecycleOp { build_id: key.build_id.to_string(), attempt: key.attempt, operation: operation.clone(), node_id: NodeId::parse(&terminal.node_id).unwrap(), incarnation: IncarnationId::parse(&terminal.incarnation_id).unwrap(), name: terminal.node.parse().unwrap(), event_at_rafka_ms: 0 };
+    let op = LifecycleOp { build_id: key.build_id.to_string(), attempt: key.attempt, operation: operation.clone(), node_id: NodeId::parse(&terminal.node_id).unwrap(), incarnation: IncarnationId::parse(&terminal.incarnation_id).unwrap(), name: terminal.node.parse().unwrap(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
     for (step, output) in [("NodeDeleting", serde_json::to_value(&op).ok()), ("TerminateRuntime", serde_json::to_value(terminal).ok()), ("NodeDeleted", serde_json::to_value(&op).ok()), ("RemoveTopologyMembership", None), ("Complete", None)] {
         builds
             .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: key.build_id.clone(), attempt: key.attempt, operation: operation.clone(), step: step.into(), outcome: rdm_admin::build_state::StepOutcome::Complete, output, executor: Some(executor.into()) })

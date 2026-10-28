@@ -5656,7 +5656,7 @@ impl DigestView {
                 continue;
             }
             let Ok(node_id) = NodeId::parse(&id) else { continue };
-            let op = LifecycleOp { build_id: build_id.to_string(), attempt, operation: format!("node.delete:{path}"), node_id, incarnation, name: path, event_at_rafka_ms: at_rafka_ms };
+            let op = LifecycleOp { build_id: build_id.to_string(), attempt, operation: format!("node.delete:{path}"), node_id, incarnation, name: path, event_at_rafka_ms: at_rafka_ms, traceparent: None, tracestate: None };
             if self.depart_quiet(op) {
                 changed = true;
             }
@@ -5977,6 +5977,8 @@ mod tests {
             incarnation: inc.clone(),
             name: "mesh1.rpc.1".parse().unwrap(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         }
     }
 
@@ -7133,7 +7135,7 @@ mod tests {
         assert!(matches!(seats.take(Seat::Cohort(NodeKind::RpcNode), &older), SeatTaken::Refused { .. }), "an older record is refused by the one supersede rule");
         // An update of the cohort's primary is held under the cohort.
         let next = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
-        let op = LifecycleOp { name: "mesh1.rpc.1".parse().unwrap(), node_id: rpc.node_id.clone(), incarnation: rpc.incarnation.clone(), operation: "node.primary.update:b:stop".into(), build_id: "b".into(), attempt: 1, event_at_rafka_ms: 0 };
+        let op = LifecycleOp { name: "mesh1.rpc.1".parse().unwrap(), node_id: rpc.node_id.clone(), incarnation: rpc.incarnation.clone(), operation: "node.primary.update:b:stop".into(), build_id: "b".into(), attempt: 1, event_at_rafka_ms: 0, traceparent: None, tracestate: None };
         let taken = seats.take_together(&[(Seat::Cohort(NodeKind::RpcNode), next.clone())]);
         assert!(matches!(taken.as_slice(), [SeatTaken::Held { .. }]), "{taken:?}");
         assert_eq!(seats.cohort("mesh1", NodeKind::RpcNode), Some(next));

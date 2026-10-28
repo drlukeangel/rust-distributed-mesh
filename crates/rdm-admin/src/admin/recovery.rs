@@ -699,7 +699,7 @@ pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str
                 Ok(_) => {
                     span.record("outcome", "row-deleted");
                     span.in_scope(|| tracing::info!("a second birth at the path.name, made across a cut, is superseded: its row is written deleted"));
-                    ops.push(rdm_core::LifecycleOp { build_id: build_id.to_string(), attempt: 0, operation: format!("node.delete:{path}"), node_id: b.node_id.clone(), incarnation, name: path.clone(), event_at_rafka_ms: local_now_ms() });
+                    ops.push(rdm_core::LifecycleOp { build_id: build_id.to_string(), attempt: 0, operation: format!("node.delete:{path}"), node_id: b.node_id.clone(), incarnation, name: path.clone(), event_at_rafka_ms: local_now_ms(), traceparent: None, tracestate: None });
                 }
                 Err(e) => {
                     span.record("outcome", "row-refused");

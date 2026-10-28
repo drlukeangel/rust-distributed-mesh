@@ -33,6 +33,8 @@ fn op(operation: &str) -> LifecycleOp {
         incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(),
         name: "mesh1.rpc.1".parse().unwrap(),
         event_at_rafka_ms: 300,
+        traceparent: None,
+        tracestate: None,
     }
 }
 

@@ -186,6 +186,8 @@ fn a_snapshot_chunk_round_trips_with_its_digests_and_overlays() {
         incarnation: IncarnationId::mint(),
         name: "mesh1.rpc.2".parse().unwrap(),
         event_at_rafka_ms: 5,
+        traceparent: None,
+        tracestate: None,
     };
     let r = TopologyReply::Snapshot {
         mesh: "mesh1".into(),

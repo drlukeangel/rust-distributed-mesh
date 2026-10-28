@@ -118,6 +118,8 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
             incarnation: inc.clone(),
             name: subject.node.name.clone(),
             event_at_rafka_ms: 2_000,
+            traceparent: None,
+            tracestate: None,
         };
         fp_m.publish_lifecycle(&Frame::NodeDeleted { op: op.clone(), forwarded_by: None }).await.unwrap();
         assert!(fp_m.digest_view.is_deleted(id.as_str()), "the executor holds its own deletion");

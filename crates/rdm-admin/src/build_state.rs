@@ -2784,6 +2784,8 @@ mod tests {
             incarnation: rdm_core::IncarnationId::mint(),
             name: node.parse().unwrap(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         };
         let (a, b) = (op("mesh1.rpc.1"), op("mesh1.rpc.2"));
         let with = |operation: &str, step: &str, output: &rdm_core::LifecycleOp| {
@@ -3366,7 +3368,7 @@ mod tests {
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { build_id: build.into(), attempt, operation: format!("{operation}:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { build_id: build.into(), attempt, operation: format!("{operation}:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
             }),
             executor: Some("mesh1.admin.1".into()),
         };
@@ -3439,7 +3441,7 @@ mod tests {
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: format!("{operation}:{}", b.0), node_id: b.1.clone(), incarnation: b.2.clone(), name: b.0.clone(), event_at_rafka_ms: 1 }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: format!("{operation}:{}", b.0), node_id: b.1.clone(), incarnation: b.2.clone(), name: b.0.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
             }),
             executor: Some("mesh2.admin.1".into()),
         };
@@ -3541,7 +3543,7 @@ mod tests {
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: format!("{kind}:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: format!("{kind}:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
             }),
             executor: Some("mesh2.admin.1".into()),
         };

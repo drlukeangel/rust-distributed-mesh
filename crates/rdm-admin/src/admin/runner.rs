@@ -149,6 +149,8 @@ pub(crate) fn stopped_publisher(topology_view: TopologyView, backbone: Backbone,
                 incarnation: row.incarnation_id,
                 name: row.name,
                 event_at_rafka_ms: topology_view.clock().now_rafka_ms(),
+                traceparent: None,
+                tracestate: None,
             };
             publish_node_stopped(&backbone, project.as_ref(), &op).await;
         })

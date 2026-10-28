@@ -225,6 +225,8 @@ mod tests {
             incarnation: last.node.incarnation.clone(),
             name: last.node.name.clone(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         }));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
         let n = t.node(&last.node.name).expect("the stopped admin is listed");
@@ -265,6 +267,8 @@ mod tests {
                 incarnation: successor.node.incarnation.clone(),
                 name: successor.node.name.clone(),
                 event_at_rafka_ms: 1,
+                traceparent: None,
+                tracestate: None,
             }));
             // Within the staleness floor the predecessor still publishes its own name (heard); past it,
             // it publishes nothing (silent). Either way the successor's row holds the name.
@@ -1793,7 +1797,7 @@ mod tests {
             step: step.into(),
             outcome: crate::build_state::StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 2, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 2, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
             }),
             executor: Some("mesh2.admin.2".into()),
         };
@@ -1881,6 +1885,8 @@ mod tests {
                 incarnation: member.node.incarnation.clone(),
                 name: member.node.name.clone(),
                 event_at_rafka_ms: 1,
+                traceparent: None,
+                tracestate: None,
             };
             assert!(digest_view.deleting(op.clone()), "{case}: the overlay is taken");
             if announced == "node-deleted" {
@@ -1986,6 +1992,8 @@ mod tests {
             incarnation: member.node.incarnation.clone(),
             name: member.node.name.clone(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         };
         let build = crate::build::BuildId::parse(&op.build_id).unwrap();
         let mut facts = vec![
@@ -2059,6 +2067,8 @@ mod tests {
             incarnation: member.node.incarnation.clone(),
             name: member.node.name.clone(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         };
         // mesh2's lane runs attempt 1, the member's recovery; its node.delete published NodeDeleting.
         let lane_attempt = |build: &crate::build::BuildId, op: &rdm_core::LifecycleOp| {
@@ -2592,7 +2602,7 @@ mod tests {
     /// view.
     async fn depart(digest_view: &DigestView, records: &Records, d: &MeshDigest) -> Topology {
         records.set_digest_view(digest_view.clone());
-        digest_view.depart(rdm_core::LifecycleOp { build_id: "dbs8z9896j0f".into(), attempt: 1, operation: format!("node.delete:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 });
+        digest_view.depart(rdm_core::LifecycleOp { build_id: "dbs8z9896j0f".into(), attempt: 1, operation: format!("node.delete:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None });
         let view = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, digest_view, records));
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, digest_view, records)).await
     }
@@ -3187,6 +3197,8 @@ mod tests {
             incarnation: held.node.incarnation.clone(),
             name: held.node.name.clone(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         }));
         // The mesh-primary's rename on the shared root, through the one writer of a row's move.
         let to: PathName = "mesh1.rpc.1.old".parse().unwrap();
@@ -3241,6 +3253,8 @@ mod tests {
             incarnation: held.node.incarnation.clone(),
             name: held.node.name.clone(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         }));
         let file = root.dir().join(crate::store_root::NODES_FILE);
         std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&file).unwrap(), b"\nnot a record line\n").unwrap();
@@ -3382,7 +3396,7 @@ mod tests {
         assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a birth saying ConnectionsDeleting makes the rebuild due at once");
 
         facts.seen();
-        let stop = rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1 };
+        let stop = rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(digest_view.stopped(stop));
         assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
     }
@@ -3501,6 +3515,8 @@ mod tests {
             incarnation: held.node.incarnation.clone(),
             name: held.node.name.clone(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         }));
         let mut record = Node::allocated(held.node.name.clone());
         record.node_id = held.node.node_id.clone();
@@ -3575,6 +3591,8 @@ mod tests {
             incarnation: stopped.node.incarnation.clone(),
             name: stopped.node.name.clone(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         };
         assert!(digest_view.stopped(stop));
         assert!(digest_view.get(stopped.node.node_id.as_str()).is_none(), "this admin never held the node's digest");
@@ -3628,6 +3646,8 @@ mod tests {
             incarnation: gone.node.incarnation.clone(),
             name: gone.node.name.clone(),
             event_at_rafka_ms: 1,
+            traceparent: None,
+            tracestate: None,
         });
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &launched);
         assert!(t.node(&gone.node.name).is_none(), "a deleted birth's launch record is not a node: {:?}", t.node(&gone.node.name));
@@ -3692,7 +3712,7 @@ mod tests {
         async fn view_over(me: &PathName, topology: &RwLock<Topology>, digest_view: &DigestView, records: &Records) -> Topology {
             records.install_read(me, topology, digest_view, &fabric1(), |reads| project_with("fabric1", &fabric1(), ProviderKind::Process, digest_view, records, reads)).await
         }
-        let deleted = |d: &MeshDigest| rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: format!("node.delete:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 };
+        let deleted = |d: &MeshDigest| rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: format!("node.delete:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let digest_view = DigestView::default();
         let records = Records::default();

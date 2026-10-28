@@ -110,7 +110,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
             records.install_read(&me, &view, &digest_view, &fabric, rebuild).await;
             let after_receipt = status_of(&*view.read().await);
             // At once: the node.delete's stop of the last admin, from its matching stopped reply.
-            let stop = LifecycleOp { build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: format!("node.stop:{LAST}"), node_id: last.node.node_id.clone(), incarnation: last.node.incarnation.clone(), name: last.node.name.clone(), event_at_rafka_ms: 1_000_100 };
+            let stop = LifecycleOp { build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: format!("node.stop:{LAST}"), node_id: last.node.node_id.clone(), incarnation: last.node.incarnation.clone(), name: last.node.name.clone(), event_at_rafka_ms: 1_000_100, traceparent: None, tracestate: None };
             lifecycle.stopped(&stop).await;
             after_receipt
         }

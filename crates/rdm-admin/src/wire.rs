@@ -882,6 +882,8 @@ mod tests {
             incarnation: crate::model::IncarnationId::mint(),
             name: "mesh1.rpc.1".parse().unwrap(),
             event_at_rafka_ms: 4_242,
+            traceparent: None,
+            tracestate: None,
         };
         unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::NodeDeleting.name(), serde_json::to_value(&op).unwrap(), "");
     }

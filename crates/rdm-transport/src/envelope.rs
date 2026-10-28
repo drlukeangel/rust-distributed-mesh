@@ -478,7 +478,7 @@ mod tests {
     }
     #[test]
     fn operation_sequence_is_absent_and_source_survives_forwarding() {
-        let op = rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: author().node, incarnation: author().incarnation, name: "m.rpc.1".parse().unwrap(), event_at_rafka_ms: 1 };
+        let op = rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: author().node, incarnation: author().incarnation, name: "m.rpc.1".parse().unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let event = Frame::NodeDeleted { op, forwarded_by: None }.authored(&author(), 0, 1);
         let forwarded = crate::topology::forward_of(event.clone(), "other.admin.1", "other").unwrap();
         assert_eq!(event.context(), forwarded.context());

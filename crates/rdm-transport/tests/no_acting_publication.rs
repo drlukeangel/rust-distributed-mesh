@@ -55,6 +55,8 @@ fn op(kind: &str, d: &MeshDigest) -> LifecycleOp {
         incarnation: d.node.incarnation.clone(),
         name: d.node.name.clone(),
         event_at_rafka_ms: 2_000,
+        traceparent: None,
+        tracestate: None,
     }
 }
 

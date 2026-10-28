@@ -36,7 +36,7 @@ fn member(fabric: &FabricId, name: &str, seq: u64) -> MeshDigest {
 }
 
 fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
-    LifecycleOp { build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: operation.into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
+    LifecycleOp { build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: operation.into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
 }
 
 // @feature: node-lifecycle
