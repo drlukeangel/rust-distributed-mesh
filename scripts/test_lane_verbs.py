@@ -194,17 +194,16 @@ class Verbs(unittest.TestCase):
         self.prove()
         tree = self.e.git(self.e.lane, 'rev-parse', 'HEAD^{tree}')
         base = self.e.git(self.e.lane, 'rev-parse', 'origin/main')
-        pid = subprocess.run(f'git diff {base} HEAD | git patch-id --stable', shell=True, cwd=self.e.lane, env=self.e.env,
+        pid = subprocess.run(f"git diff {base} HEAD -- . ':(exclude)docs/reference/rdm/*.md' | git patch-id --stable", shell=True, cwd=self.e.lane, env=self.e.env,
                              capture_output=True, text=True).stdout.split()[0]
         rows = (self.e.deploy / 'green-ranges').read_text().splitlines()
         self.assertTrue(rows[-1].startswith(f'{tree} {pid} {base} '), rows)
 
     def test_a_green_stands_when_main_moved_only_in_other_files_and_lands_without_a_gate(self):
-        self.e.commit(self.e.lane, 'branch: a', {'src/a.txt': 'a1\n'})
+        self.e.change(self.e.lane, 'branch: a', **{'a.txt': 'a1'})
         self.prove()
         proven = self.e.git(self.e.lane, 'rev-parse', 'HEAD^{tree}')
-        self.e.commit(self.e.pusher, 'main: c', {'src/c.txt': 'c0\n'})
-        self.e.git(self.e.pusher, 'push', '-q', 'origin', 'HEAD:main')
+        self.e.move_main('main: c', **{'c.txt': 'c0'})
         moved = self.e.origin_main()
         rc, out = self.land()
         self.assertEqual(rc, 0, out)
@@ -215,6 +214,44 @@ class Verbs(unittest.TestCase):
         tree = self.e.git(self.e.lane, 'rev-parse', f'{landed}^{{tree}}')
         self.assertIn(f'stands-on {proven}', next(l for l in self.e.green_trees().splitlines() if l.startswith(tree + ' ')))
         self.assertIn('issue close 1', (self.e.home / 'gh.log').read_text())
+
+    def test_a_green_stands_across_a_main_move_in_spans_md_alone(self):
+        self.e.change(self.e.lane, 'branch: a', **{'a.txt': 'a1'})
+        self.prove()
+        self.e.move_main('main: b', **{'b.txt': 'b1'})
+        rc, out = self.land()
+        self.assertEqual(rc, 0, out)
+        self.assertIn('STANDS', out)
+        self.assertFalse((self.e.home / 'gate-ran').exists(), f'no second gate: {out}')
+        landed = self.e.origin_main()
+        spans = self.e.git(self.e.lane, 'show', f'{landed}:docs/reference/rdm/spans.md')
+        self.assertEqual(spans + '\n', generated({'a.txt': 'a1', 'b.txt': 'b1'}))
+
+    def test_the_land_regenerates_the_generated_pages_and_commits_them_onto_the_tip(self):
+        self.e.commit(self.e.lane, 'branch: a, spans.md not regenerated', {'src/a.txt': 'a1\n'})
+        self.prove()
+        self.e.move_main('main: b', **{'b.txt': 'b1'})
+        moved = self.e.origin_main()
+        rc, out = self.land()
+        self.assertEqual(rc, 0, out)
+        self.assertIn('regenerated docs/reference/rdm', out)
+        landed = self.e.origin_main()
+        self.assertEqual(self.e.git(self.e.lane, 'rev-parse', f'{landed}~2'), moved)
+        spans = self.e.git(self.e.lane, 'show', f'{landed}:docs/reference/rdm/spans.md')
+        self.assertEqual(spans + '\n', generated({'a.txt': 'a1', 'b.txt': 'b1'}))
+        self.assertFalse((self.e.home / 'gate-ran').exists(), f'no second gate: {out}')
+
+    def test_a_land_whose_docgen_fails_is_refused_and_leaves_the_lane(self):
+        self.e.commit(self.e.lane, 'branch: a', {'src/a.txt': 'a1\n'})
+        self.prove()
+        self.e.move_main('main: b', **{'b.txt': 'b1'})
+        tip = self.e.git(self.e.lane, 'rev-parse', 'HEAD'); moved = self.e.origin_main()
+        (self.e.lane / 'target/debug/rdm-docgen').write_text('#!/usr/bin/env bash\nexit 1\n')
+        rc, out = self.land()
+        self.assertEqual(rc, 8, out)
+        self.assertIn('did not regenerate', out)
+        self.assertEqual(self.e.origin_main(), moved)
+        self.assertEqual(self.e.git(self.e.lane, 'rev-parse', 'HEAD'), tip)
 
     def test_a_green_does_not_stand_when_main_moved_in_the_branchs_files(self):
         self.e.commit(self.e.lane, 'branch: a', {'src/a.txt': 'a1\n'})

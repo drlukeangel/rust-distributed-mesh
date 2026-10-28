@@ -8,7 +8,7 @@
 # regenerating them with the lane's rdm-docgen (target/debug/rdm-docgen, the gate's build) over the
 # commit being applied; a conflict in any other file aborts the rebase and is refused, naming the files.
 # With each GREEN it records the proven range in green-ranges: the tree, the patch-id of
-# origin/main..HEAD (`git patch-id --stable` of the whole diff), the origin/main it was proven on and
+# origin/main..HEAD (`git patch-id --stable` of the whole diff but the generated pages docs/reference/rdm/*.md), the origin/main it was proven on and
 # the tip, so lane-land.sh can let the GREEN stand when main moves only in other files.
 set -uo pipefail
 . "$(dirname "$0")/lane-lib.sh"
@@ -35,7 +35,7 @@ if ! git -C "$d" merge-base --is-ancestor origin/main HEAD && ! git -C "$d" reba
 fi
 lane_target_at_path "$L" || exit 7
 BASE=$(git -C "$d" rev-parse origin/main); HEAD_SHA=$(git -C "$d" rev-parse HEAD)
-PATCH=$(git -C "$d" diff "$BASE" HEAD | git -C "$d" patch-id --stable | cut -d' ' -f1); PATCH=${PATCH:-empty}
+PATCH=$(git -C "$d" diff "$BASE" HEAD -- . ':(exclude)docs/reference/rdm/*.md' | git -C "$d" patch-id --stable | cut -d' ' -f1); PATCH=${PATCH:-empty}
 out=$(bash "$d/scripts/rdm-gate-at.sh" "$d" fast 2>&1); echo "$out" | grep -E "^FAIL|^DONE|^TIMINGS" | tail -12
 T=$(git -C "$d" rev-parse HEAD^{tree})
 if grep -q "^$T " "$DEPLOY_ROOT/green-trees" 2>/dev/null; then

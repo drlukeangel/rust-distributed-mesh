@@ -7,7 +7,11 @@
 #
 # A GREEN stands for a rebased tip when main moved since the proof: the branch's patch is unchanged
 # (the git patch-id of origin/main..HEAD equals the proven range's, post-land-gate.sh's green-ranges)
-# and main's movement since the proof touches none of the branch's files. Then it rebases, records the
+# and main's movement since the proof touches none of the branch's files (the generated pages
+# docs/reference/rdm/*.md are not the branch's files: a patch-id and an overlap leave them out). Then it
+# rebases (a conflict only in the generated pages is regenerated with the lane's rdm-docgen; any other
+# conflict is refused), regenerates the pages with the lane's rdm-docgen and commits what it writes onto
+# the tip (a failing rdm-docgen refuses and leaves the lane as it was), records the
 # rebased tree in green-trees (`stands-on <proven tree>`) and green-ranges, and lands without a second
 # gate. Otherwise: "prove it again".
 set -uo pipefail
@@ -27,16 +31,35 @@ if ! git -C "$d" merge-base --is-ancestor origin/main HEAD; then
   read -r _ PATCH BASE _ <<< "$rec"
   { git -C "$d" merge-base --is-ancestor "$BASE" origin/main && git -C "$d" merge-base --is-ancestor "$BASE" HEAD; } 2>/dev/null \
     || { echo "REFUSED: main moved past lane $L's tip and no longer holds the main it was proven on ($BASE); $again"; exit 8; }
-  both=$(comm -12 <(git -C "$d" diff --no-renames --name-only "$BASE" origin/main | sort) <(git -C "$d" diff --no-renames --name-only "$BASE" HEAD | sort) | tr '\n' ' ')
+  GEN='^docs/reference/rdm/[^/]+\.md$'
+  both=$(comm -12 <(git -C "$d" diff --no-renames --name-only "$BASE" origin/main | grep -vE "$GEN" | sort) <(git -C "$d" diff --no-renames --name-only "$BASE" HEAD | grep -vE "$GEN" | sort) | tr '\n' ' ')
   [ -z "$both" ] || { echo "REFUSED: main moved past lane $L's tip in the branch's own files (${both% }); $again"; exit 8; }
   [ "$(lane_dirty "$L")" -eq 0 ] || { echo "REFUSED: lane $L has uncommitted changes"; exit 6; }
-  git -C "$d" rebase -q origin/main || { git -C "$d" rebase --abort; echo "REFUSED: rebase of lane $L on origin/main conflicts; $again"; exit 8; }
-  now=$(git -C "$d" diff origin/main HEAD | git -C "$d" patch-id --stable | cut -d' ' -f1); now=${now:-empty}
-  [ "$now" = "$PATCH" ] || { echo "REFUSED: lane $L's patch on origin/main is not the proven one ($now, proven $PATCH); $again"; exit 8; }
+  orig=$(git -C "$d" rev-parse HEAD); docgen="$d/target/debug/rdm-docgen"
+  if ! git -C "$d" rebase -q origin/main; then
+    while :; do
+      u=$(git -C "$d" diff --name-only --diff-filter=U); other=$(printf '%s\n' "$u" | grep -vE "$GEN" | grep . | tr '\n' ' ')
+      if [ -z "$u" ] || [ -n "$other" ] || ! [ -x "$docgen" ] || ! "$docgen" --root "$d" --out "$d/docs/reference/rdm" >/dev/null; then
+        git -C "$d" rebase --abort; echo "REFUSED: rebase of lane $L on origin/main conflicts${other:+ in ${other% }}; $again"; exit 8
+      fi
+      git -C "$d" add docs/reference/rdm
+      GIT_EDITOR=true git -C "$d" rebase --continue >/dev/null 2>&1 && break
+    done
+  fi
+  now=$(git -C "$d" diff origin/main HEAD -- . ':(exclude)docs/reference/rdm/*.md' | git -C "$d" patch-id --stable | cut -d' ' -f1); now=${now:-empty}
+  [ "$now" = "$PATCH" ] || { git -C "$d" reset -q --keep "$orig"; echo "REFUSED: lane $L's patch on origin/main is not the proven one ($now, proven $PATCH); $again"; exit 8; }
+  if ! [ -x "$docgen" ] || ! "$docgen" --root "$d" --out "$d/docs/reference/rdm" >/dev/null; then
+    git -C "$d" reset -q --keep "$orig"; echo "REFUSED: $docgen did not regenerate docs/reference/rdm; $again"; exit 8
+  fi
+  if [ -n "$(git -C "$d" status --porcelain --untracked-files=no -- docs/reference/rdm)" ]; then
+    git -C "$d" add docs/reference/rdm && git -C "$d" commit -q -m "docs(reference): regenerate docs/reference/rdm with rdm-docgen on the rebased tip (lane-land, rdm#103)" \
+      || { git -C "$d" reset -q --keep "$orig"; echo "REFUSED: the regenerated pages could not be committed; $again"; exit 8; }
+    echo "regenerated docs/reference/rdm with rdm-docgen and committed it onto the tip"
+  fi
   T2=$(git -C "$d" rev-parse HEAD^{tree}); H2=$(git -C "$d" rev-parse HEAD)
   echo "$T2 $(date -Is) $(git -C "$d" rev-parse --short HEAD) stands-on $T" >> "$DEPLOY_ROOT/green-trees"
   echo "$T2 $PATCH $(git -C "$d" rev-parse origin/main) $H2 $(date -Is) stands-on $T" >> "$DEPLOY_ROOT/green-ranges"
-  echo "STANDS lane $L: the GREEN of tree $T stands for $(git -C "$d" rev-parse --short HEAD) (tree $T2): same patch, main moved in none of the branch's files"
+  echo "STANDS lane $L: the GREEN of tree $T stands for $(git -C "$d" rev-parse --short HEAD) (tree $T2): same patch, main moved in none of the branch's files but the generated pages"
 fi
 git -C "$MAIN" fetch -q origin && c=$(mktemp /tmp/rdm-land-run.XXXXXX) && git -C "$MAIN" show origin/main:scripts/rebase-gate-land.sh > "$c" \
   || { echo "REFUSED: origin/main's scripts/rebase-gate-land.sh could not be read"; exit 6; }
