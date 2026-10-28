@@ -310,7 +310,9 @@ impl FileProviderLines {
     /// `fabric_id`: its root opened (created when absent), each store file folded on a span naming
     /// `provider`.
     pub async fn open(provider: &str, store_dir: &Path, fabric_id: &crate::model::FabricId) -> Result<Self, StorageError> {
-        let root = crate::store_root::StoreRoot::open(store_dir, fabric_id)?;
+        // The root is made (when absent) and fsynced on the blocking pool: no worker thread waits on the disk.
+        let (dir, id) = (store_dir.to_path_buf(), fabric_id.clone());
+        let root = crate::blocking::blocking_io(move || crate::store_root::StoreRoot::open(&dir, &id)).await?;
         let mut stores = Vec::with_capacity(Store::ALL.len());
         for store in Store::ALL {
             stores.push((store, StoreLog::open_for(provider, &root.dir().join(store.file()), crate::store_log::Formats::any()).await?));

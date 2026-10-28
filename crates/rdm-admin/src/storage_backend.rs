@@ -163,7 +163,10 @@ impl StorageBackend for FileBackend {
 
     async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String> {
         let storage_err = |e: StorageError| e.to_string();
-        let root = crate::store_root::StoreRoot::open(&self.store_dir, &scope.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
+        // The root's directory and layout marker are made and fsynced on the blocking pool: no worker
+        // thread waits on the disk (rdm-node/src/blocking.rs).
+        let (store_dir, fabric_id) = (self.store_dir.clone(), scope.fabric_id.clone());
+        let root = crate::blocking::blocking_io(move || crate::store_root::StoreRoot::open(&store_dir, &fabric_id)).await.map_err(|e| format!("refusing to start: {e}"))?;
         let writes_to = "store-root".to_string();
         let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);

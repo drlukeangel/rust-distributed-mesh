@@ -50,8 +50,10 @@ impl FileNodeBackend {
 #[async_trait]
 impl NodeStorageBackend for FileNodeBackend {
     async fn open(&self, launch: &Launch) -> Result<NodeStorage, String> {
-        let store_dir = self.store_dir.as_ref().unwrap_or(&launch.store_dir);
-        let root = crate::store_root::StoreRoot::open(store_dir, &launch.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
+        // The root's directory and layout marker are made and fsynced on the blocking pool: no worker
+        // thread waits on the disk (crate::blocking).
+        let (store_dir, fabric_id) = (self.store_dir.clone().unwrap_or_else(|| launch.store_dir.clone()), launch.fabric_id.clone());
+        let root = crate::blocking::blocking_io(move || crate::store_root::StoreRoot::open(&store_dir, &fabric_id)).await.map_err(|e| format!("refusing to start: {e}"))?;
         let connections = crate::storage::FileConnectionsStorage::open(&root, &launch.name, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("connections storage: {e}"))?;
         Ok(NodeStorage {
             connections: Arc::new(connections),
