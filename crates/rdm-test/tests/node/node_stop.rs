@@ -783,9 +783,9 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
 /// check reaches the stopped birth, holds it and receipts the create `Complete`; no attempt plans it
 /// again and the attempts are bounded; the delete's operation completes and its path is listed no more;
 /// the stopped birth is still listed stopped, the same birth and the same live process. The Build then
-/// ends Complete or waits, Blocked, on the fabric's change (states.md "Resize and executable
-/// replacement"); which of the two is Q238 (states.md "Setting a state" against the resize sentence's
-/// "meshes already serving stay ready") and is not asserted here.
+/// ends Complete: the stopped birth holds neither its mesh's ready nor the fabric's checklist
+/// (states.md:16, Q240), so the fabric's change reaches ready (flame b7f9ecec2fec32f356d022f98bdfb374
+/// is this cell's shape before Q240: Blocked on the change naming the stopped birth `not-ready`).
 ///
 /// Must NOT happen (#3233, 141's estate): every attempt of the delete Build planning `node.create` at
 /// the stopped path, its check holding the stopped birth and the next attempt planning the create again,
@@ -819,19 +819,19 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     let other_name = other.to_string();
     let mut stream = nodes.delete(&other).await.expect("the delete was accepted");
     let build_id = stream.accepted().build_id.to_string();
-    // Read until the Build ends or waits on the fabric's change, bounded and without a panic: a Build that
-    // gets to neither is asserted below from its spans, which name the operations every attempt planned.
+    // Read until the Build ends, bounded and without a panic: a Build that does not end is asserted below
+    // from its spans, which name the operations every attempt planned.
     let mut deleted = Vec::new();
     let deadline = tokio::time::Instant::now() + SETTLE;
     while let Ok(Some(f)) = tokio::time::timeout_at(deadline, stream.next()).await {
         let f = f.unwrap_or_else(|e| panic!("the delete's reply stream broke: {e}"));
-        let end = f.is_terminal() || matches!(&f, Frame::Blocked { step, .. } if step == "fabric-change");
+        let end = f.is_terminal();
         deleted.push(f);
         if end {
             break;
         }
     }
-    let settled = matches!(deleted.last(), Some(Frame::Complete)) || matches!(deleted.last(), Some(Frame::Blocked { step, .. }) if step == "fabric-change");
+    let settled = matches!(deleted.last(), Some(Frame::Complete));
     if settled {
         estate.until_node(&other_name, "the deleted path is listed no more", SETTLE, |n| n.is_none().then_some(())).await;
         let held = view_of(&estate.nodes_obj().await, &stopped_path).await;
@@ -860,8 +860,90 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     assert!(ops.iter().all(|o| o.split(',').all(|op| op == delete_op || op == create_op)), "the delete Build {build_id} plans {delete_op} and at most the stopped path's held create: {ops:?}");
     let completed: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build_id && attr(sp, "node") == other_name && attr(sp, "step") == "Complete" && attr(sp, "outcome") == "complete").collect();
     assert!(!completed.is_empty(), "the delete of {other} completes in Build {build_id}");
-    assert!(settled, "the delete Build {build_id} of {other} ends Complete or waits on the fabric's change within {SETTLE:?}: {deleted:?}");
+    assert!(settled, "the delete Build {build_id} of {other} ends Complete within {SETTLE:?}, the stopped {STOPPED} holding nothing: {deleted:?}");
     estate.record_trace_url(reconciles[0]["trace_id"].as_str().unwrap_or(""));
+}
+
+/// CONTRACT (states.md:16, Q240; "Resize and executable replacement"): a stopped birth holds neither its
+/// mesh's ready nor the fabric's checklist. mesh1 {1 node-admin, 1 rpc node} and mesh2 {1 node-admin,
+/// 2 rpc nodes}, ready; `node.stop` of mesh2's rpc node that is not its node-type primary completes;
+/// then a resize grows mesh2 to 3 rpc nodes. The resize Build ends Complete, the fabric-primary's change
+/// enters ready under that Build, and the stopped birth is untouched: still stopped, the same birth
+/// and the same live process. Its later `node.start` runs its gates as before the ruling: joined, started,
+/// Complete, and the same birth is ready again.
+///
+/// Must NOT happen (flame b7f9ecec2fec32f356d022f98bdfb374): the resize Build held Blocked on the
+/// fabric's change naming the stopped birth `not-ready` until it starts or is deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_its_start_runs_its_gates() {
+    let test = "a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_its_start_runs_its_gates";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 1, 2)]).await;
+    estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 1, 2)]).await;
+    // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
+    estate.until_fabric_ready(SETTLE).await;
+    let fabric_primary = estate.fabric_view().await.fabric_primary.expect("the ready fabric names its fabric-primary");
+    let nodes = estate.nodes_obj().await;
+    let mesh2 = nodes.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("nodes.get [mesh]");
+    // The rpc node that is not mesh2's rpc node-type primary, so its stop moves no primary.
+    let stopped_path = mesh2
+        .iter()
+        .find(|n| n.name.kind == NodeKind::RpcNode && !n.is_primary)
+        .map(|n| n.name.clone())
+        .unwrap_or_else(|| panic!("mesh2 lists an rpc node that is not its primary: {mesh2:?}"));
+    let stopped_name = stopped_path.to_string();
+    let pid = estate.pid_of(&stopped_name).await;
+
+    let stopped = frames(nodes.stop(&stopped_path).await.expect("the stop was accepted")).await;
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+    estate.until_stopped_at_the_fabric_primary(&stopped_path).await;
+    let before = view_of(&estate.nodes_obj().await, &stopped_path).await;
+    assert!(before.stopped && before.status == NodeStatus::Stopped, "node.get lists {stopped_name} stopped: {before:?}");
+
+    // The resize: mesh2 grows by one rpc node while the stopped birth rests.
+    let mut stream = estate.submit_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 1, 3)]).await;
+    let build_id = stream.build_id().to_string();
+    let mut built = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while let Ok(Some(f)) = tokio::time::timeout_at(deadline, stream.next()).await {
+        let f = f.unwrap_or_else(|e| panic!("the resize's Build stream broke: {e}"));
+        let end = matches!(f, rdm_client::BuildFrame::Complete { .. } | rdm_client::BuildFrame::Failed { .. });
+        built.push(f);
+        if end {
+            break;
+        }
+    }
+    assert!(matches!(built.last(), Some(rdm_client::BuildFrame::Complete { .. })), "the resize Build {build_id} ends Complete with {stopped_name} stopped, never Blocked on the fabric's change: {built:?}");
+    estate.until_fabric_ready_at(&fabric_primary, SETTLE).await;
+    let grown = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("nodes.get [mesh]");
+    let rpc: Vec<&NodeView> = grown.iter().filter(|n| n.name.kind == NodeKind::RpcNode).collect();
+    assert_eq!(rpc.len(), 3, "mesh2 holds three rpc nodes: {grown:?}");
+    assert!(rpc.iter().filter(|n| n.name != stopped_path).all(|n| n.status == NodeStatus::Ready), "every rpc node of mesh2 that is not stopped is ready: {grown:?}");
+    let held = view_of(&estate.nodes_obj().await, &stopped_path).await;
+    assert!(held.stopped && held.status == NodeStatus::Stopped, "{stopped_name} is still stopped after the resize: {held:?}");
+    assert_eq!((&held.node_id, &held.incarnation_id), (&before.node_id, &before.incarnation_id), "the stopped birth is the same birth");
+    assert!(alive(pid), "the stopped process {pid} is alive");
+    assert_eq!(estate.pid_of(&stopped_name).await, pid, "the same process");
+
+    // Its later start runs its gates.
+    let started = frames(estate.nodes_obj().await.start(&stopped_path).await.expect("the start was accepted")).await;
+    assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
+    assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
+    // The answering admin learns mesh2's rows by gossip: its view takes the start a moment after the stream's end.
+    let after = estate.until_node(&stopped_name, "node.get lists the started birth ready again", Duration::from_secs(60), |n| n.filter(|n| !n.stopped && n.status == NodeStatus::Ready).cloned()).await;
+    assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "a start keeps the birth");
+    assert_eq!(estate.pid_of(&stopped_name).await, pid, "the same process");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let changes: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-change").into_iter().filter(|sp| attr(sp, "build_id") == build_id).collect();
+    let entered = named(&spans, "rdm.node_admin.fabric.update.via-state-entered")
+        .into_iter()
+        .find(|sp| attr(sp, "to") == "ready" && changes.iter().any(|c| c["trace_id"] == sp["trace_id"]))
+        .unwrap_or_else(|| panic!("the fabric entered ready under the resize Build {build_id}'s change: {changes:#?}"));
+    let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().filter(|sp| attr(sp, "node") == stopped_name && attr(sp, "outcome") == "started").count();
+    assert_eq!(served, 1, "{stopped_name}'s start ran once after the resize");
+    estate.record_trace_url(entered["trace_id"].as_str().unwrap_or(""));
 }
 
 fn attr(sp: &Value, k: &str) -> String {

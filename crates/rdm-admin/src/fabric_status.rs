@@ -528,7 +528,9 @@ impl FabricStates {
                 Some(planned) => {
                     let me_ready = i.view.own(&self.env.node_id).is_some_and(|n| n.status == crate::model::NodeStatus::Ready);
                     let (heard, known) = (i.digest_view.heard_direct_since(checklist.began), i.digest_view.all());
-                    missing_members(planned, &me, me_ready, &heard, &known, &|id| i.digest_view.is_deleted(id))
+                    // A birth the view holds stopped is at rest by command and holds no checklist (Q240).
+                    let stopped = |p: &PathName| i.view.members().any(|n| &n.name == p && n.stopped);
+                    missing_members(planned, &me, me_ready, &heard, &known, &|id| i.digest_view.is_deleted(id), &stopped)
                 }
             };
             if missing.is_empty() {
@@ -903,6 +905,48 @@ mod tests {
         assert_eq!(blockers, ["mesh1.rpc.1(not-ready)"], "the one node that is not ready is what blocks entry");
     }
 
+    /// CONTRACT (states.md:16, Q240): a mesh is ready when every planned birth of the accepted Build that
+    /// is not stopped is ready. A stopped birth (the view holds it `Leaving` and `stopped`) is at rest by
+    /// command and holds neither its mesh nor the fabric's checklist; a mesh whose every rpc birth is
+    /// stopped is ready. A planned birth that is not stopped and not ready still
+    /// blocks, named. Must NOT happen: the stopped birth named `not-ready`, the fabric held pending until
+    /// it starts or is deleted (flame b7f9ecec2fec32f356d022f98bdfb374).
+    #[test]
+    fn a_stopped_birth_holds_neither_its_mesh_nor_the_fabrics_checklist() {
+        let stopped = |name: &str| {
+            let mut n = node(name, NodeStatus::Leaving, false);
+            n.stopped = true;
+            n
+        };
+        let meshes = vec!["mesh1".to_string(), "mesh2".to_string()];
+        let paths = |names: &[&str]| names.iter().map(|n| n.parse::<PathName>().unwrap()).collect::<std::collections::BTreeSet<_>>();
+        let planned: std::collections::BTreeMap<String, std::collections::BTreeSet<PathName>> =
+            [("mesh1".to_string(), paths(&["mesh1.admin.1"])), ("mesh2".to_string(), paths(&["mesh2.admin.1", "mesh2.rpc.1", "mesh2.rpc.2"]))].into_iter().collect();
+        let one_stopped = projected(vec![
+            node("mesh1.admin.1", NodeStatus::Ready, true),
+            node("mesh2.admin.1", NodeStatus::Ready, true),
+            stopped("mesh2.rpc.1"),
+            node("mesh2.rpc.2", NodeStatus::Ready, false),
+        ]);
+        assert_eq!(one_stopped.mesh_unready("mesh2", planned.get("mesh2")), Vec::<Missing>::new(), "the stopped mesh2.rpc.1 holds nothing of mesh2");
+        assert_eq!(mesh_blockers(&one_stopped, &meshes, &planned), Vec::<Missing>::new(), "a stopped birth holds no checklist: nothing blocks the fabric");
+        let all_stopped = projected(vec![
+            node("mesh1.admin.1", NodeStatus::Ready, true),
+            node("mesh2.admin.1", NodeStatus::Ready, true),
+            stopped("mesh2.rpc.1"),
+            stopped("mesh2.rpc.2"),
+        ]);
+        assert_eq!(mesh_blockers(&all_stopped, &meshes, &planned), Vec::<Missing>::new(), "a mesh whose every rpc birth is stopped is ready, chosen by command");
+        let one_pending = projected(vec![
+            node("mesh1.admin.1", NodeStatus::Ready, true),
+            node("mesh2.admin.1", NodeStatus::Ready, true),
+            stopped("mesh2.rpc.1"),
+            node("mesh2.rpc.2", NodeStatus::Pending, false),
+        ]);
+        let blockers: Vec<String> = mesh_blockers(&one_pending, &meshes, &planned).iter().map(|m| m.to_string()).collect();
+        assert_eq!(blockers, ["mesh2.rpc.2(not-ready)"], "the birth that is not stopped and not ready still blocks, the stopped one is not named");
+    }
+
     /// CONTRACT (states.md, Resize and executable replacement: a Build that changes the accepted topology
     /// puts the fabric back to pending; a primary change or a stop "leaves the topology unchanged"): an
     /// admin that held the current Build as heard on gossip (no executables) and, fabric-primary now, reads
@@ -1234,6 +1278,28 @@ mod tests {
         let unreadable = adopted_states_of(&me, v.clone(), Arc::new(Records::default())).await;
         let done = unreadable.adopted_step(awaiting, AdoptedInputs { view: &v, planned: None, digest_view: &digest_view });
         assert!(!done.mesh);
+    }
+
+    /// CONTRACT (states.md:16, Q240): a stopped birth holds no checklist. An elected mesh-primary's
+    /// checklist over a planned birth its view holds stopped (`Leaving`, `stopped`: it sends no digest)
+    /// completes once every other planned birth checked in. Must NOT happen: the checklist held on the
+    /// stopped birth as `no-birth-heard` until it starts or is deleted.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn an_elected_mesh_primarys_checklist_is_not_held_by_a_stopped_birth() {
+        let (me, rpc) = (member("mesh1.admin.1", true, false), member("mesh1.rpc.1", false, false));
+        let mut at_rest = member("mesh1.rpc.2", false, false);
+        at_rest.status = NS::Leaving;
+        at_rest.stopped = true;
+        let v = view(vec![me.clone(), rpc.clone(), at_rest.clone()]);
+        let digest_view = DigestView::default();
+        let fabric_states = adopted_states_of(&me, v.clone(), Arc::new(Records::default())).await;
+        let awaiting = Announced { mesh_awaiting_checklist: true, fabric_awaiting_checklist: false };
+        let planned = vec![me.name.clone(), rpc.name.clone(), at_rest.name.clone()];
+        let inputs = || AdoptedInputs { view: &v, planned: Some(planned.clone()), digest_view: &digest_view };
+        assert!(!fabric_states.adopted_step(awaiting, inputs()).mesh, "mesh1.rpc.1 has not checked in");
+        assert!(digest_view.record(digest(&rpc.name, MemberStatus::Ready)));
+        assert!(fabric_states.adopted_step(awaiting, inputs()).mesh, "every planned birth that is not stopped checked in: the stopped mesh1.rpc.2 holds nothing");
     }
 
     /// What the pages say a Reconcile variant does to a ready fabric at its acceptance.

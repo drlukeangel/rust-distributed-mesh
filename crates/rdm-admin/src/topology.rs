@@ -165,7 +165,9 @@ impl Topology {
     }
 
     /// Why `mesh` is not ready: a mesh is ready when it has a primary node-admin and
-    /// every node of the mesh is ready (states.md). The nodes of the mesh are the
+    /// every node of the mesh that is not stopped is ready (states.md:16, Q240): a stopped birth is at
+    /// rest by command and holds neither its mesh nor a checklist, so a mesh whose every birth but its
+    /// admin is stopped is ready. The nodes of the mesh are the
     /// accepted Build's planned births (`planned`), a planned birth the view does not hold yet
     /// counting as not ready; with no accepted Build held, the members the view holds. Empty: the
     /// mesh is ready. The one derivation of a mesh's state: the projection and the fabric's entry
@@ -183,6 +185,7 @@ impl Topology {
         for path in paths {
             match self.members().find(|n| n.name == path) {
                 None => out.push(Missing { who: path.to_string(), why: "no-birth-heard" }),
+                Some(n) if n.stopped => {}
                 Some(n) if n.status != NodeStatus::Ready => out.push(Missing { who: path.to_string(), why: "not-ready" }),
                 Some(_) => {}
             }

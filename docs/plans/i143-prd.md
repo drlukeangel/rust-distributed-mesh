@@ -3306,5 +3306,7 @@ writes the cert's dates, never a clock; `durable format moved`) ruled A by Luke 
 clock-based rejection, renew_at derives from the cert's dates and the renewal inputs alone; a code unit owed with its
 RED cells and the marker.
 Q240 (a stopped birth does not hold its mesh below ready-for-traffic nor a checklist) ruled A by the lead with the flame
-(INDEX); states.md:16 landed; `mesh_unready` and the checklist are a code unit owed with its RED cell. Seat check: lane 2
+(INDEX); states.md:16 landed; built in rdm#114 (lane 1): `Topology::mesh_unready` and the adopted checklist's
+`missing_members` leave a stopped birth out; RED cells node_stop::a_resize_after_a_stop_reaches_ready_* (the resize
+Blocked on the fabric's change naming the stopped birth not-ready) and the delete-after-stop cell, now asserted Complete. Seat check: lane 2
 (rdm#93) finished its gate at 083d88fe5 and is writing its hand-over, waiting on nothing.

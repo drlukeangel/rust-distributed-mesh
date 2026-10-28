@@ -604,7 +604,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     }
     let declared_meshes = records.declared.lock().unwrap().meshes.clone();
     for m in mesh_names {
-        // A mesh becomes ready when every node of the mesh is (states.md); once heard
+        // A mesh becomes ready when every node of the mesh that is not stopped is (states.md:16, Q240); once heard
         // ready it stays ready while it has a primary, because a lost node is a degraded fabric and
         // a checklist for the primary that takes over, never a mesh gone back to pending.
         let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.node_type_primary(&m, NodeKind::NodeAdmin).is_some());
