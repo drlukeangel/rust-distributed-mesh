@@ -361,6 +361,7 @@ import subprocess,sys
 binp,n=sys.argv[1],int(sys.argv[2])
 skip={a[:-2] for a in sys.argv[3:] if a.endswith("::")}
 names=[l.rsplit(": ",1)[0] for l in subprocess.run([binp,"--list"],capture_output=True,text=True).stdout.splitlines() if l.endswith(": test")]
+names=[x for x in names if "container" not in x or x.startswith("container_unsupported::")]
 count={}
 for x in names:
     m=x.split("::",1)[0] if "::" in x else None
@@ -411,15 +412,17 @@ echo "i143-2805-process sh:scripts/i143-acceptance-gate.sh i143-2805-process" >>
 # connections.md §13 F, G, H on the process provider (rpc/proxy_cutback.rs); its stem stays in
 # SCENARIO_SKIP, so the sharded main job does not run it a second time.
 echo "i143-2938-process sh:scripts/i143-acceptance-gate.sh i143-2938-process" >> $D/jobs
+# Luke 2026-10-28: "anything running in a container is banned" until the container estates are under
+# control: no container job is queued, and the module jobs run no cell whose name says container.
 # R14 item 6: the provider mounts one qualified store namespace in every container.
 export RDM_CONTAINER_STORE_QUALIFIED=1
-echo "i143-2777-container sh:scripts/i143-acceptance-gate.sh i143-2777-container" >> $D/jobs
-echo "i143-2805-container sh:scripts/i143-acceptance-gate.sh i143-2805-container" >> $D/jobs
-echo "i143-2784-chaos-container sh:scripts/i143-acceptance-gate.sh i143-2784-chaos-container" >> $D/jobs
+# echo "i143-2777-container sh:scripts/i143-acceptance-gate.sh i143-2777-container" >> $D/jobs
+# echo "i143-2805-container sh:scripts/i143-acceptance-gate.sh i143-2805-container" >> $D/jobs
+# echo "i143-2784-chaos-container sh:scripts/i143-acceptance-gate.sh i143-2784-chaos-container" >> $D/jobs
 echo "doctests cargo:--doc $PKGS" >> $D/jobs
 echo "workspace-check sh:cargo check --workspace --tests --no-default-features" >> $D/jobs
 # Container jobs require the Docker host; absence is a refusal, never a skip.
-echo "container-proof sh:export RDM_REQUIRE_CONTAINER=1 RAFKA_REQUIRE_CONTAINER=1; $(exe rdm-admin main) -q container_proof:: provider_state::container:: & provider_pid=\$!; $(exe $SCENARIO_PKG main) -q container_kill:: executables::a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_executable_outside_them_is_refused declared_secrets::container:: topology_storage_provider::container:: --skip declared_secrets::container::an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_kinds_with_the_value_containers named_listeners::a_container_fabrics_gateway_listeners_are_on_the_containers_own_address & kill_pid=\$!; proof_rc=0; wait \$provider_pid || proof_rc=1; wait \$kill_pid || proof_rc=1; exit \$proof_rc" >> $D/jobs
+# echo "container-proof sh:export RDM_REQUIRE_CONTAINER=1 RAFKA_REQUIRE_CONTAINER=1; $(exe rdm-admin main) -q container_proof:: provider_state::container:: & provider_pid=\$!; $(exe $SCENARIO_PKG main) -q container_kill:: executables::a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_executable_outside_them_is_refused declared_secrets::container:: topology_storage_provider::container:: --skip declared_secrets::container::an_admin_started_again_from_its_data_dir_without_a_launcher_launches_the_named_kinds_with_the_value_containers named_listeners::a_container_fabrics_gateway_listeners_are_on_the_containers_own_address & kill_pid=\$!; proof_rc=0; wait \$provider_pid || proof_rc=1; wait \$kill_pid || proof_rc=1; exit \$proof_rc" >> $D/jobs
 # The Rafka-shaped (R-shape) canonical process jobs: each >1 min, so release gate only (run between epics).
 for j in i143-rshape-composition-process i143-rshape-authority-chaos-process i143-rshape-lifecycle-chaos-process i143-rshape-routing-chaos-process i143-rshape-partition-chaos-process; do
     grep -q "\"$j\"" tools/mesh-audit/i143-acceptance-jobs.json && echo "rshape-${j#i143-rshape-} sh:scripts/i143-acceptance-gate.sh $j" >> $D/jobs

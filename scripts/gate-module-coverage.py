@@ -42,6 +42,8 @@ def selected(names, args):
 def main(jobs_path, binary, elsewhere=()):
     names = [l.rsplit(": ", 1)[0] for l in subprocess.run([binary, "--list"], capture_output=True, text=True).stdout.splitlines() if l.endswith(": test")]
     names = [n for n in names if n.split("::", 1)[0] not in set(elsewhere)]
+    # Luke 2026-10-28: no cell runs in a container; a cell whose name says container is selected by no job.
+    names = [n for n in names if "container" not in n or n.startswith("container_unsupported::")]
     module_runs = {n: [] for n in names}
     named_runs = {n: [] for n in names}
     for line in open(jobs_path):
