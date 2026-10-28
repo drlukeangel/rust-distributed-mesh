@@ -2235,6 +2235,113 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
     assert_eq!(ended, vec![vec![tunnel_id, names.0, names.1, names.2, String::from_utf8_lossy(ALPN_A).to_string()]], "the tunnel's end is one span naming it");
 }
 
+/// The carrier's `rdm.node.connections.create.via-tunnel` span among `spans`: the child of the
+/// source's tunnel span for `entry` (telemetry.md §3, data-plane row).
+fn carriers_tunnel_span<'a>(spans: &'a [serde_json::Value], entry: &str) -> Option<&'a serde_json::Value> {
+    let source = spans.iter().find(|s| s["name"] == "rdm.node.connections.create.via-tunnel" && s["attributes"]["entry"] == entry && s["attributes"]["kind"] == "proxy")?;
+    spans.iter().find(|s| s["name"] == "rdm.node.connections.create.via-tunnel" && s["parent_span_id"] == source["span_id"])
+}
+
+/// CONTRACT (telemetry.md §3, data-plane row: "a carrier's tunnel span
+/// `rdm.node.connections.create.via-tunnel` is its child and passes its own context on to the
+/// destination"; §4: a connection's life is never held by the span that opened it): a Proxy opened
+/// through the carrier and carrying a stream both ways; while it still carries, the carrier's tunnel
+/// span is already exported, the source's tunnel span its parent, naming the entry, with outcome
+/// `opened`; and the tunnel carries on after the read. Must NOT happen: the carrier's span held open
+/// for the tunnel's life (exported only at its end, or never).
+#[test]
+fn a_carriers_tunnel_span_is_exported_once_the_tunnel_opens_while_the_tunnel_still_carries() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-carrier-tunnel-span").expect("the cell's evidence file can be created");
+    let (entry, names, carrier_span) = capture.run(4, async {
+        let alpns = [gateway_alpn(ALPN_A)];
+        let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+        let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+        let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+        source.know(&carrier);
+        carrier.know(&dest);
+        seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+        let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+        let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+        let accept = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+        let tunnel = dialer_s.open(&dest.birth).await.unwrap();
+        let far = accept.await.unwrap();
+        assert_eq!(tunnel.kind(), ConnectionKind::Proxy { via: carrier.birth.clone() });
+        let carry = |tag: &'static str| {
+            let (tunnel, far) = (&tunnel, &far);
+            async move {
+                let (mut send, mut recv) = tunnel.open_bi().await.unwrap();
+                send.write_all(tag.as_bytes()).await.unwrap();
+                send.finish().unwrap();
+                let (mut send_d, mut recv_d) = far.accept_bi().await.unwrap();
+                assert_eq!(recv_d.read_to_end(64).await.unwrap(), tag.as_bytes());
+                send_d.write_all(b"back").await.unwrap();
+                send_d.finish().unwrap();
+                assert_eq!(recv.read_to_end(64).await.unwrap(), b"back");
+            }
+        };
+        carry("before-the-read").await;
+        let entry = tunnel.id().to_string();
+        let spans = capture.spans().expect("the cell's spans reached its evidence file");
+        let carrier_span = carriers_tunnel_span(&spans, &entry).cloned();
+        carry("after-the-read").await;
+        let names = (source.birth.name.to_string(), carrier.birth.name.to_string(), dest.birth.name.to_string());
+        source.shutdown().await;
+        carrier.shutdown().await;
+        dest.shutdown().await;
+        (entry, names, carrier_span)
+    });
+    let span = carrier_span.expect("the carrier's tunnel span is exported while the tunnel still carries");
+    let attrs: Vec<String> = ["source", "carrier", "destination", "alpn", "entry", "outcome"].iter().map(|k| span["attributes"][*k].as_str().unwrap_or_default().to_string()).collect();
+    assert_eq!(attrs, vec![names.0, names.1, names.2, String::from_utf8_lossy(ALPN_A).to_string(), entry, "opened".to_string()], "the carrier's tunnel span names the tunnel and its outcome: {span}");
+}
+
+/// CONTRACT (connections.md §10: "`node.connections.delete { All | [ids] }` closes it by that id like
+/// any other"; §1: the carrier carries traffic for as long as the connection stands): a Proxy open
+/// through the carrier is deleted by id on the source (`node.connections.delete { [its id] }`). The
+/// carrier's two legs close: the destination's connection ends within the bound; and the carrier ends
+/// its tunnel on its own span, `rdm.node.connections.delete.via-carrier-tunnel-ended`, naming the
+/// entry, the source, the carrier, the destination and the alpn, and the close the source's leg
+/// carried (`node.connections.delete`), in the opener's trace. Must NOT happen: the destination's leg
+/// left open, or the carrier's tunnel ending unspanned.
+#[test]
+fn a_proxy_deleted_by_id_closes_the_carriers_legs_and_ends_its_tunnel_on_the_carriers_span() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-carrier-tunnel-ended").expect("the cell's evidence file can be created");
+    let (entry, names, far_closed) = capture.run(4, async {
+        let alpns = [gateway_alpn(ALPN_A)];
+        let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+        let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+        let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+        source.know(&carrier);
+        carrier.know(&dest);
+        seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+        let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+        let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+        let accept = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+        let tunnel = dialer_s.open(&dest.birth).await.unwrap();
+        let far = accept.await.unwrap();
+        assert_eq!(tunnel.kind(), ConnectionKind::Proxy { via: carrier.birth.clone() });
+        let deleted = source.registry.delete_connections(&ConnectionScope::Connections(vec![tunnel.id().clone()])).await;
+        assert_eq!(deleted, vec![tunnel.id().clone()]);
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), tunnel.closed()).await.unwrap(), Closed::ConnectionsDeleted);
+        // Read before any shutdown: a router's shutdown closes every leg it carries.
+        let far_closed = tokio::time::timeout(Duration::from_secs(5), far.closed()).await.ok();
+        let names = (source.birth.name.to_string(), carrier.birth.name.to_string(), dest.birth.name.to_string());
+        let entry = tunnel.id().to_string();
+        source.shutdown().await;
+        carrier.shutdown().await;
+        dest.shutdown().await;
+        (entry, names, far_closed)
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let ended: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node.connections.delete.via-carrier-tunnel-ended").collect();
+    assert_eq!(ended.len(), 1, "the carrier's tunnel ends on one span of its own: {ended:#?}");
+    let attrs: Vec<String> = ["entry", "source", "carrier", "destination", "alpn", "closed"].iter().map(|k| ended[0]["attributes"][*k].as_str().unwrap_or_default().to_string()).collect();
+    assert_eq!(attrs, vec![entry.clone(), names.0, names.1, names.2, String::from_utf8_lossy(ALPN_A).to_string(), "node.connections.delete".to_string()], "{}", ended[0]);
+    let source_tunnel = spans.iter().find(|s| s["name"] == "rdm.node.connections.create.via-tunnel" && s["attributes"]["entry"] == entry.as_str() && s["attributes"]["kind"] == "proxy").expect("the source's tunnel span");
+    assert_eq!(ended[0]["trace_id"], source_tunnel["trace_id"], "the carrier's tunnel end is in the opener's trace");
+    assert!(far_closed.is_some(), "the carrier closed the destination's leg once the source's leg was deleted");
+}
+
 /// CONTRACT (connections.md §6): a protocol whose `Alpn` says `proxy: false` never consumes a Proxy as a
 /// legal route even when one is held, and a Direct that sent nothing asks no carrier, though its carrier
 /// list names the carrier's kind and the carrier holds an Active Direct to the destination. Must NOT
