@@ -365,9 +365,10 @@ pub struct Drive {
     /// Each mesh's last section failure (Q250), as `operation|reason`: the same failure again stalls
     /// the drive rather than sending the same section once more.
     section_failed: Mutex<HashMap<String, String>>,
-    /// The operations a section this drive sent completed, its run reported by its verdict (Q250): done,
-    /// as a reported fabric-lane run's are ([`left`]).
-    section_done: Mutex<HashSet<String>>,
+    /// The operations a section this drive sent completed, its run reported by its verdict (Q250), with the
+    /// fabric run they were sent in (`BuildProjection::opened`): done in that run only, as a reported
+    /// fabric-lane run's are ([`left`]); a later run (a recovery of the same Build) plans from the world.
+    section_done: Mutex<HashSet<(u32, String)>>,
 }
 
 fn frame_key(f: &BuildReply) -> Option<String> {
@@ -897,7 +898,7 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
     // A standalone action plans from the birth the atlas row held at this pass ([`Gate::atlas_birth`]).
     let atlas = drive.atlas.lock().unwrap().clone();
     let plan = crate::accepted::plan_for_build_with(p, t, drive.recorded.lock().unwrap().as_ref(), atlas.as_ref());
-    let sections = drive.section_done.lock().unwrap().clone();
+    let sections: HashSet<String> = drive.section_done.lock().unwrap().iter().filter(|(run, _)| *run == p.opened).map(|(_, key)| key.clone()).collect();
     plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a)) && !sections.contains(&op.key())).collect()
 }
 
@@ -1922,10 +1923,8 @@ impl DriveEnv {
         if sections.len() < 2 && !retried {
             return Sections::None;
         }
-        let intent = self.intent_of(&p.build_id).await;
         let ended = futures_util::future::join_all(sections.into_iter().map(|(executor, ops)| {
-            let intent = intent.clone();
-            async move { (executor.mesh.clone(), self.run_section(me, turn, drive, &p.build_id, &executor, ops, intent).await) }
+            async move { (executor.mesh.clone(), self.run_section(me, turn, drive, p, &executor, ops).await) }
         }))
         .await;
         let mut held = Vec::new();
@@ -1955,7 +1954,8 @@ impl DriveEnv {
     /// fabric-primary, dispatched to the mesh-primary, every receipt it reports written in the lane, its
     /// verdict written, and the mesh's in-flight row released.
     #[allow(clippy::too_many_arguments)]
-    async fn run_section(&self, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, id: &BuildId, executor: &PathName, operations: Vec<BuildOperation>, intent: Vec<Vec<u8>>) -> Result<(), SectionEnd> {
+    async fn run_section(&self, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection, executor: &PathName, operations: Vec<BuildOperation>) -> Result<(), SectionEnd> {
+        let id = &p.build_id;
         use crate::build_state::{AttemptOpened, AttemptReason, BuildStepReceipt, StepOutcome};
         let mesh = executor.mesh.clone();
         let lane = crate::build_run::LaneBuilds::of(&self.builds, Some(&mesh));
@@ -1976,6 +1976,8 @@ impl DriveEnv {
                 other => return Err(SectionEnd::Held(format!("attempt {attempt} of mesh {mesh}'s lane of {id} was not claimed for {executor}: {}", claim_refusal(&other)))),
             }
             let context = self.door.contexts.get_lane(id, Some(&mesh), attempt).await.ok().flatten().unwrap_or_default();
+            // The intent is read after the open and the claim, so the mesh-primary holds the attempt it runs.
+            let intent = self.intent_of(id).await;
             let keys: Vec<String> = operations.iter().map(BuildOperation::key).collect();
             let plan = RunPlan { operations, hand_off_to: None };
             let mut completed: Vec<String> = Vec::new();
@@ -2031,7 +2033,7 @@ impl DriveEnv {
                 return Err(SectionEnd::Held(format!("the verdict of attempt {attempt} of mesh {mesh}'s lane of {id} could not be written: {e}")));
             }
             // Reported by its verdict: what the section completed is done.
-            drive.section_done.lock().unwrap().extend(completed);
+            drive.section_done.lock().unwrap().extend(completed.into_iter().map(|key| (p.opened, key)));
             let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: Some(mesh.clone()), attempt, claimant: me.to_string(), claimant_node: None };
             if let Err(e) = self.door.claims.release_in_flight(&mesh, &row).await {
                 tracing::info!(error = %e, "the section ended and its mesh's in-flight row could not be released: the mesh stays held by it");
