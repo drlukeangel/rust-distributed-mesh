@@ -723,7 +723,10 @@ impl AdminRunner {
     /// mesh of the same name created after it is a new mesh with a new id. The id is dropped at the
     /// receipt, never left for a later sweep to find the mesh without a member.
     fn forget_mesh_id(&self, mesh: &str) {
-        if let Some(id) = self.records.meshes.lock().unwrap().remove(mesh) {
+        let forgot = self.records.meshes.lock().unwrap().remove(mesh);
+        if let Some(id) = forgot {
+            // The projection reads the mesh ids held: the view's rebuild is due (Q254).
+            self.records.inputs_moved();
             self.records.deleted_meshes_forget(&id);
         }
     }

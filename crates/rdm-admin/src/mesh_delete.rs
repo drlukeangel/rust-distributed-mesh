@@ -953,7 +953,7 @@ async fn ensure_mesh_dead(meshes: &dyn crate::storage::MeshStorage, caches: &cra
     let (outcome, writer) = if held { ("already-applied", if applied_here { "acting-primary" } else { "mesh-primary" }) } else { ("applied", "acting-primary") };
     let mesh_row = mesh_row_dead(meshes, caches, mesh, &key.mesh_id).await.map_err(refused)?;
     if !held {
-        declared.lock().unwrap().meshes.insert(key.mesh_id.clone(), dead);
+        declared.lock().unwrap().hold_mesh(key.mesh_id.clone(), dead);
     }
     span.record("outcome", outcome);
     span.record("writer", writer);

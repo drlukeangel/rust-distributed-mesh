@@ -4149,9 +4149,10 @@ pub struct DigestView {
     /// birth does not tick.
     births: Arc<tokio::sync::watch::Sender<u64>>,
     /// Ticks when a held member is first held, changes its birth or its status, or is heard again
-    /// after it had gone silent past the staleness floor: what a local waiter on "that node is
-    /// ready" or "that node is reachable again" wakes on. A local observation of the view; nothing
-    /// is sent.
+    /// after it had gone silent past the staleness floor (on its own digest or a forwarded copy), and
+    /// when a birth held only from its mesh-primary's projection changes its status: what a local
+    /// waiter on "that node is ready" or "that node is reachable again" wakes on. A local observation
+    /// of the view; nothing is sent.
     heard: Arc<tokio::sync::watch::Sender<u64>>,
     /// Ticks when an open lifecycle overlay is added or cleared, or a departure is accepted: the
     /// overlays and departures a mesh primary's mesh topology carries. A local observation; nothing is
@@ -4227,6 +4228,9 @@ pub struct DigestView {
     /// The mesh names the accepted Build holds, once this node holds the Build: the authority on
     /// which meshes the fabric has.
     accepted_meshes: Arc<Mutex<Option<BTreeSet<String>>>>,
+    /// Ticks when the mesh names the accepted Build holds change ([`Self::set_accepted_meshes`]): the
+    /// view's rebuild reads them ([`RoutingWatch`]). A local observation; nothing is sent.
+    accepted: Arc<tokio::sync::watch::Sender<u64>>,
     retention: Duration,
     /// The staleness floor.
     staleness_floor: Duration,
@@ -4256,43 +4260,48 @@ impl Default for DigestView {
 /// The routing facts a view holds, watched: a held member first held, its birth or status changed,
 /// heard again after silence; a held birth silent past the staleness floor, marked by the pruner's
 /// sweep ([`DigestView::mark_silence`]); a lifecycle overlay opened or closed; a departure taken or
-/// forgotten; a mesh status taken. What application
-/// routing's view rebuild wakes on, so a fact is applied on receipt (states.md "Routing"). A local
-/// observation of the view; nothing is sent.
+/// forgotten; a mesh status taken; the meshes the accepted Build names. What application
+/// routing's view rebuild wakes on, so a fact is applied on receipt (states.md "Routing"); a caller
+/// adds the watches of its own inputs ([`Self::watching`]). A local observation of the view; nothing
+/// is sent.
 pub struct RoutingWatch {
-    heard: tokio::sync::watch::Receiver<u64>,
-    births: tokio::sync::watch::Receiver<u64>,
-    overlays: tokio::sync::watch::Receiver<u64>,
-    meshes: tokio::sync::watch::Receiver<u64>,
-    silence: tokio::sync::watch::Receiver<u64>,
+    /// Each watch by the name a wake reports. A watch whose sender is gone moves nothing again and
+    /// leaves the list; the others are still waited on.
+    watches: Vec<(&'static str, tokio::sync::watch::Receiver<u64>)>,
 }
 
 impl RoutingWatch {
+    /// `self`, also waiting on `watch`, named `name` when it moves.
+    pub fn watching(mut self, name: &'static str, watch: tokio::sync::watch::Receiver<u64>) -> Self {
+        self.watches.push((name, watch));
+        self
+    }
+
     /// Every fact moved so far is seen: called right before a rebuild reads the view, so a fact taken
     /// while it reads wakes the next one.
     pub fn seen(&mut self) {
-        self.heard.borrow_and_update();
-        self.births.borrow_and_update();
-        self.overlays.borrow_and_update();
-        self.meshes.borrow_and_update();
-        self.silence.borrow_and_update();
+        for (_, w) in self.watches.iter_mut() {
+            w.borrow_and_update();
+        }
     }
 
     /// Returns when a fact moved since [`RoutingWatch::seen`], naming the watch that moved (`heard`,
-    /// `births`, `overlays`, `meshes`, `silence`). A view that is gone moves nothing: this never
-    /// returns then.
+    /// `births`, `overlays`, `meshes`, `silence`, `accepted`, or a name given to [`Self::watching`]). A
+    /// watch whose sender is gone leaves the wait and the others are waited on; with every one gone,
+    /// nothing can move, and this never returns.
     pub async fn moved(&mut self) -> &'static str {
-        let (ok, which) = tokio::select! {
-            r = self.heard.changed() => (r.is_ok(), "heard"),
-            r = self.births.changed() => (r.is_ok(), "births"),
-            r = self.overlays.changed() => (r.is_ok(), "overlays"),
-            r = self.meshes.changed() => (r.is_ok(), "meshes"),
-            r = self.silence.changed() => (r.is_ok(), "silence"),
-        };
-        if !ok {
-            std::future::pending::<()>().await;
+        loop {
+            if self.watches.is_empty() {
+                return std::future::pending().await;
+            }
+            let (moved, at, _) = futures_util::future::select_all(self.watches.iter_mut().map(|(name, w)| Box::pin(async move { w.changed().await.map(|()| *name) }))).await;
+            match moved {
+                Ok(name) => return name,
+                Err(_) => {
+                    self.watches.remove(at);
+                }
+            }
         }
-        which
     }
 }
 
@@ -4401,6 +4410,7 @@ impl DigestView {
             observer_name: Arc::default(),
             held_name: Arc::default(),
             accepted_meshes: Arc::default(),
+            accepted: Arc::new(tokio::sync::watch::Sender::new(0)),
             retention,
             staleness_floor,
             seats: PrimaryView::default(),
@@ -5060,9 +5070,9 @@ impl DigestView {
             prior
         };
         let held = self.inner.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|(h, _, _)| h.node.incarnation == d.node.incarnation);
-        if held {
-            self.heard.send_modify(|v| *v += 1);
-        }
+        // The status moved for a birth held by its own heartbeat or held only from this projection
+        // ([`Self::projected_at`]): the view lists either with it.
+        self.heard.send_modify(|v| *v += 1);
         tracing::info_span!(
             "rdm.mesh.topology.update.via-projected-status",
             node = %self.observer_name.lock().unwrap(),
@@ -5155,7 +5165,7 @@ impl DigestView {
     /// The stop of `node_id` is over (its mesh-primary took node.joined, a later birth was heard, or
     /// it deleted): its overlay and mark clear.
     fn end_stop(&self, node_id: &str) {
-        self.stopped_marks.lock().unwrap().remove(node_id);
+        let unmarked = self.stopped_marks.lock().unwrap().remove(node_id).is_some();
         let cleared = {
             let mut in_flight = self.in_flight.lock().unwrap();
             let mut ended = self.ended_overlays.lock().unwrap();
@@ -5169,7 +5179,9 @@ impl DigestView {
             });
             in_flight.len() != before
         };
-        if cleared {
+        // The view lists a stopped birth from its mark ([`Self::stopped_digests`]) and its overlay
+        // ([`Self::stopped_unheard`]): either one gone moves the overlay watch.
+        if cleared || unmarked {
             self.overlays_moved();
         }
     }
@@ -5223,8 +5235,12 @@ impl DigestView {
     }
 
     /// Hold the mesh names the accepted Build names: the authority on which meshes the fabric has.
+    /// A change of them moves the accepted watch ([`RoutingWatch`]).
     pub fn set_accepted_meshes(&self, meshes: BTreeSet<String>) {
-        *self.accepted_meshes.lock().unwrap() = Some(meshes);
+        let changed = self.accepted_meshes.lock().unwrap().replace(meshes.clone()).as_ref() != Some(&meshes);
+        if changed {
+            self.accepted.send_modify(|v| *v += 1);
+        }
     }
 
     /// Whether the accepted Build names `mesh`; `None` while this node holds no Build.
@@ -5484,7 +5500,9 @@ impl DigestView {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        let mut heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status));
+        // A forwarded copy is its forwarder's word that the member is heard (it forwards only what it
+        // hears): a birth held silent past the staleness floor is heard again here, as on its own digest.
+        let mut heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, heard)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status) || unheard(at, *heard, now) > self.staleness_floor);
         self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
@@ -5515,7 +5533,16 @@ impl DigestView {
 
     /// The routing facts this view holds, watched ([`RoutingWatch`]).
     pub fn routing_watch(&self) -> RoutingWatch {
-        RoutingWatch { heard: self.heard.subscribe(), births: self.births.subscribe(), overlays: self.overlays.subscribe(), meshes: self.statuses.mesh_changes(), silence: self.silence.subscribe() }
+        RoutingWatch {
+            watches: vec![
+                ("heard", self.heard.subscribe()),
+                ("births", self.births.subscribe()),
+                ("overlays", self.overlays.subscribe()),
+                ("meshes", self.statuses.mesh_changes()),
+                ("silence", self.silence.subscribe()),
+                ("accepted", self.accepted.subscribe()),
+            ],
+        }
     }
 
     /// Ticks each time a member is first held, changes its birth or its status, or is heard again
@@ -6842,6 +6869,25 @@ mod tests {
         assert_eq!(moved_named(&mut w).await, None, "the same meshes again move nothing");
         digest_view.set_accepted_meshes(BTreeSet::from(["mesh1".to_string(), "mesh2".to_string()]));
         assert_eq!(moved_named(&mut w).await, Some("accepted"), "a mesh added");
+    }
+
+    /// CONTRACT (rdm#172): a watch of the routing watch whose sender is gone leaves the wait, and the
+    /// others still wake it. Must NOT happen: one closed watch parking the wait for good, so that no
+    /// fact any other watch moves wakes the view's rebuild again.
+    #[tokio::test]
+    async fn a_closed_watch_leaves_the_routing_watch_and_every_other_still_wakes_it() {
+        let digest_view = DigestView::default();
+        let (gone, rx) = tokio::sync::watch::channel(0u64);
+        let mut w = digest_view.routing_watch().watching("gone", rx);
+        w.seen();
+        drop(gone);
+        assert_eq!(moved_named(&mut w).await, None, "the closed watch neither wakes the wait nor holds it");
+        hold_mesh_status(&digest_view, "mesh2", "ready", 10);
+        assert_eq!(moved_named(&mut w).await, Some("meshes"), "a mesh status taken still wakes it");
+        w.seen();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 10)));
+        assert!(moved_named(&mut w).await.is_some(), "a birth first held still wakes it");
     }
 
     #[test]

@@ -583,7 +583,9 @@ impl Records {
 
     /// This admin's own logical node, set once at start.
     pub fn set_me(&self, me: NodeId) {
-        let _ = self.me.set(me);
+        if self.me.set(me).is_ok() {
+            self.inputs_moved();
+        }
     }
 
     /// Hold the MeshStatus Dead facts heard now, each `(mesh, publisher, changed_at)`. A fact held for

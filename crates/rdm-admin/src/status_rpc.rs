@@ -104,6 +104,36 @@ pub struct Declared {
     /// needs after the connections, node-name-update.md Precondition). Memory of this tenure, as the
     /// connections receipt is.
     pub meshes_left: std::collections::HashSet<(NodeId, IncarnationId)>,
+    /// Moves each time a state the view's projection reads changes here: a birth's declared state
+    /// ([`Self::hold_node`], [`Self::forget_node`]) or a Mesh's ([`Self::hold_mesh`]), or what
+    /// [`Self::fold_records`] folds. `nodes` and `meshes` are written through those alone. What the
+    /// view rebuild waits on ([`crate::admin::ViewWake`]); nothing is sent.
+    pub moved: DeclaredMoved,
+}
+
+/// The watch of [`Declared::moved`]. A copy of [`Declared`] moves the same watch, and two copies equal
+/// in what they hold are equal whatever their watches.
+#[derive(Debug, Clone)]
+pub struct DeclaredMoved(Arc<tokio::sync::watch::Sender<u64>>);
+
+impl Default for DeclaredMoved {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::watch::Sender::new(0)))
+    }
+}
+
+impl PartialEq for DeclaredMoved {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for DeclaredMoved {}
+
+impl DeclaredMoved {
+    fn moved(&self) {
+        self.0.send_modify(|v| *v += 1);
+    }
 }
 
 /// A birth's `node.connections.deleted`, as its mesh-primary holds it for the rename precondition.
@@ -143,6 +173,32 @@ impl Declared {
         self.nodes.get(&(node_id.clone(), incarnation.clone())).copied()
     }
 
+    /// Hold `state` as what the birth `birth` declared; a change moves [`Self::moved`].
+    pub fn hold_node(&mut self, birth: (NodeId, IncarnationId), state: NodeState) {
+        if self.nodes.insert(birth, state) != Some(state) {
+            self.moved.moved();
+        }
+    }
+
+    /// Forget what the birth `birth` declared; a state forgotten moves [`Self::moved`].
+    pub fn forget_node(&mut self, birth: &(NodeId, IncarnationId)) {
+        if self.nodes.remove(birth).is_some() {
+            self.moved.moved();
+        }
+    }
+
+    /// Hold `state` as the Mesh `mesh_id`'s; a change moves [`Self::moved`].
+    pub fn hold_mesh(&mut self, mesh_id: MeshId, state: MeshState) {
+        if self.meshes.insert(mesh_id, state) != Some(state) {
+            self.moved.moved();
+        }
+    }
+
+    /// The watch [`Self::moved`] moves on.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.moved.0.subscribe()
+    }
+
     /// Hold `mesh`'s checklist-complete report from `reporter`, received `at`: one per reporter, so a
     /// report from one birth never displaces another's.
     pub fn record_report(&mut self, mesh: &str, reporter: Reporter, at: std::time::Instant) {
@@ -176,6 +232,7 @@ impl Declared {
     /// operation effect of those births. What this admin already holds stands where it is the greater;
     /// nothing is written back.
     pub fn fold_records(&mut self, meshes: &[crate::storage::MeshRecord], fabric: Option<&crate::fabric_storage::FabricRecord>, nodes: &[crate::storage::NodeRow], holds: impl Fn(&NodeId, &IncarnationId) -> bool) -> usize {
+        let (nodes_before, meshes_before) = (self.nodes.clone(), self.meshes.clone());
         for m in meshes {
             if let Some(state) = m.state() {
                 let held = self.meshes.entry(m.mesh_id.clone()).or_insert(state);
@@ -205,6 +262,9 @@ impl Declared {
                     *held = (*held).max(state);
                 }
             }
+        }
+        if self.nodes != nodes_before || self.meshes != meshes_before {
+            self.moved.moved();
         }
         births
     }
@@ -748,7 +808,7 @@ pub(crate) async fn commit_mesh_state(storage: &dyn crate::storage::MeshStorage,
     let mut declared = declared.lock().unwrap();
     match apply_mesh(&declared, mesh_id, state) {
         (StatusReply::Applied, _) => {
-            declared.meshes.insert(mesh_id.clone(), state);
+            declared.hold_mesh(mesh_id.clone(), state);
             rdm_core::reply::applied()
         }
         (other, _) => other,
@@ -1560,7 +1620,7 @@ impl StatusAuthority {
         let outcome = match self.remove_declared(node_id, birth, false).await {
             Ok(()) => {
                 let mut declared = self.declared.lock().unwrap();
-                declared.nodes.remove(&(node_id.clone(), birth.clone()));
+                declared.forget_node(&(node_id.clone(), birth.clone()));
                 declared.names.remove(&(node_id.clone(), birth.clone()));
                 "begun"
             }
@@ -1673,7 +1733,7 @@ impl StatusAuthority {
                 Ok(()) => {
                     let mut declared = self.declared.lock().unwrap();
                     declared.operations.retain(|_, r| r.node_id != node_id || r.incarnation_id != incarnation);
-                    declared.nodes.remove(&(node_id.clone(), incarnation.clone()));
+                    declared.forget_node(&(node_id.clone(), incarnation.clone()));
                     declared.names.remove(&(node_id.clone(), incarnation.clone()));
                     ("deleted", String::new())
                 }
@@ -2095,7 +2155,7 @@ impl StatusAuthority {
             let Some(mesh) = named else {
                 // A mesh-primary's declaration at the fabric-primary: decided and held here, written by
                 // the mesh's own primary on its record (one writer per object; Q144).
-                self.declared.lock().unwrap().meshes.insert(mesh_id.clone(), *state);
+                self.declared.lock().unwrap().hold_mesh(mesh_id.clone(), *state);
                 return rdm_core::reply::applied();
             };
             return commit_mesh_state(&*self.meshes_storage, &self.caches, &self.declared, mesh, mesh_id, *state).await;
@@ -2127,7 +2187,7 @@ impl StatusAuthority {
             match &effect {
                 Effect::Node(row, state, _) => match transition(declared.node(&row.node_id, &row.incarnation_id), *state) {
                     Transition::Apply => {
-                        declared.nodes.insert((row.node_id.clone(), row.incarnation_id.clone()), *state);
+                        declared.hold_node((row.node_id.clone(), row.incarnation_id.clone()), *state);
                         declared.names.insert((row.node_id.clone(), row.incarnation_id.clone()), row.name.clone());
                         rdm_core::reply::applied()
                     }

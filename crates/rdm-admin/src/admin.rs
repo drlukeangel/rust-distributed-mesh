@@ -3535,6 +3535,44 @@ mod tests {
         tokio::time::advance(Duration::from_secs(1)).await;
         assert!(digest_view.mark_silence_at(std::time::Instant::now() + digest_view.staleness_floor() * 2), "the sweep marks the birth silent");
         assert_eq!(due(&mut wake), Some("silence"), "the pruner's mark makes the rebuild due");
+
+        // The states this admin applied (status_rpc), moved at their setters.
+        use rdm_core::status::{MeshState, NodeState};
+        wake.seen();
+        let birth = (rpc.node.node_id.clone(), rpc.node.incarnation.clone());
+        records.declared.lock().unwrap().hold_node(birth.clone(), NodeState::Ready);
+        assert_eq!(due(&mut wake), Some("declared"), "a birth's declared state held");
+        wake.seen();
+        records.declared.lock().unwrap().hold_node(birth.clone(), NodeState::Ready);
+        assert_eq!(due(&mut wake), None, "the same declared state again moves nothing");
+        records.declared.lock().unwrap().hold_mesh(mesh_id("mesh1"), MeshState::Dead);
+        assert_eq!(due(&mut wake), Some("declared"), "a Mesh's state held");
+        wake.seen();
+        records.declared.lock().unwrap().forget_node(&birth);
+        assert_eq!(due(&mut wake), Some("declared"), "a birth's declared state forgotten, its cycle begun");
+        wake.seen();
+
+        // The node rows this admin writes: a row's name moved, or released, is a change of the name the
+        // view lists a birth that does not publish at.
+        let storage = crate::storage::MemoryNodesStorage::default();
+        let row = crate::storage::NodeRow::new("mesh1.rpc.1".parse().unwrap(), rpc.node.node_id.clone(), crate::model::NodeStatus::Ready);
+        records.caches.nodes.put(&storage, &row).await.unwrap();
+        assert_eq!(due(&mut wake), Some("rows"), "a row first written");
+        wake.seen();
+        let held = records.caches.nodes.row_of(&row.node_id).unwrap();
+        records.caches.nodes.put(&storage, &held).await.unwrap();
+        assert_eq!(due(&mut wake), None, "the row written again at its name, not released, moves nothing");
+        records.caches.nodes.put(&storage, &crate::storage::NodeRow { name: "mesh1.rpc.9".parse().unwrap(), ..held.clone() }).await.unwrap();
+        assert_eq!(due(&mut wake), Some("rows"), "the row's name moved");
+        wake.seen();
+        let held = records.caches.nodes.row_of(&row.node_id).unwrap();
+        records.caches.nodes.put(&storage, &crate::storage::NodeRow { status: crate::model::NodeStatus::Deleted, ..held }).await.unwrap();
+        assert_eq!(due(&mut wake), Some("rows"), "the row released its name");
+        wake.seen();
+
+        // A mesh's id the records hold, held at its setter.
+        crate::admin::rows_writer::hold_mesh_id(&records, "mesh3", &mesh_id("mesh3"));
+        assert_eq!(due(&mut wake), Some("records"), "a mesh id held");
     }
 
     /// CONTRACT (node.stop: a stopped admin's tasks are held; states.md "Routing"): the view rebuild

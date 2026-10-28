@@ -803,7 +803,7 @@ pub(crate) fn adopt_held_mesh_state(answer: &crate::wire::JoinAnswer, records: &
         if declared.meshes.contains_key(mesh_id) {
             return;
         }
-        declared.meshes.insert(mesh_id.clone(), state);
+        declared.hold_mesh(mesh_id.clone(), state);
     }
     tracing::info_span!("rdm.node_admin.mesh.update.via-held-state-adopted", mesh, mesh_id = %mesh_id, state = ?state, served_by = %answer.served_by, publisher = %publisher)
         .in_scope(|| tracing::info!("the mesh's held lifecycle state is adopted as it exists: no transition, no durable write"));

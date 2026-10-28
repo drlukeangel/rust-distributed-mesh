@@ -1374,6 +1374,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 if let Some(named) = builds_dyn.current().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.map(|b| b.topology) {
                                     for m in mesh_storage.meshes().await.map_err(storage_err)?.into_iter().filter(|m| !m.dead && named.meshes.contains_key(&m.name)) {
                                         records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
+                                        records.inputs_moved();
                                     }
                                 }
                             }

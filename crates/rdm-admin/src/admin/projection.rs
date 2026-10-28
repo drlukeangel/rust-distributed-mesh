@@ -633,39 +633,41 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
 }
 
 /// What makes the view's rebuild due: every input the projection reads, each moved where it changes
-/// (Q254: no timer, no poll; a sleep is a timer). The digest view's routing watch (a birth's status, an
-/// overlay, a departure taken or forgotten, a mesh status: states.md "Routing", applied on receipt;
-/// and a birth silent past the staleness floor, marked by the pruner's sweep, the one clock the
-/// projection reads), the records' inputs ([`Records::inputs`]) and the primary records the election
-/// reads ([`rdm_transport::topology::PrimaryView::subscribe`]).
+/// (Q254: no timer, no poll; a sleep is a timer). The digest view's routing watch (a birth's status,
+/// held or held only from its mesh-primary's projection; an overlay or a stop mark; a departure taken
+/// or forgotten; a mesh status; the meshes the accepted Build names: states.md "Routing", applied on
+/// receipt; and a birth silent past the staleness floor, marked by the pruner's sweep, the one clock the
+/// projection reads), the records' inputs ([`Records::inputs`]), the primary records the election reads
+/// ([`rdm_transport::topology::PrimaryView::subscribe`]), the states this admin applied
+/// ([`crate::status_rpc::Declared::subscribe`]) and the node rows this admin writes
+/// ([`crate::node_rows::WrittenRows::subscribe_names`]). A watch whose sender is gone leaves the wait;
+/// the others are still waited on ([`rdm_transport::topology::RoutingWatch::moved`]).
 pub(crate) struct ViewWake {
-    facts: rdm_transport::topology::RoutingWatch,
-    records: tokio::sync::watch::Receiver<u64>,
-    primaries: tokio::sync::watch::Receiver<u64>,
+    inputs: rdm_transport::topology::RoutingWatch,
 }
 
 impl ViewWake {
     /// The inputs of the projection over `digest_view` and `records`, watched.
     pub(crate) fn new(digest_view: &DigestView, records: &Records) -> Self {
-        Self { facts: digest_view.routing_watch(), records: records.subscribe_inputs(), primaries: digest_view.seats.subscribe() }
+        let declared = records.declared.lock().unwrap().subscribe();
+        let inputs = digest_view
+            .routing_watch()
+            .watching("records", records.subscribe_inputs())
+            .watching("primaries", digest_view.seats.subscribe())
+            .watching("declared", declared)
+            .watching("rows", records.caches.nodes.subscribe_names());
+        Self { inputs }
     }
 
     /// Every input moved so far is seen: called right before a rebuild reads them, so one moved
     /// while it reads makes the next one due.
     pub(crate) fn seen(&mut self) {
-        self.facts.seen();
-        self.records.borrow_and_update();
-        self.primaries.borrow_and_update();
+        self.inputs.seen();
     }
 
-    /// Returns when an input moved since [`Self::seen`], naming it: the routing watch's own name, or
-    /// `records`, or `primaries`.
+    /// Returns when an input moved since [`Self::seen`], naming it.
     async fn moved(&mut self) -> &'static str {
-        tokio::select! {
-            which = self.facts.moved() => which,
-            Ok(()) = self.records.changed() => "records",
-            Ok(()) = self.primaries.changed() => "primaries",
-        }
+        self.inputs.moved().await
     }
 }
 

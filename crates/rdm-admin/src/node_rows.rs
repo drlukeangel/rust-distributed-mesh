@@ -103,6 +103,12 @@ pub struct WrittenRows {
     /// The birth this admin writes as (Q109: the record names its writer's birth), set once at its boot
     /// ([`Self::writes_as`]): every record it puts carries it as `writer`.
     birth: std::sync::OnceLock<crate::storage::BirthRef>,
+    /// Moves each time a record this writer writes moves its node's name or releases it
+    /// ([`released_its_name`]), and each time it lets a record go ([`Self::forget`]): the view lists a
+    /// birth that does not publish at the name its row holds, and a released row gives its path to
+    /// another birth (`crate::admin::projection::RowNames`). What the view rebuild waits on
+    /// ([`Self::subscribe_names`]); nothing is sent.
+    names: tokio::sync::watch::Sender<u64>,
 }
 
 impl WrittenRows {
@@ -180,8 +186,16 @@ impl WrittenRows {
         self.node_types.lock().unwrap().get(node_id).cloned()
     }
 
+    /// The watch [`Self::put`] and [`Self::forget`] move when a record's name or its release moved.
+    pub fn subscribe_names(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.names.subscribe()
+    }
+
     /// The node let go of its record (a withdrawn claim): the writer holds no record of it.
     pub fn forget(&self, node_id: &NodeId) {
+        if self.rows.get(node_id).is_some() {
+            self.names.send_modify(|v| *v += 1);
+        }
         self.rows.forget(node_id);
         if let Some(atlas) = self.atlas.get() {
             atlas.forget_record(node_id);
@@ -287,6 +301,9 @@ impl WrittenRows {
         let row = &row;
         storage.put_node(row).await?;
         self.hold(row);
+        if previous.as_ref().is_none_or(|p| p.name != row.name || released_its_name(p) != released_its_name(row)) {
+            self.names.send_modify(|v| *v += 1);
+        }
         let owed = self.owed.lock().unwrap().remove(&row.node_id).unwrap_or_default();
         let moves = owed.then(IndexMoves::of(row, previous.as_ref()));
         if let Err(e) = crate::storage::write_index_moves(storage, &row.name.mesh, &row.node_id, &moves).await {
