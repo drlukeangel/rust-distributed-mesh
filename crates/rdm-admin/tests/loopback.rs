@@ -31,6 +31,9 @@ pub struct Loopback {
     /// The executors that serve the fabric-primary's dispatch as an admin on another host does (Q118):
     /// their runs report every receipt up the stream and the fabric-primary writes it.
     reporting: Mutex<BTreeSet<String>>,
+    /// The executors on the fixture's log whose Build state frames their run's progress on the call's
+    /// stream, as an admin's does (`FramedBuilds` over its builds, `admin/boot.rs`).
+    framed: Mutex<BTreeSet<String>>,
     /// Every executor a dispatch reached, in order: `(executor, attempt)`.
     pub dispatched: Mutex<Vec<(String, u32)>>,
     /// Every section a dispatch reached (Q250), in order: `(executor, lane, attempt)`.
@@ -66,7 +69,7 @@ impl OperationRunner for OwnReceipts {
 
 impl Loopback {
     pub fn new(builds: Arc<dyn BuildStateAdapter>, local: Arc<dyn LocalBuildLog>, topology: Arc<RwLock<Topology>>, runner: Arc<dyn OperationRunner>) -> Arc<Self> {
-        Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(BTreeMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), own: Mutex::new(BTreeMap::new()), reporting: Mutex::new(BTreeSet::new()), dispatched: Mutex::new(Vec::new()), sections: Mutex::new(Vec::new()) })
+        Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(BTreeMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), own: Mutex::new(BTreeMap::new()), reporting: Mutex::new(BTreeSet::new()), framed: Mutex::new(BTreeSet::new()), dispatched: Mutex::new(Vec::new()), sections: Mutex::new(Vec::new()) })
     }
 
     /// `executor` keeps its own Build log (returned): the intent a call carries is absorbed there, its
@@ -82,6 +85,12 @@ impl Loopback {
     pub fn reports(&self, executor: &str) {
         self.own_log(executor);
         self.reporting.lock().unwrap().insert(executor.to_string());
+    }
+
+    /// `executor`, on the fixture's log, frames its run's progress on the call's stream through
+    /// `FramedBuilds`, as an admin's Build state does: a blocker its run notes reaches the caller.
+    pub fn frames(&self, executor: &str) {
+        self.framed.lock().unwrap().insert(executor.to_string());
     }
 
     /// `executor` plans and hands off from `view`, which may disagree with the fabric-primary's.
@@ -109,8 +118,10 @@ impl Loopback {
                     let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: framed.clone(), topology, runner });
                     return Arc::new(RunDoor { me: executor.clone(), builds: framed, exec, runs, local: own, gate: rdm_admin::stop_gate::StopGate::new() });
                 }
-                let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: self.builds.clone(), topology: self.views.lock().unwrap().get(&executor.to_string()).cloned().unwrap_or_else(|| self.topology.clone()), runner: self.runner.clone() });
-                Arc::new(RunDoor { me: executor.clone(), builds: self.builds.clone(), exec, runs: Arc::new(AttemptRuns::default()), local: self.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() })
+                let runs = Arc::new(AttemptRuns::default());
+                let builds: Arc<dyn BuildStateAdapter> = if self.framed.lock().unwrap().contains(&executor.to_string()) { Arc::new(FramedBuilds::new(self.builds.clone(), runs.clone())) } else { self.builds.clone() };
+                let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: builds.clone(), topology: self.views.lock().unwrap().get(&executor.to_string()).cloned().unwrap_or_else(|| self.topology.clone()), runner: self.runner.clone() });
+                Arc::new(RunDoor { me: executor.clone(), builds, exec, runs, local: self.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() })
             })
             .clone()
     }

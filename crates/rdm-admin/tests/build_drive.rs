@@ -175,6 +175,23 @@ async fn next_within(reader: &mut rdm_admin::build_drive::DriveReader) -> Option
     tokio::time::timeout(Duration::from_millis(50), reader.next()).await.ok().flatten()
 }
 
+/// Every frame the reader holds now, up to the first wait.
+async fn frames_now(reader: &mut rdm_admin::build_drive::DriveReader) -> Vec<Read> {
+    let mut read = Vec::new();
+    while let Some(r) = next_within(reader).await {
+        read.push(r);
+    }
+    read
+}
+
+/// The `Blocked` frames of `read`.
+fn blocked_of(read: &[Read]) -> Vec<BuildReply> {
+    read.iter().filter_map(|r| match r {
+        Read::Frame(f @ BuildReply::Blocked { .. }) => Some(f.clone()),
+        _ => None,
+    }).collect()
+}
+
 /// CONTRACT: a fabric-primary whose fabric-primary record names another live birth dispatches nothing.
 /// The Build log's target is checked before the claim: the drive ends `SeatLost` naming the target, no attempt is
 /// claimed, no executor is called, and the callers' streams end with the seat loss (the caller
@@ -1281,25 +1298,34 @@ const LEAVE_INCOMPLETE: &str = "mesh.delete: mesh2.admin.1 sent no valid mesh-de
 /// Build is still in progress and the current-Build read (last in, first out) returns it: it is not a
 /// failed Build the read skips. The drive claims no further attempt while nothing the resume decides
 /// on has moved, and names why; when the leaving mesh's primary is proven gone it claims the next
-/// attempt, which runs the shutdown from the receipts and completes the Build.
+/// attempt, which runs the shutdown from the receipts and completes the Build. The hand-back frames
+/// no `Blocked` to the caller (node-rpc-envelope.md: Blocked's "only source is the subject's Status
+/// `Blocked` reply to the executor's ProbeNodeState"): neither the executor's run nor the drive frames
+/// the incomplete operation; the caller's stream reads the resumed attempt's terminal.
 /// Must NOT happen: the Build failed and skipped (the current Build becomes the older one, nothing
-/// resumes the leave), or an attempt claimed again on every pass of the drive.
+/// resumes the leave), an attempt claimed again on every pass of the drive, or a `Blocked` frame on
+/// the caller's stream that no subject's Status `Blocked` reply made.
 #[test]
 fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_and_resumes_when_the_loss_is_proven() {
     use rdm_admin::build_state::{AttemptOutcome, BuildFact, BuildState, CurrentBuild};
     let cap = crate::mesh_delete_resume::capture();
-    let (trace_id, first, second, third, facts, ran, dispatched, after) = cap.run(async {
+    let (trace_id, first, second, third, facts, ran, dispatched, after, read) = cap.run(async {
         let root = tracing::info_span!("cell.leave-incomplete-stays-in-progress");
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let _in_root = root.enter();
         let (r, mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        // The executor's run frames its progress on the call's stream, as an admin's does.
+        r.dispatch.frames("mesh1.admin.1");
         // Attempt 1: the shutdown ends incomplete. One drive across the passes, as the fabric-primary keeps it.
         let drive = Drive::detached(r.build.clone());
+        let mut reader = drive.reader(1);
         let first = r.env.run(&drive).await;
         let first = (first, r.builds.read_build(&r.build).await.unwrap(), r.builds.current_build().await.unwrap());
+        let read_first = frames_now(&mut reader).await;
         // The same drive again with nothing moved: no attempt is claimed.
         let second = r.env.run(&drive).await;
         let second = (second, r.builds.read_build(&r.build).await.unwrap().attempt, r.dispatch.dispatched.lock().unwrap().len());
+        let read_second = frames_now(&mut reader).await;
         // The leaving mesh's primary is proven gone: it is no longer live in the view, and the shutdown can run.
         *mesh_deleter.ends.lock().unwrap() = None;
         for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1") {
@@ -1311,7 +1337,8 @@ fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_a
         let facts = r.builds.facts().await.unwrap();
         let ran = r.ran.0.lock().unwrap().clone();
         let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
-        (trace_id, first, second, third, facts, ran, dispatched, r.build.clone())
+        let read_third = frames_now(&mut reader).await;
+        (trace_id, first, second, third, facts, ran, dispatched, r.build.clone(), (read_first, read_second, read_third))
     });
     let spans = cap.spans();
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cells/leave_incomplete_in_progress");
@@ -1342,6 +1369,11 @@ fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_a
     assert!(named("rdm.node_admin.build.update.via-reconcile").iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["outcome"] == "converged"), "attempt 2 resumed the shutdown and converged");
     let stalls: Vec<_> = named("rdm.node_admin.build.update.via-stalled").into_iter().filter(|s| s["trace_id"] == trace_id.as_str()).collect();
     assert_eq!(stalls.len(), 1, "the idle wait is named once across the two passes that made it: {stalls:?}");
+    let (read_first, read_second, read_third) = read;
+    assert_eq!(blocked_of(&read_first), Vec::<BuildReply>::new(), "the hand-back of attempt 1 frames no Blocked to the caller: no subject's Status Blocked reply made one");
+    assert_eq!(blocked_of(&read_second), Vec::<BuildReply>::new(), "the idle wait frames no Blocked to the caller");
+    assert_eq!(blocked_of(&read_third), Vec::<BuildReply>::new(), "the resumed attempt frames no Blocked to the caller");
+    assert!(matches!(read_third.last(), Some(Read::Terminal(BuildReply::Complete { attempt: 2, .. }))), "the caller's stream ends with attempt 2's Complete: {read_third:?}");
 }
 
 /// CONTRACT (R-BI4: "Only an attempt that ended with a named terminal failure makes a Build
@@ -1381,14 +1413,17 @@ async fn mesh2_primary_becomes(r: &Rig, status: NodeStatus) {
 /// unproven. The hold targets restart, replace and delete of the mesh's births, never the shutdown's
 /// resume: the shutdown is dispatched on attempt 1, the Build stays in progress and nothing is claimed
 /// again while the primary stays unproven, and once its exit is proven attempt 2 runs the shutdown
-/// and completes the Build.
+/// and completes the Build. The caller's stream carries no `Blocked` for the incomplete leave
+/// (node-rpc-envelope.md: Blocked's "only source is the subject's Status `Blocked` reply to the
+/// executor's ProbeNodeState").
 /// Must NOT happen: the drive stopping at the unheard-mesh target before the shutdown, the Build
-/// failed, or the Build left in progress with no attempt claimed after the proof.
+/// failed, the Build left in progress with no attempt claimed after the proof, or a `Blocked` frame on
+/// the caller's stream that no subject's Status `Blocked` reply made.
 #[test]
 fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unproven_and_resumes_when_it_is_proven() {
     use rdm_admin::build_state::{BuildState, CurrentBuild};
     let cap = crate::mesh_delete_resume::capture();
-    let (first, second, third, current, dispatched, ran) = cap.run(async {
+    let (first, second, third, current, dispatched, ran, read) = cap.run(async {
         let root = tracing::info_span!("cell.leave-unheard-unproven-primary");
         let _in_root = root.enter();
         let (r, mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete("mesh.delete: the final primary mesh2.admin.1 is silent but not proven exited, so no admin is created for it".into()))).await;
@@ -1397,20 +1432,26 @@ fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unprov
             n.status = NodeStatus::PendingReconnect;
         }
         r.switch.peer.lock().unwrap().insert("mesh2".into(), rdm_admin::investigate::PeerMesh { unheard_ms: Some(120_000), recovery_decided: false, unreachable_decided: false });
+        // The executor's run frames its progress on the call's stream, as an admin's does.
+        r.dispatch.frames("mesh1.admin.1");
         let drive = Drive::detached(r.build.clone());
+        let mut reader = drive.reader(1);
         let first = r.env.run(&drive).await;
         let dispatches = r.dispatch.dispatched.lock().unwrap().len();
         let first = (first, r.builds.read_build(&r.build).await.unwrap().state, r.builds.current_build().await.unwrap(), dispatches);
+        let mut read = frames_now(&mut reader).await;
         let second = r.env.run(&drive).await;
         let dispatches = r.dispatch.dispatched.lock().unwrap().len();
         let second = (second, r.builds.read_build(&r.build).await.unwrap().attempt, dispatches);
         // The provider proves the primary's exit: it is gone from the view, and the shutdown can run.
         *mesh_deleter.ends.lock().unwrap() = None;
         mesh2_primary_becomes(&r, NodeStatus::Dead).await;
+        read.extend(frames_now(&mut reader).await);
         let third = r.env.run(&drive).await;
         let current = r.builds.current_build().await.unwrap();
         let (dispatched, ran) = (r.dispatch.dispatched.lock().unwrap().clone(), r.ran.0.lock().unwrap().clone());
-        (first, second, (third, r.builds.read_build(&r.build).await.unwrap().state), current, dispatched, (ran, r.build.clone()))
+        read.extend(frames_now(&mut reader).await);
+        (first, second, (third, r.builds.read_build(&r.build).await.unwrap().state), current, dispatched, (ran, r.build.clone()), read)
     });
     let spans = cap.spans();
     let (end, state, current_then, dispatches) = first;
@@ -1426,6 +1467,8 @@ fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unprov
     assert_eq!(ran.iter().filter(|k| k.starts_with("mesh.delete:")).count(), 1, "{ran:?}");
     assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.1".to_string(), 2)]);
     assert!(!spans.iter().any(|s| s["name"] == "rdm.node_admin.build.reject.via-unheard-mesh-drive"), "the unheard hold did not target the shutdown's resume");
+    assert_eq!(blocked_of(&read), Vec::<BuildReply>::new(), "neither the executor's run nor the drive frames a Blocked for the incomplete leave");
+    assert!(matches!(read.last(), Some(Read::Terminal(BuildReply::Complete { attempt: 2, .. }))), "the caller's stream ends with attempt 2's Complete: {read:?}");
     assert!(spans.iter().any(|s| s["name"] == "rdm.node_admin.build.update.via-stalled"), "the refusal is spanned by name");
 }
 
