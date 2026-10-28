@@ -169,7 +169,7 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     let cut_at = start(cut[0]);
     let announced: Vec<&Value> = mine("rdm.mesh.node.update.via-leave-announcement");
     assert!(announced.is_empty(), "{last} announced nothing, stopped (R-ON1): {announced:#?}");
-    let connections_deleting = mine("rdm.mesh.node.update.via-leave-draining");
+    let connections_deleting = mine("rdm.mesh.node.update.via-leave-connections-deleting");
     assert!(connections_deleting.is_empty(), "{last} said no connections-deleting of its own: {connections_deleting:?}");
     let shutdown = mine("rdm.mesh.node.update.via-leave-shutdown");
     assert_eq!(shutdown.len(), 1, "one transport shutdown by {last}: {shutdown:?}");

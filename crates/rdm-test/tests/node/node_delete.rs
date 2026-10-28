@@ -225,16 +225,16 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // Stopping reaches peers as the victim's status in its mesh-primary's projection, set on the stop
     // call's admission (states.md "Who sets each state"); node-leaving and node-left are reserved frame
     // positions (gossip.md frame catalog): nobody publishes or hears either, and nothing publishes
-    // node-draining or node-drained.
+    // node-connections-deleting or node-connections-deleted.
     for kind in ["node-left", "node-leaving"] {
         assert_eq!(named(&spans, "rdm.mesh.topology.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM).count(), 0, "no {kind} frame of the victim is heard by anyone");
     }
     assert!(named(&spans, "rdm.mesh.topology.reject.via-node-leaving").is_empty(), "no node-leaving frame reached any receiver");
-    for kind in ["node-draining", "node-drained"] {
+    for kind in ["node-connections-deleting", "node-connections-deleted"] {
         let reserved = named(&spans, "rdm.mesh.topology.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM).count();
         assert_eq!(reserved, 0, "no {kind} frame of the victim is published or heard");
     }
-    let stop_calls: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && ["node-left", "node-drained"].iter().any(|c| sp["attributes"]["completion"] == *c)).collect();
+    let stop_calls: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && ["node-left", "node-connections-deleted"].iter().any(|c| sp["attributes"]["completion"] == *c)).collect();
     assert!(stop_calls.is_empty(), "the victim makes no completion call for its stop, its reply is the completion: {stop_calls:#?}");
     let heard_deleting = named(&spans, "rdm.mesh.topology.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     let heard_deleted = named(&spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
