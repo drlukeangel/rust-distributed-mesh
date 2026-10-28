@@ -1677,8 +1677,7 @@ fn signal_stop_of<'a>(spans: &'a [Value], node: &str) -> Option<(&'a Value, &'a 
 /// and nothing after it"; stop_gate.rs: work a stop deletes with the birth "ends at the stop and never
 /// resumes"): mesh1's other node-admin, isolated (every datagram to or from its port dropped) while the
 /// fabric-primary runs, runs fabric recovery's own-mesh arm on the unheard fabric-primary: its node
-/// investigation reaches nobody, goes to the provider and reads it `running`, so the arm stays open and looks
-/// again a floor on. The isolated admin then receives SIGTERM. Its arm ends at its stop, by name, before its
+/// investigation's direct tickle reaches nobody, so the arm is open. The isolated admin then receives SIGTERM. Its arm ends at its stop, by name, before its
 /// leave aborts its tasks, and no recovery is admitted by it after its signal stop began. Must NOT happen: the
 /// arm outliving the stop (its span never written), or a `via-recovery` of the fabric-primary opened by the
 /// stopping admin.
@@ -1708,11 +1707,12 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
         Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
     };
     let cut_at = unix_nanos();
-    // The own-mesh arm is open: its node investigation of the fabric-primary reached nobody and went to the
-    // provider, which reads the running fabric-primary `running`; the arm looks again a floor on.
+    // The own-mesh arm is open: its node investigation's direct tickle of the fabric-primary is lost. The
+    // signal is sent at that span: the fabric-primary's own recovery of the isolated admin, a floor or two
+    // on, ends it otherwise, while its arm still tickles through its peers (Q111).
     let floor = rdm_transport::topology::staleness_floor();
-    wait_for(&format!("{victim}'s own-mesh arm reads {fp} running through the provider"), floor * 6 + Duration::from_secs(60), || async {
-        named(&estate.spans(), "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| start_ns(sp) >= cut_at && attr(sp, "inspector") == victim && attr(sp, "node_id") == fp_id && attr(sp, "verdict") == "running").map(|_| ())
+    wait_for(&format!("{victim}'s own-mesh arm tickles {fp} and is not answered"), floor * 6 + Duration::from_secs(60), || async {
+        named(&estate.spans(), "rdm.node.tickle.resolve.via-direct").into_iter().find(|sp| start_ns(sp) >= cut_at && attr(sp, "caller") == victim && attr(sp, "node_id") == fp_id && !attr(sp, "failure").is_empty()).map(|_| ())
     })
     .await;
     assert!(std::process::Command::new("kill").args(["-TERM", &victim_pid.to_string()]).status().unwrap().success(), "kill -TERM {victim_pid}");
