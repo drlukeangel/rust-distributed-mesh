@@ -317,11 +317,14 @@ application resumption after a new invocation are different: define the latter i
 
 ## 8. Consumer tooling to build next
 
-The protocol declaration helper is available: `rdm_core::protocol_variants!` (§2). These are proposed
-RDM improvements, not available APIs or prerequisites for using Node RPC:
+The protocol declaration helper is available: `rdm_core::protocol_variants!` (§2). The conformance
+harness is available: `rdm_test::conformance::unary::<P>` and `rdm_test::conformance::streaming::<P>`
+run a protocol by naming its type, given its registration and the requests it answers (named
+refusals, frame limits, duplicate delivery, ordering, backpressure, cancellation, loss of the reply,
+and for a stream the consumer's acknowledgement after its record); `BrokerData` and `Count` run it as
+their own cells. These are proposed RDM improvements, not available APIs or prerequisites for using
+Node RPC:
 
-- A reusable conformance harness for unary and streaming protocols: named refusals, frame limits,
-  duplicate delivery, ordering, backpressure, cancellation and loss of the reply.
 - Recovery integration helpers with application-provided persistence, making acceptance and
   response recovery explicit without moving domain transactions into the transport.
 - A standalone, compiled consumer example with an application service, registration, target
