@@ -6776,6 +6776,74 @@ mod tests {
         assert!(!digest_view.is_deleted_at(id.as_str(), t0 + Duration::from_millis(60)));
     }
 
+    /// CONTRACT (Q254, rdm#172: each input the admin's view reads raises its own event where it
+    /// changes): the writes a mesh topology's install makes move the routing watch when they change
+    /// what the view lists, and only then. A status taken from the mesh-primary's projection for a
+    /// birth held only from that projection moves `heard`; a forwarded copy of a birth held silent past
+    /// the staleness floor (the backbone's word after a cut heals) moves `heard`, one within the floor
+    /// nothing; a stop mark that ends with no in-flight overlay left moves `overlays`. Must NOT happen:
+    /// a fact the view lists changed with no watch moved (the view then shows it only when something
+    /// else moves).
+    #[tokio::test]
+    async fn each_snapshot_write_of_a_listed_fact_moves_the_routing_watch_and_a_repeat_moves_nothing() {
+        let floor = Duration::from_millis(100);
+        let t0 = Instant::now();
+
+        let digest_view = DigestView::with_floor(Duration::from_secs(3600), floor);
+        *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let target = Target::default();
+        assert!(digest_view.take_projected_status(&digest(&id, &inc, None, MemberStatus::Pending, 1), &target));
+        let mut w = digest_view.routing_watch();
+        w.seen();
+        assert!(digest_view.take_projected_status(&digest(&id, &inc, None, MemberStatus::Ready, 2), &target));
+        assert!(digest_view.get(id.as_str()).is_none(), "the birth is held only from its mesh-primary's projection");
+        assert_eq!(moved_named(&mut w).await, Some("heard"), "its status moving moves the routing watch");
+        w.seen();
+        assert!(!digest_view.take_projected_status(&digest(&id, &inc, None, MemberStatus::Ready, 3), &target));
+        assert_eq!(moved_named(&mut w).await, None, "the same status taken again moves nothing");
+
+        let digest_view = DigestView::with_floor(Duration::from_secs(3600), floor);
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(digest_view.record_forwarded_at(digest(&id, &inc, None, MemberStatus::Ready, 10), t0));
+        let mut w = digest_view.routing_watch();
+        w.seen();
+        assert!(digest_view.record_forwarded_at(digest(&id, &inc, None, MemberStatus::Ready, 11), t0 + floor / 2));
+        assert_eq!(moved_named(&mut w).await, None, "a forwarded copy of a birth heard within the floor moves nothing");
+        assert!(digest_view.record_forwarded_at(digest(&id, &inc, None, MemberStatus::Ready, 12), t0 + floor / 2 + floor * 2));
+        assert_eq!(moved_named(&mut w).await, Some("heard"), "a forwarded copy of a birth silent past the floor: heard again");
+
+        let digest_view = DigestView::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 10)));
+        assert!(digest_view.stopped(op(&id, &inc, "node.stop:mesh1.rpc.1")));
+        assert_eq!(digest_view.stopped_digests().len(), 1, "the stopped birth is listed from its mark");
+        digest_view.in_flight.lock().unwrap().clear();
+        let mut w = digest_view.routing_watch();
+        w.seen();
+        digest_view.end_stop(id.as_str());
+        assert!(digest_view.stopped_digests().is_empty());
+        assert_eq!(moved_named(&mut w).await, Some("overlays"), "a stop mark ended with no overlay held moves the routing watch");
+    }
+
+    /// CONTRACT (Q254, rdm#172): the meshes the accepted Build names are an input of the admin's view
+    /// (a mesh it does not name and that has no member is not in the view): a change of them moves the
+    /// routing watch, named `accepted`, and the same set held again moves nothing. Must NOT happen: the
+    /// view keeping a mesh the accepted Build dropped until something else moves.
+    #[tokio::test]
+    async fn the_meshes_the_accepted_build_names_move_the_routing_watch_when_they_change() {
+        let digest_view = DigestView::default();
+        let mut w = digest_view.routing_watch();
+        w.seen();
+        digest_view.set_accepted_meshes(BTreeSet::from(["mesh1".to_string()]));
+        assert_eq!(moved_named(&mut w).await, Some("accepted"), "the meshes the accepted Build names, first held");
+        w.seen();
+        digest_view.set_accepted_meshes(BTreeSet::from(["mesh1".to_string()]));
+        assert_eq!(moved_named(&mut w).await, None, "the same meshes again move nothing");
+        digest_view.set_accepted_meshes(BTreeSet::from(["mesh1".to_string(), "mesh2".to_string()]));
+        assert_eq!(moved_named(&mut w).await, Some("accepted"), "a mesh added");
+    }
+
     #[test]
     fn departures_and_overlays_pack_into_frames_that_fit_and_a_publisher_carries_only_its_mesh() {
         let digest_view = DigestView::default();
