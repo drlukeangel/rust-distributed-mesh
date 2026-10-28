@@ -14,6 +14,31 @@ use std::fmt;
 /// state, not to the executor that happens to run it.
 pub use rdm_core::BuildId;
 
+/// What a path's entry in the accepted Build names that a Build message does not carry (proposal
+/// executable-bindings-at-create.md rule 7; Q166): its executable, tags and config. The fabric-primary,
+/// the one admin that reads the Build records (Q227), puts it on each create and config operation it
+/// dispatches, so the executor reads no stored record for it. Its storage and placement ride the Build
+/// message and are read from the Build the executor holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntrySpec {
+    /// The executable the entry names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<rdm_core::binding::Binding>,
+    /// The tag labels the entry names.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub tags: std::collections::BTreeSet<String>,
+    /// The application's config the entry names.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub config: std::collections::BTreeMap<String, String>,
+}
+
+impl EntrySpec {
+    /// The entry `spec` names, as an operation carries it.
+    pub fn of(spec: &rdm_core::meta::NodeSpec) -> Self {
+        Self { executable: spec.executable.clone(), tags: spec.tags.clone(), config: spec.config.clone() }
+    }
+}
+
 /// The desired counts of one mesh's nodes by kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +144,10 @@ pub enum BuildOperation {
         /// name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         executable: Option<rdm_core::binding::Binding>,
+        /// The path's entry in the accepted Build, as the fabric-primary that dispatched the run holds
+        /// it ([`EntrySpec`]): `None` on an operation planned and never dispatched.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entry: Option<EntrySpec>,
     },
     /// `node.connections.delete { All }` of the exact birth `from_incarnation` of `node`; it keeps
     /// running (node-connections-delete.md).
@@ -188,6 +217,10 @@ pub enum BuildOperation {
         /// The exact birth the step is targeted to, for a node the Build did not create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         birth: Option<PinnedBirth>,
+        /// A Create step's path's entry in the accepted Build, as the fabric-primary that dispatched
+        /// the run holds it ([`EntrySpec`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entry: Option<EntrySpec>,
     },
     /// Shut a whole mesh down (mesh-delete.md): the fabric-primary owns the workflow, the mesh's
     /// primary deletes its connections and stops every other member, and the fabric-primary stops the final primary
@@ -221,6 +254,10 @@ pub enum BuildOperation {
     UpdateConfig {
         /// The node.
         node: PathName,
+        /// The node's entry in the accepted Build, as the fabric-primary that dispatched the run holds
+        /// it ([`EntrySpec`]): the config the row is written with.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entry: Option<EntrySpec>,
     },
     /// The node's create spec names tag labels its row does not carry: `node.tags.create` of them at
     /// the node's mesh-primary, the node's tag rows (build.md §1).
@@ -275,7 +312,7 @@ impl BuildOperation {
         match self {
             Self::CreateNode { node, .. } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::DeleteLiveNode { node, .. } => Some(node),
             Self::Step { step, .. } => Some(step.node()),
-            Self::TerminateNode { node, .. } | Self::UpdateConfig { node } | Self::CreateTags { node, .. } | Self::DeleteTags { node, .. } => Some(node),
+            Self::TerminateNode { node, .. } | Self::UpdateConfig { node, .. } | Self::CreateTags { node, .. } | Self::DeleteTags { node, .. } => Some(node),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } | Self::BlockStorage { .. } | Self::SwitchStorage { .. } | Self::UnblockStorage { .. } | Self::FinishStorage { .. } => None,
         }
     }
@@ -305,7 +342,7 @@ impl BuildOperation {
             Self::DeleteFabric { fabric_id } => format!("fabric.delete:{fabric_id}"),
             // One key per birth: a birth heard again after another termination is a new run of it.
             Self::TerminateNode { node, from_incarnation, .. } => format!("node.terminate:{node}@{}", from_incarnation.as_str()),
-            Self::UpdateConfig { node } => format!("node.config.update:{node}"),
+            Self::UpdateConfig { node, .. } => format!("node.config.update:{node}"),
             Self::CreateTags { node, .. } => format!("node.tags.create:{node}"),
             Self::DeleteTags { node, .. } => format!("node.tags.delete:{node}"),
             Self::BlockStorage { mesh, change } => crate::storage_change::block_operation(&change.change_id, mesh),
@@ -816,9 +853,9 @@ mod tests {
     #[test]
     fn only_a_create_operation_names_the_node_it_creates() {
         let node: PathName = "mesh2.admin.1".parse().unwrap();
-        assert_eq!(BuildOperation::CreateNode { node: node.clone(), over: None, executable: None }.created_node(), Some(&node));
-        assert_eq!(BuildOperation::Step { step: Step::Create { node: node.clone(), executable: None }, birth: None }.created_node(), Some(&node));
-        assert_eq!(BuildOperation::Step { step: Step::Stop { node: node.clone() }, birth: None }.created_node(), None);
-        assert_eq!(BuildOperation::Step { step: Step::Start { node: node.clone() }, birth: None }.created_node(), None);
+        assert_eq!(BuildOperation::CreateNode { node: node.clone(), over: None, executable: None, entry: None }.created_node(), Some(&node));
+        assert_eq!(BuildOperation::Step { step: Step::Create { node: node.clone(), executable: None }, birth: None, entry: None }.created_node(), Some(&node));
+        assert_eq!(BuildOperation::Step { step: Step::Stop { node: node.clone() }, birth: None, entry: None }.created_node(), None);
+        assert_eq!(BuildOperation::Step { step: Step::Start { node: node.clone() }, birth: None, entry: None }.created_node(), None);
     }
 }

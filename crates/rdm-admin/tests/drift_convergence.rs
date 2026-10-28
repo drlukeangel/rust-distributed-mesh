@@ -291,7 +291,7 @@ impl OperationRunner for Runner {
         let created;
         let op = match op {
             BuildOperation::Step { step: rdm_core::build::Step::Create { node, .. }, .. } => {
-                created = BuildOperation::CreateNode { node: node.clone(), over: None, executable: None };
+                created = BuildOperation::CreateNode { node: node.clone(), over: None, executable: None, entry: None };
                 &created
             }
             other => other,

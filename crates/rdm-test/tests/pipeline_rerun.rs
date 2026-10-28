@@ -159,7 +159,7 @@ async fn killed_then_rerun(kill_at: KillAt) {
     let sink = Published::default();
     let reached = Arc::new(Notify::new());
     let process = Arc::new(ProcessDeploymentProvider::new());
-    let req = |attempt| CreateRequest { build_id: build_id.clone(), attempt, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+    let req = |attempt| CreateRequest { build_id: build_id.clone(), attempt, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
     // Attempt 1 dies at the kill point.
     let first = Killable {
@@ -271,7 +271,7 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
         let sink = Published::default();
         let reached = Arc::new(Notify::new());
         let process = Arc::new(ProcessDeploymentProvider::new());
-        let req = |attempt| CreateRequest { build_id: build_id.clone(), attempt, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+        let req = |attempt| CreateRequest { build_id: build_id.clone(), attempt, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
         // Attempt 1 dies after the join was admitted (WaitForBind's receipt is written) and before the
         // WaitForMeshJoin receipt.

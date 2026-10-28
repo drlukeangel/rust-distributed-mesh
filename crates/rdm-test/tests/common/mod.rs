@@ -417,7 +417,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     };
 
     let created = pipeline
-        .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: node_name, spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: node_name, spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await;
     let created = match created {
         Ok(c) => c,

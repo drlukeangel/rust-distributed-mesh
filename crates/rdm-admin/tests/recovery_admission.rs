@@ -239,28 +239,6 @@ async fn a_recovery_submit_for_a_birth_a_delete_deleted_is_answered_already_appl
     }
 }
 
-/// A node-admin of the fabric whose store root is `root`: its own endpoint, and its Build journal on
-/// that root. No admin is connected to another.
-async fn store_admin(name: &str, fabric: &FabricId, root: &std::path::Path) -> (iroh::Endpoint, Arc<rdm_admin::fabric_builds::FabricBuildStateAdapter>) {
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::generate())
-        .relay_mode(iroh::RelayMode::Disabled)
-        .bind_addr("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
-        .unwrap()
-        .bind()
-        .await
-        .unwrap();
-    // Its Build journal as its file backend opens it, on the fabric's store root.
-    let mesh = name.split('.').next().unwrap_or_default().to_string();
-    let scope = rdm_admin::storage_backend::StorageScope { data_dir: root.join(format!("data-{name}")), fabric_id: fabric.clone(), own_mesh: mesh, writer: IncarnationId::mint(), node_id: NodeId::mint() };
-    let journal = {
-        use rdm_admin::storage_backend::StorageBackend as _;
-        rdm_admin::storage_backend::FileBackend::at(root).open(&scope).await.unwrap().builds
-    };
-    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::new(journal, &rdm_transport::topology::LocationView::new(&endpoint, name).unwrap(), name.into(), rdm_admin::fabric_builds::SeatSource::unrecorded());
-    (endpoint, Arc::new(builds))
-}
-
 /// Wait until `cond` holds of `builds`'s projection of `id`, naming what was awaited.
 async fn until(what: &str, builds: &dyn BuildStateAdapter, id: &rdm_admin::build::BuildId, cond: impl Fn(&rdm_admin::build_state::BuildProjection) -> bool) {
     for _ in 0..400 {
@@ -300,28 +278,53 @@ fn deletion_receipts(lane: Option<&str>, kind: &str, build: &rdm_admin::build::B
     ]
 }
 
-/// CONTRACT (R-BI7: "the mesh-primary opens the recovery attempt of the current Build itself: claim
-/// on its mesh's rows, then run; no call to the fabric-primary"; node-recovery.md "Numbered
-/// end-to-end sequence" step 1: "A repeat submit answers AlreadyApplied or BuildInProgress, never a
-/// second recovery"): mesh2's mesh-primary, which is not the fabric-primary, opens and claims the
-/// recovery of its member `mesh2.rpc.1` in mesh2's drift lane on its own Build log. Every fact of
-/// the attempt (its open, its claim, its receipts) is written on the fabric's store root, where the
-/// fabric-primary reads it (Q185: no Build channel), whose fold holds mesh2's lane claimed by the mesh-primary, and whose door
-/// answers a repeat submit for that exited birth `AlreadyApplied`, naming the attempt, from the
-/// facts it heard. Must NOT happen: a claim decided at the fabric-primary, a fact of the recovery
-/// the fabric-primary never hears, or a second recovery attempt opened.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_recovery_a_mesh_primary_opens_and_claims_on_its_own_log_is_heard_by_the_fabric_primary_and_answered_already_applied_there() {
-    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-heard-at-fabric-primary", exporter.clone());
-    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
-    let capture = Capture { exporter, pipeline };
+/// A node-admin of the fabric whose store root is `root`, its Build journal as its file backend opens it on that root, its Build log gated by the
+/// fabric-primary record `seats` holds, judged for its own birth `me` as a booted admin judges it.
+async fn held_admin(name: &str, fabric: &FabricId, root: &std::path::Path, seats: &rdm_transport::topology::PrimaryView, me: (NodeId, IncarnationId)) -> (iroh::Endpoint, Arc<rdm_admin::fabric_builds::FabricBuildStateAdapter>) {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::generate())
+        .relay_mode(iroh::RelayMode::Disabled)
+        .bind_addr("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+    let mesh = name.split('.').next().unwrap_or_default().to_string();
+    let scope = rdm_admin::storage_backend::StorageScope { data_dir: root.join(format!("data-held-{name}")), fabric_id: fabric.clone(), own_mesh: mesh, writer: IncarnationId::mint(), node_id: NodeId::mint() };
+    let journal = {
+        use rdm_admin::storage_backend::StorageBackend as _;
+        rdm_admin::storage_backend::FileBackend::at(root).open(&scope).await.unwrap().builds
+    };
+    let read = {
+        let seats = seats.clone();
+        Arc::new(move || rdm_admin::seat_watch::fabric_seat_record(seats.fabric().as_ref(), &me, &Default::default(), |_| None))
+    };
+    let seat = rdm_admin::fabric_builds::SeatSource { read, changed: Some(seats.subscribe()) };
+    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::new(journal, &rdm_transport::topology::LocationView::new(&endpoint, name).unwrap(), name.into(), seat);
+    (endpoint, Arc::new(builds))
+}
 
+/// CONTRACT (Q118; build.md §5.3: "the fabric-primary also writes each mesh's drift attempts' Build
+/// facts, the mesh in the key"; node-recovery.md "Execution": "the fabric-primary opens the attempt at
+/// `(build_id, mesh, attempt)`, the mesh-primary claims it through BuildClaim ... and the
+/// fabric-primary writes every Build record"): mesh2's mesh-primary, which is not the fabric-primary
+/// (the fabric-primary record it holds names mesh1.admin.1's live birth), opens the recovery of its
+/// member `mesh2.rpc.1` on its own Build log: the open is refused by name, naming the record, and no
+/// fact of mesh2's drift lane is written to the store root. The fabric-primary opens the same recovery
+/// in mesh2's drift lane (reported up as `build.create`) and claims it for mesh2.admin.1, which the
+/// fabric-primary's own log decides. Must NOT happen: a drift attempt's open or claim written by an
+/// admin that is not the fabric-primary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mesh_primary_that_is_not_the_fabric_primary_writes_no_drift_attempt_and_the_fabric_primary_opens_and_claims_it() {
     let t = two_meshes();
     let root = std::env::temp_dir().join(format!("recovery-admission-{}", NodeId::mint()));
     std::fs::create_dir_all(&root).unwrap();
-    let (_fp_ep, fp) = store_admin("mesh1.admin.1", &t.fabric.id, &root).await;
-    let (_mp_ep, mp) = store_admin("mesh2.admin.1", &t.fabric.id, &root).await;
+    let fp_node = t.node(&"mesh1.admin.1".parse().unwrap()).unwrap().clone();
+    let mp_node = t.node(&"mesh2.admin.1".parse().unwrap()).unwrap().clone();
+    let seats = rdm_transport::topology::PrimaryView::default();
+    seats.take(rdm_core::Seat::FabricPrimary, &rdm_core::Primary { mesh: "mesh1".into(), node_id: fp_node.node_id.clone(), incarnation: fp_node.incarnation_id.clone().unwrap(), revision: 1 });
+    let (_fp_ep, fp) = held_admin("mesh1.admin.1", &t.fabric.id, &root, &seats, (fp_node.node_id.clone(), fp_node.incarnation_id.clone().unwrap())).await;
+    let (_mp_ep, mp) = held_admin("mesh2.admin.1", &t.fabric.id, &root, &seats, (mp_node.node_id.clone(), mp_node.incarnation_id.clone().unwrap())).await;
     let path: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = t.node(&path).unwrap().clone();
     let (node_id, birth) = (exited.node_id.clone(), exited.incarnation_id.clone().unwrap());
@@ -330,43 +333,35 @@ async fn a_recovery_a_mesh_primary_opens_and_claims_on_its_own_log_is_heard_by_t
     let b0 = fp_cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     fp.claim_attempt(&BuildAttemptClaim { claimant: Some("mesh1.admin.1".into()), mesh: None, build_id: b0.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     fp.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
-    until("the mesh-primary hears the birth Build settle", &*mp, &b0, |p| p.state == rdm_admin::build_state::BuildState::Complete && p.attempt == 1).await;
+    until("the mesh-primary holds the birth Build settled", &*mp, &b0, |p| p.state == rdm_admin::build_state::BuildState::Complete && p.attempt == 1).await;
     let mp_accepted = Arc::new(AcceptedStore::new(Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()), "mesh2.admin.1"));
     let mp_cp = Arc::new(ControlPlane::new(mp.clone(), mp_accepted, "mesh2.admin.1".parse().unwrap(), t, crate::adopted_time()));
     for cp in [&fp_cp, &mp_cp] {
         cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Dead);
     }
 
-    // The mesh-primary opens and claims the recovery on its own log.
-    let first = match mp_cp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await {
-        Ok(Recovery::Opened(o)) => o,
-        other => panic!("mesh2's mesh-primary opens the recovery of its member: {other:?}"),
+    // The mesh-primary's own open is refused by name: the fabric-primary record names another live birth.
+    let own = mp_cp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await;
+    let refused = match &own {
+        Err(r) => format!("{r:?}"),
+        Ok(o) => panic!("a mesh-primary that is not the fabric-primary wrote mesh2's drift attempt on its own log: {o:?}"),
     };
-    assert_eq!((first.build_id.clone(), first.attempt, first.mesh.as_deref()), (b0.clone(), 1, Some("mesh2")), "attempt 1 of mesh2's drift lane of the current Build");
-    until("the fabric-primary hears the mesh-primary's claim of mesh2's lane", &*fp, &b0, |p| p.lanes.get("mesh2").is_some_and(|l| l.attempt == 1 && l.claimant.as_deref() == Some("mesh2.admin.1"))).await;
+    assert!(refused.contains(fp_node.node_id.as_str()), "the refusal names the fabric-primary record's birth: {refused}");
+    let lane_facts = |facts: &[BuildFact]| facts.iter().filter(|f| matches!(f, BuildFact::Opened(o) if o.mesh.as_deref() == Some("mesh2")) || matches!(f, BuildFact::Claim(c) if c.mesh.as_deref() == Some("mesh2"))).count();
+    assert_eq!(lane_facts(&fp.facts().await.unwrap()), 0, "no fact of mesh2's drift lane is on the store root");
 
-    // The mesh-primary runs the recovery: every receipt is appended to the Build journal on the store root.
-    for r in recovery_receipts(Some("mesh2"), &b0, first.attempt, &path, &node_id, &birth, "mesh2.admin.1") {
-        let step = r.step.clone();
-        mp.append_step_receipt(&r).await.unwrap_or_else(|e| panic!("the recovery's {step} receipt is not written for the fabric-primary: {e}"));
-    }
-    mp.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: first.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
-    until("the fabric-primary hears the recovery attempt converge", &*fp, &b0, |p| p.lanes.get("mesh2").is_some_and(|l| l.state == rdm_admin::build_state::BuildState::Complete && l.attempt == 1)).await;
-    assert_eq!(fp.recovery_of(&path, &node_id, &birth).await.unwrap(), Some((b0.clone(), Some("mesh2".into()), first.attempt, format!("node.delete:{path}"))), "the fabric-primary's recovery index holds the exited birth from the heard facts");
-
-    // The repeat submit, at the fabric-primary.
-    let before = opened(&fp.facts().await.unwrap());
-    let again = fp_cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await;
-    assert!(matches!(&again, Ok(Recovery::AlreadyApplied(o)) if *o == first), "a repeat once the mesh-primary recovered the birth names the attempt that recovered it: {again:?}");
-    assert_eq!(opened(&fp.facts().await.unwrap()), before, "the fabric-primary opened no second recovery attempt");
-    let decided = capture.spans("rdm.node_admin.build.update.via-claim-decision");
-    assert_eq!(decided.iter().map(|(_, a)| (a["node"].as_str(), a["mesh"].as_str(), a["outcome"].as_str())).collect::<Vec<_>>(), vec![("mesh2.admin.1", "mesh2", "won")], "the one claim decision is the mesh-primary's on mesh2: none at the fabric-primary");
-    assert_eq!(capture.spans("rdm.node_admin.build.reject.via-recovery-already-applied").len(), 1, "the duplicate is answered from the heard facts");
-    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.update.via-claim-decision", "rdm.node_admin.build.reject.via-recovery-already-applied"] {
-        for (trace_id, attrs) in capture.spans(name) {
-            eprintln!("span {name} trace_id={trace_id} {attrs:?}");
+    // The fabric-primary opens the reported drift in mesh2's lane and decides mesh2.admin.1's claim.
+    let reported = match fp_cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await {
+        Ok(Recovery::Reported { opened, claimant }) => {
+            assert_eq!(claimant.to_string(), "mesh2.admin.1", "claimed by the member's mesh-primary");
+            opened
         }
-    }
+        other => panic!("the fabric-primary opens the reported drift: {other:?}"),
+    };
+    assert_eq!((reported.build_id.clone(), reported.attempt, reported.mesh.as_deref()), (b0.clone(), 1, Some("mesh2")), "attempt 1 of mesh2's drift lane of the current Build");
+    let won = fp.claim_attempt(&BuildAttemptClaim { claimant: Some("mesh2.admin.1".into()), mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: 1, executor: "mesh2.admin.1".into() }).await;
+    assert_eq!(won, Ok(rdm_admin::build_state::ClaimOutcome::Won), "the fabric-primary records mesh2.admin.1's claim");
+    assert_eq!(lane_facts(&fp.facts().await.unwrap()), 2, "the open and the claim of mesh2's drift lane, both the fabric-primary's");
     let _ = std::fs::remove_dir_all(&root);
 }
 

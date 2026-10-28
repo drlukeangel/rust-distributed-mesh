@@ -267,18 +267,11 @@ impl AdminRunner {
         self.template_launching(node.kind, &node.mesh, executable, Some(binding)).await
     }
 
-    /// The executable `node`'s entry names in Build `build_id`'s accepted topology as builds.storage
-    /// records it ([`BuildStateAdapter::stored_accepted`]), when it names one.
-    async fn entry_executable(&self, build_id: &crate::build::BuildId, node: &PathName) -> Result<Option<rdm_core::binding::Binding>, String> {
-        let stored = self.builds.stored_accepted(build_id).await.map_err(|e| format!("node.create:{node}: the accepted Build {build_id} could not be read from builds.storage for the path's executable: {e}"))?;
-        Ok(stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).and_then(|c| c.executable.clone())))
-    }
-
-    /// The storage `node`'s entry names in Build `build_id`'s accepted topology as builds.storage records
-    /// it ([`BuildStateAdapter::stored_accepted`]), when the topology holds the path.
+    /// The storage `node`'s entry names in Build `build_id`'s accepted topology as this admin holds it:
+    /// a Build message carries each entry's storage (`crate::wire`), so no Build record is read (Q227).
     async fn entry_storage(&self, build_id: &crate::build::BuildId, node: &PathName) -> Result<Option<rdm_core::meta::StorageMeta>, String> {
-        let stored = self.builds.stored_accepted(build_id).await.map_err(|e| format!("node.create:{node}: the accepted Build {build_id} could not be read from builds.storage for the path's storage: {e}"))?;
-        Ok(stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).map(|c| c.storage_persistence)))
+        let held = self.builds.read_build(build_id).await.map_err(|e| format!("node.create:{node}: the accepted Build {build_id} could not be read for the path's storage: {e}"))?;
+        Ok(held.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).map(|c| c.storage_persistence))
     }
 
     /// The executable binding the row a create of `node` is seeded from records (the claim's seed,
@@ -548,15 +541,13 @@ impl AdminRunner {
 
     /// node.create of `node`, its name claimed for `claim_for` (a plain create, or a replace
     /// successor's at the name its predecessor released), launching the executable the step names, else
-    /// the path's entry in the accepted Build as builds.storage records it ([`Self::entry_executable`];
-    /// proposal executable-bindings-at-create.md rules 1-2: a Build message carries none, rule 7, so this
-    /// admin's own copy of the Build may name none), else the row's ([`Self::create_template`]).
-    pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, pre_node_ready: Option<crate::deployment::pipeline::PreNodeReady>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
-        let stored = match executable {
-            Some(_) => None,
-            None => self.entry_executable(build_id, node).await?,
-        };
-        let executable = executable.or(stored.as_ref());
+    /// the path's entry the fabric-primary put on the operation (`entry`, [`crate::build::EntrySpec`]:
+    /// proposal executable-bindings-at-create.md rules 1-2; a Build message carries none, rule 7, and this
+    /// admin reads no Build record, Q227), else the row's ([`Self::create_template`]). A plain create's
+    /// row takes the entry's tags and config at its name claim.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, entry: Option<&crate::build::EntrySpec>, pre_node_ready: Option<crate::deployment::pipeline::PreNodeReady>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
+        let executable = executable.or(entry.and_then(|e| e.executable.as_ref()));
         match self.revise_predecessor(node).await {
             // The member answers: it is commanded back, never created over (node-recovery.md step 3).
             // A stopped birth the check reached is still present (states.md "Stopped nodes"): this
@@ -594,7 +585,7 @@ impl AdminRunner {
             template = self.with_issuing_material(template, &node.mesh).await?;
         }
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: None, held_runtimes };
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: None, held_runtimes, entry: entry.cloned() };
         let created = match claim_for {
             crate::node_rows::ClaimFor::Recovery => self.pipeline(&template).create_recovery_with(&req, pre_node_ready, None).await,
             crate::node_rows::ClaimFor::Successor => self.pipeline(&template).create_successor_with(&req, pre_node_ready).await,
@@ -833,7 +824,7 @@ impl AdminRunner {
         };
         let exited = self.delete_read_exited(builds, build_id, attempt, node, from).await?;
         let created = if lost || !exited {
-            let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: None, held_runtimes };
+            let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: None, held_runtimes, entry: None };
             pipeline.create_recovery_with(&req, pre_node_ready, Some(Box::pin(self.revise_exited(&targeted)))).await.map_err(crate::executor::RunEnd::from)?
         } else {
             if let Err(crate::deployment::pipeline::InheritedDirError::Broken(ref cause)) = crate::deployment::pipeline::inspect_transport_key(&data_dir) {
@@ -853,7 +844,7 @@ impl AdminRunner {
                 )
                 .in_scope(|| tracing::info!("inherited data dir is broken; holding recovery until repaired"));
             }
-            let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
+            let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir: Some(data_dir), held_runtimes, entry: None };
             pipeline.create_with(&req, pre_node_ready, Some(Box::pin(self.revise_exited(&targeted)))).await.map_err(crate::executor::RunEnd::from)?
         };
         self.bring_into_traffic(&created.node).await?;
@@ -924,7 +915,7 @@ impl AdminRunner {
             None
         };
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir, held_runtimes };
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: self.listeners.spec_for(node.kind), data_dir, held_runtimes, entry: None };
         // The claim seeds config and tags from the Deleted row on both arms (node-replace.md "Inherited").
         let created = pipeline.create_recovery_with(&req, pre_node_ready, Some(Box::pin(self.revise_exited(&predecessor)))).await.map_err(crate::executor::RunEnd::from)?;
         self.bring_into_traffic(&created.node).await?;
@@ -1381,12 +1372,12 @@ impl AdminRunner {
             BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor(), &me.to_string(), build_id, attempt, op).await.map_err(Into::into),
             // A replacement's create of a replaced member: over its predecessor's kept data dir, launching
             // the binding the Build fixed (build-deployment.md §3).
-            BuildOperation::CreateNode { node, over: Some(from), executable: Some(executable) } => {
+            BuildOperation::CreateNode { node, over: Some(from), executable: Some(executable), .. } => {
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), sha256 = %executable.sha256);
                 self.create_replacement(&*builds, build_id, attempt, node, from, executable).instrument(span).await
             }
-            BuildOperation::CreateNode { node, over: Some(from), executable: None } => self.create_over_exited(&*builds, build_id, attempt, node, from).await,
-            BuildOperation::CreateNode { node, over: None, executable } => self.create_node(build_id, attempt, node, executable.as_ref(), crate::node_rows::ClaimFor::Create).await,
+            BuildOperation::CreateNode { node, over: Some(from), executable: None, .. } => self.create_over_exited(&*builds, build_id, attempt, node, from).await,
+            BuildOperation::CreateNode { node, over: None, executable, entry } => self.create_node(build_id, attempt, node, executable.as_ref(), entry.as_ref(), crate::node_rows::ClaimFor::Create).await,
             BuildOperation::StartNode { node, node_id, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %node_id, incarnation_id = %from_incarnation.as_str());
                 self.start_stopped(build_id, attempt, node, &crate::build::PinnedBirth { node_id: node_id.clone(), incarnation: from_incarnation.clone() }).instrument(span).await
@@ -1418,8 +1409,8 @@ impl AdminRunner {
             }
             BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.delete_mesh(build_id, attempt, mesh, mesh_id).await,
             BuildOperation::DeleteFabric { fabric_id } => crate::mesh_delete::complete_fabric_delete(&*builds, &*self.fabric_storage, build_id, attempt, fabric_id, &self.me.to_string()).await.map_err(Into::into),
-            BuildOperation::Step { step, birth } => return self.step(build_id, lane, attempt, step, birth.as_ref()).await,
-            BuildOperation::UpdateConfig { node } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => {
+            BuildOperation::Step { step, birth, entry } => return self.step(build_id, lane, attempt, step, birth.as_ref(), entry.as_ref()).await,
+            BuildOperation::UpdateConfig { node, .. } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt, operation = %op.key());
                 self.apply_in_place(build_id, attempt, node, op).instrument(span).await
             }
@@ -1485,10 +1476,13 @@ impl AdminRunner {
                 return Err(format!("{key}: {me} holds no birth at {node}; nothing is written"));
             };
             let reply = match op {
-                BuildOperation::UpdateConfig { .. } => {
-                    let stored = self.builds.stored_accepted(build_id).await.map_err(|e| format!("{key}: the accepted Build {build_id} could not be read for {node}'s create spec; nothing is written: {e}"))?;
-                    let spec = stored.and_then(|a| a.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).cloned()).ok_or_else(|| format!("{key}: the accepted Build {build_id} names no create spec for {node}; nothing is written"))?;
-                    let req = StatusRequest::UpdateNodeConfig { node_id, incarnation, config: spec.config };
+                BuildOperation::UpdateConfig { entry, .. } => {
+                    // The config is the entry's the fabric-primary put on the operation; the storage and
+                    // placement ride the Build message (Q227: this admin reads no Build record).
+                    let entry = entry.as_ref().ok_or_else(|| format!("{key}: the operation carries no entry of {node} from the fabric-primary that dispatched it; nothing is written"))?;
+                    let held = self.builds.read_build(build_id).await.map_err(|e| format!("{key}: the accepted Build {build_id} could not be read for {node}'s create spec; nothing is written: {e}"))?;
+                    let spec = held.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).cloned().ok_or_else(|| format!("{key}: the accepted Build {build_id} names no create spec for {node}; nothing is written"))?;
+                    let req = StatusRequest::UpdateNodeConfig { node_id, incarnation, config: entry.config.clone() };
                     match authority.update_config_from_spec(&req, spec.storage_persistence, spec.placement).await {
                         StatusReply::ConfigUpdated { .. } => return Ok(()),
                         refused => refused,
@@ -1511,12 +1505,12 @@ impl AdminRunner {
 
     /// A Build's node.create of `node` with no exited birth (`CreateNode { over: None }`, and a Build's
     /// create step, whose claim is a replace successor's), its name claimed for `claim_for`.
-    fn create_node<'a>(&'a self, build_id: &'a crate::build::BuildId, attempt: u32, node: &'a PathName, executable: Option<&'a rdm_core::binding::Binding>, claim_for: crate::node_rows::ClaimFor) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
+    fn create_node<'a>(&'a self, build_id: &'a crate::build::BuildId, attempt: u32, node: &'a PathName, executable: Option<&'a rdm_core::binding::Binding>, entry: Option<&'a crate::build::EntrySpec>, claim_for: crate::node_rows::ClaimFor) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
         // Boxed where it is made, as `run_op`.
-        Box::pin(self.create_node_body(build_id, attempt, node, executable, claim_for))
+        Box::pin(self.create_node_body(build_id, attempt, node, executable, entry, claim_for))
     }
 
-    async fn create_node_body(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
+    async fn create_node_body(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, executable: Option<&rdm_core::binding::Binding>, entry: Option<&crate::build::EntrySpec>, claim_for: crate::node_rows::ClaimFor) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
         let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt);
         async {
@@ -1525,7 +1519,7 @@ impl AdminRunner {
             // before it is asked to be Ready; only with that certainty does the shape proceed (e4.s11).
             let first_admin = self.topology.read().await.first_admin_of(node);
             let pre_node_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
-            self.create(build_id, attempt, node, executable, pre_node_ready, claim_for).await
+            self.create(build_id, attempt, node, executable, entry, pre_node_ready, claim_for).await
         }
         .instrument(span)
         .await
@@ -1541,19 +1535,19 @@ impl AdminRunner {
     /// the stopped birth; node.delete node.delete's workflow from the state the birth is in.
     ///
     /// [`ClaimFor::Successor`]: crate::node_rows::ClaimFor::Successor
-    pub(crate) fn step<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, step: &'a rdm_core::build::Step, birth: Option<&'a crate::build::PinnedBirth>) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
+    pub(crate) fn step<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, step: &'a rdm_core::build::Step, birth: Option<&'a crate::build::PinnedBirth>, entry: Option<&'a crate::build::EntrySpec>) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
         // Boxed where it is made, as `run_op`: a step runs `run_op` again, and neither holds the
         // other's state machine inline.
-        Box::pin(self.step_body(build_id, lane, attempt, step, birth))
+        Box::pin(self.step_body(build_id, lane, attempt, step, birth, entry))
     }
 
-    async fn step_body(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, step: &rdm_core::build::Step, birth: Option<&crate::build::PinnedBirth>) -> Result<(), crate::executor::RunEnd> {
+    async fn step_body(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, step: &rdm_core::build::Step, birth: Option<&crate::build::PinnedBirth>, entry: Option<&crate::build::EntrySpec>) -> Result<(), crate::executor::RunEnd> {
         use rdm_core::build::Step as S;
         let me = self.held_name();
         let node = step.node();
         let key = crate::build::step_key(step);
         if let S::Create { node, executable } = step {
-            return self.create_node(build_id, attempt, node, executable.as_ref(), crate::node_rows::ClaimFor::Successor).await;
+            return self.create_node(build_id, attempt, node, executable.as_ref(), entry, crate::node_rows::ClaimFor::Successor).await;
         }
         let birth = match birth {
             Some(b) => b.clone(),

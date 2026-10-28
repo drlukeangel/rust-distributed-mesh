@@ -77,7 +77,7 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
             timeouts: Timeouts::default(),
         };
         let first = pipeline
-            .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
 

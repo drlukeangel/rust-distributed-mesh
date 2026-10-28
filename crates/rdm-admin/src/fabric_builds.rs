@@ -2,9 +2,11 @@
 //! the Build facts' wire message.
 //!
 //! Every node-admin's Build journal is the fabric's Build journal on the shared store root (build.md
-//! §5.3, R-BI6): each fact an admin commits is one record there, and every admin reads the records
-//! from the store root (Q185: there is no Build channel). A successor therefore continues a Build
-//! from the store root, never from the executing admin's disk or process.
+//! §5.3, R-BI6): each fact the fabric-primary commits is one record there (Q118: it writes every
+//! Build record, a mesh's drift attempts' among them), and only the fabric-primary reads the records
+//! (Q227), at its take and from then on; every other admin holds what reached it (its pulls,
+//! FetchBuildFacts 0x1F, an attempt's intent). A successor therefore continues a Build from the store
+//! root, never from the executing admin's disk or process.
 //!
 //! The adapter here gates the fabric-primary's decisions on the primary record this admin holds
 //! (ruling R-A2) and refuses a fact with no wire shape before it commits: `FetchBuildFacts` (0x1F)
@@ -71,12 +73,10 @@ pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStat
 /// behind this admin's primary records.
 pub struct FabricBuildStateAdapter {
     local: Arc<dyn LocalBuildLog>,
-    /// The authority gate every fabric-primary mutation passes (ruling R-A2).
+    /// The authority gate every fabric-primary mutation passes (ruling R-A2), a mesh's drift attempt's
+    /// open and claim among them: the fabric-primary writes every Build record (Q118), so a
+    /// mesh-primary that is not the fabric-primary reports its drift up and writes none.
     authority: Authority,
-    /// The gate of this admin's drift-lane opens and claims (R-BI7): the mesh-primary record of its own
-    /// mesh this admin holds, never the fabric-primary's, so an admin that is fabric-primary no more
-    /// still opens and claims its own mesh's drift attempts while it is its mesh's primary.
-    mesh_seat_gate: Authority,
     location_view: rdm_transport::topology::LocationView,
 }
 
@@ -174,15 +174,7 @@ impl FabricBuildStateAdapter {
     /// The Build state of the admin named `node` over its Build journal `local`, its fabric-primary
     /// decisions gated by `seat`. `location_view` names this admin's path.name as its view holds it.
     pub fn new(local: Arc<dyn LocalBuildLog>, location_view: &rdm_transport::topology::LocationView, node: String, seat: SeatSource) -> Self {
-        Self { local, authority: Authority::new(node.clone(), seat), mesh_seat_gate: Authority::new(node, SeatSource::unrecorded()), location_view: location_view.clone() }
-    }
-
-    /// This log's drift-lane opens and claims gated by `seat`, the committed record of this admin's
-    /// own mesh's primary seat (R-BI7).
-    pub fn with_mesh_seat(mut self, seat: SeatSource) -> Self {
-        let node = self.authority.node.clone();
-        self.mesh_seat_gate = Authority::new(node, seat);
-        self
+        Self { local, authority: Authority::new(node, seat), location_view: location_view.clone() }
     }
 
     /// Whether this admin's Build log still decides anything: refused by name once the committed
@@ -221,10 +213,7 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        let _gate = match opened.mesh {
-            None => self.authority.enter().await?,
-            Some(_) => self.mesh_seat_gate.enter().await?,
-        };
+        let _gate = self.authority.enter().await?;
         wire_shaped(&BuildFact::Opened(opened.clone()))?;
         self.local.open_attempt(opened).await
     }
@@ -249,26 +238,17 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
         self.local.list_active().await
     }
 
-    async fn stored_accepted(&self, build_id: &BuildId) -> Result<Option<BuildAccepted>, BuildStateError> {
-        self.local.stored_accepted(build_id).await
-    }
 
     /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the seat's own log.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        let _gate = match claim.mesh {
-            None => self.authority.enter().await?,
-            Some(_) => self.mesh_seat_gate.enter().await?,
-        };
+        let _gate = self.authority.enter().await?;
         wire_shaped(&BuildFact::Claim(claim.clone()))?;
         self.local.claim_attempt(claim).await
     }
 
     /// [`Self::claim_attempt`] with the mesh's in-flight row taken in the local log's own turn.
     async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &dyn crate::storage::MeshStorage, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, BuildStateError> {
-        let _gate = match claim.mesh {
-            None => self.authority.enter().await?,
-            Some(_) => self.mesh_seat_gate.enter().await?,
-        };
+        let _gate = self.authority.enter().await?;
         wire_shaped(&BuildFact::Claim(claim.clone()))?;
         self.local.claim_in_flight(claim, claims, mesh, row).await
     }

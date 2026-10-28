@@ -444,7 +444,7 @@ impl Rig {
             template: &self.template,
             timeouts: Timeouts { bind: join, join, ..Timeouts::default() },
         };
-        let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+        let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
         pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
     }
 

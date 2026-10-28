@@ -60,12 +60,6 @@ pub fn fabric_seat_record(record: Option<&Primary>, me: &Birth, lost: &HashSet<I
     seat_record("the fabric-primary record this admin holds", record, me, lost, name_of)
 }
 
-/// [`fabric_seat_record`] of `mesh`'s primary seat record: what it says of `me`'s hold on its
-/// own mesh's drift attempts (R-BI7), judged by the same rule.
-pub fn mesh_seat_record(mesh: &str, record: Option<&Primary>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
-    seat_record(&format!("the mesh-primary record of mesh {mesh} this admin holds"), record, me, lost, name_of)
-}
-
 fn seat_record(which: &str, record: Option<&Primary>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
     match record {
         Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => {

@@ -122,7 +122,7 @@ fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_
             tokio::time::sleep(HELD).await;
             release_tx.send(()).unwrap();
         });
-        let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.3".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+        let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.3".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let err = pipeline.create(&req).await.map(|_| ()).expect_err("the provider launches nothing: the create fails at DeployRuntime");
         release.await.unwrap();
         holder.await.unwrap();
@@ -237,7 +237,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
             .unwrap();
         builds1.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build1.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
         let pipeline1 = DeploymentPipeline { provider: &LaunchesNothing, joins: &joins, observer: &NoBirth, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds1, template: &template, timeouts: Timeouts::default() };
-        let req1 = CreateRequest { build_id: build1.clone(), attempt: 1, node: "mesh1.rpc.3".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+        let req1 = CreateRequest { build_id: build1.clone(), attempt: 1, node: "mesh1.rpc.3".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
         // Pre-seed AllocateIdentity so `create` enters `PrepareStorage` without calling `claimed_allocation`.
         builds1
             .append_step_receipt(&rdm_admin::build_state::BuildStepReceipt {
@@ -278,7 +278,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
             let _ = release_rx.recv();
         });
         held_rx.await.unwrap();
-        let req2 = CreateRequest { build_id: build2.clone(), attempt: 1, node: "mesh1.rpc.4".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+        let req2 = CreateRequest { build_id: build2.clone(), attempt: 1, node: "mesh1.rpc.4".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let timed_out2 = tokio::time::timeout(Duration::from_millis(120), pipeline2.create(&req2)).await;
         assert!(timed_out2.is_err(), "the create waits at transport-key while the blocking thread is held");
         release_tx.send(()).unwrap();

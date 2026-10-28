@@ -169,13 +169,12 @@ fn topology_folds(spans: &crate::common::Spans) -> Vec<(String, String, String)>
         .collect()
 }
 
-/// The folds since the `from`th of [`topology_folds`] that a launched node-admin's start no longer
-/// makes (Q227): any fold of `fabric`, `meshes` or `nodes` .jsonl (the Fabric identity, the recorded
-/// primaries and its own row come in its pulls), and a fold of `builds.jsonl` by the Build floor's
-/// read (`read_build`) or the derivation's install (`derive_on_every_fact`). A `current_build` fold
-/// of `builds.jsonl` is a runtime read outside the start: the hierarchy's turn (boot.rs) or a peer's
-/// read the admin serves, both read on every node-admin until only the fabric-primary reads the
-/// Build records (Q227's remainder, rdm#97's hand-over).
+/// The folds since the `from`th of [`topology_folds`] that a launched node-admin that is not the
+/// fabric-primary never makes (Q227): any fold of `fabric`, `meshes` or `nodes` .jsonl (the Fabric
+/// identity, the recorded primaries and its own row come in its pulls), and any fold of
+/// `builds.jsonl`: only the fabric-primary reads the Build records ("only FP reads the builds"), so
+/// neither its start (the Build floor's read, the derivation's install) nor its hierarchy's turn nor a
+/// peer's read it serves reads them.
 fn start_folds(spans: &crate::common::Spans, from: usize) -> Vec<(String, String, String, String)> {
     const FOLD: &str = "rdm.node.store.resolve.via-fold";
     let held: std::collections::BTreeMap<u64, _> = spans.0.lock().unwrap().clone().into_iter().collect();
@@ -185,7 +184,6 @@ fn start_folds(spans: &crate::common::Spans, from: usize) -> Vec<(String, String
             (n == FOLD && TOPOLOGY_STORES.contains(&file.as_str())).then(|| (file, f.get("reader").cloned().unwrap_or_default(), f.get("caller").cloned().unwrap_or_default(), f.get("outcome").cloned().unwrap_or_default()))
         })
         .skip(from)
-        .filter(|(file, reader, _, _)| file != "builds.jsonl" || reader == "read_build" || reader == "derive_on_every_fact")
         .collect()
 }
 
@@ -296,9 +294,9 @@ fn a_launched_admin_starts_with_its_fabric_store_unreadable() {
 /// reads [`start_folds`] names. Must NOT happen: the start refused by the recorded primaries' read of
 /// the meshes and nodes stores (boot.rs `take_recorded_primaries`, Q149 arm A) or by the current
 /// Build's read of the builds store ("the builds store cannot be read for the current Build"), the
-/// floor checked against the store, or the derivation's install folding the builds store. The
-/// runtime reads of `builds.jsonl` (the hierarchy's turn, a served peer read) are refused here
-/// and hold nothing of the start.
+/// floor checked against the store, the derivation's install folding the builds store, or, once it is
+/// Ready, its hierarchy's turns reading `builds.jsonl` (only the fabric-primary reads the Build
+/// records, Q227).
 #[test]
 fn a_launched_admin_is_ready_with_every_topology_store_unreadable() {
     let cell = "a_launched_admin_is_ready_with_every_topology_store_unreadable";

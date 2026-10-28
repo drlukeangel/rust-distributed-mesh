@@ -2022,25 +2022,20 @@ impl DriveEnv {
 }
 
 /// The Build's intent as the executor absorbs it before it plans (`build.attempt.run`'s `intent`):
-/// postcard frames of a Build message, every fact of `id` but its step receipts.
+/// postcard frames of a Build message, every fact of `id` the fabric-primary holds, its step receipts
+/// with them: the executor reads no Build record (Q227), so an earlier attempt's receipts a step reads
+/// (a successor's create reads its delete's `TerminateRuntime`) reach it here.
 pub(crate) async fn intent_frames(builds: &dyn BuildStateAdapter, id: &BuildId) -> Vec<Vec<u8>> {
     let facts = match builds.facts().await {
         Ok(f) => f
             .into_iter()
-            .filter(|f| {
-                f.build_id() == id
-                    && !matches!(
-                        f,
-                        crate::build_state::BuildFact::Step(_)
-                            | crate::build_state::BuildFact::Forget { .. }
-                    )
-            })
+            .filter(|f| f.build_id() == id && !matches!(f, crate::build_state::BuildFact::Forget { .. }))
             .collect::<Vec<_>>(),
         Err(_) => return Vec::new(),
     };
     let (frames, refused) = crate::fabric_builds::encode_chunks(facts);
     for e in refused {
-        tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id.log(), detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor holds it only once it reads it from the store root"));
+        tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id.log(), detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor does not hold it"));
     }
     frames.into_iter().map(|b| b.to_vec()).collect()
 }

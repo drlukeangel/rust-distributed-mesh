@@ -131,7 +131,7 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
                 node: "mesh1.rpc.1".parse().unwrap(),
                 spec: &RPC_NODE,
                 data_dir: None,
-                held_runtimes: Vec::new(),
+                held_runtimes: Vec::new(), entry: None
             })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
@@ -190,7 +190,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             node: "mesh1.rpc.1".parse().unwrap(),
             spec: &RPC_NODE,
             data_dir: None,
-            held_runtimes: Vec::new(),
+            held_runtimes: Vec::new(), entry: None
         };
 
         // Birth A, then A exits.

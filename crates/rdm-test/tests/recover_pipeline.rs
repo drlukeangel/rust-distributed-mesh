@@ -156,7 +156,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
 
     let birth_build = publish_build(&rig.builds, add_node()).await;
     let first = pipeline
-        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -178,7 +178,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     rig.log.lock().unwrap().push(format!("targeted:{}", first.node.node_id));
     // node.create over the exited birth's data dir.
     let second = pipeline
-        .create(&CreateRequest { build_id: recover_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: recover_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("create over the inherited data dir: {e}"));
 
@@ -251,7 +251,7 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
 
     let birth_build = publish_build(&rig.builds, add_node()).await;
     let first = pipeline
-        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -262,7 +262,7 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
 
     let recover_build = publish_build(&rig.builds, add_node()).await;
     let outcome = pipeline
-        .create(&CreateRequest { build_id: recover_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: recover_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
         .await;
     let err = match outcome {
         Err(e) => e,
@@ -305,7 +305,7 @@ async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_o
 
     let birth_build = publish_build(&rig.builds, add_node()).await;
     let first = pipeline
-        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -317,7 +317,7 @@ async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_o
     assert!(matches!(inspect_transport_key(&old_dir), Err(InheritedDirError::Broken(_))), "corrupt key in existing dir is Broken");
     let broken_build = publish_build(&rig.builds, add_node()).await;
     let err = pipeline
-        .create(&CreateRequest { build_id: broken_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: broken_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
         .await
         .expect_err("broken inherited data_dir must fail PrepareStorage");
     assert_eq!(err.step, "PrepareStorage", "{err}");
@@ -327,7 +327,7 @@ async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_o
     std::fs::write(old_dir.join("node-key"), &saved_key).unwrap();
     assert_eq!(inspect_transport_key(&old_dir), Ok(first.node.endpoint_id.clone().unwrap()));
     let repaired = pipeline
-        .create(&CreateRequest { build_id: broken_build, attempt: 3, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: broken_build, attempt: 3, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("repaired create: {e}"));
     assert_eq!(repaired.node.endpoint_id, first.node.endpoint_id, "repaired dir retains endpoint key");
@@ -340,7 +340,7 @@ async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_o
     assert!(matches!(inspect_transport_key(&old_dir), Err(InheritedDirError::Gone(_))), "absent dir is Gone");
     let gone_build = publish_build(&rig.builds, add_node()).await;
     let fresh = pipeline
-        .create(&CreateRequest { build_id: gone_build, attempt: 4, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: gone_build, attempt: 4, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("gone recovery over fresh dir: {e}"));
     assert_ne!(fresh.node.node_id, repaired.node.node_id, "new node.id minted");

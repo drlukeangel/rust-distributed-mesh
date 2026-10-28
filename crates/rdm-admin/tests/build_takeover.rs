@@ -312,17 +312,17 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     assert_eq!(
         *a_runner.ran.lock().unwrap(),
         vec![
-            (1, BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)) }),
-            (1, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)) }),
+            (1, BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)), entry: None }),
+            (1, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)), entry: None }),
         ]
     );
     assert_eq!(
         *b_runner.ran.lock().unwrap(),
         vec![
             // A's admin is lost too: its path is part of what is left.
-            (2, BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap(), over: None, executable: None }),
+            (2, BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap(), over: None, executable: None, entry: None }),
             // The successor reads the Build from the store, where each entry keeps its executable (Q186).
-            (2, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)) }),
+            (2, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)), entry: None }),
         ],
         "mesh1.rpc.2 is never created twice"
     );

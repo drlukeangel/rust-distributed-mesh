@@ -1731,8 +1731,13 @@ async fn a_hung_mesh_primary_is_terminated_and_recovered_at_once_by_the_fabric_p
 /// floor, `mesh1.admin.2`, the lowest Ready node-admin of its mesh, takes no primary role: it
 /// runs fabric recovery. Node investigation reads the hung birth `running`; the recovery's first step is
 /// `TerminateRuntime`, then `mesh1.admin.1` is re-created as a new birth at the same path.name, and the
-/// workflow restores that node as mesh-primary and fabric-primary. Must NOT happen: the hung birth held,
-/// `mesh1.admin.2` named mesh-primary or fabric-primary, the hung birth recovered by anyone else or twice.
+/// workflow restores that node as mesh-primary and fabric-primary. At that take the re-created
+/// fabric-primary reads the Build records (Q227: "the exception of FP, who will need to read the last
+/// build record to determine if anything is in flight"; build.md §5 "new fabric-primary -> reads the
+/// Builds newest first"): its process's one read of `builds.jsonl` is the take's, after it became
+/// fabric-primary, naming the current Build. Must NOT happen: the hung birth held,
+/// `mesh1.admin.2` named mesh-primary or fabric-primary, the hung birth recovered by anyone else or twice,
+/// or the re-created admin reading the Build records before it is fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_from_its_own_mesh() {
     let (mut estate, _birth_build) = born_at(
@@ -1761,6 +1766,7 @@ async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_f
     .await;
     let other = estate.node_value(&standby).await;
     assert!(other["is_fabric_primary"] != true && other["is_primary"] != true, "{standby} took no primary role: {other}");
+    let re_created_pid = estate.pid_of(&fp_name).await;
     drop(held);
     estate.settles_to(&[("mesh1", 2, 1), ("mesh2", 1, 1)], Duration::from_secs(30)).await;
     estate.stop().await;
@@ -1777,8 +1783,92 @@ async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_f
     assert!(terminate.is_some(), "the recovery's TerminateRuntime of the hung birth completed");
     let elected: Vec<&Value> = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary").into_iter().filter(|sp| at(sp) >= hung_ns && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["winner_path"] == standby.as_str()).collect();
     assert!(elected.is_empty(), "mesh1 elected no node-admin while fabric recovery ran: {elected:#?}");
+    // The re-created fabric-primary's own spans: it reads the Build records at its take, and only then.
+    let own: Vec<Value> = std::fs::read_dir(&estate.evidence)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&format!("rdm-node-admin.{re_created_pid}-")))
+        .flat_map(|e| std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect::<Vec<_>>())
+        .collect();
+    let took = named(&own, "rdm.node_admin.primary.update.via-primary-updated").into_iter().map(at).min().unwrap_or_else(|| panic!("the re-created {fp_name} (pid {re_created_pid}) took its primary roles by node.primary.update"));
+    let read = named(&own, "rdm.node_admin.build.resolve.via-records-read").into_iter().find(|sp| sp["attributes"]["outcome"] == "read").cloned().unwrap_or_else(|| panic!("the re-created {fp_name} (pid {re_created_pid}) reads the Build records at its take: {:#?}", named(&own, "rdm.node.store.resolve.via-fold")));
+    assert!(at(&read) >= took, "the read is the take's, after {fp_name} became fabric-primary: {read}");
+    assert!(!s(&read["attributes"]["current_build_id"]).is_empty(), "the take's read names the current Build: {read}");
+    let folds: Vec<&Value> = named(&own, "rdm.node.store.resolve.via-fold").into_iter().filter(|sp| s(&sp["attributes"]["file"]).ends_with("builds.jsonl")).collect();
+    assert!(folds.iter().all(|sp| sp["attributes"]["reader"] == "take" && at(*sp) >= took), "{fp_name} reads builds.jsonl at its take alone: {folds:#?}");
+    eprintln!("span rdm.node_admin.build.resolve.via-records-read trace_id={} {}", s(&read["trace_id"]), read["attributes"]);
     estate.record_trace_url(run["trace_id"].as_str().unwrap_or(""));
     eprintln!("Q122 hung fabric-primary: {fp_name} (birth {}) re-created as {} by {standby}'s fabric recovery", s(&fp["node_id"]), s(&after["node_id"]));
+}
+
+/// The spans of each node-admin process of `estate` but the one with pid `except`, by its span file.
+fn admin_spans_but(estate: &Estate, except: u64) -> Vec<(String, Vec<Value>)> {
+    std::fs::read_dir(&estate.evidence)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|f| f.starts_with("rdm-node-admin.") && f.ends_with(".spans.jsonl") && !f.starts_with(&format!("rdm-node-admin.{except}-")))
+        .map(|f| {
+            let text = std::fs::read_to_string(estate.evidence.join(&f)).unwrap_or_default();
+            (f, text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect())
+        })
+        .collect()
+}
+
+/// CONTRACT (Q227: "the one reader is the fabric-primary"; Luke 2026-10-28: "only FP reads the builds";
+/// build.md §5.3 as amended: every other admin holds what reached it through FetchBuildFacts and
+/// `build.attempt.run`; node-recovery.md "Execution", Q118): the Day-0 admin, the fabric-primary, is
+/// ready, then the first line of the fabric's `builds.jsonl` no longer matches its checksum, so no read
+/// of it from byte 0 succeeds (the Day-0 admin has read past it). mesh2 is then born, its admins and its
+/// rpc node created by its own mesh-primary from the entries the fabric-primary put on each create, and
+/// one of mesh2's rpc nodes is killed. mesh2's mesh-primary, which is not the fabric-primary, runs its
+/// hierarchy, reports the drift up and runs the recovery attempt the fabric-primary opens: the member is
+/// re-created at its path.name. No node-admin but the fabric-primary reads `builds.jsonl`: none folds
+/// it and none names it unreadable. Must NOT happen: a non-fabric-primary admin reading the Build
+/// records (its hierarchy's turn, a create's spec, the recovery's run), or the drift left unrecovered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mesh_primary_that_is_not_the_fabric_primary_recovers_its_member_with_the_build_records_unreadable() {
+    let estate = Estate::bootstrap_with_env(owner("a_mesh_primary_that_is_not_the_fabric_primary_recovers_its_member_with_the_build_records_unreadable"), "fabric1", "mesh1", &[]).await;
+    let builds = wait_for("the Day-0 Build's records are on the store root", Duration::from_secs(30), || async {
+        std::fs::read_dir(estate.store_dir()).ok()?.flatten().map(|e| e.path().join("builds.jsonl")).find(|f| std::fs::metadata(f).is_ok_and(|m| m.len() > 0))
+    })
+    .await;
+    // The first line's middle byte changed: a read from byte 0 meets a line that fails its checksum.
+    let bytes = std::fs::read(&builds).unwrap();
+    let end = bytes.iter().position(|b| *b == b'\n').expect("the first line is ended");
+    let at = end / 2;
+    let changed = if bytes[at] == b'0' { b'1' } else { b'0' };
+    std::os::unix::fs::FileExt::write_at(&std::fs::OpenOptions::new().write(true).open(&builds).unwrap(), &[changed], at as u64).unwrap();
+
+    let (mut estate, birth_build) = born_at(estate, &[("mesh1", 1, 1), ("mesh2", 2, 1)], SETTLE).await;
+    let nodes = estate.node_values().await;
+    let (member, mesh_primary, primary) = placement(&nodes);
+    assert_eq!(member.split('.').next(), Some("mesh2"), "the member is mesh2's: {member}");
+    let fp_pid = estate.pid_of(&s(&primary["name"])).await;
+    let before = estate.node_value(&member).await;
+    estate.kill_node(&member).await;
+    let after = until_node_where(&estate, &member, &format!("{member} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
+    let recovery = recovery_span(&estate, &member, &before["node_id"]).await;
+    assert_eq!(s(&recovery["attributes"]["submitter"]), mesh_primary, "{recovery}");
+    assert_eq!(s(&recovery["attributes"]["build_id"]), birth_build, "an attempt of the accepted Build: {recovery}");
+    assert!(s(&recovery["attributes"]["outcome"]).starts_with("complete"), "the recovery completed: {recovery}");
+    // Every process's spans are whole once it exited.
+    estate.stop().await;
+
+    let spans = estate.spans();
+    let unreadable = named(&spans, "rdm.node_admin.build.reject.via-build-store-unreadable");
+    assert!(unreadable.is_empty(), "no admin names the builds store unreadable: {unreadable:#?}");
+    let turned: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-filled").into_iter().filter(|sp| sp["attributes"]["node"] == mesh_primary.as_str() && sp["attributes"]["mesh_primary"] == true).collect();
+    assert!(!turned.is_empty(), "{mesh_primary}'s hierarchy took its mesh-primary role");
+    for (file, own) in admin_spans_but(&estate, fp_pid) {
+        let read: Vec<&Value> = own.iter().filter(|sp| (sp["name"] == "rdm.node.store.resolve.via-fold" && s(&sp["attributes"]["file"]).ends_with("builds.jsonl")) || sp["name"] == "rdm.node_admin.build.resolve.via-records-read").collect();
+        assert!(read.is_empty(), "{file}, an admin that is not the fabric-primary, read the Build records: {read:#?}");
+    }
+    let bytes_now = std::fs::read(&builds).unwrap();
+    assert_eq!(bytes_now[at], changed, "builds.jsonl is left as written");
+    eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {}", s(&recovery["trace_id"]), recovery["attributes"]);
+    estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
+    eprintln!("{member} (birth {}) re-created as {} by {mesh_primary}", s(&before["node_id"]), s(&after["node_id"]));
 }
 
 /// CONTRACT (node-recovery.md sequence step 1: "A repeat submit answers AlreadyApplied or

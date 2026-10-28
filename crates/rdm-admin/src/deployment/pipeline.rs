@@ -929,6 +929,9 @@ pub struct CreateRequest {
     /// The runtime rows this admin holds, handed to a node-admin's own nodes.storage before it
     /// starts: its durable map of the births a predecessor heard.
     pub held_runtimes: Vec<crate::storage::RuntimeRow>,
+    /// The path's entry in the accepted Build the fabric-primary put on the create
+    /// ([`crate::build::EntrySpec`]): a plain create's row takes its tags and config at the claim.
+    pub entry: Option<crate::build::EntrySpec>,
 }
 
 /// Work the executor does at the birth between its mesh join and its Ready: the fabric primary's
@@ -1695,19 +1698,20 @@ impl DeploymentPipeline<'_> {
                 // is node recovery's (node-recovery.md step 4), whose claim inherits the Deleted
                 // row's tags with its config.
                 let of = claim_for;
-                // A plain create's row carries the tag labels and the config its create spec names in the
-                // accepted Build as builds.storage records it (Q166; proposal executable-bindings-at-create.md
-                // rule 1; a Build message carries no entry's tags, config or executable), so its first join
-                // hands it that config; a recovery's and a successor's carry their seed's.
+                // A plain create's row carries the tag labels and the config its create spec names, from the
+                // path's entry the fabric-primary put on the create (Q166; proposal
+                // executable-bindings-at-create.md rule 1; a Build message carries no entry's tags, config or
+                // executable, and this admin reads no Build record, Q227), so its first join hands it that
+                // config; a recovery's and a successor's carry their seed's.
                 // Whatever the claim, its storage and placement are the create spec's (build-deployment.md §3:
-                // a successor's storage follows its create spec's), written onto the row (build.md §1).
+                // a successor's storage follows its create spec's), written onto the row (build.md §1): a
+                // Build message carries them, read from the Build this admin holds.
                 step_span.record("awaiting", "entry-spec");
-                let stored = self.builds.stored_accepted(&req.build_id).await.map_err(|e| format!("{}: the accepted Build {} could not be read from builds.storage for the node's create spec; nothing is launched: {e}", req.node, req.build_id))?;
+                let held = self.builds.read_build(&req.build_id).await.map_err(|e| format!("{}: the accepted Build {} could not be read for the node's create spec; nothing is launched: {e}", req.node, req.build_id))?;
                 done_awaits.push("entry-spec");
-                let spec = stored.and_then(|a| a.topology.mesh(&req.node.mesh).and_then(|m| m.spec(&req.node)).cloned());
-                let placed = spec.as_ref().map(|s| (s.storage_persistence, s.placement));
-                let (tags, config) = match (of, spec) {
-                    (crate::node_rows::ClaimFor::Create, Some(s)) => (s.tags, s.config),
+                let placed = held.topology.mesh(&req.node.mesh).and_then(|m| m.spec(&req.node)).map(|s| (s.storage_persistence, s.placement));
+                let (tags, config) = match (of, &req.entry) {
+                    (crate::node_rows::ClaimFor::Create, Some(e)) => (e.tags.clone(), e.config.clone()),
                     _ => Default::default(),
                 };
                 step_span.record("awaiting", "claim");
@@ -3128,7 +3132,7 @@ mod tests {
         let template = LaunchTemplate { roots: rdm_transport::connections::RootSet::new(vec![a]), ..cell_template("launch-roots") };
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let create = |node: &str| CreateRequest { build_id: build_id.clone(), attempt: 1, node: node.parse().unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+        let create = |node: &str| CreateRequest { build_id: build_id.clone(), attempt: 1, node: node.parse().unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let _ = pipeline.create(&create("mesh1.rpc.1")).await.map(|_| ()).expect_err("the provider launches nothing");
         template.roots.replace(vec![a, b]);
         let _ = pipeline.create(&create("mesh1.rpc.2")).await.map(|_| ()).expect_err("the provider launches nothing");
@@ -3235,7 +3239,7 @@ mod tests {
         let template = cell_template("join-from-report");
         let timeouts = Timeouts { join: Duration::from_millis(1500), ready: Duration::from_millis(300), ..Timeouts::default() };
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts };
-        let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+        let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let err = pipeline.create(&req).await.map(|_| ()).expect_err("nothing answers Ready: the create ends at WaitForNodeReady");
         let steps: Vec<(String, StepOutcome)> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| (r.step, r.outcome)).collect();
         assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "WaitForMeshJoin completes from the accepted report with no digest in any view: {err}; receipts {steps:?}");

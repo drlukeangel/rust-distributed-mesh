@@ -368,9 +368,6 @@ impl BuildStateAdapter for FramedBuilds {
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.inner.list_active().await
     }
-    async fn stored_accepted(&self, build_id: &BuildId) -> Result<Option<crate::build_state::BuildAccepted>, BuildStateError> {
-        self.inner.stored_accepted(build_id).await
-    }
     async fn claim_attempt(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, BuildStateError> {
         self.inner.claim_attempt(claim).await
     }
@@ -505,9 +502,6 @@ impl BuildStateAdapter for LaneBuilds {
     }
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.inner.list_active().await
-    }
-    async fn stored_accepted(&self, build_id: &BuildId) -> Result<Option<crate::build_state::BuildAccepted>, BuildStateError> {
-        self.inner.stored_accepted(build_id).await
     }
     async fn claim_attempt(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, BuildStateError> {
         self.inner.claim_attempt(&crate::build_state::BuildAttemptClaim { mesh: self.lane(), ..claim.clone() }).await

@@ -1614,7 +1614,7 @@ mod tests {
         // at the same `path.name`"): the replace's Delete step and the node.delete route of a
         // type's only node skip the update as a removal does, refused `no-secondary` at no step.
         assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t).is_none(), "the delete of a type's only node skips node.primary.update: {:?}", last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t));
-        let delete_step = crate::build::BuildOperation::Step { step: rdm_core::build::Step::Delete { node: "mesh2.rpc.1".parse().unwrap() }, birth: None };
+        let delete_step = crate::build::BuildOperation::Step { step: rdm_core::build::Step::Delete { node: "mesh2.rpc.1".parse().unwrap() }, birth: None, entry: None };
         assert_eq!(crate::executor::seat_move(&delete_step, &t), None, "the Build's delete of a type's only node moves no primary");
     }
 

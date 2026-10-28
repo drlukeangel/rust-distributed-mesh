@@ -844,6 +844,27 @@ impl InnerStream for RemoteStream {
     }
 }
 
+/// `plan` with each create and config operation carrying its path's entry in Build `build_id`'s
+/// accepted topology as this fabric-primary holds it ([`crate::build::EntrySpec`]): the executable,
+/// tags and config a Build message does not carry. The fabric-primary is the one admin that reads the
+/// Build records (Q227), its acceptance the stored record's, so every executor, this admin included,
+/// takes them from the operation and reads none. A path the topology holds no entry for carries none.
+pub(crate) async fn with_entries(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, mut plan: RunPlan) -> Result<RunPlan, String> {
+    let needs = |op: &BuildOperation| matches!(op, BuildOperation::CreateNode { .. } | BuildOperation::UpdateConfig { .. } | BuildOperation::Step { step: rdm_core::build::Step::Create { .. }, .. });
+    if !plan.operations.iter().any(needs) {
+        return Ok(plan);
+    }
+    let held = builds.read_build(build_id).await.map_err(|e| format!("Build {build_id} could not be read for its entries' executables, tags and config: {e}"))?;
+    let entry_of = |node: &PathName| held.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).map(crate::build::EntrySpec::of);
+    for op in &mut plan.operations {
+        match op {
+            BuildOperation::CreateNode { node, entry, .. } | BuildOperation::UpdateConfig { node, entry } | BuildOperation::Step { step: rdm_core::build::Step::Create { node, .. }, entry, .. } => *entry = entry_of(node),
+            _ => {}
+        }
+    }
+    Ok(plan)
+}
+
 /// Calls the executor `executor` names: in process when that is this admin, over Node RPC otherwise.
 pub struct RpcDispatcher {
     /// This admin's `path.name`.
@@ -923,6 +944,10 @@ impl RpcDispatcher {
         plan: RunPlan,
     ) -> Dispatched {
         let me = self.local.held_name().await;
+        let plan = match with_entries(&*self.local.builds, build_id, plan).await {
+            Ok(plan) => plan,
+            Err(why) => return Dispatched::Unreached(format!("{me}: {why}")),
+        };
         if *executor == self.me || *executor == me {
             // The fabric-primary runs the attempt itself: it plans from the log the claim was decided
             // on, and the run's turn is begun under the drive pass's.

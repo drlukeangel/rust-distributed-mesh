@@ -438,7 +438,7 @@ fn a_failing_child_leaves_no_trace_of_a_secret(test: &str, spawn_type: &'static 
             timeouts: Timeouts { bind: Duration::from_secs(20), ..Timeouts::default() },
         };
         let err = pipeline
-            .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.admin.2".parse().unwrap(), spec: &rdm_admin::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.admin.2".parse().unwrap(), spec: &rdm_admin::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_err();
         let receipts: Vec<String> = builds

@@ -1132,18 +1132,6 @@ pub trait BuildStateAdapter: Send + Sync {
         accepted.dedup();
         Ok(accepted.into_iter().rev().map(|(_, id)| id).collect())
     }
-    /// The accepted Build `build_id` as builds.storage records it (the fabric's shared store root, build.md
-    /// §5.3), read there whoever reads it: the one record that carries each entry's executable, which a Build
-    /// message does not carry (proposal executable-bindings-at-create.md rule 7). A log whose own facts are
-    /// the record (one process's, an application's builds.storage) answers the acceptance it holds, the
-    /// topology its fold plans from. `Ok(None)`: no record of it.
-    async fn stored_accepted(&self, build_id: &BuildId) -> Result<Option<BuildAccepted>, BuildStateError> {
-        match self.read_build(build_id).await {
-            Ok(p) => Ok(Some(BuildAccepted { build_id: p.build_id, topology: p.topology, submitted_change: p.submitted_change, submitted_at_ms: p.submitted_at_ms })),
-            Err(BuildStateError::UnknownBuild(_)) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
     /// Insert-and-fail on `(build_id, attempt)`. Only the fabric-primary calls this on its own
     /// log to decide a claim (`build_claim::ClaimDoor`); an executor never claims from its own.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError>;
@@ -2068,7 +2056,18 @@ pub trait LocalBuildLog: BuildStateAdapter {
     async fn held_current_build(&self) -> Result<CurrentBuild, BuildStateError> {
         self.current_build().await
     }
+    /// From now on this log reads the Build records on the store only while `reader` names this admin
+    /// (Q227: "only FP reads the builds"; build.md §5): while it is the fabric-primary, or the
+    /// executor fabric recovery names in its place (Q122). Its first read of such a tenure is the take,
+    /// made under the writer's turn so every record the store holds is in the log before the read
+    /// answers; any other admin answers every read from what reached it (its pulls, 0x1F, an attempt's
+    /// intent) and reads nothing. A log that reads no store has nothing to switch.
+    async fn read_records_while(&self, _reader: RecordsReader) {}
 }
+
+/// Whether this admin reads the Build records now ([`LocalBuildLog::read_records_while`]): its
+/// path.name while it does, `None` while it holds only what reached it.
+pub type RecordsReader = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// The key of attempt `(build_id, lane, attempt)`'s context: `<build_id>-<attempt>` for the fabric
 /// lane, `<build_id>-<mesh>-<attempt>` for a mesh's drift lane, so an attempt number names one
@@ -2114,8 +2113,9 @@ impl LocalBuildLog for FileJournal {
     }
 
     async fn absorb_facts(&self, facts: &[BuildFact]) {
+        // Under the writer's turn; the store root is not read (Q227): a fact a later read of the store
+        // takes again is deduplicated there.
         let w = self.turn("absorb_facts").await;
-        let _ = self.sync(&w).await;
         let held = snapshot(&self.log);
         let mut new: Vec<BuildFact> = Vec::new();
         for f in facts {
@@ -2147,6 +2147,10 @@ impl LocalBuildLog for FileJournal {
 
     async fn held_current_build(&self) -> Result<CurrentBuild, BuildStateError> {
         Ok(current_build(&self.log))
+    }
+
+    async fn read_records_while(&self, reader: RecordsReader) {
+        let _ = self.reader.set(reader);
     }
 
     async fn put_attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext) -> Result<(), crate::storage_error::StorageError> {
@@ -2342,6 +2346,11 @@ pub struct FileJournal {
     /// What the last holder of `writer` did with it, written when it let it go: what a turn that
     /// waited names as the holder it waited behind.
     released: Mutex<Option<String>>,
+    /// Whether this admin reads the records now ([`LocalBuildLog::read_records_while`]); unset, it
+    /// reads (a bootstrap or adoption start, before its views exist: Q227's re-born fabric-primary).
+    reader: std::sync::OnceLock<RecordsReader>,
+    /// This tenure's take read is made: the next reads are tail reads.
+    took: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "file-backend")]
@@ -2454,6 +2463,8 @@ impl FileJournal {
             holder_io: Mutex::new(None),
             holder_facts: std::sync::atomic::AtomicU64::new(0),
             released: Mutex::new(None),
+            reader: std::sync::OnceLock::new(),
+            took: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -2561,8 +2572,9 @@ impl FileJournal {
         publish(&self.log, w.0.as_ref(), new);
     }
 
-    /// Read the records not taken yet, under the writer's turn `w`: every admin reads the store root
-    /// (Q185), the fabric-primary or not.
+    /// Read the records not taken yet, under the writer's turn `w`: a turn writes a record, and the
+    /// one writer of the Build records is the fabric-primary, or fabric recovery's executor in its
+    /// place (build.md §5.3, Q118, Q122), the admins that read them (Q227).
     async fn sync(&self, w: &Turn<'_>) -> Result<(), BuildStateError> {
         let read = self.store_call(self.read_new(w.op)).await?;
         self.take_read(w, read);
@@ -2575,6 +2587,19 @@ impl FileJournal {
     /// never waits behind a writer either. While it takes, `op` (the reader) is the holder a waiting
     /// turn names. Records a read could not take stay untaken for the next read.
     async fn sync_for_read(&self, op: &'static str) -> Result<(), BuildStateError> {
+        // Only the fabric-primary (or fabric recovery's executor) reads the records (Q227); every
+        // other admin answers from what reached it.
+        let reader = match self.reader.get() {
+            Some(reader) => reader(),
+            None => Some(String::new()),
+        };
+        let Some(node) = reader else {
+            self.took.store(false, std::sync::atomic::Ordering::Release);
+            return Ok(());
+        };
+        if !self.took.load(std::sync::atomic::Ordering::Acquire) {
+            return self.read_at_take(op, &node).await;
+        }
         let read = self.read_new(op).await?;
         match self.writer.try_lock() {
             Ok(w) => {
@@ -2588,6 +2613,42 @@ impl FileJournal {
                 *unread = read.into_iter().chain(later).collect();
             }
         }
+        Ok(())
+    }
+
+    /// The take (Q227: the re-born or newly taking fabric-primary "will need to read the last build
+    /// record to determine if anything is in flight"; build.md §5 "new fabric-primary -> reads the
+    /// Builds newest first"): this tenure's first read of the records, for `op`, made under the
+    /// writer's turn so the records it reads are in the log before any read answers, named on
+    /// `rdm.node_admin.build.resolve.via-records-read` with how many it read and the current Build.
+    async fn read_at_take(&self, op: &'static str, node: &str) -> Result<(), BuildStateError> {
+        use tracing::Instrument as _;
+        let w = self.turn("take").await;
+        if self.took.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        let span = tracing::info_span!("rdm.node_admin.build.resolve.via-records-read", node, reader = op, store = "builds.storage", records = tracing::field::Empty, current_build_id = tracing::field::Empty, state = tracing::field::Empty, outcome = tracing::field::Empty, error = tracing::field::Empty, "otel.kind" = "internal");
+        let read = self.store_call(self.read_new("take")).instrument(span.clone()).await;
+        let read = match read {
+            Ok(read) => read,
+            Err(e) => {
+                span.record("outcome", "refused").record("error", e.to_string().as_str());
+                span.in_scope(|| tracing::info!("the Build records could not be read at the take: the next read reads them again"));
+                return Err(e);
+            }
+        };
+        span.record("records", read.len() as u64);
+        self.take_read(&w, read);
+        self.took.store(true, std::sync::atomic::Ordering::Release);
+        let current = current_build(&self.log);
+        span.record("outcome", "read");
+        if let Some(id) = current.build_id() {
+            span.record("current_build_id", id.as_str());
+            if let Ok(p) = read_own(&self.log, id) {
+                span.record("state", format!("{:?}", p.state).as_str());
+            }
+        }
+        span.in_scope(|| tracing::info!("this admin reads the Build records: the ones the store holds are read once, to learn what is in flight, and every read after it reads on from there"));
         Ok(())
     }
 
@@ -2639,14 +2700,6 @@ impl BuildStateAdapter for FileJournal {
         read_own(&self.log, build_id)
     }
 
-    async fn stored_accepted(&self, build_id: &BuildId) -> Result<Option<BuildAccepted>, BuildStateError> {
-        // The acceptance's own key ([`record_key`]).
-        let Some(line) = self.file.latest(RECORD_KIND, &format!("{build_id}/accepted")).await.map_err(store_io)? else { return Ok(None) };
-        match line.decode::<StoredFact>(self.file.path()).map_err(store_io)? {
-            StoredFact { fact: BuildFact::Accepted(a), .. } => Ok(Some(a)),
-            _ => Ok(None),
-        }
-    }
 
     async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
         self.sync_for_read("current_build").await?;
@@ -2932,29 +2985,6 @@ mod tests {
         assert_eq!(m.list_active().await.unwrap().len(), 1);
     }
 
-    /// CONTRACT (build.md §1, "The Build applies the diff": `config` "in place, as `node.config.update`
-    /// applies a map"; [`BuildStateAdapter::stored_accepted`]: "The accepted Build `build_id` as
-    /// builds.storage records it ... read there whoever reads it"): a log whose own facts are the record
-    /// (one process's, an application's builds.storage) answers the accepted Build it holds, each entry's
-    /// config, tags and executable with it, the topology the planner folds from the same log; a Build it
-    /// holds no fact of is none. Must NOT happen: the executor of the Build's `node.config.update` told the
-    /// accepted Build names no create spec for a path the planner read in it (nothing written, the Build
-    /// failed).
-    #[tokio::test]
-    async fn a_log_that_is_its_own_record_answers_the_accepted_build_it_holds() {
-        let m = MemoryBuildStateAdapter::new();
-        let mut accepted = intent("b1");
-        let rpc: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
-        let mesh = accepted.topology.meshes.get_mut("mesh1").unwrap();
-        mesh.nodes.insert(rpc.clone());
-        let config = [("zone".to_string(), "a".to_string())].into_iter().collect();
-        mesh.set_spec(rdm_core::meta::NodeSpec { path: rpc.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: rdm_core::meta::PlacementMeta::default(), executable: None, tags: ["x".to_string()].into(), config }).unwrap();
-        m.publish_accepted(&accepted).await.unwrap();
-        let stored = m.stored_accepted(&accepted.build_id).await.unwrap();
-        assert_eq!(stored.as_ref(), Some(&accepted), "the accepted Build as the log holds it");
-        assert_eq!(stored.unwrap().topology, m.read_build(&accepted.build_id).await.unwrap().topology, "the topology the planner folds");
-        assert_eq!(m.stored_accepted(&intent("b9").build_id).await.unwrap(), None, "a Build the log holds no fact of");
-    }
 
     #[test]
     fn a_hand_off_chain_arriving_out_of_order_still_reaches_its_converged_attempt() {

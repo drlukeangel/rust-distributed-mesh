@@ -60,7 +60,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
             timeouts: Timeouts::default(),
         };
         let created = pipeline
-            .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .expect("the node is born");
         let node = created.node.clone();

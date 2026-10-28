@@ -119,7 +119,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         BuildOperation::SwitchStorage { .. } | BuildOperation::FinishStorage { .. } => fabric(),
         // A property applied in place is written by the node's mesh-primary, the one writer of its
         // mesh's rows (node-rpc-envelope.md "Node properties"; build.md §1), its own row included.
-        BuildOperation::UpdateConfig { node } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => mesh_executor(&node.mesh, None, t),
+        BuildOperation::UpdateConfig { node, .. } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => mesh_executor(&node.mesh, None, t),
     }
 }
 
@@ -187,7 +187,7 @@ pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::StartNode { node, .. }
         | BuildOperation::DeleteNode { node, .. }
-        | BuildOperation::UpdateConfig { node }
+        | BuildOperation::UpdateConfig { node, .. }
         | BuildOperation::CreateTags { node, .. }
         | BuildOperation::DeleteTags { node, .. } => node,
         BuildOperation::Step { step, .. } => step.node(),
@@ -706,7 +706,7 @@ mod tests {
     }
 
     fn create(n: &str) -> BuildOperation {
-        BuildOperation::CreateNode { node: n.parse().unwrap(), over: None, executable: None }
+        BuildOperation::CreateNode { node: n.parse().unwrap(), over: None, executable: None, entry: None }
     }
 
     fn who(op: &BuildOperation, t: &Topology) -> String {
@@ -728,7 +728,7 @@ mod tests {
     fn a_members_recovery_is_executed_by_its_mesh_primary_a_secondary_node_admins_included() {
         let recovery = |n: &str| {
             let (node, from) = (n.parse::<PathName>().unwrap(), crate::build::ExitedBirth { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint() });
-            [BuildOperation::DeleteLiveNode { node: node.clone(), exited: Some(from.clone()), birth: None }, BuildOperation::CreateNode { node, over: Some(from), executable: None }]
+            [BuildOperation::DeleteLiveNode { node: node.clone(), exited: Some(from.clone()), birth: None }, BuildOperation::CreateNode { node, over: Some(from), executable: None, entry: None }]
         };
         let recovered_by = |n: &str, t: &Topology| {
             let who: Vec<String> = recovery(n).iter().map(|op| who(op, t)).collect();
@@ -779,14 +779,14 @@ mod tests {
         assert_eq!(who(&BuildOperation::StopNode { node: p2.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &moved), m2, "once the seat moved, the new mesh primary executes the former holder's stop");
         let rename = |n: &str| {
             let node: PathName = n.parse().unwrap();
-            BuildOperation::Step { step: rdm_core::build::Step::Update { name: node.renamed(), node }, birth: None }
+            BuildOperation::Step { step: rdm_core::build::Step::Update { name: node.renamed(), node }, birth: None, entry: None }
         };
-        let make = |n: &str| BuildOperation::Step { step: rdm_core::build::Step::Create { node: n.parse().unwrap(), executable: None }, birth: None };
+        let make = |n: &str| BuildOperation::Step { step: rdm_core::build::Step::Create { node: n.parse().unwrap(), executable: None }, birth: None, entry: None };
         assert_eq!(who(&rename("mesh2.rpc.1"), &t), "mesh2.admin.1", "a Build's update of a member is its mesh primary's, the writer of its row");
         assert_eq!(who(&rename(m2), &t3), p2, "a Build's update of a non-primary admin is its mesh primary's");
         assert_eq!(who(&rename(p2), &moved), m2, "a Build's update of a former mesh primary after its node.connections.delete moved the seat is the new mesh primary's");
         assert_eq!(who(&make("mesh2.rpc.1"), &t), "mesh2.admin.1", "a Build's create, a replace successor's at the name its predecessor released, is node.create's executor");
-        let steps_connections = |n: &str| BuildOperation::Step { step: rdm_core::build::Step::DeleteConnections { node: n.parse().unwrap() }, birth: None };
+        let steps_connections = |n: &str| BuildOperation::Step { step: rdm_core::build::Step::DeleteConnections { node: n.parse().unwrap() }, birth: None, entry: None };
         assert_eq!(who(&steps_connections(p2), &t3), "", "a Build's node.connections.delete of a mesh primary waits for its seat to move");
         assert!(seat_move(&steps_connections(p2), &t3).is_some_and(|m| m.mesh_seat && !m.fabric_seat), "a Build's node.connections.delete of mesh2's primary moves its mesh seat first");
         assert_eq!(who(&steps_connections(p2), &moved), m2, "once the seat moved, the new mesh primary executes the Build's node.connections.delete");

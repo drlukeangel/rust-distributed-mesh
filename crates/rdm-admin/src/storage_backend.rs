@@ -292,6 +292,9 @@ pub struct TopologyStorageHandle {
     /// replacement installs it on the new provider's journal, which derives over each fact as the fact
     /// enters its log (its first read of the store root takes the facts the store holds).
     derivation: std::sync::Mutex<Option<crate::build_state::FactDerivation>>,
+    /// Whether the admin reads the Build records now (`LocalBuildLog::read_records_while`, Q227): a
+    /// replacement sets it on the new provider's journal.
+    records_reader: std::sync::Mutex<Option<crate::build_state::RecordsReader>>,
     /// One replacement at a time, and no connections open or derivation installed during one.
     replacing: tokio::sync::Mutex<()>,
     /// Told the provider the admin writes each time it moves to another.
@@ -312,6 +315,7 @@ impl TopologyStorageHandle {
             scope,
             names: Default::default(),
             derivation: Default::default(),
+            records_reader: Default::default(),
             replacing: tokio::sync::Mutex::new(()),
             provider_written: Default::default(),
             own_row: Default::default(),
@@ -459,6 +463,14 @@ impl TopologyStorageHandle {
             if let Some(derivation) = derivation {
                 boundaries.builds.derive_on_every_fact(derivation).await;
             }
+            // The new journal holds what the old one held: an admin that reads no Build record (Q227)
+            // takes none from the new provider's store, and the fabric-primary reads on from it.
+            let reader = self.records_reader.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(reader) = reader {
+                boundaries.builds.read_records_while(reader).await;
+            }
+            let held = self.current.read().stores().boundaries.builds.facts().await.map_err(|e| format!("the Build facts this admin holds could not be read for the provider moved onto: {e}"))?;
+            boundaries.builds.absorb_build(&held).await;
             // The own row in the data dir names the provider moved onto before the move answers, so a
             // start with no launcher opens it (storage.md §2 "The property").
             let own = self.own_row.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -665,9 +677,6 @@ impl crate::build_state::BuildStateAdapter for Through {
     async fn list_active(&self) -> Result<Vec<crate::build_state::BuildProjection>, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.list_active().await
     }
-    async fn stored_accepted(&self, build_id: &crate::build::BuildId) -> Result<Option<crate::build_state::BuildAccepted>, crate::build_state::BuildStateError> {
-        self.read().stores().boundaries.builds.stored_accepted(build_id).await
-    }
     async fn claim_attempt(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, crate::build_state::BuildStateError> {
         let w = self.write();
         w.boundaries.builds.claim_attempt(claim).await
@@ -742,6 +751,11 @@ impl LocalBuildLog for Through {
     }
     async fn held_current_build(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.held_current_build().await
+    }
+    async fn read_records_while(&self, reader: crate::build_state::RecordsReader) {
+        let _one = self.0.replacing.lock().await;
+        *self.0.records_reader.lock().unwrap_or_else(|e| e.into_inner()) = Some(reader.clone());
+        self.read().stores().boundaries.builds.read_records_while(reader).await
     }
 }
 
