@@ -1484,6 +1484,8 @@ impl DriveEnv {
                     // An attempt handed back to this admin that moved nothing (it ended incomplete: a
                     // participant lost, a proof not in) would be claimed again and end the same way: the
                     // Build stays in progress, and the next attempt waits for what it decides on to move.
+                    // The wait is named on its span, never framed to the caller (node-rpc-envelope.md:
+                    // Blocked's only source is the subject's Status `Blocked`).
                     if next == me {
                         if let (Some(before), Ok(ended)) = (before, self.builds.read_build(&id).await) {
                             let t = self.topology.read().await.clone();
@@ -1498,7 +1500,6 @@ impl DriveEnv {
                                 let why = format!(
                                     "{me}: attempt {attempt} of Build {id} ended incomplete and was handed back to this fabric-primary with nothing moved ({after}): the Build stays in progress and no next attempt is claimed until what it decides on moves"
                                 );
-                                self.blocked(drive, attempt, "", "incomplete", &why);
                                 drive.set_idle(Some(Idle { attempt, world: after, why: why.clone() }));
                                 return self.stalled(&me, drive, why);
                             }

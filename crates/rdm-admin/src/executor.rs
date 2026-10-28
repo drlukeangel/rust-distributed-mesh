@@ -654,13 +654,13 @@ impl BuildExecutor {
     /// not in. Its receipts stand and no terminal verdict is recorded. The attempt ends the way a run
     /// that stops at another executor's operation ends: handed to the fabric-primary of the view the
     /// run ends with, which claims the next attempt, and that attempt resumes from the receipts. The
-    /// Build stays in progress. The reason is the attempt's blocker, framed to the caller.
+    /// Build stays in progress. Nothing is framed to the caller (node-rpc-envelope.md: Blocked's only
+    /// source is the subject's Status `Blocked`): the reason is on the run's span.
     #[allow(clippy::too_many_arguments)]
     async fn hand_back(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, op: &BuildOperation, reason: String, span: &tracing::Span) -> Reconciled {
         span.record("incomplete", reason.as_str());
         let me = self.held_name().await;
         let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or(me);
-        builds.note_blocked(&build.build_id, None, attempt, &op.key(), "incomplete", &reason).await;
         tracing::info!(operation = %op.key(), reason = %reason, to = %to, "the operation ended incomplete: its receipts stand, the attempt is handed to the fabric-primary and the Build stays in progress");
         self.hand_off(builds, build, attempt, ran, to).await
     }
