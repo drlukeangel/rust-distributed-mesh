@@ -3315,3 +3315,10 @@ the lead (INDEX); node-start.md landed; the cell accepts the order, in lane 6's 
 Q249 (rdm#140: an executor whose replayed start is answered already-applied for a birth its view holds stopped clears
 the stop mark and publishes the clear) ruled A by the lead with the flame (INDEX); node-start.md landed; the code unit
 is the landing blocker, owed first. Lane 5 (rdm#87) rebases onto 9cd422ab2 and gates again; its own red is fixed in 43aafb405.
+
+Q252 (Q245's heal and a caller's own node.create: one failed create is created again by the next attempt; the same
+failure twice running ends the Build Failed { step, reason } naming the step and its concrete reason, never a stall Blocked
+incomplete, since build.create refuses BuildInProgress for as long as a Build sits in progress) ruled B by the lead with
+arch-1, decided by node-rpc-envelope.md:267, :1342, :1351 and :338 (INDEX); no page changes; built in rdm#152 (lane 3),
+which also brings Q250's section stall (build_drive.rs:1944) to the same terminal; the drive's nothing-moved stall
+(build_drive.rs:1512, a Blocked frame not from Status Blocked) is recorded in INDEX as owed.
