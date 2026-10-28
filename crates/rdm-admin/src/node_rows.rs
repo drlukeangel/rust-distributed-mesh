@@ -269,18 +269,6 @@ impl WrittenRows {
         let mut row = before.clone();
         let r = change(&mut row);
         let owes = self.owed.lock().unwrap().contains_key(node_id);
-        // A stored Deleted record is never written over (node-recovery.md: a birth that comes back after
-        // its re-creation is a deleted birth): the copy this writer holds may predate the delete, so a
-        // write of a live record reads the stored one first and leaves a Deleted one as it stands.
-        if !new && row != before && row.status != NodeStatus::Deleted {
-            let stored = storage.node(node_id).await.map_err(|e| format!("the record of {node_id} could not be read before its write: {e}"))?;
-            if let Some(stored) = stored.filter(|s| s.status == NodeStatus::Deleted) {
-                tracing::info_span!("rdm.node_admin.node.update.via-node-row", subject = %stored.name, node_id = %node_id, outcome = "deleted-stands")
-                    .in_scope(|| tracing::info!("the stored record is Deleted: it is left as it stands, and this writer's copy is the stored record from now on"));
-                self.hold(&stored);
-                return Ok(None);
-            }
-        }
         if row != before || owes || new {
             self.put(storage, &row).await.map_err(|e| format!("nodes.storage refused the record of {node_id}: {e}"))?;
         }

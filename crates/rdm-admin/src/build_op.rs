@@ -581,14 +581,14 @@ impl BuildDoor {
         // Served to a remote fabric-primary, a run's receipts go up this stream and the fabric-primary
         // writes them, a topology attempt's as a mesh's drift attempt's (build.md: the fabric-primary
         // writes every Build record; Q118), while this admin is not the fabric-primary: a run whose
-        // own node.primary.update seats this admin writes its own from then on. A drift attempt is run
+        // own node.primary.update makes this admin the fabric-primary writes its own from then on. A drift attempt is run
         // in its mesh, numbered there.
         let served = match mesh.as_deref() {
             lane if !held_at_start => {
                 let (seats, node_id, incarnation) = (self.seats.clone(), self.env.door.node_id.clone(), self.incarnation.clone());
-                let not_seated: crate::build_run::NotSeated = Arc::new(move || !seats.fabric().is_some_and(|h| h.is_birth(&node_id, &incarnation)));
+                let not_fabric_primary: crate::build_run::NotFabricPrimary = Arc::new(move || !seats.fabric().is_some_and(|h| h.is_birth(&node_id, &incarnation)));
                 self.run
-                    .attempt_run_reporting(lane, &id, attempt, &executor, &context, &intent, &plan, not_seated)
+                    .attempt_run_reporting(lane, &id, attempt, &executor, &context, &intent, &plan, not_fabric_primary)
                     .await
             }
             lane => {

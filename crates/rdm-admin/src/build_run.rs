@@ -66,7 +66,7 @@ struct RunState {
 }
 
 /// Whether the admin a run reports from is still not the fabric-primary ([`RunLog::report`]).
-pub type NotSeated = Arc<dyn Fn() -> bool + Send + Sync>;
+pub type NotFabricPrimary = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// What one run of one attempt has produced: the frames every call attached to it reads.
 pub struct RunLog {
@@ -78,9 +78,9 @@ pub struct RunLog {
     /// record): its receipts go up the stream in each `Step`, and the fabric-primary writes them; this
     /// admin writes no Build record of it while it is not the fabric-primary itself.
     reporting: std::sync::atomic::AtomicBool,
-    /// Whether this admin is still not the fabric-primary: a run whose executor takes the fabric seat
+    /// Whether this admin is still not the fabric-primary: a run whose executor becomes the fabric-primary
     /// during it (its own node.primary.update) writes its own records from then on.
-    not_seated: Mutex<Option<NotSeated>>,
+    not_fabric_primary: Mutex<Option<NotFabricPrimary>>,
 }
 
 impl RunLog {
@@ -91,21 +91,21 @@ impl RunLog {
             state: Mutex::new(RunState::default()),
             wake: Notify::new(),
             reporting: Default::default(),
-            not_seated: Mutex::new(None),
+            not_fabric_primary: Mutex::new(None),
         })
     }
 
     /// This run reports its receipts up the stream (an attempt served to a remote fabric-primary) while
-    /// `not_seated` holds: while this admin is not the fabric-primary.
-    pub fn report(&self, not_seated: Option<NotSeated>) {
-        *self.not_seated.lock().unwrap() = not_seated;
+    /// `not_fabric_primary` holds: while this admin is not the fabric-primary.
+    pub fn report(&self, not_fabric_primary: Option<NotFabricPrimary>) {
+        *self.not_fabric_primary.lock().unwrap() = not_fabric_primary;
         self.reporting
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Whether this run reports its receipts up the stream instead of writing them.
     pub fn reporting(&self) -> bool {
-        self.reporting.load(std::sync::atomic::Ordering::SeqCst) && self.not_seated.lock().unwrap().as_ref().is_none_or(|still| still())
+        self.reporting.load(std::sync::atomic::Ordering::SeqCst) && self.not_fabric_primary.lock().unwrap().as_ref().is_none_or(|still| still())
     }
 
     /// A step's `Complete` receipt is durable: its frame. A repeat of a step already framed is
@@ -684,7 +684,7 @@ impl RunDoor {
     /// [`Self::attempt_run_in`] for an attempt served to a remote fabric-primary, a topology attempt
     /// (`lane` `None`) or a mesh's drift attempt (Q118; build.md: the fabric-primary writes every Build
     /// record): the run reports its receipts up the stream and writes no Build record of its own while
-    /// `not_seated` holds.
+    /// `not_fabric_primary` holds.
     #[allow(clippy::too_many_arguments)]
     pub async fn attempt_run_reporting(
         &self,
@@ -695,12 +695,12 @@ impl RunDoor {
         context: &CallContext,
         intent: &[Vec<u8>],
         plan: &RunPlan,
-        not_seated: NotSeated,
+        not_fabric_primary: NotFabricPrimary,
     ) -> Attached {
         self.serve(
             None,
             lane,
-            Some(not_seated),
+            Some(not_fabric_primary),
             build_id,
             attempt,
             executor,
@@ -743,7 +743,7 @@ impl RunDoor {
         &self,
         under: Option<&crate::stop_gate::Turn>,
         lane: Option<&str>,
-        reporting: Option<NotSeated>,
+        reporting: Option<NotFabricPrimary>,
         build_id: &BuildId,
         attempt: u32,
         executor: &str,
@@ -797,7 +797,7 @@ impl RunDoor {
         &self,
         under: Option<&crate::stop_gate::Turn>,
         lane: Option<&str>,
-        reporting: Option<NotSeated>,
+        reporting: Option<NotFabricPrimary>,
         build_id: &BuildId,
         attempt: u32,
         executor: &str,
@@ -847,8 +847,8 @@ impl RunDoor {
             let (replay, reader) = log.attach();
             return Attached::Live { disposition: Disposition::Reattached, replay, reader };
         }
-        if let Some(not_seated) = reporting {
-            log.report(Some(not_seated));
+        if let Some(not_fabric_primary) = reporting {
+            log.report(Some(not_fabric_primary));
         }
         let reader = log.reader();
         // The run's turn of the admin's gate: under the drive pass that dispatched it here, begun now;

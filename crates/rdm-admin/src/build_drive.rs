@@ -1888,8 +1888,8 @@ impl DriveEnv {
             self.verdicts.record(receipt).await;
             return;
         }
-        // An attempt has one verdict: one its executor wrote itself (a run served when it held the
-        // fabric seat) is the attempt's, and nothing is written again.
+        // An attempt has one verdict: one its executor wrote itself (a run served when it was the
+        // fabric-primary) is the attempt's, and nothing is written again.
         let decided = self.builds.facts().await.map(|facts| facts.iter().any(|f| matches!(f, crate::build_state::BuildFact::Attempt(a) if a.build_id == receipt.build_id && a.attempt == receipt.attempt && a.mesh.is_none())));
         if matches!(decided, Ok(true)) {
             return;
