@@ -180,11 +180,17 @@ fn serve_count(b: ServerBuilder, produced: Arc<AtomicU64>, caller_gone: Arc<Atom
 }
 
 async fn rig() -> Rig {
+    rig_serving(true).await
+}
+
+/// A rig whose node serves Count when `count` is set, and no op of its own otherwise.
+async fn rig_serving(count: bool) -> Rig {
     let produced = Arc::new(AtomicU64::new(0));
     let caller_gone = Arc::new(AtomicU64::new(0));
     let finished = Arc::new(tokio::sync::Notify::new());
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-    let server = serve_count(ServerBuilder::new(), produced.clone(), caller_gone.clone(), finished.clone())
+    let builder = if count { serve_count(ServerBuilder::new(), produced.clone(), caller_gone.clone(), finished.clone()) } else { ServerBuilder::new() };
+    let server = builder
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let stats = server.stats();
@@ -340,6 +346,53 @@ async fn a_handler_that_panics_after_started_leaves_the_caller_indeterminate() {
     }
     assert!(matches!(last, Some(StreamItem::Failed(StreamFailure::Indeterminate(IndeterminateReason::Reset(423))))), "{last:?}");
     assert!(in_flight_reaches_zero(&r.stats).await);
+}
+
+/// CONTRACT: a stream to a node that does not serve its op opens (its request frame is written
+/// before the node's `421 UNSERVED_OP` arrives), and its first item is the definitive unserved failure
+/// naming the op: the outcome a unary call gets for the same reset (node-rpc.md §23, §40), nothing
+/// dispatched. The caller's call span keeps `outcome=stream-open` and records `code=UNIMPLEMENTED
+/// detail=unserved-op`. Must NOT happen: the 421 read as a lost stream (`Indeterminate`, `UNKNOWN`,
+/// `reset`). Its trace: the cell's root span, the call span under it.
+#[test]
+fn a_stream_to_a_node_that_does_not_serve_its_op_fails_unserved_on_its_first_item() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-stream-unserved").expect("the cell's evidence file can be created");
+    let (trace, first, after, unserved, dispatched) = capture.run(2, async {
+        let root = tracing::info_span!("rdm.test.stream.reject.via-unserved-op");
+        let trace = crate::delivery::trace_of(&root);
+        let (first, after, unserved, dispatched) = tracing::Instrument::instrument(
+            async {
+                let r = rig_serving(false).await;
+                let (mut s, _) = r
+                    .client
+                    .call_stream::<Count>(&r.target, &count(1, 8, Mode::Normal), &CallOptions::default())
+                    .await
+                    .unwrap_or_else(|(out, _)| panic!("the request is written whole before the 421 arrives, so the stream opens; it ended {} {}", out.name(), out.detail_name()));
+                let first = s.next().await;
+                let after = s.next().await;
+                drop(s);
+                (first, after, ServerStats::get(&r.stats.unserved), ServerStats::get(&r.stats.dispatched))
+            },
+            root,
+        )
+        .await;
+        (trace, first, after, unserved, dispatched)
+    });
+    let Some(StreamItem::Failed(failure)) = &first else { panic!("the first item is the stream's failure: {first:?}") };
+    assert_eq!(failure.code(), rdm_core::outcome::Code::Unimplemented, "a 421 is the definitive unserved outcome, as unary's: {failure:?}");
+    assert_eq!(format!("{failure:?}"), format!("Unserved(Unserved {{ op: {} }})", Count::OP), "the failure names the unserved op");
+    assert!(after.is_none(), "nothing follows the definitive failure: {after:?}");
+    assert_eq!((unserved, dispatched), (1, 0), "the node answered 421 and dispatched nothing");
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let calls: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.update.via-call" && s["trace_id"] == trace.as_str()).collect();
+    assert_eq!(calls.len(), 1, "one call span in the cell's trace: {calls:#?}");
+    let a = &calls[0]["attributes"];
+    assert_eq!(
+        (a["op"].as_str(), a["outcome"].as_str(), a["code"].as_str(), a["detail"].as_str()),
+        (Some(Count::OP.to_string().as_str()), Some("stream-open"), Some("UNIMPLEMENTED"), Some("unserved-op")),
+        "the call span: {a}"
+    );
+    println!("stream unserved flame: {}", crate::delivery::flame(&trace));
 }
 
 /// CONTRACT: a stream's end is a step of its serve: the terminal frame the runtime writes once the
