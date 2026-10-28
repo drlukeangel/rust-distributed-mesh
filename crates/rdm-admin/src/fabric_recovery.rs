@@ -238,13 +238,16 @@ pub struct FabricRecoveryDoor {
     launched_at_new_path: bool,
     /// The birth whose workflow runs here now.
     running: Mutex<Option<crate::model::IncarnationId>>,
+    /// The admin's stop gate: the workflow is work a stop deletes with the birth
+    /// ([`crate::stop_gate::StopGate::until_stopped`]), ended where it stands at this admin's stop.
+    gate: crate::stop_gate::StopGate,
 }
 
 impl FabricRecoveryDoor {
     /// A door for the admin these name.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(me: PathName, me_id: NodeId, topology: Arc<tokio::sync::RwLock<Topology>>, digest_view: DigestView, records: Arc<crate::admin::Records>, looker: crate::seat_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot, launched_to_recover: bool) -> Self {
-        Self { me, me_id, topology, digest_view, records, looker, recovery, handover, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None) }
+    pub fn new(me: PathName, me_id: NodeId, topology: Arc<tokio::sync::RwLock<Topology>>, digest_view: DigestView, records: Arc<crate::admin::Records>, looker: crate::seat_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot, launched_to_recover: bool, gate: crate::stop_gate::StopGate) -> Self {
+        Self { me, me_id, topology, digest_view, records, looker, recovery, handover, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None), gate }
     }
 
     /// This door's admin is the adoption launch under an in-force fabric.delete, at its own new path.name
@@ -300,7 +303,10 @@ impl FabricRecoveryDoor {
     }
 
     /// The workflow for the fabric-primary record `target`, pass by pass until the node at its path.name
-    /// is restored, the record names a heard holder, or this admin no longer runs it.
+    /// is restored, the record names a heard holder, or this admin no longer runs it. This admin's stop
+    /// ends it where it stands, a look or a submit in flight included: a stopping node takes no new
+    /// lifecycle step, and a signal's stop ends its process. After a start the seat watch's next turn decides
+    /// again whether it runs here.
     async fn run(self: &Arc<Self>, target: Primary) {
         let me = self.held_name();
         let span = tracing::info_span!(
@@ -313,7 +319,12 @@ impl FabricRecoveryDoor {
             restored = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
-        let outcome = self.run_in(&span, &target).instrument(span.clone()).await;
+        let (door, of) = (self.clone(), span.clone());
+        let outcome = self
+            .gate
+            .until_stopped(async move { door.run_in(&of, &target).instrument(of.clone()).await })
+            .await
+            .unwrap_or_else(|| format!("{me}'s stop ended it where it stood"));
         span.record("outcome", outcome.as_str());
         span.in_scope(|| tracing::info!("fabric recovery ended at this admin"));
     }

@@ -248,7 +248,8 @@ pub async fn run(w: Watch) {
                         // The holder this watch said unreachable: held off ready in its eyes
                         // until this digest, as `watch_marked` holds a marked birth.
                         let n = Node { status: NodeStatus::PendingReconnect, ..n.clone() };
-                        tokio::spawn(async move { heard_again.command(&n, &incarnation).await; });
+                        // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
+                        tokio::spawn(w.gate.until_stopped(async move { heard_again.command(&n, &incarnation).await; }));
                     }
                 }
             }
@@ -304,9 +305,11 @@ pub async fn run(w: Watch) {
                 (Finding::Reached { .. }, _, _) => false,
                 (_, Some(recovery), Some(inspected)) if !node.is_fabric_primary && view.is_fabric_primary(&me_birth.0) && (node.is_primary || was_mesh_primary(&node)) => {
                     let (node, topology, me_id, digest_view) = (node.clone(), w.topology.clone(), me_birth.0.clone(), w.topology_view.digest_view.clone());
-                    tokio::spawn(async move {
+                    // Owed until opened, and ended at this admin's stop where it stands (the stop gate's
+                    // `until_stopped`): a stopping node takes no new lifecycle step.
+                    tokio::spawn(w.gate.until_stopped(async move {
                         submit_recovery(&node, || recovery.submit(&node, &inspected), &topology, &digest_view, &me_id, read_at).await;
-                    });
+                    }));
                     true
                 }
                 _ => false,

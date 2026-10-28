@@ -161,7 +161,8 @@ impl Running {
 
     /// Stop on this process's signal (i146 Q55; node-stop.md steps 2-4), this admin its own subject: the
     /// one stop sequence an rpc node's signal runs ([`crate::node_self::NodeSelf::stop_on_signal`]). The
-    /// Build executor stops first (an attempt it was running is continued by the Build's next attempt).
+    /// Build executor, every Build's drive and every attempt run this admin executes stop first
+    /// ([`Self::stop_reconciling`]; an attempt it was running is continued by the Build's next attempt).
     /// Then the whole `node.connections.delete { All }` under the birth's bound, its connections-deleting
     /// owed to its mesh-primary; its tasks held; its last mesh topology before the cut carrying itself
     /// Leaving when it is its mesh's primary; `node.mesh.leave`, its own mesh and the backbone left and
@@ -171,7 +172,7 @@ impl Running {
     /// each call this node answered settled with its caller, the transport closed.
     pub async fn leave(self) {
         self.pre_node_ready_cancel.cancel();
-        self.executor.abort();
+        self.stop_reconciling().await;
         let _ = self.node_self.stop_on_signal().await;
         self.leave_with(false).await;
     }
@@ -182,6 +183,7 @@ impl Running {
     /// stopped reply produced.
     pub async fn leave_after_stop(self) {
         self.pre_node_ready_cancel.cancel();
+        self.stop_reconciling().await;
         self.leave_with(true).await
     }
 
@@ -200,10 +202,19 @@ impl Running {
         }
         tracing::info_span!("rdm.mesh.node.update.via-leave-tasks", node = %me, aborted, elapsed_ms = started.elapsed().as_millis() as u64, outcome = "aborted").in_scope(|| tracing::info!("the node's tasks are aborted"));
         let started = std::time::Instant::now();
-        let span = tracing::info_span!("rdm.mesh.node.update.via-leave-shutdown", node = %me, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.mesh.node.update.via-leave-shutdown", node = %me, elapsed_ms = tracing::field::Empty, settled = tracing::field::Empty, unsettled = tracing::field::Empty, outcome = tracing::field::Empty);
         // Every call this node answered is settled with its caller before the transport closes:
-        // a close takes an unacknowledged reply down with the connection.
-        self.rpc_server.settled().instrument(span.clone()).await;
+        // a close takes an unacknowledged reply down with the connection. The wait is the birth's bound
+        // (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`: how long in-flight handlers may finish before the node
+        // leaves; node-rpc.md §35): a handler still running at it, its call never answered, holds the
+        // leave no longer, and the span names each such call.
+        let bound = self.node_self.connections_delete_deadline;
+        if tokio::time::timeout(bound, self.rpc_server.settled()).instrument(span.clone()).await.is_ok() {
+            span.record("settled", "settled");
+        } else {
+            span.record("settled", "deadline");
+            span.record("unsettled", self.rpc_server.unsettled().join(",").as_str());
+        }
         let r = self.router.shutdown().instrument(span.clone()).await;
         span.record("elapsed_ms", started.elapsed().as_millis() as u64);
         span.record("outcome", if r.is_ok() { "closed" } else { "refused" });
@@ -2492,6 +2503,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         recovery.clone(),
                                                         handover_slot.clone(),
                                                         cfg.fabric_primary || cfg.adopt.is_some(),
+                                                        stop_gate.clone(),
                                                     )
                                                     .adopted_at_new_path(adoption_claim.as_ref().is_some_and(|c| c.under_delete.is_some())),
                                                 );
@@ -2680,7 +2692,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                 n.status = NodeStatus::PendingReconnect;
                                                             }
                                                             if let Some(incarnation) = n.incarnation_id.clone() {
-                                                                tokio::spawn(async move { heard_again.command(&n, &incarnation).await; });
+                                                                // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
+                                                                tokio::spawn(stop.until_stopped(async move { heard_again.command(&n, &incarnation).await; }));
                                                             }
                                                         }
                                                     }
@@ -2708,7 +2721,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                 n.status = NodeStatus::PendingReconnect;
                                                             }
                                                             if let Some(incarnation) = n.incarnation_id.clone() {
-                                                                tokio::spawn(async move { heard_again.command(&n, &incarnation).await; });
+                                                                // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
+                                                                tokio::spawn(stop.until_stopped(async move { heard_again.command(&n, &incarnation).await; }));
                                                             }
                                                         }
                                                     }
@@ -2772,13 +2786,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     if let (true, Some(callers)) = (holds_seat, control_atlas.callers().cloned()) {
                                                         for d in recovery.digest_view.returned_births().into_iter().filter(|d| d.node.name.mesh == mesh) {
                                                             let (recovery, callers, atlas) = (recovery.clone(), callers.clone(), control_atlas.clone());
-                                                            tokio::spawn(async move {
+                                                            // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
+                                                            tokio::spawn(stop.until_stopped(async move {
                                                                 if let Some((_, outcome)) = callers.decide(&atlas, "digest", &d.node.node_id, &d.node.incarnation).await {
                                                                     if outcome == "terminate-reported" || outcome.starts_with("mesh-join:") {
                                                                         recovery.digest_view.returned_reported(d.node.node_id.as_str(), d.node.incarnation.as_str());
                                                                     }
                                                                 }
-                                                            });
+                                                            }));
                                                         }
                                                     }
                                                 }

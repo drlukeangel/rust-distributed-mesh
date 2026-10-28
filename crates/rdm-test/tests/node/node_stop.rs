@@ -1660,4 +1660,122 @@ async fn a_signal_stops_last_span_is_in_the_evidence_on_tmpfs_and_kept_when_the_
     drop(estate);
     assert!(!evidence.exists(), "the estate's root is removed when it ends");
     assert_eq!(std::fs::read_to_string(kept.join(&file)).ok().as_deref(), Some(written.as_str()), "the kept {file} is the evidence file whole");
+
+/// The signal stop of `node` its evidence names, by the closed spans of its leave: its `via-leave-tasks`
+/// and `via-leave-shutdown` (each naming the node) and the `rdm.mesh.node.delete.via-signal` span both are
+/// children of, which closes as the process ends; `None` until all three are written.
+fn signal_stop_of<'a>(spans: &'a [Value], node: &str) -> Option<(&'a Value, &'a Value, &'a Value)> {
+    let shutdown = named(spans, "rdm.mesh.node.update.via-leave-shutdown").into_iter().find(|sp| attr(sp, "node") == node)?;
+    let tasks = named(spans, "rdm.mesh.node.update.via-leave-tasks").into_iter().find(|sp| attr(sp, "node") == node && sp["parent_span_id"] == shutdown["parent_span_id"])?;
+    let signal = named(spans, "rdm.mesh.node.delete.via-signal").into_iter().find(|sp| sp["span_id"] == shutdown["parent_span_id"] && sp["trace_id"] == shutdown["trace_id"])?;
+    Some((signal, tasks, shutdown))
+}
+
+/// CONTRACT (node-identity-and-state.md §4: "Shutdown is signal-driven. SIGINT and SIGTERM run the node's own
+/// stop steps"; node-stop.md steps 2-4; node-mesh-leave.md Progress: "the node publishes nothing in that state
+/// and nothing after it"; stop_gate.rs: work a stop deletes with the birth "ends at the stop and never
+/// resumes"): mesh1's other node-admin, isolated (every datagram to or from its port dropped) while the
+/// fabric-primary runs, runs fabric recovery's own-mesh arm on the unheard fabric-primary: its node
+/// investigation reaches nobody, goes to the provider and reads it `running`, so the arm stays open and looks
+/// again a floor on. The isolated admin then receives SIGTERM. Its arm ends at its stop, by name, before its
+/// leave aborts its tasks, and no recovery is admitted by it after its signal stop began. Must NOT happen: the
+/// arm outliving the stop (its span never written), or a `via-recovery` of the fabric-primary opened by the
+/// stopping admin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_and_admits_no_recovery() {
+    use rdm_test::netfault::{udp_ports, Partition};
+    let test = "a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_and_admits_no_recovery";
+    let fp = "mesh1.admin.1";
+    let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &shape).await;
+    estate.settles_to(&shape, SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
+    let nodes = estate.node_values().await;
+    let holder = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
+    assert_eq!(s(&holder["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
+    let fp_id = s(&holder["node_id"]);
+    let victim = s(&nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["name"] != fp).expect("mesh1's other node-admin")["name"]);
+    let victim_pid = estate.pid_of(&victim).await;
+    let cut = match Partition::isolate(&udp_ports(&nodes, &[victim.clone()])) {
+        Ok(p) => p,
+        Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
+            eprintln!("SKIPPED by name: the host cannot drop {victim}'s UDP: {why}");
+            estate.stop().await;
+            return;
+        }
+        Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
+    };
+    let cut_at = unix_nanos();
+    // The own-mesh arm is open: its node investigation of the fabric-primary reached nobody and went to the
+    // provider, which reads the running fabric-primary `running`; the arm looks again a floor on.
+    let floor = rdm_transport::topology::staleness_floor();
+    wait_for(&format!("{victim}'s own-mesh arm reads {fp} running through the provider"), floor * 6 + Duration::from_secs(60), || async {
+        named(&estate.spans(), "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| start_ns(sp) >= cut_at && attr(sp, "inspector") == victim && attr(sp, "node_id") == fp_id && attr(sp, "verdict") == "running").map(|_| ())
+    })
+    .await;
+    assert!(std::process::Command::new("kill").args(["-TERM", &victim_pid.to_string()]).status().unwrap().success(), "kill -TERM {victim_pid}");
+    // Its own stop's three spans written: the stop ran to its end and the process left.
+    let (signal, tasks, _) = wait_for(&format!("{victim} leaves by its own signal stop"), Duration::from_secs(60), || async {
+        let spans = estate.spans();
+        signal_stop_of(&spans, &victim).map(|(a, b, c)| (a.clone(), b.clone(), c.clone()))
+    })
+    .await;
+    drop(cut);
+    estate.stop().await;
+    let spans = estate.spans();
+    let stop_began = named(&spans, "rdm.node_admin.connection.delete.via-stop").into_iter().find(|sp| attr(sp, "node") == victim && attr(sp, "operation") == "signal" && sp["trace_id"] == signal["trace_id"]).map(start_ns).unwrap_or_else(|| panic!("{victim}'s signal stop began with its connections delete: {signal}"));
+    let arm = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().find(|sp| attr(sp, "node") == victim && start_ns(sp) >= cut_at).cloned().unwrap_or_else(|| panic!("{victim}'s fabric recovery arm, open at its signal, ended and was written before its process left"));
+    assert!(end_ns(&arm) <= start_ns(&tasks), "{victim}'s arm ended at its stop, before its leave aborted its tasks: arm {arm}, leave-tasks {tasks}");
+    assert!(attr(&arm, "outcome").contains("stop"), "the arm's end names the stop: {arm}");
+    let after: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "executor") == victim && start_ns(sp) >= stop_began).collect();
+    assert!(after.is_empty(), "{victim} opened no recovery after its signal stop began: {after:#?}");
+    estate.record_trace_url(&s(&signal["trace_id"]));
+}
+
+/// CONTRACT (node-rpc.md §35: "Handlers already running ... may finish ... In-flight work finishes under
+/// node.connections.delete's own rules; its receipt is ... `Deadline { last_in_flight, closed, held }` at its
+/// bound (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`)"; CLAUDE.md, that env var: the bound "on a signal stop alike:
+/// how long in-flight handlers may finish before the node leaves"): the fabric-primary serves mesh2's
+/// primary's claim of the drift attempt it opened for a killed mesh2 rpc node, and the testkit's
+/// claimed-attempt cut holds that claim, so the call it serves never ends. The fabric-primary receives
+/// SIGTERM. It leaves by its own signal stop within the bound's steps: its connections delete ends at the
+/// bound, its leave waits for the unsettled call at most the bound, names it, and closes, and its
+/// `via-signal` span is written as the process ends. Must NOT happen: the process held past its bound by the
+/// call it serves, ended only by the estate's kill with no `via-signal` written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fabric_primary_serving_a_held_claim_leaves_on_its_signal_within_the_bound() {
+    let test = "a_fabric_primary_serving_a_held_claim_leaves_on_its_signal_within_the_bound";
+    let fp = "mesh1.admin.1";
+    let bound = Duration::from_millis(3000);
+    let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
+    let sha = candidate_sha();
+    let mut estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[("RDM_CONNECTIONS_DELETE_DEADLINE_MS", "3000")]).await.expect("the faulted-admin binding set is accepted");
+    estate.reconcile_shape("fabric1", &shape).await;
+    estate.settles_to(&shape, SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
+    let fp_pid = estate.bootstrap_pid().expect("the Day-0 admin is the fabric-primary and the estate holds its pid") as u64;
+    let fp_door = Door::at(&estate, fp).await;
+    fp_door.arm("held-claim", serde_json::json!({"kind": "claimed-attempt"})).await;
+    // mesh2's primary reads its killed rpc node exited and submits its recovery; the fabric-primary opens the
+    // attempt, and mesh2's primary's claim of it is held at the fabric-primary.
+    estate.kill_node("mesh2.rpc.1").await;
+    let claimed = fp_door.wait_held("held-claim").await;
+    assert_eq!(s(&claimed["hit"]["executor"]), "mesh2.admin.1", "the held claim is mesh2's primary's, served by the fabric-primary: {claimed}");
+    let signalled = std::time::Instant::now();
+    assert!(std::process::Command::new("kill").args(["-TERM", &fp_pid.to_string()]).status().unwrap().success(), "kill -TERM {fp_pid}");
+    // The estate is the Day-0 admin's parent and reaps it only at its stop: an ended process is a zombie (`Z`).
+    let ended = |pid: u64| std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |st| st.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z')));
+    // The connections delete's bound, the declarations' bound and the leave's bound, and the steps between.
+    let within = bound * 3 + Duration::from_secs(8);
+    wait_for(&format!("{fp} ends by its own signal stop within {within:?} while the claim it serves is held"), within, || async { ended(fp_pid).then_some(()) }).await;
+    let ended_in = signalled.elapsed();
+    let killed = estate.stop().await;
+    assert!(!killed.contains(&(fp_pid as u32)), "{fp} left by its own stop, not the estate's kill: {killed:?}");
+    let spans = estate.spans();
+    let (signal, _, shutdown) = signal_stop_of(&spans, fp).unwrap_or_else(|| panic!("{fp}'s signal stop wrote its via-signal, leave-tasks and leave-shutdown spans as it ended ({ended_in:?} after its signal)"));
+    assert_eq!(attr(shutdown, "outcome"), "closed", "{fp}'s transport closed: {shutdown}");
+    assert!(!attr(shutdown, "unsettled").is_empty(), "the leave names the call it served that was still unsettled at its bound: {shutdown}");
+    println!("{fp} ended {ended_in:?} after its signal; leave-shutdown: {shutdown}");
+    estate.record_trace_url(&s(&signal["trace_id"]));
 }

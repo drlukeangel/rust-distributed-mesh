@@ -233,7 +233,8 @@ impl Drop for InFlight {
 #[derive(Default)]
 struct UnsettledReplies {
     next: AtomicU64,
-    open: std::sync::Mutex<std::collections::BTreeSet<u64>>,
+    /// Each unsettled call by its dispatch order, named `op <op> from <peer>`.
+    open: std::sync::Mutex<std::collections::BTreeMap<u64, String>>,
     changed: tokio::sync::watch::Sender<u64>,
 }
 
@@ -245,10 +246,10 @@ struct Unsettled {
 }
 
 impl Unsettled {
-    fn enter(replies: &Arc<UnsettledReplies>) -> Self {
+    fn enter(replies: &Arc<UnsettledReplies>, op: u8, peer: &iroh::PublicKey) -> Self {
         let mut open = replies.open.lock().unwrap();
         let seq = replies.next.fetch_add(1, Ordering::SeqCst);
-        open.insert(seq);
+        open.insert(seq, format!("op {op} from {}", peer.fmt_short()));
         Self { replies: replies.clone(), seq }
     }
 }
@@ -543,13 +544,19 @@ impl NodeRpcServer {
         let upto = replies.next.load(Ordering::SeqCst);
         let mut changed = replies.changed.subscribe();
         loop {
-            if replies.open.lock().unwrap().first().is_none_or(|first| *first >= upto) {
+            if replies.open.lock().unwrap().first_key_value().is_none_or(|(first, _)| *first >= upto) {
                 return;
             }
             if changed.changed().await.is_err() {
                 return;
             }
         }
+    }
+
+    /// The calls this server dispatched whose reply is not settled now, in dispatch order, each named
+    /// `op <op> from <peer>`: what a leave that stopped waiting at its bound names.
+    pub fn unsettled(&self) -> Vec<String> {
+        self.inner.replies.open.lock().unwrap().values().cloned().collect()
     }
 
     /// Hard-cut the connections this server accepted (`node.connections.delete`), closing each with
@@ -869,7 +876,7 @@ impl NodeRpcServer {
                     return;
                 };
                 stats.dispatched.fetch_add(1, Ordering::SeqCst);
-                let _unsettled = Unsettled::enter(&self.inner.replies);
+                let _unsettled = Unsettled::enter(&self.inner.replies, op, &peer);
                 // Bad or over-bound context is dropped here, named, and the call proceeds.
                 let (context, dropped) = request.context.sanitized();
                 if !dropped.is_empty() {
