@@ -3326,3 +3326,8 @@ Q253 (after a hand-back with nothing moved, when the next attempt is claimed) ru
 the wait as built is on a named world (the operation left, its receipts, its mesh's members, fabric ready), re-read every
 reconcile pass, reconstructed by a successor's one claim; builds.get shows Pending and the HandedOff receipt; no new field or
 frame; two cells owed to the lead (an unrelated mesh's change claims nothing; a successor claims once and waits).
+Q253 amended by Luke (2026-10-28, "I hate timers; make this event driven"): the reconcile pass runs on events only, a view
+install (`Records::view_tick`), a Build submitted or attempt opened, a fabric state change (a new watch); the 300 ms arm at
+boot.rs:3289 goes; rdm#164 in lane 7 (seat i143-164), RED cells on the loop's wait, then the fast gate and one exported
+R-shape flame counting passes per admin. The other timers (boot.rs:2288; the gossip cadences; investigate.rs's interval) are
+each their own question, the gossip ones with a flame first.
