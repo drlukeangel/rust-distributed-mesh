@@ -3342,3 +3342,10 @@ Deleted row is written by its mesh's one writer: the fabric-primary's explicit d
 write, it does not write that mesh's rows, and the new mesh-primary runs the delete on in the same attempt; R-OW1, mesh-delete.md
 resume steps 1 and 3; the 20543a306 regression). In flight: rdm#170 (lane 6, a stopped node's connections reconciler ends at the
 stop, states.md "Stopped nodes"); rdm#171 (lane 3, NodeRows::status takes the §4.3 writer check). Then the one-SHA tail.
+rdm#170 855de1e42 (a stopped node's reconciler ends at its stop), rdm#171 0a6030abd (one writer predicate for a node row's
+Deleted row and status, §4.3; mesh-delete step 7's writes decided by mesh-delete.md:52 and states.md:35), rdm#172 13230e8e6 (Q254 A:
+the admin view rebuild waits on events only, VIEW_POLL gone; idle rebuilds 4.8/s per admin -> 0). Recorded, not changed: three
+projection inputs with no local event ride the hierarchy turn's view install every gossip interval (boot.rs:3128), a gossip cadence
+and its own question with a flame; the pruner loop is watch_meshes at 250 ms (topology.rs:2867), Q254's "5 s sweep" is the
+staleness sweep's own cadence of marking, not the loop's. The tail at 855de1e42: fast GREEN, release 118 ok 0 FAIL; the export
+tail runs again at the tip after rdm#172.
