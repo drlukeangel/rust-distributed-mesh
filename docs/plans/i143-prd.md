@@ -3301,5 +3301,6 @@ Q239 (an os-stopped executor's unfinished attempt: `exited` and `os-stopped` are
 `unproven` are not; the next attempt is claimed and the mesh recovers) ruled A, narrowed, by the lead (INDEX);
 build.md:424 landed with the ruling; `DepartureProof::proven` and its RED cell are a code unit owed.
 Q241 (a renewed cert row's issued_at is the cert's own: `NodeCert` and `IssuingCert` carry `issued_ms`, the installer
-writes the cert's dates, never a clock; `durable format moved`) ruled A by the lead (INDEX); a code unit owed with its
-RED cells; the admit path reads the new field and checks nothing new.
+writes the cert's dates, never a clock; `durable format moved`) ruled A by Luke (INDEX): admit verifies the signed field and adds no
+clock-based rejection, renew_at derives from the cert's dates and the renewal inputs alone; a code unit owed with its
+RED cells and the marker.
