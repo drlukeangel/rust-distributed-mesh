@@ -16,7 +16,7 @@ lives on its own page; op fields and enums live only in the
 A mesh is ready when every planned exact member birth for the accepted
 Build that is not stopped is ready: a stopped birth is at rest by command (below), receives no
 traffic and holds neither its mesh nor a checklist (Q240). When every planned mesh is ready the fabric-primary sets the fabric
-ready-for-traffic (Q174); no node is commanded to open traffic and none checks in.
+ready (Q174); no node is commanded to open traffic and none checks in.
 Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 
 ## Who sets each state
