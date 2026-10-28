@@ -585,6 +585,9 @@ impl DeploymentProvider for FaultedProvider {
     fn launched(&self) -> Vec<DeploymentHandle> {
         self.inner.launched()
     }
+    fn exits(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.exits()
+    }
     async fn failure_detail(&self, handle: &DeploymentHandle, data_dir: &std::path::Path) -> String {
         self.inner.failure_detail(handle, data_dir).await
     }

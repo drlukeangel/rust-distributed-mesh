@@ -295,6 +295,8 @@ pub enum Woken {
     PeerMesh,
     /// A drive ended its Build (`Drives::subscribe_ended`).
     DriveEnded,
+    /// A runtime this admin's provider started exited (`DeploymentProvider::exits`).
+    ProviderExit,
 }
 
 impl Woken {
@@ -307,6 +309,7 @@ impl Woken {
             Self::FabricState => "fabric-state",
             Self::PeerMesh => "peer-mesh",
             Self::DriveEnded => "drive-ended",
+            Self::ProviderExit => "provider-exit",
         }
     }
 }
@@ -314,7 +317,8 @@ impl Woken {
 /// The reconcile loop's wait between two passes (Q253, amended by Luke 2026-10-28: "I hate timers;
 /// make this event driven"): the loop is `loop { wake.next().await; <pass> }`, and a pass runs on an
 /// event, never on a tick. Each event the pass decides on wakes it: a Build submitted, a view installed,
-/// the fabric state changed, the peer-mesh investigation moved, a drive ended its Build. An event during
+/// the fabric state changed, the peer-mesh investigation moved, a drive ended its Build, a runtime the
+/// admin's provider started exited (Q254). An event during
 /// a pass (the pass's own install among them) is held for the next: every source is marked seen as a
 /// pass begins, and the submit's notification is armed then, so a `notify_waiters` while the pass runs
 /// is not lost. The wait touches no lock.
@@ -326,20 +330,22 @@ pub struct ReconcileWake {
     fabric_state: tokio::sync::watch::Receiver<crate::fabric_state::FabricState>,
     peer_mesh: tokio::sync::watch::Receiver<u64>,
     drive_ended: tokio::sync::watch::Receiver<u64>,
+    provider_exit: tokio::sync::watch::Receiver<u64>,
 }
 
 impl ReconcileWake {
     /// The wait over a Build submitted (`submitted`), a view installed (`view`), a fabric state change
-    /// (`fabric_state`), a move of the peer-mesh investigation (`peer_mesh`) and a drive's end
-    /// (`drive_ended`).
+    /// (`fabric_state`), a move of the peer-mesh investigation (`peer_mesh`), a drive's end
+    /// (`drive_ended`) and an exit the provider saw (`provider_exit`).
     pub fn new(
         submitted: Arc<tokio::sync::Notify>,
         view: tokio::sync::watch::Receiver<u64>,
         fabric_state: tokio::sync::watch::Receiver<crate::fabric_state::FabricState>,
         peer_mesh: tokio::sync::watch::Receiver<u64>,
         drive_ended: tokio::sync::watch::Receiver<u64>,
+        provider_exit: tokio::sync::watch::Receiver<u64>,
     ) -> Self {
-        Self { submitted, armed: None, view, fabric_state, peer_mesh, drive_ended }
+        Self { submitted, armed: None, view, fabric_state, peer_mesh, drive_ended, provider_exit }
     }
 
     /// Wait for the next pass's event: the first pass begins at once. Every source is marked seen and
@@ -354,6 +360,7 @@ impl ReconcileWake {
                 Ok(()) = self.fabric_state.changed() => Woken::FabricState,
                 Ok(()) = self.peer_mesh.changed() => Woken::PeerMesh,
                 Ok(()) = self.drive_ended.changed() => Woken::DriveEnded,
+                Ok(()) = self.provider_exit.changed() => Woken::ProviderExit,
             },
         };
         let mut armed = Box::pin(self.submitted.clone().notified_owned());
@@ -363,6 +370,7 @@ impl ReconcileWake {
         self.fabric_state.mark_unchanged();
         self.peer_mesh.mark_unchanged();
         self.drive_ended.mark_unchanged();
+        self.provider_exit.mark_unchanged();
         woken
     }
 }

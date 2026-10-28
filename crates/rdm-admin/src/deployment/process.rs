@@ -72,6 +72,8 @@ pub struct ProcessDeploymentProvider {
     /// Children this provider started. A watcher thread per child waits on
     /// it, so an exit is reaped at once (no zombie) and its code recorded.
     children: std::sync::Arc<Mutex<HashMap<u32, Launched>>>,
+    /// Moves each time a child's watcher reaps its exit ([`DeploymentProvider::exits`]).
+    exits: std::sync::Arc<tokio::sync::watch::Sender<u64>>,
     /// This host's boot and pid namespace.
     domain: String,
     failpoints: Failpoints,
@@ -86,7 +88,7 @@ impl Default for ProcessDeploymentProvider {
 impl ProcessDeploymentProvider {
     /// A provider with no children.
     pub fn new() -> Self {
-        Self { children: Default::default(), domain: process_control_domain().unwrap_or_else(|e| format!("process:unknown:{e}")), failpoints: Failpoints::default() }
+        Self { children: Default::default(), exits: std::sync::Arc::new(tokio::sync::watch::Sender::new(0)), domain: process_control_domain().unwrap_or_else(|e| format!("process:unknown:{e}")), failpoints: Failpoints::default() }
     }
 
     /// A provider whose executor is lost the instant a child exists ([`Failpoints::lost_after_spawn`]).
@@ -364,7 +366,7 @@ fn spawn_gated(_: &mut std::process::Command, _: impl FnOnce(u32) -> Result<(), 
 }
 
 /// [`ProcessDeploymentProvider::spawn`] on the blocking pool: the launch's pid and start token.
-fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<HashMap<u32, Launched>>>, failpoints: &Failpoints) -> Result<(u32, Option<u64>), DeployError> {
+fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<HashMap<u32, Launched>>>, exits: &std::sync::Arc<tokio::sync::watch::Sender<u64>>, failpoints: &Failpoints) -> Result<(u32, Option<u64>), DeployError> {
     let err = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason };
     std::fs::create_dir_all(&spec.data_dir).map_err(|e| err(format!("data dir {}: {e}", spec.data_dir.display())))?;
     let log = |name: &str| {
@@ -425,7 +427,7 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
     let pid = child.id();
     failpoints.after_spawn(pid).map_err(err)?;
     children.lock().unwrap().insert(pid, Launched { deployment_id: spec.deployment_id.clone(), start, exit: None });
-    let children = children.clone();
+    let (children, _exits) = (children.clone(), exits.clone());
     std::thread::Builder::new()
         .name(format!("reap-{pid}"))
         .spawn(move || {
@@ -483,14 +485,18 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         ProviderKind::Process
     }
 
+    fn exits(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.exits.subscribe()
+    }
+
     fn control_domain(&self) -> String {
         self.domain.clone()
     }
 
     /// The data dir, logs, records and the fork run on the blocking pool (`blocking::blocking_io`).
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
-        let (owned, children, failpoints) = (spec.clone(), self.children.clone(), self.failpoints.clone());
-        let (pid, start) = crate::blocking::blocking_io(move || spawn_on_disk(&owned, &children, &failpoints)).await?;
+        let (owned, children, exits, failpoints) = (spec.clone(), self.children.clone(), self.exits.clone(), self.failpoints.clone());
+        let (pid, start) = crate::blocking::blocking_io(move || spawn_on_disk(&owned, &children, &exits, &failpoints)).await?;
         // The pipeline registers this exact handle and makes its runtime fact
         // available to the birth (`MakeRuntimeFactAvailableToBirth`).
         Ok(self.handle(spec.deployment_id.clone(), pid, start))
@@ -954,5 +960,22 @@ mod tests {
         let h = h.unwrap();
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(p.terminate(&h, TerminationMode::Immediate)).unwrap();
         assert!(waited, "the spawn finished on the runtime's thread while the blocking pool was held");
+    }
+
+    /// CONTRACT (Q254: a provider exit is an event the reconcile loop wakes on): the exit of a runtime this
+    /// provider started, killed from outside, moves its exits watch once its watcher reaps it, and nothing
+    /// moves it while the runtime runs.
+    /// Must NOT happen: an exit the reconcile loop never hears of, read only on a tick.
+    #[tokio::test]
+    async fn the_exit_of_a_runtime_this_provider_started_moves_its_exits_watch() {
+        let dir = crate::test_support::tempdir("process-exits-watch");
+        let p = ProcessDeploymentProvider::new();
+        let mut exits = p.exits();
+        let h = p.spawn(&launch(&dir)).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(300), exits.changed()).await.is_err(), "nothing moves while the runtime runs");
+        assert!(signal(h.pid.expect("a pid"), libc::SIGKILL), "the runtime was alive to kill");
+        tokio::time::timeout(Duration::from_secs(5), exits.changed()).await.expect("the exit never moved the watch").expect("the provider lives");
+        assert!(matches!(p.inspect(&h).await, DeploymentStatus::Exited { .. }), "the exit is the provider's");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

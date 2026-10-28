@@ -448,6 +448,13 @@ pub trait DeploymentProvider: Send + Sync {
         Vec::new()
     }
 
+    /// Moves each time a runtime this provider started is seen to exit: the reconcile loop waits on it
+    /// (Q254: a provider exit is an event), whose drive's departure proof reads the exit. Default: a
+    /// watch that never moves (a provider that sees no exit of its own).
+    fn exits(&self) -> tokio::sync::watch::Receiver<u64> {
+        tokio::sync::watch::channel(0).1
+    }
+
     /// The runtime's last words, for a named failure when it stopped early.
     /// Default: the tail of `stderr.log` in its data dir, read on the blocking pool; a log that
     /// cannot be read is named, never an empty detail.

@@ -3247,7 +3247,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let ladder = ladder.clone();
                                         let stop = stop_gate.clone();
                                         let drift_seam = wiring.drift_seam.take();
-                                        let mut wake = ReconcileWake::new(submitted, records.subscribe_view(), records.subscribe_fabric_state(), ladder.lock().unwrap().subscribe_moved(), drives.subscribe_ended());
+                                        let mut wake = ReconcileWake::new(submitted, records.subscribe_view(), records.subscribe_fabric_state(), ladder.lock().unwrap().subscribe_moved(), drives.subscribe_ended(), deployer.exits());
                                         executor = tokio::spawn(async move {
                                             let mut started = HashSet::new();
                                             let mut held = HashSet::new();

@@ -3698,11 +3698,12 @@ struct Wakes {
     records: Arc<rdm_admin::admin::Records>,
     ladder: Arc<Mutex<rdm_admin::investigate::Ladder>>,
     drives: Arc<rdm_admin::build_drive::Drives>,
+    provider: Arc<rdm_admin::deployment::process::ProcessDeploymentProvider>,
 }
 
 impl Wakes {
     fn new() -> Self {
-        Self { submitted: Arc::new(tokio::sync::Notify::new()), records: Arc::new(rdm_admin::admin::Records::default()), ladder: Arc::new(Mutex::new(rdm_admin::investigate::Ladder::new(Self::rungs()))), drives: Arc::new(rdm_admin::build_drive::Drives::default()) }
+        Self { submitted: Arc::new(tokio::sync::Notify::new()), records: Arc::new(rdm_admin::admin::Records::default()), ladder: Arc::new(Mutex::new(rdm_admin::investigate::Ladder::new(Self::rungs()))), drives: Arc::new(rdm_admin::build_drive::Drives::default()), provider: Arc::new(rdm_admin::deployment::process::ProcessDeploymentProvider::new()) }
     }
 
     /// The ladder's rungs at the gate's cadence (3 s floor, 500 ms backbone interval).
@@ -3711,7 +3712,7 @@ impl Wakes {
     }
 
     fn wake(&self) -> rdm_admin::admin::ReconcileWake {
-        rdm_admin::admin::ReconcileWake::new(self.submitted.clone(), self.records.subscribe_view(), self.records.subscribe_fabric_state(), self.ladder.lock().unwrap().subscribe_moved(), self.drives.subscribe_ended())
+        rdm_admin::admin::ReconcileWake::new(self.submitted.clone(), self.records.subscribe_view(), self.records.subscribe_fabric_state(), self.ladder.lock().unwrap().subscribe_moved(), self.drives.subscribe_ended(), rdm_admin::deployment::provider::DeploymentProvider::exits(&*self.provider))
     }
 }
 
@@ -4020,4 +4021,38 @@ fn an_event_whose_pass_finds_the_drive_running_runs_the_drive_again_once_it_ends
     assert_eq!(passes, vec![Woken::First, Woken::Submitted], "{passes:?}");
     assert_eq!(attempt, 1, "attempt 1 was handed back with nothing moved: no other is claimed");
     assert_eq!(drive_passes(&spans, &trace_id), 2, "the drive runs again for the submit its pass found it running for");
+}
+
+/// CONTRACT (Q254: the reconcile loop "wakes on events (... a provider exit)"; a drive's departure proof
+/// reads the provider's exit): a runtime the admin's provider started, killed from outside, runs exactly
+/// one pass once the provider reaps its exit.
+/// Must NOT happen: the exit unseen until an unrelated event.
+#[test]
+fn a_provider_exit_runs_one_reconcile_pass() {
+    use rdm_admin::admin::Woken;
+    use rdm_admin::deployment::provider::DeploymentProvider;
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, passes) = cap.run(async {
+        let root = tracing::info_span!("cell.reconcile-provider-exit-runs-one-pass");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, _mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        let wakes = Wakes::new();
+        let dir = std::env::temp_dir().join(format!("reconcile-provider-exit-{}", MeshId::mint()));
+        let spec = rdm_admin::deployment::provider::ResolvedNodeLaunch { secrets: Default::default(), withhold: Vec::new(), node: "mesh1.rpc.9".parse().unwrap(), deployment_id: rdm_admin::model::DeploymentId::mint(), executable: "/bin/sleep".into(), args: vec!["30".into()], env: Default::default(), data_dir: dir.clone(), transport: "127.0.0.1:0".parse().unwrap(), listeners: vec![] };
+        let h = wakes.provider.spawn(&spec).await.expect("the runtime starts");
+        let (passes, task) = reconciler(&r.env, &wakes, None);
+        tokio::time::sleep(SETTLE).await;
+        // SAFETY: kill(2) of the child this cell's provider started, by its exact pid.
+        assert_eq!(unsafe { libc::kill(h.pid.expect("a pid") as i32, libc::SIGKILL) }, 0, "the runtime was alive to kill");
+        tokio::time::sleep(SETTLE).await;
+        task.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+        let passes = passes.lock().unwrap().clone();
+        (trace_id, passes)
+    });
+    let spans = cap.spans();
+    println!("trace_id={trace_id}");
+    assert_eq!(passes, vec![Woken::First, Woken::ProviderExit], "one exit, one pass: {passes:?}");
+    assert_eq!(drive_passes(&spans, &trace_id), 2);
 }
