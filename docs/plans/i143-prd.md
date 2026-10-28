@@ -3300,3 +3300,6 @@ Every INDEX row whose state was not landed, decided or withdrawn (Q63-Q214, 48 r
 Q239 (an os-stopped executor's unfinished attempt: `exited` and `os-stopped` are departure proof, `running` and
 `unproven` are not; the next attempt is claimed and the mesh recovers) ruled A, narrowed, by the lead (INDEX);
 build.md:424 landed with the ruling; `DepartureProof::proven` and its RED cell are a code unit owed.
+Q241 (a renewed cert row's issued_at is the cert's own: `NodeCert` and `IssuingCert` carry `issued_ms`, the installer
+writes the cert's dates, never a clock; `durable format moved`) ruled A by the lead (INDEX); a code unit owed with its
+RED cells; the admit path reads the new field and checks nothing new.
