@@ -1795,7 +1795,7 @@ async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_f
     assert!(at(&read) >= took, "the read is the take's, after {fp_name} became fabric-primary: {read}");
     assert!(!s(&read["attributes"]["current_build_id"]).is_empty(), "the take's read names the current Build: {read}");
     let folds: Vec<&Value> = named(&own, "rdm.node.store.resolve.via-fold").into_iter().filter(|sp| s(&sp["attributes"]["file"]).ends_with("builds.jsonl")).collect();
-    assert!(folds.iter().all(|sp| sp["attributes"]["reader"] == "take" && at(*sp) >= took), "{fp_name} reads builds.jsonl at its take alone: {folds:#?}");
+    assert!(!folds.is_empty() && folds.iter().all(|sp| at(*sp) >= took), "{fp_name} reads builds.jsonl from its take on, never before it: {folds:#?}");
     eprintln!("span rdm.node_admin.build.resolve.via-records-read trace_id={} {}", s(&read["trace_id"]), read["attributes"]);
     estate.record_trace_url(run["trace_id"].as_str().unwrap_or(""));
     eprintln!("Q122 hung fabric-primary: {fp_name} (birth {}) re-created as {} by {standby}'s fabric recovery", s(&fp["node_id"]), s(&after["node_id"]));
@@ -1820,7 +1820,7 @@ fn admin_spans_but(estate: &Estate, except: u64) -> Vec<(String, Vec<Value>)> {
 /// `build.attempt.run`; node-recovery.md "Execution", Q118): the Day-0 admin, the fabric-primary, is
 /// ready, then the first line of the fabric's `builds.jsonl` no longer matches its checksum, so no read
 /// of it from byte 0 succeeds (the Day-0 admin has read past it). mesh2 is then born, its admins and its
-/// rpc node created by its own mesh-primary from the entries the fabric-primary put on each create, and
+/// rpc nodes created by its own mesh-primary from the entries the fabric-primary put on each create, and
 /// one of mesh2's rpc nodes is killed. mesh2's mesh-primary, which is not the fabric-primary, runs its
 /// hierarchy, reports the drift up and runs the recovery attempt the fabric-primary opens: the member is
 /// re-created at its path.name. No node-admin but the fabric-primary reads `builds.jsonl`: none folds
@@ -1840,7 +1840,7 @@ async fn a_mesh_primary_that_is_not_the_fabric_primary_recovers_its_member_with_
     let changed = if bytes[at] == b'0' { b'1' } else { b'0' };
     std::os::unix::fs::FileExt::write_at(&std::fs::OpenOptions::new().write(true).open(&builds).unwrap(), &[changed], at as u64).unwrap();
 
-    let (mut estate, birth_build) = born_at(estate, &[("mesh1", 1, 1), ("mesh2", 2, 1)], SETTLE).await;
+    let (mut estate, birth_build) = born_at(estate, &[("mesh1", 1, 1), ("mesh2", 2, 2)], SETTLE).await;
     let nodes = estate.node_values().await;
     let (member, mesh_primary, primary) = placement(&nodes);
     assert_eq!(member.split('.').next(), Some("mesh2"), "the member is mesh2's: {member}");
@@ -2520,8 +2520,9 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
 /// mesh2's primary P reports its recovery, the fabric-primary FP opens it as an attempt of mesh2's
 /// lane, P claims it and FP runs it at P. The fault door holds P inside the run, at the member's
 /// node.delete `deleted` event (the `event` cut: the NodeDeleted receipt reported and written by FP,
-/// node.deleted not yet published). Once NA2's own Build log holds that attempt running with P its
-/// executor and its NodeDeleting receipt, P is killed while the cut holds it (claimed, mid-run, no
+/// node.deleted not yet published). Once FP's Build log, the one writer's and the one an admin reads the
+/// Build records into (Q118, Q227), holds that attempt running with P its executor and its NodeDeleting
+/// receipt, P is killed while the cut holds it (claimed, mid-run, no
 /// verdict). FP ends that attempt Failed only on P's proven departure, naming it; mesh2's other admin
 /// NA2 is elected mesh2's primary, and FP, which opens an unheard mesh-primary's recovery
 /// (node-recovery.md step 2 and sequence step 1), claims the next attempt of the fabric lane for P's
@@ -2561,9 +2562,9 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_t
     let lost_attempt = held["hit"]["attempt"]
         .as_u64()
         .expect("the held event names its attempt");
-    // NA2 heard FP's records on the Build topic: in its own log mesh2's lane runs that attempt for the
-    // member's recovery, P its executor, with no verdict.
-    let heard = build_log::build_fact(&estate.carrier_at(&Estate::path(&na2)).await, &build, &format!("attempt {lost_attempt} of mesh2's lane running with {p_name} its executor, its NodeDeleting durable"), SETTLE, |pr| {
+    // FP wrote the attempt's records (Q118): in its log mesh2's lane runs that attempt for the member's
+    // recovery, P its executor, with no verdict. NA2 reads no Build record (Q227).
+    let heard = build_log::build_fact(&estate.carrier_at(&Estate::path(&fp)).await, &build, &format!("attempt {lost_attempt} of mesh2's lane running with {p_name} its executor, its NodeDeleting durable"), SETTLE, |pr| {
         let b = serde_json::to_value(pr).expect("a Build view serializes");
         let lane = &b["lanes"]["mesh2"];
         let deleting = lane_steps(&b, "mesh2").iter().any(|r| r["operation"] == format!("node.delete:{NODE}").as_str() && r["step"] == "NodeDeleting" && r["attempt"] == json!(lost_attempt) && r["outcome"] == "complete");

@@ -2270,8 +2270,6 @@ const CONTEXT_FORMAT: &str = "attempt-context/1";
 #[cfg(feature = "file-backend")]
 /// The format of one Build record's line in `builds.jsonl`, at `<build_id>/<key>` ([`FileJournal`]).
 pub const RECORD_FORMAT: &str = "build-record/1";
-#[cfg(feature = "file-backend")]
-const RECORD_KIND: &str = "build-record";
 
 #[cfg(feature = "file-backend")]
 /// One Build record as it is stored: the fact, and `seq`, its place in the order its writer wrote the
@@ -2576,8 +2574,23 @@ impl FileJournal {
     /// one writer of the Build records is the fabric-primary, or fabric recovery's executor in its
     /// place (build.md §5.3, Q118, Q122), the admins that read them (Q227).
     async fn sync(&self, w: &Turn<'_>) -> Result<(), BuildStateError> {
-        let read = self.store_call(self.read_new(w.op)).await?;
+        // The first read of a tenure under the writer is its take ([`Self::name_take`]).
+        let take = self.reads_now().filter(|_| !self.took.load(std::sync::atomic::Ordering::Acquire));
+        let read = match self.store_call(self.read_new(w.op)).await {
+            Ok(read) => read,
+            Err(e) => {
+                if let Some(node) = &take {
+                    self.name_take(w.op, node, Err(&e));
+                }
+                return Err(e);
+            }
+        };
+        let records = read.len();
         self.take_read(w, read);
+        if let Some(node) = take {
+            self.took.store(true, std::sync::atomic::Ordering::Release);
+            self.name_take(w.op, &node, Ok(records));
+        }
         Ok(())
     }
 
@@ -2589,16 +2602,12 @@ impl FileJournal {
     async fn sync_for_read(&self, op: &'static str) -> Result<(), BuildStateError> {
         // Only the fabric-primary (or fabric recovery's executor) reads the records (Q227); every
         // other admin answers from what reached it.
-        let reader = match self.reader.get() {
-            Some(reader) => reader(),
-            None => Some(String::new()),
-        };
-        let Some(node) = reader else {
+        if self.reads_now().is_none() {
             self.took.store(false, std::sync::atomic::Ordering::Release);
             return Ok(());
-        };
+        }
         if !self.took.load(std::sync::atomic::Ordering::Acquire) {
-            return self.read_at_take(op, &node).await;
+            return self.read_at_take(op).await;
         }
         let read = self.read_new(op).await?;
         match self.writer.try_lock() {
@@ -2616,40 +2625,49 @@ impl FileJournal {
         Ok(())
     }
 
+    /// Whether this admin reads the Build records now ([`LocalBuildLog::read_records_while`]): its
+    /// path.name while it does; unset, it reads (`""`), as a bootstrap or adoption start does.
+    fn reads_now(&self) -> Option<String> {
+        match self.reader.get() {
+            Some(reader) => reader(),
+            None => Some(String::new()),
+        }
+    }
+
     /// The take (Q227: the re-born or newly taking fabric-primary "will need to read the last build
     /// record to determine if anything is in flight"; build.md §5 "new fabric-primary -> reads the
-    /// Builds newest first"): this tenure's first read of the records, for `op`, made under the
-    /// writer's turn so the records it reads are in the log before any read answers, named on
-    /// `rdm.node_admin.build.resolve.via-records-read` with how many it read and the current Build.
-    async fn read_at_take(&self, op: &'static str, node: &str) -> Result<(), BuildStateError> {
-        use tracing::Instrument as _;
-        let w = self.turn("take").await;
+    /// Builds newest first"), when a read comes first: this tenure's first read of the records, for
+    /// `op`, made under the writer's turn so the records it reads are in the log before any read
+    /// answers ([`Self::sync`] names it). A turn of this tenure that read already made it.
+    async fn read_at_take(&self, op: &'static str) -> Result<(), BuildStateError> {
+        let w = self.turn(op).await;
         if self.took.load(std::sync::atomic::Ordering::Acquire) {
             return Ok(());
         }
+        self.sync(&w).await
+    }
+
+    /// This tenure's first read of the records under the writer's turn (`op`), `read` of them taken:
+    /// named once on `rdm.node_admin.build.resolve.via-records-read` with how many it read and the
+    /// current Build the log holds after it, or refused naming why (`error`; the next read reads again).
+    fn name_take(&self, op: &str, node: &str, read: Result<usize, &BuildStateError>) {
         let span = tracing::info_span!("rdm.node_admin.build.resolve.via-records-read", node, reader = op, store = "builds.storage", records = tracing::field::Empty, current_build_id = tracing::field::Empty, state = tracing::field::Empty, outcome = tracing::field::Empty, error = tracing::field::Empty, "otel.kind" = "internal");
-        let read = self.store_call(self.read_new("take")).instrument(span.clone()).await;
-        let read = match read {
-            Ok(read) => read,
+        match read {
+            Ok(records) => {
+                span.record("records", records as u64).record("outcome", "read");
+                if let Some(id) = current_build(&self.log).build_id() {
+                    span.record("current_build_id", id.as_str());
+                    if let Ok(p) = read_own(&self.log, id) {
+                        span.record("state", format!("{:?}", p.state).as_str());
+                    }
+                }
+                span.in_scope(|| tracing::info!("this admin reads the Build records: the ones the store holds are read once, to learn what is in flight, and every read after it reads on from there"));
+            }
             Err(e) => {
                 span.record("outcome", "refused").record("error", e.to_string().as_str());
                 span.in_scope(|| tracing::info!("the Build records could not be read at the take: the next read reads them again"));
-                return Err(e);
-            }
-        };
-        span.record("records", read.len() as u64);
-        self.take_read(&w, read);
-        self.took.store(true, std::sync::atomic::Ordering::Release);
-        let current = current_build(&self.log);
-        span.record("outcome", "read");
-        if let Some(id) = current.build_id() {
-            span.record("current_build_id", id.as_str());
-            if let Ok(p) = read_own(&self.log, id) {
-                span.record("state", format!("{:?}", p.state).as_str());
             }
         }
-        span.in_scope(|| tracing::info!("this admin reads the Build records: the ones the store holds are read once, to learn what is in flight, and every read after it reads on from there"));
-        Ok(())
     }
 
     /// Append `fact` at its own key and publish it, under the writer's turn `w` that has read the store
