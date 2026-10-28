@@ -92,6 +92,8 @@ async fn main() {
         }
     };
     let _ = declare_client.set(running.node_rpc.clone());
+    // The node-row knob: this node reads another node's row from the nodes storage when the estate asks.
+    node::watch_node_row_knob(&launch, running.node_row_read());
     // The member cert the admin that accepted this join issued, as the testkit's own span records it (hex).
     tracing::info_span!(
         "rdm.testkit.cert.resolve.via-running-node",

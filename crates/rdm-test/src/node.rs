@@ -122,6 +122,44 @@ pub const APP_PROTOCOL: &[u8] = b"rdm-test/echo/1";
 /// [`APP_PROTOCOL`].
 pub const APP_PROTOCOL_KNOB: &str = "app-protocol.knob";
 
+/// The directory, under the root that holds an estate's data dirs, of the node-row knob: a file named
+/// by an rpc node's `path.name` whose text is another node's `path.name` has that node read the other's
+/// row from the nodes storage ([`watch_node_row_knob`]).
+pub fn node_row_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("node-row-knob")
+}
+
+/// The rpc node `launch` names reads another node's row when the estate's root holds its node-row
+/// knob ([`node_row_knob_dir`]`/<path.name>`): looked at every 200 ms for the process's life, the knob
+/// is taken (removed), the row it names is read once through `read` (`RunningNode::node_row`), and the
+/// answer is written beside it as `<path.name>.answer`, JSON: `outcome` (`found`, `none` or `refused`)
+/// with the row's `node_id` and `config`, or the refusal's `cause`.
+pub fn watch_node_row_knob(launch: &Launch, read: rdm_node::node::NodeRowRead) {
+    let Some(root) = launch.data_dir.parent() else { return };
+    let (dir, name) = (node_row_knob_dir(root), launch.name.to_string());
+    tokio::spawn(async move {
+        let knob = dir.join(&name);
+        loop {
+            if let Ok(text) = tokio::fs::read_to_string(&knob).await {
+                let _ = tokio::fs::remove_file(&knob).await;
+                let answer = match text.trim().parse::<rdm_core::PathName>() {
+                    Err(e) => serde_json::json!({"outcome": "refused", "cause": format!("the knob names no path.name ({:?}): {e}", text.trim())}),
+                    Ok(target) => match read.read(target).await {
+                        Ok(Some(row)) => serde_json::json!({"outcome": "found", "node_id": row.node_id.to_string(), "config": row.config}),
+                        Ok(None) => serde_json::json!({"outcome": "none"}),
+                        Err(e) => serde_json::json!({"outcome": "refused", "cause": e.to_string()}),
+                    },
+                };
+                let staged = dir.join(format!("{name}.answer.staged"));
+                if tokio::fs::write(&staged, answer.to_string()).await.is_ok() {
+                    let _ = tokio::fs::rename(&staged, dir.join(format!("{name}.answer"))).await;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    });
+}
+
 /// The file, under the root that holds an estate's data dirs, that has its rpc nodes register
 /// [`APP_PROTOCOL`] proxied through an rpc node carrier (connections.md §6, §7): a Direct open
 /// that ends `NotSent` proves a Proxy through a carrier.

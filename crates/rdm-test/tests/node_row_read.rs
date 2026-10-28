@@ -154,3 +154,60 @@ fn a_nodes_start_opens_no_nodes_store_and_its_first_read_does() {
     assert_eq!(reads[0].get("outcome").map(String::as_str), Some("refused"), "{reads:?}");
     assert!(reads[0].get("cause").is_some_and(|c| c.contains("nodes.jsonl")), "{reads:?}");
 }
+
+fn estate_owner(test: &str) -> rdm_test::estate::Owner {
+    rdm_test::estate::Owner {
+        product: "mesh".into(),
+        feature: "query".into(),
+        subfeature: "node-row".into(),
+        rung: "MN".into(),
+        provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
+        test: test.into(),
+    }
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (query.md §1, Q237), on real node processes: mesh1.rpc.2 puts its own config and its
+/// mesh-primary, mesh1.admin.1, writes its row to the nodes storage. mesh1.admin.1, the fabric's only
+/// node-admin and so every primary, is then killed. mesh1.rpc.1 reads mesh1.rpc.2's row from the nodes
+/// storage by `path.name` (the testkit's node-row knob, `RunningNode::node_row`) and answers the config
+/// mesh1.rpc.2 put. Spans: mesh1.rpc.1's `rdm.node.row.resolve.via-store` is `found`; the store's fold
+/// of `nodes.jsonl` in that trace is the read's own, under it; no Node RPC call descends from it. Must
+/// NOT happen: the read needing a primary, or answering a row older than the one written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_nodes_row_is_read_from_the_nodes_storage_by_another_node_process_with_no_primary_alive() {
+    let cell = "a_nodes_row_is_read_from_the_nodes_storage_by_another_node_process_with_no_primary_alive";
+    let mut estate = rdm_test::estate::Estate::bootstrap(estate_owner(cell), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    estate.settled_views(&[("mesh1", 1, 2)]).await;
+    estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
+    let out = estate.probe(&["own-config", "--target", "path:mesh1.rpc.2", "--value", "listener.data=127.0.0.1:45007"]);
+    assert_eq!(out["own_config"], "config-updated", "mesh1.rpc.2's mesh-primary writes its row: {out}");
+
+    // Every primary is gone: the fabric's one node-admin is killed.
+    estate.kill_bootstrap();
+    let dir = rdm_test::node::node_row_knob_dir(&estate.root);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("mesh1.rpc.1.staged"), "mesh1.rpc.2").unwrap();
+    std::fs::rename(dir.join("mesh1.rpc.1.staged"), dir.join("mesh1.rpc.1")).unwrap();
+    let answer: serde_json::Value = rdm_test::estate::wait_for("mesh1.rpc.1 answers its read of mesh1.rpc.2's row", std::time::Duration::from_secs(30), || {
+        let file = dir.join("mesh1.rpc.1.answer");
+        async move { std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()) }
+    })
+    .await;
+    assert_eq!(answer["outcome"], "found", "{answer}");
+    assert_eq!(answer["config"], serde_json::json!({"listener.data": "127.0.0.1:45007"}), "the config mesh1.rpc.2 put, as its mesh-primary wrote it: {answer}");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let attr = |sp: &serde_json::Value, k: &str| sp["attributes"][k].as_str().map(str::to_string).unwrap_or_else(|| sp["attributes"][k].to_string());
+    let read = rdm_test::estate::named(&spans, READ).into_iter().find(|sp| attr(sp, "node") == "mesh1.rpc.1").unwrap_or_else(|| panic!("mesh1.rpc.1's {READ}"));
+    assert_eq!((attr(read, "by"), attr(read, "at"), attr(read, "outcome")), ("name".to_string(), "mesh1.rpc.2".to_string(), "found".to_string()), "{read}");
+    let folds: Vec<_> = rdm_test::estate::named(&spans, FOLD).into_iter().filter(|sp| sp["trace_id"] == read["trace_id"] && attr(sp, "file").ends_with("nodes.jsonl")).collect();
+    assert_eq!(folds.len(), 1, "the read's trace holds one fold of nodes.jsonl: {folds:?}");
+    assert!(rdm_test::estate::descends_from(&spans, folds[0], read), "the store is opened by the read: {}", folds[0]);
+    let called: Vec<_> = spans.iter().filter(|sp| sp["name"].as_str().is_some_and(|n| n.starts_with("rdm.node_rpc.")) && rdm_test::estate::descends_from(&spans, sp, read)).collect();
+    assert!(called.is_empty(), "the read makes no Node RPC call: {called:?}");
+    eprintln!("read: trace {} {} node={} outcome={}", read["trace_id"].as_str().unwrap_or_default(), READ, attr(read, "node"), attr(read, "outcome"));
+    estate.record_trace_url(read["trace_id"].as_str().unwrap_or_default());
+}

@@ -124,20 +124,12 @@ impl RunningNode {
     /// `path.name` is the one the `path.name` index names, a `Withdrawn` one answered as none. `None` when
     /// no row was ever written there; a store that does not read is refused by name.
     pub async fn node_row(&self, node: impl Into<crate::nodes_storage::IdOrName>) -> std::result::Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
-        use tracing::Instrument as _;
-        let node = node.into();
-        let (by, at) = match &node {
-            crate::nodes_storage::IdOrName::Id(id) => ("id", id.to_string()),
-            crate::nodes_storage::IdOrName::Name(name) => ("name", name.to_string()),
-        };
-        let span = tracing::info_span!("rdm.node.row.resolve.via-store", node = %self.topology_view.node_name(), by, at = %at, outcome = tracing::field::Empty, cause = tracing::field::Empty);
-        let read = node.read(self.node_rows.as_ref()).instrument(span.clone()).await;
-        match &read {
-            Ok(Some(_)) => span.record("outcome", "found"),
-            Ok(None) => span.record("outcome", "none"),
-            Err(e) => span.record("outcome", "refused").record("cause", e.to_string()),
-        };
-        read
+        self.node_row_read().read(node).await
+    }
+
+    /// [`Self::node_row`] as a handle that outlives the borrow: what an application task holds.
+    pub fn node_row_read(&self) -> NodeRowRead {
+        NodeRowRead { rows: self.node_rows.clone(), topology_view: self.topology_view.clone() }
     }
 
     /// [`Self::config_update`] as a handle that outlives the borrow: what an application task holds.
@@ -1330,6 +1322,34 @@ fn mesh_primary_moved(told: Option<&(NodeId, IncarnationId)>, holder: Option<&rd
 
 /// A declaration: the state and the operation that produced it, when one did (i146 Q36).
 pub(crate) type Declaration = (rdm_core::status::NodeState, Option<rdm_core::status::DeclaredOperation>);
+
+/// A running node's point read of another node's row ([`RunningNode::node_row`]), held apart from the
+/// node: each read is recorded on `rdm.node.row.resolve.via-store`.
+#[derive(Clone)]
+pub struct NodeRowRead {
+    rows: Arc<dyn crate::nodes_storage::NodeRowsStorage>,
+    topology_view: TopologyView,
+}
+
+impl NodeRowRead {
+    /// [`RunningNode::node_row`].
+    pub async fn read(&self, node: impl Into<crate::nodes_storage::IdOrName>) -> std::result::Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+        use tracing::Instrument as _;
+        let node = node.into();
+        let (by, at) = match &node {
+            crate::nodes_storage::IdOrName::Id(id) => ("id", id.to_string()),
+            crate::nodes_storage::IdOrName::Name(name) => ("name", name.to_string()),
+        };
+        let span = tracing::info_span!("rdm.node.row.resolve.via-store", node = %self.topology_view.node_name(), by, at = %at, outcome = tracing::field::Empty, cause = tracing::field::Empty);
+        let read = node.read(self.rows.as_ref()).instrument(span.clone()).await;
+        match &read {
+            Ok(Some(_)) => span.record("outcome", "found"),
+            Ok(None) => span.record("outcome", "none"),
+            Err(e) => span.record("outcome", "refused").record("cause", e.to_string()),
+        };
+        read
+    }
+}
 
 /// A running node's own config door ([`RunningNode::config_update`]): cloneable, held by whatever task
 /// puts the node's own config.
