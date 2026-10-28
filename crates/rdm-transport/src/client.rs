@@ -1616,11 +1616,27 @@ impl Attempts {
                     }
                     // The responder ended its direction: after a repeat's ack, or after its terminal.
                     Ok(None) => {
+                        // A frame this stream delivered and its owner has not recovered is acked on
+                        // this direction (node-rpc.md §31, §43), and the responder reads the
+                        // direction's finish as the caller done with the invocation: it stays open
+                        // until the owner has recovered every frame and the invocation completes, or
+                        // the connection closes. A direction that delivered no such frame (a repeat's
+                        // ack) is finished at once, the stream lost.
+                        if !self.state.borrow().complete && d.unrecovered_on(&self.id, &out) {
+                            let mut state = self.state.clone();
+                            tokio::select! {
+                                _ = state.wait_for(|s| s.complete) => {}
+                                _ = conn.closed() => {}
+                            }
+                        }
                         if self.state.borrow().complete {
                             out.finish().await;
                             return StreamEnd::Complete;
                         }
                         out.finish().await;
+                        if conn.close_reason().is_some() {
+                            return self.lost(&key, &conn);
+                        }
                         return StreamEnd::Lost;
                     }
                     Err(ReadEnd::Reset(code)) if [ResetCode::UnservedOp, ResetCode::InternalRpcFailure, ResetCode::ProtocolViolation].iter().any(|c| u64::from(c.code()) == code) => {

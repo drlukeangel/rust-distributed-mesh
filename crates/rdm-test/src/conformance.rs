@@ -434,6 +434,20 @@ impl Rig {
         }
     }
 
+    /// Every one of the `n` frames handed over was acknowledged: the consumer wrote `n` acks and the
+    /// producer received each, so it holds nothing because the acks arrived.
+    async fn acked_every(&self, n: usize, what: &str) -> Result<(), String> {
+        let sent = DeliveryStats::get(&self.client.delivery().stats().acks_sent);
+        let stats = self.server.delivery().stats();
+        let arrived = eventually(FRAME_BOUND, || DeliveryStats::get(&stats.acks_received) >= n as u64).await;
+        let received = DeliveryStats::get(&stats.acks_received);
+        if sent == n as u64 && arrived && received == n as u64 {
+            Ok(())
+        } else {
+            Err(format!("{what}: {n} frames handed over, {sent} acks written by the consumer, {received} received by the producer"))
+        }
+    }
+
     /// The producer owes the caller nothing: every frame it wrote was acked or is owed no longer.
     async fn owes_nothing(&self, what: &str) -> Result<(), String> {
         let d = self.server.delivery().clone();
@@ -819,10 +833,12 @@ where
     P::Reply: Debug,
 {
     let r = Rig::new(&f.serve, P::OP, false).await?;
+    let mut handed = 0;
     for req in [&f.answered, &f.long] {
         let mut s = open::<P>(&r, req, &options()).await?;
         let mut seen = Vec::new();
         read_to_terminal(&mut s, &mut seen).await?;
+        handed += seen.len();
         in_order(&seen).map_err(|why| format!("{req:?}: {why}"))?;
         match tokio::time::timeout(FRAME_BOUND, s.next()).await {
             Ok(None) => {}
@@ -830,6 +846,7 @@ where
         }
     }
     r.dispatched_exactly(2)?;
+    r.acked_every(handed, "both streams read to their terminals").await?;
     r.owes_nothing("both streams read to their terminals").await
 }
 
@@ -864,6 +881,7 @@ where
     let mut rest = Vec::new();
     read_to_terminal(&mut s, &mut rest).await.map_err(|why| format!("once acknowledged: {why}"))?;
     r.dispatched_exactly(1)?;
+    r.acked_every(bound + rest.len(), "the long stream read to its terminal").await?;
     r.owes_nothing("the long stream read to its terminal").await
 }
 
@@ -922,6 +940,7 @@ where
     read_to_terminal(&mut s, &mut seen).await.map_err(|why| format!("after the cut: {why}"))?;
     in_order(&seen)?;
     r.dispatched_exactly(1)?;
+    r.acked_every(seen.len(), "the stream read to its terminal after the cut").await?;
     r.owes_nothing("the stream read to its terminal after the cut").await
 }
 
@@ -952,6 +971,7 @@ where
     if acked != frames.len() as u64 {
         return Err(format!("{acked} frames acknowledged and {} recorded: each recorded frame is acknowledged, none before it is recorded", frames.len()));
     }
+    r.acked_every(frames.len(), "the consumer's recorded frames").await?;
     r.owes_nothing("the consumer's recorded frames").await
 }
 

@@ -549,6 +549,12 @@ impl Delivery {
     }
 
     /// The invocation `id`'s response broke the framing on a stream: its owner is told, `424`.
+    /// Whether invocation `id` holds a frame handed to its owner and not yet recovered whose ack is
+    /// written on `out` (node-rpc.md §31, §43): that direction is still needed for the ack.
+    pub(crate) fn unrecovered_on(&self, id: &DeliveryId, out: &FrameOut) -> bool {
+        self.inner.st.lock().unwrap().calls.get(id).is_some_and(|s| s.unrecovered.values().any(|(_, to)| matches!(to, AckTo::Stream(o) if o.same(out))))
+    }
+
     pub(crate) fn fail_call(&self, id: &DeliveryId, why: &str) {
         self.inner.stats.violations.fetch_add(1, Ordering::SeqCst);
         if let Some(slot) = self.inner.st.lock().unwrap().calls.get(id) {
@@ -1137,6 +1143,11 @@ pub(crate) struct FrameOut(Arc<tokio::sync::Mutex<Option<SendStream>>>);
 impl FrameOut {
     pub(crate) fn new(send: SendStream) -> Self {
         Self(Arc::new(tokio::sync::Mutex::new(Some(send))))
+    }
+
+    /// Whether `other` is this direction (a clone of it).
+    pub(crate) fn same(&self, other: &FrameOut) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     /// Write `bytes`; `false` when the direction is gone.
