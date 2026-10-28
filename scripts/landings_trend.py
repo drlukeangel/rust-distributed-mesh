@@ -79,6 +79,8 @@ def record(path, deploy, lane, issue, branch, sha, plan, launched, first, commit
     # A lane's plan file stays until the next dispatch: a unit the lead lands without one starts at the
     # lane's last landing, so the earlier unit's gates and time are never counted again.
     plan = max(plan, last_landing(path, lane))
+    launched = launched if launched is None else max(launched, plan)
+    first = first if first is None else max(first, plan)
     runs = gate_runs(deploy, lane, plan)
     cells = cells_runs(deploy, lane, plan)
     row = {"landed_at": now, "lane": lane, "issue": int(issue), "branch": branch, "sha": sha, "plan_at": plan, "launched_at": launched,
