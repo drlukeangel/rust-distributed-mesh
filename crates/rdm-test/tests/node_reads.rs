@@ -67,8 +67,9 @@ fn names_of(nodes: &[rdm_client::NodeView]) -> Vec<String> {
 /// values)` pairs, AND across pairs, any-of within, nothing matching the empty list): a Day-0
 /// node-admin answers the reads over Node RPC from what it holds, and the caller reaches nothing but
 /// the admin's Node RPC endpoint. `nodes.get []` is the fabric's topology, the admin alone, as its
-/// view holds it (ReadyForTraffic, both seats, its birth, its load and gossip stats when its view
-/// carries them); `[id: the admin]` is that one node and `[id: another]` the empty list;
+/// view holds it, with its row's status as its atlas holds it (Q233, query.md §1: ReadyForTraffic
+/// once its row took it; primary of its mesh and of the fabric, its birth, its load and gossip stats
+/// when its view carries them); `[id: the admin]` is that one node and `[id: another]` the empty list;
 /// `[mesh: mesh1] [kind: admin]` the admin and `[mesh: mesh1] [kind: gateway]` nothing (AND across
 /// pairs); `[mesh: mesh9]`, a mesh the admin does not hold, the empty list. `meshes.get []` lists
 /// every mesh the view holds, by name; `[name: mesh1]` and `[id: mesh1's id]` the one mesh with the
@@ -93,18 +94,24 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         let dir = std::env::temp_dir().join(format!("node-reads-{}", NodeId::mint()));
         let running = start_with(day0_config(&dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         let me = running.digest.lock().unwrap().clone();
-        // The reads answer from the view the admin holds: it holds itself ready, in both seats.
+        // The reads answer the births the admin's view holds, each with its row's status as the atlas
+        // holds it (query.md §1 "Status": "a node's `status` is its row's as written: the state the row
+        // last took from the node's frame or the mesh-primary's receipt", Q233). The view holds the
+        // admin ready and primary of its mesh and of the fabric at its own Ready; its row takes
+        // ReadyForTraffic when its mesh-primary applies its node.started report (states.md "Who sets
+        // each state"), after that. The reads start once both hold.
         tokio::time::timeout(WRONG, async {
             loop {
                 let ready = running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
-                if ready {
+                let row_ready = running.control.atlas.record(&me.node.node_id).is_some_and(|r| r.status == rdm_admin::model::NodeStatus::ReadyForTraffic);
+                if ready && row_ready {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await
-        .expect("the admin's view never held it ready in both seats");
+        .expect("the admin's view never held it ready and primary of its mesh and of the fabric, with its row ready in its atlas");
         let admin = ResolvedNode { node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
         let carrier = BuildCarrier::new(client.clone(), me.node.name.clone());
