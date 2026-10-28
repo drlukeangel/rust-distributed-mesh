@@ -3349,3 +3349,7 @@ projection inputs with no local event ride the hierarchy turn's view install eve
 and its own question with a flame; the pruner loop is watch_meshes at 250 ms (topology.rs:2867), Q254's "5 s sweep" is the
 staleness sweep's own cadence of marking, not the loop's. The tail at 855de1e42: fast GREEN, release 118 ok 0 FAIL; the export
 tail runs again at the tip after rdm#172.
+Q258 (Build notices and a member's self-heal) ruled A by the lead with arch-1, decided by R-BI7 and Q256 (INDEX): a mesh's
+own recovery attempt reopens nothing and sends no notice; item G withdrawn; build.md:289 conforms to R-BI7's approved line, in
+rdm#173 (lane 7, note 0005). Found: R-BI7's page text never landed on node-recovery.md:22, :72-80 and node-rpc-envelope.md:993,
+rdm#174 with the lead's conforming text.
