@@ -1221,14 +1221,7 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
         .filter(|sp| attr(sp, "node") == stopped_s && attr(sp, "state") == "Stopped" && attr(sp, "operation") == stopped_operation && attr(sp, "to") == successor_s)
         .collect();
     assert!(redeclared.is_empty(), "a stopped birth hears no seat move, so it re-declares nothing to the new holder: {redeclared:#?}");
-    // The new holder holds the stopped birth stopped whichever arrives first (Q90: gossip is eventual and
-    // unordered): the old holder's NodeStopped frame (its fold then finds the stop mark held, `stopped`), or
-    // the birth's durable Stopped in its record, which the fold adopts as `Leaving`, the member status of a
-    // declared Stopped (rdm-core status.rs member_of_declared).
-    assert!(
-        folded.iter().any(|sp| attr(sp, "outcome") == "stopped" || (attr(sp, "outcome") == "adopted" && attr(sp, "status") == "Leaving")),
-        "the new holder's SeatFold holds the stopped birth stopped: {folded:#?}"
-    );
+    assert!(folded.iter().any(|sp| attr(sp, "outcome") == "stopped"), "the new holder's SeatFold holds the stopped birth stopped: {folded:#?}");
     // The old holder's own stop: its Stopped names the stop, applied by the new holder, published once.
     let holder_stop = format!("node.stop:{holder_s}");
     let holder_declared: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declare")
