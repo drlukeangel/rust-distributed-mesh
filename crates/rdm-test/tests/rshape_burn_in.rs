@@ -713,7 +713,7 @@ fn write_views(v: Views<'_>, spans_index: Vec<Value>, spans: &[Value]) {
         "finished_ms": now_ms(),
         "wall_ms": now_ms() - f.started_ms,
         "formation_build": {"build_id": f.build_id, "attempt": f.build["attempt"], "executor": f.build["executor"]},
-        "estate": {"manifest": f.estate.artifacts.join("manifest.json"), "rpc_ledger": f.estate.artifacts.join("rpc-ledger.jsonl"), "spans_dir": f.estate.evidence},
+        "estate": {"manifest": f.estate.artifacts.join("manifest.json"), "rpc_ledger": f.estate.artifacts.join("rpc-ledger.jsonl"), "spans_dir": f.estate.kept_evidence()},
         "spans": spans_index,
         "views": {
             "topology-initial.json": "initial Day-0 view, the requested shape and the provider state before launch (estate node.get, provider /proc and docker)",
@@ -6894,7 +6894,7 @@ async fn soak_run(cell: &str, story: Story) {
         "evidence": {
             "estate_manifest": estate.artifacts.join("manifest.json"),
             "rpc_ledger": estate.artifacts.join("rpc-ledger.jsonl"),
-            "spans_dir": estate.evidence,
+            "spans_dir": estate.kept_evidence(),
             "exported_spans": spans.len(),
             "proof_store_serve_spans": served,
             "build_attempt_spans": reconciles,

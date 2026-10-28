@@ -520,17 +520,44 @@ pub fn estate_root(test: &str) -> PathBuf {
 
 pub struct EstateScope {
     root: PathBuf,
+    /// The estate's evidence directory under its root, and the directory it is kept in when the
+    /// estate ends ([`EstateScope::keeping`]).
+    keep: Option<(PathBuf, PathBuf)>,
     reaper: Option<Child>,
+}
+
+/// Where an estate's processes write their span evidence (`RDM_EVIDENCE_DIR`): `<root>/spans`, under
+/// the temp dir with the rest of the estate, which the gate and `cells.sh` put on tmpfs. A process's
+/// exit flush is bounded (telemetry.md "Exit"; Q60): written to a disk the gate's load holds, the spans
+/// a signal stop closes last were lost at that bound (rdm#118). The estate keeps the directory in its
+/// artifacts (`<artifacts>/spans`) when it ends, and the reaper does when the test binary is killed.
+pub fn estate_evidence_dir(root: &Path) -> PathBuf {
+    root.join("spans")
+}
+
+/// Copy every file under `from` into `to`, keeping its relative path: an estate's evidence kept in its
+/// artifacts before its root is removed. A file that cannot be copied is named on stderr.
+fn keep_evidence(from: &Path, to: &Path) {
+    let _ = std::fs::create_dir_all(to);
+    for e in std::fs::read_dir(from).into_iter().flatten().flatten() {
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if src.is_dir() {
+            keep_evidence(&src, &dst);
+        } else if let Err(err) = std::fs::copy(&src, &dst) {
+            eprintln!("estate: the evidence file {} was not kept in {}: {err}", src.display(), to.display());
+        }
+    }
 }
 
 /// The reaper: waits for the test binary to die, then kills every process whose environment names
 /// this estate's root: `RDM_ESTATE_ROOT` (the bootstrap admin and the admins the estate restarted)
 /// or a data dir under it, `RDM_DATA_DIR` (every node an admin launched: the process provider strips
 /// every `RDM_*` of the launcher from the child, so its launch contract is the only mark it has),
-/// removes the container fabric recorded in `<root>/fabric_id`, and removes the root. It runs
-/// in its own session, so a gate that kills the test binary's process group leaves it running.
+/// removes the container fabric recorded in `<root>/fabric_id`, keeps the estate's evidence directory
+/// (`$3`, when given) in its artifacts (`$4`), and removes the root. It runs in its own session, so a
+/// gate that kills the test binary's process group leaves it running.
 const REAPER: &str = r#"
-owner=$1; root=$2
+owner=$1; root=$2; evidence=$3; kept=$4
 while kill -0 "$owner" 2>/dev/null; do sleep 0.2; done
 for pass in 1 2 3 4 5 6 7 8 9 10; do
   found=0
@@ -558,9 +585,21 @@ rm -rf "$root"
 impl EstateScope {
     /// The scope of `root`: its reaper starts now, and dropping the scope removes the root.
     pub fn begin(root: &Path) -> Self {
+        Self::start(root, None)
+    }
+
+    /// [`Self::begin`] for an estate whose processes write their evidence to `evidence` under `root`:
+    /// dropping the scope, or the reaper once the test binary is killed, copies it into `kept` before the
+    /// root is removed.
+    pub fn keeping(root: &Path, evidence: &Path, kept: &Path) -> Self {
+        Self::start(root, Some((evidence.to_path_buf(), kept.to_path_buf())))
+    }
+
+    fn start(root: &Path, keep: Option<(PathBuf, PathBuf)>) -> Self {
         use std::os::unix::process::CommandExt;
+        let (evidence, kept) = keep.as_ref().map(|(e, k)| (e.display().to_string(), k.display().to_string())).unwrap_or_default();
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", REAPER, "estate-reaper", &std::process::id().to_string(), &root.display().to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        cmd.args(["-c", REAPER, "estate-reaper", &std::process::id().to_string(), &root.display().to_string(), &evidence, &kept]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         cmd.env_remove("RDM_ESTATE_ROOT");
         unsafe {
             cmd.pre_exec(|| {
@@ -568,7 +607,7 @@ impl EstateScope {
                 Ok(())
             });
         }
-        EstateScope { root: root.to_path_buf(), reaper: cmd.spawn().ok() }
+        EstateScope { root: root.to_path_buf(), keep, reaper: cmd.spawn().ok() }
     }
 }
 
@@ -603,6 +642,8 @@ pub struct Estate {
     pub owner: Owner,
     pub root: PathBuf,
     pub artifacts: PathBuf,
+    /// Where the estate's processes write their spans while it runs ([`estate_evidence_dir`], under the
+    /// root): read it live; once the estate has ended its files are in [`Self::kept_evidence`].
     pub evidence: PathBuf,
     /// The node-admin the estate enters at: the typed objects start at it, and a probe is given its birth
     /// ([`Self::entry_birth`]). [`Estate::enter`] changes it.
@@ -677,12 +718,13 @@ impl Estate {
     async fn born(owner: Owner, fabric: &str, mesh: &str, external: Option<(Validated, String)>, extra_env: &[(&str, &str)]) -> Self {
         let artifacts = artifacts_root().join(&owner.feature).join(&owner.test);
         let _ = std::fs::remove_dir_all(&artifacts);
-        let evidence = artifacts.join("spans");
-        std::fs::create_dir_all(&evidence).unwrap();
+        let kept = artifacts.join("spans");
+        std::fs::create_dir_all(&kept).unwrap();
         let root = estate_root(&owner.test);
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(estate_store_dir(&root)).unwrap();
+        let evidence = kept.clone();
         let scope = EstateScope::begin(&root);
         let container = owner.provider == "container";
         let external = external.map(|(validated, candidate)| {
@@ -915,6 +957,11 @@ impl Estate {
         }
         out.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
         out
+    }
+
+    /// Where the estate's evidence is kept when it ends: `<artifacts>/spans`.
+    pub fn kept_evidence(&self) -> PathBuf {
+        self.artifacts.join("spans")
     }
 
     /// The trace URL for `trace_id` when a Jaeger query base is configured.
@@ -1513,6 +1560,68 @@ mod spawn_tests {
         let _ = reaper.wait();
         let _ = std::fs::remove_dir_all(&root);
         assert!(!left, "the reaper left the node running 30 s after its owner was killed");
+    }
+
+    /// An estate root holding evidence in its spans directory (`estate_evidence_dir`), one file in a
+    /// directory of its own, and the directory it is kept in (outside the root, emptied): what each cell
+    /// below keeps.
+    fn evidence_of_an_estate(test: &str) -> (PathBuf, PathBuf, PathBuf, [(&'static str, &'static str); 2]) {
+        let root = estate_root(test);
+        let evidence = estate_evidence_dir(&root);
+        let kept = root.with_extension("kept");
+        let _ = std::fs::remove_dir_all(&kept);
+        let files = [("rdm-node-admin.1-2.spans.jsonl", "{\"name\":\"rdm.mesh.node.delete.via-signal\"}\n"), ("probe/rdm-rpc-probe.3-4.spans.jsonl", "{\"name\":\"a probe's span\"}\n")];
+        for (name, body) in files {
+            let f = evidence.join(name);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, body).unwrap();
+        }
+        (root, evidence, kept, files)
+    }
+
+    /// CONTRACT (rdm#118): the reaper of a SIGKILLed test binary keeps the estate's evidence, which its
+    /// processes write under the estate's root on tmpfs, in the estate's artifacts before it removes the
+    /// root, so a gate's red keeps its spans. What must NOT happen: the root removed with the spans in it.
+    #[test]
+    fn the_reaper_of_a_killed_test_binary_keeps_the_estates_evidence_before_it_removes_the_root() {
+        let (root, evidence, kept, files) = evidence_of_an_estate("reaper-kept-evidence");
+        let mut owner = Command::new("sleep").arg("120").spawn().unwrap();
+        let mut reaper = Command::new("sh")
+            .args(["-c", REAPER, "estate-reaper", &owner.id().to_string(), &root.display().to_string(), &evidence.display().to_string(), &kept.display().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .env_remove("RDM_ESTATE_ROOT")
+            .spawn()
+            .unwrap();
+        owner.kill().unwrap();
+        owner.wait().unwrap();
+        let until = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < until && reaper.try_wait().unwrap().is_none() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let ended = reaper.try_wait().unwrap().is_some();
+        let _ = reaper.kill();
+        let _ = reaper.wait();
+        let read: Vec<Option<String>> = files.iter().map(|(name, _)| std::fs::read_to_string(kept.join(name)).ok()).collect();
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&kept);
+        assert!(ended, "the reaper ended within 30 s of its owner's kill");
+        assert!(!root.exists(), "the reaper removed the estate's root");
+        assert_eq!(read, files.iter().map(|(_, body)| Some(body.to_string())).collect::<Vec<_>>(), "every evidence file is kept, whole, under its own relative path");
+    }
+
+    /// CONTRACT (rdm#118): an estate's scope that drops (a finished estate, a panicking cell) keeps the
+    /// estate's evidence in its artifacts before it removes the root. What must NOT happen: the root
+    /// removed with the spans in it.
+    #[test]
+    fn a_dropped_estate_scope_keeps_the_estates_evidence_before_it_removes_the_root() {
+        let (root, evidence, kept, files) = evidence_of_an_estate("scope-kept-evidence");
+        drop(EstateScope::keeping(&root, &evidence, &kept));
+        let read: Vec<Option<String>> = files.iter().map(|(name, _)| std::fs::read_to_string(kept.join(name)).ok()).collect();
+        let _ = std::fs::remove_dir_all(&kept);
+        assert!(!root.exists(), "the scope removed the estate's root");
+        assert_eq!(read, files.iter().map(|(_, body)| Some(body.to_string())).collect::<Vec<_>>(), "every evidence file is kept, whole, under its own relative path");
     }
 
     /// CONTRACT: a node-admin that never names its application contact is refused by name, and the

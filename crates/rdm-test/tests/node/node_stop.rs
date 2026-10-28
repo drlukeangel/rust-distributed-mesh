@@ -1614,3 +1614,41 @@ async fn a_signal_stop_past_the_bound_leaves_naming_its_undelivered_declarations
     let elapsed: u64 = attr(&outcome, "elapsed_ms").parse().unwrap_or(0);
     assert!((3_000..8_000).contains(&elapsed), "the stop waited the bound and left ({elapsed} ms): {outcome}");
 }
+
+/// CONTRACT (rdm#118; telemetry.md §1 "Exit": the exit flush is bounded, i146 Q60): an estate's
+/// processes write their span evidence on tmpfs under the estate's root, never on the disk the
+/// estate's artifacts are on, so the gate's disk load holds no write of a bounded exit flush; the
+/// estate keeps the evidence in its artifacts when it ends. The fabric's only node-admin is stopped by
+/// its signal: the span its stop closes last (`rdm.mesh.node.delete.via-signal`) is in its evidence file
+/// once it has exited, and the kept copy is that file whole once the estate ends.
+/// Must NOT happen: the evidence directory on a disk filesystem or under the artifacts, the admin given
+/// another, or the last span missing from either copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_signal_stops_last_span_is_in_the_evidence_on_tmpfs_and_kept_when_the_estate_ends() {
+    let test = "a_signal_stops_last_span_is_in_the_evidence_on_tmpfs_and_kept_when_the_estate_ends";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    let evidence = estate.evidence.clone();
+    let fs = {
+        let path = std::ffi::CString::new(evidence.display().to_string()).unwrap();
+        let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::statfs(path.as_ptr(), &mut st) }, 0, "statfs {}", evidence.display());
+        st.f_type
+    };
+    assert_eq!(fs, libc::TMPFS_MAGIC, "the estate's evidence {} is on tmpfs (TMPDIR={:?})", evidence.display(), std::env::var("TMPDIR"));
+    assert!(!evidence.starts_with(rdm_test::estate::artifacts_root()), "the evidence {} is not written under the artifacts", evidence.display());
+    let pid = estate.bootstrap_pid().expect("the bootstrap admin runs");
+    let env = std::fs::read(format!("/proc/{pid}/environ")).unwrap();
+    let given = env.split(|b| *b == 0).find_map(|v| v.strip_prefix(b"RDM_EVIDENCE_DIR=")).map(|v| String::from_utf8_lossy(v).into_owned());
+    assert_eq!(given.as_deref(), Some(evidence.display().to_string().as_str()), "the bootstrap admin writes its evidence there");
+
+    assert_eq!(estate.stop().await, Vec::<u32>::new(), "the admin ended by its own stop");
+    let file = std::fs::read_dir(&evidence).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).find(|n| n.starts_with(&format!("rdm-node-admin.{pid}-")) && n.ends_with(".spans.jsonl")).expect("the admin's evidence file");
+    let written = std::fs::read_to_string(evidence.join(&file)).unwrap();
+    let last = written.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|sp| sp["name"] == "rdm.mesh.node.delete.via-signal").last();
+    let last = last.unwrap_or_else(|| panic!("the signal stop's last span is in {file}"));
+    let kept = estate.kept_evidence();
+    estate.record_trace_url(last["trace_id"].as_str().unwrap_or(""));
+    drop(estate);
+    assert!(!evidence.exists(), "the estate's root is removed when it ends");
+    assert_eq!(std::fs::read_to_string(kept.join(&file)).ok().as_deref(), Some(written.as_str()), "the kept {file} is the evidence file whole");
+}

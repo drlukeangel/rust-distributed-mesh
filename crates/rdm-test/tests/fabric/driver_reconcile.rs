@@ -178,7 +178,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
         "evidence": {
             "estate_manifest": estate.artifacts.join("manifest.json"),
             "rpc_ledger": estate.artifacts.join("rpc-ledger.jsonl"),
-            "spans_dir": estate.evidence,
+            "spans_dir": estate.kept_evidence(),
             "exported_spans": spans.len(),
             "proof_store_serve_spans": served,
             "build_attempt_spans": reconciles,
