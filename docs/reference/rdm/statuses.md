@@ -118,7 +118,7 @@ serde: `rename_all = "kebab-case"`
 | 1 | **`Ready`** | `ready` |  |  | Ready: it takes traffic. |
 | 2 | **`Leaving`** | `leaving` |  |  | Leaving: it has announced its departure. |
 | 3 | **`Dead`** | `dead` |  |  | Dead: it is gone. |
-| 4 | **`Retired`** | `retired` |  |  | Retired: it has been taken out of service. |
+| 4 | **`Deleted`** | `deleted` |  |  | Deleted: it has been taken out of service (node.delete). |
 
 <a id="t-rdm_core-digest-MemberStatus"></a>
 
