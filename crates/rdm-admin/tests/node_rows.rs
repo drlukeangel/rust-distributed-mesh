@@ -1920,3 +1920,46 @@ fn node_update_of_node_type_and_invalid_node_type_are_refused_by_name() {
     });
 }
 
+
+/// CONTRACT (node-recovery.md: a birth that comes back after its re-creation is a deleted birth; the
+/// rows writer: "a `Deleted` record is left as it stands"; Q110: nothing else is built for it): a writer
+/// whose copy of a node's record predates that record's delete (a mesh-primary held suspended while its
+/// recovery deleted it) changes the record: the stored record is read first, it is Deleted, and it is
+/// left as it stands, named on `rdm.node_admin.node.update.via-node-row` with outcome `deleted-stands`;
+/// the writer's copy is the stored record from then on, so its next change writes nothing either. Must
+/// NOT happen: the stale copy written whole over the Deleted record.
+#[tokio::test]
+async fn a_writer_whose_copy_predates_a_delete_leaves_the_stored_deleted_record_as_it_stands() {
+    let storage = MemoryNodesStorage::default();
+    let id = NodeId::mint();
+    let name: PathName = "mesh2.admin.1".parse().unwrap();
+    let deleter = rdm_admin::node_rows::WrittenRows::default();
+    deleter.update(&storage, &id, Some(NodeRow::new(name.clone(), id.clone(), NodeStatus::ReadyForTraffic)), |_| ()).await.unwrap();
+    // The resumed writer's copy, taken while the record was live.
+    let resumed = rdm_admin::node_rows::WrittenRows::default();
+    assert_eq!(resumed.known_row(&storage, &id).await.unwrap().map(|r| r.status), Some(NodeStatus::ReadyForTraffic));
+    deleter.update(&storage, &id, None, |r| r.status = NodeStatus::Deleted).await.unwrap();
+    let (exporter, capture) = {
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let (capture, layer) = rdm_transport::span_capture("i143-rdm108-deleted-stands", exporter.clone());
+        (exporter, (capture, layer))
+    };
+    let (pipeline, layer) = capture;
+    let wrote = {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let _g = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+        let first = resumed.update(&storage, &id, None, |r| r.config.insert("k".into(), "v".into())).await.unwrap();
+        let second = resumed.update(&storage, &id, None, |r| r.status != NodeStatus::Deleted).await.unwrap();
+        (first, second)
+    };
+    assert!(wrote.0.is_none(), "the stale change writes nothing: {wrote:?}");
+    assert_eq!(wrote.1, Some(false), "the writer's copy is the stored Deleted record from then on: {wrote:?}");
+    let stored = storage.node(&id).await.unwrap().expect("the record");
+    assert_eq!((stored.status, stored.config.get("k")), (NodeStatus::Deleted, None), "the Deleted record stands as its delete wrote it: {stored:?}");
+    pipeline.flush(std::time::Duration::from_secs(10)).unwrap();
+    let spans: Vec<_> = exporter.get_finished_spans().unwrap().into_iter().filter(|s| s.name == "rdm.node_admin.node.update.via-node-row").collect();
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    let attrs: BTreeMap<String, String> = spans[0].attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect();
+    assert_eq!((attrs.get("outcome").map(String::as_str), attrs.get("subject").map(String::as_str)), (Some("deleted-stands"), Some("mesh2.admin.1")), "{attrs:?}");
+    eprintln!("span rdm.node_admin.node.update.via-node-row trace_id={} {attrs:?}", spans[0].span_context.trace_id());
+}

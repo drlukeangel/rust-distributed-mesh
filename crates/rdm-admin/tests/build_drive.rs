@@ -2946,3 +2946,55 @@ async fn the_drive_claims_an_unheard_mesh_primarys_recovery_for_the_mesh_primary
     let claimed = r.builds.read_build(&r.build).await.unwrap().attempt_executors;
     assert_eq!(claimed.get(&attempt).map(String::as_str), Some("mesh2.admin.2"), "claimed for the mesh-primary the election named: {claimed:?}");
 }
+
+/// CONTRACT (build.md: the Build facts are "written by the fabric-primary", and "a call carrying a claim
+/// that is not the current folded attempt of the receiver's projection is refused `StaleClaim`"; Q118;
+/// Q239 addendum 0): an executor on another admin reports its step receipts up the attempt's stream,
+/// and the fabric-primary writes each by the claim record it holds: a receipt of the claimed attempt is
+/// written; a receipt of an attempt the record does not hold is refused
+/// `rdm.node_admin.build.reject.via-stale-claim` and written nowhere; the run's reported `Complete` is
+/// written as the attempt's verdict by the fabric-primary. Must NOT happen: a receipt the record does
+/// not hold written, or a remote run's attempt left with no verdict.
+#[tokio::test]
+async fn a_remote_executors_reported_receipts_are_written_by_the_claim_record_and_any_other_attempts_refused() {
+    use rdm_admin::build_drive::InnerItem;
+    use rdm_admin::build_state::{BuildStepReceipt, StepOutcome};
+    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-rdm108-reported-receipts");
+    let r = rig().await;
+    let (feed, items) = tokio::sync::mpsc::unbounded_channel();
+    let fed = Arc::new(Fed { items: Mutex::new(Some(items)), dispatched: tokio::sync::Notify::new() });
+    let e = &r.env;
+    let env = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: fed.clone(),
+        gate: e.gate.clone(),
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        turns: e.turns.clone(),
+    });
+    let drive = Drive::detached(r.build.clone());
+    let (e, d) = (env.clone(), drive.clone());
+    let running = tokio::spawn(async move { e.run(&d).await });
+    tokio::time::timeout(Duration::from_secs(5), fed.dispatched.notified()).await.expect("attempt 1 is dispatched");
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "attempt 1 runs at the remote executor");
+    let receipt = |attempt: u32, step: &str| BuildStepReceipt { build_id: r.build.clone(), attempt, operation: "node.create:mesh1.rpc.2".into(), step: step.into(), outcome: StepOutcome::Complete, output: None, executor: Some("mesh1.admin.2".into()), mesh: None };
+    let frame = |attempt: u32, step: &str| InnerItem::Frame(BuildReply::Step { build_id: r.build.to_string(), attempt, operation: "node.create:mesh1.rpc.2".into(), step: step.into(), receipt: Some(serde_json::to_vec(&receipt(attempt, step)).unwrap()) });
+    feed.send(frame(1, "AllocateIdentity")).unwrap();
+    feed.send(frame(2, "PrepareStorage")).unwrap();
+    feed.send(InnerItem::Frame(BuildReply::Complete { build_id: r.build.to_string(), attempt: 1 })).unwrap();
+    let end = tokio::time::timeout(Duration::from_secs(5), running).await.expect("the drive ends on the run's terminal").unwrap();
+    assert!(matches!(end, DriveEnd::Terminal), "{end:?}");
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    let steps: Vec<(u32, String)> = p.steps.iter().filter(|s| s.operation == "node.create:mesh1.rpc.2").map(|s| (s.attempt, s.step.clone())).collect();
+    assert_eq!(steps, vec![(1, "AllocateIdentity".to_string())], "the claimed attempt's receipt is written and the other attempt's is not");
+    assert!(p.reported.contains(&1), "the fabric-primary writes the remote run's verdict: {:?}", p.reported);
+    let refused = capture.spans("rdm.node_admin.build.reject.via-stale-claim");
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    let attrs = &refused[0].1;
+    assert_eq!((attrs.get("attempt").map(String::as_str), attrs.get("held_attempt").map(String::as_str), attrs.get("executor").map(String::as_str)), (Some("2"), Some("1"), Some("mesh1.admin.2")), "{attrs:?}");
+    eprintln!("span rdm.node_admin.build.reject.via-stale-claim trace_id={} {:?}", refused[0].0, attrs);
+}
