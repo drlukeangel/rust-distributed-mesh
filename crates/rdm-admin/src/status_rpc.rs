@@ -1306,14 +1306,14 @@ impl StatusAuthority {
         match checked {
             Ok(key) => {
                 let expiry = key.expiry_ms();
+                let installed = key.cert().clone();
                 let previous = certs.install_issuer(key);
                 tracing::info_span!("rdm.node_admin.issuer.update.via-installed", node = %self.me, node_id = %self.node_id, mesh = %me.mesh, sender, issuer_expires_at = expiry, previous_issuer_expires_at = previous.unwrap_or(0))
                     .in_scope(|| tracing::info!("the mesh's new issuer is installed: member certs are signed with it from now"));
                 // A mesh-primary writes its own signing cert dates on its own record at its install
                 // (node-issuer-update.md step 4).
                 if crate::node_rows::writes_for(view, &self.node_id, &me.mesh) {
-                    let issued_at = certs.now_ms().unwrap_or(0);
-                    let dates = crate::storage::SigningCertDates { issued_at, expires_at: expiry, renew_at: crate::certs::issuer_renew_at(&me.mesh, issued_at, expiry, certs.policy().renew_at_permille) };
+                    let dates = crate::cert_renewal::installed_signing_dates(&installed, certs);
                     if let Err(why) = self.write_own(&me, incarnation, |b| b.signing_cert = Some(dates)).await {
                         return rdm_core::reply::status::not_ready(format!("{}: the issuer is installed and its dates could not be written on its record: {why}", self.me));
                     }
@@ -2363,25 +2363,26 @@ impl rdm_transport::CarriedReplies for CarriedIssuerDates {
         if inner_op != Status::OP {
             return;
         }
-        let (Ok(StatusRequest::UpdateIssuer { incarnation, .. }), Ok(StatusReply::IssuerUpdated { node_id, incarnation: answered, issuer_expires_at })) = (Status::decode_request(request), Status::decode_reply(reply)) else { return };
+        let (Ok(StatusRequest::UpdateIssuer { incarnation, cert, .. }), Ok(StatusReply::IssuerUpdated { node_id, incarnation: answered, .. })) = (Status::decode_request(request), Status::decode_reply(reply)) else { return };
         let Some(auth) = self.0.get().cloned() else { return };
         if node_id != *target || answered != incarnation {
             return;
         }
-        auth.write_carried_issuer(&node_id, &incarnation, issuer_expires_at).await;
+        // The admin installed the cert carried, or refused it: its dates are that cert's.
+        let Ok(signed) = rdm_core::certs::decode_issuing_cert(&cert) else { return };
+        auth.write_carried_issuer(&node_id, &incarnation, &signed).await;
     }
 }
 
 impl StatusAuthority {
     /// Write the signing cert dates admin `node_id`'s birth `incarnation` answered, carried through this
     /// admin, on the admin's record when this admin writes its mesh's records.
-    async fn write_carried_issuer(&self, node_id: &NodeId, incarnation: &IncarnationId, expires_at: u64) {
+    async fn write_carried_issuer(&self, node_id: &NodeId, incarnation: &IncarnationId, signed: &rdm_core::certs::SignedIssuingCert) {
         let view = self.topology.read().await.clone();
         let Some(admin) = view.births().find(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(incarnation)).cloned() else { return };
         let (Some(certs), true) = (&self.certs, crate::node_rows::writes_for(&view, &self.node_id, &admin.mesh)) else { return };
-        let issued_at = certs.now_ms().unwrap_or(0);
-        let dates = crate::storage::SigningCertDates { issued_at, expires_at, renew_at: crate::certs::issuer_renew_at(&admin.mesh, issued_at, expires_at, certs.policy().renew_at_permille) };
-        let span = tracing::info_span!("rdm.node_admin.issuer.update.via-carried", node = %admin.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), carrier = %self.me, issuer_expires_at = expires_at, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let dates = crate::cert_renewal::installed_signing_dates(signed, certs);
+        let span = tracing::info_span!("rdm.node_admin.issuer.update.via-carried", node = %admin.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), carrier = %self.me, issuer_expires_at = dates.expires_at, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         let base = crate::storage::NodeRow::new(admin.name.clone(), admin.node_id.clone(), admin.status);
         match self.caches.nodes.update(&*self.nodes_storage, node_id, Some(base), |r| r.birth_mut(incarnation, &admin.name).signing_cert = Some(dates)).await {
             Ok(_) => {

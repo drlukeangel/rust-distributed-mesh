@@ -783,11 +783,12 @@ async fn estate_span(estate: &rdm_test::estate::Estate, name: &str, what: &str, 
 
 // @feature: node-lifecycle
 /// CONTRACT (node-cert-renew.md Caller: "its mesh-primary for a member, the fabric-primary for a
-/// mesh-primary"; e3, decided by arch: "a mesh-primary's cert rows are written by the fabric-primary
-/// through the `_of(mesh)` door"): under a 30 s member TTL, the fabric-primary (mesh1.admin.1) renews
-/// mesh2's primary, spanned `via-renewal` `installed` for it. The renewed issue is mesh2's own row:
-/// `node.get` shows it at the fabric-primary, which reads mesh2's rows through the door, and at
-/// mesh2's primary, which reads them as its own.
+/// mesh-primary"; Row: "A mesh-primary's own cert, issued by the fabric-primary, it writes on its own
+/// record when it installs it"; Q141, Q241: the row holds the cert's own dates, never a clock's): under
+/// a 30 s member TTL, the fabric-primary (mesh1.admin.1) renews mesh2's primary, spanned `via-renewal`
+/// `installed` for it. `node.get` shows that issue's dates exactly, issued_at and expires_at, at the
+/// fabric-primary and at mesh2's primary, which wrote them on its own row: two admins on two clocks,
+/// one set of dates (rdm#112: mesh2's row held its own clock, 1 ms behind, as issued_at).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_through_that_meshs_door() {
     use rdm_test::estate::Estate;
@@ -801,15 +802,15 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_throu
     assert!(primary.is_primary && !primary.is_fabric_primary, "mesh2.admin.1 is mesh2's primary and not the fabric's: {primary:?}");
 
     let renewed = estate_span(&estate, "rdm.node_admin.cert.update.via-renewal", "the fabric-primary renews mesh2.admin.1", Duration::from_secs(60), |sp| attr(sp, "node") == "mesh2.admin.1" && attr(sp, "outcome") == "installed").await;
-    let issued_at = attr_num(&renewed, "issued_at");
+    let (issued_at, expires_at) = (attr_num(&renewed, "issued_at"), attr_num(&renewed, "expires_at"));
     for at in ["mesh1.admin.1", "mesh2.admin.1"] {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
             let shown = estate.node_views_at(&Estate::path(at)).await.and_then(|vs| vs.into_iter().find(|v| v.name.to_string() == "mesh2.admin.1")).and_then(|v| v.cert);
-            if shown.as_ref().is_some_and(|c| c.issued_at >= issued_at) {
+            if shown.as_ref().is_some_and(|c| (c.issued_at, c.expires_at) == (issued_at, expires_at)) {
                 break;
             }
-            assert!(tokio::time::Instant::now() < deadline, "node.get at {at} shows mesh2.admin.1's renewed issue ({issued_at}) from mesh2's rows: {shown:?}");
+            assert!(tokio::time::Instant::now() < deadline, "node.get at {at} shows mesh2.admin.1's renewed issue's dates ({issued_at}, {expires_at}): {shown:?}");
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
