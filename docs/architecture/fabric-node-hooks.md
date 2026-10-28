@@ -127,7 +127,7 @@ on a task of its own. The notice gates nothing in RDM.
 ## on_fabric_ready
 
 After the ready-for-traffic state is set, the fabric-primary sends the application one
-`on_fabric_ready` notice ([ready-for-traffic](lifecycles/states.md#the-fabrics-ready-for-traffic)), with
+`on_fabric_ready` notice ([ready-for-traffic](lifecycles/states.md#the-fabrics-ready)), with
 `FabricReadyCtx { fabric_id, build_id, attempt, context }`: the accepted Build and attempt whose change
 made the fabric ready-for-traffic and that attempt's observability context. Rafka opens client traffic
 on that notice. The notice gates nothing in RDM.

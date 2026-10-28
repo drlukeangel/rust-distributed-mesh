@@ -33,7 +33,7 @@ page that owns each step is linked at the step.
    and creates the fabric row and its own mesh's row. Every other mesh's row is created by that
    mesh's primary.
 4. When every mesh the accepted Build names is ready-for-traffic, the fabric-primary sets the fabric
-   [ready-for-traffic](states.md#the-fabrics-ready-for-traffic) (Q174).
+   [ready-for-traffic](states.md#the-fabrics-ready) (Q174).
 5. The application is told once (`on_fabric_ready`) and opens client traffic.
 6. Emit `fabric.created`. The call ends here.
 
