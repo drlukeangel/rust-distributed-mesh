@@ -109,6 +109,11 @@ PY
 # drop in test discovery naming the package and binary. Tests main gained after that base are not the
 # candidate's to have: a landing during the gate no longer reddens it (8 of 30 red gates on 2026-10-28
 # were that); lane-land.sh re-proves a tip whose files main moved in.
+# The code a discovery lists: the trees its tests are built from, so a landed main (rebased, with a docs
+# commit on top) whose code equals a gated candidate's reuses that candidate's discovery.
+code_key(){
+    git rev-parse "$1:crates" "$1:tools" "$1:Cargo.toml" "$1:Cargo.lock" "$1:demo" 2>/dev/null | sha1sum | cut -c1-16
+}
 discover_check(){
     BASE=$(git merge-base HEAD origin/main)
     MAIN_SHA=$(git rev-parse --short "$BASE")
@@ -136,6 +141,8 @@ for l in open(art_path):
 json.dump(pkgs, open(out_path, "w"), indent=2, sort_keys=True)
 PY
     cp "$CAND_DISC" "$DEPLOY/discovery-$SHA.json"
+    cp "$CAND_DISC" "$DEPLOY/discovery-code-$(code_key HEAD).json"
+    [ -f "$MAIN_DISC" ] || { f="$DEPLOY/discovery-code-$(code_key "$BASE").json"; [ -f "$f" ] && cp "$f" "$MAIN_DISC"; }
     # A main whose code equals an earlier main's (a docs-only push) has that main's tests: reuse its
     # discovery rather than building main's whole workspace again.
     if [ ! -f "$MAIN_DISC" ]; then
