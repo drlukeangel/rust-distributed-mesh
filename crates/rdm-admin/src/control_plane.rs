@@ -720,7 +720,7 @@ impl ControlPlane {
     /// lifecycles/node-replace.md), under `span`. The topology is unchanged; the Build stays the
     /// current one. Refused by name: a Build with no step, one naming an operation twice, or one
     /// acting on a path that holds no birth and that no earlier step makes
-    /// ([`crate::accepted::steps_action`]); a step in a mesh held by its own drift attempt (R-BI7
+    /// (`crate::accepted::steps_action`); a step in a mesh held by its own drift attempt (R-BI7
     /// caveat 3); a step on a node of a peer mesh this fabric-primary holds unheard (R-D1); a
     /// node.connections.delete, stop or delete of a seat holder while no other node of its type in its
     /// mesh can take its seat (R-MT1, Q7).

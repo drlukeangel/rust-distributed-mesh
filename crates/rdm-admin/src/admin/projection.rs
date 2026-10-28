@@ -113,7 +113,7 @@ pub fn project_with(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, 
 /// What a view rebuild reads from the stores, taken in one read phase before the view's write lock
 /// ([`Records::install_read`], `view_now`) and handed to the projection under it. Every store read a
 /// projection needs is read in [`ViewReads::read`]: the exited-verdict rows, folded into the records
-/// ([`Records::read_exits`]), and the node rows, a field here; nothing is read under the lock.
+/// (`Records::read_exits`), and the node rows, a field here; nothing is read under the lock.
 pub struct ViewReads {
     /// The instant the births were judged at: the projection is taken as of it, so the births it lists
     /// from these reads are exactly the ones the reads covered.

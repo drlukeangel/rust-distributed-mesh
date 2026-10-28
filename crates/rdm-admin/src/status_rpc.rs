@@ -110,7 +110,7 @@ pub struct Declared {
     /// Moves each time a state the view's projection reads changes here: a birth's declared state
     /// ([`Self::hold_node`], [`Self::forget_node`]) or a Mesh's ([`Self::hold_mesh`]), or what
     /// [`Self::fold_records`] folds. `nodes` and `meshes` are written through those alone. What the
-    /// view rebuild waits on ([`crate::admin::ViewWake`]); nothing is sent.
+    /// view rebuild waits on (`crate::admin::ViewWake`); nothing is sent.
     pub moved: DeclaredMoved,
 }
 
@@ -340,7 +340,7 @@ impl SeatFold {
     /// The fold is the successor's acquisition of the held member statuses (node-status-heartbeat-
     /// connections.md §A.3), and `digest_view`, this admin's digest view, is what its member projection is
     /// published from: each folded birth of the mesh whose state is ahead of what the view holds for
-    /// it is adopted there ([`DigestView::adopt_status`]), before the view naming this admin primary is
+    /// it is adopted there ([`DigestView::adopt_status`](rdm_transport::topology::DigestView::adopt_status)), before the view naming this admin primary is
     /// installed and so before its first projection (fabric-authority.md §7: hydration, not
     /// transition). One `rdm.node_admin.status.update.via-successor-fold` per birth adopted or refused.
     pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, digest_view: Option<&rdm_transport::topology::DigestView>) {
@@ -1719,7 +1719,7 @@ impl StatusAuthority {
     /// the node (a superseding birth) or holds the node deleted (node.deleted). Which birth holds a
     /// path.name is the records' answer, never the view's (Q197; node-identity-and-state.md §2.3 "the
     /// deleted row releases the `path.name`"): a birth whose row holds its name live holds it, whatever
-    /// digests of other births the view still holds there ([`Self::superseded_on_rows`]). Each such
+    /// digests of other births the view still holds there (`Self::superseded_on_rows`). Each such
     /// birth's keys are tombstoned, blind, and then forgotten in memory. A birth the rows hold current
     /// and the view holds at the same incarnation keeps its rows, however long it is silent, and so
     /// does a birth the view does not hold at all that the rows do not show superseded (nothing is

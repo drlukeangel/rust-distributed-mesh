@@ -10,9 +10,9 @@
 //!
 //! A step receipt's `output` is the JSON value the step committed (`serde_json::Value`, the
 //! REST and journal shape). On the wire it is the typed result of the step that produced it
-//! ([`WireOutput`]), chosen by the receipt's own step name. A step name this build does not
+//! (`WireOutput`), chosen by the receipt's own step name. A step name this build does not
 //! know to produce an output, or an output that is not the type its step produces, is refused by
-//! name ([`WireRefusal`]) — never sent as something else, never dropped.
+//! name (`WireRefusal`) — never sent as something else, never dropped.
 
 use crate::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyChange};
 use crate::build::{BuildId, FabricDesired, MeshDesired};

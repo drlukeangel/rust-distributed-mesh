@@ -46,7 +46,7 @@ pub struct HeardAgain {
 pub type HeardAgainSlot = Arc<OnceLock<Arc<HeardAgain>>>;
 
 impl HeardAgain {
-    /// Command `node`'s exact birth back through `node.mesh.join` ([`command_mesh_join`]).
+    /// Command `node`'s exact birth back through `node.mesh.join` (`command_mesh_join`).
     pub async fn command(&self, node: &Node, incarnation: &IncarnationId) -> String {
         let outcome = match self.runner.get() {
             None => "no-runner".to_string(),

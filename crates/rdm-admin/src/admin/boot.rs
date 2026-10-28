@@ -168,7 +168,7 @@ impl Running {
     /// Leaving when it is its mesh's primary; `node.mesh.leave`, its own mesh and the backbone left and
     /// its Node RPC pool cut but for the connection to its mesh-primary; its `Stopped` owed to its
     /// mesh-primary (node-rpc.md §43); then the wait until each owed declaration is answered or its
-    /// receiver proven gone (Q206). Then the process end ([`Self::leave_with`]): every task aborted,
+    /// receiver proven gone (Q206). Then the process end (`Self::leave_with`): every task aborted,
     /// each call this node answered settled with its caller, the transport closed.
     pub async fn leave(self) {
         self.pre_node_ready_cancel.cancel();

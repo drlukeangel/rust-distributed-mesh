@@ -34,7 +34,7 @@ pub struct BuildMessage {
 }
 
 impl BuildMessage {
-    /// This message as one frame; the frame is not bounded here (see [`encode`]).
+    /// This message as one frame; the frame is not bounded here (see `encode`).
     pub fn to_bytes(&self) -> Result<bytes::Bytes, BuildStateError> {
         let wire = crate::wire::WireMessage::of(self).map_err(|e| BuildStateError::Unencodable(e.to_string()))?;
         rdm_transport::wire::encode(&wire).map(Into::into).map_err(|e| BuildStateError::Unencodable(e.to_string()))

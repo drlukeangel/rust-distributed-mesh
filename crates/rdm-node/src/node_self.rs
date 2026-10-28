@@ -1256,7 +1256,7 @@ impl NodeSelf {
     }
 
     /// The stop this process's own signal runs: node.stop's steps with the node its own subject
-    /// ([`Self::stop_steps`], i146 Q55), then the wait its process end follows (Q206): each owed
+    /// (`Self::stop_steps`, i146 Q55), then the wait its process end follows (Q206): each owed
     /// declaration's call ends on its answer or on the proof its receiver is gone, over the
     /// connection to the mesh-primary the cut spared. A mesh-primary exiting beside this node
     /// leaves no proof this node can hear once its mesh is left, so the wait is bounded by the

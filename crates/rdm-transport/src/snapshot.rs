@@ -123,7 +123,7 @@ impl Full {
         self.digests.len()
     }
 
-    /// Whether `other` is the same topology: the same members by [`topology_view`], the same
+    /// Whether `other` is the same topology: the same members by `topology_view`, the same
     /// overlays, the same departures. A heartbeat, a stamp, a load or a republish is not a
     /// difference.
     pub fn same_topology(&self, other: &Full) -> bool {
@@ -388,7 +388,7 @@ pub enum Refusal {
         why: &'static str,
     },
     /// A topology read chunk below the version this node installed from the same publisher: the
-    /// receive path ignored it (R-RX3, [`crate::receive_order`]).
+    /// receive path ignored it (R-RX3, `crate::receive_order`).
     OlderThanHeld {
         /// The version held.
         held_version: u64,

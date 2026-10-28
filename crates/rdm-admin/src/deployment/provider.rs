@@ -412,7 +412,7 @@ pub trait DeploymentProvider: Send + Sync {
     /// The provider control domain this provider's locators mean something in.
     fn control_domain(&self) -> String;
     /// Start the launch `spec` and return the exact handle of its runtime. The launch's record in
-    /// its data dir ([`write_launch_record`]) is durable before the runtime's executable runs, so a
+    /// its data dir (`write_launch_record`) is durable before the runtime's executable runs, so a
     /// runtime that runs always has its record and an executor lost at any point of the spawn
     /// leaves [`find`](Self::find) a record to read.
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError>;
@@ -490,7 +490,7 @@ pub(crate) async fn write_held_runtimes(data_dir: &std::path::Path, rows: &[crat
     crate::blocking::blocking_io(move || write_launch_record(&dir, HELD_RUNTIMES_FILE, &record)).await
 }
 
-/// The runtime rows the launcher of the node-admin in `data_dir` handed it ([`write_held_runtimes`]):
+/// The runtime rows the launcher of the node-admin in `data_dir` handed it (`write_held_runtimes`):
 /// none when it handed none. A hand-off this build cannot read is refused by name.
 pub async fn held_runtimes_in(data_dir: &std::path::Path) -> Result<Vec<crate::storage::RuntimeRow>, String> {
     let path = data_dir.join(HELD_RUNTIMES_FILE);

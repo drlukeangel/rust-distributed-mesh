@@ -4,7 +4,7 @@
 /// Run `f`, a blocking disk call (a write that ends in an fsync, a read, a directory made or looked
 /// at), on tokio's blocking pool. No
 /// worker thread waits on the disk, and no lock a worker could block on is held across it: a
-/// journal commit that takes seconds delays only the caller awaiting it. Inside [`io_time`] the call
+/// journal commit that takes seconds delays only the caller awaiting it. Inside [`io_time_with`] the call
 /// adds what it took to that work's [`IoTime`]: the wait from its issue until a blocking thread began
 /// it, and its run on that thread, including while the call is still queued or running if the caller
 /// awaiting it is cancelled.

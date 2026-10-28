@@ -856,7 +856,7 @@ pub(crate) fn recovery_progress(build: &crate::build_state::BuildProjection, pat
 }
 
 /// The attempt whose `node.create:<path>`, the last operation of the recovery of the exited birth
-/// `(node_id, incarnation)` ([`recovery_progress`]), completed in `build`. `None` while no attempt
+/// `(node_id, incarnation)` (`recovery_progress`), completed in `build`. `None` while no attempt
 /// recovered that birth: a recovery that deleted the exited instance and has not created the new
 /// node is not one.
 pub fn recovered_at(build: &crate::build_state::BuildProjection, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Option<u32> {
@@ -1040,7 +1040,7 @@ pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, topol
 /// executable (by sha256, as a replacement is planned: [`paths_owed_replacement`]). An entry that names
 /// the executable its row already records is no executable replacement; an entry naming another one is,
 /// and a path or mesh added or removed is a resize. A path's config, tags, storage and placement are
-/// neither: the Build applies them in place (build.md §1; [`properties_owed`]), and a storage or placement
+/// neither: the Build applies them in place (build.md §1; `properties_owed`), and a storage or placement
 /// change re-births a path only with its executable (proposal executable-bindings-at-create.md rule 5), so
 /// a request changing only those leaves the fabric where it is (states.md "Resize and executable
 /// replacement").

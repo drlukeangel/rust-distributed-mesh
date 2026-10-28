@@ -9,7 +9,7 @@
 //! 2. **Copy** and 3. **Switch**, `storage.switch:<change_id>`, run by the fabric-primary once every
 //!    mesh-primary replied `blocked`: the copy ([`rdm_node::storage_copy::copy`]), then the `commit`
 //!    record for `(build_id, change_id)` inserted on the new provider with the store's insert-and-fail
-//!    primitive (the claim primitive, [`ClaimKind::Commit`]), then the Fabric row's line.
+//!    primitive (the claim primitive, [`ClaimKind::Commit`](rdm_node::storage_copy::ClaimKind::Commit)), then the Fabric row's line.
 //! 4. **Unblock**, `mesh.unblock:<mesh>`, run by each mesh-primary: it moves its nodes to the provider
 //!    the `commit` record decided (each node's storage handle replaced, node command op 0x22
 //!    `StorageStep`), replies `unblocked` and issues commands again. A node that will not move (it refuses

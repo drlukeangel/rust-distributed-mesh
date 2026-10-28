@@ -3908,7 +3908,7 @@ impl Backbone {
     /// - this mesh's primary, for its own mesh: the version its projection takes with the event
     ///   applied, observed and versioned under one hold, so its next publication carries exactly that
     ///   version, carrying the event;
-    /// - the fabric-primary stopping a deleted mesh's birth ([`Backbone::publishes_deleted_mesh_of`]):
+    /// - the fabric-primary stopping a deleted mesh's birth (`Backbone::publishes_deleted_mesh_of`):
     ///   from the stop on it is that mesh's publisher of record (gossip.md "Mesh delete"), so the
     ///   version is the deleted mesh's topology's with the stop listed, and that mesh topology leaves on
     ///   the backbone at once, from this event (mesh-delete.md "Command, completion and gossip
@@ -5103,7 +5103,7 @@ impl DigestView {
     }
 
     /// Hold the own-mesh birth `d` its mesh-primary's projection lists, received at `now`, when this
-    /// view holds no digest of it ([`DigestView::projected`]): first held at `now`, or kept as first
+    /// view holds no digest of it (`DigestView::projected`): first held at `now`, or kept as first
     /// held when this exact birth is held already (a projection is no liveness); a later birth of
     /// the node replaces an earlier one, first held at `now`.
     pub fn hold_projected_at(&self, d: &MeshDigest, now: Instant) {
@@ -5318,7 +5318,7 @@ impl DigestView {
     /// runtime fact. A heartbeat of a stopped birth is refused by name. For a birth of this view's own
     /// mesh, its status is the mesh-primary's (gossip.md §3.1: a Digest "carries no status: a member's
     /// status comes only from its mesh-primary"): the held status is the one this view holds for the
-    /// birth ([`Self::projected_status`]), which the primary sets from node.joined, node.started and
+    /// birth (`Self::projected_status`), which the primary sets from node.joined, node.started and
     /// the commands it admits, and every other member takes from its primary's projection. No
     /// heartbeat moves it, at the primary or anywhere.
     pub fn record_at(&self, d: MeshDigest, now: Instant) -> bool {
@@ -5419,7 +5419,7 @@ impl DigestView {
         self.record_topology_at(d, Instant::now())
     }
 
-    /// [`Self::record_topology`], received at `now`.
+    /// `Self::record_topology`, received at `now`.
     pub fn record_topology_at(&self, d: MeshDigest, now: Instant) -> bool {
         if self.is_deleted_at(d.node.node_id.as_str(), now) {
             reject_deleted(&d, "forwarded");
@@ -5461,7 +5461,7 @@ impl DigestView {
         true
     }
 
-    /// [`Self::record_forwarded`], heard at `now`.
+    /// `Self::record_forwarded`, heard at `now`.
     pub fn record_forwarded_at(&self, d: MeshDigest, now: Instant) -> bool {
         self.record_forwarded_inner(d, now, Carried::Status)
     }
@@ -5603,7 +5603,7 @@ impl DigestView {
         self.returned.lock().unwrap().remove(&(node_id.to_string(), incarnation.to_string()));
     }
 
-    /// This node's own loop ran at `now` ([`Self::woken`] first): what a gap is measured from.
+    /// This node's own loop ran at `now` (`Self::woken` first): what a gap is measured from.
     pub fn mark_awake(&self) {
         self.woken();
         *self.awake.lock().unwrap() = Some(Instant::now());
@@ -5644,7 +5644,7 @@ impl DigestView {
 
     /// The birth held at endpoint key `endpoint_id`, as [`Self::get`] answers for its NodeId: a map
     /// read. Two births at one key (a node re-born over its inherited data dir): the one this view
-    /// took most recently ([`HeldMembers`]).
+    /// took most recently (`HeldMembers`).
     pub fn get_by_endpoint(&self, endpoint_id: &str) -> Option<(MeshDigest, Duration)> {
         self.get_by_endpoint_at(endpoint_id, Instant::now())
     }
@@ -5659,7 +5659,7 @@ impl DigestView {
 
     /// The birth held at `name`, as [`Self::get`] answers for its NodeId: a map read. Two births at
     /// one path.name (a successor while its predecessor is still held): the one this view took most
-    /// recently ([`HeldMembers`]).
+    /// recently (`HeldMembers`).
     pub fn get_by_path_name(&self, name: &rdm_core::PathName) -> Option<(MeshDigest, Duration)> {
         self.get_by_path_name_at(name, Instant::now())
     }
@@ -5696,7 +5696,7 @@ impl DigestView {
     }
 
     /// The pruner's sweep at `now` (Q254: one clock, the pruner's; its mark is a view change): every
-    /// departure past the retention is forgotten ([`Self::expire_deleted_at`]), and the births held
+    /// departure past the retention is forgotten (`Self::expire_deleted_at`), and the births held
     /// silent past the staleness floor are read, each held birth by its unheard time and each birth
     /// held only from its mesh-primary's projection by the time since it was first held. When they
     /// differ from the last sweep's, the silence watch moves ([`RoutingWatch`]): the view is rebuilt on

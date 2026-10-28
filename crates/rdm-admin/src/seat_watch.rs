@@ -6,7 +6,7 @@
 //! runtime. An answer from the exact birth is `reached`: the fabric-primary commands it back (Q87).
 //! Any other verdict of an unheard mesh-primary is the fabric-primary's recovery of it, at once
 //! (node-recovery.md step 3, Q111); the fabric-primary itself is superseded by its successor
-//! ([`takeover_due`]).
+//! (`takeover_due`).
 //!
 //! [`plan`] decides what a pass owes, from the view and births already inspected; [`run`] drives it.
 

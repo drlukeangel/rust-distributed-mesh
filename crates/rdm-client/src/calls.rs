@@ -378,7 +378,7 @@ impl<'a> NodeRpc<'a> {
     /// `node.tags.create` of `labels` on the exact birth, the caller's single call to the node's
     /// mesh-primary `mesh_primary` (R-TG1; node-rpc-envelope.md node.tags): it writes the node's row
     /// carrying them and puts each label's key of the tags index, and answers `TagsCreated` naming
-    /// any label the node already carried. `route` as [`Self::node_update`].
+    /// any label the node already carried. `route` as `Self::node_update`.
     pub async fn tags_create(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, labels: &std::collections::BTreeSet<String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::CreateTags { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), labels: labels.clone() };
         self.row_writer_call(NodeOp::TagsCreate, mesh_primary, route, &req, opts).await

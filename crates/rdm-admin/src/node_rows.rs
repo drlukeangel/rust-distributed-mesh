@@ -1549,7 +1549,7 @@ pub enum RenameRefused {
 /// node's record carrying `renamed_from: from`, then the release of the old claim. The step resumes from
 /// its receipts: a retry, or a successor writer resuming it, finds `to` claimed by this node and
 /// continues from the record write; a record already at `to` is a move made before, and the release its
-/// `renamed_from` names is finished when still pending ([`finish_release`]). A release that fails after
+/// `renamed_from` names is finished when still pending (`finish_release`). A release that fails after
 /// the write leaves both names held and answers [`Moved::ReleasePending`]: nothing is undone and no
 /// second record is written. The record written starts from the one the writer holds, its facts kept;
 /// a node it holds no record of is written from `record`'s config. The one writer of a rename (R13:
@@ -1638,7 +1638,7 @@ pub enum Moved {
     /// The node held the new name already and not the old one: the move was made before.
     AlreadyMoved,
     /// The node holds the new name and still holds the old one: the release failed, and the next
-    /// writer that meets the row finishes it ([`finish_release`]).
+    /// writer that meets the row finishes it (`finish_release`).
     ReleasePending {
         /// Why the release failed.
         why: String,

@@ -108,7 +108,7 @@ impl TryFrom<u8> for Code {
 /// Classification of a failed-state receipt written before codes were retained.
 pub fn legacy_failed_code() -> Code { Code::FailedPrecondition }
 
-/// A view over the standard code. RDM's typed detail is the protocol reply in Replied<R>.
+/// A view over the standard code. RDM's typed detail is the protocol reply in `Replied<R>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReplyKind { code: Code }
 

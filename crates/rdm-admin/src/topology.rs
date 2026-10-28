@@ -205,7 +205,7 @@ impl Topology {
     }
 
     /// The fabric primary, when exactly one member holds the seat: the holder the election resolved
-    /// from the seat records, whatever its status, as [`Self::cohort_primary`].
+    /// from the seat records, whatever its status, as `Self::cohort_primary`.
     pub fn fabric_primary(&self) -> Option<&Node> {
         let mut p = self.members().filter(|n| n.is_fabric_primary);
         let first = p.next()?;

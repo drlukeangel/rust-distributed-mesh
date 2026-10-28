@@ -1,7 +1,7 @@
 //! The runtime watchdog: proof, from the process itself, of a window in which its async runtime
-//! ran nothing. A tokio task stamps a heartbeat every [`BEAT`]; a plain OS thread (outside the
+//! ran nothing. A tokio task stamps a heartbeat every `BEAT`; a plain OS thread (outside the
 //! runtime, so it runs when the runtime does not) reads it. When the stamp is older than
-//! [`STALL`], the thread samples what every thread of the process is doing (`/proc/self/task`:
+//! `STALL`, the thread samples what every thread of the process is doing (`/proc/self/task`:
 //! state and kernel wait channel); when the runtime runs again it logs the stall's length, the
 //! runqueue wait the process accrued in it, and the samples. Telemetry only: nothing acts on it.
 

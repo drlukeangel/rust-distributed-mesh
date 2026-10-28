@@ -554,12 +554,12 @@ impl Records {
         self.view_tick.subscribe()
     }
 
-    /// A record the projection reads changed here: the view's rebuild is due ([`Self::inputs`]).
+    /// A record the projection reads changed here: the view's rebuild is due (`Self::inputs`).
     pub fn inputs_moved(&self) {
         self.inputs.send_modify(|v| *v += 1);
     }
 
-    /// The watch a view rebuild arms on to see a record the projection reads change ([`Self::inputs`]).
+    /// The watch a view rebuild arms on to see a record the projection reads change (`Self::inputs`).
     pub fn subscribe_inputs(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inputs.subscribe()
     }

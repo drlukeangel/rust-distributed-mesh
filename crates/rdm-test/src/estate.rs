@@ -656,7 +656,7 @@ pub struct Estate {
     pub admin: rdm_client::PathName,
     /// This estate's Fabric id. Control addresses are loopback ports that other estates on the
     /// host reuse once a runtime dies: an admin answers for this estate only when its view names
-    /// this id ([`Self::fabric_at`]).
+    /// this id (`Self::fabric_at`).
     pub fabric_id: String,
     bootstrap: Option<Child>,
     /// The explicit executable bindings this estate runs from, if it was born with any.

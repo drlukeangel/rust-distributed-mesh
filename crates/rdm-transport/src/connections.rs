@@ -2353,7 +2353,7 @@ impl SendStream {
     }
 
     /// Wait for the peer to finish reading or stop this stream; returns `Err(StreamError::Stopped { code })`
-    /// when the peer called [`RecvStream::stop(code)`].
+    /// when the peer called `RecvStream::stop(code)`.
     pub async fn stopped(&mut self) -> Result<(), StreamError> {
         match self.inner.stopped().await {
             Ok(None) => Ok(()),

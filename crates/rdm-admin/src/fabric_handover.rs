@@ -577,7 +577,7 @@ impl HandoverDoor {
     /// after the result is installed and acknowledged: node.primary.updated answered to the resuming
     /// executor's call, never a read alone"). An update this admin holds acknowledged is acknowledged
     /// again with nothing installed. Otherwise the update is discovered from this admin's view
-    /// ([`Self::discovered`]). `false`: the view names the primary still, or holds no node at the name
+    /// (`Self::discovered`). `false`: the view names the primary still, or holds no node at the name
     /// the update names (no primary is there, so no update is owed): no update happened.
     pub async fn row_acknowledged(&self, mesh: &str, operation: &str, named: Option<&PathName>, build_id: &str, attempt: u32) -> Result<bool, String> {
         if self.memo.acknowledged(operation).is_some() {

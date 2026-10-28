@@ -385,7 +385,7 @@ impl Filter {
     }
 
     /// Why this filter is refused for `builds.get` (Q167 R-RD5), naming the pair, or `None` when every
-    /// pair names a property of the Build header ([`BUILD_HEADER`]: `id`, `current`, `phase`,
+    /// pair names a property of the Build header (`BUILD_HEADER`: `id`, `current`, `phase`,
     /// `attempt`, `executor`) and values it can take. Read against the schema, never a Build.
     pub fn builds_refusal(&self) -> Option<String> {
         self.refusal_in(&BUILDS)

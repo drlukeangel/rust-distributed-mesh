@@ -2342,7 +2342,7 @@ fn record_key(fact: &BuildFact) -> Result<String, BuildStateError> {
 
 #[cfg(feature = "file-backend")]
 /// `builds.storage`: the Build journal on the fabric's shared store root, one line of its `builds.jsonl`
-/// per fact at its own key (`<build_id>/<key>`, [`record_key`]; build.md §5.3; R-SR1), appended when
+/// per fact at its own key (`<build_id>/<key>`, `record_key`; build.md §5.3; R-SR1), appended when
 /// it is committed (Q61). A successor folds the lines.
 pub struct FileJournal {
     /// The root's `builds.jsonl`.

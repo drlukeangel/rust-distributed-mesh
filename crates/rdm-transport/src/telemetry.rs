@@ -108,7 +108,7 @@ impl Exporters {
 }
 
 /// The handle of the exporters one `init_*` call built. Dropping it flushes the queued spans and
-/// logs, bounded by [`export::EXIT_FLUSH_BOUND`], and shuts the exporters down.
+/// logs, bounded by `export::EXIT_FLUSH_BOUND`, and shuts the exporters down.
 pub struct TelemetryGuard {
     exporters: Exporters,
 }
@@ -138,7 +138,7 @@ fn flush_log_sinks(deadline: std::time::Instant) {
 /// Flush and shut down the exporters before a deliberate `process::exit`, which skips the guard's
 /// `Drop`: spans closed just before the exit (the reason it exits for) reach the evidence file and the
 /// collector. A process that never initialised telemetry has only its logs to flush. The wait is
-/// bounded by [`export::EXIT_FLUSH_BOUND`]: an unreachable collector never holds the exit.
+/// bounded by `export::EXIT_FLUSH_BOUND`: an unreachable collector never holds the exit.
 pub fn flush_before_exit() {
     match EXIT_FLUSH.get() {
         Some(exporters) => exporters.flush_before_exit("the exit flush"),
@@ -176,7 +176,7 @@ pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
 
 /// Initialize OTLP tracing for short-lived CLI processes.
 /// Spans export in the background like a service's; the guard's `Drop` and
-/// [`flush_before_exit`] flush what is queued, each waiting at most [`export::EXIT_FLUSH_BOUND`],
+/// [`flush_before_exit`] flush what is queued, each waiting at most `export::EXIT_FLUSH_BOUND`,
 /// so a CLI never waits on a collector that is down.
 ///
 /// Also installs the W3C TraceContext propagator globally.

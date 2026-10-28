@@ -174,7 +174,7 @@ impl NodeConfigs {
 
     /// A `UpdateNodeConfig` at the admin `me` (born as `me_id`) sent by `sent_by`, deciding over `view`,
     /// the view `topology` holds (node-config-update.md): a node's own ([`SentBy::Own`]) served by the
-    /// node's mesh-primary ([`Self::own_update`]); a caller's at an admin that is not the fabric-primary,
+    /// node's mesh-primary (`Self::own_update`); a caller's at an admin that is not the fabric-primary,
     /// carried up to the fabric-primary and its answer handed back ([`Self::forward_up`]); at the
     /// fabric-primary, the command sent to the node's mesh-primary ([`Self::update`] in process when it
     /// is that mesh-primary too) and the row as written, from its completion, written into `atlas` over
@@ -756,7 +756,7 @@ impl NodeConfigs {
     /// Owe the row of `node_id` as written, `config` at `revision`, up to the fabric-primary, while this
     /// admin `me` is `mesh`'s primary (node-config-update.md, a node's own update, step 3; Q235 P3): keyed
     /// by the node and its revision, a newer revision replacing an older one's send; one
-    /// `NodeConfigUpdated` owed until the fabric-primary answers by name ([`Self::owed`]: resent to the
+    /// `NodeConfigUpdated` owed until the fabric-primary answers by name (`Self::owed`: resent to the
     /// fabric-primary the view names next on `ReceiverNotPrimary` or an exited verdict, with backoff), and
     /// withdrawn once this admin is not `mesh`'s primary: the next one owes it again from the row
     /// ([`Self::owe_pushes`]). Once this admin holds the fabric-primary, its own atlas takes it. One span,

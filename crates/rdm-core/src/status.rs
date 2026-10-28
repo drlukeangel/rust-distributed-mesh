@@ -1736,7 +1736,7 @@ impl StatusReply {
 impl NodeProtocol for Status {
     const OP: u8 = 0x1B;
     const NAME: &'static str = "status";
-    /// [`MAX_STATUS_REQUEST_BYTES`].
+    /// `MAX_STATUS_REQUEST_BYTES`.
     const MAX_REQUEST_FRAME_BYTES: usize = MAX_STATUS_REQUEST_BYTES;
     /// A `node.connections.deleted` names every connection it accounts for by id: the bound holds
     /// [`MAX_REPORTED_CONNECTIONS`] of them. A read's answer past it is

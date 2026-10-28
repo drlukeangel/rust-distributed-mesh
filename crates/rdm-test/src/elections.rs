@@ -4,8 +4,8 @@
 //! (docs/architecture/fabric-node-lifecycle-elections.md §5: "For every seat: a living holder
 //! keeps its seat; a lower-NodeId candidate that later becomes Ready never displaces it"; "a restarted
 //! node is a candidate for a later vacancy and never displaces the holder"), so a view alone cannot
-//! name a holder: [`seats_as_expected`] checks that exactly one holder is advertised per cohort with a
-//! ready member and that the fabric primary is a mesh primary, and [`seats_kept`] checks that a holder
+//! name a holder: `seats_as_expected` checks that exactly one holder is advertised per cohort with a
+//! ready member and that the fabric primary is a mesh primary, and `seats_kept` checks that a holder
 //! still present and live in a later view still holds its seat. [`expected_primaries`] is the seat a
 //! vacancy goes to: the lowest Ready NodeId of the cohort.
 

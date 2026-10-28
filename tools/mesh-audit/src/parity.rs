@@ -189,7 +189,7 @@ pub enum Violation {
     ConnectionsRowWithoutProof { clause: String, line: usize },
     /// Two rows map the same connections clause.
     ConnectionsDuplicate { clause: String, lines: Vec<usize> },
-    /// A MIRROR row (SHA or clause) that does not name the RDM SHA (`RDM `<sha>``).
+    /// A MIRROR row (SHA or clause) that does not name the RDM SHA (``RDM <sha>``).
     MirrorWithoutRdmProof { row: String, line: usize },
 }
 

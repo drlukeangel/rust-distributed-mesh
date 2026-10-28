@@ -310,7 +310,7 @@ fn parse_cidr(cidr: &str) -> Option<(Ipv4Addr, u8)> {
 }
 
 /// Is UDP `addr` bound in the network namespace of `pid`? Reads `/proc/<pid>/net/udp`
-/// ([`udp_table_holds`]). The kernel answers that table a page per read and resumes each page by
+/// (`udp_table_holds`). The kernel answers that table a page per read and resumes each page by
 /// position, so `Ok(true)` proves the bind, and `Ok(false)` is no proof of absence in a table longer
 /// than a page that changes between its pages.
 pub fn netns_holds_udp(pid: u32, addr: SocketAddr) -> Result<bool, String> {
@@ -318,7 +318,7 @@ pub fn netns_holds_udp(pid: u32, addr: SocketAddr) -> Result<bool, String> {
 }
 
 /// Every UDP socket bound in the network namespace of `pid`, as `/proc/<pid>/net/udp` lists them
-/// ([`udp_sockets_in`]), read as [`netns_holds_udp`] reads it.
+/// (`udp_sockets_in`), read as [`netns_holds_udp`] reads it.
 pub fn netns_udp_sockets(pid: u32) -> Result<Vec<SocketAddr>, String> {
     Ok(udp_sockets_in(&udp_table(pid)?))
 }

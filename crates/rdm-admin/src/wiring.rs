@@ -275,9 +275,9 @@ pub struct Wiring {
     /// they are published on the node's row. A duplicate name in a kind, a name RDM owns and a
     /// node-admin's listeners refuse the start by name ([`crate::deployment::endpoint::ListenerNames`]).
     pub listeners: Vec<rdm_core::launch::DeclaredListeners>,
-    /// The cert material: the fabric's root ([`CertChoice::Ca`]) or no certs by name
-    /// ([`CertChoice::NoCerts`]). There is no default: a
-    /// node-admin started with [`CertChoice::Unchosen`] is refused at start by name.
+    /// The cert material: the fabric's root ([`CertChoice::Ca`](crate::certs::CertChoice::Ca)) or no certs by name
+    /// ([`CertChoice::NoCerts`](crate::certs::CertChoice::NoCerts)). There is no default: a
+    /// node-admin started with [`CertChoice::Unchosen`](crate::certs::CertChoice::Unchosen) is refused at start by name.
     pub certs: crate::certs::CertChoice,
 }
 

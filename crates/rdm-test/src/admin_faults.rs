@@ -3,8 +3,8 @@
 //! Build, deployment, lifecycle and hydration sequences and releases it (i143.e8.s2).
 //!
 //! The product node-admin carries no fault code. Its `Wiring` (`rdm_admin::wiring`)
-//! takes the decorators here: a [`FaultedBuilds`] over the Build state, a [`FaultedProvider`] over
-//! the deployment provider and a [`FaultedEvents`]
+//! takes the decorators here: a `FaultedBuilds` over the Build state, a `FaultedProvider` over
+//! the deployment provider and a `FaultedEvents`
 //! over the lifecycle events. Each decorator
 //! asks the shared [`AdminFaults`] at its one cut; an armed, matching cut holds the caller there
 //! until the door releases it. Nothing else changes: every other call passes straight through.

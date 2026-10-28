@@ -116,7 +116,7 @@ pub struct AdminRunner {
     /// a join is verified against.
     pub listeners: crate::deployment::endpoint::ListenerNames,
     /// The drives of the Builds this admin drives: the node.delete of this admin's own birth ends its
-    /// runtime once the callers of that Build read its terminal ([`Self::delete_own`]).
+    /// runtime once the callers of that Build read its terminal (`Self::delete_own`).
     pub drives: Arc<crate::build_drive::Drives>,
     /// This admin's storage changes: its own block, and the change it runs as the fabric-primary
     /// (storage.md §2 "Changing it").

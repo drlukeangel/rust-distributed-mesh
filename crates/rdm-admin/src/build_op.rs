@@ -3,7 +3,7 @@
 //!
 //! The wire door is a thin decoder: `build.create` hands the change to the control plane's own cores
 //! (`ControlPlane::submit_in` and `open_attempt_in`, the ones the control routes use) and then reads
-//! the Build's [`Drive`](crate::build_drive::Drive); `build.get` and `build.delete` read and forget
+//! the Build's [`Drive`]; `build.get` and `build.delete` read and forget
 //! through the same Build state; `build.attempt.run` is the executor's [`RunDoor`]. Only the
 //! fabric-primary accepts the first three; any other admin refuses by name and names the one it sees.
 //!

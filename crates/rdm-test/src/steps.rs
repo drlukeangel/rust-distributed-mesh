@@ -18,7 +18,7 @@ pub fn predecessor_steps(node: &PathName) -> Vec<Step> {
 
 /// The replace of `node` (node-replace.md steps 1-3) and the predecessor's delete at `<name>.old`:
 /// [`predecessor_steps`], node.create of the successor at `<name>`, the name the rename released, then
-/// node[1].delete at `<name>.old`.
+/// `node[1].delete` at `<name>.old`.
 pub fn replace(node: &PathName) -> Vec<Step> {
     let mut steps = predecessor_steps(node);
     steps.extend([Step::Create { node: node.clone(), executable: None }, Step::Delete { node: node.renamed() }]);

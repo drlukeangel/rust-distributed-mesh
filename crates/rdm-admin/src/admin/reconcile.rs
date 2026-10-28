@@ -418,7 +418,7 @@ impl FabricTenureRows {
 ///   admin and deletes it only on its exact exit, so nothing is proven or recorded here;
 /// - a peer mesh whose investigation decided `unreachable` (`unreachable`: mesh-investigation.md step
 ///   5, "No member answers"): the same steps, for the mesh's first node-admin
-///   ([`unanswered_peer_mesh`]); the drive that claims that attempt authors the fabric `degraded`
+///   (`unanswered_peer_mesh`); the drive that claims that attempt authors the fabric `degraded`
 ///   ([`Records::open_mesh_recovery`], R-DG1);
 /// - a mesh this authority hears (it is not held unheard) that lost its mesh-primary, whose unheard
 ///   node-admin the provider was asked about: the same steps, for that admin, on whatever verdict

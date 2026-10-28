@@ -1,11 +1,11 @@
 //! Where telemetry export runs, and what an unreachable collector costs the process: nothing.
 //!
-//! Export runs on one dedicated OS thread with its own single-threaded runtime ([`ExportRuntime`]),
+//! Export runs on one dedicated OS thread with its own single-threaded runtime (`ExportRuntime`),
 //! never on the application's runtime: a collector that is down, silent or unroutable blocks only
 //! that thread. The batch processors reach it through bounded queues that drop on overflow; the
-//! exporter wrappers ([`WatchedSpans`], [`WatchedLogs`]) turn every failed batch into a count and
+//! exporter wrappers (`WatchedSpans`, `WatchedLogs`) turn every failed batch into a count and
 //! name each outage once, when it starts and when it ends. A caller that must wait for the
-//! queue to empty (a guard dropping, a process about to exit) waits at most [`EXIT_FLUSH_BOUND`].
+//! queue to empty (a guard dropping, a process about to exit) waits at most `EXIT_FLUSH_BOUND`.
 
 use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::logs::{LogBatch, LogExporter};
@@ -207,7 +207,7 @@ impl<E: LogExporter> LogExporter for WatchedLogs<E> {
     }
 }
 
-/// Run each job on a thread of its own and wait at most [`EXIT_FLUSH_BOUND`] for all of them; when the
+/// Run each job on a thread of its own and wait at most `EXIT_FLUSH_BOUND` for all of them; when the
 /// collector is known to be down they are not waited for at all. Past the bound the threads are
 /// left behind (the process goes on, or exits and takes them) and the wait is named on stderr.
 pub fn bounded(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>) {

@@ -229,7 +229,7 @@ pub fn node_admin_recoverer(node: &PathName, t: &Topology) -> Option<PathName> {
 /// ... the mesh-primary runs it"; node-identity-and-state.md: "The fabric-primary writes a row only as
 /// acting primary of a mesh with no primary"), decided once, at the attempt's claim, from view `t`, the
 /// view its rows are written against: the mesh-primary the view names in the unheard birth's place,
-/// read from the election and not from liveness, as [`mesh_executor`] reads it; the fabric-primary,
+/// read from the election and not from liveness, as `mesh_executor` reads it; the fabric-primary,
 /// the acting primary, while the mesh holds no other node-admin that is not proven gone
 /// ([`held_admins`]); `None` while the view names no mesh-primary in its place and the mesh holds one:
 /// the election has not named it here yet.
