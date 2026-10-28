@@ -232,8 +232,17 @@ fn command_frames(spans: &[Value], node: &str, operation: &str) -> Vec<String> {
 /// (`written` or `unchanged`).
 fn rows_taken(spans: &[Value], node: &str, from: u64) -> Vec<(String, String)> {
     let mut of: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-row-status").into_iter().filter(|sp| attr(sp, "subject") == node && start_ns(sp) >= from).collect();
-    of.sort_by_key(|sp| start_ns(sp));
+    in_write_order(&mut of);
     of.into_iter().map(|sp| (attr(sp, "status"), attr(sp, "outcome"))).collect()
+}
+
+/// `rows`, `rdm.node_admin.node.update.via-row-status` spans of one record, in the order its writer
+/// made the writes: by the record's `revision` once each write finished, a write that moved the record
+/// to a revision before every write that found it there, then by start. Each span follows its write, so
+/// a write made first may report last; the revision is what the write records.
+pub(crate) fn in_write_order(rows: &mut [&Value]) {
+    let revision = |sp: &Value| attr(sp, "revision").parse::<u64>().unwrap_or_else(|_| panic!("a held record's row-status span carries its revision: {sp}"));
+    rows.sort_by_key(|sp| (revision(sp), attr(sp, "outcome") != "written", start_ns(sp)));
 }
 
 /// Every order a stop's row writes can take at its mesh-primary, each `(status, outcome)`: the stop
@@ -252,7 +261,7 @@ pub(crate) fn stop_row_writes() -> Vec<Vec<(String, String)>> {
 /// The statuses the mesh-primary wrote on `node`'s row from `from` on, in order.
 fn rows_written(spans: &[Value], node: &str, from: u64) -> Vec<String> {
     let mut of: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-row-status").into_iter().filter(|sp| attr(sp, "subject") == node && attr(sp, "outcome") == "written" && start_ns(sp) >= from).collect();
-    of.sort_by_key(|sp| start_ns(sp));
+    in_write_order(&mut of);
     of.into_iter().map(|sp| attr(sp, "status")).collect()
 }
 

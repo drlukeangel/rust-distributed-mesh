@@ -257,6 +257,14 @@ impl WrittenRows {
     /// the whole record written when it changed or an index move is still owed. `None`: no record of
     /// the node is held anywhere and no `base` was given; nothing is written.
     pub async fn update<R>(&self, storage: &dyn NodesStorage, node_id: &NodeId, base: Option<NodeRow>, change: impl FnOnce(&mut NodeRow) -> R) -> Result<Option<R>, String> {
+        Ok(self.update_at_revision(storage, node_id, base, change).await?.map(|(r, _)| r))
+    }
+
+    /// [`Self::update`], with the revision the record carries once it finished, read under the node's
+    /// lock: the revision this update wrote, else the one it found. The writes of one record are made
+    /// one at a time under that lock, so the revisions order them as they were made, whichever of their
+    /// callers reports first.
+    pub async fn update_at_revision<R>(&self, storage: &dyn NodesStorage, node_id: &NodeId, base: Option<NodeRow>, change: impl FnOnce(&mut NodeRow) -> R) -> Result<Option<(R, u64)>, String> {
         let _one = self.lock(node_id).await;
         let (held, new) = match self.known_row(storage, node_id).await? {
             Some(row) => (Some(row), false),
@@ -272,7 +280,8 @@ impl WrittenRows {
         if row != before || owes || new {
             self.put(storage, &row).await.map_err(|e| format!("nodes.storage refused the record of {node_id}: {e}"))?;
         }
-        Ok(Some(r))
+        let revision = self.row_of(node_id).map_or(row.revision, |held| held.revision);
+        Ok(Some((r, revision)))
     }
 }
 
@@ -659,7 +668,7 @@ impl NodeRows {
     /// One `rdm.node_admin.node.update.via-row-status` span.
     pub async fn status(&self, record: &Node, incarnation: &IncarnationId, status: NodeStatus) -> Result<(), String> {
         let me = self.held_name().await;
-        let written = self.written.update(&*self.storage, &record.node_id, None, |r| r.set_status(incarnation, status)).await;
+        let written = self.written.update_at_revision(&*self.storage, &record.node_id, None, |r| r.set_status(incarnation, status)).await;
         crate::status_rpc::row_status_span(&me, &record.name, &record.node_id, incarnation, status, &written);
         written.map(|_| ())
     }

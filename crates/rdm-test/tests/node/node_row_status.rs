@@ -91,9 +91,10 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
 
     estate.stop().await;
     let spans = estate.spans();
-    // Every status write on the node's row, written or unchanged, in the order its mesh-primary made them.
+    // Every status write on the node's row, written or unchanged, in the order its mesh-primary made them:
+    // by the revision each write left the record at, never by span start (each span follows its write).
     let mut rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-row-status").into_iter().filter(|sp| sp["attributes"]["node_id"] == node_id.as_str()).collect();
-    rows.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
+    crate::node_stop::in_write_order(&mut rows);
     let at = |sp: &Value| (sp["attributes"]["status"].as_str().unwrap_or_default().to_string(), sp["attributes"]["outcome"].as_str().unwrap_or_default().to_string());
     let all: Vec<(String, String)> = rows.iter().map(|sp| at(sp)).collect();
     let written = |statuses: &[&str]| statuses.iter().map(|s| (s.to_string(), "written".to_string())).collect::<Vec<_>>();

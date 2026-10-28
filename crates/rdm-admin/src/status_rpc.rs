@@ -1478,7 +1478,7 @@ impl StatusAuthority {
         };
         let base = crate::storage::NodeRow::new(row.name.clone(), row.node_id.clone(), crate::model::NodeStatus::Pending);
         let status = node_status_of(row.state);
-        let written = self.caches.nodes.update(&*self.nodes_storage, &row.node_id, Some(base), |r| {
+        let written = self.caches.nodes.update_at_revision(&*self.nodes_storage, &row.node_id, Some(base), |r| {
             let birth = r.birth_mut(&row.incarnation_id, &row.name);
             birth.declared.insert(row.state);
             if let Some(o) = operation {
@@ -1496,7 +1496,7 @@ impl StatusAuthority {
     /// states.md "Who sets each state" names ([`crate::storage::NodeRow::set_status`]); a node with no
     /// record held anywhere is written nothing. One `rdm.node_admin.node.update.via-row-status` span.
     pub(crate) async fn put_status(&self, node_id: &NodeId, incarnation: &IncarnationId, name: &crate::model::PathName, status: crate::model::NodeStatus) -> Result<(), String> {
-        let written = self.caches.nodes.update(&*self.nodes_storage, node_id, None, |r| r.set_status(incarnation, status)).await;
+        let written = self.caches.nodes.update_at_revision(&*self.nodes_storage, node_id, None, |r| r.set_status(incarnation, status)).await;
         row_status_span(&self.me, name, node_id, incarnation, status, &written);
         written.map(|_| ())
     }
@@ -2209,15 +2209,17 @@ pub type RowMoved = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName, NodeId, rdm_core
 /// The one `rdm.node_admin.node.update.via-row-status` span of a status write on `subject`'s record by
 /// `me`: `written` when the status moved, `unchanged` when the record's status stands (states.md's
 /// order, [`crate::storage::NodeRow::set_status`]), `no-record` when no record is held, `refused` with
-/// the store's error.
-pub(crate) fn row_status_span(me: &impl std::fmt::Display, subject: &crate::model::PathName, node_id: &NodeId, incarnation: &IncarnationId, status: crate::model::NodeStatus, written: &Result<Option<bool>, String>) {
-    let outcome = match written {
-        Ok(Some(true)) => "written",
-        Ok(Some(false)) => "unchanged",
-        Ok(None) => "no-record",
-        Err(_) => "refused",
+/// the store's error. A held record's `revision` is the one it carries once the write finished (the
+/// revision written, else the one found): the span follows the write, so the record's writes are read
+/// in the order they were made by their revisions, never by when each span began.
+pub(crate) fn row_status_span(me: &impl std::fmt::Display, subject: &crate::model::PathName, node_id: &NodeId, incarnation: &IncarnationId, status: crate::model::NodeStatus, written: &Result<Option<(bool, u64)>, String>) {
+    let (outcome, revision) = match written {
+        Ok(Some((true, revision))) => ("written", Some(*revision)),
+        Ok(Some((false, revision))) => ("unchanged", Some(*revision)),
+        Ok(None) => ("no-record", None),
+        Err(_) => ("refused", None),
     };
-    tracing::info_span!("rdm.node_admin.node.update.via-row-status", node = %me, subject = %subject, node_id = %node_id, incarnation_id = %incarnation.as_str(), status = ?status, outcome, error = %written.as_ref().err().map(String::as_str).unwrap_or(""), "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.node.update.via-row-status", node = %me, subject = %subject, node_id = %node_id, incarnation_id = %incarnation.as_str(), status = ?status, outcome, revision, error = %written.as_ref().err().map(String::as_str).unwrap_or(""), "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the node's status is written on its record"));
 }
 
