@@ -427,7 +427,7 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
     let pid = child.id();
     failpoints.after_spawn(pid).map_err(err)?;
     children.lock().unwrap().insert(pid, Launched { deployment_id: spec.deployment_id.clone(), start, exit: None });
-    let (children, _exits) = (children.clone(), exits.clone());
+    let (children, exits) = (children.clone(), exits.clone());
     std::thread::Builder::new()
         .name(format!("reap-{pid}"))
         .spawn(move || {
@@ -436,6 +436,8 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
             if let Some(l) = children.lock().unwrap().get_mut(&pid) {
                 l.exit = Some(code);
             }
+            // The exit is an event at its source: the reconcile loop wakes on it (Q254).
+            exits.send_modify(|v| *v += 1);
         })
         .map_err(|e| err(format!("watching pid {pid}: {e}")))?;
     Ok((pid, start))
