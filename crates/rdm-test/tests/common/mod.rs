@@ -9,7 +9,7 @@
 //! `MESH_SPAWN_TYPE` value selects.
 //!
 //! The pieces (admin side, observer, sink, span capture) are shared with the
-//! e2.s5 re-run and retire tests.
+//! e2.s5 re-run and delete tests.
 
 #![allow(dead_code)]
 

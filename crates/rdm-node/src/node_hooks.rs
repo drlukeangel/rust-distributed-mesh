@@ -128,7 +128,7 @@ pub struct NodeReadyCtx {
     /// The topology/gossip handle: the app subscribes its kind topics before it takes its
     /// snapshot, so what changes during the pull arrives by gossip.
     pub topology_view: TopologyView,
-    /// Cancelled when the birth is retired (stop-node, its process stopping): the hook
+    /// Cancelled when the birth is deleted (stop-node, its process stopping): the hook
     /// and any pull it has in flight end.
     pub cancel: CancelToken,
     /// Rafka-time: the process's one instance, adopted by the join that was accepted.
@@ -266,7 +266,7 @@ pub struct Mark {
 pub enum Waited {
     /// The event happened.
     Fired(&'static str),
-    /// The birth was retired.
+    /// The birth was deleted.
     Cancelled,
 }
 
@@ -576,7 +576,7 @@ impl HookDriver {
     }
 
     /// From `step` on: wait for each blocked attempt's event and run again, until the hook passes,
-    /// fails or the birth is retired.
+    /// fails or the birth is deleted.
     pub async fn run(&self, mut step: Step) -> End {
         loop {
             match step {

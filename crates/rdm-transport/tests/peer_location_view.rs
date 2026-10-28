@@ -203,7 +203,7 @@ fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_nev
             "after the newer birth is accepted every address view names the key at {y} alone (old {x}): admin {at_admin:?}, member {at_member:?}"
         );
 
-        // The admin retires its path to X, and a dial of the key by its id puts none back.
+        // The admin deletes its path to X, and a dial of the key by its id puts none back.
         let deadline = Instant::now() + Duration::from_secs(10);
         while paths(&admin.ep, peer).await.contains(&x) {
             assert!(Instant::now() < deadline, "the admin still holds a path to the old socket {x}: {:?}", paths(&admin.ep, peer).await);
@@ -212,7 +212,7 @@ fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_nev
         assert_eq!(
             held_by_admin.close_reason(),
             Some(iroh::endpoint::ConnectionError::LocallyClosed),
-            "the retire closed the admin's open connection from the old birth, whose last path X was"
+            "the delete closed the admin's open connection from the old birth, whose last path X was"
         );
         let _dialed = admin.ep.connect(iroh::EndpointAddr::new(peer), iroh_gossip::ALPN).await.unwrap();
         let after = paths(&admin.ep, peer).await;
@@ -227,8 +227,8 @@ fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_nev
                 refreshed.iter().any(|s| s["attributes"]["observer"] == observer
                     && s["attributes"]["old_socket"] == x.to_string()
                     && s["attributes"]["new_socket"] == y.to_string()
-                    && s["attributes"]["retired"] == "true"),
-                "{observer} names the move from {x} to {y} and the retirement of the old paths: {refreshed:#?}"
+                    && s["attributes"]["deleted"] == "true"),
+                "{observer} names the move from {x} to {y} and the deletion of the old paths: {refreshed:#?}"
             );
         }
     });

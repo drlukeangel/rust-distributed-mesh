@@ -94,7 +94,7 @@ async fn a_client_reaches_a_restarted_birth_whose_old_port_another_process_took(
 
 /// A birth that dies: it lives on its own thread and runtime, and `kill` drops that runtime, which
 /// closes its socket with no CONNECTION_CLOSE and no goodbye, the way a killed process does. Its
-/// connections stay open on the client until something retires them.
+/// connections stay open on the client until something deletes them.
 struct DyingBirth {
     kill: std::sync::mpsc::Sender<()>,
     thread: std::thread::JoinHandle<()>,
@@ -126,7 +126,7 @@ impl DyingBirth {
 
 /// CONTRACT: a client holding an OPEN connection to a birth that was killed (no close frame) and
 /// then calling the key's restart, while another process holds the killed birth's port, reaches
-/// the restart every time: the open connection's path to the old port is retired, so it neither
+/// the restart every time: the open connection's path to the old port is deleted, so it neither
 /// carries the dial nor takes the dial's first packets to the process on the old port.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_holding_an_open_connection_to_a_killed_birth_reaches_its_restart_whose_old_port_another_process_took() {

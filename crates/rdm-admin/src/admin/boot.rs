@@ -49,9 +49,9 @@ pub struct Running {
     pub(crate) leave_seam: Option<Arc<dyn crate::wiring::LeaveSeam>>,
     /// This admin's Build log: targeted before the first `Leaving` (ruling R-A2).
     pub(crate) builds: Arc<FabricBuildStateAdapter>,
-    /// Cancelled when this admin is retired (stop-node, leaving): its hook and any pull
+    /// Cancelled when this admin is deleted (stop-node, leaving): its hook and any pull
     /// it has in flight end.
-    pub(crate) pre_node_ready_cancel: rdm_transport::Retirement,
+    pub(crate) pre_node_ready_cancel: rdm_transport::BirthCancel,
     pub(crate) pre_node_ready: Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>>,
     /// The member cert the launching admin's signer issued for this birth, as the opaque bytes the
     /// join that admitted it carried (empty when that admin is configured with no certs); for a birth
@@ -2072,7 +2072,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // its topology, Build-floor and rafka-time steps in the same task; the Ready check below names
                             // the hook's blocker and the step the start is at. A birth with no launcher has no authority to
                             // pull from, and says why.
-                            let pre_node_ready_cancel = rdm_transport::Retirement::new();
+                            let pre_node_ready_cancel = rdm_transport::BirthCancel::new();
                             // The node-admins a Build-facts read asks, in order: the fabric-primary, every other live
                             // node-admin, then the launcher. Read at each request, so the order follows the leadership
                             // projection; every start of this admin asks them.

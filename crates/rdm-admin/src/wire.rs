@@ -18,7 +18,7 @@ use crate::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyChang
 use crate::build::{BuildId, FabricDesired, MeshDesired};
 use crate::build_state::{AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, AttemptOpened, StepOutcome};
 use crate::deployment::pipeline::Bound;
-use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Identity, RetireStep, StorageDisposition, TerminalReceipt};
+use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Identity, DeleteStep, StorageDisposition, TerminalReceipt};
 use crate::mesh_delete::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
@@ -503,7 +503,7 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
     if ret_complete(step) && operation.starts_with("node.stop:") {
         return Some(Produces::LifecycleOp);
     }
-    let ret = |r: RetireStep| r.name() == step;
+    let ret = |r: DeleteStep| r.name() == step;
     Some(if is(CreateStep::AllocateIdentity) {
         Produces::Identity
     } else if is(CreateStep::WaitForBind) {
@@ -520,15 +520,15 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         Produces::RuntimeEvidence
     } else if is(CreateStep::ApplyMeshPending) {
         Produces::MeshPending
-    } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeDeleted) {
+    } else if ret(DeleteStep::NodeDeleting) || ret(DeleteStep::NodeDeleted) {
         Produces::LifecycleOp
-    } else if ret(RetireStep::DeleteConnections) || ret(RetireStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() {
+    } else if ret(DeleteStep::DeleteConnections) || ret(DeleteStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() {
         Produces::CommandAdmission
-    } else if ret(RetireStep::AwaitNodeLeft) {
+    } else if ret(DeleteStep::AwaitNodeLeft) {
         Produces::Completion
     } else if step == RELEASE_STORAGE_STEP {
         Produces::Storage
-    } else if ret(RetireStep::TerminateRuntime) {
+    } else if ret(DeleteStep::TerminateRuntime) {
         Produces::Terminal
     } else if [crate::mesh_delete::STEP_OTHER_MEMBERS_EXITED, crate::mesh_delete::STEP_MESH_DELETED, crate::mesh_delete::STEP_MESH_LEFT, crate::mesh_delete::STEP_ACCEPTED_ROSTER, crate::mesh_delete::STEP_LEAVING_ROSTER].contains(&step) {
         // The accepted roster rides the exit-manifest shape: an exit manifest with no receipts yet.
@@ -551,7 +551,7 @@ fn json<T: Serialize>(v: &T) -> Result<serde_json::Value, String> {
 }
 
 fn ret_complete(step: &str) -> bool {
-    RetireStep::Complete.name() == step
+    DeleteStep::Complete.name() == step
 }
 
 fn output_to_wire(operation: &str, step: &str, v: &serde_json::Value) -> Result<WireOutput, String> {
@@ -768,7 +768,7 @@ pub use rdm_node::wire::{answer_from_wire, answer_to_wire, BuildFloor, JoinAnswe
 mod tests {
     use super::*;
     use crate::build_state::StepOutcome;
-    use crate::deployment::pipeline::{CreateStep, RetireStep};
+    use crate::deployment::pipeline::{CreateStep, DeleteStep};
     use crate::model::{DeploymentId, ProviderKind};
     use serde_json::{json, Value};
 
@@ -885,25 +885,25 @@ mod tests {
             traceparent: None,
             tracestate: None,
         };
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::NodeDeleting.name(), serde_json::to_value(&op).unwrap(), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::NodeDeleting.name(), serde_json::to_value(&op).unwrap(), "");
     }
 
     #[test]
     fn a_command_admission_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::DeleteConnections.name(), json!({ "arm": "admitted" }), "");
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::StopNode.name(), json!({ "arm": "not-sent", "reason": "no route" }), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::DeleteConnections.name(), json!({ "arm": "admitted" }), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::StopNode.name(), json!({ "arm": "not-sent", "reason": "no route" }), "");
     }
 
     #[test]
     fn a_connections_receipt_in_an_admission_with_an_unknown_field_is_refused_by_name() {
         let valid = json!({ "arm": "connections-deleted", "receipt": { "Established": { "in_flight": 0, "closed": [] } } });
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::DeleteConnections.name(), valid, "/receipt/Established");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::DeleteConnections.name(), valid, "/receipt/Established");
     }
 
     #[test]
     fn a_completion_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::AwaitNodeLeft.name(), json!({ "arm": "received" }), "");
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::AwaitNodeLeft.name(), json!({ "arm": "not-awaited", "admission": "refused" }), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::AwaitNodeLeft.name(), json!({ "arm": "received" }), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::AwaitNodeLeft.name(), json!({ "arm": "not-awaited", "admission": "refused" }), "");
     }
 
     #[test]
@@ -914,12 +914,12 @@ mod tests {
 
     #[test]
     fn a_terminal_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::TerminateRuntime.name(), terminal(), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::TerminateRuntime.name(), terminal(), "");
     }
 
     #[test]
     fn a_runtime_proof_inside_a_terminal_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::TerminateRuntime.name(), terminal(), "/runtime");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::TerminateRuntime.name(), terminal(), "/runtime");
     }
 
     fn exit_manifest() -> Value {

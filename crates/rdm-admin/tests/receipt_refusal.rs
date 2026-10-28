@@ -11,7 +11,7 @@ use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, MemoryBuildStateAdapter,
 };
-use rdm_admin::deployment::pipeline::{CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RetireRequest, Timeouts, TopologySink};
+use rdm_admin::deployment::pipeline::{CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, DeleteRequest, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::model::{IncarnationId, Node, NodeId, NodeStatus, PathName, ProviderKind};
 use rdm_admin::node_commands::NodeCommand;
@@ -196,7 +196,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     let joins = rdm_admin::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &Answers, sink: &Discard, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
     let handle = DeploymentHandle { deployment_id: rdm_admin::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
+    let req = DeleteRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
 
     let err = match pipeline.delete_connections(&req).await {
         Err(e) => e,
@@ -371,7 +371,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
     let joins = rdm_admin::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer, sink: &Discard, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
     let handle = DeploymentHandle { deployment_id: rdm_admin::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
+    let req = DeleteRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
     if stop {
         pipeline.stop(&req).await
     } else {

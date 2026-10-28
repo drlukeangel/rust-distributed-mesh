@@ -1,7 +1,7 @@
 //! Lifecycle events: what the Mesh executor that holds an operation publishes
 //! around it, keyed by the operation it belongs to.
 //!
-//! One retirement runs many deployment steps and publishes one `NodeDeleting`
+//! One deletion runs many deployment steps and publishes one `NodeDeleting`
 //! (after the executor's own journal holds its Claim for the attempt) and one
 //! `NodeDeleted` (after the provider's exact inspection says the runtime is
 //! terminal). Both carry the same [`LifecycleOp`]; a receiver applies a

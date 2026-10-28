@@ -19,7 +19,7 @@ use rdm_admin::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyC
 use rdm_admin::build::{BuildId, FabricDesired, MeshDesired};
 use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateError, BuildStepReceipt, StepOutcome};
 use rdm_admin::deployment::pipeline::Bound;
-use rdm_admin::deployment::pipeline::{CommandAdmission, Completion, CreateStep, RetireStep, StorageDisposition};
+use rdm_admin::deployment::pipeline::{CommandAdmission, Completion, CreateStep, DeleteStep, StorageDisposition};
 use rdm_admin::deployment::provider::DeploymentHandle;
 use rdm_admin::fabric_builds::{encode_chunks, BuildMessage};
 use rdm_admin::model::{DeploymentId, ProviderKind};
@@ -254,7 +254,7 @@ fn facts() -> Vec<BuildFact> {
         build_id: bid("3qcfk1kq47m9"),
         attempt: 3,
         operation: "node.delete:mesh2.rpc.1".into(),
-        step: RetireStep::TerminateRuntime.name().into(),
+        step: DeleteStep::TerminateRuntime.name().into(),
         outcome: StepOutcome::failed("terminating deployment an16er0436pg failed: the daemon refused"),
         output: None,
         executor: Some("key@127.0.0.1:1".into()),
@@ -264,7 +264,7 @@ fn facts() -> Vec<BuildFact> {
         build_id: bid("3qcfk1kq47m9"),
         attempt: 4,
         operation: "node.delete:mesh2.rpc.1".into(),
-        step: RetireStep::TerminateRuntime.name().into(),
+        step: DeleteStep::TerminateRuntime.name().into(),
         outcome: StepOutcome::Complete,
         output: Some(to_json(&rdm_admin::deployment::pipeline::TerminalReceipt { node: "mesh2.rpc.1".into(), node_id: NodeId::mint().to_string(), incarnation_id: IncarnationId::mint().to_string(), runtime: None, exit_code: None, verdict: Some("running".into()), data_dir: Some("/data/mesh2.rpc.1-3qcfk1kq47m9".into()) })),
         executor: Some("key@127.0.0.1:1".into()),
@@ -294,10 +294,10 @@ fn facts() -> Vec<BuildFact> {
     out.push(step(CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), Some(evidence(Some("/var/lib/rafka/mesh2.rpc.1")))));
     out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": "Pending" }))));
     out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": null, "reason": "no Pending owed: not a new mesh's first admin" }))));
-    for s in [RetireStep::NodeDeleting, RetireStep::NodeDeleted] {
+    for s in [DeleteStep::NodeDeleting, DeleteStep::NodeDeleted] {
         out.push(step(s.name(), Some(to_json(&op("node.delete:mesh2.rpc.1")))));
     }
-    for (command, completion) in [(RetireStep::StopNode, RetireStep::AwaitNodeLeft)] {
+    for (command, completion) in [(DeleteStep::StopNode, DeleteStep::AwaitNodeLeft)] {
         for d in [
             CommandAdmission::Admitted {},
             CommandAdmission::AlreadyAdmitted {},

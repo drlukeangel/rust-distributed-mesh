@@ -524,7 +524,7 @@ mod tests {
 
     /// CONTRACT: `holds`, a look at whether a key's file is on the disk, never waits on the disk on
     /// a runtime worker: it runs on the blocking pool, as a point read does. The fabric store's
-    /// open asks it (the retired whole-record file) inside the admin's boot.
+    /// open asks it (the deleted whole-record file) inside the admin's boot.
     #[test]
     fn a_look_at_whether_a_key_is_held_waits_on_the_disk_off_the_runtime_thread() {
         let d = tempdir("records-holds");

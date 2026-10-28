@@ -4,10 +4,10 @@
 //! estate's manifest and every process's spans land under it, feature `i143-2892`, test the
 //! cell's name).
 //!
-//! The fabric-primary's mesh is lost the way an operator loses it: a Build retires the mesh that
+//! The fabric-primary's mesh is lost the way an operator loses it: a Build deletes the mesh that
 //! holds the fabric seat (`{mesh1, mesh2}` -> the other mesh), executed by an admin outside it.
 //! Fabric authority leaves with that Build, through the rectifier; the former holder's runtimes
-//! end only after, by the retire pipeline's own terminate. While it runs, every survivor admin
+//! end only after, by the delete pipeline's own terminate. While it runs, every survivor admin
 //! is asked who holds the fabric and the advertised endpoint is asked at once (the request the
 //! original failure refused); each pair is recorded with the run's own map of control endpoints.
 
@@ -79,7 +79,7 @@ async fn describe(estate: &Estate, node: &Value) -> Value {
     })
 }
 
-/// CONTRACT (#2892): when the mesh that holds the fabric is retired through a Build, the fabric
+/// CONTRACT (#2892): when the mesh that holds the fabric is deleted through a Build, the fabric
 /// authority every surviving admin advertises is, at every instant it is asked, a control
 /// endpoint of a birth of this run (never a port outside the run's data dirs); once the Build
 /// is complete the authority is a ready admin of the surviving mesh that answers for this
@@ -111,7 +111,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let survivors: Vec<String> = described.values().filter(|d| d["mesh"] == survivor_mesh.as_str() && d["kind"] == "node_admin").map(|d| s(&d["name"])).collect();
     let survivor_pids: BTreeMap<String, u64> = described.values().filter(|d| survivors.contains(&s(&d["name"]))).map(|d| (s(&d["name"]), d["host"]["pid"].as_u64().unwrap())).collect();
     let survivor_bases: BTreeSet<String> = survivors.iter().map(|n| s(&described[n]["admin_api_base"])).collect();
-    // Control moves to the surviving mesh's admins before the loss: they execute the retire.
+    // Control moves to the surviving mesh's admins before the loss: they execute the delete.
     estate.enter(&Estate::path(&survivors[0])).await;
     let fabric_id = estate.fabric_id.clone();
 
@@ -237,14 +237,14 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     assert!(!after_complete.is_empty(), "the survivors were asked after the Build completed");
 
     // The hand-off precedes the former holder's end: a surviving admin announced the new fabric
-    // primary (survivor mesh) before the former holder's runtime was gone (the retire pipeline's terminate step ended).
+    // primary (survivor mesh) before the former holder's runtime was gone (the delete pipeline's terminate step ended).
     let recompute = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute");
     let handed_off: Vec<&&Value> = recompute.iter().filter(|sp| sp["attributes"]["election_level"] == "fabric_primary" && sp["attributes"]["winner_mesh"] == survivor_mesh.as_str() && s(&sp["attributes"]["previous"]).starts_with(&format!("{lost_mesh}."))).collect();
     assert!(!handed_off.is_empty(), "a surviving admin announced the new fabric primary of {survivor_mesh}, succeeding {lost_mesh}'s");
     let first_handoff = handed_off.iter().map(|sp| sp["start_unix_nano"].as_u64().unwrap()).min().unwrap();
     let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
     let holder_terminate: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == holder.as_str() && sp["attributes"]["build_id"] == build_id.as_str()).collect();
-    assert_eq!(holder_terminate.len(), 1, "the retire pipeline terminated the former holder {holder} once under {build_id}: {holder_terminate:?}");
+    assert_eq!(holder_terminate.len(), 1, "the delete pipeline terminated the former holder {holder} once under {build_id}: {holder_terminate:?}");
     assert_eq!(holder_terminate[0]["attributes"]["outcome"], "complete");
     let terminate_began = holder_terminate[0]["start_unix_nano"].as_u64().unwrap();
     let terminated_at = holder_terminate[0]["end_unix_nano"].as_u64().unwrap();

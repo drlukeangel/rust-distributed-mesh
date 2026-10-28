@@ -16,7 +16,7 @@ use crate::build_log;
 use rdm_client::{LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
 use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
-use rdm_admin::deployment::pipeline::{AdoptStep, CreateStep, RetireStep};
+use rdm_admin::deployment::pipeline::{AdoptStep, CreateStep, DeleteStep};
 use rdm_test::estate::{named, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
@@ -263,7 +263,7 @@ impl Run {
         self.door_of(&primary.name.to_string()).await
     }
 
-    /// The admin that executes everything else (mesh creation and retirement): the fabric primary.
+    /// The admin that executes everything else (mesh creation and deletion): the fabric primary.
     async fn fabric_door(&self) -> Door {
         let nodes = self.estate.node_views().await;
         let primary = nodes.iter().find(|n| n.is_fabric_primary).unwrap_or_else(|| panic!("the fabric has a primary: {nodes:?}"));
@@ -297,14 +297,14 @@ impl Run {
         json!({"build_state": b["state"], "attempt": b["attempt"], "step_receipts": counts, "node": {"status": view["status"], "node_id": view["node_id"], "incarnation_id": view["incarnation_id"]}, "runtimes": 1, "fabric_build_id": build_id})
     }
 
-    /// After a released removal: complete once, each retire step once, the node gone, no runtime left.
+    /// After a released removal: complete once, each delete step once, the node gone, no runtime left.
     async fn after_delete(&self, door: &Door, build_id: &str, node: &str, order: &[String]) -> Value {
         let b = self.build_complete(door, build_id).await;
         assert_eq!(b["state"], "complete", "{b}");
         assert_eq!(b["attempt"], RUN_THEN_CHANGE, "no other attempt was opened than the run and the Complete after the fabric's change: {b}");
         assert!(b["steps"].as_array().into_iter().flatten().all(|r| r["attempt"] == 1), "the Complete after the fabric's change runs no step: {b}");
         let op = format!("node.delete:{node}");
-        assert_eq!(done_steps(&b, &op, Some(1)), order, "release completes every documented retire step once, in order: {b}");
+        assert_eq!(done_steps(&b, &op, Some(1)), order, "release completes every documented delete step once, in order: {b}");
         let counts = step_counts(&b, &op, 1);
         assert!(counts.values().all(|n| *n == 1) && counts.len() == order.len(), "no step receipt is recorded twice: {counts:?}");
         self.node_gone(node).await;
@@ -342,7 +342,7 @@ async fn create_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
 /// A removal step stalled at its receipt, on the node the matching create left.
 async fn delete_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
     let step = &order[i];
-    let id = format!("retire:{step}");
+    let id = format!("delete:{step}");
     let spec = json!({"kind": "receipt", "step": step, "operation": "node.delete", "node": node});
     let op = format!("node.delete:{node}");
     let door = run.member_door("mesh1").await;
@@ -351,15 +351,15 @@ async fn delete_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
     let build_id = Run::id_of(&stream);
     // Before StopNode asked the birth to stop it must be alive; once TerminateRuntime's work is
     // done it is dead. Between, the birth may have exited by its own stop: not asserted.
-    let (mark, terminate) = (index_of(order, RetireStep::StopNode.name()), index_of(order, RetireStep::TerminateRuntime.name()));
+    let (mark, terminate) = (index_of(order, DeleteStep::StopNode.name()), index_of(order, DeleteStep::TerminateRuntime.name()));
     let runtimes = if i < mark { Some((node, 1)) } else if i >= terminate { Some((node, 0)) } else { None };
     let h = run.hold(&door, &id, ack, &build_id, &op, Some(order[..i].to_vec()), runtimes).await;
     let rel = door.release(&id).await;
     run.complete(&mut stream).await;
     let after = run.after_delete(&door, &build_id, node, order).await;
     run.note_build(&build_id, RUN_THEN_CHANGE);
-    run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": 1, "steps": order, "held_step": step}));
-    run.push(row(h, "retire-step", &id, &spec, rel, after));
+    run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "delete", "attempt": 1, "steps": order, "held_step": step}));
+    run.push(row(h, "delete-step", &id, &spec, rel, after));
 }
 
 /// CONTRACT (#2780): every documented Build/deployment step,
@@ -369,7 +369,7 @@ async fn delete_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
 /// attempt, operation, step); while it holds, the Build holds exactly the receipts before the cut
 /// and is not complete, the later steps have not begun, and
 /// the runtime count is the one the cut position implies; release alone completes the Build with
-/// each step's receipt exactly once, one runtime (none after a retire), the current build_id on the
+/// each step's receipt exactly once, one runtime (none after a delete), the current build_id on the
 /// Build that was accepted and no other Build or
 /// attempt. The exported spans put the held step's span before the hold and the next step's span
 /// after the release, and each witness event (a lifecycle event, the Build's acceptance, a node's Ready)
@@ -395,7 +395,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     run.note_build(&shape, RUN_THEN_CHANGE);
 
     let create_order: Vec<String> = CreateStep::ORDER.iter().map(|s| s.name().to_string()).collect();
-    let retire_order: Vec<String> = RetireStep::ORDER.iter().map(|s| s.name().to_string()).collect();
+    let delete_order: Vec<String> = DeleteStep::ORDER.iter().map(|s| s.name().to_string()).collect();
     let node = "mesh1.rpc.1";
 
     // The healthy control: an unarmed create and removal of the same node. Its receipts are the
@@ -405,15 +405,15 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     assert_eq!(done_steps(&b, &format!("node.create:{node}"), Some(1)), create_order, "the healthy create runs every documented step once, in order: {b}");
     let control_delete = run.plain_delete(node).await;
     let b = run.build(&run.member_door("mesh1").await, &control_delete).await;
-    assert_eq!(done_steps(&b, &format!("node.delete:{node}"), Some(1)), retire_order, "the healthy removal runs every documented step once, in order: {b}");
-    run.push(json!({"cut": "control", "group": "healthy-control", "create_build_id": control_create, "create_steps": create_order, "retire_build_id": control_delete, "retire_steps": retire_order}));
+    assert_eq!(done_steps(&b, &format!("node.delete:{node}"), Some(1)), delete_order, "the healthy removal runs every documented step once, in order: {b}");
+    run.push(json!({"cut": "control", "group": "healthy-control", "create_build_id": control_create, "create_steps": create_order, "delete_build_id": control_delete, "delete_steps": delete_order}));
 
     // Every create step, each at its own receipt; the node it leaves is removed with the matching
     // removal step stalled (the removal's eleven), the remaining creates' nodes plainly.
     for i in 0..create_order.len() {
         create_step_cut(&run, &create_order, i, node).await;
-        if i < retire_order.len() {
-            delete_step_cut(&run, &retire_order, i, node).await;
+        if i < delete_order.len() {
+            delete_step_cut(&run, &delete_order, i, node).await;
         } else {
             run.plain_delete(node).await;
         }
@@ -422,7 +422,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // The removal's lifecycle events, each between its durable receipt and its publish.
     for event in ["deleting", "deleted"] {
         run.plain_create(NodeKind::RpcNode, node).await;
-        event_cut(&run, &retire_order, event, node).await;
+        event_cut(&run, &delete_order, event, node).await;
     }
 
     // The accepted Build is its own entity, written once and current from the moment it is durable
@@ -436,17 +436,17 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     mesh_pending_cut(&run, &create_order).await;
 
     // A joining admin, held at its Ready gate. (It is not removed afterwards: a joined admin with the
-    // lowest NodeId holds the fabric seat and would execute its own retire, which is not what this cut
+    // lowest NodeId holds the fabric seat and would execute its own delete, which is not what this cut
     // explores.) `WaitForNodeReady` holds no receipt until it completes, so a Build waiting on a held
     // admin holds a receipt for every step before it.
     let pre_node_ready = index_of(&create_order, CreateStep::WaitForNodeReady.name());
     joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", "mesh1.admin.3", pre_node_ready, "refusing to act on its locator").await;
 
-    finish(run, &dir, &create_order, &retire_order).await;
+    finish(run, &dir, &create_order, &delete_order).await;
 }
 
 /// Stop the estate, check the spans against what each cut did, and write `result.json`.
-async fn finish(run: Run, dir: &Path, create_order: &[String], retire_order: &[String]) {
+async fn finish(run: Run, dir: &Path, create_order: &[String], delete_order: &[String]) {
     let Run { mut estate, rows, builds, span_checks, .. } = run;
     // Every Build the run made still has exactly the attempts it was expected to have: no cut left
     // a second attempt or a new Build behind.
@@ -467,7 +467,7 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], retire_order: &[S
     // Exhaustive by construction: every step of the product's documented orders has its cut row.
     let explored: std::collections::BTreeSet<String> = rows.iter().filter_map(|r| r["cut"].as_str().map(String::from)).collect();
     let mut documented: Vec<String> = create_order.iter().map(|s| format!("create:{s}")).collect();
-    documented.extend(retire_order.iter().map(|s| format!("retire:{s}")));
+    documented.extend(delete_order.iter().map(|s| format!("delete:{s}")));
     for want in &documented {
         assert!(explored.contains(want), "no cut row for the documented step `{want}`; explored: {explored:?}");
     }
@@ -486,7 +486,7 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], retire_order: &[S
     let result = json!({
         "cell": CELL,
         "cuts_explored": rows.iter().filter_map(|r| r["cut"].as_str()).collect::<Vec<_>>(),
-        "documented_orders": {"create": create_order, "retire": retire_order, "adopt_current": AdoptStep::ORDER.iter().map(|s| s.name()).collect::<Vec<_>>()},
+        "documented_orders": {"create": create_order, "delete": delete_order, "adopt_current": AdoptStep::ORDER.iter().map(|s| s.name()).collect::<Vec<_>>()},
         "rows": rows,
         "builds": builds,
         "span_checks": checked,
@@ -607,7 +607,7 @@ fn event_span(event: &str) -> &'static str {
 }
 
 /// A lifecycle event of a removal stalled between its durable receipt and its publish.
-async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node: &str) {
+async fn event_cut(run: &Run, delete_order: &[String], event: &'static str, node: &str) {
     let id = format!("event:{event}");
     let spec = json!({"kind": "event", "event": event, "node": node});
     let op = format!("node.delete:{node}");
@@ -618,11 +618,11 @@ async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node
     // `deleting` follows the NodeDeleting receipt, with the birth untouched; `deleted` follows the
     // NodeDeleted receipt, with the runtime already terminal.
     let (receipts, runtimes) = match event {
-        "deleting" => (index_of(retire_order, RetireStep::NodeDeleting.name()) + 1, 1),
-        "deleted" => (index_of(retire_order, RetireStep::NodeDeleted.name()) + 1, 0),
+        "deleting" => (index_of(delete_order, DeleteStep::NodeDeleting.name()) + 1, 1),
+        "deleted" => (index_of(delete_order, DeleteStep::NodeDeleted.name()) + 1, 0),
         other => panic!("{other} is not a removal event"),
     };
-    let mut h = run.hold(&door, &id, ack, &build_id, &op, Some(retire_order[..receipts].to_vec()), Some((node, runtimes))).await;
+    let mut h = run.hold(&door, &id, ack, &build_id, &op, Some(delete_order[..receipts].to_vec()), Some((node, runtimes))).await;
     let view = run.node_from(&door, node).await;
     // Observed, not asserted: the executor derives the open overlay from its own Build facts each
     // hierarchy checklist (`routable` goes false from the NodeDeleting receipt alone, within one checklist),
@@ -631,10 +631,10 @@ async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node
     h.during["node_in_executor_view"] = view.map(|v| json!({"status": v["status"], "routable": v["routable"]})).unwrap_or(Value::Null);
     let rel = door.release(&id).await;
     run.complete(&mut stream).await;
-    let after = run.after_delete(&door, &build_id, node, retire_order).await;
+    let after = run.after_delete(&door, &build_id, node, delete_order).await;
     run.note_build(&build_id, RUN_THEN_CHANGE);
     run.span_check(json!({"kind": "event", "cut": id, "span": event_span(event), "build_id": build_id, "attempt": 1}));
-    run.span_check(json!({"kind": "step", "cut": format!("{id}#steps"), "hold_cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": 1, "steps": retire_order, "held_step": retire_order[receipts - 1]}));
+    run.span_check(json!({"kind": "step", "cut": format!("{id}#steps"), "hold_cut": id, "build_id": build_id, "node": node, "pipeline": "delete", "attempt": 1, "steps": delete_order, "held_step": delete_order[receipts - 1]}));
     run.push(row(h, "lifecycle-event", &id, &spec, rel, after));
 }
 

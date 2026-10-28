@@ -381,7 +381,7 @@ async fn a_live_births_delete_is_admitted_and_planned_to_stop_it_first() {
     let build = r.builds.read_build(&opened.build_id).await.unwrap();
     let ops = rdm_admin::accepted::plan_for_build(&build, &t).operations;
     let delete = ops.iter().find(|op| op.key() == "node.delete:mesh1.rpc.1").unwrap_or_else(|| panic!("the delete is planned: {ops:?}"));
-    assert!(matches!(delete, rdm_admin::build::BuildOperation::RetireNode { exited: None, birth: Some(_), .. }), "the live birth's delete composes its stop: {delete:?}");
+    assert!(matches!(delete, rdm_admin::build::BuildOperation::DeleteLiveNode { exited: None, birth: Some(_), .. }), "the live birth's delete composes its stop: {delete:?}");
 }
 
 /// CONTRACT (build.md §4.4 gate 6: "The node's mesh is heard | the fabric-primary's view | refused by

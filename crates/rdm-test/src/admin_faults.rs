@@ -54,7 +54,7 @@ pub enum CutSpec {
         /// durable); a Complete one when false.
         #[serde(default)] failed: bool,
     },
-    /// A lifecycle event a retirement publishes (`deleting`, `restarting`, `deleted`): the step's
+    /// A lifecycle event a deletion publishes (`deleting`, `restarting`, `deleted`): the step's
     /// receipt is durable and the event is not yet published. `stopped`: the stop stream's `stopped`
     /// reached the executor and is not yet recorded in the birth's declared-state row (i146 Q36).
     Event {
@@ -590,7 +590,7 @@ impl DeploymentProvider for FaultedProvider {
     }
 }
 
-/// The lifecycle events a retirement publishes, each with its cut before the publish.
+/// The lifecycle events a deletion publishes, each with its cut before the publish.
 pub(crate) struct FaultedEvents {
     inner: Arc<dyn LifecycleEvents>,
     faults: Arc<AdminFaults>,

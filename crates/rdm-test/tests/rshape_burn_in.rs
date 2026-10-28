@@ -549,11 +549,11 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
         out.insert(node, json!({"active_len": snap["active_len"], "owed": snap["owed"], "directs": snap["own_latest_directs"], "stale_connected": stale}));
     }
     let msg = if owed_no_edge_to.is_some() {
-        "every compute and gateway owes no retirement after the restart (no Direct fact is owed to a restarted primary's new birth)"
+        "every compute and gateway owes no deletion after the restart (no Direct fact is owed to a restarted primary's new birth)"
     } else if strict {
-        "every compute and gateway holds no Connected Direct edge to a superseded birth and owes no retirement"
+        "every compute and gateway holds no Connected Direct edge to a superseded birth and owes no deletion"
     } else {
-        "every compute and gateway owes no retirement (a Connected fact to a re-born node's superseded birth is listed, not required away)"
+        "every compute and gateway owes no deletion (a Connected fact to a re-born node's superseded birth is listed, not required away)"
     };
     inv.holds(msg, true, json!({"nodes": out.len()}));
     json!(out)
@@ -1311,7 +1311,7 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
                 if !gone {
                     assert_eq!(present, handler_runs == 1, "{}: the final state ({present}) and the handler record ({handler_runs}) disagree about whether the Indeterminate put applied", op.key);
                 }
-                indeterminate.push(json!({"seq": op.seq, "key": op.key, "applied": if gone { handler_runs == 1 } else { present }, "reason": call.out["reason"], "target_retired": gone}));
+                indeterminate.push(json!({"seq": op.seq, "key": op.key, "applied": if gone { handler_runs == 1 } else { present }, "reason": call.out["reason"], "target_deleted": gone}));
             }
         }
         *summary.entry(format!("{:?}:{}", b, call.out["reason"].as_str().or(call.out["reply"]["result"]["refused"].as_str()).unwrap_or(""))).or_insert(0usize) += 1;
@@ -1649,7 +1649,7 @@ struct Run {
     probe_round: u64,
     /// The Build projection as the fabric folds it, each time it changed: attempt, executor, state, reason.
     build_obs: Vec<Value>,
-    /// The role nodes a checkpoint expects to stand, when a lifecycle cell has retired or not yet
+    /// The role nodes a checkpoint expects to stand, when a lifecycle cell has deleted or not yet
     /// re-added one; the shape's own role nodes when unset.
     roles: Option<BTreeSet<String>>,
     /// Topology writes the cell sent to an admin that is not the fabric-primary, to see them refused.
@@ -2049,7 +2049,7 @@ impl Run {
 }
 
 /// Point the estate's entry (the admin the controller and its probes ask) at an admin that is not
-/// about to stop: the node a Build restarts or retires, or a process about to be killed, is never the
+/// about to stop: the node a Build restarts or deletes, or a process about to be killed, is never the
 /// entry while it does.
 async fn point_entry_away(f: &mut Formed, st: &Stable, avoid: &str) {
     let keep = st.admins.iter().find(|n| n["name"] != avoid && n["is_fabric_primary"] == true).or_else(|| st.admins.iter().find(|n| n["name"] != avoid)).expect("a second admin to ask");
@@ -2225,14 +2225,14 @@ async fn hand_off(f: &mut Formed, a: &mut Run, st: &Stable, scenario: &str, inv:
         }
     });
     let t0 = now_ns();
-    let build_id = a.write(f, st, &format!("{scenario}: fabric-primary.retire"), Write::Delete(old_name.to_string())).await;
+    let build_id = a.write(f, st, &format!("{scenario}: fabric-primary.delete"), Write::Delete(old_name.to_string())).await;
     let fin = a.finish(f, &build_id, Until::Gone { node: old_name.clone() }, "during-handoff").await;
     let exit_ns = tokio::time::timeout(Duration::from_secs(30), watcher).await.unwrap_or_else(|_| panic!("{old_name} (pid {old_pid}) still runs 30 s after its retiring Build completed")).unwrap();
     let mut want = both(2);
     want.insert(mesh.clone(), 1);
-    let after = a.stable(f, &format!("{scenario}: after the fabric-primary retired"), &want, inv).await;
+    let after = a.stable(f, &format!("{scenario}: after the fabric-primary deleted"), &want, inv).await;
     assert_ne!(after.fp["node_id"], old["node_id"], "{scenario}: the fabric-primary changed");
-    assert!(after.admins.iter().all(|n| n["node_id"] != old["node_id"]), "{scenario}: the retired birth is in no admin's view");
+    assert!(after.admins.iter().all(|n| n["node_id"] != old["node_id"]), "{scenario}: the deleted birth is in no admin's view");
     let ev = json!({
         "event": "authority.hand-off", "scenario": scenario, "old_fabric_primary": old_name, "old_node_id": old["node_id"], "old_incarnation_id": old["incarnation_id"], "old_pid": old_pid, "old_mesh": mesh,
         "new_fabric_primary": after.fp["name"], "new_node_id": after.fp["node_id"], "new_mesh": after.fp["mesh"], "build_id": build_id, "fabric_build_id_before": st.fabric["build_id"],
@@ -2242,32 +2242,32 @@ async fn hand_off(f: &mut Formed, a: &mut Run, st: &Stable, scenario: &str, inv:
     (after, ev)
 }
 
-/// After a retirement: the retired path cannot be stopped (refused by name, no Build opened), then a
-/// Build adds a node-admin to the mesh with a NodeId that was never the retired one.
-async fn replace_deleted(f: &mut Formed, a: &mut Run, after_retire: &Stable, retired: &Value, scenario: &str, inv: &mut Invariants) -> Stable {
-    let mesh = s(&retired["old_mesh"]);
-    let path = s(&retired["old_fabric_primary"]);
-    let fabric_build = s(&after_retire.fabric["build_id"]);
-    let v = ask(&f.estate, &after_retire.fp_name(), BuildChange::Stop { node: path_of(&path) }).await;
-    assert_eq!(v["reply"].as_str(), Some("unknown-node"), "{scenario}: a retired path cannot be stopped: {v}");
-    a.events.push(json!({"event": "retired.restart-refused", "scenario": scenario, "node": path, "reply": v["reply"], "detail": v["detail"]}));
-    a.actions.push(json!({"t_ms": now_ms(), "action": format!("{scenario}: node.stop of the retired path"), "via": "node.stop", "subject": path, "reply": v["reply"]}));
-    let before: BTreeSet<String> = after_retire.admins.iter().map(|n| s(&n["node_id"])).collect();
-    let build_id = a.write(f, after_retire, &format!("{scenario}: node.spawn admin"), Write::Create { mesh: mesh.to_string(), kind: LaunchKind::NodeAdmin }).await;
+/// After a deletion: the deleted path cannot be stopped (refused by name, no Build opened), then a
+/// Build adds a node-admin to the mesh with a NodeId that was never the deleted one.
+async fn replace_deleted(f: &mut Formed, a: &mut Run, after_delete: &Stable, deleted: &Value, scenario: &str, inv: &mut Invariants) -> Stable {
+    let mesh = s(&deleted["old_mesh"]);
+    let path = s(&deleted["old_fabric_primary"]);
+    let fabric_build = s(&after_delete.fabric["build_id"]);
+    let v = ask(&f.estate, &after_delete.fp_name(), BuildChange::Stop { node: path_of(&path) }).await;
+    assert_eq!(v["reply"].as_str(), Some("unknown-node"), "{scenario}: a deleted path cannot be stopped: {v}");
+    a.events.push(json!({"event": "deleted.restart-refused", "scenario": scenario, "node": path, "reply": v["reply"], "detail": v["detail"]}));
+    a.actions.push(json!({"t_ms": now_ms(), "action": format!("{scenario}: node.stop of the deleted path"), "via": "node.stop", "subject": path, "reply": v["reply"]}));
+    let before: BTreeSet<String> = after_delete.admins.iter().map(|n| s(&n["node_id"])).collect();
+    let build_id = a.write(f, after_delete, &format!("{scenario}: node.spawn admin"), Write::Create { mesh: mesh.to_string(), kind: LaunchKind::NodeAdmin }).await;
     let fin = a.finish(f, &build_id, Until::Grew { mesh: mesh.clone(), before }, "during-spawn").await;
     let st = a.stable(f, &format!("{scenario}: replacement ready"), &both(2), inv).await;
-    let born: Vec<&Value> = st.admins.iter().filter(|n| n["mesh"] == mesh.as_str() && !after_retire.admins.iter().any(|o| o["node_id"] == n["node_id"])).collect();
+    let born: Vec<&Value> = st.admins.iter().filter(|n| n["mesh"] == mesh.as_str() && !after_delete.admins.iter().any(|o| o["node_id"] == n["node_id"])).collect();
     assert_eq!(born.len(), 1, "{scenario}: one new admin in {mesh}");
-    assert_ne!(born[0]["node_id"], retired["old_node_id"], "{scenario}: a replacement never reuses the retired NodeId");
+    assert_ne!(born[0]["node_id"], deleted["old_node_id"], "{scenario}: a replacement never reuses the deleted NodeId");
     // A lower NodeId never displaces a living holder (R-A2): the late admin holds no mesh seat, whatever its
     // NodeId, and the incumbent keeps it.
-    let incumbent = after_retire.admins.iter().find(|n| n["mesh"] == mesh.as_str()).unwrap().clone();
+    let incumbent = after_delete.admins.iter().find(|n| n["mesh"] == mesh.as_str()).unwrap().clone();
     let lower = s(&born[0]["node_id"]) < s(&incumbent["node_id"]);
     assert_eq!(born[0]["is_primary"], false, "{scenario}: the late admin {} (NodeId lower than the incumbent's {}: {lower}) holds no mesh seat while the incumbent lives", born[0]["node_id"], incumbent["node_id"]);
     let kept = st.admins.iter().find(|n| n["node_id"] == incumbent["node_id"]).unwrap_or_else(|| panic!("{scenario}: the incumbent {} is in the view", incumbent["name"]));
     assert_eq!(kept["is_primary"], true, "{scenario}: the incumbent {} keeps the mesh seat", incumbent["name"]);
     a.events.push(json!({
-        "event": "admin.replacement", "scenario": scenario, "mesh": mesh, "retired": path, "retired_node_id": retired["old_node_id"], "replacement": born[0]["name"], "replacement_node_id": born[0]["node_id"],
+        "event": "admin.replacement", "scenario": scenario, "mesh": mesh, "deleted": path, "deleted_node_id": deleted["old_node_id"], "replacement": born[0]["name"], "replacement_node_id": born[0]["node_id"],
         "build_id": build_id, "fabric_build_id_before_spawn": fabric_build, "wall_ms": fin["wall_ms"], "fabric_primary_after": st.fp["name"],
         "late_admin_lower_than_incumbent": lower, "late_admin_holds_mesh_seat": born[0]["is_primary"], "incumbent": incumbent["name"], "incumbent_node_id": incumbent["node_id"],
     }));
@@ -2308,7 +2308,7 @@ fn check_one_executor_per_attempt(claims: &[Value], inv: &mut Invariants) -> Val
     let mut lost = 0usize;
     for c in claims {
         match c["outcome"].as_str() {
-            // `interrupted`: the executor's process ended inside the attempt (it retired itself), so
+            // `interrupted`: the executor's process ended inside the attempt (it deleted itself), so
             // its span closed without an outcome. It held the attempt; a successor takes the next one.
             Some("converged" | "failed" | "handed-off" | "interrupted") => {
                 by.entry((s(&c["build_id"]), s(&c["lane"]), c["attempt"].as_u64().unwrap())).or_default().insert(s(&c["executor"]));
@@ -2339,7 +2339,7 @@ fn check_one_executor_per_attempt(claims: &[Value], inv: &mut Invariants) -> Val
 }
 
 /// The topology writes the spans show are exactly the ones the cell sent, each accepted once; the
-/// spans of rejected writes are exactly the writer probes (and the retired-path restart), each
+/// spans of rejected writes are exactly the writer probes (and the deleted-path restart), each
 /// non-writer naming the fabric-primary the checkpoint held.
 ///
 /// Which door a Build call's span comes from (build_op.rs `BuildDoor::admit_change`): a create, a delete
@@ -2376,9 +2376,9 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mu
     // (`build.update.via-node-rpc`), every other refused write on the create door.
     let at_a_door: Vec<&Value> = a.refused_writes.iter().filter(|r| r["reply"] != "not-fabric-primary").collect();
     let refused_opens = at_a_door.iter().filter(|r| r["route"].as_str() == Some("restart")).count();
-    let refused_retired_restarts = a.events.iter().filter(|e| e["event"] == "retired.restart-refused").count();
+    let refused_deleted_restarts = a.events.iter().filter(|e| e["event"] == "deleted.restart-refused").count();
     let rejected_updates = updates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty()).count();
-    assert_eq!(rejected_updates, refused_opens + refused_retired_restarts, "every rejected attempt-opening write is a restart the cell sent the writer to be refused, or a restart of a retired path, each asked for by the cell");
+    assert_eq!(rejected_updates, refused_opens + refused_deleted_restarts, "every rejected attempt-opening write is a restart the cell sent the writer to be refused, or a restart of a deleted path, each asked for by the cell");
     // Each probe round's one writer answer (`unknown-node`) is a refused create; its non-writers refuse before the door.
     assert_eq!(rejected_creates, a.probes.len() + at_a_door.len() - refused_opens, "every rejected topology write at the create door is a writer probe's answer or a write the cell sent the writer to see it refused");
     let non_writer_refusals = a.probes.iter().map(|p| p["answers"].as_array().unwrap().iter().filter(|x| x["reply"] == "not-fabric-primary").count()).sum::<usize>() + a.refused_writes.len() - at_a_door.len();
@@ -2420,7 +2420,7 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
         let (old_name, old_id, new_id) = (s(&ev["old_fabric_primary"]), s(&ev["old_node_id"]), s(&ev["new_node_id"]));
         let (req, gone) = (ev["request_ns"].as_u64().unwrap(), ev["old_process_gone_ns"].as_u64().unwrap());
         let announced: Vec<&&Value> = recompute.iter().filter(|sp| sp["attributes"]["winner_node_id"] == new_id.as_str() && sp["attributes"]["previous_node_id"] == old_id.as_str() && start_ns(sp) >= req).collect();
-        assert!(!announced.is_empty(), "{}: no admin announced {new_id} succeeding {old_id} after the retire was requested", ev["scenario"]);
+        assert!(!announced.is_empty(), "{}: no admin announced {new_id} succeeding {old_id} after the delete was requested", ev["scenario"]);
         let first = announced.iter().min_by_key(|sp| start_ns(sp)).unwrap();
         let e = start_ns(first);
         assert!(e < gone, "{}: the new fabric-primary's election ({e}) resolved before the old fabric-primary's process was gone ({gone})", ev["scenario"]);
@@ -2445,13 +2445,13 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
         assert!(!decider.is_empty(), "{}: the new fabric-primary {new_name} did not report its own election of the seat", ev["scenario"]);
         let terminate: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
         let mark: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "StopNode" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
-        // The retiring admin executes its own retirement: its TerminateRuntime step signals its own
+        // The deleting admin executes its own deletion: its TerminateRuntime step signals its own
         // process, so the step's span closes at the shutdown flush and never records an outcome. The
         // terminal observation is the host's: the process is gone. The step's start is recorded
         // beside the election's, as a measurement.
         let terminate_start = terminate.iter().map(|sp| start_ns(sp)).min();
         let after: Vec<&&Value> = recompute.iter().filter(|sp| sp["attributes"]["winner_node_id"] == old_id.as_str() && start_ns(sp) > e).collect();
-        assert!(after.is_empty(), "{}: the retired fabric-primary won again after the hand-off: {after:?}", ev["scenario"]);
+        assert!(after.is_empty(), "{}: the deleted fabric-primary won again after the hand-off: {after:?}", ev["scenario"]);
         out.push(json!({
             "scenario": ev["scenario"], "old": old_name, "new": ev["new_fabric_primary"], "request_ns": req, "install_span": installed["span_id"], "install_start_ns": start_ns(installed), "election_span": first["span_id"], "election_observer": first["attributes"]["observer"], "election_start_ns": e, "election_inputs": inputs,
             "stop_node_steps": mark.iter().map(|sp| json!({"outcome": sp["attributes"]["outcome"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
@@ -2486,14 +2486,14 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
     inv.holds("a restarted primary: the seat left it while its birth was not a candidate (a later vacancy may fill it again; C19 asserts it is not taken back from a living holder)", retakes.iter().all(|r| r["seat_left_while_restarting"] == true), json!({"restarts": retakes}));
     // No resurrected identity.
     let ready = named(spans, "rdm.mesh.node.update.via-ready");
-    let mut retired = Vec::new();
+    let mut deleted = Vec::new();
     for d in named(spans, "rdm.node_admin.node.delete.via-node-deleted") {
         let id = s(&d["attributes"]["node_id"]);
         let after: Vec<&&Value> = ready.iter().filter(|r| r["attributes"]["node_id"] == id.as_str() && start_ns(r) > start_ns(d)).collect();
-        assert!(after.is_empty(), "a retired NodeId {id} was ready again after its departure: {after:?}");
-        retired.push(json!({"node": d["attributes"]["node"], "node_id": id, "incarnation_id": d["attributes"]["incarnation_id"], "deleted_ns": start_ns(d)}));
+        assert!(after.is_empty(), "a deleted NodeId {id} was ready again after its departure: {after:?}");
+        deleted.push(json!({"node": d["attributes"]["node"], "node_id": id, "incarnation_id": d["attributes"]["incarnation_id"], "deleted_ns": start_ns(d)}));
     }
-    inv.holds("no retired NodeId is Ready again after its departure; a replacement is a new NodeId", true, json!({"retired": retired}));
+    inv.holds("no deleted NodeId is Ready again after its departure; a replacement is a new NodeId", true, json!({"deleted": deleted}));
     // A restart keeps the birth: every Ready of a restarted admin's NodeId carries its one incarnation.
     let mut restarts = Vec::new();
     for ev in a.events.iter().filter(|e| e["event"] == "admin.restart") {
@@ -2503,7 +2503,7 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
         restarts.push(json!({"node": ev["node"], "node_id": id, "births_seen_ready": incs}));
     }
     inv.holds("each restarted admin: one logical NodeId, ready under the one exact birth it kept across the restart", true, json!({"restarts": restarts}));
-    json!({"hand_offs": out, "kills": kills, "retakes": retakes, "retired": retired, "restarts": restarts})
+    json!({"hand_offs": out, "kills": kills, "retakes": retakes, "deleted": deleted, "restarts": restarts})
 }
 
 /// The final view holds exactly the shape's counts per mesh and role, every node ready, with
@@ -2591,7 +2591,7 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
 
     // C19: a primary that restarts loses its seat to its mesh (its stop moves its seats) and keeps its NodeId
     // and incarnation; back as the same birth it holds no seat while the admin that filled it lives (R-A2: a
-    // lower NodeId never displaces a living holder); the fabric-primary hands off once more; no retired
+    // lower NodeId never displaces a living holder); the fabric-primary hands off once more; no deleted
     // identity returns.
     let quiet = MESHES.iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
     let incumbent = st.primary_of(&quiet);
@@ -2678,11 +2678,11 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
 /// and gateway holds a Connected Direct edge to the current primary's birth, fresh puts all stored):
 /// a mesh without the fabric-primary loses its current primary to a SIGKILL and the surviving admin
 /// takes the seat (C1); the other admin of a mesh restarts through a Build as the same NodeId in a new
-/// birth (C3); the fabric-primary is never killed, it is retired by a Build it executes itself,
+/// birth (C3); the fabric-primary is never killed, it is deleted by a Build it executes itself,
 /// its stopping birth is not an election candidate, and the new fabric-primary's election is
 /// announced, with the old birth not a ready candidate, before the host sees the old process gone (C2); a
 /// restarted primary keeps its NodeId and holds no seat while the admin that filled it lives, a late admin takes no seat from a living
-/// holder, a retired path cannot be restarted and a retired NodeId never returns,
+/// holder, a deleted path cannot be restarted and a deleted NodeId never returns,
 /// across a repeated hand-off (C19). At every stable checkpoint each admin's own view equals the
 /// election function and every other admin's, exactly one admin validates a topology write and the
 /// others reject it naming the fabric-primary. From the spans: no two effective executors share an
@@ -3456,7 +3456,7 @@ fn final_reads(f: &Formed, a: &Run, nodes_end: &[Value], gone_ok: &BTreeSet<Stri
     for (op, _) in &a.traffic.ops {
         let alive = nodes_end.iter().any(|n| s(&n["node_id"]) == op.target_id);
         if !alive {
-            assert!(gone_ok.contains(&op.target), "{}: its target {} ({}) left the fabric and is not one the cell replaced or retired", op.key, op.target, op.target_id);
+            assert!(gone_ok.contains(&op.target), "{}: its target {} ({}) left the fabric and is not one the cell replaced or deleted", op.key, op.target, op.target_id);
             final_state.insert(op.key.clone(), json!({"unverifiable": "the target's NodeId left the fabric; its store went with it"}));
             continue;
         }
@@ -3576,7 +3576,7 @@ async fn mock_role_restarts_preserve_identity_and_birth() {
     restart_run("mock_role_restarts_preserve_identity_and_birth", any_tier()).await;
 }
 
-// ---- retirement, replacement and the exact-runtime kill ------------------------------------------
+// ---- deletion, replacement and the exact-runtime kill ------------------------------------------
 
 /// Every live admin's view of `name`: whether it lists the path, and under which NodeId.
 async fn admin_views_of(a: &mut Run, f: &Formed, name: &str) -> Vec<Value> {
@@ -3596,13 +3596,13 @@ async fn refused_by_a_non_writer(f: &Formed, a: &mut Run, st: &Stable, path: &st
     let non_writer = st.admins.iter().find(|n| n["name"] != st.fp["name"]).expect("an admin that is not the fabric-primary").clone();
     let _ = how;
     let v = ask(&f.estate, &s(&non_writer["name"]), BuildChange::RemoveNode { node: path_of(path) }).await;
-    assert_eq!((v["reply"].as_str(), &v["fabric_primary"]), (Some("not-fabric-primary"), &st.fp["name"]), "a retire sent to {} is refused naming the fabric-primary: {v}", non_writer["name"]);
+    assert_eq!((v["reply"].as_str(), &v["fabric_primary"]), (Some("not-fabric-primary"), &st.fp["name"]), "a delete sent to {} is refused naming the fabric-primary: {v}", non_writer["name"]);
     let rec = json!({"sent_to": non_writer["name"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "path": path, "route": "delete", "t_ms": now_ms()});
     a.refused_writes.push(rec.clone());
     rec
 }
 
-/// How a node's birth is ended through the rectifier: `node.delete` of the node (a retirement, the
+/// How a node's birth is ended through the rectifier: `node.delete` of the node (a deletion, the
 /// topology changes: a new accepted Build) or the replace steps (node-replace.md: one Build of node
 /// primitives, the next attempt of the accepted Build, no Build minted): the live birth's connections
 /// deleted, its mesh left, renamed `<node>.old` live and stopped, the successor created at the path it
@@ -3613,26 +3613,26 @@ enum Removal {
     Replace,
 }
 
-/// Retire `node` through the Build rectifier as the fabric-primary authorizes it, under seeded
+/// Delete `node` through the Build rectifier as the fabric-primary authorizes it, under seeded
 /// traffic aimed at it. The old birth's runtime is terminal as the provider reports it, its NodeId is
 /// in no admin's view after the removal is held for a full staleness window, and a call to the exact
 /// NodeId sends nothing. Leaves `a.roles` as the shape without the node.
 async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, label: &str, how: Removal, inv: &mut Invariants) -> (Value, Stable) {
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
     let (kind, mesh, node_id, old_inc) = (s(&n["kind"]), s(&n["mesh"]), s(&n["node_id"]), s(&n["incarnation_id"]));
-    assert!(matches!(kind.as_str(), "broker" | "gateway" | "compute"), "{node}: only a role node is retired here");
+    assert!(matches!(kind.as_str(), "broker" | "gateway" | "compute"), "{node}: only a role node is deleted here");
     let rt_before = exact_runtime(f, node).await;
     let gw = format!("{mesh}.gateway.1");
-    let ci = op_to(f, a, &n, None, "canary", "before-retire");
+    let ci = op_to(f, a, &n, None, "canary", "before-delete");
     let (ckey, cval) = (a.traffic.ops[ci].0.key.clone(), a.traffic.ops[ci].0.value.clone());
-    assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node}: the canary was stored before the retire: {}", a.traffic.ops[ci].1.out);
+    assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node}: the canary was stored before the delete: {}", a.traffic.ops[ci].1.out);
     if kind == "broker" && gw != node {
-        originate_op(f, a, &gw, &n, "before-retire");
+        originate_op(f, a, &gw, &n, "before-delete");
         await_edge(&f.estate, &gw, &node_id, &old_inc, None).await;
     }
     let refusal = refused_by_a_non_writer(f, a, st, node, how).await;
     let still = f.estate.node_value(node).await;
-    assert_eq!((still["node_id"].clone(), still["incarnation_id"].clone(), still["status"].clone()), (n["node_id"].clone(), n["incarnation_id"].clone(), json!("ready")), "{node}: the refused retire executed nothing: {still}");
+    assert_eq!((still["node_id"].clone(), still["incarnation_id"].clone(), still["status"].clone()), (n["node_id"].clone(), n["incarnation_id"].clone(), json!("ready")), "{node}: the refused delete executed nothing: {still}");
     let mut roles: BTreeSet<String> = a.roles.clone().unwrap_or_else(|| f.shape.names().into_iter().filter(|x| launch_id(x) != "node_admin").collect());
     roles.remove(node);
     a.roles = Some(roles);
@@ -3641,9 +3641,9 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
     let t0 = now_ns();
     let (build_id, fin) = match how {
         Removal::Delete => {
-            let build_id = a.write(f, st, &format!("{label}: retire at the fabric-primary"), Write::Delete(node.to_string())).await;
-            assert_ne!(build_id, before_build, "{node}: a retire changes the topology, so it is a new accepted Build");
-            let fin = a.finish(f, &build_id, Until::Gone { node: node.into() }, "during-retire").await;
+            let build_id = a.write(f, st, &format!("{label}: delete at the fabric-primary"), Write::Delete(node.to_string())).await;
+            assert_ne!(build_id, before_build, "{node}: a delete changes the topology, so it is a new accepted Build");
+            let fin = a.finish(f, &build_id, Until::Gone { node: node.into() }, "during-delete").await;
             (build_id, fin)
         }
         Removal::Replace => {
@@ -3661,26 +3661,26 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
         // The node stands at its path again: the shape is whole.
         a.roles = None;
     }
-    let st2 = a.stable(f, &format!("{label}: {node} retired"), &both(2), inv).await;
-    assert!(st2.nodes.iter().all(|x| x["node_id"] != n["node_id"]), "{node}: the retired NodeId is in the settled view");
+    let st2 = a.stable(f, &format!("{label}: {node} deleted"), &both(2), inv).await;
+    assert!(st2.nodes.iter().all(|x| x["node_id"] != n["node_id"]), "{node}: the deleted NodeId is in the settled view");
     assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node}: the current build_id names the retiring Build (a replace leaves it as it was)");
     let terminal = terminal_proof(node, &rt_before);
-    // Terminal retire + held removal, then absence: a full staleness window with the removal held.
+    // Terminal delete + held removal, then absence: a full staleness window with the removal held.
     let window = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
     let until = Instant::now() + Duration::from_millis(window);
     let mut looks = 0u32;
     while Instant::now() < until {
         for v in admin_views_of(a, f, node).await {
-            assert!(v["node_id"] != json!(node_id), "{node}: the retired NodeId {node_id} is back in an admin's view during the convergence window: {v}");
+            assert!(v["node_id"] != json!(node_id), "{node}: the deleted NodeId {node_id} is back in an admin's view during the convergence window: {v}");
         }
         looks += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     let views = admin_views_of(a, f, node).await;
-    // A call to the exact retired NodeId sends nothing.
-    let gone_i = op_to(f, a, &n, None, "to-retired", "after-retire");
+    // A call to the exact deleted NodeId sends nothing.
+    let gone_i = op_to(f, a, &n, None, "to-deleted", "after-delete");
     let g = &a.traffic.ops[gone_i].1.out;
-    assert_eq!(bucket(g), Bucket::NotSent, "{node}: a call to the retired NodeId sends nothing: {g}");
+    assert_eq!(bucket(g), Bucket::NotSent, "{node}: a call to the deleted NodeId sends nothing: {g}");
     let rec = json!({
         "label": label, "node": node, "kind": kind, "mesh": mesh, "node_id": node_id, "old_incarnation_id": old_inc, "endpoint_id": n["endpoint_id"], "data_dir": n["data_dir"],
         "build_id": build_id, "fabric_build_id_before": before_build, "request_ns": t0, "wall_ms": fin["wall_ms"], "attempt_after": fin["build"]["attempt"], "executor_after": fin["build"]["executor"],
@@ -3689,14 +3689,14 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
         "absence": {"window_ms": window, "looks": looks, "views_at_end": views}, "call_after_removal": {"outcome": g["outcome"], "reason": g["reason"]},
     });
     inv.holds(
-        &format!("{label}: {node} ({kind}) was retired by the fabric-primary's Build (a non-writer's identical request was refused naming the fabric-primary and executed nothing); the old birth's runtime is terminal; its NodeId stayed out of every admin's view for a full staleness window; a call to it sent nothing"),
+        &format!("{label}: {node} ({kind}) was deleted by the fabric-primary's Build (a non-writer's identical request was refused naming the fabric-primary and executed nothing); the old birth's runtime is terminal; its NodeId stayed out of every admin's view for a full staleness window; a call to it sent nothing"),
         true,
         json!({"node_id": node_id, "old_incarnation_id": old_inc, "terminal": rec["old_birth_terminal"], "absence_window_ms": window, "looks": looks}),
     );
     (rec, st2)
 }
 
-/// The spans of one retirement: build.create.via-node-rpc (a new accepted Build) -> reconcile (`node.delete:<node>`), or for
+/// The spans of one deletion: build.create.via-node-rpc (a new accepted Build) -> reconcile (`node.delete:<node>`), or for
 /// a replace the Build's delete of the stopped predecessor (`node.delete:<node>.old`, node.delete's one
 /// key, a step of the Build's attempt of the accepted Build) -> node.delete.via-build -> pipeline -> the
 /// steps in their documented order; NodeDeleting and NodeDeleted naming the old birth; the receivers'
@@ -3713,7 +3713,7 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
     let replace = opener == "rdm.node_admin.build.update.via-steps";
     let target = if replace { format!("{node}.old") } else { node.clone() };
     let op = format!("node.delete:{target}");
-    // The request that opened the retiring reconcile: an accepted Build (a retirement), or the
+    // The request that opened the deleting reconcile: an accepted Build (a deletion), or the
     // steps' attempt of the accepted Build.
     let create = named(spans, &opener)
         .into_iter()
@@ -3740,8 +3740,8 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
         &["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
     };
     for want in wanted.iter().copied() {
-        let at = names.iter().position(|x| x == want).unwrap_or_else(|| panic!("{node}: the retire pipeline has no `{want}` step: {names:?}"));
-        assert!(at >= last, "{node}: retire steps out of order at `{want}`: {names:?}");
+        let at = names.iter().position(|x| x == want).unwrap_or_else(|| panic!("{node}: the delete pipeline has no `{want}` step: {names:?}"));
+        assert!(at >= last, "{node}: delete steps out of order at `{want}`: {names:?}");
         last = at;
     }
     let outcomes: Vec<Value> = steps.iter().map(|st| json!({"step": st["attributes"]["step"], "outcome": st["attributes"]["outcome"]})).collect();
@@ -3760,7 +3760,7 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
     let removed = named(spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str()).count();
     let ready = named(spans, "rdm.mesh.node.update.via-ready");
     let after: Vec<&&Value> = ready.iter().filter(|r| r["attributes"]["node_id"] == id.as_str() && start_ns(r) > start_ns(deleted[0])).collect();
-    assert!(after.is_empty(), "{node}: the retired NodeId {id} was Ready again after its departure: {after:?}");
+    assert!(after.is_empty(), "{node}: the deleted NodeId {id} was Ready again after its departure: {after:?}");
     json!({"node": node, "op": op, "rest_span": create["span_id"], "reconcile_span": reconcile["span_id"], "delete_span": del["span_id"], "pipeline_span": pipeline["span_id"], "steps": outcomes,
         "node_deleting_spans": deleting.len(), "node_deleted_span": deleted[0]["span_id"], "receivers_removed": removed, "ready_after_departure": 0, "step_ops": step_ops})
 }
@@ -3854,7 +3854,7 @@ fn stop_evidence(spans: &[Value], rec: &Value) -> Value {
     })
 }
 
-/// No Connected Direct edge from `holder` to any birth of `node_id` (a retired node): its pooled
+/// No Connected Direct edge from `holder` to any birth of `node_id` (a deleted node): its pooled
 /// connections to it are gone. Bounded by the same 30 s as every connections convergence.
 async fn await_no_edge(estate: &Estate, holder: &str, node_id: &str) -> Value {
     let until = Instant::now() + Duration::from_secs(30);
@@ -3864,13 +3864,13 @@ async fn await_no_edge(estate: &Estate, holder: &str, node_id: &str) -> Value {
         if !d.iter().any(|x| x["state"] == "Connected") {
             return json!({"holder": holder, "node_id": node_id, "converged_ms": t0.elapsed().as_millis() as u64, "edges": d});
         }
-        assert!(Instant::now() < until, "{holder} still holds a Connected Direct edge to the retired {node_id} 30 s after the removal: {}", serde_json::to_string(&d).unwrap());
+        assert!(Instant::now() < until, "{holder} still holds a Connected Direct edge to the deleted {node_id} 30 s after the removal: {}", serde_json::to_string(&d).unwrap());
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
 /// The Connected Direct facts any gateway or compute still holds toward `node_id`, observed (not
-/// required away): a cross-mesh holder's fact about a retired or replaced birth.
+/// required away): a cross-mesh holder's fact about a deleted or replaced birth.
 fn stale_facts_toward(estate: &Estate, f: &Formed, node_id: &str) -> Vec<Value> {
     let mut out = Vec::new();
     for h in f.shape.names().into_iter().filter(|n| matches!(launch_id(n), "gateway" | "compute")) {
@@ -4094,33 +4094,33 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let old = at(&st, &victim).clone();
     let old_id = s(&old["node_id"]);
     let add_t0 = now_ns();
-    let (retired, st_new) = delete_via_build(&mut f, &mut a, &st, &victim, "C8 planned replacement", Removal::Replace, &mut inv).await;
-    assert_eq!(s(&retired["build_id"]), formation_build, "the replacement is an attempt of the formation's Build: none was minted");
+    let (deleted, st_new) = delete_via_build(&mut f, &mut a, &st, &victim, "C8 planned replacement", Removal::Replace, &mut inv).await;
+    assert_eq!(s(&deleted["build_id"]), formation_build, "the replacement is an attempt of the formation's Build: none was minted");
     a.traffic.burst(&f, 4, "steady-gap").await;
     let gw = "mesh2.gateway.1".to_string();
     let add_build = formation_build.clone();
-    let add_fin = json!({"wall_ms": retired["wall_ms"]});
+    let add_fin = json!({"wall_ms": deleted["wall_ms"]});
     let born = at(&st_new, &victim).clone();
     let (new_id, new_inc) = (s(&born["node_id"]), s(&born["incarnation_id"]));
     assert_ne!(born["node_id"], old["node_id"], "the successor is a new logical node: a new NodeId");
     assert_ne!(born["endpoint_id"], old["endpoint_id"], "the successor has a new EndpointId (a new key in a new data dir)");
     assert_ne!(born["incarnation_id"], old["incarnation_id"], "the successor is a new birth");
-    assert_ne!(born["data_dir"], old["data_dir"], "the successor has a fresh data dir, not the retired node's");
-    assert!(st_new.nodes.iter().filter(|n| n["node_id"] == old["node_id"]).count() == 0, "the retired NodeId is in no later view");
+    assert_ne!(born["data_dir"], old["data_dir"], "the successor has a fresh data dir, not the deleted node's");
+    assert!(st_new.nodes.iter().filter(|n| n["node_id"] == old["node_id"]).count() == 0, "the deleted NodeId is in no later view");
     let rt_new = exact_runtime(&f, &victim).await;
-    let old_rt_record = retired["runtime_before"].clone();
+    let old_rt_record = deleted["runtime_before"].clone();
     assert_ne!(old_rt_record, rt_new.record(), "the successor runs in a new runtime");
-    live_and_distinct(&victim, &exact_rt_from_record(&old_rt_record, &retired), &rt_new);
+    live_and_distinct(&victim, &exact_rt_from_record(&old_rt_record, &deleted), &rt_new);
     // Fresh proof store, no inherited identity, no stale targeting.
-    let ckey = s(&retired["canary_key"]);
+    let ckey = s(&deleted["canary_key"]);
     let c = probe_call(&f.estate, &["get", "--target", &format!("exact:{new_id}"), "--key", &ckey]);
-    assert_eq!((c.out["reply"]["result"].clone(), c.out["reply"]["executing_node"].clone()), (json!({"found": false}), json!(new_id)), "the successor's fresh proof store holds nothing of the retired node's: {}", c.out);
+    assert_eq!((c.out["reply"]["result"].clone(), c.out["reply"]["executing_node"].clone()), (json!({"found": false}), json!(new_id)), "the successor's fresh proof store holds nothing of the deleted node's: {}", c.out);
     f.actions.push(action_row(&c));
     let c2 = probe_call(&f.estate, &["get", "--target", &format!("path:{victim}"), "--key", &ckey]);
     assert_eq!((c2.out["reply"]["executing_node"].clone(), c2.out["reply"]["incarnation_id"].clone()), (json!(new_id), json!(new_inc)), "the path now resolves to the successor and only to it: {}", c2.out);
     f.actions.push(action_row(&c2));
-    let gi = op_to(&f, &mut a, &old, None, "to-retired", "after-replacement");
-    assert_eq!(bucket(&a.traffic.ops[gi].1.out), Bucket::NotSent, "a call to the retired NodeId still sends nothing once its path.name has a successor: {}", a.traffic.ops[gi].1.out);
+    let gi = op_to(&f, &mut a, &old, None, "to-deleted", "after-replacement");
+    assert_eq!(bucket(&a.traffic.ops[gi].1.out), Bucket::NotSent, "a call to the deleted NodeId still sends nothing once its path.name has a successor: {}", a.traffic.ops[gi].1.out);
     let carried = carried_get(&f.estate, &born, &gw, &ckey);
     let oi = originate_op(&f, &mut a, &gw, &born, "after-replacement");
     let edge_new = await_edge(&f.estate, &gw, &new_id, &new_inc, None).await;
@@ -4132,12 +4132,12 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let replacement = json!({
         "old": {"node": victim, "node_id": old_id, "endpoint_id": old["endpoint_id"], "incarnation_id": old["incarnation_id"], "data_dir": old["data_dir"], "runtime": old_rt_record},
         "new": {"node": victim, "node_id": new_id, "endpoint_id": born["endpoint_id"], "incarnation_id": new_inc, "data_dir": born["data_dir"], "runtime": rt_new.record()},
-        "add_build": add_build, "add_request_ns": add_t0, "add_wall_ms": add_fin["wall_ms"], "gateway_edge_to_successor": edge_new, "gateway_edge_to_retired_gone": edge_old_gone,
-        "facts_other_holders_keep_toward_the_retired": stale_toward_old, "carried_trace": carried.trace_id, "originated_trace": orig_trace, "connections_after": connections_after,
+        "add_build": add_build, "add_request_ns": add_t0, "add_wall_ms": add_fin["wall_ms"], "gateway_edge_to_successor": edge_new, "gateway_edge_to_deleted_gone": edge_old_gone,
+        "facts_other_holders_keep_toward_the_deleted": stale_toward_old, "carried_trace": carried.trace_id, "originated_trace": orig_trace, "connections_after": connections_after,
         "path_name_successor": true,
     });
     inv.holds(
-        "C8 planned replacement: the retired broker's NodeId, EndpointId, data dir and runtime are not the successor's; the successor's proof store is fresh; the retired NodeId is not routable and the path resolves only to the successor; the mesh's gateway dropped its edge to the retired node and holds one to the successor",
+        "C8 planned replacement: the deleted broker's NodeId, EndpointId, data dir and runtime are not the successor's; the successor's proof store is fresh; the deleted NodeId is not routable and the path resolves only to the successor; the mesh's gateway dropped its edge to the deleted node and holds one to the successor",
         true,
         json!({"old_node_id": old_id, "new_node_id": new_id}),
     );
@@ -4204,7 +4204,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let writes_checked = check_writes_and_writer_probes(&f, &a, &spans, &mut inv);
     let elections = check_election_history(&a, &spans, &mut inv);
     let imported = check_imported_mechanism(&f, &spans, &mut inv);
-    let retire_chain = check_delete_chain(&spans, &retired);
+    let delete_chain = check_delete_chain(&spans, &deleted);
     let add_chain = check_replace_create_chain(&spans, &victim, &add_build, &new_id, &new_inc);
     let t_deleted = start_ns(named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| sp["attributes"]["node_id"] == old_id.as_str()).unwrap());
     let t_ready = start_ns(named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == new_id.as_str()).unwrap());
@@ -4228,7 +4228,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     });
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([formation_build.clone()]), "the only Build accepted is the formation: the planned replacement and the death's recovery are attempts of it");
-    inv.holds("no topology changed after the formation: the planned replacement (the replace's attempt: its seven node primitives) and the death's recovery (the mesh-primary's recovery attempt: its delete, create and update) are attempts of the formation's Build, and exactly one Build was ever accepted", true, json!({"retire": retire_chain, "add": add_chain, "drift": drift_chain}));
+    inv.holds("no topology changed after the formation: the planned replacement (the replace's attempt: its seven node primitives) and the death's recovery (the mesh-primary's recovery attempt: its delete, create and update) are attempts of the formation's Build, and exactly one Build was ever accepted", true, json!({"delete": delete_chain, "add": add_chain, "drift": drift_chain}));
     let services = check_services(&spans, &mut inv);
     let formation = check_formation_chain(&f, &spans, &mut inv);
     let mut runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
@@ -4256,7 +4256,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
             inv,
             extra: json!({
                 "primaries_at_formation": primaries, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
-                "planned_replacement": {"retired": retired, "replacement": replacement, "retire_chain": retire_chain, "add_chain": add_chain},
+                "planned_replacement": {"deleted": deleted, "replacement": replacement, "delete_chain": delete_chain, "add_chain": add_chain},
                 "drift_replacement": {"drift": drift, "chain": drift_chain,
                     "planned_replace_operation": "the replace steps (lifecycles/node-replace.md) are one Build of node primitives submitted over the node objects to the fabric-primary: it opens the next attempt of the accepted Build, and the planned replacement above is that attempt; a runtime death of a member is its mesh-primary's recovery: one attempt keyed on the exited birth, its delete, create and update (node-recovery.md)"},
                 "scenario_events": a.events, "topology_writes": a.writes, "writer_probes": writes_checked, "attempts": attempts, "elections": elections, "imported_mechanism": imported, "final_launches": launches_end, "scenarios": ["C8"],
@@ -4269,7 +4269,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     );
 }
 
-/// CONTRACT: a logical replacement retires the old identity and creates a distinct one. In the formed
+/// CONTRACT: a logical replacement deletes the old identity and creates a distinct one. In the formed
 /// estate the replace steps of the broker (lifecycles/node-replace.md), submitted over the node objects to
 /// the fabric-primary (a Build sent to an admin that is not the fabric-primary is refused naming it and
 /// executes nothing), opens the next attempt of the accepted Build, under seeded traffic aimed at the
@@ -4277,20 +4277,20 @@ async fn replacement_run(cell: &str, shape: Shape) {
 /// terminal as the provider reports it, its NodeId stays out of every admin's view for a full staleness
 /// window, and a call to it sends nothing. The same attempt creates a broker at the path.name: a new NodeId, a new
 /// EndpointId, a fresh data dir and a new runtime; its proof store holds nothing of the old node's, the
-/// path resolves only to it, the mesh's gateway drops its edge to the retired node and holds one to
+/// path resolves only to it, the mesh's gateway drops its edge to the deleted node and holds one to
 /// the successor. Then the exact runtime of a gateway is killed (acknowledged by the provider) and the
 /// rectifier proves the birth gone and re-births the path under the next attempt of the same Build,
-/// accepting no new Build. What must NOT happen: a reused NodeId, a successor holding the retired
-/// node's data, a retired NodeId Ready again, a retire executed for a non-writer, a Build for a
+/// accepting no new Build. What must NOT happen: a reused NodeId, a successor holding the deleted
+/// node's data, a deleted NodeId Ready again, a delete executed for a non-writer, a Build for a
 /// death's recovery.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_node_replacement_creates_distinct_logical_identity() {
     replacement_run("mock_node_replacement_creates_distinct_logical_identity", any_tier()).await;
 }
 
-/// Rebuild the old birth's `Rt` from the record the retirement kept, so its terminal and distinctness
+/// Rebuild the old birth's `Rt` from the record the deletion kept, so its terminal and distinctness
 /// can be checked against the successor's.
-fn exact_rt_from_record(r: &Value, retired: &Value) -> Rt {
+fn exact_rt_from_record(r: &Value, deleted: &Value) -> Rt {
     match r["provider"].as_str() {
         Some("process") => Rt::Process(ExactRuntime { deployment_id: s(&r["deployment_id"]), control_domain: s(&r["control_domain"]), pid: r["pid"].as_u64().unwrap() as u32, start: r["start_token"].as_u64().unwrap() }),
         Some("container") => Rt::Container(container_faults::Inspected {
@@ -4304,7 +4304,7 @@ fn exact_rt_from_record(r: &Value, retired: &Value) -> Rt {
             oom_killed: false,
             networks: Vec::new(),
         }),
-        other => panic!("{}: no runtime record ({other:?})", retired["node"]),
+        other => panic!("{}: no runtime record ({other:?})", deleted["node"]),
     }
 }
 
@@ -4434,7 +4434,7 @@ async fn delete_run(cell: &str, shape: Shape) {
     inv.holds("steady traffic before any change: every operation replied", steady == a.traffic.ops.len(), json!({"issued": a.traffic.ops.len(), "replied": steady}));
 
     // C15 + C16 on a broker, then on a gateway: the two routable work shapes. Traffic aimed at the node
-    // runs through its stop; the retirement is the fabric-primary's Build.
+    // runs through its stop; the deletion is the fabric-primary's Build.
     let broker = format!("mesh1.broker.{}", f.shape.broker);
     let (rb, st1) = delete_via_build(&mut f, &mut a, &st, &broker, "C15/C16 broker", Removal::Delete, &mut inv).await;
     a.traffic.burst(&f, 4, "steady-between").await;
@@ -4453,8 +4453,8 @@ async fn delete_run(cell: &str, shape: Shape) {
     want_names.remove(&broker);
     want_names.remove(&gateway);
     let names_final: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["name"])).collect();
-    assert_eq!(names_final, want_names, "the final view is the shape without the two retired nodes");
-    let mut retired_runtimes = Vec::new();
+    assert_eq!(names_final, want_names, "the final view is the shape without the two deleted nodes");
+    let mut deleted_runtimes = Vec::new();
     for n in &nodes_end {
         let name = s(&n["name"]);
         assert_eq!(n["status"], "ready", "{name}");
@@ -4462,7 +4462,7 @@ async fn delete_run(cell: &str, shape: Shape) {
         let b = f.set.bindings.iter().find(|b| b.launch_id == launch_id(&name)).unwrap();
         assert_eq!(launched_path(&o), b.executable, "{name} runs the bound executable: {o}");
         assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{name} runs the bound bytes: {o}");
-        retired_runtimes.push(o);
+        deleted_runtimes.push(o);
     }
     let gone_ok: BTreeSet<String> = BTreeSet::from([broker.clone(), gateway.clone(), compute.clone()]);
     let (final_state, verification) = final_reads(&f, &a, &nodes_end, &gone_ok);
@@ -4530,12 +4530,12 @@ async fn delete_run(cell: &str, shape: Shape) {
         stops.push(json!({"node": node, "chain": chain, "stop": stop, "ordinary_work_refused_during_the_all": hits.len(), "refusals": hits, "leaving_decided_after_apply": decided.len(), "apply_started_ns": t_apply}));
     }
     inv.holds(
-        "C15/C16: each retiring node ran its stop: its whole node.connections.delete { All } reached zero in-flight work, then its Leaving, then its own transport cut, and the executor received `stopped`; the retire steps ran NodeDeleting, StopNode, AwaitNodeLeft, TerminateRuntime, NodeDeleted in order; the exact old birth is terminal in the provider and its NodeDeleted names it",
+        "C15/C16: each deleting node ran its stop: its whole node.connections.delete { All } reached zero in-flight work, then its Leaving, then its own transport cut, and the executor received `stopped`; the delete steps ran NodeDeleting, StopNode, AwaitNodeLeft, TerminateRuntime, NodeDeleted in order; the exact old birth is terminal in the provider and its NodeDeleted names it",
         true,
         json!({"stops": stops}),
     );
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
-    assert_eq!(all_creates, BTreeSet::from([f.build_id.clone(), s(&rb["build_id"]), s(&rg["build_id"])]), "the Builds accepted are the formation and the two retirements; holding a runtime accepted none");
+    assert_eq!(all_creates, BTreeSet::from([f.build_id.clone(), s(&rb["build_id"]), s(&rg["build_id"])]), "the Builds accepted are the formation and the two deletions; holding a runtime accepted none");
     // C17 post hoc (Q111): the held birth was recovered on node investigation's verdict, never `reached`.
     let (h0, h1) = (hold["hold_ns"].as_u64().unwrap(), hold["recreated_ns"].as_u64().unwrap());
     let hid = s(&hold["node_id"]);
@@ -4552,8 +4552,8 @@ async fn delete_run(cell: &str, shape: Shape) {
     let services = check_services(&spans, &mut inv);
     let formation = check_formation_chain(&f, &spans, &mut inv);
     let mut runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
-    runtime.push(json!({"phase": "retire", "node": rb["node"], "node_id": rb["node_id"], "runtime_before": rb["runtime_before"], "old_birth_terminal": rb["old_birth_terminal"]}));
-    runtime.push(json!({"phase": "retire", "node": rg["node"], "node_id": rg["node_id"], "runtime_before": rg["runtime_before"], "old_birth_terminal": rg["old_birth_terminal"]}));
+    runtime.push(json!({"phase": "delete", "node": rb["node"], "node_id": rb["node_id"], "runtime_before": rb["runtime_before"], "old_birth_terminal": rb["old_birth_terminal"]}));
+    runtime.push(json!({"phase": "delete", "node": rg["node"], "node_id": rg["node_id"], "runtime_before": rg["runtime_before"], "old_birth_terminal": rg["old_birth_terminal"]}));
     runtime.push(json!({"phase": "hold", "hold": hold}));
     runtime.push(json!({"phase": "restart-of-a-held-runtime", "hold_restart": hold_restart}));
     let index = copy_spans(&f.estate, &f.dir);
@@ -4578,10 +4578,10 @@ async fn delete_run(cell: &str, shape: Shape) {
             inv,
             extra: json!({
                 "primaries_at_formation": primaries, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
-                "retirements": [rb, rg], "stops": stops, "hold": hold, "hold_restart": hold_restart, "scenario_events": a.events, "topology_writes": a.writes, "writer_probes": writes_checked, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
-                "final_launches": retired_runtimes, "scenarios": ["C15", "C16", "C17"],
+                "deletions": [rb, rg], "stops": stops, "hold": hold, "hold_restart": hold_restart, "scenario_events": a.events, "topology_writes": a.writes, "writer_probes": writes_checked, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
+                "final_launches": deleted_runtimes, "scenarios": ["C15", "C16", "C17"],
                 "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
-                "schedule": {"seed": f.seed, "generator": "rdm_test::model::Rng (SplitMix64)", "retired": [broker, gateway], "held": compute},
+                "schedule": {"seed": f.seed, "generator": "rdm_test::model::Rng (SplitMix64)", "deleted": [broker, gateway], "held": compute},
             }),
         },
         index,
@@ -4589,11 +4589,11 @@ async fn delete_run(cell: &str, shape: Shape) {
     );
 }
 
-/// CONTRACT: the stop, retire and a held runtime are proven against the exact runtime the provider holds.
-/// A broker and a gateway (the routable work shapes) are retired by the fabric-primary's Build under
+/// CONTRACT: the stop, delete and a held runtime are proven against the exact runtime the provider holds.
+/// A broker and a gateway (the routable work shapes) are deleted by the fabric-primary's Build under
 /// seeded traffic aimed at them: each retiring node runs its stop (its whole node.connections.delete
 /// { All } until its in-flight work reaches zero, its Leaving, its own transport cut) and answers
-/// `stopped`, and the retire steps run in their documented order (NodeDeleting, StopNode, AwaitNodeLeft,
+/// `stopped`, and the delete steps run in their documented order (NodeDeleting, StopNode, AwaitNodeLeft,
 /// TerminateRuntime, NodeDeleted); ordinary work that reaches a node whose connections are being deleted
 /// is refused with the typed `ConnectionsDeleting` refusal before its body is read, with no handler run and no
 /// value stored; every operation ends in exactly one typed bucket, an Indeterminate put is reported
@@ -4602,7 +4602,7 @@ async fn delete_run(cell: &str, shape: Shape) {
 /// compute's exact runtime is then held (SIGSTOP, or `docker pause`; acknowledged by the provider): a call
 /// to it ends in a typed uncertain outcome, and unheard past the floor it is re-created at its path with
 /// a new NodeId under the same Build (node-recovery.md step 3, Q111), which serves. What must NOT happen:
-/// a retired node's work applied after its refusal, an Indeterminate put re-sent, a retired or re-created
+/// a deleted node's work applied after its refusal, an Indeterminate put re-sent, a deleted or re-created
 /// NodeId back in a view, a Build minted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof() {
@@ -4632,7 +4632,7 @@ async fn close_run(
     close_run_with(f, a, inv, nodes, launches, primaries, connections, scenarios, extra, BTreeSet::new(), checks).await
 }
 
-/// [`close_run`] for a cell that replaced or retired nodes: `gone_ok` names the paths whose old NodeIds
+/// [`close_run`] for a cell that replaced or deleted nodes: `gone_ok` names the paths whose old NodeIds
 /// the ledger may hold operations for.
 async fn close_run_with(
     mut f: Formed,
@@ -4994,7 +4994,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
 
     // C13: the destination dials the source while the Proxy is proven: the accept wakes the source's own dial
     // (R-CN1), unless the due time its Failed row sets came first (connections.md §9.4: either arms the one
-    // attempt), and only that dial's Direct Connected owes the retirement. The retirement write is refused (the dial's own
+    // attempt), and only that dial's Direct Connected owes the deletion. The deletion write is refused (the dial's own
     // history append goes through): the Proxy stays the route; the retirement lands once the write can, and only
     // then is Direct effective.
     let armed = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
@@ -5014,7 +5014,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    assert!(!owed_refused.is_null(), "the source owes the retirement and its write was refused within 15 s");
+    assert!(!owed_refused.is_null(), "the source owes the deletion and its write was refused within 15 s");
     assert_eq!(owed_refused["own_active_proxies"].as_array().map(Vec::len), Some(1), "the Proxy is still held while the retirement is owed: {owed_refused}");
     let t_dur0 = now_ns();
     let during = orig_get(&f, &src, &dst, "while-refused");
@@ -5032,7 +5032,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
         if snap["owed"].as_array().map(Vec::len) == Some(0) && snap["own_active_proxies"].as_array().map(Vec::len) == Some(0) {
             break snap;
         }
-        assert!(Instant::now() < until, "the owed retirement did not land within 15 s of the release: {snap}");
+        assert!(Instant::now() < until, "the owed deletion did not land within 15 s of the release: {snap}");
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
     let durable_after = durable_history(&f, &src).await;
@@ -5040,7 +5040,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
     assert_eq!(retirement.len(), 1, "exactly one durable retirement");
     assert_eq!(retirement[0]["reason"], "direct-restored");
     let t_cut0 = now_ns();
-    let cut = orig_get(&f, &src, &dst, "after-retirement");
+    let cut = orig_get(&f, &src, &dst, "after-deletion");
     let t_cut1 = now_ns();
     f.actions.push(action_row(&cut));
     assert_eq!((cut.out["route"].as_str(), cut.out["call_outcome"].as_str()), (Some("direct"), Some("reply")), "{}", cut.out);
@@ -5057,15 +5057,15 @@ async fn proxy_run(cell: &str, shape: Shape) {
         let _ = &c0;
         let inner = named(spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| in_window(sp, w.0, w.1)).count();
         assert_eq!(inner, 1, "the carrier made exactly one inner call for the carried call (one hop, never forwarded again)");
-        let during_route = route(w.2, w.3).unwrap_or_else(|| panic!("no route span for the call while the retirement was refused"));
-        let cut_route = route(w.4, w.5).unwrap_or_else(|| panic!("no route span for the call after the retirement"));
+        let during_route = route(w.2, w.3).unwrap_or_else(|| panic!("no route span for the call while the deletion was refused"));
+        let cut_route = route(w.4, w.5).unwrap_or_else(|| panic!("no route span for the call after the deletion"));
         assert_eq!(during_route["attributes"]["route"], "via-peer");
         assert_eq!(cut_route["attributes"]["route"], "direct");
         let mut ret: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-retirement").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str()).collect();
         ret.sort_by_key(|sp| start_ns(sp));
         let (refused, lands): (Vec<&Value>, Vec<&Value>) = ret.iter().partition(|sp| sp["attributes"]["outcome"] == "refused");
-        assert!(!refused.is_empty(), "the refused retirement write is named on a span");
-        assert_eq!(lands.len(), 1, "one landed retirement");
+        assert!(!refused.is_empty(), "the refused deletion write is named on a span");
+        assert_eq!(lands.len(), 1, "one landed deletion");
         assert!(refused.iter().all(|sp| start_ns(sp) <= start_ns(lands[0])), "every refusal precedes the landing");
         assert!(start_ns(&during_route) < start_ns(lands[0]), "the call during the refusal chose its route before the landing");
         assert!(start_ns(&cut_route) >= lands[0]["end_unix_nano"].as_u64().unwrap_or(u64::MAX), "the first Direct route is chosen after the retirement landed");
@@ -5089,9 +5089,9 @@ async fn proxy_run(cell: &str, shape: Shape) {
             other => panic!("the destination's accept is the source's own recovery trigger, or finds its Direct connected: {other:?} {wakes:?}"),
         }
         assert!(wakes.iter().filter(|sp| matches!(sp["attributes"]["outcome"].as_str(), Some("pending" | "coalesced"))).count() <= 1, "the accept armed at most one attempt: {wakes:?}");
-        assert!(refused.iter().all(|sp| start_ns(sp) >= start_ns(entry)), "every retirement attempt follows the dial's entry");
+        assert!(refused.iter().all(|sp| start_ns(sp) >= start_ns(entry)), "every deletion attempt follows the dial's entry");
         inv.holds("C12/C13: a call is carried by the gateway in one hop to the destination's exact birth; the destination's accept wakes the source's own dial, whose Direct does not cut back while the retirement write is refused; the retirement lands durably before the first Direct route", true, json!({"carried_route": carried_route["span_id"], "inner_calls": inner, "refused_retirements": refused.len()}));
-        json!({"carried_route_span": carried_route["span_id"], "route_while_refused": during_route["span_id"], "route_after_retirement": cut_route["span_id"], "landed_retirement": lands[0]["span_id"], "refused": refused.len()})
+        json!({"carried_route_span": carried_route["span_id"], "route_while_refused": during_route["span_id"], "route_after_deletement": cut_route["span_id"], "landed_retirement": lands[0]["span_id"], "refused": refused.len()})
     })
     .await;
 }
@@ -5100,10 +5100,10 @@ async fn proxy_run(cell: &str, shape: Shape) {
 /// toward the other mesh's gateway (the carrier's own Direct edge to it is Active). The compute's call is
 /// carried: the route is via-peer through that gateway, the gateway makes exactly one inner call (it never
 /// forwards again), the other mesh's gateway executes it as its exact birth, and the compute holds no
-/// connection to it. The destination then dials the compute while the compute's retirement write is refused
+/// connection to it. The destination then dials the compute while the compute's deletion write is refused
 /// (the accept wakes the compute's own dial once its backoff ends, R-CN1, and that dial's Direct Connected append
 /// goes through): the retirement is owed, refused by name, the Proxy
-/// stays the route, nothing durable says it retired; released, the retirement lands durably once, and only
+/// stays the route, nothing durable says it deleted; released, the deletion lands durably once, and only
 /// then does a call go Direct. What must NOT happen: a Direct leg while the Proxy is owed, a second
 /// forward, a Direct route chosen before the durable retirement, a retirement without a durable row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -6482,7 +6482,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     let rows1 = proxy_disconnected_rows(&durable_history(&f, &src).await);
     assert_eq!(rows1.len(), rows0 + 1, "exactly one durable Proxy Disconnected: {rows1:?}");
     assert_eq!(rows1.last().unwrap()["reason"], "carrier-edge-lost", "{rows1:?}");
-    let next = orig_get(&f, &src, &dst, "after-retirement");
+    let next = orig_get(&f, &src, &dst, "after-deletion");
     f.actions.push(action_row(&next));
     assert_ne!(next.out["carrier"].as_str(), Some(car.as_str()), "the retired Proxy is not selected again: {}", next.out);
     assert_eq!(proxy_disconnected_rows(&durable_history(&f, &src).await).len(), rows0 + 1, "no second retirement row");
@@ -6517,7 +6517,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     // Leg C, a carrier restart while a cutback is owed. The carrier's edge is back; the Proxy is recorded
     // again; the retirement write is refused when Direct returns, so the retirement is owed; the carrier is
     // restarted by the rectifier while calls keep coming. Each call ends typed; none is answered by a birth other
-    // than the destination's exact one; none is sent twice; the owed retirement lands once, durably, with a
+    // than the destination's exact one; none is sent twice; the owed deletion lands once, durably, with a
     // structural reason; then the route is Direct to the same destination birth.
     let seeded2 = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "1", "--key", "x"]);
     assert_eq!(seeded2.out["proxy_recorded"], true, "{}", seeded2.out);
@@ -6530,7 +6530,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     f.actions.push(action_row(&armed));
     let inbound = dial(&f, &dst, &src);
     f.actions.push(action_row(&inbound));
-    let owed = wait_for("the source owes the retirement", Duration::from_secs(15), || async {
+    let owed = wait_for("the source owes the deletion", Duration::from_secs(15), || async {
         let snap = snapshot(&f.estate, &src);
         (snap["owed"].as_array().map(Vec::len) == Some(1) && snap["fault_refused"].as_u64().unwrap_or(0) >= 2).then_some(snap)
     })
@@ -6588,7 +6588,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     let released = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--release", "--key", "x"]);
     assert_eq!(released.out["fault"], "released", "{}", released.out);
     f.actions.push(action_row(&released));
-    let landed = wait_for("the owed retirement lands", Duration::from_secs(30), || async {
+    let landed = wait_for("the owed deletion lands", Duration::from_secs(30), || async {
         let snap = snapshot(&f.estate, &src);
         (snap["owed"].as_array().map(Vec::len) == Some(0) && snap["own_active_proxies"].as_array().map(Vec::len) == Some(0)).then_some(snap)
     })
@@ -6640,7 +6640,7 @@ async fn mock_direct_edge_loss_to_a_mesh_primary_declares_no_death() {
 /// owed retirement, released, lands exactly once and durably with a structural reason, and the route is Direct
 /// to the destination's exact birth. Canon: connections.md section 8 (a carrier incarnation change invalidates a
 /// Proxy that names the old carrier) and section 9 H, I, K (a retirement write failure is safe and retried; a
-/// sent request is never rerouted). What must NOT happen: a second durable retirement, a call sent twice, a
+/// sent request is never rerouted). What must NOT happen: a second durable deletion, a call sent twice, a
 /// Direct route chosen while the retirement is owed, an answer from a superseded birth. Each mesh holds a
 /// second gateway: the restarted carrier may hold its type's seat, and a restart of a seat holder with no
 /// successor is refused by name (node-stop.md, Primary), so its seat moves to the second gateway first.
@@ -6852,7 +6852,7 @@ async fn soak_run(cell: &str, story: Story) {
     write_jsonl(&dir, "outcomes.jsonl", &report.operations.iter().map(|o| json!({"op_seq": o["op_seq"], "route": o["route"], "trace_id": o["trace_id"], "classification": o["classification"]})).collect::<Vec<_>>());
     write_jsonl(&dir, "primaries-history.jsonl", &rows.iter().map(|r| json!({"round": r["round"], "kind": r["kind"], "at_s": r["at_s"], "authority": r.get("authority"), "handed_off_from": r.get("handed_off_from")})).collect::<Vec<_>>());
     write_jsonl(&dir, "route-history.jsonl", &routes);
-    write_jsonl(&dir, "runtime-history.jsonl", &rows.iter().filter(|r| r.get("born").is_some() || r.get("killed").is_some() || r.get("wedge").is_some()).map(|r| json!({"round": r["round"], "kind": r["kind"], "at_s": r["at_s"], "born": r.get("born"), "killed": r.get("killed"), "wedge": r.get("wedge"), "retired_call": r.get("retired_call")})).collect::<Vec<_>>());
+    write_jsonl(&dir, "runtime-history.jsonl", &rows.iter().filter(|r| r.get("born").is_some() || r.get("killed").is_some() || r.get("wedge").is_some()).map(|r| json!({"round": r["round"], "kind": r["kind"], "at_s": r["at_s"], "born": r.get("born"), "killed": r.get("killed"), "wedge": r.get("wedge"), "deleted_call": r.get("deleted_call")})).collect::<Vec<_>>());
     write_json(&dir, "topology-initial.json", &json!({"shape_requested": {"tier": shape.tier, "meshes": MESHES, "per_mesh": {"node_admin": shape.node_admin, "compute": shape.compute, "gateway": shape.gateway, "broker": shape.broker}, "total": shape.total()}, "provider_state_before": provider_before, "view_at_day0": day0, "view_after_birth": born_view}));
     write_json(&dir, "topology-final.json", &json!({"total": nodes_final.len(), "nodes": nodes_final, "fabric": fabric_final}));
 
@@ -6989,11 +6989,11 @@ async fn mock_soak_partition_preserves_continuous_invariants() {
 }
 
 /// CONTRACT (S4, lifecycle, #2949): the same estate, traffic and ledger, with the seeded draw
-/// limited to the life of role nodes: restart, retire (delete: stop then terminate), replacement
+/// limited to the life of role nodes: restart, delete (delete: stop then terminate), replacement
 /// at the same path.name as a new NodeId, and legal capacity re-add (grow to the lowest free
 /// ordinal), each as a Build the rectifier executes. After every action the view holds exactly the
-/// model's counts, the retired NodeId names no node (a call to it is refused, never dispatched)
-/// and a replaced birth is held nowhere. What must NOT happen: a resurrected retired identity, a
+/// model's counts, the deleted NodeId names no node (a call to it is refused, never dispatched)
+/// and a replaced birth is held nowhere. What must NOT happen: a resurrected deleted identity, a
 /// replacement reusing a NodeId, drift left unrepaired, or an operation without an outcome.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_soak_lifecycle_preserves_continuous_invariants() {

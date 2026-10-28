@@ -205,7 +205,7 @@ impl OperationRunner for Runs {
                 let sha = rdm_admin::accepted::target_executable(&topology, node).map(|b| b.sha256.clone());
                 self.recorded.lock().unwrap().insert(node.clone(), RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: sha });
             }
-            BuildOperation::DeleteNode { node, .. } | BuildOperation::RetireNode { node, .. } => {
+            BuildOperation::DeleteNode { node, .. } | BuildOperation::DeleteLiveNode { node, .. } => {
                 self.recorded.lock().unwrap().remove(node);
             }
             _ => {}

@@ -176,7 +176,7 @@ async fn two_concurrent_topology_submissions_admit_one_build_and_refuse_the_othe
 /// refusal; http.rs: "The Build is current the moment it is durable in the builds store"): the door's
 /// acceptance is its point of no return, and nothing it writes after it can be refused. The accepted
 /// Build's drive starts from the reconcile loop the moment the Build is current (admin.rs `ensure_active`)
-/// and may move the fabric seat at once (a retire of the fabric-primary's own mesh); here the seat moves
+/// and may move the fabric seat at once (a delete of the fabric-primary's own mesh); here the seat moves
 /// the moment the acceptance is durable. The door answers the Build it accepted, which the Build log
 /// holds as the current Build. A seat that moved before the door wrote anything refuses the submission
 /// `SeatYielded` with nothing accepted.

@@ -1661,7 +1661,7 @@ impl StatusAuthority {
                     declared.operations.retain(|_, r| r.node_id != node_id || r.incarnation_id != incarnation);
                     declared.nodes.remove(&(node_id.clone(), incarnation.clone()));
                     declared.names.remove(&(node_id.clone(), incarnation.clone()));
-                    ("retired", String::new())
+                    ("deleted", String::new())
                 }
                 Err(e) => ("refused", e.to_string()),
             };
@@ -3443,22 +3443,22 @@ mod tests {
 
     /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): a replace or a recovery keeps the
     /// path.name and mints a new node id. The view holds one row per path.name (`admin::project_at`
-    /// keys it by `PathName`), so until the retired birth's digest goes non-live or departs, the row
-    /// at this admin's path can be the retired birth's, live and seated, and this admin's own row is
+    /// keys it by `PathName`), so until the deleted birth's digest goes non-live or departs, the row
+    /// at this admin's path can be the deleted birth's, live and seated, and this admin's own row is
     /// absent. The authority finds itself by the node id it was born with: it decides nothing from
-    /// the retired birth's seat and refuses naming the true reason, "a view holding this admin"; a
+    /// the deleted birth's seat and refuses naming the true reason, "a view holding this admin"; a
     /// node command naming its node id goes on to the subject's own door (`NodeSelf::serve`, which
     /// checks the exact birth itself), here not yet filled. What must NOT happen: a member's
-    /// declaration `Applied` on the retired birth's mesh-primary seat, or a node command naming this
+    /// declaration `Applied` on the deleted birth's mesh-primary seat, or a node command naming this
     /// admin refused as "not the subject node itself".
     #[tokio::test]
     async fn a_mesh_primary_whose_view_holds_its_superseded_birth_at_its_path_answers_as_itself() {
-        let mut retired = node("mesh1.admin.1");
-        retired.kind = NodeKind::NodeAdmin;
-        retired.mesh = "mesh1".into();
-        retired.status = crate::model::NodeStatus::ConnectionsDeleting;
-        retired.is_primary = true;
-        retired.is_fabric_primary = true;
+        let mut deleted = node("mesh1.admin.1");
+        deleted.kind = NodeKind::NodeAdmin;
+        deleted.mesh = "mesh1".into();
+        deleted.status = crate::model::NodeStatus::ConnectionsDeleting;
+        deleted.is_primary = true;
+        deleted.is_fabric_primary = true;
         let mut successor = node("mesh1.admin.1");
         successor.kind = NodeKind::NodeAdmin;
         successor.mesh = "mesh1".into();
@@ -3473,16 +3473,16 @@ mod tests {
         let view = Topology {
             fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
             meshes: Vec::new(),
-            nodes: vec![retired.clone(), member.clone(), owner.clone()],
+            nodes: vec![deleted.clone(), member.clone(), owner.clone()],
         };
-        assert_ne!(retired.node_id, successor.node_id, "a replace mints a new node id");
-        assert_eq!(view.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds mesh1's seat in this view");
+        assert_ne!(deleted.node_id, successor.node_id, "a replace mints a new node id");
+        assert_eq!(view.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds mesh1's seat in this view");
         let auth = mesh_primary_of(&successor, view.clone());
         let holding_me = |r: &StatusReply| matches!(r, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "a view holding this admin");
 
         let declare = StatusRequest::DeclareNodeState { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
         let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare);
-        assert!(holding_me(&reply) && effect.is_none(), "the retired birth's seat is not this admin's: {reply:?}");
+        assert!(holding_me(&reply) && effect.is_none(), "the deleted birth's seat is not this admin's: {reply:?}");
 
         let stop = StatusRequest::JoinMesh { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.mesh.join:mesh1.admin.1".into() };
         let reply = auth.apply(Some(owner.clone()), &stop).await;
@@ -3692,8 +3692,8 @@ mod tests {
         for s in by_incarnation.iter().chain(&by_deletion) {
             eprintln!("span {} trace_id={} {:?}", s.name, s.trace_id, s.attributes);
         }
-        assert_eq!(by_incarnation.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(restarted.node_id.to_string(), "retired".to_string())], "the restarted node's old birth is retired for its new incarnation");
-        assert_eq!(by_deletion.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(deleted.node_id.to_string(), "retired".to_string())], "the deleted node's birth is retired for its deletion");
+        assert_eq!(by_incarnation.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(restarted.node_id.to_string(), "deleted".to_string())], "the restarted node's old birth is retired for its new incarnation");
+        assert_eq!(by_deletion.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(deleted.node_id.to_string(), "deleted".to_string())], "the deleted node's birth is retired for its deletion");
         use crate::storage::NodesStorage as _;
         let rows: Vec<String> = Declaration::of_records(&status.nodes("mesh1").await.unwrap()).into_iter().map(|r| r.node_id.to_string()).collect();
         assert_eq!(rows, vec![standing.node_id.to_string()], "only the birth the view still holds keeps its declared-state row");
@@ -3785,8 +3785,8 @@ mod tests {
         }
         assert_eq!(
             by_new_node.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["held_node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(),
-            vec![(exited.node_id.to_string(), recovered.node_id.to_string(), "retired".to_string())],
-            "the exited birth is retired for the new node at its path"
+            vec![(exited.node_id.to_string(), recovered.node_id.to_string(), "deleted".to_string())],
+            "the exited birth is deleted for the new node at its path"
         );
         use crate::storage::NodesStorage as _;
         assert!(Declaration::of_records(&status.nodes("mesh1").await.unwrap()).is_empty(), "no declared state of the exited birth is left");

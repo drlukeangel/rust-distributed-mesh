@@ -136,7 +136,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let shrink = Estate::complete(&mut shrinking).await.build_id.to_string();
     let b = built(&estate, &shrink).await;
     assert_eq!(last_run_executor(&b), mesh2_primary, "{b:#}");
-    estate.until_node("mesh2.rpc.4", "mesh2.rpc.4 retired", Duration::from_secs(30), |n| n.is_none().then_some(())).await;
+    estate.until_node("mesh2.rpc.4", "mesh2.rpc.4 deleted", Duration::from_secs(30), |n| n.is_none().then_some(())).await;
 
     estate.artifact("nodes.json", &json!(estate.node_values().await));
     estate.enter(&fabric_admin).await;

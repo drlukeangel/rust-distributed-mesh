@@ -513,7 +513,7 @@ pub(crate) fn never_heard(view: &Topology, me_mesh: &str, heard: &BTreeSet<Strin
     view.members().map(|n| n.mesh.clone()).filter(|m| m != me_mesh && !heard.contains(m)).collect()
 }
 
-/// Forget every investigation of a mesh the backbone no longer carries (a retired mesh).
+/// Forget every investigation of a mesh the backbone no longer carries (a deleted mesh).
 fn forget_unheard_meshes(ladder: &Mutex<Ladder>, heard: &BTreeSet<String>) {
     let gone: Vec<String> = ladder.lock().unwrap().meshes().difference(heard).cloned().collect();
     let mut held = ladder.lock().unwrap();
@@ -1348,7 +1348,7 @@ mod tests {
     }
 
     /// CONTRACT (#2803 detection): forgetting the investigation of a mesh the backbone no longer
-    /// carries (a retired mesh) returns; it never holds the ladder's lock while it takes it again,
+    /// carries (a deleted mesh) returns; it never holds the ladder's lock while it takes it again,
     /// which would hold the fabric primary's watch and its drift check (both read the ladder) forever.
     #[test]
     fn forgetting_a_deleted_mesh_does_not_deadlock_on_the_ladder_lock() {
@@ -1360,7 +1360,7 @@ mod tests {
             forget_unheard_meshes(&l, &BTreeSet::new());
             let _ = tx.send(());
         });
-        assert!(rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(), "forgetting a retired mesh never returned: the ladder lock is held by the loop that takes it");
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(), "forgetting a deleted mesh never returned: the ladder lock is held by the loop that takes it");
         assert!(ladder.lock().unwrap().meshes().is_empty());
     }
 

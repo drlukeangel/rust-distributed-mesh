@@ -81,7 +81,7 @@ impl FabricPolicy {
 
 // ---------------------------------------------------------------------------
 // The provider contract (mesh-control-plane.md §6). A provider realises or
-// retires one runtime from an already-resolved launch; it decides nothing.
+// deletes one runtime from an already-resolved launch; it decides nothing.
 // ---------------------------------------------------------------------------
 
 use crate::model::{DeploymentId, PathName};
@@ -403,7 +403,7 @@ impl std::fmt::Display for DeployError {
     }
 }
 
-/// Realises and retires runtimes: starts a launch, stops a runtime and reports what it knows of
+/// Realises and deletes runtimes: starts a launch, stops a runtime and reports what it knows of
 /// one.
 #[async_trait::async_trait]
 pub trait DeploymentProvider: Send + Sync {

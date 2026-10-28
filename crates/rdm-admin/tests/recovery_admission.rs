@@ -515,7 +515,7 @@ impl rdm_admin::executor::OperationRunner for RecoveryReceipts {
     async fn run(&self, build_id: &rdm_admin::build::BuildId, lane: Option<&str>, attempt: u32, op: &rdm_admin::build::BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
         use rdm_admin::build::BuildOperation;
         let receipts = match op {
-            BuildOperation::RetireNode { node, exited: Some(from), .. } => deletion_receipts(lane, "node.delete", build_id, attempt, node, &from.node_id, &from.incarnation, &self.executor),
+            BuildOperation::DeleteLiveNode { node, exited: Some(from), .. } => deletion_receipts(lane, "node.delete", build_id, attempt, node, &from.node_id, &from.incarnation, &self.executor),
             BuildOperation::CreateNode { .. } => {
                 vec![BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build_id.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: Some(self.executor.clone()) }]
             }

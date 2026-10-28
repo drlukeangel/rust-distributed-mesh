@@ -172,7 +172,7 @@ pub struct LegacyAdapter {
     pub name: &'static str,
     /// The product the core ledger reserves the op for.
     pub owner: &'static str,
-    /// The migration unit that retires the adapter.
+    /// The migration unit that deletes the adapter.
     pub migration_unit: &'static str,
 }
 

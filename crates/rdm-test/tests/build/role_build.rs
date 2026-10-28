@@ -7,7 +7,7 @@
 //! - every role cohort has exactly one primary; the fabric exactly one fabric primary;
 //! - every role's boot and ready spans name its kind, and each boot runs under the deployment
 //!   step that launched it;
-//! - a second Build without the compute retires `mesh1.compute.1` under that Build, and the
+//! - a second Build without the compute deletes `mesh1.compute.1` under that Build, and the
 //!   other roles keep their birth.
 
 use crate::build_log;
@@ -113,7 +113,7 @@ async fn roles_are_born_by_build_under_their_kind() {
         assert!(g["frames_received"].as_u64().is_some_and(|f| f >= 1), "{} decoded frames: {n}", n["name"]);
     }
 
-    // The second Build drops the compute: its path is retired, the others keep their birth.
+    // The second Build drops the compute: its path is deleted, the others keep their birth.
     let births = |ns: &[Value]| -> BTreeMap<String, String> {
         ns.iter().map(|n| (n["name"].as_str().unwrap().to_string(), n["incarnation_id"].as_str().unwrap_or("").to_string())).collect()
     };

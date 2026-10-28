@@ -118,7 +118,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         let (fabric, fabric_id) = (root_cfg.fabric.clone(), root_cfg.fabric_id.clone());
         let root = start_with(root_cfg, Wiring { node_hooks: root_hook, serve_app: Some(serve), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         // The accepted Build names only the root: the launched admin is surplus to it, and a reconciling
-        // root would retire it, which for an in-process admin is signalling this test process. The cell
+        // root would delete it, which for an in-process admin is signalling this test process. The cell
         // is about the hook, so the root does not reconcile.
         root.stop_reconciling().await;
         tokio::time::timeout(WRONG, started.notified()).await.expect("the Day-0 admin's hook began");

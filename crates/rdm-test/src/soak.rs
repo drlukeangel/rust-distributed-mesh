@@ -192,7 +192,7 @@ pub enum Profile {
     Authority,
     /// A mesh made unheard by the others, held, healed, converged, repeated.
     Partition,
-    /// Restart, retire (delete), replacement and capacity re-add of role nodes under traffic.
+    /// Restart, delete (delete), replacement and capacity re-add of role nodes under traffic.
     Lifecycle,
     /// Holds past the floors (S6): a runtime held and a mesh cut, each kept past the staleness and
     /// the hung-hold floors (`Config::hold`) with traffic on, then released or healed; the same
@@ -1371,7 +1371,7 @@ impl Driver {
         let mut lane_watch: Option<(String, u64)> = None;
         // A restarted birth: the same node id and incarnation come back ready (node-restart.md).
         let mut restarted: Option<(String, (String, String))> = None;
-        let mut retired_node_id: Option<String> = None;
+        let mut deleted_node_id: Option<String> = None;
         // A birth held while its runtime ran: it comes back as itself.
         let mut held: Option<(String, String)> = None;
         let mut gone: Option<String> = None;
@@ -1389,7 +1389,7 @@ impl Driver {
                 entry["accepted"] = accepted_json(delete.accepted());
                 entry["build"] = self.await_build(delete).await?;
                 gone = Some(node.clone());
-                retired_node_id = Some(s(&n["node_id"]));
+                deleted_node_id = Some(s(&n["node_id"]));
             }
             Action::Restart { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
@@ -1409,7 +1409,7 @@ impl Driver {
                 let (b2, old) = self.replace(&n, entry).await?;
                 removed = Some((node.clone(), old));
                 watch = Some((b2, 0));
-                retired_node_id = Some(s(&n["node_id"]));
+                deleted_node_id = Some(s(&n["node_id"]));
             }
             Action::HandOff { mesh } => {
                 let n = nodes
@@ -1421,7 +1421,7 @@ impl Driver {
                 let (b2, old) = self.replace(&n, entry).await?;
                 removed = Some((s(&n["name"]), old));
                 watch = Some((b2, 0));
-                retired_node_id = Some(s(&n["node_id"]));
+                deleted_node_id = Some(s(&n["node_id"]));
             }
             Action::Kill { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
@@ -1429,7 +1429,7 @@ impl Driver {
                 watch = Some((self.build_id.clone(), attempt_before));
                 let mesh = s(&n["mesh"]);
                 lane_watch = Some((mesh.clone(), num(&before["lanes"][mesh.as_str()]["attempt"])));
-                retired_node_id = Some(s(&n["node_id"]));
+                deleted_node_id = Some(s(&n["node_id"]));
                 no_build_for_drift = true;
                 self.kill(node, entry).await?;
             }
@@ -1606,11 +1606,11 @@ impl Driver {
             }
         }
         // The replaced node's id names no node: a call to it is refused, never dispatched.
-        if let Some(old) = &retired_node_id {
+        if let Some(old) = &deleted_node_id {
             let r = self.estate.probe(&["get", "--target", &format!("exact:{old}"), "--key", "9999"]);
-            entry["retired_call"] = r["outcome"].clone();
+            entry["deleted_call"] = r["outcome"].clone();
             if r["outcome"] == "Reply" {
-                return Err(broken("retired-node-is-not-dispatched", format!("a call to the retired node {old} was dispatched: {r}")));
+                return Err(broken("deleted-node-is-not-dispatched", format!("a call to the deleted node {old} was dispatched: {r}")));
             }
         }
         // A loss opens attempts of the accepted Build, never a Build.

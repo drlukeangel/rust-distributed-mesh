@@ -1340,7 +1340,7 @@ async fn an_owed_call_ends_on_its_receivers_removal_from_the_view_unavailable() 
 }
 
 /// Cell 28 (i146 Q44; node-rpc.md §43, the outcome table "receiving birth proven exited or removed"):
-/// an Owed call in flight ends when its receiver's exit is proven (the live resolver retires the birth),
+/// an Owed call in flight ends when its receiver's exit is proven (the live resolver deletes the birth),
 /// `ReceiverGone`, code `UNAVAILABLE`: the proof of the exit ends it, as the removal does, never
 /// silence. Must NOT happen: the call resent to a birth proven exited.
 #[tokio::test]

@@ -748,7 +748,7 @@ async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_an
 /// Part C1 step 8: "Only then does the commanding Build continue, and only once the successor's
 /// installation is acknowledged"): a planned seat move mid-Build ends the caller's outer stream with
 /// the typed new-seat frame, never `Indeterminate`. `mesh1` holds the fabric-primary seat, and the
-/// Build retires `mesh1`: before the retire is claimed, the fabric-primary moves the fabric seat alone
+/// Build deletes `mesh1`: before the delete is claimed, the fabric-primary moves the fabric seat alone
 /// to `mesh2`'s primary by node.fabric-primary.update (op `0x21`, mesh-delete.md step 1), and the Build
 /// goes on at the new fabric-primary. The successor installs the election's result the call carries
 /// (`primary.update.via-primary-updated` at the new fabric-primary, `held`) before the old fabric-primary's drive refuses in its
@@ -765,14 +765,14 @@ async fn a_planned_handover_mid_build_ends_the_outer_stream_with_the_new_fabric_
     let old_seat = carrier.fabric_primary().to_string();
     assert!(old_seat.starts_with("mesh1."), "mesh1 holds the fabric-primary seat: {old_seat}");
 
-    // The Build retires mesh1; the seat leaves with it, by a planned handover inside the Build.
+    // The Build deletes mesh1; the seat leaves with it, by a planned handover inside the Build.
     let keep = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] };
     let mut stream = carrier.create(estate.shape_change_at(&carrier, &keep).await).await.expect("the fabric-primary accepts the delete of mesh1");
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
     let new_seat = loop {
         match stream.next().await {
             Some(Ok(BuildFrame::FabricPrimaryMoved { fabric_primary })) => break fabric_primary.expect("the old seat names the new one"),
-            Some(Ok(BuildFrame::Complete { .. })) => panic!("the old fabric-primary cannot finish a retire of its own mesh"),
+            Some(Ok(BuildFrame::Complete { .. })) => panic!("the old fabric-primary cannot finish a delete of its own mesh"),
             Some(Ok(BuildFrame::Failed { operation, step, reason, .. })) => panic!("the Build failed at {operation} {step}: {reason}"),
             Some(Ok(_)) => continue,
             Some(Err(end)) => panic!("a planned seat move ends the outer stream with the typed new-seat frame, never as {end:?}"),

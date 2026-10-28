@@ -66,7 +66,7 @@ fn alive(pid: u64) -> bool {
 /// What a mesh1 delete run to its end leaves to read: the last admin, the mesh.delete's Build and
 /// its last admin's node.delete's (an attempt of the accepted Build), what a peer's resolver answers
 /// for the last admin's birth after the delete, and every span.
-struct Retired {
+struct Deleted {
     last: String,
     builds: Vec<String>,
     resolution: Value,
@@ -76,7 +76,7 @@ struct Retired {
 }
 
 /// mesh1 deleted, then its last admin's own node.delete, run to their end and read back.
-async fn delete_mesh1(test: &str) -> Retired {
+async fn delete_mesh1(test: &str) -> Deleted {
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     let both = [mesh("mesh1"), mesh("mesh2")];
     estate.reconcile_shape("fabric1", &both).await;
@@ -90,7 +90,7 @@ async fn delete_mesh1(test: &str) -> Retired {
         };
         pids.push((name, pid));
     }
-    // The Build retires mesh1, a mesh.delete, which the initial fabric refuses until it has first reached
+    // The Build deletes mesh1, a mesh.delete, which the initial fabric refuses until it has first reached
     // ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Control moves to mesh2 before mesh1 goes.
@@ -125,7 +125,7 @@ async fn delete_mesh1(test: &str) -> Retired {
     if !builds.contains(&c) {
         builds.push(c);
     }
-    Retired { last, builds, resolution, spans: estate.spans(), pids }
+    Deleted { last, builds, resolution, spans: estate.spans(), pids }
 }
 
 /// mesh1's last admin, stopped by its own node.delete, announces nothing after its stop's cut, and
@@ -144,7 +144,7 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     let cell = "a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    let Retired { last, builds, resolution, spans, pids } = delete_mesh1(cell).await;
+    let Deleted { last, builds, resolution, spans, pids } = delete_mesh1(cell).await;
     let of_builds = |sp: &Value| builds.iter().any(|x| sp["attributes"]["build_id"] == x.as_str());
 
     // The executor's exit proof: the TerminateRuntime of the last admin's node.delete, complete inside

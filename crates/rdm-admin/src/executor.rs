@@ -82,7 +82,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // node recovery, and no admin executes one. Its node-admin is created by a Build's node.create
         // (below), the fabric-primary's once the mesh holds no admin that is not proven gone
         // (mesh-investigation.md "A node-admin joins the live mesh").
-        BuildOperation::RetireNode { node, exited: Some(_), .. } | BuildOperation::CreateNode { node, over: Some(_), .. } => {
+        BuildOperation::DeleteLiveNode { node, exited: Some(_), .. } | BuildOperation::CreateNode { node, over: Some(_), .. } => {
             if node.kind == NodeKind::NodeAdmin {
                 node_admin_recoverer(node, t)
             } else {
@@ -99,12 +99,12 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // node-admin, its claim targeted at the fabric primary (node-admin-lifecycle.md §4.3); the
         // fabric primary creates only the first admin of a mesh that has none.
         BuildOperation::CreateNode { node, .. } => mesh_executor(&node.mesh, None, t),
-        BuildOperation::RetireNode { node, .. }
+        BuildOperation::DeleteLiveNode { node, .. }
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::StartNode { node, .. }
         | BuildOperation::DeleteNode { node, .. } => node_op_executor(node, op, t),
-        // A mesh retire whose mesh holds the fabric seat waits for node.fabric-primary.update ([`seat_move`]):
+        // A mesh delete whose mesh holds the fabric seat waits for node.fabric-primary.update ([`seat_move`]):
         // the new fabric-primary, outside the leaving mesh, drives the rest (mesh-delete.md step 1).
         BuildOperation::ShutdownMesh { .. } if seat_move(op, t).is_some() => None,
         BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } | BuildOperation::DeleteFabric { .. } => fabric(),
@@ -120,7 +120,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
     }
 }
 
-/// The executor of a node op (retire, connections delete, stop, start, delete, and a
+/// The executor of a node op (delete, connections delete, stop, start, delete, and a
 /// Build's step) on `node` in view `t`.
 fn node_op_executor(node: &PathName, op: &BuildOperation, t: &Topology) -> Option<PathName> {
     let fabric = || t.fabric_primary().map(|n| n.name.clone());
@@ -179,7 +179,7 @@ pub fn held_admins<'a>(mesh: &str, target: Option<&PathName>, t: &'a Topology) -
 pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
     let node = match op {
         BuildOperation::CreateNode { node, .. }
-        | BuildOperation::RetireNode { node, .. }
+        | BuildOperation::DeleteLiveNode { node, .. }
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::StartNode { node, .. }
@@ -250,10 +250,10 @@ fn is_primary(node: &PathName, t: &Topology) -> bool {
 
 /// The seats `op` moves before it runs (R-MT1: node.primary.update "should be called on MP stop or
 /// delete. Caveat: delete is skipped if it's the only node on the mesh"): the node of any other type it
-/// stops, deletes or deletes the connections of, when that node holds its cohort's
+/// stops or deletes, or deletes the connections of, when that node holds its cohort's
 /// seat (Part C1, Q3: its mesh-primary commands the update); the node-admin it stops,
-/// deletes or deletes the connections of, when that node holds its mesh's primary
-/// seat or the fabric seat in view `t`; and for a mesh retire of the mesh that holds the fabric seat,
+/// deletes, or deletes the connections of, when that node holds its mesh's primary
+/// seat or the fabric seat in view `t`; and for a mesh delete of the mesh that holds the fabric seat,
 /// the fabric seat alone (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part
 /// C1 "The last node-admin of a mesh": "mesh.delete never updates the mesh primary ... If the mesh
 /// holds the fabric seat, that seat moves first by `node.fabric-primary.update` with the departing mesh
@@ -274,7 +274,7 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
         return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false, successor: None });
     }
     let (node, delete) = match op {
-        BuildOperation::RetireNode { node, exited: None, .. } | BuildOperation::Step { step: Step::Delete { node }, .. } => (node, true),
+        BuildOperation::DeleteLiveNode { node, exited: None, .. } | BuildOperation::Step { step: Step::Delete { node }, .. } => (node, true),
         BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::Step { step: Step::Stop { node } | Step::DeleteConnections { node }, .. } => (node, false),
@@ -417,7 +417,7 @@ pub enum Reconciled {
 ///
 /// Which admin executes an operation (PRD §12.1, `executor_for`): a mesh's admin primary runs the
 /// operations on that mesh's members, its node-admins included; the fabric primary runs everything
-/// else (mesh creation and retirement) and a mesh's members while that mesh has no admin primary.
+/// else (mesh creation and deletion) and a mesh's members while that mesh has no admin primary.
 /// An attempt that reaches an operation another admin executes ends `HandedOff`, and the
 /// fabric-primary claims the next attempt of the same Build for that admin. A run that ends with
 /// more of the plan to follow hands back to the fabric primary of the view it ends with, which
@@ -681,7 +681,7 @@ mod tests {
     fn a_members_recovery_is_executed_by_its_mesh_primary_a_secondary_node_admins_included() {
         let recovery = |n: &str| {
             let (node, from) = (n.parse::<PathName>().unwrap(), crate::build::ExitedBirth { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint() });
-            [BuildOperation::RetireNode { node: node.clone(), exited: Some(from.clone()), birth: None }, BuildOperation::CreateNode { node, over: Some(from), executable: None }]
+            [BuildOperation::DeleteLiveNode { node: node.clone(), exited: Some(from.clone()), birth: None }, BuildOperation::CreateNode { node, over: Some(from), executable: None }]
         };
         let recovered_by = |n: &str, t: &Topology| {
             let who: Vec<String> = recovery(n).iter().map(|op| who(op, t)).collect();
@@ -707,24 +707,24 @@ mod tests {
     fn a_meshs_members_are_its_own_primarys_and_everything_else_the_fabric_primarys() {
         let t = mm(true);
         assert_eq!(who(&create("mesh2.rpc.1"), &t), "mesh2.admin.1");
-        assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None, birth: None }, &t), "mesh2.admin.1");
+        assert_eq!(who(&BuildOperation::DeleteLiveNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None, birth: None }, &t), "mesh2.admin.1");
         assert_eq!(who(&create("mesh1.rpc.2"), &t), "mesh1.admin.1");
         // The rule names no role: a product's kinds get the mesh's own primary admin too.
         assert_eq!(who(&create("mesh2.broker.1"), &t), "mesh2.admin.1");
         assert_eq!(who(&BuildOperation::StopNode { node: "mesh2.gateway.1".parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t), "mesh2.admin.1");
-        assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.compute.1".parse().unwrap(), exited: None, birth: None }, &t), "mesh2.admin.1");
+        assert_eq!(who(&BuildOperation::DeleteLiveNode { node: "mesh2.compute.1".parse().unwrap(), exited: None, birth: None }, &t), "mesh2.admin.1");
         assert_eq!(who(&create("mesh2.admin.2"), &t), "mesh2.admin.1", "a mesh's missing admin is created by that mesh's primary");
         assert_eq!(who(&create("mesh1.admin.2"), &t), "mesh1.admin.1", "its own mesh's primary, which is the fabric primary here");
-        assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.admin.1".parse().unwrap(), exited: None, birth: None }, &t), "mesh1.admin.1", "mesh2.admin.1 is mesh2's only admin: no successor, the fabric primary");
+        assert_eq!(who(&BuildOperation::DeleteLiveNode { node: "mesh2.admin.1".parse().unwrap(), exited: None, birth: None }, &t), "mesh1.admin.1", "mesh2.admin.1 is mesh2's only admin: no successor, the fabric primary");
         let mut t3 = mm(true);
         t3.nodes.push(node("mesh2.admin.2", false, false));
         let (p2, m2) = ("mesh2.admin.1", "mesh2.admin.2");
-        assert_eq!(who(&BuildOperation::RetireNode { node: m2.parse().unwrap(), exited: None, birth: None }, &t3), p2, "a non-primary admin's retire is its mesh primary's");
+        assert_eq!(who(&BuildOperation::DeleteLiveNode { node: m2.parse().unwrap(), exited: None, birth: None }, &t3), p2, "a non-primary admin's delete is its mesh primary's");
         assert_eq!(who(&BuildOperation::StopNode { node: m2.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t3), p2, "a non-primary admin's stop is its mesh primary's");
         // R-MT1: a mesh primary's own operation waits for node.primary.update; no admin executes it
         // while it holds the seat, and once the seat moved its mesh's new primary does.
         assert_eq!(who(&BuildOperation::StopNode { node: p2.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t3), "", "a mesh primary's own stop waits for its seat to move");
-        assert_eq!(who(&BuildOperation::RetireNode { node: p2.parse().unwrap(), exited: None, birth: None }, &t3), "", "a mesh primary's own retire waits for its seat to move");
+        assert_eq!(who(&BuildOperation::DeleteLiveNode { node: p2.parse().unwrap(), exited: None, birth: None }, &t3), "", "a mesh primary's own delete waits for its seat to move");
         let mut moved = t3.clone();
         for n in moved.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin) {
             n.is_primary = n.name.to_string() == m2;
@@ -778,48 +778,48 @@ mod tests {
     /// approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C2 "Successor search
     /// for the commanded transfer": "1. the holder's own mesh ... 2. only when that mesh has none, or
     /// it is the departing mesh under mesh.delete: the lowest NodeId among the other Ready
-    /// mesh-primaries"): a retire or stop of the fabric primary is never executed by the target
+    /// mesh-primaries"): a delete or stop of the fabric primary is never executed by the target
     /// itself: no admin executes it until its seats moved. Beside another node of its mesh, both seats
-    /// move (node.primary.update's one row, Q1). As its mesh's only node, its retire skips
+    /// move (node.primary.update's one row, Q1). As its mesh's only node, its delete skips
     /// node.primary.update (R-MT1: the delete of a mesh's only node) and moves the fabric seat alone,
     /// out of its mesh (C2 step 2), after which the new fabric primary executes it; its stop still
-    /// moves both (refused by Q7's text, no secondary). Another admin's retire is its own mesh
+    /// moves both (refused by Q7's text, no secondary). Another admin's delete is its own mesh
     /// primary's (mesh2's only admin, its mesh's only node, has no mesh primary beside it: the fabric
     /// primary). The NodeIds are pinned: which admin holds the fabric seat is the case, never a draw.
-    /// Must NOT happen: the fabric primary named the executor of its own retire, or its retire as its
+    /// Must NOT happen: the fabric primary named the executor of its own delete, or its delete as its
     /// mesh's only node left waiting with no seat to move and no admin to execute it.
     #[test]
     fn the_fabric_primary_never_executes_its_own_delete_or_stop() {
-        let retire = |n: &str| BuildOperation::RetireNode { node: n.parse().unwrap(), exited: None, birth: None };
+        let delete = |n: &str| BuildOperation::DeleteLiveNode { node: n.parse().unwrap(), exited: None, birth: None };
         let stop = |n: &str| BuildOperation::StopNode { node: n.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() };
         // mesh1.admin.1 holds the fabric seat, mesh1.rpc.1 beside it.
         let t = elected("mesh1.admin.1");
-        for op in [retire("mesh1.admin.1"), stop("mesh1.admin.1")] {
+        for op in [delete("mesh1.admin.1"), stop("mesh1.admin.1")] {
             assert_eq!(executor_for(&op, &t), None, "{op:?}: never the fabric primary; no admin until its seats moved");
             assert!(seat_move(&op, &t).is_some_and(|m| m.mesh_seat && m.fabric_seat), "{op:?}: both seats move first: {:?}", seat_move(&op, &t));
         }
-        assert_eq!(who(&retire("mesh2.admin.1"), &t), "mesh1.admin.1", "mesh2's only admin has no mesh primary beside it: the fabric primary retires it");
+        assert_eq!(who(&delete("mesh2.admin.1"), &t), "mesh1.admin.1", "mesh2's only admin has no mesh primary beside it: the fabric primary deletes it");
         // mesh2.admin.1 holds the fabric seat and is its mesh's only node.
         let t = elected("mesh2.admin.1");
-        assert_eq!(executor_for(&retire("mesh2.admin.1"), &t), None, "never the fabric primary; no admin until its fabric seat moved");
+        assert_eq!(executor_for(&delete("mesh2.admin.1"), &t), None, "never the fabric primary; no admin until its fabric seat moved");
         assert!(
-            seat_move(&retire("mesh2.admin.1"), &t).is_some_and(|m| !m.mesh_seat && m.fabric_seat),
-            "the retire of its mesh's only node moves the fabric seat alone: {:?}",
-            seat_move(&retire("mesh2.admin.1"), &t)
+            seat_move(&delete("mesh2.admin.1"), &t).is_some_and(|m| !m.mesh_seat && m.fabric_seat),
+            "the delete of its mesh's only node moves the fabric seat alone: {:?}",
+            seat_move(&delete("mesh2.admin.1"), &t)
         );
         assert!(seat_move(&stop("mesh2.admin.1"), &t).is_some_and(|m| m.mesh_seat && m.fabric_seat), "its stop moves both seats");
-        assert_eq!(who(&retire("mesh1.admin.1"), &t), "", "mesh1's primary, beside mesh1.rpc.1, waits for its own seat to move");
+        assert_eq!(who(&delete("mesh1.admin.1"), &t), "", "mesh1's primary, beside mesh1.rpc.1, waits for its own seat to move");
         let mut moved = t.clone();
         for n in moved.nodes.iter_mut() {
             n.is_fabric_primary = n.name.to_string() == "mesh1.admin.1";
         }
-        assert_eq!(seat_move(&retire("mesh2.admin.1"), &moved), None, "once the fabric seat moved, nothing is owed");
-        assert_eq!(who(&retire("mesh2.admin.1"), &moved), "mesh1.admin.1", "the new fabric primary executes it");
-        // Alone, the fabric primary has no successor: nobody executes its retire.
+        assert_eq!(seat_move(&delete("mesh2.admin.1"), &moved), None, "once the fabric seat moved, nothing is owed");
+        assert_eq!(who(&delete("mesh2.admin.1"), &moved), "mesh1.admin.1", "the new fabric primary executes it");
+        // Alone, the fabric primary has no successor: nobody executes its delete.
         let mut alone = mm(false);
         crate::election::resolve(&mut alone.nodes);
         let fp = alone.fabric_primary().unwrap().name.clone();
-        assert_eq!(executor_for(&BuildOperation::RetireNode { node: fp, exited: None, birth: None }, &alone), None);
+        assert_eq!(executor_for(&BuildOperation::DeleteLiveNode { node: fp, exited: None, birth: None }, &alone), None);
     }
 
     /// CONTRACT (#3016; elections §5: a holder proven gone "hands the seat to the lowest
@@ -843,7 +843,7 @@ mod tests {
             n.status = NodeStatus::Dead;
             n.is_primary = false;
         }
-        let ops = [BuildOperation::StopNode { node: "mesh2.rpc.3".parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, create("mesh2.rpc.2"), create("mesh2.admin.3"), BuildOperation::RetireNode { node: "mesh2.admin.1".parse().unwrap(), exited: None, birth: None }];
+        let ops = [BuildOperation::StopNode { node: "mesh2.rpc.3".parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, create("mesh2.rpc.2"), create("mesh2.admin.3"), BuildOperation::DeleteLiveNode { node: "mesh2.admin.1".parse().unwrap(), exited: None, birth: None }];
         for op in &ops {
             assert_eq!(executor_for(op, &t), None, "{op:?}: mesh2.admin.2 is held, not proven gone: never the fabric primary");
             let why = why_no_executor(op, &t);
@@ -873,14 +873,14 @@ mod tests {
     /// `node.fabric-primary.update` with the departing mesh excluded (mesh-delete.md step 1); nothing
     /// else moves"): `mesh.delete:<mesh_id>` is the fabric primary's. When the fabric primary is
     /// inside the leaving mesh, its fabric seat alone moves first ([`seat_move`]: the mesh seat stays),
-    /// no admin executes the retire until it has, and the executor is then the new fabric primary.
-    /// Must NOT happen: the leaving mesh's admin named the executor of its own mesh's retire.
+    /// no admin executes the delete until it has, and the executor is then the new fabric primary.
+    /// Must NOT happen: the leaving mesh's admin named the executor of its own mesh's delete.
     #[test]
     fn a_mesh_delete_is_the_fabric_primarys() {
         let t = mm(true);
         assert_eq!(who(&shutdown("mesh2"), &t), "mesh1.admin.1", "the fabric primary, outside mesh2");
-        assert_eq!(seat_move(&shutdown("mesh2"), &t), None, "a retire of a mesh the fabric seat is not in moves no seat");
-        assert_eq!(who(&shutdown("mesh1"), &t), "", "the fabric primary, inside mesh1: no admin executes the retire until its seat moved");
+        assert_eq!(seat_move(&shutdown("mesh2"), &t), None, "a delete of a mesh the fabric seat is not in moves no seat");
+        assert_eq!(who(&shutdown("mesh1"), &t), "", "the fabric primary, inside mesh1: no admin executes the delete until its seat moved");
         assert!(
             seat_move(&shutdown("mesh1"), &t).is_some_and(|m| m.holder.name.to_string() == "mesh1.admin.1" && !m.mesh_seat && m.fabric_seat),
             "the fabric seat alone moves first: {:?}",

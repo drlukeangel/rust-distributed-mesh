@@ -161,9 +161,10 @@ pub enum BuildOperation {
         /// The birth deleted.
         from_incarnation: IncarnationId,
     },
-    /// Remove the logical node through the retire pipeline (node-delete.md): its storage stays.
-    RetireNode {
-        /// The node to retire.
+    /// The live target's delete (node-delete.md "Live target"): `node.stop` completes first, then the delete; its storage stays.
+    #[serde(rename = "retire_node")] // rdm#88: stored tag
+    DeleteLiveNode {
+        /// The node to delete.
         node: PathName,
         /// A crashed target (node-delete.md "Crashed target"; node-recovery.md sequence step 3): the
         /// exact exited birth, deleted on its mesh-primary's recorded exit proof. Its stop steps are
@@ -272,7 +273,7 @@ impl BuildOperation {
     /// The node the operation acts on; `None` for a mesh operation.
     pub fn node(&self) -> Option<&PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
+            Self::CreateNode { node, .. } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::DeleteLiveNode { node, .. } => Some(node),
             Self::Step { step, .. } => Some(step.node()),
             Self::TerminateNode { node, .. } | Self::UpdateConfig { node } | Self::CreateTags { node, .. } | Self::DeleteTags { node, .. } => Some(node),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } | Self::BlockStorage { .. } | Self::SwitchStorage { .. } | Self::UnblockStorage { .. } | Self::FinishStorage { .. } => None,
@@ -299,7 +300,7 @@ impl BuildOperation {
             Self::Step { step, .. } => step_key(step),
             // node.delete has one key, whatever the node's name and whatever state the birth is
             // deleted from (a stopped birth's delete runs no stop steps, a live one's stops it first).
-            Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => format!("node.delete:{node}"),
+            Self::DeleteNode { node, .. } | Self::DeleteLiveNode { node, .. } => format!("node.delete:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("mesh.delete:{mesh_id}"),
             Self::DeleteFabric { fabric_id } => format!("fabric.delete:{fabric_id}"),
             // One key per birth: a birth heard again after another termination is a new run of it.
@@ -439,7 +440,7 @@ pub fn delete_admits(stopped: bool, live: bool, heard_dead: bool, verdict: Optio
 /// birth, its runtime read from its row.
 pub fn step_delete(node: &PathName, birth: &PinnedBirth, held: Option<&crate::model::Node>) -> BuildOperation {
     match held.filter(|n| birth.is(n)) {
-        Some(n) if !n.stopped => BuildOperation::RetireNode { node: node.clone(), exited: None, birth: Some(birth.clone()) },
+        Some(n) if !n.stopped => BuildOperation::DeleteLiveNode { node: node.clone(), exited: None, birth: Some(birth.clone()) },
         _ => BuildOperation::DeleteNode { node: node.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() },
     }
 }
@@ -592,7 +593,7 @@ pub enum BuildReject {
         /// The node-admin named.
         node: String,
     },
-    /// The Build would stop, delete the connections of or retire a seat holder (its
+    /// The Build would stop, delete the connections of or delete a seat holder (its
     /// mesh's primary, or the fabric-primary) whose node.primary.update has no successor (the approved proposal
     /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The no-successor cases", Q7 ruled
     /// Luke 2026-10-12): refused by name with Q7's exact text, the holder stays primary and nothing is
@@ -602,13 +603,13 @@ pub enum BuildReject {
         node: String,
         /// Its mesh.
         mesh: String,
-        /// What the Build would do to it (`node.connections.delete`, `stop`, `retire`).
+        /// What the Build would do to it (`node.connections.delete`, `stop`, `delete`).
         action: String,
         /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, or the
         /// fabric seat's `cannot transfer fabric-primary: ...` naming both searches.
         refusal: String,
     },
-    /// The Build would stop, delete the connections of or retire the holder of its
+    /// The Build would stop, delete the connections of or delete the holder of its
     /// cohort's seat, a node type other than node-admin, while no other node of its type is in its mesh
     /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The
     /// no-successor cases", Q7 ruled Luke 2026-10-12: "a mesh's sole broker ... cannot be stopped or
@@ -619,7 +620,7 @@ pub enum BuildReject {
         node: String,
         /// Its mesh.
         mesh: String,
-        /// What the Build would do to it (`node.connections.delete`, `stop`, `retire`,
+        /// What the Build would do to it (`node.connections.delete`, `stop`, `delete`,
         /// `delete`).
         action: String,
         /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`.

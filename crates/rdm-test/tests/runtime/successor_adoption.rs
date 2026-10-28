@@ -8,7 +8,7 @@
 //! - the successor holds the mesh and the fabric, and its view advertises
 //!   every rpc node's data dir (current birth metadata, from the topology view);
 //! - it restarts one of A's births (same node id, new incarnation) and
-//!   retires another (its runtime is gone), from the runtime each birth
+//!   deletes another (its runtime is gone), from the runtime each birth
 //!   publishes with its topology view, never from Build history.
 //!
 //! Evidence: the bootstrap admin's ready span names its own self-adopted
@@ -64,8 +64,8 @@ async fn a_successor_manages_births_it_never_launched() {
     let successor = nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.2").cloned().unwrap();
     let launcher = nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").cloned().unwrap();
     let rpc = |name: &str| a_births.iter().find(|n| n.name.to_string() == name).cloned().unwrap();
-    let (restarted, retired) = (rpc("mesh1.rpc.2"), rpc("mesh1.rpc.3"));
-    let retired_pid = estate.pid_of("mesh1.rpc.3").await;
+    let (restarted, deleted) = (rpc("mesh1.rpc.2"), rpc("mesh1.rpc.3"));
+    let deleted_pid = estate.pid_of("mesh1.rpc.3").await;
 
     // Stop the launching admin (`node.stop` runs `node.primary.update` to `mesh1.admin.2` first and
     // takes `mesh1.admin.1` down only after the confirmed transfer).
@@ -86,19 +86,19 @@ async fn a_successor_manages_births_it_never_launched() {
         assert!(n.data_dir.as_deref().is_some_and(|d| !d.is_empty()), "the successor's view carries {}'s data dir: {n:?}", n.name);
     }
 
-    // Restart one of A's births and retire another, through the successor.
+    // Restart one of A's births and delete another, through the successor.
     estate.stop_then_start(&restarted.name).await;
     // A stop then a start keep the birth (node-stop.md "Kept": "node.id, incarnation, endpoint key, port,
     // bin, path/name and storage"): the node is ready again as the same birth.
     let after = estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation_id), (&restarted.node_id, &restarted.incarnation_id), "a restart keeps the node id and the birth");
-    Estate::workflow("node.delete of mesh1.rpc.3", estate.nodes_obj().await.delete(&retired.name).await).await;
-    wait_for("mesh1.rpc.3's runtime is gone", Duration::from_secs(30), || async { (!alive(retired_pid)).then_some(()) }).await;
+    Estate::workflow("node.delete of mesh1.rpc.3", estate.nodes_obj().await.delete(&deleted.name).await).await;
+    wait_for("mesh1.rpc.3's runtime is gone", Duration::from_secs(30), || async { (!alive(deleted_pid)).then_some(()) }).await;
 
     // The admins that hold mesh1 now: the successor, and the drift recovery's rebirth of the
     // killed launcher's path, a new NodeId that may take the seat back by NodeId order.
     let admins_now: Vec<String> = estate.node_views().await.iter().filter(|n| n.kind == NodeKind::NodeAdmin && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|n| n.node_id.to_string()).collect();
-    let (launcher, restarted, retired) = (serde_json::to_value(&launcher).unwrap(), serde_json::to_value(&restarted).unwrap(), serde_json::to_value(&retired).unwrap());
+    let (launcher, restarted, deleted) = (serde_json::to_value(&launcher).unwrap(), serde_json::to_value(&restarted).unwrap(), serde_json::to_value(&deleted).unwrap());
     estate.stop().await;
     let spans = estate.spans();
     // Day 0: the bootstrap admin published the runtime it adopted for itself.
@@ -176,7 +176,7 @@ async fn a_successor_manages_births_it_never_launched() {
         assert_eq!(inspected["attributes"]["verdict"], check["attributes"]["verdict"], "the inspection's verdict is the investigation's: {inspected} {check}");
         assert!(!s(&inspected["attributes"]["inspector"]).is_empty(), "the inspection names its inspector: {inspected}");
     }
-    for birth in [&restarted, &retired] {
+    for birth in [&restarted, &deleted] {
         let name = s(&birth["name"]);
         let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()

@@ -2,7 +2,7 @@
 //!
 //! `start` builds a node-admin from concrete parts and holds them behind traits: the Fabric's
 //! control storage (`FabricStorage`), the Build state (`BuildStateAdapter`), the deployment
-//! provider and the lifecycle events a retirement publishes. A [`Wiring`] lets an executable that IS
+//! provider and the lifecycle events a deletion publishes. A [`Wiring`] lets an executable that IS
 //! a node-admin (a consumer's own, or a testkit's) wrap each of them once before the admin runs. The
 //! product passes [`Wiring::default`]: nothing is wrapped. Application work enters a lifecycle only
 //! through the [Fabric and node hooks](../../../docs/architecture/fabric-node-hooks.md)
@@ -182,7 +182,7 @@ pub struct Wiring {
     pub builds: Option<Wrap<dyn BuildStateAdapter>>,
     /// Wraps the deployment provider the pipelines, the drift check and the Ready gate use.
     pub provider: Option<Wrap<dyn DeploymentProvider>>,
-    /// Wraps the lifecycle events a retirement publishes.
+    /// Wraps the lifecycle events a deletion publishes.
     pub lifecycle_events: Option<Wrap<dyn LifecycleEvents>>,
     /// The app's `pre_node_ready` hook, run after the join is accepted, the topology installed
     /// and the mesh channel joined. The product passes none: the hook passes at once and the admin's

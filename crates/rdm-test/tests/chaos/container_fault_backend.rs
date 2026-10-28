@@ -815,7 +815,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
             let on_isolated = isolated_set.contains(sp["attributes"]["node"].as_str().unwrap_or_default());
             // A node-row step that found the row held wrote nothing: a read, never a create.
             let wrote = sp["attributes"]["outcome"] != "row-held-by-node";
-            (n.starts_with("rdm.node_admin.node.") && (n.contains(".create.") || n.contains(".delete.") || n.contains(".retire.") || n.contains(".update.via-build")) && on_isolated && wrote)
+            (n.starts_with("rdm.node_admin.node.") && (n.contains(".create.") || n.contains(".delete.") || n.contains(".delete.") || n.contains(".update.via-build")) && on_isolated && wrote)
                 || (CONNECTIONS_DELETE.contains(&n) && on_isolated && wrote)
                 || (n == "rdm.node_admin.deployment.update.via-pipeline" && on_isolated)
                 || (n == "rdm.node_admin.build.update.via-reconcile" && sp["attributes"]["build_id"] == fabric_build.as_str())
@@ -865,7 +865,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         rec2.check("every node other than the silenced one stays ready as the same birth while it is silent", still == want_rest, format!("differ: {:?}", still.symmetric_difference(&want_rest).collect::<Vec<_>>()));
     }
     rec2.check("the healthy legs before and after the silence replied Direct and ViaPeer", by("direct", true).len() >= 3 && by("via-peer", true).len() >= 2, format!("direct {} via-peer {}", by("direct", true).len(), by("via-peer", true).len()));
-    rec2.check("the control plane created, retired, re-attempted and re-birthed nothing while the silence held", mutations.is_empty(), format!("{mutations:?}"));
+    rec2.check("the control plane created, deleted, re-attempted and re-birthed nothing while the silence held", mutations.is_empty(), format!("{mutations:?}"));
     rec2.check("no kept-side admin named another fabric primary while the silence held", moved.is_empty(), format!("{} elections, {} by kept-side admins moved", elections_after_cut.len(), moved.len()));
     let own_ok = cut == Cut::Node || silence.iter().all(|r| {
         isolated_admins.iter().all(|a| {
@@ -1102,7 +1102,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
         .filter(|sp| attr(sp, "build_id") == accepted && attr(sp, "node").starts_with(&format!("{kept_mesh}.")) && at(sp) > fault_at)
         .map(|sp| attr(sp, "node").to_string())
         .collect();
-    assert!(touched.is_empty(), "no member of the surviving mesh was created or retired after the fault: {touched:?}");
+    assert!(touched.is_empty(), "no member of the surviving mesh was created or deleted after the fault: {touched:?}");
 
     let result = json!({
         "cell": cell,
@@ -1126,11 +1126,11 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-const RETIRE_CELL: &str = "container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end";
+const DELETE_CELL: &str = "container_primary_mesh_deleted_hands_over_fabric_primary_before_its_containers_end";
 
 /// CONTRACT (#2784, fabric loss): on a real Docker estate of two meshes (two node-admins and three
 /// rpc nodes each) the mesh that holds the fabric seat is lost the way an operator loses it: one
-/// Build retires it, executed by an admin outside it. While the Build runs, every surviving admin
+/// Build deletes it, executed by an admin outside it. While the Build runs, every surviving admin
 /// is asked who holds the fabric and the advertised endpoint is asked at once; an advertised
 /// endpoint is always a control endpoint of a birth of this run. Fabric authority moves to a ready
 /// admin of the surviving mesh, through an election a surviving admin announces before the former
@@ -1146,7 +1146,7 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
         return;
     }
     assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
-    let cell = RETIRE_CELL;
+    let cell = DELETE_CELL;
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
@@ -1283,14 +1283,14 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
     let after_complete = rows.iter().filter(|r| r["at_unix_nano"].as_u64().unwrap() > build_complete && r["asked"].is_string()).count();
     assert!(after_complete > 0, "the survivors were asked after the Build completed");
     // The hand-off precedes the former holder's end: a surviving admin announced the new fabric
-    // primary before the retire pipeline's terminate step of the former holder ended.
+    // primary before the delete pipeline's terminate step of the former holder ended.
     let recompute = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute");
     let handed_off: Vec<&&Value> = recompute.iter().filter(|sp| attr(sp, "election_level") == "fabric_primary" && attr(sp, "winner_mesh") == survivor_mesh && attr(sp, "previous").starts_with(&format!("{lost_mesh}."))).collect();
     assert!(!handed_off.is_empty(), "a surviving admin announced the new fabric primary of {survivor_mesh}, succeeding {lost_mesh}'s");
     let first_handoff = handed_off.iter().map(|sp| start(sp)).min().unwrap();
     let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
     let holder_terminate: Vec<&Value> = steps.iter().copied().filter(|sp| attr(sp, "step") == "TerminateRuntime" && attr(sp, "node") == holder && attr(sp, "build_id") == delete_build_id).collect();
-    assert_eq!(holder_terminate.len(), 1, "the retire pipeline terminated the former holder {holder} once under {delete_build_id}: {holder_terminate:?}");
+    assert_eq!(holder_terminate.len(), 1, "the delete pipeline terminated the former holder {holder} once under {delete_build_id}: {holder_terminate:?}");
     assert_eq!(attr(holder_terminate[0], "outcome"), "complete");
     let terminated_at = holder_terminate[0]["end_unix_nano"].as_u64().unwrap();
     assert!(first_handoff < terminated_at, "fabric authority moved ({first_handoff}) before the former holder's runtime was gone ({terminated_at})");

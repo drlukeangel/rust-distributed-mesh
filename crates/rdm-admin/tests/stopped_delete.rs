@@ -2,14 +2,14 @@
 //! birth already ran its whole stop (connections delete receipt, connection cut, `stopped`, `NodeStopped`), so
 //! its delete composes nothing of that stop again. It goes from the `NodeDeleting` pre-notice
 //! straight to the provider's exact runtime exit proof, then `NodeDeleted`, and releases no storage
-//! (node-delete.md "Storage": "Retain data dir and endpoint key"). The cell drives the retire
+//! (node-delete.md "Storage": "Retain data dir and endpoint key"). The cell drives the delete
 //! pipeline over a recording provider and a recording observer: nothing here depends on timing.
 
 use rdm_core::{IncarnationId, NodeId};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::deployment::pipeline::{
-    CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RetireRequest, RetireStep, Timeouts, TopologySink,
+    CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, DeleteRequest, DeleteStep, Timeouts, TopologySink,
 };
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::model::{DeploymentId, Node, NodeStatus, PathName, ProviderKind};
@@ -139,7 +139,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
         timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: Some("i143-3072-delete".into()) };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), unreached: false };
+    let req = DeleteRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), unreached: false };
     let out = pipeline.delete_node(&req).await;
     // The trace first: a red below still names the steps the delete ran, with their trace id.
     capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
@@ -154,7 +154,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
     assert_eq!(*observer.sent.lock().unwrap(), Vec::<String>::new(), "nothing is sent to a stopped birth: its stop is done; steps {order:?}");
     assert_eq!(
         order,
-        [RetireStep::NodeDeleting, RetireStep::TerminateRuntime, RetireStep::NodeDeleted, RetireStep::RemoveTopologyMembership, RetireStep::Complete].map(|s| s.name()),
+        [DeleteStep::NodeDeleting, DeleteStep::TerminateRuntime, DeleteStep::NodeDeleted, DeleteStep::RemoveTopologyMembership, DeleteStep::Complete].map(|s| s.name()),
         "the pre-notice, the exact runtime's exit proof, the departure, and no storage release: {out:?}"
     );
     assert!(out.is_ok(), "{out:?}");
@@ -165,7 +165,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
         .filter(|s| s.name == "rdm.node_admin.deployment.update.via-step")
         .filter_map(|s| s.attributes.iter().find(|kv| kv.key.as_str() == "step").map(|kv| kv.value.to_string()))
         .collect();
-    assert!(!steps.iter().any(|s| s == RetireStep::StopNode.name()), "no stop step span: {steps:?}");
-    assert!(steps.iter().any(|s| s == RetireStep::TerminateRuntime.name()), "{steps:?}");
+    assert!(!steps.iter().any(|s| s == DeleteStep::StopNode.name()), "no stop step span: {steps:?}");
+    assert!(steps.iter().any(|s| s == DeleteStep::TerminateRuntime.name()), "{steps:?}");
     assert!(!steps.iter().any(|s| s == "ReleaseStorage"), "no step span releases storage: {steps:?}");
 }

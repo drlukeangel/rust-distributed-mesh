@@ -1,5 +1,5 @@
 //! The server half of born-full (`pre_node_ready`): the gate an app's own ops sit behind
-//! until the app's hook on this node returned `Ok`, and the cancellation token a birth's retirement
+//! until the app's hook on this node returned `Ok`, and the cancellation token a birth's deletion
 //! ends its hook with.
 //!
 //! RDM dispatches app ops and owns neither their meaning nor their replies. What it owns is the
@@ -49,7 +49,7 @@ impl PreNodeReadyGate {
     }
 }
 
-/// A birth's cancellation: cancelled once when the birth is retired (stop-node, or its
+/// A birth's cancellation: cancelled once when the birth is deleted (stop-node, or its
 /// process stopping), and never reset. Cloned into the hook's context and everything that ends with
 /// the birth.
 #[derive(Clone, Debug)]
@@ -74,12 +74,12 @@ impl CancelToken {
         self.tx.send_replace(true);
     }
 
-    /// Whether the birth was retired.
+    /// Whether the birth was deleted.
     pub fn is_cancelled(&self) -> bool {
         *self.tx.borrow()
     }
 
-    /// Resolves once the birth is retired (at once when it already was).
+    /// Resolves once the birth is deleted (at once when it already was).
     pub async fn cancelled(&self) {
         let _ = self.tx.subscribe().wait_for(|v| *v).await;
     }
@@ -114,15 +114,15 @@ impl ServerBuilder {
     }
 }
 
-/// A birth's retirement across its stopped cycles: the token the current cycle's hook and pulls end
+/// A birth's deletion across its stopped cycles: the token the current cycle's hook and pulls end
 /// with. A stop (or connections delete) cancels it; a start renews it for the next cycle.
 #[derive(Clone, Debug, Default)]
-pub struct Retirement {
+pub struct BirthCancel {
     current: Arc<std::sync::Mutex<CancelToken>>,
 }
 
-impl Retirement {
-    /// A retirement whose current token is not cancelled.
+impl BirthCancel {
+    /// A deletion whose current token is not cancelled.
     pub fn new() -> Self {
         Self::default()
     }

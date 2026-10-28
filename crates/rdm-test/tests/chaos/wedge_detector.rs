@@ -301,7 +301,7 @@ use crate::build_log;
 use rdm_client::{BuildStream, CallEnd, LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
 use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
-use rdm_admin::deployment::pipeline::{CreateStep, RetireStep};
+use rdm_admin::deployment::pipeline::{CreateStep, DeleteStep};
 use rdm_test::elections::{advertised_fabric_primaries, primaries_as_expected};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
@@ -411,7 +411,7 @@ enum Triggered {
 /// Which pipeline's documented receipts the Build holds.
 enum Shape {
     Create { node: Option<String> },
-    Retire { node: String },
+    Delete { node: String },
 }
 
 struct Run {
@@ -619,7 +619,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     }
     let op = match &shape {
         Shape::Create { node: Some(n) } => Some(format!("node.create:{n}")),
-        Shape::Retire { node } => Some(format!("node.delete:{node}")),
+        Shape::Delete { node } => Some(format!("node.delete:{node}")),
         Shape::Create { node: None } => None,
     };
 
@@ -696,11 +696,11 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     rec.check("the Build is current, not the previous Build", current_before != build_id, format!("previous {current_before}"));
     match &shape {
         Shape::Create { .. } => create_checks(run, &mut rec, &done).await,
-        Shape::Retire { node } => {
-            let order: Vec<String> = RetireStep::ORDER.iter().map(|x| x.name().to_string()).collect();
+        Shape::Delete { node } => {
+            let order: Vec<String> = DeleteStep::ORDER.iter().map(|x| x.name().to_string()).collect();
             let op = format!("node.delete:{node}");
             let counts = step_counts(&done, &op, 1);
-            rec.check("every documented retire step has one receipt, in order", done_steps(&done, &op, 1) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
+            rec.check("every documented delete step has one receipt, in order", done_steps(&done, &op, 1) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
             run.node_gone(node).await;
             rec.check("no runtime of the node is left", run.runtimes(node) == 0, format!("{}", run.runtimes(node)));
         }
@@ -919,7 +919,7 @@ async fn silent_case(run: &Run) {
 /// CONTRACT (#2782): real stalls of a real estate (mesh1 with two node-admins, both the testkit's
 /// faulted admin, and rpc nodes), each held and released through its own door or signal, are judged
 /// by the semantic detector, never by a timeout. Cuts: a deployment step (create `WaitForBind`), a
-/// removal step on a serving node (retire `NodeDeleting`),
+/// removal step on a serving node (delete `NodeDeleting`),
 /// the accepted Build durable, and current from then on (the
 /// fabric-primary admin held), a joining admin held at its Ready gate on the provider domain and another
 /// held at the topology read it makes while it hydrates (node-start.md step 4), and a non-primary rpc node
@@ -961,10 +961,10 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     let mut control_stream = run.delete(node).await;
     let control_delete = Run::id_of(&control_stream);
     let b = run.complete(&mut control_stream).await;
-    let retire_order: Vec<String> = RetireStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-    assert_eq!(done_steps(&b, &format!("node.delete:{node}"), 1), retire_order, "the healthy removal runs every documented step once: {b}");
+    let delete_order: Vec<String> = DeleteStep::ORDER.iter().map(|x| x.name().to_string()).collect();
+    assert_eq!(done_steps(&b, &format!("node.delete:{node}"), 1), delete_order, "the healthy removal runs every documented step once: {b}");
     run.node_gone(node).await;
-    run.rows.lock().unwrap().push(json!({"cut": "control", "group": "healthy-control", "create_build_id": control_create, "create_steps": create_order, "retire_build_id": control_delete, "retire_steps": retire_order, "door_admin": control_door.name}));
+    run.rows.lock().unwrap().push(json!({"cut": "control", "group": "healthy-control", "create_build_id": control_create, "create_steps": create_order, "delete_build_id": control_delete, "delete_steps": delete_order, "door_admin": control_door.name}));
 
     // A deployment step: the runtime is bound and the node declares itself Ready on its own, so the
     // stalled Build bookkeeping does not unroute it (the public view shows it ready).
@@ -983,16 +983,16 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         true,
     )
     .await;
-    // A removal step on a node that keeps serving until the retire reaches it.
-    let step = RetireStep::NodeDeleting.name();
+    // A removal step on a node that keeps serving until the delete reaches it.
+    let step = DeleteStep::NodeDeleting.name();
     door_case(
         &run,
         Family::BuildStep,
-        &format!("retire:{step}"),
+        &format!("delete:{step}"),
         json!({"kind": "receipt", "step": step, "operation": "node.delete", "node": node}),
         &door,
         Trigger::Delete(node.into()),
-        Shape::Retire { node: node.into() },
+        Shape::Delete { node: node.into() },
         Watch::Node(node.into()),
         true,
     )

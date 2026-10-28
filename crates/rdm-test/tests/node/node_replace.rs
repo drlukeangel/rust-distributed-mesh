@@ -629,7 +629,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     assert!(end(targets[0]) <= start(boot), "the target is done before the new node with the same key boots: {} vs {boot}", targets[0]);
     // Each operation is its workflow: its node operation span and its own pipeline, never a recovery
     // pipeline of its own.
-    for (op, pipeline) in [("delete", "retire"), ("create", "create")] {
+    for (op, pipeline) in [("delete", "delete"), ("create", "create")] {
         let name = format!("rdm.node_admin.node.{op}.via-build");
         let at = named(&run, &name).into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE).unwrap_or_else(|| panic!("the recovery's {name} span"));
         assert_eq!(at["attributes"]["node_id"], before["node_id"], "{name} names the exited birth it acts for: {at}");
@@ -886,7 +886,7 @@ async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_tha
 }
 
 /// The target spans of the exited birth `old` (node-recovery.md "Delete targets the old instance
-/// before the new join"): its resolver entry and the direct paths of its endpoint key retired.
+/// before the new join"): its resolver entry and the direct paths of its endpoint key deleted.
 fn exited_birth_spans<'a>(spans: &'a [Value], old: &Value) -> Vec<&'a Value> {
     named(spans, "rdm.node_admin.node.update.via-exit-paths-removed").into_iter().filter(|sp| sp["attributes"]["node_id"] == old["node_id"] && sp["attributes"]["kind"] == "recovery").collect()
 }
@@ -896,7 +896,7 @@ fn booted(spans: &[Value], node: &Value) -> bool {
     named(spans, "rdm.mesh.node.create.via-deployment").into_iter().any(|sp| sp["attributes"]["node_id"] == node["node_id"])
 }
 
-/// The nodes whose path.name is a retired `<path>.old`.
+/// The nodes whose path.name is a deleted `<path>.old`.
 fn nodes_named_old(nodes: &[Value]) -> Vec<String> {
     nodes.iter().map(|n| s(&n["name"])).filter(|n| n.ends_with(".old")).collect()
 }
@@ -1701,7 +1701,7 @@ async fn a_hung_mesh_primary_is_terminated_and_recovered_at_once_by_the_fabric_p
         .cloned()
         .expect("the election seats the standby once the hung birth is deleted");
     // Commands go down (mesh-investigation.md step 6 and its messages: "the fabric-primary claims on its
-    // own log, the executor adopts the won claim"): the retire is the fabric-primary's (R-FM1), and the
+    // own log, the executor adopts the won claim"): the delete is the fabric-primary's (R-FM1), and the
     // new birth at mesh2.admin.1 is created by the admin mesh2 seats in the hung birth's place, which
     // takes its join, its node.started and its member status. mesh2's lane opens no second recovery of
     // the hung birth.

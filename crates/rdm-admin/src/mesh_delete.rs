@@ -204,10 +204,10 @@ pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey
 /// receipt names that exact birth. The provider's proof that a runtime exited, not that the delete of
 /// its birth is finished ([`members_exited`] runs a delete that holds only this proof on to its end).
 pub fn exit_receipts(steps: &[BuildStepReceipt], _operation: &str, roster: &[RosterBirth]) -> BTreeMap<(String, String), TerminalReceipt> {
-    let terminate = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
+    let terminate = crate::deployment::pipeline::DeleteStep::TerminateRuntime.name();
     let mut held = BTreeMap::new();
     for b in roster {
-        let Some(deleted) = b.node.parse::<crate::model::PathName>().ok().map(|node| crate::build::BuildOperation::RetireNode { node, exited: None, birth: None }.key()) else { continue };
+        let Some(deleted) = b.node.parse::<crate::model::PathName>().ok().map(|node| crate::build::BuildOperation::DeleteLiveNode { node, exited: None, birth: None }.key()) else { continue };
         let proof = steps
             .iter()
             .filter(|r| r.operation == deleted && r.step == terminate && r.outcome == StepOutcome::Complete)
@@ -231,9 +231,9 @@ pub(crate) fn finished_delete(steps: &[BuildStepReceipt], executor: &str, b: &Ro
     let path: crate::model::PathName = b.node.parse().map_err(|e| format!("{executor}: the roster birth {named} names no path.name: {e:?}"))?;
     let node_id = NodeId::parse(&b.node_id).map_err(|e| format!("{executor}: the roster birth {named}'s node id {} does not parse: {e}", b.node_id))?;
     let birth = b.birth().map_err(|e| format!("{executor}: the roster birth {named}: {e}"))?;
-    let operation = crate::build::BuildOperation::RetireNode { node: path, exited: None, birth: None }.key();
-    let deleted = crate::deployment::pipeline::RetireStep::NodeDeleted.name();
-    let complete = crate::deployment::pipeline::RetireStep::Complete.name();
+    let operation = crate::build::BuildOperation::DeleteLiveNode { node: path, exited: None, birth: None }.key();
+    let deleted = crate::deployment::pipeline::DeleteStep::NodeDeleted.name();
+    let complete = crate::deployment::pipeline::DeleteStep::Complete.name();
     Ok(steps
         .iter()
         .filter(|r| r.operation == operation && r.step == deleted && r.outcome == StepOutcome::Complete)
@@ -677,7 +677,7 @@ where
 /// that name left out; a `Deleted` row only when this Build's own node.delete of that exact birth deleted it (its
 /// `NodeDeleting` receipt names it), never a birth an earlier Build deleted. In path order.
 pub fn stored_roster(rows: &[crate::storage::NodeRow], mesh: &str, mesh_id: &MeshId, steps: &[BuildStepReceipt]) -> Vec<RosterBirth> {
-    let deleting = crate::deployment::pipeline::RetireStep::NodeDeleting.name();
+    let deleting = crate::deployment::pipeline::DeleteStep::NodeDeleting.name();
     let began = |r: &crate::storage::NodeRow, inc: &crate::model::IncarnationId| {
         let op = format!("node.delete:{}", r.name);
         steps.iter().filter(|s| s.operation == op && s.step == deleting && s.outcome == StepOutcome::Complete).filter_map(|s| s.output.clone().and_then(|v| serde_json::from_value::<LifecycleOp>(v).ok())).any(|o| o.node_id == r.node_id && o.incarnation == *inc)

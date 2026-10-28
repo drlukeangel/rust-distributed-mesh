@@ -970,7 +970,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
 }
 
 /// The lifecycle operations open in `builds` (the fold of `facts`): every `NodeDeleting` step a
-/// retire operation completed with no `NodeDeleted` step of the same operation after it whose attempt
+/// delete operation completed with no `NodeDeleted` step of the same operation after it whose attempt
 /// has no terminal verdict. Derived from the Build facts as each fact enters the log, never stored: a
 /// successor primary publishes the same overlays from the same facts.
 pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, BuildProjection>) -> InFlight {
@@ -2848,7 +2848,7 @@ mod tests {
             with(&b.operation, "DeleteConnections", &b),
         ];
         let open = in_flight_ops(&facts, &fold(&facts)).ops;
-        assert_eq!(open, vec![b.clone()], "a retire with its pre-notice and no departure is open; a completed one is not");
+        assert_eq!(open, vec![b.clone()], "a delete with its pre-notice and no departure is open; a completed one is not");
 
         assert!(in_flight_ops(&facts, &fold(&facts)).unrecognised.is_empty());
         let mut facts = facts;
@@ -3588,18 +3588,18 @@ mod tests {
             executor: Some("mesh2.admin.1".into()),
         };
         let replaced = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
-        let retired = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
+        let deleted = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
         let dir = tmp();
         {
             let j = open_at(&dir).await.unwrap();
             j.publish_accepted(&intent("b1")).await.unwrap();
             j.append_step_receipt(&receipt("node.delete", 2, "NodeDeleted", &replaced.0, &replaced.1)).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "deleted, the retire not complete: its next attempt finishes it");
+            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "deleted, the delete not complete: its next attempt finishes it");
             j.append_step_receipt(&receipt("node.delete", 2, "Complete", &replaced.0, &replaced.1)).await.unwrap();
-            j.append_step_receipt(&receipt("node.delete", 3, "NodeDeleted", &retired.0, &retired.1)).await.unwrap();
-            j.append_step_receipt(&receipt("node.delete", 3, "Complete", &retired.0, &retired.1)).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, format!("node.delete:{path}"))), "own append: the first retire that deleted its birth");
-            assert_eq!(j.recovery_of(&path, &retired.0, &retired.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 3, format!("node.delete:{path}"))), "own append: the retire that deleted the birth");
+            j.append_step_receipt(&receipt("node.delete", 3, "NodeDeleted", &deleted.0, &deleted.1)).await.unwrap();
+            j.append_step_receipt(&receipt("node.delete", 3, "Complete", &deleted.0, &deleted.1)).await.unwrap();
+            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, format!("node.delete:{path}"))), "own append: the first delete that deleted its birth");
+            assert_eq!(j.recovery_of(&path, &deleted.0, &deleted.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 3, format!("node.delete:{path}"))), "own append: the delete that deleted the birth");
         }
         let j = open_at(&dir).await.unwrap(); // the admin restarted
         assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, format!("node.delete:{path}"))), "journal replay");

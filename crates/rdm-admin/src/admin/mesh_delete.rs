@@ -467,7 +467,7 @@ impl AdminRunner {
                 match crate::node_investigation::birth_runtime(&self.digest_view, Some(&**store), &record).await {
                     Ok(b) => row = Some(crate::storage::RuntimeRow { node_id: record.node_id.clone(), name: record.name.clone(), incarnation_id: b.incarnation, runtime: b.fact, data_dir: b.data_dir }),
                     Err(why) => {
-                        let step = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
+                        let step = crate::deployment::pipeline::DeleteStep::TerminateRuntime.name();
                         let reason = format!(
                             "node.delete:{} {step}: the lost final primary {} {}'s verdict is unproven ({why}), so the resume proceeds to its node.delete, and that delete has no runtime to inspect or terminate: the step fails by name and no receipt is manufactured (Q160)",
                             lost.node, lost.node, lost.incarnation_id
@@ -669,7 +669,7 @@ impl AdminRunner {
         let completion = crate::mesh_delete::completion_of(&steps, operation).ok_or_else(|| format!("{operation}: no {STEP_MESH_DELETED} receipt is held in {build_id}"))??;
         // The final birth's exact Exited: its node.delete's TerminateRuntime receipt, in that Build.
         let deleted_in = crate::build::BuildId::parse(&op.build_id).map_err(|e| format!("{}: the node.delete names Build {:?}, which is not a Crockford id: {e}", op.operation, op.build_id))?;
-        let terminate = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
+        let terminate = crate::deployment::pipeline::DeleteStep::TerminateRuntime.name();
         let terminal = self
             .builds
             .read_build(&deleted_in)
@@ -907,7 +907,7 @@ impl AdminRunner {
                 }
             };
             // Whether the birth is stopped is the record's the leave works from (a stopped member's
-            // delete goes straight to its exit proof), as `retire` takes it from the view.
+            // delete goes straight to its exit proof), as `delete` takes it from the view.
             let record = Node { stopped: n.stopped, ..record };
             self.delete_birth(&key.build_id.clone(), key.attempt, record, handle).await.map_err(|e| format!("{}'s node.delete: {e}", n.name))
         }
@@ -929,7 +929,7 @@ impl AdminRunner {
             return;
         }
         // mesh.deleted (ops-naming mesh.delete: "reported by the mesh-primary, still alive, from its
-        // members' exit proofs; mesh is dead, id kept retired"): every other member's exit is proven,
+        // members' exit proofs; mesh is dead, id kept deleted"): every other member's exit is proven,
         // so this primary commits its mesh row Dead (states.md: "one commit stores the row, applies
         // it, gossips it and answers"); its view then states the mesh Dead and its status workflow
         // publishes MeshStatus Dead, five sends, while it lives (R-NS1 item 1). A refused put

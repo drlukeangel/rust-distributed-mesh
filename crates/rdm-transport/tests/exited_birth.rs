@@ -3,7 +3,7 @@
 //! A restarted node keeps its key and binds a port the operating system assigns; its old port is
 //! free for any other process. Between the old birth's proven exit and the new birth's join the
 //! resolver names no current birth for the node, so the client dials nothing (a dial's
-//! `replace_direct_addrs(peer, [addr])` would re-pin the retired address for the key).
+//! `replace_direct_addrs(peer, [addr])` would re-pin the deleted address for the key).
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
@@ -18,7 +18,7 @@ async fn ping(c: &NodeRpcClient, t: &NodeTarget) -> RpcOutcome<PingReply> {
     c.call::<Ping>(t, &PingRequest::Ping { payload: b"p".to_vec() }, &CallOptions::default()).await.0
 }
 
-/// CONTRACT: after `retire_birth`, a call to the exited node ends `NotSent(Resolve(Unavailable))`
+/// CONTRACT: after `delete_birth`, a call to the exited node ends `NotSent(Resolve(Unavailable))`
 /// at once and starts no dial (a dial to the old address would install it for the key again); the successor's birth, applied with the old one as its lineage, is dialled normally.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_to_an_exited_birth_dials_nothing_and_the_successor_is_dialled() {

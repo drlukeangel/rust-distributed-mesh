@@ -64,9 +64,9 @@ pub struct RunningNode {
     /// The declarations this birth owes its mesh-primary, in the order they were owed: one in flight
     /// at a time (Q210), sent by `declare_loop` and retargeted when the mesh-primary changes.
     pub owed_state: Arc<OwedDeclarations>,
-    /// Cancelled when this birth is retired (stop-node, its process stopping): the
+    /// Cancelled when this birth is deleted (stop-node, its process stopping): the
     /// `pre_node_ready` hook and any pull it has in flight end.
-    pub cancel: rdm_transport::Retirement,
+    pub cancel: rdm_transport::BirthCancel,
     /// The surface that serves this birth's lifecycle and state commands
     /// (`crate::node_self`).
     pub own: Arc<crate::node_self::NodeSelf>,
@@ -727,7 +727,7 @@ async fn start_booted(
                             // From here the node is on the mesh, Pending: it answers status and its node commands, and
                             // says Pending on the topology cadence while its `pre_node_ready` hook runs. It is
                             // published Ready only once the hook has passed ("born full").
-                            let cancel = rdm_transport::Retirement::new();
+                            let cancel = rdm_transport::BirthCancel::new();
                             let addressed = crate::node_hooks::Addressed::new();
                             let owed_state: Arc<OwedDeclarations> = Arc::default();
                             let own = {
@@ -1011,7 +1011,7 @@ impl crate::node_self::Session for NodeSession {
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }
 
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, birth_cancel: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), crate::node_self::StartFailed> {
         // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
         // rides it, never the birth's frozen name (R-JN1).
         // The stopped cycle's declaration ends with it: the start begins the next cycle, whose states
@@ -1020,7 +1020,7 @@ impl crate::node_self::Session for NodeSession {
         let held = self.topology_view.reported(&self.digest);
         let name = held.node.name.to_string();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
-        let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows, operation, progress, held_again };
+        let mut start = AfterStop { session: self, root, name, held, commander, birth_cancel: Some(birth_cancel), rows, operation, progress, held_again };
         crate::workflows::node_start::node_start(&mut start, crate::node_hooks::StartKind::AfterStop).await
     }
 
@@ -1066,7 +1066,7 @@ struct AfterStop<'a> {
     /// and the admin that answers is the hook's accepting authority.
     commander: tokio::sync::watch::Receiver<iroh::PublicKey>,
     /// The new cycle's token: the hook runs under it.
-    retire: Option<rdm_transport::CancelToken>,
+    birth_cancel: Option<rdm_transport::CancelToken>,
     /// The start's hold on this birth's connections rows, dropped once the handed name is held.
     rows: Option<crate::connections_writer::RowsHeld>,
     /// The start's operation: the Ready this birth declares at the start's end names it.
@@ -1154,7 +1154,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.name.kind },
             node_hooks: s.node_hooks.clone(),
             events: crate::node_hooks::Events::new(topology_view.digest_view.clone(), s.addressed.clone()),
-            cancel: self.retire.take().expect("the hook's token is handed once"),
+            cancel: self.birth_cancel.take().expect("the hook's token is handed once"),
             state: s.pre_node_ready_cell.clone(),
             runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.pre_node_ready_task.clone() },
             after: Box::new(RpcAfterHook {
@@ -1275,7 +1275,7 @@ struct Becoming {
 impl Becoming {
     /// node.started: the report `node.start` makes once its steps after the hook ended.
     async fn go(&self) {
-        // A node retired while its hook ran is not Pending any more and is not made Ready.
+        // A node deleted while its hook ran is not Pending any more and is not made Ready.
         if *self.status.lock().unwrap() != MemberStatus::Pending {
             return;
         }

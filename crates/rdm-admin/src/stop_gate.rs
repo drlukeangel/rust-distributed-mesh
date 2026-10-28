@@ -19,7 +19,7 @@
 //!   (one another node commands, a signal's) waits for every turn;
 //! - a task that takes no such lock is spawned through the gate ([`StopGate::spawn`]): while the
 //!   gate is stopped its future is not polled, so it holds its place at the await it was at.
-//! Work a stop retires with the birth instead of holding it runs as [`StopGate::until_stopped`]: it
+//! Work a stop deletes with the birth instead of holding it runs as [`StopGate::until_stopped`]: it
 //! ends at the stop and never resumes. The gate restarts nothing.
 
 use std::collections::BTreeMap;
@@ -277,7 +277,7 @@ impl StopGate {
     }
 
     /// `work`, ended the moment the gate stops: `None` when the stop came first (or the gate was
-    /// already stopped). For work a stop retires with the birth instead of holding it (a tickle ladder, a
+    /// already stopped). For work a stop deletes with the birth instead of holding it (a tickle ladder, a
     /// recovery follower): it is dropped where it stands, a lock it held or was queued on included, and
     /// never resumes; the next turn after a start decides again. The stop is looked at first, so work
     /// woken by its own progress and by the stop at once is never polled past the stop.

@@ -210,7 +210,7 @@ pub struct HookParts {
     pub node_hooks: NodeHooks,
     /// The retry events of this birth.
     pub events: Events,
-    /// Cancelled when the birth is retired: the hook and any pull it has in flight end.
+    /// Cancelled when the birth is deleted: the hook and any pull it has in flight end.
     pub cancel: CancelToken,
     /// Where the node's Ready check and its probe read the hook's state.
     pub state: Arc<Mutex<Option<PreNodeReadyHandle>>>,

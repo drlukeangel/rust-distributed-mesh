@@ -13,7 +13,7 @@
 //!   before it commits Ready;
 //! - does not displace the living holder, which keeps every seat it held;
 //! - fills the seats when the holder is lost (the mesh's lowest ready NodeId), and restarts and
-//!   retires births A launched, through its own `node.stop` then `node.start` and `node.delete`, from their published
+//!   deletes births A launched, through its own `node.stop` then `node.start` and `node.delete`, from their published
 //!   runtimes, with A's receipts nowhere.
 
 use rdm_client::{CallEnd, LaunchKind as NodeKind, NodeStatus};
@@ -116,18 +116,18 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     let unknown = estate.builds_obj().await.get(&a).await;
     assert!(matches!(&unknown, Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-build"), "A's history is nowhere: {unknown:?}");
 
-    // It stops and starts one of A's births and retires the other.
-    let (restarted, retired) = (a_births[0].clone(), a_births[1].clone());
+    // It stops and starts one of A's births and deletes the other.
+    let (restarted, deleted) = (a_births[0].clone(), a_births[1].clone());
     estate.stop_then_start(&restarted.name).await;
     let after = estate.until_node(&restarted.name.to_string(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready && !n.stopped).cloned()).await;
     assert_eq!(after.node_id, restarted.node_id, "a restart keeps the NodeId");
-    Estate::workflow(&format!("node.delete of {}", retired.name), estate.nodes_obj().await.delete(&retired.name).await).await;
+    Estate::workflow(&format!("node.delete of {}", deleted.name), estate.nodes_obj().await.delete(&deleted.name).await).await;
     estate
-        .until_view("the retired birth leaves the view", Duration::from_secs(30), |views| views.iter().all(|n| n.name != retired.name || n.incarnation_id != retired.incarnation_id).then_some(()))
+        .until_view("the deleted birth leaves the view", Duration::from_secs(30), |views| views.iter().all(|n| n.name != deleted.name || n.incarnation_id != deleted.incarnation_id).then_some(()))
         .await;
 
     estate.stop().await;
-    let (late, restarted, retired) = (serde_json::to_value(&late).unwrap(), serde_json::to_value(&restarted).unwrap(), serde_json::to_value(&retired).unwrap());
+    let (late, restarted, deleted) = (serde_json::to_value(&late).unwrap(), serde_json::to_value(&restarted).unwrap(), serde_json::to_value(&deleted).unwrap());
     let late_name = late_name.to_string();
     let spans = estate.spans();
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap();
@@ -153,7 +153,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
         .any(|sp| sp["attributes"]["kind"] == "node_admin" && sp["attributes"]["winner_node_id"] == late["node_id"] && sp["attributes"]["election_key"] == "node_id_crockford"));
     assert!(named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute").iter().any(|sp| sp["attributes"]["winner_node_id"] == late["node_id"]));
     // It managed A's births from their published runtimes.
-    for birth in [&restarted, &retired] {
+    for birth in [&restarted, &deleted] {
         let adopted = named(&spans, "rdm.node_admin.runtime.update.via-adopt")
             .into_iter()
             .find(|sp| sp["attributes"]["node"] == birth["name"] && sp["attributes"]["incarnation_id"] == birth["incarnation_id"])

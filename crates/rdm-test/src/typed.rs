@@ -166,7 +166,7 @@ impl Estate {
             }
         };
         // What the view lists is reachable from here on: a node created again at a path.name (a new node
-        // id, as a retired admin's successor is) is dialled as the view names it, never by the id the
+        // id, as a deleted admin's successor is) is dialled as the view names it, never by the id the
         // path held before.
         self.note(&peers, &views);
         Ok(views)
@@ -364,7 +364,7 @@ impl Estate {
 
     /// The view the Build left: every `(mesh, node_admin, rpc_node)` cohort holds exactly its count of
     /// nodes, every one ready, as `mesh.nodes.get` reads it at the admin the estate asks. A Build's
-    /// shape is counts, not paths: a shrink retires non-primaries, so which ordinals remain depends on
+    /// shape is counts, not paths: a shrink deletes non-primaries, so which ordinals remain depends on
     /// where the seats are. The Build's terminal frame is the executor's: the answering admin learns the
     /// nodes of another mesh by gossip, so its view converges on the shape a moment after (a wait on the
     /// view, bounded at 60 s, named when it does not settle).

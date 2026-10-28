@@ -113,7 +113,7 @@ pub enum JoinReply {
     },
     /// The receiver deployed exactly this birth and ended its deployment (the create stopped
     /// waiting for the birth's report) before the join arrived. The receiver is the authority;
-    /// the birth's runtime is retired by the executor that deployed it, not by this reply.
+    /// the birth's runtime is deleted by the executor that deployed it, not by this reply.
     DeploymentAbandoned {
         /// The Build whose create deployed the birth.
         build_id: String,

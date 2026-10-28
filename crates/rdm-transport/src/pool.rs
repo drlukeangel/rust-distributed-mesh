@@ -376,7 +376,7 @@ impl Pool {
                     let (tx, rx) = watch::channel(None);
                     dials.insert(key.clone(), Dial { cancel, outcome: rx.clone(), addr: spec.addr });
                     let (pool, key) = (self.clone(), key.clone());
-                    // The one dial for `key`: its steps (the superseded paths retired, the connect) and how it
+                    // The one dial for `key`: its steps (the superseded paths deleted, the connect) and how it
                     // ended, however many callers wait on it. The pooled dial outlives the wait of the call that
                     // started it (that call's deadline bounds its wait, never the dial), so it is no child of
                     // that call: its span is a root of its own, linked (follows_from) to the call that started
@@ -447,11 +447,11 @@ impl Pool {
             }
         };
         // The resolver names this one socket for the peer: every other direct address the endpoint
-        // holds for the key is a superseded birth's, and its paths (open ones too) are retired
+        // holds for the key is a superseded birth's, and its paths (open ones too) are deleted
         // before the dial so none of them takes part in it.
         let connect = async {
             spec.endpoint.replace_direct_addrs(key.peer, [spec.addr]).await;
-            tracing::info!(parent: span, step = "direct-addrs-replaced", elapsed_ms = started.elapsed().as_millis() as u64, "every other direct address for the peer is retired");
+            tracing::info!(parent: span, step = "direct-addrs-replaced", elapsed_ms = started.elapsed().as_millis() as u64, "every other direct address for the peer is deleted");
             let r = spec.endpoint.connect(EndpointAddr::new(key.peer).with_ip_addr(spec.addr), crate::ALPN).await;
             tracing::info!(parent: span, step = "connect-returned", ok = r.is_ok(), elapsed_ms = started.elapsed().as_millis() as u64, "the endpoint's connect returned");
             diag_connect(key, &spec, &r, started, span);

@@ -613,7 +613,7 @@ impl ControlPlane {
             // take its seat is refused before it exists: node.primary.update has no successor (R-MT1, Q7).
             if let Some(reject) = operations.iter().find_map(|op| {
                 let (node, action) = match op {
-                    crate::build::BuildOperation::RetireNode { node, .. } => (node, "retire"),
+                    crate::build::BuildOperation::DeleteLiveNode { node, .. } => (node, "delete"),
                     crate::build::BuildOperation::DeleteConnections { node, .. } => (node, "node.connections.delete"),
                     crate::build::BuildOperation::StopNode { node, .. } => (node, "stop"),
                     _ => return None,
@@ -648,7 +648,7 @@ impl ControlPlane {
                 .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
             // The Build is current the moment it is durable in the builds store: nothing else is written.
             // It is the door's last write: the reconcile loop drives a current Build at once, and its first
-            // step can move the fabric seat (a retire of this admin's own mesh), which refuses every gated
+            // step can move the fabric seat (a delete of this admin's own mesh), which refuses every gated
             // write after it, so the door answers the Build it accepted whatever the drive does next.
             let me = self.held_name().await;
             crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), &me.to_string(), "accepted").await.map_err(Refusal::State)?;
@@ -1010,7 +1010,7 @@ impl ControlPlane {
                 return Err(Refusal::Conflict(why));
             }
             // Keyed on the exited birth across the Build log: a birth a node workflow already
-            // deleted (its recovery, or a delete or retire it exited inside: node-recovery.md
+            // deleted (its recovery, or a delete it exited inside: node-recovery.md
             // "Failure and receipts") is answered as applied by that workflow's attempt, whatever
             // Build is accepted or in flight now (a later topology Build holds none of its
             // receipts), and nothing is opened.
@@ -1305,7 +1305,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     if target.kind != crate::model::NodeKind::NodeAdmin {
         let holds = t.node_type_primary(&node.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
         let only_of_cohort = t.nodes_of_type(&node.mesh, target.kind).all(|n| n.node_id == target.node_id);
-        if !holds || (matches!(action, "retire" | "delete") && only_of_cohort) {
+        if !holds || (action == "delete" && only_of_cohort) {
             return None;
         }
         let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
@@ -1319,11 +1319,11 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
         (true, false) => crate::election::Moving::MeshSeat,
         _ => return None,
     };
-    // The delete of a mesh's only node, by a desired-state retire or by the node.delete route (the
+    // The delete of a mesh's only node, by a desired-state delete or by the node.delete route (the
     // final primary a mesh.delete left alive, mesh-delete.md step 7), skips the update; a fabric seat on
     // it still moves, out of its mesh (C2 search step 2), and is refused with C2 step 3's text when no
     // other mesh-primary can take it.
-    let moving = if matches!(action, "retire" | "delete") && t.only_node(&node.mesh, &target.node_id) {
+    let moving = if action == "delete" && t.only_node(&node.mesh, &target.node_id) {
         if !fabric_seat || (!t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead)) {
             return None;
         }
@@ -1606,9 +1606,9 @@ mod tests {
                 None => panic!("{action} of mesh2's sole rpc node is refused by name"),
             }
         }
-        let retire_sole = crate::build::BuildOperation::RetireNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None, birth: None };
-        assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "retire", &t).is_none(), "retiring the sole member of a non-admin cohort skips node.primary.update");
-        assert_eq!(crate::executor::seat_move(&retire_sole, &t), None, "retiring the sole member of a non-admin cohort moves no seat");
+        let delete_sole = crate::build::BuildOperation::DeleteLiveNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None, birth: None };
+        assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t).is_none(), "deleting the sole member of a non-admin cohort skips node.primary.update");
+        assert_eq!(crate::executor::seat_move(&delete_sole, &t), None, "deleting the sole member of a non-admin cohort moves no seat");
         // R5 (Luke 2026-10-24, arm (a); node-primary-update.md "No-successor cases": "the delete of a
         // type's only node in its mesh, whether the node leaves the topology (a removal) or is re-created
         // at the same `path.name`"): the replace's Delete step and the node.delete route of a
@@ -1622,7 +1622,7 @@ mod tests {
     /// no-successor cases": "The one exception is R-MT1's: the delete of a mesh's only node skips the
     /// update"; mesh-delete.md step 7: "A separate node.delete deletes the mesh-primary"): mesh1's final
     /// primary, the only node a mesh.delete left in mesh1 and still its mesh-primary, is deleted through
-    /// the node.delete route (`delete`) and through a desired-state retire (`retire`) with no
+    /// the node.delete route (`delete`) and through a desired-state delete (`delete`) with no
     /// node.primary.update and no refusal. A stop of that node is refused with Q7's text, and so is the
     /// delete of mesh2's primary while mesh2 still holds another node and no other node-admin. What must
     /// NOT happen: the node.delete mesh-delete.md step 7 names refused `last-admin`.
@@ -1637,7 +1637,7 @@ mod tests {
             nodes: vec![node("mesh1.admin.1", true, false), node("mesh2.admin.1", true, true), node("mesh2.rpc.1", true, false)],
         };
         let only: PathName = "mesh1.admin.1".parse().unwrap();
-        for action in ["delete", "retire"] {
+        for action in ["delete"] {
             assert!(last_admin(&only, action, &t).is_none(), "{action} of mesh1's only node skips the update: {:?}", last_admin(&only, action, &t));
         }
         let refusal = |path: &str, action: &str| match last_admin(&path.parse().unwrap(), action, &t) {
@@ -1646,7 +1646,7 @@ mod tests {
         };
         assert_eq!(refusal("mesh1.admin.1", "stop"), "cannot transfer: no secondary of type node-admin in mesh mesh1");
         assert!(crate::executor::seat_move(&crate::build::BuildOperation::StopNode { node: only.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t).is_some_and(|m| m.mesh_seat), "stop of mesh1's only node never skips the seat move");
-        assert_eq!(crate::executor::seat_move(&crate::build::BuildOperation::RetireNode { node: only, exited: None, birth: None }, &t), None, "the delete of mesh1's only node skips the seat move");
+        assert_eq!(crate::executor::seat_move(&crate::build::BuildOperation::DeleteLiveNode { node: only, exited: None, birth: None }, &t), None, "the delete of mesh1's only node skips the seat move");
         assert_eq!(refusal("mesh2.admin.1", "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
     }
 
@@ -1656,7 +1656,7 @@ mod tests {
     /// `cannot transfer fabric-primary: no other node-admin Ready in mesh <mesh>, no other
     /// mesh-primary Ready` ... the commanding workflow fails with that reason"; C1: "the
     /// delete of a mesh's only node skips the update"): the fabric primary `mesh2.admin.1` is mesh2's
-    /// only node. Its retire and delete skip node.primary.update, and its fabric seat moves out of
+    /// only node. Its delete skips node.primary.update, and its fabric seat moves out of
     /// mesh2: with mesh1's primary Ready the Build door admits them; with no other
     /// mesh-primary Ready the door refuses them `last-admin` with C2 step 3's text.
     /// Must NOT happen: a Build admitted whose fabric seat has nowhere to go.
@@ -1671,13 +1671,13 @@ mod tests {
             nodes: vec![node("mesh1.admin.1", true, false), node("mesh1.rpc.1", true, false), node("mesh2.admin.1", true, true)],
         };
         let fp: PathName = "mesh2.admin.1".parse().unwrap();
-        for action in ["retire", "delete"] {
+        for action in ["delete"] {
             assert!(last_admin(&fp, action, &t).is_none(), "{action}: mesh1's Ready primary takes the fabric seat: {:?}", last_admin(&fp, action, &t));
         }
         for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh1.admin.1") {
             n.status = NodeStatus::Pending;
         }
-        for action in ["retire", "delete"] {
+        for action in ["delete"] {
             match last_admin(&fp, action, &t) {
                 Some(BuildReject::LastAdmin { refusal, .. }) => assert_eq!(refusal, "cannot transfer fabric-primary: no other node-admin Ready in mesh mesh2, no other mesh-primary Ready", "{action}"),
                 other => panic!("{action}: no other mesh-primary is Ready: refused last-admin: {other:?}"),

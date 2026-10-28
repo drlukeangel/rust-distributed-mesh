@@ -214,14 +214,14 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     }
     let gone = !std::path::Path::new(&format!("/proc/{victim_pid}")).exists() || std::fs::read_to_string(format!("/proc/{victim_pid}/stat")).unwrap_or_default().contains(") Z ");
     assert!(gone, "the member's exact runtime (pid {victim_pid}) exited");
-    // The members that answered are never retired or created again.
+    // The members that answered are never deleted or created again.
     let touched: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .chain(named(&spans, "rdm.node_admin.node.delete.via-build"))
         .filter(|sp| attr(sp, "build_id") == accepted && survivors.contains(&attr(sp, "node")) && at(sp) > at(first))
         .map(|sp| attr(sp, "node"))
         .collect();
-    assert!(touched.is_empty(), "members that answered are neither retired nor created again: {touched:?}");
+    assert!(touched.is_empty(), "members that answered are neither deleted nor created again: {touched:?}");
 
     // The second admin was created by an attempt the NEW mesh primary executed, not the fabric primary.
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| attr(r, "build_id") == accepted).collect();
@@ -276,7 +276,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
 /// dead sibling and the dead member do not answer), and sends them to the standard decommission.
 /// The other mesh's admins are restored by the fabric under the same Build with their existing
 /// MeshIds. What must NOT happen: a Day-0 start or a new Build or MeshId, a member that answered
-/// created or retired again.
+/// created or deleted again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     let cell = "fabric_recovery_restarts_one_admin_and_restores_every_missing_admin";

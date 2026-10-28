@@ -478,7 +478,7 @@ fn a_read_from_a_peer_mesh_returns_the_readers_own_mesh_but_holds_none_of_it_as_
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a topology read of a mesh that has a birth being retired carries the retirement: the
+/// CONTRACT: a topology read of a mesh that has a birth being deleted carries the deletion: the
 /// node serves the held source's in-flight operation with the member still listed, and the reader
 /// holds the member as deleting (its overlay names the operation) rather than as a plain member.
 #[test]
@@ -508,7 +508,7 @@ fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overla
         let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh3"), None).await.unwrap();
         assert_eq!(read.installed[0].members.len(), 3, "the retiring member is still listed");
         let (in_flight, _) = caller.topology_view.digest_view.overlays_of("mesh3");
-        assert_eq!(in_flight, vec![op], "the reader holds the retirement as an overlay");
+        assert_eq!(in_flight, vec![op], "the reader holds the deletion as an overlay");
         server.ep.close().await;
         caller.ep.close().await;
     });

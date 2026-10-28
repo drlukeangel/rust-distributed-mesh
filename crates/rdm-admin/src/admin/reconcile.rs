@@ -50,7 +50,7 @@ impl crate::build_drive::Gate for SeatGate {
             }
             return Ok(());
         }
-        // The fabric seat alone moves out of this admin's mesh (C2 search step 2: a mesh retire of its
+        // The fabric seat alone moves out of this admin's mesh (C2 search step 2: a mesh delete of its
         // mesh, mesh-delete.md step 1), by node.fabric-primary.update; with the mesh seat, both move in
         // node.primary.update's one row (Q1).
         let (moving, seat) = match (m.mesh_seat, m.fabric_seat) {
@@ -486,14 +486,14 @@ pub async fn reconcile_drift(
     let first_exited: Option<(&PathName, &crate::drift::ExitedBirth)> =
         proven.iter().filter(|(p, _)| short.iter().any(|s| s.exited.iter().any(|e| *e == p.to_string()))).min_by_key(|(p, b)| (b.verdict == "running", p.to_string()));
     // Surplus: a live birth of a kept Mesh the accepted topology does not name (a removal the
-    // executing view had not heard yet when the Build closed). Its retirement is its own attempt,
+    // executing view had not heard yet when the Build closed). Its deletion is its own attempt,
     // taken only once no exited birth is left to repair.
     let mut surplus: Vec<String> = t
         .members()
         .filter(|n| n.status.is_live() && current.topology.meshes.contains_key(&n.mesh) && !current.topology.contains(&n.name))
         .filter(|n| n.mesh == me.mesh || hold(&n.mesh).is_none())
-        // A birth whose retirement the Build already receipted (`NodeDeleting` of this exact birth) is
-        // not surplus: that operation retires it, and this view is only late in hearing it go.
+        // A birth whose deletion the Build already receipted (`NodeDeleting` of this exact birth) is
+        // not surplus: that operation deletes it, and this view is only late in hearing it go.
         .filter(|n| {
             let (node_id, incarnation) = (serde_json::to_value(&n.node_id).unwrap_or_default(), serde_json::to_value(&n.incarnation_id).unwrap_or_default());
             !current.steps.iter().any(|st| st.step == "NodeDeleting" && st.output.as_ref().is_some_and(|o| o.get("node_id") == Some(&node_id) && o.get("incarnation") == Some(&incarnation)))

@@ -102,7 +102,7 @@ async fn a_node_delete_build_carries_the_birth_it_was_accepted_on() {
     let build = builds.read_build(&opened.build_id).await.unwrap();
     let ops = plan_for_build(&build, &t).operations;
     let delete = ops.iter().find(|op| op.key() == "node.delete:mesh1.rpc.2").unwrap_or_else(|| panic!("the delete is planned: {ops:?}"));
-    assert!(matches!(delete, BuildOperation::RetireNode { .. }), "a live birth's delete: {delete:?}");
+    assert!(matches!(delete, BuildOperation::DeleteLiveNode { .. }), "a live birth's delete: {delete:?}");
     let delete = serde_json::to_value(delete).unwrap();
     assert_eq!(json_birth(&delete["birth"]), as_json(&pinned), "the delete carries the birth it was accepted on: {delete}");
 }
@@ -166,10 +166,10 @@ fn a_dead_births_step_delete_composes_its_stop() {
     let mut dead = t.node(&path).unwrap().clone();
     dead.status = NodeStatus::Dead;
     let op = rdm_admin::build::step_delete(&path, &pinned, Some(&dead));
-    assert!(matches!(&op, BuildOperation::RetireNode { exited: None, birth: Some(b), .. } if *b == pinned), "a Dead birth's delete stops it first: {op:?}");
+    assert!(matches!(&op, BuildOperation::DeleteLiveNode { exited: None, birth: Some(b), .. } if *b == pinned), "a Dead birth's delete stops it first: {op:?}");
     let mut stopped = t.node(&path).unwrap().clone();
     stopped.stopped = true;
     assert!(matches!(rdm_admin::build::step_delete(&path, &pinned, Some(&stopped)), BuildOperation::DeleteNode { .. }), "a stopped birth's delete composes no stop");
     let live = t.node(&path).unwrap().clone();
-    assert!(matches!(rdm_admin::build::step_delete(&path, &pinned, Some(&live)), BuildOperation::RetireNode { exited: None, birth: Some(_), .. }), "a live birth's delete stops it first");
+    assert!(matches!(rdm_admin::build::step_delete(&path, &pinned, Some(&live)), BuildOperation::DeleteLiveNode { exited: None, birth: Some(_), .. }), "a live birth's delete stops it first");
 }

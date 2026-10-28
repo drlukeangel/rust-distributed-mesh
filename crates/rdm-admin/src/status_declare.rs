@@ -1118,29 +1118,29 @@ mod tests {
 
     /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): the view holds one row per
     /// path.name (`admin::project_at` keys it by `PathName`), so after a replace of the fabric-primary
-    /// the row at mesh1.admin.1 can be the retired birth's, live and holding both seats, while the
+    /// the row at mesh1.admin.1 can be the deleted birth's, live and holding both seats, while the
     /// re-born admin's own row is absent. The re-born admin decides its seats by the node id it was born
     /// with: it owes no fabric event and no Mesh report, and withdraws the Mesh key it held, because
-    /// the seat is another birth's. What must NOT happen: the retired birth's seats read as this
+    /// the seat is another birth's. What must NOT happen: the deleted birth's seats read as this
     /// admin's, so it owes the fabric's readiness to every mesh primary as a fabric-primary it is not.
     #[test]
     fn a_re_born_admin_whose_view_names_its_superseded_birth_primary_owes_nothing_as_primary() {
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let mut v = view("mesh1.admin.1", "mesh1.admin.1");
-        let retired = v.nodes.iter_mut().find(|n| n.name == me).unwrap();
-        retired.status = NodeStatus::ConnectionsDeleting;
-        let retired = retired.clone();
+        let deleted = v.nodes.iter_mut().find(|n| n.name == me).unwrap();
+        deleted.status = NodeStatus::ConnectionsDeleting;
+        let deleted = deleted.clone();
         let mut re_born = node("mesh1.admin.1", false, false);
         re_born.node_id = NodeId::mint();
-        assert_ne!(retired.node_id, re_born.node_id, "a replace mints a new node id");
-        assert_eq!(v.fabric_primary().map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds the fabric seat in this view");
+        assert_ne!(deleted.node_id, re_born.node_id, "a replace mints a new node id");
+        assert_eq!(v.fabric_primary().map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds the fabric seat in this view");
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
         owed_from_view(&d, &me, &re_born.node_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, None, &v, &ids);
-        assert_eq!(d.owed(), 0, "the retired birth's seats owe this admin nothing: {:?}", d.pending.lock().unwrap().keys().collect::<Vec<_>>());
+        assert_eq!(d.owed(), 0, "the deleted birth's seats owe this admin nothing: {:?}", d.pending.lock().unwrap().keys().collect::<Vec<_>>());
         d.owe(mesh_key(), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready });
         d.withdraw_unowned(&me, &re_born.node_id, &v);
-        assert_eq!(d.owed(), 0, "the mesh seat is the retired birth's, not this admin's: the Mesh key is withdrawn");
+        assert_eq!(d.owed(), 0, "the mesh seat is the deleted birth's, not this admin's: the Mesh key is withdrawn");
     }
 
     /// CONTRACT: a burst of 5 pokes wakes the declarer once; a poke during a sweep is kept as the

@@ -557,7 +557,7 @@ pub(crate) struct OfflineTickle {
     /// This node-admin's path.name, named on every span it emits: a seat handed over mid-window is
     /// read from which admin ran each ladder.
     observer: String,
-    /// The admin's stop gate: a stop retires the ladders in flight.
+    /// The admin's stop gate: a stop deletes the ladders in flight.
     gate: crate::stop_gate::StopGate,
 }
 
@@ -576,7 +576,7 @@ impl OfflineTickle {
         Self::default()
     }
 
-    /// The tickle of node-admin `observer` (its path.name), whose ladders a stop of `gate` retires.
+    /// The tickle of node-admin `observer` (its path.name), whose ladders a stop of `gate` deletes.
     pub fn observed_by(observer: String, gate: crate::stop_gate::StopGate) -> Self {
         let mut tickle = Self::default();
         tickle.observer = observer;
@@ -1113,7 +1113,7 @@ pub(crate) mod tests {
             assert_eq!(folded.offline, vec!["a".to_string(), "b".to_string()], "both ladders ended with no path: both are TRUE OFFLINE at the fold");
         }
 
-        /// CONTRACT (node-stop retires the work the loop runs beside it; the lead's decision: "a stop
+        /// CONTRACT (node-stop deletes the work the loop runs beside it; the lead's decision: "a stop
         /// cancels it as part of retiring the birth, and does not wait for it"): a stop while a
         /// tickle ladder and a recovery follower are in flight ends both at the stop, with no time
         /// passing. The follower, queued on the view lock a handler holds, leaves that queue, and its

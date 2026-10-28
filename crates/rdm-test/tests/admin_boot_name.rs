@@ -87,7 +87,7 @@ fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once
         let base = std::env::temp_dir().join(format!("admin-boot-name-{}", NodeId::mint()));
         let (root_dir, admin_dir) = (base.join("admin1"), base.join("admin2"));
         std::fs::create_dir_all(&root_dir).unwrap();
-        // The mesh's primary: a Day-0 node-admin that does not reconcile (it would retire the admin this
+        // The mesh's primary: a Day-0 node-admin that does not reconcile (it would delete the admin this
         // cell launches in its own process).
         let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling().await;

@@ -197,7 +197,7 @@ async fn a_fabric_primary_whose_record_names_another_birth_claims_and_dispatches
 
 /// CONTRACT: an admin knows the fabric-primary seat is its own by the node id it was born with,
 /// never by path.name. When its view shows another birth at its own path.name holding the seat (a
-/// successor or a retired birth of that path), the drive ends `SeatLost` naming that birth, claims
+/// successor or a deleted birth of that path), the drive ends `SeatLost` naming that birth, claims
 /// no attempt and calls no executor, and the callers' streams end naming the holder the committed
 /// seat record names (none here), never the view's.
 #[tokio::test]
@@ -937,11 +937,11 @@ impl Gate for SeatMoves {
 /// node-admin of a mesh": "If the mesh holds the fabric seat, that seat moves first by
 /// `node.fabric-primary.update` with the departing mesh excluded (mesh-delete.md step 1)"; C1 step 1:
 /// "The holder is commanded from above, as a step of the Build"; step 8: "Only then does the commanding
-/// Build continue"): a mesh retire whose fabric-primary sits inside the leaving mesh moves the fabric
+/// Build continue"): a mesh delete whose fabric-primary sits inside the leaving mesh moves the fabric
 /// seat alone (the mesh seat stays, mesh.delete never updates it) from the drive, as a step of the
 /// attempt the holder claims for itself; that attempt ends `HandedOff` to the new seat once the move
 /// answered, and the drive ends `SeatLost` naming the new holder.
-/// Must NOT happen: an operation dispatched at the leaving mesh's admin, the retire run there, or the
+/// Must NOT happen: an operation dispatched at the leaving mesh's admin, the delete run there, or the
 /// attempt ending with no verdict or handed to any admin but the new seat.
 #[tokio::test]
 async fn a_mesh_delete_whose_fabric_primary_sits_inside_moves_the_fabric_primary_alone_in_its_own_attempt_handed_to_the_new_one() {
@@ -971,7 +971,7 @@ async fn a_mesh_delete_whose_fabric_primary_sits_inside_moves_the_fabric_primary
     assert_eq!(moved.len(), 1, "one node.fabric-primary.update: {moved:?}");
     let (holder, mesh_seat, fabric_seat, operation) = &moved[0];
     assert_eq!((holder.as_str(), *mesh_seat, *fabric_seat), ("mesh1.admin.1", false, true), "the fabric seat alone moves from the fabric-primary: {moved:?}");
-    assert!(operation.starts_with("mesh.delete:"), "the update names the mesh retire it precedes: {operation}");
+    assert!(operation.starts_with("mesh.delete:"), "the update names the mesh delete it precedes: {operation}");
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no operation was dispatched: {:?}", r.dispatch.dispatched.lock().unwrap());
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran at the leaving mesh's admin: {:?}", r.ran.0.lock().unwrap());
     let p = r.builds.read_build(&r.build).await.unwrap();
@@ -1726,13 +1726,13 @@ impl Gate for HolderUpdate {
 /// commanding Build continue"; build proposal Part A, build.md:365: "The next attempt is claimed after
 /// the running attempt's terminal receipt (Complete, Failed or HandedOff), or, when the executor is
 /// lost with the attempt unfinished, after exact departure proof. A live run is reattached, never
-/// re-claimed"): the fabric-primary `mesh1.admin.1` holds both seats and its Build retires it, so its
+/// re-claimed"): the fabric-primary `mesh1.admin.1` holds both seats and its Build deletes it, so its
 /// drive moves both seats itself first. At its row the successor `mesh1.admin.2` holds the seats and
 /// its own drive of the same Build begins, while the holder is still at steps 6-7. The update is a
 /// step of the holder's attempt: the successor's drive reattaches to that attempt, claims nothing and
 /// dispatches nothing until it ends, and only after the holder said "primary updated" does the attempt
-/// end `HandedOff` to the successor, which then claims the next attempt and runs the retire.
-/// Must NOT happen: the successor claiming an attempt, dispatching, or the retire running while the
+/// end `HandedOff` to the successor, which then claims the next attempt and runs the delete.
+/// Must NOT happen: the successor claiming an attempt, dispatching, or the delete running while the
 /// holder (alive) has not reached step 7.
 #[tokio::test(start_paused = true)]
 async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has_not_said_primary_updated() {
@@ -1803,7 +1803,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has
         _ => None,
     }).collect();
     assert_eq!(handed, vec![rdm_admin::build_state::AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }], "the holder's attempt ended handed off to the successor");
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.delete:mesh1.admin.1".to_string()], "the retire ran once, at the successor");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.delete:mesh1.admin.1".to_string()], "the delete ran once, at the successor");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.2".to_string(), 2)], "the successor reattached to the holder's attempt, then dispatched the next to itself");
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string(), "primary updated".into()]);
 }
@@ -1865,14 +1865,14 @@ impl Gate for RefusedUpdate {
 /// refused by name, nothing changed, the Build's step fails by name. Nothing was cut off, so nothing
 /// is restored"; R-BI4: "Only an attempt that ended with a named terminal failure (Failed { step,
 /// reason }) makes the Build failed"): the fabric-primary `mesh1.admin.1` holds both seats and its
-/// Build retires it, so it claims attempt 1 for itself and runs its own node.primary.update first,
+/// Build deletes it, so it claims attempt 1 for itself and runs its own node.primary.update first,
 /// which is refused before the row with Q7's text. Attempt 1 ends `Failed`, its reason naming the
 /// refusal, and the drive ends at that terminal: nothing is dispatched or run and the view still names
 /// `mesh1.admin.1` the holder of both seats. No cut-off and no row is the refusing gate's own record
 /// here (it wrote nothing); the door's refusal writing neither is
 /// `fabric_handover::a_transfer_with_no_successor_is_refused_with_q7s_exact_texts_and_nothing_moves`.
 /// Must NOT happen: the attempt handed back to the holder and the drive idle on a refusal (an
-/// incomplete attempt's arm), the update asked again, or the retire dispatched.
+/// incomplete attempt's arm), the update asked again, or the delete dispatched.
 #[tokio::test(start_paused = true)]
 async fn a_primarys_own_update_refused_before_the_row_fails_its_attempt_by_name_and_nothing_moves() {
     let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
@@ -1912,11 +1912,11 @@ async fn a_primarys_own_update_refused_before_the_row_fails_its_attempt_by_name_
 /// CONTRACT (build.md: "The next attempt is claimed after the running attempt's terminal receipt
 /// (Complete, Failed or HandedOff)"; R-BI7 caveat 3, mesh_claims.rs: a mesh's in-flight row "is
 /// released at that attempt's verdict", by "the admin that durably recorded the verdict"): the
-/// fabric-primary `mesh1.admin.1` holds both seats and its Build retires it, so it moves both seats in
+/// fabric-primary `mesh1.admin.1` holds both seats and its Build deletes it, so it moves both seats in
 /// the attempt it claims for itself, on mesh1's rows of the fabric's one store root, and that attempt
 /// ends `HandedOff` to the successor `mesh1.admin.2`. The successor's drive begins only after the
 /// attempt ended, so it reads the verdict and reattaches to nothing; it claims the next attempt on the
-/// same mesh1 rows and runs the retire.
+/// same mesh1 rows and runs the delete.
 /// Must NOT happen: the successor's claim refused build-in-progress by the holder's ended attempt, its
 /// drive stalled on a mesh no attempt in flight holds.
 #[tokio::test(start_paused = true)]
@@ -1971,11 +1971,11 @@ async fn a_successor_that_reads_the_primarys_attempt_ended_claims_the_next_attem
     });
     let n_drive = Drive::detached(r.build.clone());
     let end = tokio::time::timeout(Duration::from_secs(60), successor.run(&n_drive)).await.expect("the successor's drive ends");
-    assert_eq!(end, DriveEnd::Terminal, "the successor claimed the next attempt on mesh1 and ran the retire");
+    assert_eq!(end, DriveEnd::Terminal, "the successor claimed the next attempt on mesh1 and ran the delete");
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt_executors.get(&1).map(String::as_str), p.attempt_executors.get(&2).map(String::as_str)), (Some("mesh1.admin.1"), Some("mesh1.admin.2")), "the successor claimed the attempt after the holder's: {:?}", p.attempt_executors);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 2)], "the successor reattached to nothing and dispatched the next attempt to itself");
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.delete:mesh1.admin.1".to_string()], "the retire ran once, at the successor");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.delete:mesh1.admin.1".to_string()], "the delete ran once, at the successor");
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string(), "primary updated".into()]);
 }
 
@@ -2020,9 +2020,9 @@ impl Gate for AfterTheProof {
 /// acknowledge the row's update (the acknowledgement in which the successor, the next writer to read the
 /// row, says "primary updated" once the holder's exit is proven: fabric_handover.rs
 /// `a_successor_that_answered_the_holders_call_says_primary_updated_only_once_the_holder_is_proven_exited`),
-/// before it dispatches the retire.
+/// before it dispatches the delete.
 /// Must NOT happen: the successor claiming the holder's attempt over it on silence, the acknowledgement
-/// before the departure proof, or the retire dispatched before the acknowledgement.
+/// before the departure proof, or the delete dispatched before the acknowledgement.
 #[tokio::test(start_paused = true)]
 async fn a_fabric_primary_lost_after_its_row_has_exited_before_its_successor_acknowledges_the_row_and_dispatches() {
     let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
@@ -2083,8 +2083,8 @@ async fn a_fabric_primary_lost_after_its_row_has_exited_before_its_successor_ack
     assert_eq!(*n_gate.asked.lock().unwrap(), vec![(update, true, 0)], "the row's update was acknowledged once, after the departure proof and before any dispatch");
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt_executors.get(&1).map(String::as_str), p.attempt_executors.get(&2).map(String::as_str)), (Some("mesh1.admin.1"), Some("mesh1.admin.2")), "the successor claimed the attempt after the holder's: {:?}", p.attempt_executors);
-    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 2)], "nothing reached the lost holder; the retire was dispatched once, to the successor");
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![op.to_string()], "the retire ran once, at the successor");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 2)], "nothing reached the lost holder; the delete was dispatched once, to the successor");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec![op.to_string()], "the delete ran once, at the successor");
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string()], "the holder never said primary updated");
 }
 

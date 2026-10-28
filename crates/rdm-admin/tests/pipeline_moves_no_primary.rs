@@ -6,7 +6,7 @@
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rdm_admin::deployment::pipeline::{CommandAdmission, CommandContext, DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, RetireRequest, RetireStep, Timeouts, TopologySink};
+use rdm_admin::deployment::pipeline::{CommandAdmission, CommandContext, DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, DeleteRequest, DeleteStep, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::join::Joins;
 use rdm_admin::model::{DeploymentId, Node, NodeStatus, PathName, ProviderKind};
@@ -124,7 +124,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let r = {
             use tracing::Instrument;
-            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: primary(), handle, unreached: false };
+            let req = DeleteRequest { build_id: build_id.clone(), attempt: 1, node: primary(), handle, unreached: false };
             match workflow {
                 NodeCommand::Stop => pipeline.stop(&req).instrument(root).await,
                 _ => pipeline.delete_connections(&req).instrument(root).await,
@@ -153,13 +153,13 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
 /// its wait step fails by name with the admission it got, and no `Complete` receipt names the birth.
 #[test]
 fn a_standalone_connections_delete_or_stop_whose_command_was_never_admitted_fails_by_name_and_completes_nothing() {
-    for (workflow, command, wait) in [(NodeCommand::DeleteConnections, "node.connections.delete", RetireStep::DeleteConnections.name()), (NodeCommand::Stop, "stop-node", RetireStep::AwaitNodeLeft.name())] {
+    for (workflow, command, wait) in [(NodeCommand::DeleteConnections, "node.connections.delete", DeleteStep::DeleteConnections.name()), (NodeCommand::Stop, "stop-node", DeleteStep::AwaitNodeLeft.name())] {
         let (r, sent, steps, _) = run_with(workflow);
         assert_eq!(sent, vec![workflow], "the {command} was asked for");
         let e = r.expect_err("a command that never reached the birth established nothing");
         assert_eq!(e.step, wait, "{e}");
         assert!(e.reason.contains(HOLDER) && e.reason.contains(command) && e.reason.contains("NotSent"), "the failure names the birth, the command and the admission it got: {e}");
         assert!(!steps.iter().any(|(s, _)| s == "Complete"), "no Complete receipt: {steps:?}");
-        assert_eq!(steps.first().map(|(s, _)| s.as_str()), Some(if workflow == NodeCommand::DeleteConnections { RetireStep::DeleteConnections.name() } else { RetireStep::StopNode.name() }), "the pipeline moves no seat: its first step is the command's (R-MT1): {steps:?}");
+        assert_eq!(steps.first().map(|(s, _)| s.as_str()), Some(if workflow == NodeCommand::DeleteConnections { DeleteStep::DeleteConnections.name() } else { DeleteStep::StopNode.name() }), "the pipeline moves no seat: its first step is the command's (R-MT1): {steps:?}");
     }
 }

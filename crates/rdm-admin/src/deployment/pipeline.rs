@@ -1,4 +1,4 @@
-//! `DeploymentPipeline`: create or retire one runtime (PRD §8;
+//! `DeploymentPipeline`: create or delete one runtime (PRD §8;
 //! mesh-control-plane.md §6).
 //!
 //! ```text
@@ -7,7 +7,7 @@
 //!   -> MakeRuntimeFactAvailableToBirth -> WaitForBind
 //!   -> PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata -> WaitForMeshJoin
 //!   -> WaitForNodeReady -> Complete
-//! retire: StopNode (stop-node to the exact birth: its node.connections.delete { All }, then its
+//! delete: StopNode (stop-node to the exact birth: its node.connections.delete { All }, then its
 //!   transport cut; the `Stopped` reply carries the All's ConnectionsReceipt)
 //!   -> AwaitNodeLeft (its `Stopped` reply, bounded; a deadline is an arm, never a failure)
 //!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
@@ -25,7 +25,7 @@
 //! (node-delete.md "Storage"), and no step here deletes a node's storage.
 //!
 //! Node-admin is the brain: identity, endpoints, storage and readiness are
-//! decided here; the provider only realises or retires the runtime. Every
+//! decided here; the provider only realises or deletes the runtime. Every
 //! step appends a receipt to the Build's state and runs under one child span
 //! of the pipeline's parent span. Optional steps (DNS, load balancer,
 //! firewall) have no realisation on these providers and are not run.
@@ -229,9 +229,9 @@ impl CreateMeshStep {
     }
 }
 
-/// One step of retiring a node, in the order of [`RetireStep::ORDER`].
+/// One step of deleting a node, in the order of [`DeleteStep::ORDER`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RetireStep {
+pub enum DeleteStep {
     /// The pre-notice (a removal only): the executor holds the operation; the node is
     /// found and not routable.
     NodeDeleting,
@@ -250,13 +250,13 @@ pub enum RetireStep {
     NodeDeleted,
     /// Remove the node from the local topology.
     RemoveTopologyMembership,
-    /// The node is retired.
+    /// The node is deleted.
     Complete,
 }
 
-impl RetireStep {
-    /// Every retire step in order.
-    pub const ORDER: [RetireStep; 7] = [
+impl DeleteStep {
+    /// Every delete step in order.
+    pub const ORDER: [DeleteStep; 7] = [
         Self::NodeDeleting,
         Self::StopNode,
         Self::AwaitNodeLeft,
@@ -946,9 +946,9 @@ pub(crate) type PreNodeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<
 /// it exists and never once it does.
 pub(crate) type BeforeLaunch<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
 
-/// A request to retire one node.
+/// A request to delete one node.
 #[derive(Debug, Clone)]
-pub struct RetireRequest {
+pub struct DeleteRequest {
     /// The Build.
     pub build_id: BuildId,
     /// The attempt.
@@ -1014,7 +1014,7 @@ pub(crate) enum Terminate {
 /// What a stop's wait step must have seen to complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StopProof {
-    /// Whatever the birth answered: the shutdown leg of a retire or a mesh leave member, which the
+    /// Whatever the birth answered: the shutdown leg of a delete or a mesh leave member, which the
     /// provider's terminal proof judges.
     Lenient,
     /// stop-node admitted and `stopped` received, or the step fails by name: a whole node.stop, a
@@ -1110,7 +1110,7 @@ impl Bound {
     }
 }
 
-/// The pipeline that creates and retires runtimes.
+/// The pipeline that creates and deletes runtimes.
 pub struct DeploymentPipeline<'a> {
     /// The provider that realises runtimes.
     pub provider: &'a dyn DeploymentProvider,
@@ -2012,7 +2012,7 @@ impl DeploymentPipeline<'_> {
     /// the exact birth's mesh-primary sets connections-deleting at admission and holds the birth's
     /// `node.connections.deleted` with its receipt. The process keeps running; nothing
     /// stops it and nothing is deleted.
-    pub fn delete_connections<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
+    pub fn delete_connections<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("node.connections.delete", &req.build_id, &req.node.name, req.attempt);
         Box::pin(async move {
@@ -2021,7 +2021,7 @@ impl DeploymentPipeline<'_> {
             let node = req.node.clone();
             let ctx = CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: run.operation.clone() };
             let _: CommandAdmission = self
-                .step_with(&mut run, RetireStep::DeleteConnections.name(), async {
+                .step_with(&mut run, DeleteStep::DeleteConnections.name(), async {
                     // Nothing is recorded before the command leaves (i144 R22): the node reports
                     // connections-deleting on its command's stream and its mesh-primary records it then.
                     self.command_op(&ctx, &node)?;
@@ -2041,7 +2041,7 @@ impl DeploymentPipeline<'_> {
     /// The mesh primary publishes `NodeStopped` from that reply, and `Complete` names the birth and the
     /// rafka-time it stopped at. No
     /// runtime exit is asked and no departure is published.
-    pub fn stop<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
+    pub fn stop<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("stop", &req.build_id, &req.node.name, req.attempt);
         Box::pin(async move {
@@ -2053,8 +2053,8 @@ impl DeploymentPipeline<'_> {
             // lifecycle op, the exact birth and the rafka-time it stopped at, which the stopped-node
             // garbage collector ages it from (node-identity-and-state.md §6.9 Age).
             let ctx = self.command_context(&run, crate::node_commands::NodeCommand::Stop, &node);
-            let op = self.command_op(&ctx, &node).map_err(|reason| PipelineError { step: RetireStep::Complete.name(), reason , code: rdm_core::outcome::Code::FailedPrecondition })?;
-            let _: LifecycleOp = self.step(&mut run, RetireStep::Complete.name(), async { Ok(op) }).await?;
+            let op = self.command_op(&ctx, &node).map_err(|reason| PipelineError { step: DeleteStep::Complete.name(), reason , code: rdm_core::outcome::Code::FailedPrecondition })?;
+            let _: LifecycleOp = self.step(&mut run, DeleteStep::Complete.name(), async { Ok(op) }).await?;
             Ok(())
         }
         .instrument(span))
@@ -2135,7 +2135,7 @@ impl DeploymentPipeline<'_> {
     /// `BuildProjection::attempt_actions`), so a later attempt's plan reads it as that birth's and
     /// plans nothing more for it.
     async fn complete(&self, run: &mut Run<'_>) -> Result<(), PipelineError> {
-        self.step(run, RetireStep::Complete.name(), async { Ok(()) }).await
+        self.step(run, DeleteStep::Complete.name(), async { Ok(()) }).await
     }
 
     /// `node.delete` of the stopped birth `req.node` (lifecycles/node-delete.md), as ONE operation under
@@ -2150,13 +2150,13 @@ impl DeploymentPipeline<'_> {
     /// Exited is the proof, and the executor publishes NodeDeleted from it. Storage is kept: "It
     /// releases node.id and name, not storage". The lifecycle events name the birth as its own
     /// digest does (`<path>`), by its exact `(node.id, incarnation)`.
-    pub fn delete_stopped<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
+    pub fn delete_stopped<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt);
         Box::pin(async move {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
-            let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?;
+            let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: DeleteStep::NodeDeleting.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?;
             let op = LifecycleOp {
                 build_id: req.build_id.to_string(),
                 attempt: req.attempt,
@@ -2168,11 +2168,11 @@ impl DeploymentPipeline<'_> {
                 traceparent: None,
                 tracestate: None,
             };
-            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), Box::pin(self.deleting_row(&req.node, op.clone()))).await?;
+            let op = self.step(&mut run, DeleteStep::NodeDeleting.name(), Box::pin(self.deleting_row(&req.node, op.clone()))).await?;
             self.lifecycle.deleting(&op).await;
             self.terminate_step(&mut run, &req.node, &req.handle).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&req.node, op.clone(), false)).await?;
+            let op = self.step(&mut run, DeleteStep::NodeDeleted.name(), self.deleted_row(&req.node, op.clone(), false)).await?;
             self.lifecycle.deleted(&op).await;
             self.complete(&mut run).await
         }
@@ -2183,12 +2183,12 @@ impl DeploymentPipeline<'_> {
     /// it reports it to the fabric-primary, which terminates its runtime"; Q110, Q128): the existing
     /// `TerminateRuntime` step on its exact runtime, under `node.terminate:<path>@<incarnation>`. Its
     /// departure and Deleted row stand: nothing else is written.
-    pub fn terminate_returned<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
+    pub fn terminate_returned<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("terminate", &req.build_id, &req.node.name, req.attempt);
         Box::pin(async move {
             let name = &req.node.name;
-            let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::TerminateRuntime.name(), reason: format!("{name} has no known birth"), code: rdm_core::outcome::Code::FailedPrecondition })?;
+            let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: DeleteStep::TerminateRuntime.name(), reason: format!("{name} has no known birth"), code: rdm_core::outcome::Code::FailedPrecondition })?;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.terminate:{name}@{}", birth.as_str())).await?;
             let receipt = self.terminate_step_when(&mut run, &req.node, &req.handle, Terminate::Unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?;
             self.complete(&mut run).await?;
@@ -2197,11 +2197,11 @@ impl DeploymentPipeline<'_> {
         .instrument(span))
     }
 
-    /// Retire `req.node` through every step (node.delete): the provider's exact terminal receipt of
+    /// Delete `req.node` through every step (node.delete): the provider's exact terminal receipt of
     /// the birth's runtime, the proof its NodeDeleted was published from.
-    pub fn delete_node<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
+    pub fn delete_node<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
+        let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt);
         Box::pin(self.delete_steps(req, Terminate::Unreached).instrument(span))
     }
 
@@ -2209,21 +2209,21 @@ impl DeploymentPipeline<'_> {
     /// mesh deleted in process under fabric.delete; fabric-delete.md "Receipts"): the unreached delete,
     /// except that an `os-stopped` runtime is terminated `Immediate` (deployment-provider.md §2.5;
     /// node-runtime-inspect.md "What follows"), never left as node recovery leaves it.
-    pub fn delete_explicit<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
+    pub fn delete_explicit<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
+        let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt);
         Box::pin(self.delete_steps(req, Terminate::Explicit).instrument(span))
     }
 
     /// Fabric recovery's backbone arm's node.delete of the exact lost birth (fabric-recovery.md step 3,
     /// Q148): the unreached delete, its runtime read and never terminated.
-    pub fn delete_from_backbone<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
+    pub fn delete_from_backbone<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<TerminalReceipt, PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
+        let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt);
         Box::pin(self.delete_steps(req, Terminate::Backbone).instrument(span))
     }
 
-    async fn delete_steps(&self, req: &RetireRequest, unreached: Terminate) -> Result<TerminalReceipt, PipelineError> {
+    async fn delete_steps(&self, req: &DeleteRequest, unreached: Terminate) -> Result<TerminalReceipt, PipelineError> {
         let name = &req.node.name;
         let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
         let mut node = req.node.clone();
@@ -2236,7 +2236,7 @@ impl DeploymentPipeline<'_> {
             attempt: req.attempt,
             operation: run.operation.clone(),
             node_id: node.node_id.clone(),
-            incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?,
+            incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: DeleteStep::NodeDeleting.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?,
             name: name.clone(),
             event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
             traceparent: None,
@@ -2244,7 +2244,7 @@ impl DeploymentPipeline<'_> {
         };
         // The receipt first, then the publish: the Build facts carry the overlay from the
         // moment it is announced, so a successor derives it from the same facts.
-        let op = self.step(&mut run, RetireStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone()))).await?;
+        let op = self.step(&mut run, DeleteStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone()))).await?;
         self.lifecycle.deleting(&op).await;
         let terminal = if req.unreached {
             // An unreached birth (node-recovery.md sequence step 3): nothing is sent to it and no node
@@ -2273,7 +2273,7 @@ impl DeploymentPipeline<'_> {
         // claim) is.
         let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
         let op = self
-            .step(&mut run, RetireStep::NodeDeleted.name(), async {
+            .step(&mut run, DeleteStep::NodeDeleted.name(), async {
                 // The deleted birth's row goes Deleted at its path.name, its config kept, inside the
                 // step and before node.deleted (lifecycles/node-delete.md step 3): a node created at that
                 // path.name, a recovery's create included, claims the name over it and seeds its
@@ -2285,12 +2285,12 @@ impl DeploymentPipeline<'_> {
         // node-delete.md step 3: the data dir, node-identity.json and endpoint key are retained; no
         // step of the delete touches the birth's storage. Exactly the deleted birth leaves the
         // executor's records, and stays out of its view even when the records never held it.
-        self.step(&mut run, RetireStep::RemoveTopologyMembership.name(), async {
+        self.step(&mut run, DeleteStep::RemoveTopologyMembership.name(), async {
             self.sink.remove_birth(name, &op.node_id, &op.incarnation);
             Ok(())
         })
         .await?;
-        self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
+        self.step(&mut run, DeleteStep::Complete.name(), async { Ok(()) }).await?;
         Ok(terminal)
     }
 
@@ -2308,9 +2308,9 @@ impl DeploymentPipeline<'_> {
     /// nobody is left in the fabric to record it ("Receipts": the one exception). The executor ends its
     /// runtime through the provider after the reply (`AdminRunner::delete_own`). Every other node.delete
     /// is [`Self::delete_node`]: the provider's `Exited` before node.deleted.
-    pub fn delete_own<'a>(&'a self, req: &'a RetireRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
+    pub fn delete_own<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
+        let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt);
         Box::pin(async move {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
@@ -2320,24 +2320,24 @@ impl DeploymentPipeline<'_> {
                 attempt: req.attempt,
                 operation: run.operation.clone(),
                 node_id: node.node_id.clone(),
-                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth"), code: rdm_core::outcome::Code::FailedPrecondition })?,
+                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: DeleteStep::NodeDeleting.name(), reason: format!("{name} has no known birth"), code: rdm_core::outcome::Code::FailedPrecondition })?,
                 name: name.clone(),
                 event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
                 traceparent: None,
                 tracestate: None,
             };
-            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone()))).await?;
+            let op = self.step(&mut run, DeleteStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone()))).await?;
             self.lifecycle.deleting(&op).await;
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Lenient, StopEnd::Stop { publish_stopped: true }).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&node, op.clone(), false)).await?;
+            let op = self.step(&mut run, DeleteStep::NodeDeleted.name(), self.deleted_row(&node, op.clone(), false)).await?;
             self.lifecycle.deleted(&op).await;
-            self.step(&mut run, RetireStep::RemoveTopologyMembership.name(), async {
+            self.step(&mut run, DeleteStep::RemoveTopologyMembership.name(), async {
                 self.sink.remove_birth(name, &op.node_id, &op.incarnation);
                 Ok(())
             })
             .await?;
-            self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await
+            self.step(&mut run, DeleteStep::Complete.name(), async { Ok(()) }).await
         }
         .instrument(span))
     }
@@ -2405,7 +2405,7 @@ impl DeploymentPipeline<'_> {
     /// birth's `stopped` reply received).
     /// `end` says what follows: the process stops, or the provider ends it.
     async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
-        self.stop_steps_as(run, node, handle, proof, end, [RetireStep::StopNode.name(), RetireStep::AwaitNodeLeft.name()]).await
+        self.stop_steps_as(run, node, handle, proof, end, [DeleteStep::StopNode.name(), DeleteStep::AwaitNodeLeft.name()]).await
     }
 
     /// [`Self::stop_steps_with`] whose two steps are receipted as `steps` (the send, the left reply):
@@ -2481,7 +2481,7 @@ impl DeploymentPipeline<'_> {
     /// nothing and waits for nothing (node-recovery.md step 3); the receipt names what it read.
     async fn terminate_step_when(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle, when: Terminate, mut mode: TerminationMode) -> Result<TerminalReceipt, PipelineError> {
         let name = node.name.clone();
-        self.step_with(run, RetireStep::TerminateRuntime.name(), async {
+        self.step_with(run, DeleteStep::TerminateRuntime.name(), async {
             let receipt = |exit_code: Option<i32>, verdict: Option<&str>| -> Result<TerminalReceipt, StepFailure> {
                 Ok(TerminalReceipt {
                     node: name.to_string(),
@@ -2949,7 +2949,7 @@ mod tests {
         let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
         node.status = NodeStatus::PendingReconnect;
         node.incarnation_id = Some(IncarnationId::mint());
-        let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: process_handle(), unreached: false };
+        let req = DeleteRequest { build_id: build_id.clone(), attempt: 1, node, handle: process_handle(), unreached: false };
         let capture = crate::span_capture::Capture::new("i144-e3-os-stopped-delete");
         let terminal = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
@@ -2990,7 +2990,7 @@ mod tests {
         let mut node = Node::allocated("mesh1.admin.1".parse().unwrap());
         node.status = NodeStatus::PendingReconnect;
         node.incarnation_id = Some(IncarnationId::mint());
-        let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: process_handle(), unreached: true };
+        let req = DeleteRequest { build_id: build_id.clone(), attempt: 1, node, handle: process_handle(), unreached: true };
         let terminal = pipeline.delete_explicit(&req).await.expect("the explicit delete of an os-stopped birth completes");
         assert_eq!(*provider.modes.lock().unwrap(), vec![TerminationMode::Immediate], "the suspended runtime is terminated once, Immediate");
         assert_eq!((terminal.exit_code, terminal.verdict.as_deref()), (Some(137), Some("os-stopped")), "the receipt names the os-stopped read and the terminate's Exited: {terminal:?}");
@@ -3017,7 +3017,7 @@ mod tests {
         let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
         node.status = NodeStatus::PendingReconnect;
         node.incarnation_id = Some(IncarnationId::mint());
-        let req = RetireRequest { build_id, attempt: 1, node, handle: process_handle(), unreached: true };
+        let req = DeleteRequest { build_id, attempt: 1, node, handle: process_handle(), unreached: true };
         let terminal = pipeline.delete_node(&req).await.expect("the recovery's delete of an exited birth completes");
         assert_eq!((terminal.exit_code, terminal.verdict.as_deref()), (Some(137), Some("exited")), "the receipt is the inspection's exited: {terminal:?}");
         assert!(observer.sent.lock().unwrap().is_empty(), "no command is sent to the unheard birth: {:?}", observer.sent.lock().unwrap());
@@ -3043,7 +3043,7 @@ mod tests {
         node.status = NodeStatus::PendingReconnect;
         node.incarnation_id = Some(IncarnationId::mint());
         let handle = process_handle();
-        let req = RetireRequest { build_id, attempt: 1, node, handle: handle.clone(), unreached: false };
+        let req = DeleteRequest { build_id, attempt: 1, node, handle: handle.clone(), unreached: false };
         let capture = crate::span_capture::Capture::new("i144-e3-inspect-handle");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);

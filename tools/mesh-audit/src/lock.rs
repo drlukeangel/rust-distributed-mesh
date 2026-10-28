@@ -21,10 +21,10 @@ pub enum Ratchet {
     LegacyDefaultsAreIngressOnly,
     ProviderInterpretsNeitherMetaNorTags,
     NoTransportTagVocabulary,
-    RetireAttemptsRpcStopFirst,
-    RetireHasBoundedFailureArms,
-    DriftSilenceIsNotRetireAuthority,
-    RetireReceiptNamesCommandArm,
+    DeleteAttemptsRpcStopFirst,
+    DeleteHasBoundedFailureArms,
+    DriftSilenceIsNotDeleteAuthority,
+    DeleteReceiptNamesCommandArm,
     ConnectionsDeletedIsNotRefusal,
     ForwardPreservesContext,
     PostcardSectionBounds,
@@ -53,10 +53,10 @@ impl Ratchet {
         Self::LegacyDefaultsAreIngressOnly,
         Self::ProviderInterpretsNeitherMetaNorTags,
         Self::NoTransportTagVocabulary,
-        Self::RetireAttemptsRpcStopFirst,
-        Self::RetireHasBoundedFailureArms,
-        Self::DriftSilenceIsNotRetireAuthority,
-        Self::RetireReceiptNamesCommandArm,
+        Self::DeleteAttemptsRpcStopFirst,
+        Self::DeleteHasBoundedFailureArms,
+        Self::DriftSilenceIsNotDeleteAuthority,
+        Self::DeleteReceiptNamesCommandArm,
         Self::ConnectionsDeletedIsNotRefusal,
         Self::ForwardPreservesContext,
         Self::PostcardSectionBounds,
@@ -86,10 +86,10 @@ impl Ratchet {
             Self::LegacyDefaultsAreIngressOnly => "legacy_defaults_are_ingress_only",
             Self::ProviderInterpretsNeitherMetaNorTags => "provider_interprets_neither_meta_nor_tags",
             Self::NoTransportTagVocabulary => "no_transport_tag_vocabulary",
-            Self::RetireAttemptsRpcStopFirst => "retire_attempts_rpc_stop_first",
-            Self::RetireHasBoundedFailureArms => "retire_has_bounded_failure_arms",
-            Self::DriftSilenceIsNotRetireAuthority => "drift_silence_is_not_retire_authority",
-            Self::RetireReceiptNamesCommandArm => "retire_receipt_names_command_arm",
+            Self::DeleteAttemptsRpcStopFirst => "delete_attempts_rpc_stop_first",
+            Self::DeleteHasBoundedFailureArms => "delete_has_bounded_failure_arms",
+            Self::DriftSilenceIsNotDeleteAuthority => "drift_silence_is_not_delete_authority",
+            Self::DeleteReceiptNamesCommandArm => "delete_receipt_names_command_arm",
             Self::ConnectionsDeletedIsNotRefusal => "connections_deleted_is_not_refusal",
             Self::ForwardPreservesContext => "forward_preserves_context",
             Self::PostcardSectionBounds => "postcard_section_bounds",
@@ -154,7 +154,7 @@ pub const ACTIVE_TRANSPORT_SOURCES: &[&str] = &[
     "tools/mesh-audit",
 ];
 
-/// Transport vocabulary the lock retired: `Op` names a wire family, `Tag` is not a wire concept.
+/// Transport vocabulary the lock deleted: `Op` names a wire family, `Tag` is not a wire concept.
 pub const TRANSPORT_TAG_TOKENS: &[&str] = &[
     "TagOwner",
     "TagState",
@@ -292,7 +292,7 @@ pub const TRANSPORT_HEADER_ACK_GOLDEN: &str = r#"format!("1c02{BIRTH}01")"#;
 pub const TRANSPORT_HEADER_LARGEST: &str = "(47, 88, 37)";
 pub const CATALOG: &str = "crates/rdm-core/src/catalog.rs";
 pub const CONTEXT_CELLS: &str = "crates/rdm-transport/tests/context.rs";
-pub const RETIRE_CELLS: &str = "crates/rdm-test/tests/node_delete_pipeline.rs";
+pub const DELETE_CELLS: &str = "crates/rdm-test/tests/node_delete_pipeline.rs";
 pub const DRIFT_CELLS: &str = "crates/rdm-admin/tests/drift_convergence.rs";
 pub const PROBE_APPLY_CELLS: &str = "crates/rdm-test/tests/status_probe_apply.rs";
 
@@ -557,28 +557,28 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
         Ratchet::NoTransportTagVocabulary => {
             scan_tokens(root, &files_in(root, ACTIVE_TRANSPORT_SOURCES), TRANSPORT_TAG_TOKENS, ratchet, &mut out);
         }
-        Ratchet::RetireAttemptsRpcStopFirst => {
-            require(root, RETIRE_CELLS, &["fn node_delete_runs_every_step_in_order", "RetireStep::StopNode"], ratchet, &mut out);
+        Ratchet::DeleteAttemptsRpcStopFirst => {
+            require(root, DELETE_CELLS, &["fn node_delete_runs_every_step_in_order", "DeleteStep::StopNode"], ratchet, &mut out);
             if let Some(text) = read(root, PIPELINE) {
                 match (text.find("Self::StopNode,"), text.find("Self::TerminateRuntime,")) {
                     (Some(a), Some(b)) if a < b => {}
-                    _ => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "StopNode ordered before TerminateRuntime in the retire steps".into() }),
+                    _ => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "StopNode ordered before TerminateRuntime in the delete steps".into() }),
                 }
             } else {
                 out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "the file itself".into() });
             }
         }
-        Ratchet::RetireHasBoundedFailureArms => match read(root, PIPELINE).as_deref().and_then(|t| enum_arms(t, "CommandAdmission")) {
+        Ratchet::DeleteHasBoundedFailureArms => match read(root, PIPELINE).as_deref().and_then(|t| enum_arms(t, "CommandAdmission")) {
             Some(found) if found == COMMAND_ARMS => {}
             Some(found) => out.push(Violation::Arms { ratchet, file: PIPELINE.into(), expected: COMMAND_ARMS.iter().map(|s| s.to_string()).collect(), found }),
             None => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "`pub enum CommandAdmission`".into() }),
         },
-        Ratchet::DriftSilenceIsNotRetireAuthority => {
+        Ratchet::DriftSilenceIsNotDeleteAuthority => {
             require(root, DRIFT_CELLS, &["fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced"], ratchet, &mut out);
         }
-        Ratchet::RetireReceiptNamesCommandArm => {
+        Ratchet::DeleteReceiptNamesCommandArm => {
             require(root, PIPELINE, &["#[serde(tag = \"arm\", rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission"], ratchet, &mut out);
-            require(root, RETIRE_CELLS, &["StopNode"], ratchet, &mut out);
+            require(root, DELETE_CELLS, &["StopNode"], ratchet, &mut out);
         }
         Ratchet::ConnectionsDeletedIsNotRefusal => {
             require(root, STATUS, &["ConnectionsDeleting { reason: String }", "ConnectionsDeleted {", "receipt: Option<ConnectionsReceipt>"], ratchet, &mut out);

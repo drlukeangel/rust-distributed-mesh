@@ -99,7 +99,7 @@ async fn stop(root: &Running, launch: &Launch) -> StatusReply {
 
 // @feature: node-lifecycle
 /// CONTRACT: an rpc node stopped by its mesh-primary's `StopNode` keeps its process live, and the
-/// termination signal that follows (a retire's `TerminateRuntime`) ends its process without running its stop
+/// termination signal that follows (a delete's `TerminateRuntime`) ends its process without running its stop
 /// again: its `node.connections.delete { All }` ran once, at the command, nothing is owed on the
 /// signal, and its mesh-primary holds it `Stopped`.
 /// Must NOT happen: the signal running node-stop.md's steps a second time on the stopped birth and
@@ -117,7 +117,7 @@ fn a_stopped_births_signal_runs_no_second_stop() {
         let base = std::env::temp_dir().join(format!("stopped-birth-signal-{}", NodeId::mint()));
         let (root_dir, rpc_dir) = (base.join("admin1"), base.join("rpc1"));
         std::fs::create_dir_all(&root_dir).unwrap();
-        // The mesh's primary: a Day-0 node-admin that does not reconcile (it would retire the node this
+        // The mesh's primary: a Day-0 node-admin that does not reconcile (it would delete the node this
         // cell launches in its own process).
         let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling().await;

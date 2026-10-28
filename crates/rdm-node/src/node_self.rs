@@ -168,7 +168,7 @@ pub trait Session: Send + Sync {
     /// bound.
     async fn cut(&self, spare: &[iroh::PublicKey], mesh_primary: Option<iroh::PublicKey>) -> CutReport;
     /// Rejoin as the same birth: join the authority, rejoin the mesh channel, take the topology and
-    /// run the `pre_node_ready` hook with `AfterStop` in its context under `retire`, the new cycle's token.
+    /// run the `pre_node_ready` hook with `AfterStop` in its context under `delete`, the new cycle's token.
     /// `commander` holds the endpoint key of the call that commanded the start last: each join
     /// attempt goes back over that call ([`crate::workflows::node_start::JoinTo::Commander`]), and
     /// the admin that answers is the hook's accepting authority. `rows` is the start's hold on this
@@ -177,7 +177,7 @@ pub trait Session: Send + Sync {
     /// `operation` is the start's own: the Ready the rejoin declares names it (i146 Q36).
     /// `held_again` is sent once the start holds its mesh again (node-mesh-join.md step 9: back on its
     /// topic with a neighbour, its Pending presence published): what a commanded `node.mesh.join` answers on.
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), StartFailed>;
+    async fn rejoin(&self, birth_cancel: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), StartFailed>;
     /// Leave the channels this birth is on (its mesh; the backbone too, a node-admin), its hook task
     /// ended and its hook gate closed, its connections kept: what a live birth does before its start
     /// sequence runs again on a commanded `node.mesh.join` (node-mesh-join.md step 10, Q87). A stop's
@@ -286,8 +286,8 @@ pub struct NodeSelf {
     /// a surface whose declarations are made elsewhere (a node-admin).
     pub declare: Option<Declare>,
     /// Cancelled when `node.connections.delete { All }` or `stop-node` is admitted: the birth is
-    /// retired, so its `pre_node_ready` hook and any pull it has in flight end.
-    pub retire: Option<rdm_transport::Retirement>,
+    /// deleted, so its `pre_node_ready` hook and any pull it has in flight end.
+    pub birth_cancel: Option<rdm_transport::BirthCancel>,
     /// What this birth owes its mesh-primary, for a signal stop's outcome span to name what it left.
     pub owed: Option<Arc<crate::node::OwedDeclarations>>,
     /// The backbone, for a node-admin: its state hooks go out on its mesh channel and the backbone.
@@ -338,7 +338,7 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         topology_view.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, retire: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
+        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -360,9 +360,9 @@ impl NodeSelf {
         self
     }
 
-    /// This surface, cancelling `retire` when `node.connections.delete { All }` or a stop is admitted.
-    pub fn with_cancel(mut self, retire: rdm_transport::Retirement) -> Self {
-        self.retire = Some(retire);
+    /// This surface, cancelling `delete` when `node.connections.delete { All }` or a stop is admitted.
+    pub fn with_cancel(mut self, birth_cancel: rdm_transport::BirthCancel) -> Self {
+        self.birth_cancel = Some(birth_cancel);
         self
     }
 
@@ -519,12 +519,12 @@ impl NodeSelf {
         // `All` is graceful node-wide closure (node-connections-delete.md step 3): admission of new
         // application work is blocked, and the eligible work in flight (every dispatched handler but
         // this call's own) is let finish, bounded by the birth's `connections_delete_deadline`.
-        // The birth is retired at the admission of `All`: its `pre_node_ready` hook and any pull
+        // The birth is deleted at the admission of `All`: its `pre_node_ready` hook and any pull
         // it has in flight end; it returns to service only through a stop and a start.
         let in_flight = match scope {
             ConnectionScope::All => {
-                if let Some(retire) = &self.retire {
-                    retire.cancel();
+                if let Some(birth_cancel) = &self.birth_cancel {
+                    birth_cancel.cancel();
                 }
                 // The block on new application work: from here the node refuses new non-status calls
                 // (Node RPC §35); the node is connections-deleting, and says so.
@@ -970,7 +970,7 @@ impl NodeSelf {
         let _ = (self.set_status)(MemberStatus::Pending);
         self.server.resume();
         self.admit_new_connections();
-        let retire = match &self.retire {
+        let birth_cancel = match &self.birth_cancel {
             Some(r) => r.renew(),
             None => rdm_transport::CancelToken::new(),
         };
@@ -980,7 +980,7 @@ impl NodeSelf {
         let (held_tx, held_again) = tokio::sync::oneshot::channel();
         let me = self.clone();
         tokio::spawn(async move {
-            let result = session.rejoin(retire, commander_rx, None, operation, None, Some(held_tx)).await;
+            let result = session.rejoin(birth_cancel, commander_rx, None, operation, None, Some(held_tx)).await;
             let reply = match result {
                 Ok(()) => StatusReply::Started,
                 Err(failed) => {
@@ -1100,8 +1100,8 @@ impl NodeSelf {
         if op.is_some() {
             process_stop().stop();
         }
-        if let Some(retire) = &self.retire {
-            retire.cancel();
+        if let Some(birth_cancel) = &self.birth_cancel {
+            birth_cancel.cancel();
         }
         // 1. node.connections.delete { All } (node-stop.md step 2), whole: admission of new
         // application work is blocked, the eligible work in flight finishes under the bound, and every
@@ -1373,7 +1373,7 @@ impl NodeSelf {
                 }
                 Next::Run(tx, session, commanded) => (tx, session, commanded),
             };
-            let retire = match &self.retire {
+            let birth_cancel = match &self.birth_cancel {
                 Some(r) => r.renew(),
                 None => rdm_transport::CancelToken::new(),
             };
@@ -1390,7 +1390,7 @@ impl NodeSelf {
             // The admin that commanded the start answers its join, reached back over its own call:
             // the call's endpoint key and path (node-start.md step 2).
             let joined = match commanded {
-                Some(commander) => session.rejoin(retire, commander, rows, declared(&op), progress, None).await,
+                Some(commander) => session.rejoin(birth_cancel, commander, rows, declared(&op), progress, None).await,
                 None => Err(StartFailed { step: "node.join", reason: format!("{}: commander-uncalled: the start came on no Node RPC call, so no endpoint names the admin to join back", self.held_name()) }),
             };
             let reply = match joined {

@@ -203,7 +203,7 @@ pub struct Control {
     pub attempts: [u64; 2],
     /// The exact runtime was alive, as the provider holds it, during the hold.
     pub exact_runtime_alive: bool,
-    /// The hold ended with the work replaced: a new attempt, a new incarnation or a retire.
+    /// The hold ended with the work replaced: a new attempt, a new incarnation or a delete.
     pub replaced_during: bool,
     /// The held birth was unheard past the staleness floor: node investigation reads it held and
     /// re-creates it at its path (node-recovery.md step 3, Q111), so its replacement is the recovery, not

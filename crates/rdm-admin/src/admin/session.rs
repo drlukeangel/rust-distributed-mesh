@@ -362,12 +362,12 @@ impl crate::node_self::Session for AdminSession {
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
     }
 
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, birth_cancel: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), crate::node_self::StartFailed> {
         // The name this admin holds (its row's, as its last join or apply handed it): what its join
         // presents and what it is named by until the join answer hands it the row's (R12).
         let held = self.digest.lock().unwrap().node.name.clone();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %held, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
-        let mut start = AdminAfterStop { session: self, root, commander, retire: Some(retire), rows, operation, progress, held_again };
+        let mut start = AdminAfterStop { session: self, root, commander, birth_cancel: Some(birth_cancel), rows, operation, progress, held_again };
         crate::workflows::node_start::node_start(&mut start, crate::node_hooks::StartKind::AfterStop).await
     }
 
@@ -432,7 +432,7 @@ pub(crate) struct AdminAfterStop<'a> {
     /// call, and the admin that answers is the hook's accepting authority.
     pub(crate) commander: tokio::sync::watch::Receiver<iroh::PublicKey>,
     /// The new cycle's token: the hook runs under it.
-    pub(crate) retire: Option<rdm_transport::CancelToken>,
+    pub(crate) birth_cancel: Option<rdm_transport::CancelToken>,
     /// The start's hold on this birth's connections rows, dropped once the handed name is held.
     pub(crate) rows: Option<crate::connections_writer::RowsHeld>,
     /// The start's operation: the node.started this cycle reports names it (node-status.md "Status report").
@@ -526,7 +526,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
             birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: NodeKind::NodeAdmin },
             node_hooks: s.node_hooks.clone(),
             events: crate::node_hooks::Events::new(topology_view.digest_view.clone(), s.addressed.clone()),
-            cancel: self.retire.take().expect("the hook's token is handed once"),
+            cancel: self.birth_cancel.take().expect("the hook's token is handed once"),
             state: s.pre_node_ready_cell.clone(),
             runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.pre_node_ready_task.clone() },
             after: Box::new(after),

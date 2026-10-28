@@ -21,9 +21,9 @@ fn target(name: &str, silent_ms: u64) -> RepairTarget {
 
 /// CONTRACT (#2902, gossip.md §6): a held member whose coverage has been stale for the repair
 /// window is scheduled once per window per peer, whether or not the channel has neighbours; a
-/// member heard within the window is never scheduled; a member no longer held (retired or
+/// member heard within the window is never scheduled; a member no longer held (deleted or
 /// deleted) leaves the schedule and is never attempted again. What must NOT happen: a hot loop on
-/// one peer, a healthy member re-fed, or a retired member re-fed.
+/// one peer, a healthy member re-fed, or a deleted member re-fed.
 #[test]
 fn refeed_scheduler_bounds_stale_held_peer_attempts() {
     let cell = "refeed_scheduler_bounds_stale_held_peer_attempts";
@@ -31,24 +31,24 @@ fn refeed_scheduler_bounds_stale_held_peer_attempts() {
     std::fs::create_dir_all(&dir).unwrap();
     let window = Duration::from_millis(3000);
     let mut schedule = RepairSchedule::new(window);
-    let (stale, healthy, retired) = (target("mesh2.admin.1", 4000), target("mesh2.rpc.1", 500), target("mesh2.rpc.2", 9000));
+    let (stale, healthy, deleted) = (target("mesh2.admin.1", 4000), target("mesh2.rpc.1", 500), target("mesh2.rpc.2", 9000));
     let t0 = Instant::now();
 
-    let first = schedule.due(vec![stale.clone(), healthy.clone(), retired.clone()], t0);
+    let first = schedule.due(vec![stale.clone(), healthy.clone(), deleted.clone()], t0);
     let first_names: Vec<String> = first.iter().map(|t| t.node.clone()).collect();
     assert_eq!(first_names, vec!["mesh2.admin.1".to_string(), "mesh2.rpc.2".to_string()], "only members stale for the window are due");
     // Within the window: nothing is attempted again (bounded, one per peer per window).
     let mut within = Vec::new();
     for step in 1..=29u64 {
-        let due = schedule.due(vec![stale.clone(), healthy.clone(), retired.clone()], t0 + Duration::from_millis(step * 100));
+        let due = schedule.due(vec![stale.clone(), healthy.clone(), deleted.clone()], t0 + Duration::from_millis(step * 100));
         within.extend(due.into_iter().map(|t| t.node));
     }
     assert!(within.is_empty(), "no peer attempted twice within one window: {within:?}");
-    // The retired member leaves the held set: never due again, even past the window.
+    // The deleted member leaves the held set: never due again, even past the window.
     let next = schedule.due(vec![stale.clone(), healthy.clone()], t0 + window);
     let next_names: Vec<String> = next.iter().map(|t| t.node.clone()).collect();
-    assert_eq!(next_names, vec!["mesh2.admin.1".to_string()], "one attempt per window for the still-held stale member; the retired one is gone");
-    let later = schedule.due(vec![stale.clone(), healthy.clone(), retired.clone()], t0 + window + Duration::from_millis(1));
+    assert_eq!(next_names, vec!["mesh2.admin.1".to_string()], "one attempt per window for the still-held stale member; the deleted one is gone");
+    let later = schedule.due(vec![stale.clone(), healthy.clone(), deleted.clone()], t0 + window + Duration::from_millis(1));
     assert!(later.iter().all(|t| t.node != "mesh2.admin.1"), "the stale member waits a whole window again");
 
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&json!([])).unwrap()).unwrap();

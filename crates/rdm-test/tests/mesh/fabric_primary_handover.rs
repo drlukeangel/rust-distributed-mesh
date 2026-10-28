@@ -505,12 +505,12 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let created = named(&spans, "rdm.node_admin.node.create.via-build");
     assert!(!created.iter().any(|sp| (sp["attributes"]["build_id"] == b.as_str() || sp["attributes"]["build_id"] == c.as_str()) && s(&sp["attributes"]["node"]).starts_with("mesh1.")), "nothing recreates a mesh1 node");
 
-    // rafka-time: the fabric seat moved from the retired mesh1 to the lowest NodeId among the
+    // rafka-time: the fabric seat moved from the deleted mesh1 to the lowest NodeId among the
     // remaining mesh primaries (R-A2). The other remaining mesh primary, which does not hold the seat,
     // pulled once from the new fabric-primary and adopted its time under the mesh-primary rule.
     let holder = fabric_primary.clone();
     let holder_id = after.iter().find(|n| s(&n["name"]) == holder).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("the fabric primary {holder} is in the settled view"));
-    assert!(["mesh2.admin.1", "mesh3.admin.1"].contains(&holder.as_str()), "the seat left the retired mesh1 for a remaining mesh primary: {holder}");
+    assert!(["mesh2.admin.1", "mesh3.admin.1"].contains(&holder.as_str()), "the seat left the deleted mesh1 for a remaining mesh primary: {holder}");
     let other = if holder == "mesh2.admin.1" { "mesh3.admin.1" } else { "mesh2.admin.1" };
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let moved: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-fabric-primary-changed").into_iter().filter(|sp| attr(sp, "node") == other && attr(sp, "to") == holder_id).collect();

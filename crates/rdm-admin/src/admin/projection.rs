@@ -557,7 +557,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     }
     // Births this admin started that have not reported yet. A launch record
     // stands in for a birth only until the topology view speaks for it: once heard,
-    // it never revives the birth (another admin may have retired it since). A
+    // it never revives the birth (another admin may have deleted it since). A
     // deleted birth was heard and has left: its record never stands in either.
     for op in digest_view.deleted() {
         heard.insert(op.incarnation.clone());

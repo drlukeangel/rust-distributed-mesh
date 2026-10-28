@@ -43,7 +43,7 @@ pub fn birth_of_view(n: &NodeView) -> Option<MeshNode> {
 pub struct Peers {
     rpc: Arc<NodeRpcClient>,
     resolver: Arc<StaticResolver>,
-    /// The birth each `path.name` resolves to now: a name that moves to another node id retires the
+    /// The birth each `path.name` resolves to now: a name that moves to another node id deletes the
     /// id it held, so a call by path reaches the current birth and never a deleted one.
     held: Mutex<HashMap<PathName, NodeId>>,
     _endpoint: iroh::Endpoint,
@@ -123,7 +123,7 @@ impl Peers {
         Ok(())
     }
 
-    /// Resolve `node` by its id and its `path.name`; a name that moves to another node id retires
+    /// Resolve `node` by its id and its `path.name`; a name that moves to another node id deletes
     /// the id it held.
     fn hold(&self, node: ResolvedNode) {
         if let Some(before) = self.held.lock().unwrap().insert(node.name.clone(), node.node_id.clone()) {

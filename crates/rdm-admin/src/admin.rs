@@ -14,13 +14,13 @@
 //! cohort; the lowest-NodeId mesh primary holds the fabric). Admins execute Builds (`executor`): the fabric primary
 //! and each mesh's admin primary claim the attempts whose next operation is
 //! theirs and run what is left through the deployment pipeline (create, restart,
-//! retire) and the lifecycle pipeline (a node's `Pending -> Ready`).
+//! delete) and the lifecycle pipeline (a node's `Pending -> Ready`).
 
 use crate::build::BuildOperation;
 use crate::build_state::BuildStateAdapter;
 use crate::accepted::AcceptedStore;
 use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
-    CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, RetireRequest, Timeouts, TopologySink,
+    CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, DeleteRequest, Timeouts, TopologySink,
 };
 use crate::deployment::provider::{DeploymentHandle, DeploymentProvider, FabricPolicy};
 use crate::executor::{BuildExecutor, OperationRunner};
@@ -78,7 +78,7 @@ mod tests {
     /// CONTRACT: the mesh primary's per-birth bookkeeping (the TRUE OFFLINE set, the silence-status
     /// memo) holds only births its view still watches at that exact incarnation. A birth deleted by
     /// its recovery (a new node.id at its path.name) and a birth superseded by a new incarnation of its
-    /// node are retired; a watched TRUE OFFLINE birth keeps both. Must NOT happen: entries of gone births accumulating, one per recovered birth.
+    /// node are deleted; a watched TRUE OFFLINE birth keeps both. Must NOT happen: entries of gone births accumulating, one per recovered birth.
     #[test]
     fn the_mesh_primarys_offline_bookkeeping_drops_deleted_and_superseded_births() {
         let watched_node = |path: &str| {
@@ -97,7 +97,7 @@ mod tests {
         let mut written: WrittenSilence = [(kept.node_id.clone(), (kept.incarnation_id.clone(), Some(NodeStatus::Dead))), (deleted.0.clone(), (Some(deleted.1.clone()), Some(NodeStatus::Dead)))].into();
         clear_unwatched(&watched, &mut offline, &mut written);
         assert_eq!(offline, [kept_birth.clone()].into(), "only the watched TRUE OFFLINE birth stays offline");
-        assert_eq!(written.keys().cloned().collect::<HashSet<_>>(), [kept.node_id.clone()].into(), "the silence memo of a deleted node is retired");
+        assert_eq!(written.keys().cloned().collect::<HashSet<_>>(), [kept.node_id.clone()].into(), "the silence memo of a deleted node is deleted");
     }
 
     /// CONTRACT (node-recovery.md step 1: "Each node's pruner marks a member `PendingReconnect` once it is
@@ -3673,7 +3673,7 @@ mod tests {
 
     #[test]
     fn a_launch_record_never_revives_a_birth_that_another_admin_deleted() {
-        // This admin launched mesh1.rpc.1; another admin (the primary) retired
+        // This admin launched mesh1.rpc.1; another admin (the primary) deleted
         // it: its last word is Leaving, then silence. The topology view speaks for the
         // birth (silent past the floor), so this admin's own launch record must
         // not bring it back as ready.

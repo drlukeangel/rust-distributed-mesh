@@ -7,16 +7,16 @@
 //! After every step, from public surfaces only:
 //! - the Build completes and the view settles on exactly the desired count of
 //!   each cohort, all `ready` (which ordinals remain depends on
-//!   where the seats are: shrink retires non-primaries);
+//!   where the seats are: shrink deletes non-primaries);
 //! - every seat is the one the election computes from the view's NodeIds
 //!   (one primary per cohort, the lowest ready NodeId; one fabric primary);
-//!   shrink retires non-primaries, highest ordinal first;
+//!   shrink deletes non-primaries, highest ordinal first;
 //! - no two nodes advertise the same endpoint (no port collision);
 //! - a mesh the step did not resize keeps every node's birth (incarnation).
 //!
-//! Evidence, by parent span id: every retired node has a
+//! Evidence, by parent span id: every deleted node has a
 //! `rdm.node_admin.node.delete.via-build` span that descends from the
-//! request that accepted its Build, with a retire pipeline under it.
+//! request that accepted its Build, with a delete pipeline under it.
 
 use rdm_test::elections::{primaries_as_expected, primaries_kept};
 use rdm_test::estate::{descends_from, named, Estate, Owner};
@@ -35,10 +35,10 @@ fn owner(test: &str) -> Owner {
     }
 }
 
-/// One resize step and what it retired.
+/// One resize step and what it deleted.
 struct Step {
     build_id: String,
-    retired: Vec<String>,
+    deleted: Vec<String>,
 }
 
 /// Submit `meshes` as the fabric's desired shape and check the step settled.
@@ -66,11 +66,11 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], befor
             assert_eq!(prev, birth, "{label}: {name} was restarted by a resize");
         }
     }
-    let retired = old.keys().filter(|n| !new.contains_key(*n)).cloned().collect();
-    (Step { build_id, retired }, nodes)
+    let deleted = old.keys().filter(|n| !new.contains_key(*n)).cloned().collect();
+    (Step { build_id, deleted }, nodes)
 }
 
-/// Every retired node's removal descends from the request that accepted its Build.
+/// Every deleted node's removal descends from the request that accepted its Build.
 fn deletes_are_causal(estate: &Estate, steps: &[Step]) {
     let spans = estate.spans();
     for step in steps {
@@ -79,17 +79,17 @@ fn deletes_are_causal(estate: &Estate, steps: &[Step]) {
             .find(|s| s["attributes"]["build_id"] == step.build_id.as_str())
             .unwrap_or_else(|| panic!("no span accepted build {}", step.build_id))
             .clone();
-        for node in &step.retired {
+        for node in &step.deleted {
             let delete = named(&spans, "rdm.node_admin.node.delete.via-build")
                 .into_iter()
                 .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["build_id"] == step.build_id.as_str())
                 .unwrap_or_else(|| panic!("{node}: no removal under build {}", step.build_id))
                 .clone();
             assert!(descends_from(&spans, &delete, &accepted), "{node}: its removal descends from its Build");
-            let retire = named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
+            let delete = named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
                 .into_iter()
-                .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["pipeline"] == "retire" && descends_from(&spans, s, &delete));
-            assert!(retire.is_some(), "{node}: a retire pipeline ran under its removal");
+                .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["pipeline"] == "delete" && descends_from(&spans, s, &delete));
+            assert!(delete.is_some(), "{node}: a delete pipeline ran under its removal");
         }
     }
 }

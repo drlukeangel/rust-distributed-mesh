@@ -1,7 +1,7 @@
-//! Functional: a retire is commanded and proven per exact birth, whatever the fabric last heard.
+//! Functional: a delete is commanded and proven per exact birth, whatever the fabric last heard.
 //!
 //! The observer hides every `ConnectionsDeleting` and `Leaving` the node says, as if each announcement were
-//! lost on the fabric. The retire's proof is the commands and their completion calls
+//! lost on the fabric. The delete's proof is the commands and their completion calls
 //! (`node.connections.delete` / `node.connections.deleted`, `stop-node` / `node-left`) and the exact runtime's `Exited`,
 //! never a digest. A predecessor's exit at the same path stands for none of a successor's commands.
 
@@ -13,7 +13,7 @@ use rdm_admin::accepted::FabricTopology;
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::deployment::endpoint::RPC_NODE;
 use rdm_admin::deployment::pipeline::{CommandAdmission, Completion,
-    CreateRequest, DeploymentPipeline, NodeObserver, RetireRequest, Timeouts,
+    CreateRequest, DeploymentPipeline, NodeObserver, DeleteRequest, Timeouts,
 };
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{
@@ -46,7 +46,7 @@ impl NodeObserver for DeparturesLost<'_> {
 }
 
 /// The real provider; `signal_stop` is ignored when armed, so the runtime
-/// keeps running through its retire.
+/// keeps running through its delete.
 struct Stubborn<'a> {
     inner: &'a ProcessDeploymentProvider,
     ignore_stop: bool,
@@ -141,8 +141,8 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
             FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
         )
         .await;
-        let retired = pipeline
-            .delete_node(&RetireRequest {
+        let deleted = pipeline
+            .delete_node(&DeleteRequest {
                 build_id: build,
                 attempt: 1,
                 node: created.node.clone(),
@@ -150,8 +150,8 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
                 unreached: false,
             })
             .await;
-        let terminal = retired.unwrap_or_else(|e| panic!("the retired runtime exited: its commands were completed and its exit proven, whatever the fabric last heard: {e:?}"));
-        assert_eq!((terminal.node_id.as_str(), Some(terminal.incarnation_id.as_str())), (created.node.node_id.as_str(), created.node.incarnation_id.as_ref().map(|i| i.as_str())), "the terminal receipt names the retired birth: {terminal:?}");
+        let terminal = deleted.unwrap_or_else(|e| panic!("the deleted runtime exited: its commands were completed and its exit proven, whatever the fabric last heard: {e:?}"));
+        assert_eq!((terminal.node_id.as_str(), Some(terminal.incarnation_id.as_str())), (created.node.node_id.as_str(), created.node.incarnation_id.as_ref().map(|i| i.as_str())), "the terminal receipt names the deleted birth: {terminal:?}");
         assert!(exited(&process, &created.handle).await);
         let _ = std::fs::remove_dir_all(&template.data_root);
     })
@@ -218,8 +218,8 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
         )
         .await;
-        let retired = pipeline
-            .delete_node(&RetireRequest {
+        let deleted = pipeline
+            .delete_node(&DeleteRequest {
                 build_id: build.clone(),
                 attempt: 1,
                 node: b.node.clone(),
@@ -230,7 +230,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         // B is live and admits its node-admin: its stop-node answered `stopped`, the completion the
         // commanding side awaits. A's exit counts for nothing:
         // every command and every proof is on B's own birth and handle.
-        retired.unwrap_or_else(|e| panic!("retire B: {e}"));
+        deleted.unwrap_or_else(|e| panic!("delete B: {e}"));
         assert!(matches!(process.inspect(&b.handle).await, DeploymentStatus::Exited { .. }), "B's own runtime is terminal");
         let steps = builds.read_build(&build).await.unwrap().steps;
         let output = |name: &str| steps.iter().find(|r| r.step == name).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{name} receipted with an output"));

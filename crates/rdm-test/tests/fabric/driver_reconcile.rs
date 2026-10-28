@@ -213,7 +213,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
 /// name the new birth, every live admin holds the same births) and the invariants hold: one current
 /// birth per path, one fabric-primary, the current build_id held, no peer mesh unheard, the seats
 /// equal the public candidates', every role node reachable on its current birth, no Build minted
-/// for drift, a held runtime comes back as the same birth, a retired node is never dispatched.
+/// for drift, a held runtime comes back as the same birth, a deleted node is never dispatched.
 /// At the end every issued operation is accounted: issued = Reply + NotSent + Unserved +
 /// RejectedStale + Indeterminate with none unclassified, every successful write is in the final
 /// store of each surviving node, nothing was applied that no operation explains. The

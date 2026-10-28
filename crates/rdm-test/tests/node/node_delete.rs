@@ -3,7 +3,7 @@
 //! From public surfaces and span evidence only, on an MM estate: mesh1 (two admins, two rpc
 //! nodes) and mesh2 (one admin, two rpc nodes). `node.delete` of mesh2.rpc.2 reaches the
 //! fabric-primary, which accepts a Build without the node; mesh2's primary claims the attempt
-//! and executes the retirement.
+//! and executes the deletion.
 //!
 //! 1. Before the executor starts, the node is routable everywhere. Once it holds the operation
 //!    it publishes `NodeDeleting`: the node stays found and live in every view and stops being
@@ -132,8 +132,8 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     let deleting: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
-    assert_eq!(deleting.len(), 1, "one pre-notice for one retirement: {deleting:?}");
-    assert_eq!(deleted.len(), 1, "one departure for one retirement: {deleted:?}");
+    assert_eq!(deleting.len(), 1, "one pre-notice for one deletion: {deleting:?}");
+    assert_eq!(deleted.len(), 1, "one departure for one deletion: {deleted:?}");
     // The node's row (ops-naming "Node data", the delete point; R13): the mesh's primary, which
     // executes the delete, writes it with status Deleted at its NodeDeleted from the exact record it
     // acted on; the node born after it at the same path.name claims the row there at its create,
@@ -240,7 +240,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let heard_deleted = named(&spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     // The victim's own mesh hears the pre-notice on its channel. A peer mesh gets it only inside a backbone
     // mesh topology while the operation is open (`in_flight`: "while the operation is claimed and has no
-    // completed receipt", gossip.md MeshTopology): a retirement that completes within one mesh topology interval
+    // completed receipt", gossip.md MeshTopology): a deletion that completes within one mesh topology interval
     // reaches it as the retained departure alone, which `heard_deleted` below covers for every node.
     assert!(heard_deleting >= 2, "the victim's own mesh heard the pre-notice: {heard_deleting}");
     // Each receiver's overlay install shows the victim found, live and not routable as the overlay

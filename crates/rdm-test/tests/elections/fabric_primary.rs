@@ -190,7 +190,7 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
         assert_eq!(advertised_fabric_primaries(&view), vec![winner.clone()], "{} resolves the same fabric primary", mp["name"]);
     }
 
-    // Retire the holder's mesh (`mesh.delete` runs `node.fabric-primary.update` first and takes
+    // Delete the holder's mesh (`mesh.delete` runs `node.fabric-primary.update` first and takes
     // `mesh1` down only after the confirmed transfer): the seat leaves it for the lowest remaining mesh primary.
     let survivors: Vec<&Value> = mesh_primaries.iter().filter(|m| m["mesh"] != "mesh1").collect();
     let survivor_admin = Estate::path(&s(&survivors[0]["name"]));

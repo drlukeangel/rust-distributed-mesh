@@ -300,7 +300,7 @@ impl OperationRunner for Runner {
             // node.delete of the exited instance (node-delete.md "Crashed target"): no RPC, no stop
             // frames, no probe; the provider's exit proof is the target. A runtime that still runs is
             // no proof: refused by name, as the admin's crashed-target delete inspects before it deletes.
-            BuildOperation::RetireNode { node: path, exited: Some(from), .. } => {
+            BuildOperation::DeleteLiveNode { node: path, exited: Some(from), .. } => {
                 self.recovering.lock().unwrap().push(op.key());
                 if let Some(r) = self.world.runtimes.lock().unwrap().values().find(|r| r.node_id == from.node_id.as_str()) {
                     if matches!(r.status, DeploymentStatus::Running) {
@@ -1930,9 +1930,9 @@ mod unheard_mesh_hold {
     }
 }
 
-/// CONTRACT: a live birth the accepted topology does not name is surplus, retired by an attempt of its
-/// own, UNLESS the Build already receipted its retirement (`NodeDeleting` of that exact birth): that
-/// operation retires it, and this view is only late in hearing it go.
+/// CONTRACT: a live birth the accepted topology does not name is surplus, deleted by an attempt of its
+/// own, UNLESS the Build already receipted its deletion (`NodeDeleting` of that exact birth): that
+/// operation deletes it, and this view is only late in hearing it go.
 #[tokio::test]
 async fn a_birth_whose_delete_the_build_receipted_is_not_surplus() {
     use rdm_admin::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
@@ -1957,7 +1957,7 @@ async fn a_birth_whose_delete_the_build_receipted_is_not_surplus() {
                 .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: current.build_id.clone(), attempt: current.attempt, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: serde_json::to_value(&op).ok(), executor: None })
                 .await
                 .unwrap();
-            assert_eq!(e.drift().await, None, "a receipted retirement is not surplus");
+            assert_eq!(e.drift().await, None, "a receipted deletion is not surplus");
         } else {
             assert!(e.drift().await.is_some(), "an unreceipted live birth outside the accepted topology is surplus");
         }

@@ -13,7 +13,7 @@ use common::{add_node, admin_side, publish_build, template, LiveMesh, Published,
 use rdm_core::{FabricId, IncarnationId, LifecycleOp, NodeId};
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rdm_admin::deployment::endpoint::RPC_NODE;
-use rdm_admin::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, RetireRequest, Timeouts};
+use rdm_admin::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, DeleteRequest, Timeouts};
 use rdm_admin::node_commands::NodeCommand;
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{DeploymentProvider, DeploymentStatus, TerminationMode};
@@ -171,7 +171,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     let recover_build = publish_build(&rig.builds, add_node()).await;
     // node.delete of the unreached birth.
     pipeline
-        .delete_node(&RetireRequest { build_id: recover_build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), unreached: true })
+        .delete_node(&DeleteRequest { build_id: recover_build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), unreached: true })
         .await
         .unwrap_or_else(|e| panic!("delete: {e}"));
     // The executor targets the exited birth before the create that takes its key.
@@ -225,7 +225,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
 
     // Spans: one pipeline per workflow.
     let all = spans.0.lock().unwrap().clone();
-    for kind in ["retire", "create"] {
+    for kind in ["delete", "create"] {
         assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some(kind) && f.get("build_id") == Some(&recover_build.log().to_string())), "the {kind} workflow ran as its pipeline");
     }
     assert!(!all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("recover")), "no recovery pipeline of its own");

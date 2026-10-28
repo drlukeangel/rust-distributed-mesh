@@ -260,7 +260,7 @@ fn a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes() {
 /// CONTRACT: while its hook is blocked the node answers its authority's status probe with Status
 /// `Blocked { node_id, incarnation, reason, retry_on }` (node-start.md step 3): the exact birth, the
 /// hook's own reason and the event it runs again on. It serves `node.connections.delete { All }`
-/// (`ConnectionsDeleted`); the retirement at its admission cancels the hook: the blocker span closes `retired`, the hook does not run again, and
+/// (`ConnectionsDeleted`); the deletion at its admission cancels the hook: the blocker span closes `deleted`, the hook does not run again, and
 /// the node never publishes Ready. What must NOT happen: `Current` or `NotReady` for a
 /// blocked node's probe (the executor could not name the blocker, or would take its door for it), or
 /// `NotReady` for a lifecycle command (s15).
@@ -285,7 +285,7 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
         let d = running.digest.clone();
         assert_eq!(probed, StatusReply::Blocked { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), reason: hook_reason.clone(), retry_on: RetryOn::PrimaryReady }, "a blocked node answers Blocked: the exact birth, the hook's own reason and its retry event");
         assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the hook is blocked");
-        let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the retirement ends the hook");
+        let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the deletion ends the hook");
         assert_eq!(settled, PreNodeReadyState::Cancelled);
         assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-pre-node-ready-blocked")[0]["cleared_by"], "cancelled");
         assert_eq!(pre_node_ready.attempts.load(std::sync::atomic::Ordering::SeqCst), 1, "the hook did not run again");
@@ -296,11 +296,11 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
     })
 }
 
-/// CONTRACT: a retire during the hook cancels the pull. The authority's gate is open and the pull
+/// CONTRACT: a delete during the hook cancels the pull. The authority's gate is open and the pull
 /// is held in flight; `node.connections.delete { All }` reaches the node; the attempt span closes `cancelled`, the pull
 /// is dropped in flight (started = answered + dropped, nothing left running), its call span never
 /// records an outcome, and the node never publishes Ready. What must NOT happen: the
-/// pull answering into a node that was retired, or the node going Ready afterwards.
+/// pull answering into a node that was deleted, or the node going Ready afterwards.
 #[test]
 fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
@@ -320,7 +320,7 @@ fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
         tokio::time::timeout(WRONG, b.authority.entered(1)).await.expect("the pull is in flight at the authority");
 
         assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the pull is in flight");
-        let running = tokio::time::timeout(WRONG, starting).await.expect("the retirement ends the first attempt").unwrap().expect("the retired node's start returns");
+        let running = tokio::time::timeout(WRONG, starting).await.expect("the deletion ends the first attempt").unwrap().expect("the deleted node's start returns");
         assert_eq!(running.pre_node_ready().expect("handle").state(), PreNodeReadyState::Cancelled);
         use std::sync::atomic::Ordering::SeqCst;
         assert_eq!((pre_node_ready.pulls_started.load(SeqCst), pre_node_ready.pulls_answered.load(SeqCst), pre_node_ready.pulls_dropped.load(SeqCst)), (1, 0, 1), "the pull was dropped in flight");
@@ -329,7 +329,7 @@ fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
         assert_eq!(calls.len(), 1, "one pull call was made");
         assert!(!calls[0].contains_key("outcome"), "the dropped call recorded no outcome: it ended with the hook, not with a reply: {:?}", calls[0]);
         b.authority.release();
-        assert!(pre_node_ready.held().0.is_empty(), "no row was applied after the retirement");
+        assert!(pre_node_ready.held().0.is_empty(), "no row was applied after the deletion");
         assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "{:?}", seen.lock().unwrap());
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
         running.stop().await;

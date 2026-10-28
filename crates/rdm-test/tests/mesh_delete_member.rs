@@ -11,7 +11,7 @@ use common::{add_node, admin_side, publish_build, template, Published};
 use rdm_core::{FabricId, LifecycleOp};
 use rdm_admin::build_state::MemoryBuildStateAdapter;
 use rdm_admin::deployment::endpoint::RPC_NODE;
-use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, LifecycleEvents, RetireRequest, Timeouts};
+use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, LifecycleEvents, DeleteRequest, Timeouts};
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{DeploymentProvider, DeploymentStatus};
 use std::net::IpAddr;
@@ -83,7 +83,7 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
 
         let leave_build = publish_build(&builds, add_node()).await;
         let terminal = pipeline
-            .delete_node(&RetireRequest { build_id: leave_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
+            .delete_node(&DeleteRequest { build_id: leave_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
             .await
             .unwrap_or_else(|e| panic!("the member's node.delete: {e}"));
         assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }), "the member's runtime is proven exited");

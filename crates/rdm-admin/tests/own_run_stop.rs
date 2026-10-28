@@ -23,7 +23,7 @@
 //! fabric-primary of a one-mesh fabric, and a run whose one operation is the cell's. The gate does not
 //! tell a stop, a connections delete and a delete apart: each holds the admin's tasks
 //! through the one `Session::hold_tasks(commanded_by)`, so the first row runs every one of them.
-//! - its own run commands a stop, connections delete or delete of itself, the run served for a
+//! - its own run commands a stop, connections delete or node delete of itself, the run served for a
 //!   fabric-primary elsewhere and the run its own drive pass dispatched: the hold resolves inside the
 //!   connections-delete bound without that run's turns, and the run reaches its terminal;
 //! - the hold every other stop takes, `quiesce()`, commanded from inside that run: it waits on the run
@@ -156,7 +156,7 @@ fn own_operations() -> Vec<BuildOperation> {
     vec![
         BuildOperation::StopNode { node: node.clone(), node_id: node_id.clone(), from_incarnation: birth.clone() },
         BuildOperation::DeleteConnections { node: node.clone(), node_id, from_incarnation: birth },
-        BuildOperation::RetireNode { node, exited: None, birth: Some(pinned) },
+        BuildOperation::DeleteLiveNode { node, exited: None, birth: Some(pinned) },
     ]
 }
 
@@ -216,7 +216,7 @@ async fn its_own_runs_stop_connections_delete_or_delete_of_itself_holds_inside_t
 #[tokio::test(start_paused = true)]
 async fn the_hold_every_other_stop_takes_commanded_from_inside_the_run_waits_on_that_run_until_the_bound() {
     let calls = Arc::new(Calls::default());
-    let op = BuildOperation::RetireNode { node: "mesh1.admin.1".parse().unwrap(), exited: None, birth: Some(rdm_admin::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }) };
+    let op = BuildOperation::DeleteLiveNode { node: "mesh1.admin.1".parse().unwrap(), exited: None, birth: Some(rdm_admin::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }) };
     let (door, _gate, plan) = executor(&calls, Hold::EveryTurn, op).await;
     let Attached::Live { mut reader, .. } = door.attempt_run(&build_id(), 1, "mesh1.admin.1", &CallContext::default(), &[], &plan).await else { panic!("the claimed attempt is started") };
     let begun = tokio::time::Instant::now();
@@ -283,7 +283,7 @@ async fn a_stop_of_itself_from_a_signal_waits_for_the_run_in_progress_and_resolv
 #[tokio::test(start_paused = true)]
 async fn a_stop_its_own_run_commands_still_waits_for_every_turn_that_is_not_that_builds() {
     let calls = Arc::new(Calls::default());
-    let op = BuildOperation::RetireNode { node: "mesh1.admin.1".parse().unwrap(), exited: None, birth: Some(rdm_admin::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }) };
+    let op = BuildOperation::DeleteLiveNode { node: "mesh1.admin.1".parse().unwrap(), exited: None, birth: Some(rdm_admin::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }) };
     let (door, gate, plan) = executor(&calls, Hold::CommandedBy, op).await;
     let other = gate.turn("backbone").await;
     let Attached::Live { mut reader, .. } = door.attempt_run(&build_id(), 1, "mesh1.admin.1", &CallContext::default(), &[], &plan).await else { panic!("the claimed attempt is started") };

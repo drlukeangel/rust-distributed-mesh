@@ -333,7 +333,7 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
 /// every other call is refused `ConnectionsDeleting`: a probe answers the current state. A node command
 /// classifies as exactly one CommandAdmission arm and a refusal is never admitted: Refused (a
 /// stale incarnation, `ApplyNodeState` as a connections delete), NotSent (cut before the send), Indeterminate
-/// (the reply lost). The completion wait of an admitted command that never completes is the retire
+/// (the reply lost). The completion wait of an admitted command that never completes is the delete
 /// pipeline's Deadline arm, never a success.
 #[test]
 fn connections_deleting_mesh_primary_serves_status_checks_exact_birth() {
@@ -391,7 +391,7 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     let (lost, _) = c.call::<Status>(&target, &command(incarnation.clone()), &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;
     let indeterminate = command_admission(&lost);
     assert!(matches!(indeterminate, CommandAdmission::Indeterminate { .. }), "{indeterminate:?}");
-    // Deadline: the retire pipeline's AwaitNodeLeft over an admitted command that never completes.
+    // Deadline: the delete pipeline's AwaitNodeLeft over an admitted command that never completes.
     let deadline = deadline_arm().await;
     assert_eq!(deadline, Completion::Deadline {});
 
@@ -417,12 +417,12 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// The retire pipeline run to its AwaitNodeLeft over a birth that admits the stop and never
+/// The delete pipeline run to its AwaitNodeLeft over a birth that admits the stop and never
 /// completes it: the step's receipt is the arm.
 async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
     use rdm_admin::build::BuildId;
     use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
-    use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, RetireRequest, RetireStep, Timeouts, TopologySink};
+    use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, DeleteRequest, DeleteStep, Timeouts, TopologySink};
     use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 
     struct Running;
@@ -522,17 +522,17 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         container: None,
         domain: Some("i143-2805".into()),
     };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
+    let req = DeleteRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
     let _ = pipeline.delete_node(&req).await;
-    // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the stop
+    // The drawing's order, as far as this birth lets the delete go: NodeDeleting, the stop
     // command (StopNode), its completion wait (AwaitNodeLeft: the deadline arm); and never
     // NodeDeleted, because the provider never proves the runtime dead.
     let view = builds.read_build(&build_id).await.unwrap();
     let order: Vec<&str> = view.steps.iter().map(|s| s.step.as_str()).collect();
     let pos = |name: &str| order.iter().position(|s| *s == name);
-    let (deleting, marked, waited) = (pos(RetireStep::NodeDeleting.name()), pos(RetireStep::StopNode.name()), pos(RetireStep::AwaitNodeLeft.name()));
+    let (deleting, marked, waited) = (pos(DeleteStep::NodeDeleting.name()), pos(DeleteStep::StopNode.name()), pos(DeleteStep::AwaitNodeLeft.name()));
     assert!(deleting.is_some() && deleting < marked && marked < waited, "NodeDeleting, then the stop, then its result: {order:?}");
-    assert!(pos(RetireStep::NodeDeleted.name()).is_none(), "no NodeDeleted without the provider's proof of death: {order:?}");
+    assert!(pos(DeleteStep::NodeDeleted.name()).is_none(), "no NodeDeleted without the provider's proof of death: {order:?}");
     let step = &view.steps[waited.unwrap()];
     serde_json::from_value(step.output.clone().expect("AwaitNodeLeft records its arm")).unwrap()
 }

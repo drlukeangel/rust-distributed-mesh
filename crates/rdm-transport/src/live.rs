@@ -88,7 +88,7 @@ struct Live {
     nodes: HashMap<NodeId, ResolvedNode>,
     /// The path's holder: the first live node heard at it, until it departs.
     by_path: HashMap<PathName, NodeId>,
-    retired: HashMap<NodeId, HashSet<IncarnationId>>,
+    superseded: HashMap<NodeId, HashSet<IncarnationId>>,
     deleted: HashMap<NodeId, Instant>,
     /// Births known to have exited (an executor's proof): the node resolves nothing until a
     /// successor birth is applied, so nothing dials or installs the dead birth's address.
@@ -156,7 +156,7 @@ impl LiveNodeResolver {
         if live.deleted.contains_key(&id) {
             return Applied::Refused(Refusal::Deleted { node_id: id });
         }
-        if live.retired.get(&id).is_some_and(|r| r.contains(&birth.incarnation)) {
+        if live.superseded.get(&id).is_some_and(|r| r.contains(&birth.incarnation)) {
             return Applied::Refused(Refusal::StaleIncarnation { node_id: id, incarnation: birth.incarnation });
         }
         // The topology view holds the birth again: a stopped birth rejoined as itself (or a later birth of
@@ -178,7 +178,7 @@ impl LiveNodeResolver {
         };
         live.stopped.retain(|(n, _)| n != &id);
         if let Applied::Restarted { old } = &applied {
-            live.retired.entry(id.clone()).or_default().insert(old.clone());
+            live.superseded.entry(id.clone()).or_default().insert(old.clone());
             live.exited.remove(&(id.clone(), old.clone()));
         }
         // A birth that took another name (`ApplyNodeName`, R12) gives up the one it held.
@@ -212,7 +212,7 @@ impl LiveNodeResolver {
         }
         live.deleted.insert(node_id.clone(), now);
         live.stopped.retain(|(n, _)| n != node_id);
-        live.retired.entry(node_id.clone()).or_default().insert(incarnation.clone());
+        live.superseded.entry(node_id.clone()).or_default().insert(incarnation.clone());
         let held_path = live.nodes.remove(node_id).map(|n| n.name);
         for p in held_path.iter().chain(std::iter::once(path)) {
             if live.by_path.get(p) == Some(node_id) {

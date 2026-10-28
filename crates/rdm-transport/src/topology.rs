@@ -82,7 +82,7 @@ pub type LocationMarks = Mutex<HashMap<iroh::PublicKey, LocationMark>>;
 /// The peer-location view of one endpoint: the ONE address view its address lookup reads. Every
 /// channel and topic the endpoint joins installs where a key is through it, and only a birth's
 /// ordered digest changes a key's address (gossip.md, contact fields: "Contact changes continue
-/// through the birth's ordered digest updates"). A move retires every other direct path the
+/// through the birth's ordered digest updates"). A move deletes every other direct path the
 /// endpoint holds to the key (R-I1, `Endpoint::replace_direct_addrs`). An address from anything
 /// else (a seed, a peer list) fills a key the view holds no address for and never adds a second
 /// one: iroh merges every address lookup service's answer when it dials a key with no selected
@@ -119,7 +119,7 @@ impl LocationView {
         self.held_name.lock().unwrap().clone()
     }
 
-    /// Register where the birth `d` names is, and retire the paths a moved key leaves behind.
+    /// Register where the birth `d` names is, and delete the paths a moved key leaves behind.
     pub fn register(&self, d: &MeshDigest) {
         replace_superseded(&self.endpoint, &self.observer_name(), register_location(&self.marks, &self.lookup, d));
     }
@@ -171,7 +171,7 @@ fn incarnation_deleted(node_id: &NodeId, incarnation: &rdm_core::IncarnationId) 
 /// address, so it never puts an old socket back.
 ///
 /// Returns the key, the socket it moved from and the new socket when a newer birth MOVED the key:
-/// the caller then retires the endpoint's paths to every other socket (`retire_superseded`). The
+/// the caller then deletes the endpoint's paths to every other socket (`delete_superseded`). The
 /// socket it moved from is the one the view last registered for the key, or else the one it holds:
 /// a view that forgot the key under an open removal still knows where the key was.
 pub fn register_location(marks: &LocationMarks, lookup: &MemoryLookup, d: &MeshDigest) -> Option<LocationMove> {
@@ -229,10 +229,10 @@ pub struct LocationMove {
     pub new: std::net::SocketAddr,
 }
 
-/// A newer birth moved a key: the endpoint retires every direct path it holds to any other socket
+/// A newer birth moved a key: the endpoint deletes every direct path it holds to any other socket
 /// of the key, open ones included (iroh `Endpoint::replace_direct_addrs`), so a connection to the
 /// old socket, or a dial's first packet to it, can no longer reach whoever took that port. The span
-/// ends when the endpoint has retired them (`retired=true`).
+/// ends when the endpoint has deleted them (`deleted=true`).
 fn replace_superseded(endpoint: &Endpoint, observer: &str, moved: Option<LocationMove>) {
     let Some(m) = moved else { return };
     let span = tracing::info_span!(
@@ -243,15 +243,15 @@ fn replace_superseded(endpoint: &Endpoint, observer: &str, moved: Option<Locatio
         peer = %m.key.fmt_short(),
         old_socket = %m.old,
         new_socket = %m.new,
-        retired = tracing::field::Empty,
+        deleted = tracing::field::Empty,
     );
     span.in_scope(|| tracing::info!("a newer birth of this key moved: its old socket is no longer dialled"));
     let endpoint = endpoint.clone();
     tokio::spawn(tracing::Instrument::instrument(
         async move {
             endpoint.replace_direct_addrs(m.key, [m.new]).await;
-            tracing::Span::current().record("retired", true);
-            tracing::info!("every direct path to another socket of the key is retired");
+            tracing::Span::current().record("deleted", true);
+            tracing::info!("every direct path to another socket of the key is deleted");
         },
         span,
     ));
@@ -1212,7 +1212,7 @@ pub struct RepairTarget {
 
 /// Which held members are due a repair attempt now (gossip.md §6): a held member silent for the
 /// repair window gets one join attempt per window, whatever the channel's neighbours; a member that
-/// is no longer held (a retired or deleted birth) is never a target, and its schedule entry is
+/// is no longer held (a deleted birth) is never a target, and its schedule entry is
 /// dropped with it. Pure: the caller makes the attempts.
 pub struct RepairSchedule {
     window: Duration,
@@ -1268,19 +1268,19 @@ pub struct Held {
     /// The members due a repair attempt.
     pub targets: Vec<RepairTarget>,
     /// The keys of births under an open removal, whose addresses the channel forgets.
-    pub retired: Vec<iroh::EndpointId>,
+    pub deleted: Vec<iroh::EndpointId>,
 }
 
 /// [`Held`] from `digest_view` for the members `pick` selects.
 pub(crate) fn held_view(digest_view: &DigestView, pick: impl Fn(&MeshDigest) -> bool + Copy) -> Held {
     let overlaid = overlaid_nodes(digest_view);
-    let retired = digest_view
+    let deleted = digest_view
         .all()
         .into_iter()
         .filter(|d| pick(d) && overlaid.contains(d.node.node_id.as_str()))
         .filter_map(|d| d.node.endpoint_id.0.parse::<iroh::PublicKey>().ok())
         .collect();
-    Held { targets: held_targets(digest_view, pick), retired }
+    Held { targets: held_targets(digest_view, pick), deleted }
 }
 
 /// The members of `live` not yet in `joined`, recording them as joined; members that left `live`
@@ -1379,7 +1379,7 @@ impl Replayed {
 }
 
 impl Channel {
-    /// Register where the birth `d` names is, and retire the paths a moved key leaves behind.
+    /// Register where the birth `d` names is, and delete the paths a moved key leaves behind.
     fn register(&self, d: &MeshDigest) {
         self.location_view.register(d);
     }
@@ -1647,7 +1647,7 @@ impl Channel {
             let mut alone_since: Option<Instant> = None;
             let mut backoff = backbone_gossip_interval();
             let mut schedule = RepairSchedule::new(staleness_floor());
-            let mut retired: BTreeSet<iroh::EndpointId> = BTreeSet::new();
+            let mut deleted: BTreeSet<iroh::EndpointId> = BTreeSet::new();
             loop {
                 tokio::time::sleep(backbone_gossip_interval()).await;
                 let node = me.location_view.observer_name();
@@ -1657,9 +1657,9 @@ impl Channel {
                 let held = targets();
                 // A birth under an open removal: this channel keeps no address for
                 // its key and never hands it out again. The birth's iroh paths stay open: its
-                // typed connections delete is in flight over them, and they are retired at the proven exit.
-                for key in &held.retired {
-                    if retired.insert(*key) {
+                // typed connections delete is in flight over them, and they are deleted at the proven exit.
+                for key in &held.deleted {
+                    if deleted.insert(*key) {
                         me.location_view.forget(*key);
                         me.peers.lock().unwrap().remove(key);
                         me.joined.lock().unwrap().remove(key);
@@ -1667,7 +1667,7 @@ impl Channel {
                             .in_scope(|| tracing::info!("a birth under an open removal: its address is dropped from this channel; its paths stay until the exit is proven"));
                     }
                 }
-                retired.retain(|k| held.retired.contains(k));
+                deleted.retain(|k| held.deleted.contains(k));
                 for t in schedule.due(held.targets, Instant::now()) {
                     me.location_view.fill(&t.addr);
                     me.peers.lock().unwrap().insert(t.addr.id);
@@ -7383,8 +7383,8 @@ mod tests {
         assert_eq!(refused.len(), 1, "one refusal by name, its copies silent: {refused:?}");
         assert_eq!((refused[0]["frame"].as_str(), refused[0]["operation"].as_str(), refused[0]["build_id"].as_str()), ("node-deleted", "node.delete:mesh2.admin.2", "b2"));
         // Another departure of the same birth is a fact of its own: refused by name once.
-        let retired = LifecycleOp { build_id: "b3".into(), ..op_at("mesh2.admin.2", &id, &inc, "node.delete:mesh2.admin.2") };
-        assert!(!digest_view.depart(retired.clone()) && !digest_view.depart(retired));
+        let deleted = LifecycleOp { build_id: "b3".into(), ..op_at("mesh2.admin.2", &id, &inc, "node.delete:mesh2.admin.2") };
+        assert!(!digest_view.depart(deleted.clone()) && !digest_view.depart(deleted));
         assert_eq!(spans.named("rdm.mesh.topology.reject.via-deleted-birth").len(), 2, "each refused departure once");
     }
 

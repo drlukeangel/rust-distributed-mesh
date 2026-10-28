@@ -125,11 +125,11 @@ fn provider_interprets_neither_meta_nor_tags_fails_a_provider_reading_meta() {
 #[test]
 fn no_transport_tag_vocabulary_fails_a_tag_owner_in_an_active_source() {
     let t = Planted::of_tree();
-    // The retired name is assembled here so this file never carries it as a token.
-    let retired = format!("{}Owner", "Tag");
-    t.write("crates/rdm-transport/src/planted.rs", &format!("use rdm_core::catalog::{retired};\n"));
+    // The deleted name is assembled here so this file never carries it as a token.
+    let deleted = format!("{}Owner", "Tag");
+    t.write("crates/rdm-transport/src/planted.rs", &format!("use rdm_core::catalog::{deleted};\n"));
     let v = only(check(t.root()), Ratchet::NoTransportTagVocabulary);
-    assert!(matches!(&v[0], Violation::Token { token, .. } if *token == retired));
+    assert!(matches!(&v[0], Violation::Token { token, .. } if *token == deleted));
     // A serde discriminator named `tag` is JSON vocabulary, not transport vocabulary.
     let s = Planted::of_tree();
     s.write("crates/rdm-transport/src/planted.rs", "#[serde(tag = \"kind\")]\npub enum A { B }\n");
@@ -145,14 +145,14 @@ fn node_delete_attempts_rpc_stop_first_fails_when_termination_precedes_the_stop(
         "        Self::NodeDeleting,",
     );
     t.edit("crates/rdm-admin/src/deployment/pipeline.rs", "        Self::TerminateRuntime,", "        Self::TerminateRuntime,\n        Self::StopNode,");
-    only(check(t.root()), Ratchet::RetireAttemptsRpcStopFirst);
+    only(check(t.root()), Ratchet::DeleteAttemptsRpcStopFirst);
 }
 
 #[test]
 fn node_delete_has_bounded_failure_arms_fails_the_older_four_arm_draft() {
     let t = Planted::of_tree();
     t.edit("crates/rdm-admin/src/deployment/pipeline.rs", "    /// The birth, or the op, refused the call by name (a stale incarnation, an unserved op).\n    Refused {\n        /// The refusal's name.\n        reply: String,\n        /// Standard code of the original typed command outcome.\n        #[serde(default = \"rdm_core::outcome::legacy_failed_code\")]\n        code: rdm_core::outcome::Code,\n    },\n", "");
-    let v = only(check(t.root()), Ratchet::RetireHasBoundedFailureArms);
+    let v = only(check(t.root()), Ratchet::DeleteHasBoundedFailureArms);
     assert!(matches!(&v[0], Violation::Arms { found, .. } if !found.iter().any(|a| a == "Refused")));
 }
 
@@ -164,7 +164,7 @@ fn drift_silence_never_deletes_a_node_fails_without_its_proof() {
         "fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced",
         "fn a_silent_node_is_replaced",
     );
-    only(check(t.root()), Ratchet::DriftSilenceIsNotRetireAuthority);
+    only(check(t.root()), Ratchet::DriftSilenceIsNotDeleteAuthority);
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn node_delete_receipt_names_command_arm_fails_an_untagged_outcome() {
         "#[serde(tag = \"arm\", rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission",
         "#[serde(rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission",
     );
-    only(check(t.root()), Ratchet::RetireReceiptNamesCommandArm);
+    only(check(t.root()), Ratchet::DeleteReceiptNamesCommandArm);
 }
 
 #[test]

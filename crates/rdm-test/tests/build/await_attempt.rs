@@ -7,7 +7,7 @@
 
 use crate::build_log;
 use rdm_client::{Frame, LaunchKind as NodeKind, NodeStatus};
-use rdm_admin::deployment::pipeline::RetireStep;
+use rdm_admin::deployment::pipeline::DeleteStep;
 use rdm_test::estate::{Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use serde_json::json;
@@ -62,7 +62,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let door = Door::at(&estate, &primary.name.to_string()).await;
 
     let cut = "stop:StopNode";
-    door.arm(cut, json!({"kind": "receipt", "step": RetireStep::StopNode.name(), "operation": "node.stop", "node": node})).await;
+    door.arm(cut, json!({"kind": "receipt", "step": DeleteStep::StopNode.name(), "operation": "node.stop", "node": node})).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The create put the fabric back to pending, so its Build is Complete at the attempt after its run,

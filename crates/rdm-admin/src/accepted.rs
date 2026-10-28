@@ -736,7 +736,7 @@ fn reconciled(current: &FabricTopology, nodes: &[NodeSpec], recorded: &Recorded)
 }
 
 /// Plan `topology − observed`, plus `action` where it still applies. Deterministic, idempotent:
-/// what observed reality already satisfies is not planned. Creates come before retirements, meshes
+/// what observed reality already satisfies is not planned. Creates come before deletions, meshes
 /// in name order, nodes in path order.
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
     plan_with(topology, observed, action, ActionProgress::default(), &BTreeSet::new(), &[], None)
@@ -915,7 +915,7 @@ pub(crate) fn replacement_pins(replacements: &[BuildOperation], pinned: &[(PathN
     replacements
         .iter()
         .filter_map(|op| match op {
-            BuildOperation::RetireNode { node, exited: None, birth: Some(b) } if !pinned.iter().any(|(at, _)| at == node) => Some((node.clone(), b.clone())),
+            BuildOperation::DeleteLiveNode { node, exited: None, birth: Some(b) } if !pinned.iter().any(|(at, _)| at == node) => Some((node.clone(), b.clone())),
             _ => None,
         })
         .collect()
@@ -1141,7 +1141,7 @@ fn replacements_owed(topology: &FabricTopology, observed: &Topology, recorded: &
                 (ReplacementProgress::Deleting(birth), held) if held.is_none_or(|n| n.node_id == birth.node_id) => {
                     let pin = crate::build::PinnedBirth { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() };
                     ops.push(match held {
-                        Some(_) => BuildOperation::RetireNode { node: p.clone(), exited: None, birth: Some(pin) },
+                        Some(_) => BuildOperation::DeleteLiveNode { node: p.clone(), exited: None, birth: Some(pin) },
                         None => BuildOperation::DeleteNode { node: p.clone(), node_id: pin.node_id, from_incarnation: pin.incarnation },
                     });
                     ops.push(BuildOperation::CreateNode { node: p.clone(), over: Some(birth), executable: Some(binding.clone()) });
@@ -1156,7 +1156,7 @@ fn replacements_owed(topology: &FabricTopology, observed: &Topology, recorded: &
                     // Q221), else, for a replacement a later attempt finds, the one the view holds now. A
                     // birth replaced since its pin is refused `birth-replaced` by the executing mesh-primary.
                     let pin = topology.pinned.iter().find(|(at, _)| at == p).map(|(_, b)| b.clone()).unwrap_or_else(|| crate::build::PinnedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().expect("a held birth names its incarnation") });
-                    ops.push(BuildOperation::RetireNode { node: p.clone(), exited: None, birth: Some(pin.clone()) });
+                    ops.push(BuildOperation::DeleteLiveNode { node: p.clone(), exited: None, birth: Some(pin.clone()) });
                     ops.push(BuildOperation::CreateNode { node: p.clone(), over: Some(crate::build::ExitedBirth { node_id: pin.node_id, incarnation: pin.incarnation }), executable: Some(binding.clone()) });
                 }
                 _ => {}
@@ -1253,7 +1253,7 @@ fn plan_with(
                 Some(AttemptAction::DeleteConnections { .. }) => BuildOperation::DeleteConnections { node, node_id, from_incarnation },
                 Some(AttemptAction::Start { .. }) => BuildOperation::StartNode { node, node_id, from_incarnation },
                 Some(AttemptAction::Delete { .. }) if stopped_old => BuildOperation::DeleteNode { node, node_id, from_incarnation },
-                Some(AttemptAction::Delete { .. }) => BuildOperation::RetireNode { node, exited: None, birth: Some(pin) },
+                Some(AttemptAction::Delete { .. }) => BuildOperation::DeleteLiveNode { node, exited: None, birth: Some(pin) },
                 _ => BuildOperation::StopNode { node, node_id, from_incarnation },
             });
         }
@@ -1270,7 +1270,7 @@ fn plan_with(
         let exited = crate::build::ExitedBirth { node_id: node_id.clone(), incarnation: from_incarnation.clone() };
         let done = progress.recovery;
         if done < RecoveryProgress::Deleted {
-            ops.push(BuildOperation::RetireNode { node: path.clone(), exited: Some(exited.clone()), birth: None });
+            ops.push(BuildOperation::DeleteLiveNode { node: path.clone(), exited: Some(exited.clone()), birth: None });
         }
         if done < RecoveryProgress::Recovered {
             ops.push(BuildOperation::CreateNode { node: path.clone(), over: Some(exited), executable: None });
@@ -1318,11 +1318,11 @@ fn plan_with(
         for op_key in begun_ops {
             if let Ok(crate::mesh_delete::OwnerResume::Deleted(manifest)) = crate::mesh_delete::owner_resume(steps, op_key) {
                 if let Some((node, birth)) = final_primary_birth(&manifest) {
-                    let retire_key = format!("node.delete:{node}");
-                    let completed = steps.iter().any(|r| r.operation == retire_key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
-                    let begun = steps.iter().any(|r| r.operation == retire_key);
+                    let delete_key = format!("node.delete:{node}");
+                    let completed = steps.iter().any(|r| r.operation == delete_key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
+                    let begun = steps.iter().any(|r| r.operation == delete_key);
                     if !completed && begun && Some(node.mesh.as_str()) != fp_mesh {
-                        ops.push(BuildOperation::RetireNode { node, exited: None, birth: Some(birth) });
+                        ops.push(BuildOperation::DeleteLiveNode { node, exited: None, birth: Some(birth) });
                     }
                 }
             }
@@ -1341,14 +1341,14 @@ fn plan_with(
                 Ok(crate::mesh_delete::OwnerResume::Deleted(manifest)) => {
                     if !is_fp_mesh {
                         if let Some((node, birth)) = final_primary_birth(&manifest) {
-                            let retire_key = format!("node.delete:{node}");
-                            let completed = steps.iter().any(|r| r.operation == retire_key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
+                            let delete_key = format!("node.delete:{node}");
+                            let completed = steps.iter().any(|r| r.operation == delete_key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
                             let held = observed.nodes.iter().any(|n| n.node_id.as_str() == manifest.final_primary.node_id);
                             // A delete this Build began is owed its receipt whether or not the view still
                             // holds the birth (fabric-delete.md "Failure").
-                            let begun = steps.iter().any(|r| r.operation == retire_key);
+                            let begun = steps.iter().any(|r| r.operation == delete_key);
                             if !completed && (held || begun) {
-                                ops.push(BuildOperation::RetireNode { node, exited: None, birth: Some(birth) });
+                                ops.push(BuildOperation::DeleteLiveNode { node, exited: None, birth: Some(birth) });
                             }
                         }
                     }
@@ -1405,13 +1405,13 @@ fn plan_with(
         let applied = properties_owed(topology, recorded, steps, &ops);
         ops.extend(applied);
     }
-    // A live or stopped node of a kept mesh that the topology no longer names is retired
-    // (a node.delete of a stopped node retires it: lifecycles/node-delete.md), and so is one its
+    // A live or stopped node of a kept mesh that the topology no longer names is deleted
+    // (a node.delete of a stopped node deletes it: lifecycles/node-delete.md), and so is one its
     // mesh-primary recorded os-stopped, silent as it is (node-delete.md "OS-suspended target": its
-    // delete skips the stop by name); a birth that is only silent is never retired for its silence. A
-    // node leaving under another operation is that operation's. A mesh the topology no longer names is retired whole
-    // (every member, dead or live, by the retire pipeline), never member by member.
-    // A surplus birth's retirement is its own attempt (no action): an attempt that carries an action
+    // delete skips the stop by name); a birth that is only silent is never deleted for its silence. A
+    // node leaving under another operation is that operation's. A mesh the topology no longer names is deleted whole
+    // (every member, dead or live, by the delete pipeline), never member by member.
+    // A surplus birth's deletion is its own attempt (no action): an attempt that carries an action
     // repairs exactly its birth.
     // A Build that failed stops at its step, and resuming it or running its compensation steps is the
     // caller's (lifecycles/node-replace.md "Rollback").
@@ -1423,7 +1423,7 @@ fn plan_with(
     // mesh-primary verifies it before any effect either way.
     for p in extra {
         let birth = topology.pinned.iter().find(|(at, _)| at == p).map(|(_, b)| b.clone()).or_else(|| observed.node(p).and_then(crate::build::PinnedBirth::of));
-        ops.push(BuildOperation::RetireNode { node: p.clone(), exited: None, birth });
+        ops.push(BuildOperation::DeleteLiveNode { node: p.clone(), exited: None, birth });
     }
     // A deleted mesh (its row Dead at mesh.deleted) is done: its mesh.delete ended, and its last
     // admin's end is a separate node.delete (mesh-delete.md steps 5-7), never planned from here. Only
@@ -1559,7 +1559,7 @@ mod tests {
 
     /// The node.delete of the birth `o` holds at `path`, pinned to it.
     fn delete_of(o: &Topology, path: &str) -> BuildOperation {
-        BuildOperation::RetireNode { node: path.parse().unwrap(), exited: None, birth: Some(pin_of(o, path)) }
+        BuildOperation::DeleteLiveNode { node: path.parse().unwrap(), exited: None, birth: Some(pin_of(o, path)) }
     }
 
     fn observed(nodes: Vec<Node>, meshes: &[&str]) -> Topology {
@@ -1650,7 +1650,7 @@ mod tests {
     /// the current topology to the Fabric with no mesh, and that Build's plan is the page's sequence:
     /// step 1, `mesh.delete` (`ShutdownMesh`) of each mesh, the fabric-primary's own mesh last (here
     /// mesh2, so the order is not the names' order); step 2, once a mesh's `mesh.deleted` stands (its
-    /// `MeshDeleted` receipt), `node.delete` (`RetireNode`) of that mesh's mesh-primary in its place;
+    /// `MeshDeleted` receipt), `node.delete` (`DeleteLiveNode`) of that mesh's mesh-primary in its place;
     /// step 3, `fabric.deleted` (`DeleteFabric`) last. The fabric-primary's own `node.delete` (step 4)
     /// is a separate call from outside the fabric, never this Build's. Must NOT happen: the
     /// fabric-primary's own mesh deleted before another, a deleted mesh's mesh.delete planned again,
@@ -1742,7 +1742,7 @@ mod tests {
         assert_eq!(fresh.operations[0], BuildOperation::CreateMesh { mesh: "mesh1".into(), mesh_id: cur.mesh("mesh1").unwrap().mesh_id.clone() });
         assert_eq!(fresh.operations.len(), 6);
         // A dead (unheard) birth's path is planned again — the create pipeline's target then holds a
-        // runtime that still runs; a live node outside the topology is retired.
+        // runtime that still runs; a live node outside the topology is deleted.
         let mut o = mn();
         o.nodes[3].status = NodeStatus::PendingReconnect;
         o.nodes.push(n("mesh1.rpc.7", NodeStatus::Ready, false));
@@ -1756,7 +1756,7 @@ mod tests {
         let mut later = o.clone();
         later.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.7").unwrap().node_id = NodeId::mint();
         assert_eq!(plan(&pinned(cur.clone(), &o), &later, None).operations[1], delete_of(&o, "mesh1.rpc.7"));
-        // A mesh outside the topology is retired after everything else.
+        // A mesh outside the topology is deleted after everything else.
         let mut o2 = mn();
         let id2 = MeshId::mint();
         o2.meshes.push(Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::Ready });
@@ -1789,7 +1789,7 @@ mod tests {
 
     /// CONTRACT (mesh-delete.md step 7: "A separate node.delete deletes the mesh-primary"): the
     /// targeted `Delete` action on a birth of a deleted mesh (no `.old` path: the topology names no
-    /// such mesh) is the ordinary node.delete of that exact birth, `RetireNode`, planned while the
+    /// such mesh) is the ordinary node.delete of that exact birth, `DeleteLiveNode`, planned while the
     /// view holds it, and nothing once it left or its `Complete` is receipted; a `Delete` of a stopped
     /// `.old` stays `DeleteNode`. Must NOT happen: the last admin of a deleted mesh deleted through a
     /// copy that skips its stop (`DeleteNode` sends no command to a live process).
@@ -1816,8 +1816,8 @@ mod tests {
 
     /// CONTRACT (lifecycles/node-delete.md, node-identity-and-state.md 6.9 Effect): a stopped node (Leaving,
     /// stopped, its process alive) that the accepted topology no longer names, the topology a
-    /// node.delete of it accepts, is retired: the plan is its one `RetireNode`. A node leaving under
-    /// another operation (Leaving, not stopped) is that operation's, never retired beside it. Must NOT
+    /// node.delete of it accepts, is deleted: the plan is its one `DeleteLiveNode`. A node leaving under
+    /// another operation (Leaving, not stopped) is that operation's, never deleted beside it. Must NOT
     /// happen: a node.delete of a stopped node that converges with nothing planned while its process
     /// lives on.
     #[test]
@@ -1830,7 +1830,7 @@ mod tests {
         assert_eq!(plan(&pinned(cur.clone(), &o), &o, None).operations, vec![delete_of(&o, "mesh1.rpc.7")]);
         let mut leaving = mn();
         leaving.nodes.push(n("mesh1.rpc.7", NodeStatus::Leaving, false));
-        assert_eq!(plan(&cur, &leaving, None).operations, vec![], "a departure already under way is not retired again");
+        assert_eq!(plan(&cur, &leaving, None).operations, vec![], "a departure already under way is not deleted again");
     }
 
     /// CONTRACT (node-stop.md step 6, states.md "Stopped nodes": "stopped is not live and is still
@@ -1930,7 +1930,7 @@ mod tests {
         let mut o = mn();
         o.nodes.retain(|x| x.name != path && x.name.to_string() != "mesh1.rpc.2" && x.name.to_string() != "mesh1.admin.2");
         let want = vec![
-            BuildOperation::RetireNode { node: path.clone(), exited: Some(exited.clone()), birth: None },
+            BuildOperation::DeleteLiveNode { node: path.clone(), exited: Some(exited.clone()), birth: None },
             BuildOperation::CreateNode { node: path.clone(), over: Some(exited), executable: None },
         ];
         assert_eq!(plan(&cur, &o, Some(&recover)).operations, want);
@@ -1953,7 +1953,7 @@ mod tests {
         let o = mn();
         assert_eq!(
             plan(&cur, &o, Some(&backbone)).operations,
-            vec![BuildOperation::RetireNode { node: path.clone(), exited: Some(lost.clone()), birth: None }, BuildOperation::CreateNode { node: path.clone(), over: Some(lost), executable: None }]
+            vec![BuildOperation::DeleteLiveNode { node: path.clone(), exited: Some(lost.clone()), birth: None }, BuildOperation::CreateNode { node: path.clone(), over: Some(lost), executable: None }]
         );
         let wire = crate::wire::action_round_trip(&backbone);
         assert_eq!(wire, backbone, "the backbone action crosses a Build message as itself");
@@ -1975,7 +1975,7 @@ mod tests {
     /// accepted Build of steps pins the birth its predecessor path holds and plans its steps in order, each its
     /// op's own operation (`node.connections.delete:<name>`, `node.mesh.leave:<name>`,
     /// `node.update:<name>`, `node.stop:<name>.old`, `node.create:<name>`), never a replace operation
-    /// and never a generic create or retire beside them. The predecessor's steps carry its pinned
+    /// and never a generic create or delete beside them. The predecessor's steps carry its pinned
     /// birth, followed through its rename to `.old`; the successor's create carries none (its executor
     /// resolves the node its create made at the name the rename released). A step whose `Complete` is
     /// receipted in an attempt that carried these steps is not planned again; a `Complete` of the same
@@ -2061,7 +2061,7 @@ mod tests {
     }
 
     /// CONTRACT: a standalone node.connections.delete or stop plans its one operation (`node.connections.delete:<path>` /
-    /// `node.stop:<path>`) while the view holds the exact birth, never a create, a retire or a repair
+    /// `node.stop:<path>`) while the view holds the exact birth, never a create, a delete or a repair
     /// of another member whatever the view lacks; a path run by another birth plans nothing.
     #[test]
     fn a_connections_delete_or_stop_plans_only_its_operation_for_its_exact_birth() {
@@ -2462,7 +2462,7 @@ mod tests {
             let node: PathName = name.parse().unwrap();
             let executable = Some(exe("b", node.kind));
             let b = birth(name, o);
-            vec![BuildOperation::RetireNode { node: node.clone(), exited: None, birth: Some(crate::build::PinnedBirth { node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }) }, BuildOperation::CreateNode { node, over: Some(b), executable }]
+            vec![BuildOperation::DeleteLiveNode { node: node.clone(), exited: None, birth: Some(crate::build::PinnedBirth { node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }) }, BuildOperation::CreateNode { node, over: Some(b), executable }]
         };
         let all: Vec<BuildOperation> = ["mesh1.admin.2", "mesh1.admin.1", "mesh1.rpc.2", "mesh2.admin.2", "mesh2.admin.1", "mesh2.rpc.1"].iter().flat_map(|p| replace(p, &o)).collect();
         assert_eq!(replacement_plan(&next, &o, &recorded, vec![]), all, "non-primary admins, the primary admin, then each type non-primary before primary; the member on its entry is left alone");
@@ -2877,7 +2877,7 @@ mod tests {
         let replacement = crate::build::PinnedBirth::of(now.node(&path).unwrap()).unwrap();
         let ops = replacement_plan(&next, &now, &rows, vec![]);
         let delete = ops.iter().find(|op| op.key() == "node.delete:mesh1.gateway.1").unwrap_or_else(|| panic!("the replacement's delete is planned: {ops:?}"));
-        let Some(BuildOperation::RetireNode { birth: Some(carried), .. }) = Some(delete) else { panic!("a replacement's delete composes its stop: {delete:?}") };
+        let Some(BuildOperation::DeleteLiveNode { birth: Some(carried), .. }) = Some(delete) else { panic!("a replacement's delete composes its stop: {delete:?}") };
         assert_eq!(*carried, seen, "the delete carries the acceptance pin, not the birth the view holds now");
         let create = ops.iter().find_map(|op| match op { BuildOperation::CreateNode { node, over: Some(b), .. } if *node == path => Some(b.clone()), _ => None }).unwrap_or_else(|| panic!("the create over it is planned: {ops:?}"));
         assert_eq!((create.node_id, create.incarnation), (seen.node_id.clone(), seen.incarnation.clone()), "the create is over the pinned birth");
@@ -2933,7 +2933,7 @@ mod tests {
         let replace = |name: &str| {
             let node: PathName = name.parse().unwrap();
             let b = birth(name);
-            vec![BuildOperation::RetireNode { node: node.clone(), exited: None, birth: Some(crate::build::PinnedBirth { node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }) }, BuildOperation::CreateNode { node, over: Some(b), executable: Some(exe("b", NodeKind::Gateway)) }]
+            vec![BuildOperation::DeleteLiveNode { node: node.clone(), exited: None, birth: Some(crate::build::PinnedBirth { node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }) }, BuildOperation::CreateNode { node, over: Some(b), executable: Some(exe("b", NodeKind::Gateway)) }]
         };
         let all: Vec<BuildOperation> = ["mesh1.gateway.2", "mesh1.gateway.1", "mesh2.gateway.2", "mesh2.gateway.1"].iter().flat_map(|p| replace(p)).collect();
         assert_eq!(replacement_plan(&next, &o, &rows, vec![]), all, "the gateways alone, each type's non-primary first");
@@ -2978,7 +2978,7 @@ mod tests {
         lost.nodes.retain(|x| x.name != path);
         assert_eq!(
             replacement_build_plan(&next, &lost, &rows, vec![], Some(recover.clone()), [(2, recover.clone())].into()),
-            vec![BuildOperation::RetireNode { node: path.clone(), exited: Some(exited.clone()), birth: None }, BuildOperation::CreateNode { node: path.clone(), over: Some(exited.clone()), executable: None }],
+            vec![BuildOperation::DeleteLiveNode { node: path.clone(), exited: Some(exited.clone()), birth: None }, BuildOperation::CreateNode { node: path.clone(), over: Some(exited.clone()), executable: None }],
             "the recovery alone, on the row's executable"
         );
         // Recovered by attempt 2 on a: the next attempt replaces it on b.
@@ -2987,7 +2987,7 @@ mod tests {
         let birth = crate::build::ExitedBirth { node_id: recovered.node_id.clone(), incarnation: recovered.incarnation_id.clone().unwrap() };
         assert_eq!(
             replacement_build_plan(&next, &o, &rows, steps, None, [(2, recover)].into()),
-            vec![BuildOperation::RetireNode { node: path.clone(), exited: None, birth: Some(crate::build::PinnedBirth { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() }) }, BuildOperation::CreateNode { node: path, over: Some(birth), executable: Some(exe("b", NodeKind::RpcNode)) }],
+            vec![BuildOperation::DeleteLiveNode { node: path.clone(), exited: None, birth: Some(crate::build::PinnedBirth { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() }) }, BuildOperation::CreateNode { node: path, over: Some(birth), executable: Some(exe("b", NodeKind::RpcNode)) }],
             "the replacement follows as the next attempt's"
         );
     }

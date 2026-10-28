@@ -1085,13 +1085,13 @@ fn calls_no_op_carries_today_say_so_by_name() {
     });
 }
 
-/// CONTRACT: every step the create and retire pipelines record is one the client names. The
+/// CONTRACT: every step the create and delete pipelines record is one the client names. The
 /// receipts of a whole create fold to `node.joined`, `node.started`, `node.created`
 /// and `Complete`; the receipts of a whole delete fold to the connections-deleted, stopped and
 /// deleted events and `Complete`. A step the client does not name is refused by name, never skipped.
 #[test]
 fn every_pipeline_step_is_named_by_the_client() {
-    use rdm_admin::deployment::pipeline::{CreateStep, RetireStep};
+    use rdm_admin::deployment::pipeline::{CreateStep, DeleteStep};
     let view = |op: &str, steps: Vec<&str>| -> rdm_client::BuildView {
         serde_json::from_value(json!({
             "build_id": "3qcfk1kq47m9", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
@@ -1104,8 +1104,8 @@ fn every_pipeline_step_is_named_by_the_client() {
     let f = rdm_client::fold(&WorkflowKind::Create, &view("node.create:mesh1.rpc.3", create), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
     let name: rdm_core::PathName = "mesh1.rpc.3".parse().unwrap();
-    let retire: Vec<&str> = RetireStep::ORDER.iter().map(|s| s.name()).collect();
-    let f = rdm_client::fold(&WorkflowKind::Delete(name.clone()), &view("node.delete:mesh1.rpc.3", retire.clone()), 1).unwrap();
+    let delete: Vec<&str> = DeleteStep::ORDER.iter().map(|s| s.name()).collect();
+    let f = rdm_client::fold(&WorkflowKind::Delete(name.clone()), &view("node.delete:mesh1.rpc.3", delete.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
@@ -1114,7 +1114,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
     // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
     let admin: rdm_core::PathName = "mesh1.admin.2".parse().unwrap();
-    let f = rdm_client::fold(&WorkflowKind::Delete(admin.clone()), &view("node.delete:mesh1.admin.2", retire.clone()), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Delete(admin.clone()), &view("node.delete:mesh1.admin.2", delete.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
@@ -1130,7 +1130,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     // A node-admin's delete with only NodeDeleting held resumes at StopNode, as any node's does.
     let r = rdm_client::Resume::from_view(&WorkflowKind::Delete(admin.clone()), &view("node.delete:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
     assert_eq!(r.from, Some(("node.delete".to_string(), "StopNode".to_string())));
-    // A SeatTransfer receipt is a retired step: refused by name under any target, never folded.
+    // A SeatTransfer receipt is a deleted step: refused by name under any target, never folded.
     for (kind, op, steps) in [
         (WorkflowKind::Delete(name.clone()), "node.delete:mesh1.rpc.3", vec!["NodeDeleting", "SeatTransfer"]),
         (WorkflowKind::Stop(name.clone()), "node.stop:mesh1.rpc.3", vec!["SeatTransfer"]),

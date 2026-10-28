@@ -193,13 +193,13 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
         }
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, |b| b).await;
-        let dir = std::env::temp_dir().join(format!("connections-all-retired-{}", NodeId::mint()));
+        let dir = std::env::temp_dir().join(format!("connections-all-deleted-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         let (launch, _running) = live_node(&admin, &dir, &fabric).await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
-        let retired = StatusRequest::Reserved6 { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.7".into() };
-        let reply = call_on(&admin, &target, &retired, None).await;
+        let reserved = StatusRequest::Reserved6 { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.7".into() };
+        let reply = call_on(&admin, &target, &reserved, None).await;
         assert!(matches!(&reply, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name: {reply:?}");
         let all = NodeCommandRequest::DeleteConnections { node_id, incarnation, scope: ConnectionScope::All };
         assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "the node deletes its connections afterwards");

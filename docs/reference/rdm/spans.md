@@ -540,7 +540,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.delete.via-workflow` | `crates/rdm-core/src/names.rs` | 90 |
 | `rdm.node_admin.node.reject.via-apply-node-name` | `crates/rdm-admin/src/status_rpc.rs` | 2332 |
 | `rdm.node_admin.node.reject.via-apply-node-name` | `crates/rdm-node/src/node.rs` | 1896 |
-| `rdm.node_admin.node.reject.via-birth-replaced` | `crates/rdm-admin/src/build.rs` | 360 |
+| `rdm.node_admin.node.reject.via-birth-replaced` | `crates/rdm-admin/src/build.rs` | 361 |
 | `rdm.node_admin.node.reject.via-data-dir-unreadable` | `crates/rdm-admin/src/admin/runner.rs` | 846 |
 | `rdm.node_admin.node.reject.via-declaration-held` | `crates/rdm-admin/src/admin/records.rs` | 503 |
 | `rdm.node_admin.node.reject.via-delete-under-way` | `crates/rdm-admin/src/stopped_gc.rs` | 323 |
