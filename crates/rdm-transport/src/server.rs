@@ -419,7 +419,8 @@ impl ServerBuilder {
 }
 
 /// Test seam (R-I3): withholds the reply of the next call after its handler has run, until the test
-/// releases it, then writes the reply and records what the caller's side of the stream did with it.
+/// releases it, then writes the reply and records what the caller's side of the stream did with it;
+/// every release is recorded, a reply with no stream left to write as a failed one.
 /// The server, its wire format and the reply bytes are the production ones; only the moment of the
 /// write moves. Unarmed, it is inert.
 #[derive(Default)]
@@ -437,7 +438,8 @@ pub struct LateReply {
     /// The caller's `STOP_SENDING` for the call's reply stream, as the server observed it
     /// (`Ok(Some(code))`), or why it observed none.
     pub stopped: Result<Option<u64>, String>,
-    /// The late reply's write: `Err` when the caller's side had already abandoned the stream.
+    /// The late reply's write: `Err` when the caller's side had already abandoned the stream, or
+    /// when the reply's direction had ended before the release (named: a write on it that failed).
     pub written: Result<(), String>,
 }
 
@@ -472,13 +474,24 @@ impl ReplyWithhold {
         self.release.notified().await;
     }
 
-    async fn land(&self, send: &mut SendStream, bytes: &[u8]) {
+    async fn land(send: &mut SendStream, bytes: &[u8]) -> LateReply {
         // The caller's abandonment of the reply stream is waited for, not slept for: it is the
         // fact the release is ordered after.
         let stopped = send.stopped().await.map(|c| c.map(|v| v.into_inner())).map_err(|e| e.to_string());
         let written = send.write_all(bytes).await.map_err(|e| e.to_string());
-        *self.late.lock().unwrap() = Some(LateReply { stopped, written });
+        LateReply { stopped, written }
+    }
+
+    fn record(&self, late: LateReply) {
+        *self.late.lock().unwrap() = Some(late);
         self.landed.notify_one();
+    }
+}
+
+impl LateReply {
+    /// A released reply that had no stream to be written on: `why` names what ended it.
+    fn unwritten(why: String) -> Self {
+        Self { stopped: Err(why.clone()), written: Err(why) }
     }
 }
 
@@ -957,10 +970,28 @@ impl NodeRpcServer {
                             // request stays unaccepted and a repeat of it pending.
                             w.wait_release().await;
                             gate.implicit();
-                            if let (Some(frame), Some(mut send)) = (d.owe_frame(&id, 0, reply, true), out.take().await) {
-                                w.land(&mut send, &frame).await;
-                                let _ = send.finish();
-                            }
+                            // Every release is recorded: a reply whose direction ended before it (a
+                            // read-only request's ack write that lost to a cut) is a failed late
+                            // reply naming that end, and the frame stays owed.
+                            let late = match d.owe_frame(&id, 0, reply, true) {
+                                None => LateReply::unwritten("no reply is owed: the caller already finished the invocation".into()),
+                                Some(frame) => match out.take().await {
+                                    Ok(mut send) => {
+                                        let late = ReplyWithhold::land(&mut send, &frame).await;
+                                        let _ = send.finish();
+                                        late
+                                    }
+                                    Err(why) => LateReply::unwritten(format!("the reply's direction ended before the release: {why}")),
+                                },
+                            };
+                            let written = match &late.written {
+                                Ok(()) => "written".to_string(),
+                                Err(why) => why.clone(),
+                            };
+                            let span = tracing::info_span!("rdm.node_rpc.delivery.update.via-withheld-reply-released", delivery_id = %id, peer = %peer, written);
+                            crate::delivery::parent_on(&span, parent.as_ref());
+                            span.in_scope(|| tracing::info!("the test seam released the withheld reply"));
+                            w.record(late);
                             let ended = acks.await.unwrap_or_else(|e| format!("{e}"));
                             if !d.response_settled(&id) {
                                 d.push(&id, None, &format!("a withheld reply; the request direction {ended}"));

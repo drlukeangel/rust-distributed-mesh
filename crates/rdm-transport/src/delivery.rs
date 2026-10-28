@@ -102,6 +102,9 @@ pub struct DeliverySeams {
     drop_next_request_ack: AtomicBool,
     drop_next_response_ack: AtomicBool,
     cut_after_next_request: AtomicBool,
+    hold_next_request_ack: AtomicBool,
+    request_ack_released: tokio::sync::Notify,
+    request_ack_written: tokio::sync::Notify,
 }
 
 impl DeliverySeams {
@@ -120,6 +123,19 @@ impl DeliverySeams {
     /// read and before it is dispatched or acknowledged.
     pub fn cut_connection_after_next_request(&self) {
         self.cut_after_next_request.store(true, Ordering::SeqCst);
+    }
+
+    /// The responder holds the `Ack` of the next request it accepts until
+    /// [`release_request_ack`](Self::release_request_ack): the ack's write moves after whatever the
+    /// cell does in between (a connection cut).
+    pub fn hold_next_request_ack(&self) {
+        self.hold_next_request_ack.store(true, Ordering::SeqCst);
+    }
+
+    /// Let the held request `Ack` be written; resolves once its write has ended, written or failed.
+    pub async fn release_request_ack(&self) {
+        self.request_ack_released.notify_one();
+        self.request_ack_written.notified().await;
     }
 
     fn take(flag: &AtomicBool) -> bool {
@@ -627,7 +643,19 @@ impl Delivery {
             }
             return false;
         }
-        let ok = out.write(&encode_ack_frame(&h.ack())).await;
+        let held = kind == AckOf::Request && DeliverySeams::take(&self.inner.seams.hold_next_request_ack);
+        if held {
+            tracing::info_span!("rdm.node_rpc.delivery.update.via-ack-held-by-seam", delivery_id = %h.delivery_id(), of = kind.name())
+                .in_scope(|| tracing::info!("the test seam holds this ack until the cell releases it"));
+            self.inner.seams.request_ack_released.notified().await;
+        }
+        let written = out.send(&encode_ack_frame(&h.ack())).await;
+        if held {
+            tracing::info_span!("rdm.node_rpc.delivery.update.via-held-ack-released", delivery_id = %h.delivery_id(), of = kind.name(), written = ?written)
+                .in_scope(|| tracing::info!("the test seam released the held ack: its write ended"));
+            self.inner.seams.request_ack_written.notify_one();
+        }
+        let ok = written == Written::Ok;
         if ok {
             self.inner.stats.acks_sent.fetch_add(1, Ordering::SeqCst);
         }
@@ -1137,17 +1165,28 @@ impl Acceptance {
 }
 
 /// One direction of a stream that frames are written to, shared by the writers of one invocation.
+/// Once the direction ends (a failed write, its finish, its reset, its take) it keeps why, so a
+/// writer that comes after is told what ended it.
 #[derive(Clone)]
-pub(crate) struct FrameOut(Arc<tokio::sync::Mutex<Option<SendStream>>>);
+pub(crate) struct FrameOut(Arc<tokio::sync::Mutex<Result<SendStream, String>>>);
 
 impl FrameOut {
     pub(crate) fn new(send: SendStream) -> Self {
-        Self(Arc::new(tokio::sync::Mutex::new(Some(send))))
+        Self(Arc::new(tokio::sync::Mutex::new(Ok(send))))
     }
 
     /// Whether `other` is this direction (a clone of it).
     pub(crate) fn same(&self, other: &FrameOut) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// End the direction for `why`, handing back the stream if it was still open; an ended
+    /// direction keeps the reason it first ended for.
+    fn end(dir: &mut Result<SendStream, String>, why: impl FnOnce() -> String) -> Option<SendStream> {
+        if dir.is_err() {
+            return None;
+        }
+        std::mem::replace(dir, Err(why())).ok()
     }
 
     /// Write `bytes`; `false` when the direction is gone.
@@ -1158,36 +1197,44 @@ impl FrameOut {
     /// Write `bytes`, naming how a failure ended the direction.
     pub(crate) async fn send(&self, bytes: &[u8]) -> Written {
         let mut g = self.0.lock().await;
-        let Some(send) = g.as_mut() else { return Written::Gone("the direction is closed".into()) };
+        let send = match g.as_mut() {
+            Ok(send) => send,
+            Err(why) => return Written::Gone(format!("the direction is closed: {why}")),
+        };
         match send.write_all(bytes).await {
             Ok(()) => Written::Ok,
             Err(e) => {
-                *g = None;
-                match e {
+                let written = match e {
                     iroh::endpoint::WriteError::Stopped(code) => Written::Stopped(code.into_inner()),
                     other => Written::Gone(other.to_string()),
-                }
+                };
+                *g = Err(format!("a write on it failed: {written:?}"));
+                written
             }
         }
     }
 
     /// Finish the direction (FIN): this stream carries nothing more.
     pub(crate) async fn finish(&self) {
-        if let Some(mut send) = self.0.lock().await.take() {
+        if let Some(mut send) = Self::end(&mut *self.0.lock().await, || "it was finished".into()) {
             let _ = send.finish();
         }
     }
 
     /// Reset the direction with `code`.
     pub(crate) async fn reset(&self, code: ResetCode) {
-        if let Some(mut send) = self.0.lock().await.take() {
+        if let Some(mut send) = Self::end(&mut *self.0.lock().await, || format!("it was reset {}", code.code())) {
             let _ = send.reset(VarInt::from_u32(code.code()));
         }
     }
 
-    /// Take the direction back (the caller of a withheld reply writes it itself).
-    pub(crate) async fn take(&self) -> Option<SendStream> {
-        self.0.lock().await.take()
+    /// Take the direction back (the caller of a withheld reply writes it itself), or why it ended.
+    pub(crate) async fn take(&self) -> Result<SendStream, String> {
+        let mut g = self.0.lock().await;
+        if let Err(why) = &*g {
+            return Err(why.clone());
+        }
+        Ok(Self::end(&mut g, || "it was taken by a withheld reply's writer".into()).expect("the direction is open"))
     }
 }
 

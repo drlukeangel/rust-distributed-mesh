@@ -19,7 +19,7 @@ use rdm_core::streaming::{FrameKind, StreamingProtocol};
 use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::stream::{StreamFailure, StreamItem};
 use rdm_transport::{
-    Budget, CallOptions, CarriedIdentity, Delivery, DeliveryStats, HandlerFault, NodeRpcClient, NodeRpcServer, NodeTarget, Pacing, PeerContext, ResolvedNode, ServedBirth,
+    Budget, CallOptions, CarriedIdentity, Delivery, DeliveryStats, HandlerFault, NodeRpcClient, NodeRpcServer, NodeTarget, Pacing, PeerContext, ReplyWithhold, ResolvedNode, ServedBirth,
     ServerBuilder, ServerStats, StaticResolver,
 };
 use serde::{Deserialize, Serialize};
@@ -763,6 +763,91 @@ fn a_response_is_delivered_on_a_new_stream_after_a_reconnect() {
         "the response resend, its cause named and acked, in the caller's trace: {resends:#?}"
     );
     println!("delivery flame (a response resent on a new stream after a reconnect): {}", flame(&trace));
+}
+
+/// Cell 11b (rdm#180). CONTRACT: a read-only request is accepted at its dispatch and its `Ack` is
+/// written by a task of its own; when that write loses to a cut of the request's connection, the
+/// reply direction is gone before a withheld reply is released. The release is recorded as a failed
+/// late reply naming the failed write, and spanned (`rdm.node_rpc.delivery.update.via-withheld-reply-released`,
+/// in the caller's trace); the reply stays owed and reaches the caller on a new stream, the handler
+/// dispatched once. Must NOT happen: a release that records nothing (the late reply never resolves),
+/// or a late reply written whole on the cut stream.
+#[test]
+fn a_withheld_reply_whose_direction_a_lost_ack_write_ended_is_a_failed_late_reply() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-delivery-withheld-reply-direction-gone").expect("the cell's evidence file can be created");
+    let trace = capture.run(4, async {
+        let root = tracing::info_span!("rdm.test.delivery.serve.via-withheld-reply-direction-gone");
+        let trace = trace_of(&root);
+        tracing::Instrument::instrument(
+            async {
+                let withhold = Arc::new(ReplyWithhold::default());
+                let s = served_with({
+                    let w = withhold.clone();
+                    move |b| b.withhold_replies(w)
+                })
+                .await;
+                let (client, _) = client_of(&[&s.node]).await;
+                withhold.arm();
+                s.delivery.seams().hold_next_request_ack();
+                let call = tokio::spawn(tracing::Instrument::instrument(
+                    {
+                        let target = s.target();
+                        async move { client.call::<Command>(&target, &CommandRequest::Read { tag: 180, hold: false }, &budget(Duration::from_secs(8))).await.0 }
+                    },
+                    tracing::Span::current(),
+                ));
+                tokio::time::timeout(Duration::from_secs(2), withhold.reached()).await.expect("the handler reaches its reply within 2 s");
+                assert!(s.server.close_connections_except(&[], "the cell cuts the connection") >= 1);
+                tokio::time::timeout(Duration::from_secs(2), s.delivery.seams().release_request_ack()).await.expect("the held ack's write ends within 2 s");
+                withhold.release();
+                let late = tokio::time::timeout(Duration::from_secs(2), withhold.late_reply()).await.expect("the released reply is recorded within 2 s, never skipped");
+                let written = late.written.clone().expect_err("the late reply is not written whole on the cut stream");
+                assert!(written.contains("a write on it failed"), "the late reply names the write that ended its direction: {late:?}");
+                let out = call.await.unwrap();
+                assert_eq!(ran(&out), Some((180, 0)), "{out:?}");
+                assert!(get(&s.delivery.stats().responses_resent) >= 1, "the reply went out on a new stream");
+                assert_eq!(get(&s.stats.dispatched), 1, "the handler was dispatched once");
+                eventually("the resent reply is acked", Duration::from_secs(2), || s.delivery.owed_frames() == 0).await;
+            },
+            root,
+        )
+        .await;
+        trace
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    assert!(
+        spans.iter().any(|s| s["name"] == "rdm.node_rpc.delivery.update.via-withheld-reply-released"
+            && s["trace_id"] == trace.as_str()
+            && s["attributes"]["written"].as_str().is_some_and(|w| w.contains("a write on it failed"))),
+        "the release, its failed write named, in the caller's trace"
+    );
+    println!("delivery flame (a withheld reply whose direction a lost ack write ended): {}", flame(&trace));
+}
+
+/// Cell 11c (rdm#180). CONTRACT: a read-only request (`Read`: accepted at its dispatch, its `Ack`
+/// written by a task of its own, racing the check's cut) passes the conformance harness's
+/// reply-lost-after-acceptance check: the released reply is recorded, written into the cut stream or
+/// named unwritten, and reaches the caller on a new stream, the handler dispatched once. Its
+/// evidence: the check's trace under `rdm.test.conformance.serve.via-check`. Must NOT happen: the
+/// check timing out on a release that recorded nothing.
+#[test]
+fn a_read_only_request_passes_the_reply_lost_after_acceptance_check() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-conformance-read-only-reply-lost").expect("the cell's evidence file can be created");
+    let fixture = rdm_test::conformance::Unary::<Command> {
+        serve: Arc::new(|b: ServerBuilder| {
+            b.ledger(ledger()).serve::<Command, _, _>(OpOwner::Product("test".into()), |_peer: PeerContext, req| async move {
+                Ok::<_, HandlerFault>(match req {
+                    CommandRequest::Read { tag, .. } => CommandReply::Ran { tag, runs: 0 },
+                    CommandRequest::Run { tag, .. } => CommandReply::Ran { tag, runs: 1 },
+                })
+            })
+        }),
+        answered: CommandRequest::Read { tag: 180, hold: false },
+        refusals: Vec::new(),
+    };
+    let report = capture.run(4, async { rdm_test::conformance::unary_checks(&fixture, &[rdm_test::conformance::Check::ReplyLostAfterAcceptance]).await });
+    println!("{}", report.summary());
+    assert!(report.failed().is_empty(), "{}", report.summary());
 }
 
 /// Cell 12. CONTRACT: a repeat after acceptance is answered `Ack` then EOF: delivery only. The
