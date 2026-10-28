@@ -77,6 +77,9 @@ pub struct RunningNode {
     /// This node's connections projection: the owed declaration's carriers ([`declaration_route`]).
     held: Arc<Mutex<rdm_core::connections::ConnectionsHeld>>,
     declare_loop: tokio::task::JoinHandle<()>,
+    /// The node's one connections reconciler (connections.md §9.4): it ends at the node's stop, as
+    /// `declare_loop` does, so a stopped node dials no recovery attempt (states.md "Stopped nodes").
+    reconciler: tokio::task::JoinHandle<()>,
     data_connections: rdm_transport::connections::ConnectionsRegistry,
     /// The listeners this birth bound from its launch (`RDM_LISTENERS`, Q151), held open for its life.
     listeners: Arc<Vec<(String, std::net::TcpListener)>>,
@@ -179,6 +182,7 @@ impl RunningNode {
         self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
+        self.reconciler.abort();
         for r in self.routers {
             let _ = r.shutdown().await;
         }
@@ -206,6 +210,7 @@ impl RunningNode {
         }
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
+        self.reconciler.abort();
         for r in self.routers {
             let _ = r.shutdown().await;
         }
@@ -237,6 +242,7 @@ impl RunningNode {
         self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
+        self.reconciler.abort();
         let me = self.own.held_name().to_string();
         let started = std::time::Instant::now();
         let span = tracing::info_span!("rdm.mesh.node.update.via-leave-shutdown", node = %me, routers = self.routers.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
@@ -553,7 +559,7 @@ async fn start_booted(
     // The node's one connections reconciler (connections.md §9.4, §10): an owed Proxy retirement
     // whose write was refused is attempted again while owed, and a recovery attempt an accept armed
     // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own
-    // observation. The task ends with the process.
+    // observation. The task ends at the node's stop, with `declare_loop`.
     let recovery_dial: crate::connection_reconnect::RecoveryDial = {
         let (data_plane, connections) = (data_plane.clone(), connections.clone());
         Arc::new(move |destination: rdm_core::connections::ConnectionEnd| {
@@ -570,7 +576,7 @@ async fn start_booted(
         })
     };
     let alpn_dial = crate::connection_reconnect::registry_recovery_dial(&data_connections, Some(recovery_dial));
-    let _reconciler = crate::connection_reconnect::spawn_alpn_reconciler(&connections, crate::connection_reconnect::RECONCILER_TICK, alpn_dial);
+    let reconciler = crate::connection_reconnect::spawn_alpn_reconciler(&connections, crate::connection_reconnect::RECONCILER_TICK, alpn_dial);
     // The status kick (node-identity-and-state.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
     // The name this birth holds, read per call by every door that names it: its launch's until it joins.
@@ -913,7 +919,7 @@ async fn start_booted(
                                     leave: None,
                                 }),
                             };
-                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, pre_node_ready_task: pre_node_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections, listeners: bound_listeners.clone(), node_rows: node_rows.clone() });
+                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, pre_node_ready_task: pre_node_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, reconciler, data_connections, listeners: bound_listeners.clone(), node_rows: node_rows.clone() });
                             Ok::<_, anyhow::Error>((parts, None))
                         })
                     },
