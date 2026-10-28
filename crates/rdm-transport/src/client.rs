@@ -385,6 +385,22 @@ impl NodeRpcClient {
         self.admission.lift();
     }
 
+    /// Testkit seam: block this client's direct dials to the process at `peer` (its Iroh key, the
+    /// pool's dial key) until [`Self::unblock_direct_dial`]. A call that would dial it ends as an
+    /// unreachable dial ends, `NotSent` `Connection`; a connection already pooled to it is closed.
+    /// A carried call through another peer, and every dial to any other peer, is untouched.
+    /// Returns how many pooled connections were closed.
+    #[cfg(feature = "testkit-gossip")]
+    pub fn block_direct_dial(&self, peer: iroh::PublicKey) -> usize {
+        self.pool.block_direct(peer)
+    }
+
+    /// Testkit seam: release [`Self::block_direct_dial`] for `peer`.
+    #[cfg(feature = "testkit-gossip")]
+    pub fn unblock_direct_dial(&self, peer: &iroh::PublicKey) {
+        self.pool.unblock_direct(peer);
+    }
+
     /// Hand this client its source-owned connections writer: every Direct fact the client
     /// observes about its own pooled connections is reported there.
     pub fn with_connection_observer(mut self, observer: Arc<dyn ConnectionObserver>) -> Self {

@@ -132,6 +132,9 @@ struct Pooled {
 struct Inner {
     conns: Mutex<HashMap<PoolKey, Pooled>>,
     dials: Mutex<HashMap<PoolKey, Dial>>,
+    /// Testkit seam: the peers no direct dial of this pool reaches ([`Pool::block_direct`]).
+    #[cfg(feature = "testkit-gossip")]
+    blocked_direct: Mutex<std::collections::HashSet<iroh::PublicKey>>,
 }
 
 /// The pool a [`crate::NodeRpcClient`] owns.
@@ -321,6 +324,35 @@ impl Pool {
             .collect()
     }
 
+    /// Testkit seam: block every direct dial of this pool to `peer`, whatever its scope or birth,
+    /// until [`Self::unblock_direct`]. A call that would dial it ends as an unreachable dial ends
+    /// (`NotSent` `Connection`); the connections already pooled to it are closed and its dials in
+    /// flight cancelled, so no later call rides one. Every other peer is untouched.
+    #[cfg(feature = "testkit-gossip")]
+    pub fn block_direct(&self, peer: iroh::PublicKey) -> usize {
+        self.inner.blocked_direct.lock().unwrap().insert(peer);
+        self.close_peer(&peer, b"direct dial blocked")
+    }
+
+    /// Testkit seam: release [`Self::block_direct`] for `peer`; the next call to it dials afresh.
+    #[cfg(feature = "testkit-gossip")]
+    pub fn unblock_direct(&self, peer: &iroh::PublicKey) {
+        self.inner.blocked_direct.lock().unwrap().remove(peer);
+    }
+
+    /// Is a direct dial to `peer` blocked ([`Self::block_direct`])? Never, outside the testkit.
+    fn direct_blocked(&self, peer: &iroh::PublicKey) -> bool {
+        #[cfg(feature = "testkit-gossip")]
+        {
+            self.inner.blocked_direct.lock().unwrap().contains(peer)
+        }
+        #[cfg(not(feature = "testkit-gossip"))]
+        {
+            let _ = peer;
+            false
+        }
+    }
+
     /// A live pooled connection for `key`.
     pub fn pooled(&self, key: &PoolKey) -> Option<Connection> {
         let mut conns = self.inner.conns.lock().unwrap();
@@ -337,6 +369,16 @@ impl Pool {
     /// The pooled connection for `key`, or the outcome of the one dial for
     /// it (started here or already in flight). `true` when reused.
     pub(crate) async fn get_or_dial(&self, key: &PoolKey, spec: DialSpec, deadline: Instant) -> Result<(Connection, bool), DialError> {
+        // Testkit seam ([`Self::block_direct`]): no call reaches a blocked peer directly, over a
+        // pooled connection or a dial; it ends as an unreachable dial ends.
+        if self.direct_blocked(&key.peer) {
+            tracing::info_span!(
+                "rdm.node_rpc.connection.reject.via-direct-dial-block",
+                peer = %key.peer.fmt_short(), incarnation_id = %key.birth(), addr = %spec.addr
+            )
+            .in_scope(|| tracing::info!("the direct dial to the peer is blocked: it ends as an unreachable dial ends"));
+            return Err(DialError::Failed(format!("the direct dial to {} at {} is blocked", key.peer.fmt_short(), spec.addr)));
+        }
         let existing = {
             let mut conns = self.inner.conns.lock().unwrap();
             match conns.get_mut(key) {

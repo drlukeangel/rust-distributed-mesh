@@ -124,6 +124,85 @@ async fn the_products_adapter_is_catalogued_and_unserved_on_the_node_rpc_alpn() 
     compute.running.stop().await;
 }
 
+/// The birth `p` runs, as a peer's resolver holds it.
+fn birth_of(p: &RoleProcess) -> ResolvedNode {
+    let addr = p.running.routers[0].endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    ResolvedNode { node_id: p.launch.node_id.clone(), name: p.launch.name.clone(), endpoint_id: p.key.public(), transport_addr: addr, incarnation: p.launch.incarnation.clone() }
+}
+
+// @feature: mesh-rpc
+/// CONTRACT (the testkit's Node RPC direct dial block, `rdm_test::connection_faults::block_direct_node_rpc`):
+/// gateway mesh1.gateway.1 holds a pooled connection to broker mesh2.broker.1 from a direct
+/// `broker_data` append. Blocked toward the broker, its pooled connection is closed (a hard-cut
+/// delete naming the broker's peer) and a direct read asked once ends `NotSent` `Connection`, never
+/// committed, exactly as an unreachable dial ends, refused before any dial by the block (its
+/// reject span). The same gateway's `call_routed` through mesh1.gateway.2, a carrier of its own
+/// mesh, reaches the broker, which executes the append exactly once (the next append under its key
+/// takes offset 1), and the gateway opens no direct connection to the broker meanwhile. Released,
+/// the gateway's direct call dials again and is served by the broker. Must NOT happen: a blocked
+/// direct call reaching the broker, the carrier's dial blocked, or a second execution of the
+/// carried append.
+#[test]
+fn a_blocked_direct_node_rpc_dial_ends_not_sent_and_a_carrier_of_the_sources_mesh_still_reaches_the_destination() {
+    use rdm_test::connection_faults::{block_direct_node_rpc, unblock_direct_node_rpc};
+    use rdm_test::families::{BrokerData, BrokerDataReply, BrokerDataRequest};
+    use rdm_transport::{RouteChoice, RouteLeg};
+    let cap = crate::common::capture("a_blocked_direct_node_rpc_dial_ends_not_sent_and_a_carrier_of_the_sources_mesh_still_reaches_the_destination");
+    let seen = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let broker = born("mesh2.broker.1").await;
+        let source = born("mesh1.gateway.1").await;
+        let carrier = born("mesh1.gateway.2").await;
+        // Each view holds the births it calls, as the topology view would feed them.
+        let (b, c) = (birth_of(&broker), birth_of(&carrier));
+        source.running.node_rpc.resolver.apply(b.clone(), None);
+        source.running.node_rpc.resolver.apply(c.clone(), None);
+        carrier.running.node_rpc.resolver.apply(b.clone(), None);
+        let client = source.running.node_rpc.client.clone();
+        let target = NodeTarget::ExactNode(b.node_id.clone());
+        let once = CallOptions { once: true, ..Default::default() };
+        let served_by = b.node_id.to_string();
+        let append = |key: &str| BrokerDataRequest::Append { key: key.into(), value: b"v".to_vec() };
+        let to_broker = |c: &NodeRpcClient| c.pooled().iter().filter(|k| k.peer == b.endpoint_id).count();
+
+        // Direct, before the block: served, one pooled connection to the broker.
+        let (out, _) = client.call::<BrokerData>(&target, &append("d0"), &once).await;
+        assert_eq!(out.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Appended { key: "d0".into(), offset: 0, served_by: served_by.clone() }), "{out:?}");
+        assert_eq!(to_broker(&client), 1, "one pooled connection to the broker");
+
+        // Blocked: the pooled connection is closed and a direct call ends NotSent Connection.
+        let blocked = block_direct_node_rpc(&source.running, &broker.launch.name);
+        assert_eq!(blocked, b, "the block keys the birth the source's view names at the broker's path");
+        assert_eq!(to_broker(&client), 0, "the pooled connection to the blocked broker is closed");
+        let (out, ev) = client.call::<BrokerData>(&target, &BrokerDataRequest::Read { key: "d0".into() }, &once).await;
+        assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Connection(_))), "a blocked direct dial ends as an unreachable one: {out:?}");
+        assert!(!ev.is_some_and(|e| e.committed), "nothing crossed the commit cut");
+        let peer = b.endpoint_id.fmt_short().to_string();
+        let named = |name: &str| seen.0.lock().unwrap().values().filter(|(n, _, f)| n == name && f.get("peer") == Some(&peer)).count();
+        assert_eq!(named("rdm.node_rpc.connection.delete.via-hard-cut"), 1, "the block closed the one pooled connection to the broker");
+        assert_eq!(named("rdm.node_rpc.connection.reject.via-direct-dial-block"), 1, "the blocked direct call was refused by the block, before any dial");
+
+        // Carried through a carrier of the source's own mesh: the broker executes it, once.
+        let via = RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
+        let (out, _, leg) = client.call_routed::<BrokerData>(&b.node_id, &via, &append("r1"), &once).await;
+        assert_eq!(leg, RouteLeg::ViaPeer { carrier: c.name.to_string() });
+        assert_eq!(out.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Appended { key: "r1".into(), offset: 0, served_by: served_by.clone() }), "{out:?}");
+        assert_eq!(to_broker(&client), 0, "the carried call opened no direct connection from the source to the broker");
+        let (out, _) = carrier.running.node_rpc.client.call::<BrokerData>(&target, &append("r1"), &once).await;
+        assert_eq!(out.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Appended { key: "r1".into(), offset: 1, served_by: served_by.clone() }), "the carried append executed exactly once: {out:?}");
+
+        // Released: the direct call dials and is served.
+        unblock_direct_node_rpc(&source.running, &broker.launch.name);
+        let (out, _) = client.call::<BrokerData>(&target, &BrokerDataRequest::Read { key: "r1".into() }, &once).await;
+        assert_eq!(out.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Value { key: "r1".into(), value: Some(b"v".to_vec()), served_by }), "{out:?}");
+        assert_eq!(to_broker(&client), 1, "the direct call dialled the broker again");
+
+        source.running.stop().await;
+        carrier.running.stop().await;
+        broker.running.stop().await;
+    });
+}
+
 mod tempdir {
     use std::path::{Path, PathBuf};
     pub struct Dir(PathBuf);
