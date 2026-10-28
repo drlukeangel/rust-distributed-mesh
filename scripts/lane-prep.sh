@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # lane-prep.sh <lane> <branch> — claim a lane for one unit on a fresh branch from origin/main.
-# Refuses a lane that is busy (exit 3), dirty (exit 6), whose branch name is taken (exit 4), or that
-# does not build (exit 7): the lane is built before it is handed out, so no seat starts cold. The
-# lane is reused, never re-created, so its target stays warm. Clears the previous unit's plan, seat
+# Refuses a lane that is busy (exit 3), dirty (exit 6) or whose branch name is taken (exit 4). A prep is the
+# branch alone, seconds: the seat's first cells run builds the lane incrementally (Luke, 2026-10-28: "a
+# fresh branch takes 2 s"). The lane is reused, never re-created, so its target stays warm. Clears the previous unit's plan, seat
 # and issue; keeps its inbox history under inbox/done-<branch>/.
 set -euo pipefail
 . "$(dirname "$0")/lane-lib.sh"
@@ -15,7 +15,6 @@ git -C "$d" fetch -q origin
 git -C "$d" show-ref -q --verify "refs/heads/$B" && { echo "REFUSED: branch $B exists"; exit 4; }
 git -C "$d" switch -q -c "$B" origin/main
 lane_target_at_path "$L" || exit 7
-lane_warm "$L" || exit 7
 mkdir -p "$s/inbox"
 prev=$(cat "$s/branch" 2>/dev/null || true)
 if [ -n "$prev" ] && ls "$s/inbox"/[0-9]*.md >/dev/null 2>&1; then mkdir -p "$s/inbox/done-$prev"; mv "$s/inbox"/[0-9]*.md "$s/inbox/done-$prev/"; fi
