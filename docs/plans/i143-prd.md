@@ -3322,3 +3322,7 @@ incomplete, since build.create refuses BuildInProgress for as long as a Build si
 arch-1, decided by node-rpc-envelope.md:267, :1342, :1351 and :338 (INDEX); no page changes; built in rdm#152 (lane 3),
 which also brings Q250's section stall (build_drive.rs:1944) to the same terminal; the drive's nothing-moved stall
 (build_drive.rs:1512, a Blocked frame not from Status Blocked) is recorded in INDEX as owed.
+Q253 (after a hand-back with nothing moved, when the next attempt is claimed) ruled A by the lead with arch-1 (INDEX):
+the wait as built is on a named world (the operation left, its receipts, its mesh's members, fabric ready), re-read every
+reconcile pass, reconstructed by a successor's one claim; builds.get shows Pending and the HandedOff receipt; no new field or
+frame; two cells owed to the lead (an unrelated mesh's change claims nothing; a successor claims once and waits).
