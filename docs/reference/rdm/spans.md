@@ -359,7 +359,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.update.via-stalled` | `crates/rdm-admin/src/build_drive.rs` | 1026 |
 | `rdm.node_admin.build.update.via-steps` | `crates/rdm-admin/src/build_op.rs` | 140 |
 | `rdm.node_admin.build.update.via-storage-copy` | `crates/rdm-node/src/storage_copy.rs` | 230 |
-| `rdm.node_admin.build.update.via-storage-open` | `crates/rdm-admin/src/storage_backend.rs` | 443 |
+| `rdm.node_admin.build.update.via-storage-open` | `crates/rdm-admin/src/storage_backend.rs` | 446 |
 | `rdm.node_admin.build.update.via-storage-switch` | `crates/rdm-admin/src/storage_change.rs` | 230 |
 | `rdm.node_admin.build.update.via-terminate-returned` | `crates/rdm-admin/src/admin/recovery.rs` | 730 |
 | `rdm.node_admin.build.update.via-terminate-returned` | `crates/rdm-admin/src/build_op.rs` | 149 |
