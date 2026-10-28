@@ -290,17 +290,22 @@ pub(crate) fn recovery_pending(writer: &ConnectionsWriter) -> Vec<RecoveryAttemp
         .collect()
 }
 
-/// Arm the one pending recovery attempt per `(destination, destination_incarnation, alpn)` from each
-/// own latest `Direct Failed` row in `held` (`connections.md` §9.4, §9.5, Q7). A series for a
-/// superseded birth at the same path and ALPN is replaced by the current birth's series; a series
-/// whose latest Direct row is `Connected` is satisfied.
-pub(crate) fn sync_recovery(writer: &ConnectionsWriter) {
+/// Arm the one pending recovery attempt per `(destination, destination_incarnation, alpn)` from this
+/// node's own latest `Direct Failed` row toward `destination` on `alpn` in `held`, the pair of the
+/// row just applied (`connections.md` §9.4, §9.5, Q7). A series for a superseded birth at the same
+/// path and ALPN is replaced by the current birth's series; a series whose latest Direct row is
+/// `Connected` is satisfied. Another pair's attempt is never touched: a row landing for one
+/// destination never arms again an attempt another destination's dial spent on its Reply while
+/// that destination's own Direct Connected row is still owed (§9.4: a reconnect on one pair never
+/// touches another's; Q169: the dial's own result decides, in memory).
+pub(crate) fn sync_recovery(writer: &ConnectionsWriter, destination: &PathName, alpn: &[u8]) {
     let (directs, own_source): (Vec<NodeConnection>, Option<PathName>) = {
         let held_arc = writer.held();
         let held = held_arc.lock().unwrap();
         (
             held.own_latest_directs()
                 .into_iter()
+                .filter(|r| &r.destination.name == destination && r.alpn.as_slice() == alpn)
                 .filter(|r| held.end_superseded(&r.destination) != Some(true))
                 .cloned()
                 .collect(),

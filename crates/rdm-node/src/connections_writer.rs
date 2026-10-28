@@ -278,8 +278,9 @@ impl ConnectionsWriter {
             let mut last = self.inner.last_stamp.lock().unwrap();
             *last = (*last).max(row.logged_at_ms);
         }
+        let pair = (row.destination.name.clone(), row.alpn.clone());
         let _ = self.inner.held.lock().unwrap().apply(row);
-        self.sync_recovery();
+        self.sync_recovery(&pair.0, &pair.1);
         Ok(())
     }
 
@@ -540,10 +541,11 @@ impl ConnectionsWriter {
         crate::connection_reconnect::recovery_pending(self)
     }
 
-    /// Arm the one pending recovery attempt per `(destination, destination_incarnation, alpn)` from each
-    /// own latest Direct Failed row in `held` (connections.md §9.4, §9.5, Q7).
-    fn sync_recovery(&self) {
-        crate::connection_reconnect::sync_recovery(self);
+    /// Arm (or spend) the one pending recovery attempt of the pair `(destination, alpn)` of a row
+    /// just applied, from this node's own latest Direct row of that pair in `held` (connections.md
+    /// §9.4, §9.5, Q7): another pair's attempt is never touched.
+    fn sync_recovery(&self, destination: &PathName, alpn: &[u8]) {
+        crate::connection_reconnect::sync_recovery(self, destination, alpn);
     }
 
     /// An accept on `alpn` from `peer` (connections.md §9.4, §10, §13 G): writes nothing (R-CN1),
@@ -628,7 +630,7 @@ impl ConnectionsWriter {
                 Some((attempts, gate)) => {
                     span.record("attempts", attempts);
                     let _ = w.inner.held.lock().unwrap().apply(row.clone());
-                    w.sync_recovery();
+                    w.sync_recovery(&row.destination.name, &row.alpn);
                     span.record("outcome", "landed");
                     drop(gate);
                     true
