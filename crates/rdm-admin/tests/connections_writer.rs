@@ -647,23 +647,92 @@ async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The recovery-dial spans open at each moment.
-#[derive(Clone, Default)]
-struct OpenDials {
+/// The spans named `name` open at each moment. A close takes `close_takes` before it is counted:
+/// the thread that ends the span is held there, as a thread descheduled while it ends one would be.
+#[derive(Clone)]
+struct OpenSpans {
+    name: &'static str,
+    close_takes: std::time::Duration,
     open: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> tracing_subscriber::Layer<S> for OpenDials {
+impl OpenSpans {
+    fn named(name: &'static str, close_takes: std::time::Duration) -> Self {
+        Self { name, close_takes, open: Arc::default() }
+    }
+
+    fn open(&self) -> usize {
+        self.open.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> tracing_subscriber::Layer<S> for OpenSpans {
     fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, _: &tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
-        if attrs.metadata().name() == "rdm.node_admin.connection.create.via-recovery-dial" {
+        if attrs.metadata().name() == self.name {
             self.open.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
     fn on_close(&self, id: tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
-        if ctx.span(&id).is_some_and(|s| s.name() == "rdm.node_admin.connection.create.via-recovery-dial") {
+        if ctx.span(&id).is_some_and(|s| s.name() == self.name) {
+            std::thread::sleep(self.close_takes);
             self.open.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
+}
+
+/// CONTRACT (Q169; `observations_landed`: "the moment after which the index and the evidence hold
+/// every fact this writer was handed"): a write owed inside a call's span (a recovery dial's) is a
+/// child of that span, and once every owed write has landed the writer holds the span no longer:
+/// the call's span has ended by the moment `observations_landed` resolves, however long the thread
+/// that ends it takes to end it. What must NOT happen: `observations_landed` resolving while the
+/// writer still holds the span of the call that owed the write, so its evidence is not complete.
+#[test]
+fn the_span_that_owed_a_write_has_ended_once_the_write_has_landed() {
+    let owing = OpenSpans::named("rdm.test.connections_writer.owing", std::time::Duration::from_millis(100));
+    spans_of("the_span_that_owed_a_write_has_ended_once_the_write_has_landed", Some(owing.clone()), || async {
+        let dir = data_dir("owing-span");
+        let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
+        // The call owes its fact inside its own span and lets the span go: the owed write holds it.
+        tracing::info_span!("rdm.test.connections_writer.owing").in_scope(|| writer.direct_connected(&resolved(&dest)));
+        writer.observations_landed().await;
+        let open = owing.open();
+        tracing::info_span!("rdm.test.connections_writer.open-owing", open).in_scope(|| tracing::info!("the owing spans open once every owed write has landed"));
+        assert_eq!(open, 0, "the span that owed the write ended before the write was counted landed");
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+/// CONTRACT (the writer's stamp: every row it writes carries a later one than the rows it wrote
+/// before; connections.md §9.1: a newer Direct Connected supersedes a series): a fact this writer
+/// observes after a row it recorded for the same pair is the pair's latest, whatever the clock reads
+/// when the observation is stamped: a Direct Connected observed after a recorded Direct Failed
+/// stamped at the clock's own millisecond, or later, is held, and the series it satisfied ends.
+/// What must NOT happen: the Connected row landing in the store while the held projection keeps the
+/// Failed row as the pair's latest (one millisecond, and a Failed row wins a tie), so the series
+/// stands and the reconciler dials a destination already connected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_observation_after_a_recorded_row_of_its_pair_is_held_as_the_latest_whatever_the_clock_reads() {
+    let dir = data_dir("recorded-then-observed");
+    let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+    let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
+    // Recorded at a millisecond the clock has not passed when the observation is stamped.
+    let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, now_ms() + 1_000);
+    failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
+    writer.record(failed.clone()).await.unwrap();
+    assert_eq!(writer.recovery_pending().len(), 1, "the recorded Failed row armed its series");
+    writer.direct_connected(&resolved(&dest));
+    writer.observations_landed().await;
+    let connected = storage.history().await.unwrap().into_iter().last().unwrap();
+    assert_eq!((connected.kind, connected.state), (ConnectionKind::Direct, ConnectionState::Connected), "the observation landed: {connected:?}");
+    assert!(connected.logged_at_ms > failed.logged_at_ms, "the observation is stamped after the row recorded before it: {} after {}", connected.logged_at_ms, failed.logged_at_ms);
+    let latest: Vec<(ConnectionState, rdm_core::ConnectionId)> = held.lock().unwrap().own_latest_directs().into_iter().map(|d| (d.state, d.id.clone())).collect();
+    assert_eq!(latest, vec![(ConnectionState::Connected, connected.id.clone())], "the landed observation is the pair's latest held");
+    assert!(writer.recovery_pending().is_empty(), "the series the Direct Connected satisfied ended");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// CONTRACT (connections.md §9.3, §9.4, §9.5, Q7 ruled Luke 2026-10-13): one reconciler, two
@@ -678,7 +747,7 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
 /// the route back to Direct, and spends the pending item.
 #[test]
 fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts() {
-    let open_dials = OpenDials::default();
+    let open_dials = OpenSpans::named("rdm.node_admin.connection.create.via-recovery-dial", std::time::Duration::ZERO);
     let spans = spans_of("a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts", Some(open_dials.clone()), || async {
         let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
         let jitter1 = rdm_core::reconnect::deterministic_jitter(&me.name, &dest.name, 1);
@@ -735,7 +804,7 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
         // The dial decides from its own result and never waits for its row (Q169): its span,
         // the parent of the row's, ends once that row has landed.
         writer.observations_landed().await;
-        let open = open_dials.open.load(std::sync::atomic::Ordering::SeqCst);
+        let open = open_dials.open();
         tracing::info_span!("rdm.test.connections_writer.open-dials", open).in_scope(|| tracing::info!("the recovery-dial spans open once every owed write has landed"));
         assert_eq!(open, 0, "every recovery-dial span ended once its fact landed");
         let _ = std::fs::remove_dir_all(&dir);
@@ -763,7 +832,7 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
 /// the runtime and flushes the capture before it leaves the cell, so a red's spans are kept and
 /// readable. Every finished span, in the order it ended, as written (name, ids, start and end,
 /// attributes as text).
-fn spans_of<F: std::future::Future<Output = ()>>(cell: &str, extra: Option<OpenDials>, body: impl FnOnce() -> F) -> Vec<serde_json::Value> {
+fn spans_of<F: std::future::Future<Output = ()>>(cell: &str, extra: Option<OpenSpans>, body: impl FnOnce() -> F) -> Vec<serde_json::Value> {
     use tracing_subscriber::layer::SubscriberExt;
     let dir = std::env::temp_dir().join("i143-testkit").join(cell);
     let exporter = rdm_transport::jsonl_span_exporter(&dir, "connections-writer").unwrap_or_else(|e| panic!("the span artifact dir {} is unusable: {e}", dir.display()));
