@@ -428,6 +428,18 @@ impl MeshStorage for FileMeshStorage {
 
 pub use rdm_node::nodes_storage::{AppTypes, Allocation, BirthFacts, BirthRef, CertDates, DataDirLost, DataDirUnreadable, NodeOperation, NodeRow, RuntimeRow, SigningCertDates, BIRTHS_KEPT};
 
+/// The address of `birth` and the primaries recorded for it leave its facts: a birth whose exit is
+/// proven is no node to reach and holds no primary (mesh-delete.md step 7, "Departed births resolve
+/// Gone"). The mesh-primary's write, never a node's: a node records no primary (rdm-node's
+/// `node_base_holds_no_comparator`).
+pub fn clear_address_and_primaries(birth: &mut BirthFacts) {
+    birth.endpoint_id = None;
+    birth.transport_addr = None;
+    birth.listeners.clear();
+    birth.is_primary = None;
+    birth.is_fabric_primary = None;
+}
+
 // ---------------------------------------------------------------- nodes.storage
 
 

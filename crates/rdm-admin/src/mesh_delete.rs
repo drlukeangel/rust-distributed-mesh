@@ -909,7 +909,7 @@ async fn drop_mesh_left_contacts(rows: Option<&crate::node_rows::NodeRows>, exec
             .written()
             .update(&**rows.storage(), &node_id, None, |r| {
                 if let Some(b) = r.births.iter_mut().find(|b| b.incarnation_id.as_str() == t.incarnation_id) {
-                    b.clear_address_and_primaries();
+                    crate::storage::clear_address_and_primaries(b);
                 }
             })
             .await;

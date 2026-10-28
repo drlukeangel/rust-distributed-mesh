@@ -135,17 +135,6 @@ impl BirthFacts {
         Self { incarnation_id, name, declared: BTreeSet::new(), operations: Vec::new(), silence: None, data_dir_lost: None, data_dir_unreadable: None, cert: None, signing_cert: None, endpoint_id: None, transport_addr: None, listeners: Vec::new(), is_primary: None, is_fabric_primary: None }
     }
 
-    /// The birth's address and the primaries recorded for it leave its facts: a birth whose exit is
-    /// proven is no node to reach and holds no primary (mesh-delete.md step 7, "Departed births resolve
-    /// Gone").
-    pub fn clear_address_and_primaries(&mut self) {
-        self.endpoint_id = None;
-        self.transport_addr = None;
-        self.listeners.clear();
-        self.is_primary = None;
-        self.is_fabric_primary = None;
-    }
-
     /// The greatest state declared in the birth's current cycle.
     pub fn declared_state(&self) -> Option<NodeState> {
         self.declared.iter().next_back().copied()
