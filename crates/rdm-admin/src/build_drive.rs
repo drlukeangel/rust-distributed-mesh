@@ -365,6 +365,13 @@ pub struct Drive {
     /// Each mesh's last section failure (Q250), as `operation|reason`: the same failure again stalls
     /// the drive rather than sending the same section once more.
     section_failed: Mutex<HashMap<String, String>>,
+    /// The create of the fabric lane an attempt's stream reported failed (Q245,
+    /// [`crate::executor::CREATE_FAILED`]), as `operation|reason`, with that attempt.
+    create_failing: Mutex<Option<(u32, String)>>,
+    /// The fabric lane's last handed-back attempt's failed create (Q250), as `operation|reason`: the same
+    /// failure on the next attempt stalls the drive, as a section's does; a different failure, or an
+    /// attempt without one, replaces it.
+    create_failed: Mutex<Option<String>>,
     /// The operations a section this drive sent completed, its run reported by its verdict (Q250), with the
     /// fabric run they were sent in (`BuildProjection::opened`): done in that run only, as a reported
     /// fabric-lane run's are ([`left`]); a later run (a recovery of the same Build) plans from the world.
@@ -388,7 +395,26 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), create_failing: Mutex::new(None), create_failed: Mutex::new(None), section_done: Mutex::new(HashSet::new()) })
+    }
+
+    /// The executor's stream reported that a create of the fabric lane failed in `attempt` (Q245).
+    fn note_create_failed(&self, attempt: u32, operation: &str, reason: &str) {
+        let mut held = self.create_failing.lock().unwrap();
+        let failure = (attempt, format!("{operation}|{reason}"));
+        // The attempt's first failed create is the one the executor handed back with; a repeat frame is the same one.
+        if held.as_ref().is_none_or(|(a, _)| *a != attempt) {
+            *held = Some(failure);
+        }
+    }
+
+    /// Whether `attempt`, handed back, failed a create the same way the attempt before it did (Q250:
+    /// the same failure twice running stalls the drive naming it): `Some(operation|reason)` then.
+    /// An attempt with no failed create, or a different one, clears what was held.
+    fn create_failed_again(&self, attempt: u32) -> Option<String> {
+        let now = self.create_failing.lock().unwrap().as_ref().filter(|(a, _)| *a == attempt).map(|(_, f)| f.clone());
+        let before = std::mem::replace(&mut *self.create_failed.lock().unwrap(), now.clone());
+        now.filter(|n| before.as_deref() == Some(n.as_str()))
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -1458,6 +1484,14 @@ impl DriveEnv {
                     let Some(next) = parse_path(&to) else {
                         return self.stalled(&me, drive, format!("attempt {attempt} of Build {id} handed off to {to:?}, which is not a path.name"));
                     };
+                    // A create of the fabric lane that failed hands its attempt back (Q245); the same
+                    // failure twice running stalls the drive naming it, as a section's does (Q250).
+                    if let Some(failure) = drive.create_failed_again(attempt) {
+                        let (operation, reason) = failure.split_once('|').unwrap_or((failure.as_str(), ""));
+                        let why = format!("{me}: attempt {attempt} of Build {id} ended incomplete: {operation} failed the same way twice running ({reason}); the Build stays in progress");
+                        self.blocked(drive, attempt, operation, "incomplete", &why);
+                        return self.stalled(&me, drive, why);
+                    }
                     // An attempt handed back to this admin that moved nothing (it ended incomplete: a
                     // participant lost, a proof not in) would be claimed again and end the same way: the
                     // Build stays in progress, and the next attempt waits for what it decides on to move.
@@ -2213,8 +2247,11 @@ impl DriveEnv {
                         }
                         self.step(drive, BuildReply::Step { build_id: id.to_string(), attempt: a, operation: operation.clone(), step: step.clone(), receipt: None }).await
                     }
-                    BuildReply::Blocked { .. } => {
+                    BuildReply::Blocked { attempt: a, ref operation, ref step, ref reason, .. } => {
                         stream.accepted().await;
+                        if step == crate::executor::CREATE_FAILED {
+                            drive.note_create_failed(a, operation, reason);
+                        }
                         drive.push(f);
                     }
                     // Past the target this admin decides nothing of the attempt: the executor, now the

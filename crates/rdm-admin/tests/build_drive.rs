@@ -3054,6 +3054,10 @@ async fn at_once_failing(fails: Option<&'static str>, times: usize, admins: u32,
         at
     })
     .await;
+    // mesh1's primary `mesh1.admin.2` executes the creates on its own log, as the product's door does
+    // (`FramedBuilds`): its receipts and its Blocked notes reach the fabric-primary as frames of the
+    // call's stream.
+    r.dispatch.own_log("mesh1.admin.2");
     let at = runner.lock().unwrap().clone().unwrap();
     (r, at)
 }
@@ -3071,16 +3075,20 @@ async fn a_meshs_member_creates_run_at_once() {
     assert_eq!(at.most.load(Ordering::SeqCst), 4, "the four creates ran at once");
 }
 
-/// CONTRACT (Q245): a member create that fails stops none of the others: each of the four runs to its
-/// own end, and the attempt ends once every one has.
+/// CONTRACT (Q245, Q250): a member create that fails stops none of the others: each of the four runs to
+/// its own end, and the attempt ends once every one has. Failing every time, it is planned again by the
+/// next attempt, and failing the same way twice running the drive stalls naming it, the others done.
 #[tokio::test]
 async fn a_failed_member_create_stops_none_of_the_others() {
     let (r, at) = at_once(Some("mesh1.rpc.3")).await;
     let drive = Drive::detached(r.build.clone());
-    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    match tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s") {
+        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh1.rpc.3"), "the stall names the create: {why}"),
+        other => panic!("the same create failure twice running stalls the drive: {other:?}"),
+    }
     let mut ran = r.ran.0.lock().unwrap().clone();
     ran.sort();
-    assert_eq!(ran, ["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].map(String::from).to_vec(), "every create ran to its end");
+    assert_eq!(ran, ["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].map(String::from).to_vec(), "every create ran to its end, the failed one once more");
     assert_eq!(at.most.load(Ordering::SeqCst), 4);
 }
 
@@ -3157,10 +3165,17 @@ async fn a_section_that_fails_stops_no_other_and_the_same_failure_twice_stalls_t
     assert_eq!(sent.iter().filter(|(l, _)| l == "mesh3").map(|(_, a)| *a).collect::<Vec<_>>(), vec![1, 2], "mesh3's section was sent again, as its lane's next attempt, once: {sent:?}");
 }
 
-/// The reconcile spans of `spans` under the cell root `trace_id`, as `(attempt, outcome, operations, incomplete)`.
-fn reconciles(spans: &[serde_json::Value], trace_id: &str) -> Vec<(String, String, String, String)> {
+/// The executors' reconcile spans of a cell's capture, as `(attempt, outcome, operations, incomplete)`
+/// (an executor's span parents to the dispatch's traceparent, not to the cell's root).
+fn reconciles(spans: &[serde_json::Value]) -> Vec<(String, String, String, String)> {
     let at = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or("").to_string();
-    spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile" && s["trace_id"] == trace_id).map(|s| (at(s, "attempt"), at(s, "outcome"), at(s, "operations"), at(s, "incomplete"))).collect()
+    spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile").map(|s| (at(s, "attempt"), at(s, "outcome"), at(s, "operations"), at(s, "incomplete"))).collect()
+}
+
+/// The drive's dispatch spans of a cell's capture, as `(attempt, executor, node, outcome)`.
+fn dispatches(spans: &[serde_json::Value]) -> Vec<(String, String, String, String)> {
+    let at = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or("").to_string();
+    spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-dispatch").map(|s| (at(s, "attempt"), at(s, "executor"), at(s, "node"), at(s, "outcome"))).collect()
 }
 
 /// CONTRACT (Q245: "a failed node does not stop it, it just self-heals like it already does"): in the
@@ -3187,7 +3202,7 @@ fn a_member_create_that_fails_once_is_created_by_the_next_attempt_and_the_build_
     ran.sort();
     assert_eq!(ran, ["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.3", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].map(String::from).to_vec(), "the failed create ran again and no completed create did");
     let spans = cap.spans();
-    let runs = reconciles(&spans, &trace_id);
+    let runs = reconciles(&spans);
     eprintln!("cell trace_id={trace_id} reconcile spans {runs:?}");
     assert!(runs.iter().any(|(a, o, _, inc)| a == "1" && o == "handed-off" && inc.contains("node.create:mesh1.rpc.3")), "attempt 1 is handed back naming the failed create: {runs:?}");
     assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "converged" && ops == "node.create:mesh1.rpc.3"), "attempt 2 runs the failed create alone and converges: {runs:?}");
@@ -3208,7 +3223,7 @@ fn a_member_create_that_fails_every_time_stalls_the_drive_blocked_naming_it() {
         let (r, _at) = at_once(Some("mesh1.rpc.3")).await;
         let drive = Drive::detached(r.build.clone());
         let mut reader = drive.reader(1);
-        let end = tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.expect("the drive ends within 20 s");
+        let end = tokio::time::timeout(Duration::from_secs(20), r.env.run(&drive)).await.ok();
         let mut frames = Vec::new();
         while let Some(read) = next_within(&mut reader).await {
             frames.push(read);
@@ -3216,9 +3231,13 @@ fn a_member_create_that_fails_every_time_stalls_the_drive_blocked_naming_it() {
         let ran = r.ran.0.lock().unwrap().clone();
         (end, r.builds.read_build(&r.build).await.unwrap(), r.builds.current_build().await.unwrap(), ran, frames, trace_id)
     });
+    let spans = cap.spans();
     match &end {
-        DriveEnd::Stalled(why) => assert!(why.contains("ended incomplete") && why.contains("node.create:mesh1.rpc.3"), "the stall names the create: {why}"),
-        other => panic!("a create that fails every time stalls the drive: {other:?}"),
+        Some(DriveEnd::Stalled(why)) => assert!(why.contains("ended incomplete") && why.contains("node.create:mesh1.rpc.3"), "the stall names the create: {why}"),
+        other => {
+            let d = dispatches(&spans);
+            panic!("a create that fails every time stalls the drive: {other:?} (None: no end within 20 s); {} dispatches, the first 4 {:?}, reconciles {:?}", d.len(), &d[..d.len().min(4)], &reconciles(&spans)[..reconciles(&spans).len().min(4)])
+        }
     }
     assert_ne!(p.state, BuildState::Failed, "the Build is not failed");
     assert!(matches!(current, CurrentBuild::InProgress(_)), "the Build stays in progress: {current:?}");
@@ -3227,8 +3246,10 @@ fn a_member_create_that_fails_every_time_stalls_the_drive_blocked_naming_it() {
     let count = |k: &str| ran.iter().filter(|r| *r == k).count();
     assert_eq!(count("node.create:mesh1.rpc.3"), 2, "the failed create is run by attempt 1 and once more by attempt 2: {ran:?}");
     assert!(["node.create:mesh1.rpc.2", "node.create:mesh1.rpc.4", "node.create:mesh1.rpc.5"].iter().all(|k| count(k) == 1), "the completed creates ran once: {ran:?}");
-    let spans = cap.spans();
-    eprintln!("cell trace_id={trace_id} reconcile spans {:?}", reconciles(&spans, &trace_id));
+    eprintln!("cell trace_id={trace_id} reconcile spans {:?}", reconciles(&spans));
+    let mut failed: Vec<String> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-create-failed" && s["attributes"]["operation"] == "node.create:mesh1.rpc.3").map(|s| s["attributes"]["attempt"].as_str().unwrap_or("").to_string()).collect();
+    failed.sort();
+    assert_eq!(failed, ["1", "2"], "each attempt's failed create is named on the executor's span");
     let stalls: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-stalled" && s["trace_id"] == trace_id.as_str()).collect();
     assert_eq!(stalls.len(), 1, "the stall is named once: {stalls:?}");
 }
