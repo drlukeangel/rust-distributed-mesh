@@ -598,10 +598,15 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_has_every_
     let build = accepted.build_id.to_string();
     let superseded = accepted.attempt;
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
-    // The next attempt's claim and the claim of the mesh-primary's recovery (the investigation ended
-    // os-stopped), then at once the resume and the Door's release, while the recovery runs: before
-    // the path has its new birth.
-    let (claim, recovery) = wait_for("the next attempt and the suspended birth's recovery claimed", crate::node_recovery_due() * 2, || async {
+    // The mesh-primary's recovery (the investigation ended os-stopped) is held by its executor's own
+    // Door once its delete wrote the suspended birth's row Deleted and before its create: the window
+    // after the next attempt's claim in which the recovery runs. Then at once the resume and the
+    // suspended executor's release, and the recovery goes on once the resumed run of the superseded
+    // attempt has ended (its last frame written to a stream no fabric-primary reads).
+    let recovering = Door::at(&estate, "mesh2.admin.2").await;
+    recovering.arm("recovery", json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete", "node": SUSPENDED})).await;
+    let cut = recovering.wait_held("recovery").await;
+    let (claim, recovery) = wait_for("the next attempt and the suspended birth's recovery claimed", crate::node_recovery_due(), || async {
         let spans = estate.spans();
         let won = |attempt: &str| spans_named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().find(|sp| attr(sp, "build_id") == build && attr(sp, "node") == fp && attr(sp, "outcome") == "won" && attr(sp, "attempt") == attempt).cloned();
         let recovery = spans_named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| attr(sp, "node_id") == node_id && attr(sp, "outcome") == "admitted").cloned()?;
@@ -609,6 +614,7 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_has_every_
         won(&attr(&recovery, "attempt")).map(|_| (next, recovery))
     })
     .await;
+    assert_eq!(cut["hit"]["attempt"], json!(attr(&recovery, "attempt").parse::<u32>().unwrap()), "the recovery's attempt is held: {cut}");
     let resumed_at = now_ns();
     let resumed = rt.apply(rdm_test::process_faults::Fault::Continue).expect("the suspended runtime is resumed");
     assert_ne!(resumed.state_after, Some('T'), "{resumed:?}");
@@ -616,6 +622,11 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_has_every_
     let at_resume = estate.node_value_opt(SUSPENDED).await;
     assert!(at_resume.as_ref().is_none_or(|n| s(&n["node_id"]) == node_id || n["status"] != "ready-for-traffic"), "the resume falls while the recovery still runs: {at_resume:?}");
     assert_eq!(attr(&claim, "executor"), "mesh2.admin.2", "{claim}");
+    wait_for("the resumed run of the superseded attempt ended", crate::node_recovery_due(), || async {
+        spans_of_pid(&estate, rt.pid).iter().any(|sp| sp["name"] == "rdm.node_rpc.stream.serve.via-terminal" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= resumed_at).then_some(())
+    })
+    .await;
+    recovering.release("recovery").await;
     println!("resumed after the next attempt {} and the recovery attempt {} were claimed", attr(&claim, "attempt"), attr(&recovery, "attempt"));
 
     started_to_the_end(&mut stream, "the next attempt's start").await;

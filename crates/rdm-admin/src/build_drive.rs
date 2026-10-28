@@ -1888,6 +1888,12 @@ impl DriveEnv {
             self.verdicts.record(receipt).await;
             return;
         }
+        // An attempt has one verdict: one its executor wrote itself (a run served when it held the
+        // fabric seat) is the attempt's, and nothing is written again.
+        let decided = self.builds.facts().await.map(|facts| facts.iter().any(|f| matches!(f, crate::build_state::BuildFact::Attempt(a) if a.build_id == receipt.build_id && a.attempt == receipt.attempt && a.mesh.is_none())));
+        if matches!(decided, Ok(true)) {
+            return;
+        }
         if let Some((operation, step, reason, code)) = failed.filter(|(operation, ..)| !operation.is_empty()) {
             let failed = crate::build_state::BuildStepReceipt { build_id: receipt.build_id.clone(), attempt: receipt.attempt, operation: operation.clone(), step: step.clone(), outcome: crate::build_state::StepOutcome::Failed { reason: reason.clone(), code }, output: None, executor: Some(executor.to_string()), mesh: None };
             if let Err(e) = self.builds.append_step_receipt(&failed).await {
