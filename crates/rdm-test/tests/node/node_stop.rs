@@ -775,6 +775,84 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
     estate.record_trace_url(collected[0]["trace_id"].as_str().unwrap_or(""));
 }
 
+/// CONTRACT (node-stop.md step 6: "A stopped node leaves the stopped status only through node.start or
+/// node.delete"; states.md "Stopped nodes": "stopped is not live and is still present"; build.md §4.4: a
+/// create targets no live birth): in mesh2, a peer mesh of the fabric-primary mesh1.admin.1, `node.stop`
+/// of mesh2.rpc.1, then `node.delete` of another rpc node of mesh2 (the Build that removes its path).
+/// The delete Build completes; no attempt of it plans `node.create:mesh2.rpc.1` and no create of it
+/// runs; the stopped birth is still listed stopped, the same incarnation, its process the same and
+/// alive; the deleted path is listed no more. Must NOT happen (#3233, 141's estate): every attempt of
+/// the delete Build planning `node.create` at the stopped path, its create finding the stopped process
+/// alive and handing the attempt back, the Build never completing (1198 attempts in 240 s).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_build_deleting_another_path_after_a_stop_completes_and_plans_no_create_of_the_stopped_path() {
+    let test = "a_build_deleting_another_path_after_a_stop_completes_and_plans_no_create_of_the_stopped_path";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 1, 3)]).await;
+    estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 1, 3)]).await;
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(SETTLE).await;
+    let nodes = estate.nodes_obj().await;
+    const STOPPED: &str = "mesh2.rpc.1";
+    let stopped_path: PathName = STOPPED.parse().unwrap();
+    let pid = estate.pid_of(STOPPED).await;
+
+    let stopped = frames(nodes.stop(&stopped_path).await.expect("the stop was accepted")).await;
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+    let before = view_of(&estate.nodes_obj().await, &stopped_path).await;
+    assert!(before.stopped && before.status == NodeStatus::Stopped, "node.get lists {STOPPED} stopped: {before:?}");
+
+    // The other path: an rpc node of mesh2 that is not its node-type primary, so its delete moves no primary.
+    let mesh2 = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("nodes.get [mesh]");
+    let other = mesh2
+        .iter()
+        .filter(|n| n.name.to_string().starts_with("mesh2.rpc.") && n.name != stopped_path && !n.is_primary)
+        .map(|n| n.name.clone())
+        .max()
+        .unwrap_or_else(|| panic!("mesh2 lists another rpc node that is not its primary: {mesh2:?}"));
+    let stream = nodes.delete(&other).await.expect("the delete was accepted");
+    let build_id = stream.accepted().build_id.to_string();
+    // Bounded, and read to the end without a panic: a Build that never completes is asserted below
+    // from its spans, which name the operations every attempt planned.
+    let mut stream = stream;
+    let mut deleted = Vec::new();
+    let deadline = tokio::time::Instant::now() + SETTLE;
+    while let Ok(Some(f)) = tokio::time::timeout_at(deadline, stream.next()).await {
+        let f = f.unwrap_or_else(|e| panic!("the delete's reply stream broke: {e}"));
+        let terminal = f.is_terminal();
+        deleted.push(f);
+        if terminal {
+            break;
+        }
+    }
+    let completed = deleted.last() == Some(&Frame::Complete);
+    if completed {
+        let after = view_of(&estate.nodes_obj().await, &stopped_path).await;
+        assert!(after.stopped && after.status == NodeStatus::Stopped, "{STOPPED} is still stopped after the delete of {other}: {after:?}");
+        assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "the stopped birth is the same birth");
+        let other_name = other.to_string();
+        estate.until_node(&other_name, "the deleted path is listed no more", SETTLE, |n| n.is_none().then_some(())).await;
+    }
+    assert!(alive(pid), "the stopped process {pid} is alive");
+    assert_eq!(estate.pid_of(STOPPED).await, pid, "the same process");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|sp| attr(sp, "build_id") == build_id).collect();
+    let planned_create: Vec<String> = reconciles
+        .iter()
+        .filter(|sp| attr(sp, "operations").split(',').any(|op| op == format!("node.create:{STOPPED}")))
+        .map(|sp| format!("attempt {} at {}: {} ({})", attr(sp, "attempt"), attr(sp, "executor"), attr(sp, "operations"), attr(sp, "outcome")))
+        .collect();
+    assert!(planned_create.is_empty(), "{} of {} attempts of the delete Build {build_id} planned node.create of the stopped {STOPPED}: {:#?}", planned_create.len(), reconciles.len(), &planned_create[..planned_create.len().min(5)]);
+    let created: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| attr(sp, "node") == STOPPED && attr(sp, "build_id") == build_id).collect();
+    assert!(created.is_empty(), "no create of the stopped {STOPPED} ran in the delete Build: {} runs", created.len());
+    assert!(completed, "the delete Build {build_id} of {other} ends Complete within {SETTLE:?}: {deleted:?}");
+    let ops: Vec<String> = reconciles.iter().map(|sp| attr(sp, "operations")).collect();
+    assert!(ops.iter().any(|o| o.contains(&format!("node.delete:{other}"))), "an attempt of the delete Build planned the delete of {other}: {ops:?}");
+    estate.record_trace_url(reconciles[0]["trace_id"].as_str().unwrap_or(""));
+}
+
 fn attr(sp: &Value, k: &str) -> String {
     match &sp["attributes"][k] {
         Value::String(v) => v.clone(),

@@ -1826,6 +1826,25 @@ mod tests {
         assert_eq!(plan(&cur, &leaving, None).operations, vec![], "a departure already under way is not retired again");
     }
 
+    /// CONTRACT (node-stop.md step 6, states.md "Stopped nodes": "stopped is not live and is still
+    /// present"; build.md §4.4: a create targets no live birth): a stopped birth (its row Stopped, stopped, its
+    /// process alive) at a path the accepted topology names is that path's birth, never a missing one.
+    /// A Build that removes another path of its mesh plans that path's delete and nothing at the
+    /// stopped path, and the settled topology plans nothing. Must NOT happen: `node.create`
+    /// planned at the stopped path (#3233: every attempt of the delete Build planned it, its create
+    /// found the stopped process alive and handed the attempt back, 1198 times).
+    #[test]
+    fn a_stopped_birth_at_a_path_the_topology_names_is_held_and_no_create_is_planned_for_it() {
+        let mut o = mn();
+        let stopped = o.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.1").unwrap();
+        stopped.status = NodeStatus::Stopped;
+        stopped.stopped = true;
+        stopped.is_primary = false;
+        let other_removed = pinned(t(&[("mesh1", 2, 2)]), &o);
+        assert_eq!(plan(&other_removed, &o, None).operations, vec![delete_of(&o, "mesh1.rpc.3")], "the other path's delete, and nothing at the stopped mesh1.rpc.1");
+        assert_eq!(plan(&pinned(t(&[("mesh1", 2, 3)]), &o), &o, None).operations, vec![], "the settled topology with a stopped birth plans nothing");
+    }
+
     /// CONTRACT: a replaced predecessor (`<path>.old`) is neither the live birth at `<path>` nor a missing
     /// node nor a surplus one: the plan of the settled topology is empty with it in the view, and a
     /// successor at the path is the one birth the plan counts.
