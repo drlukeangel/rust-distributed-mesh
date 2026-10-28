@@ -42,13 +42,32 @@ def gate_runs(deploy, lane, since):
     return sorted(runs, key=lambda r: r["end"])
 
 
+def cells_runs(deploy, lane, since):
+    """This lane's cells.sh runs since `since`, from the cells ledger cells.sh writes."""
+    out = []
+    try:
+        for line in open(os.path.join(deploy, "cells.jsonl")):
+            try:
+                c = json.loads(line)
+            except ValueError:
+                continue
+            if c.get("lane") == str(lane) and c.get("start", 0) >= since:
+                out.append(c)
+    except OSError:
+        pass
+    return out
+
+
 def record(path, deploy, lane, issue, branch, sha, plan, launched, first, commits):
     now = int(time.time())
     runs = gate_runs(deploy, lane, plan)
+    cells = cells_runs(deploy, lane, plan)
     row = {"landed_at": now, "lane": lane, "issue": int(issue), "branch": branch, "sha": sha, "plan_at": plan, "launched_at": launched,
            "first_commit_at": first, "commits": int(commits), "gates": len(runs),
            "red": sum(r["result"] == "red" for r in runs), "gate_s": sum(r["secs"] for r in runs),
-           "total_s": now - plan, "gate_runs": runs}
+           "total_s": now - plan, "gate_runs": runs,
+           "cells": len(cells), "cells_red": sum(c["rc"] != 0 for c in cells),
+           "cells_s": sum(c["end"] - c["start"] for c in cells)}
     with open(path, "a") as f:
         f.write(json.dumps(row) + "\n")
 
@@ -69,6 +88,7 @@ def phases(r):
         ("Building to the first gate", first_gate - first),
         ("Rework after a red gate (not gating)", max(0, last_green - first_gate - gating)),
         ("Gating", gating),
+        (f"Cells runs ({r.get('cells', 0)} runs, {r.get('cells_red', 0)} red; overlaps the phases above)", r.get("cells_s", 0)),
         ("Last GREEN to the landing", land - last_green),
     ]
 

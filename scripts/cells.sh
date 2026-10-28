@@ -59,7 +59,12 @@ export RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS
 # 10 s bound. Each cells.sh run has its own directory: parallel runs in one lane never remove another's.
 export TMPDIR=/dev/shm/rdm-lane-$(basename "$lane")/cells-$$
 rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
+started=$(date +%s)
 cd "$dir" && CARGO_MANIFEST_DIR=$dir "$exe" "$@"; rc=$?
+# The cells ledger: one line per run, so lane-land.sh's time report counts the seat's cell time beside
+# its gates (Luke, 2026-10-28).
+python3 -c 'import json,sys; print(json.dumps({"lane":sys.argv[1],"start":int(sys.argv[2]),"end":int(sys.argv[3]),"package":sys.argv[4],"target":sys.argv[5],"args":sys.argv[7:],"rc":int(sys.argv[6])}))' \
+  "$(basename "$lane")" "$started" "$(date +%s)" "$pkg" "$target" "$rc" "$@" >> "${RDM_DEPLOY:-$HOME/rust-distributed-mesh-deploy}/cells.jsonl" 2>/dev/null || true
 # An estate's reaper (rdm-test estate.rs) outlives a killed test binary in its own session and reads
 # its root under TMPDIR (the fabric_id whose containers it removes): TMPDIR goes once every reaper of
 # this run has ended, waited for at most 60 s.
