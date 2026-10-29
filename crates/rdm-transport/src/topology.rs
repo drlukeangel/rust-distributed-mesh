@@ -2025,8 +2025,9 @@ impl View {
             // The receive framework has already named this refusal or duplicate.
             return;
         }
-        let births: Vec<MeshDigest> = self.digest_view.all().into_iter().filter(|d| &d.node.name.mesh == mesh).collect();
-        let routable = births.iter().filter(|d| self.digest_view.routable(d.node.node_id.as_str())).count();
+        // Counted under the digest view's lock, never by copying every digest held (Q268).
+        let births = self.digest_view.node_ids_of_mesh(mesh);
+        let routable = births.iter().filter(|id| self.digest_view.routable(id)).count();
         span.record("births_held", births.len());
         span.record("births_routable", routable);
         tracing::info!("a mesh status is held: application routing selects the mesh's births only while it is ready");
@@ -2438,7 +2439,7 @@ impl View {
         if let Some(op) = &final_delete {
             let deleted_mesh_id = complete_digests[0].mesh_id.clone();
             if deleted_mesh_id.is_some()
-                && self.digest_view.all().into_iter().any(|d| d.node.name.mesh == mesh && d.mesh_id.is_some() && d.mesh_id != deleted_mesh_id)
+                && self.digest_view.holds_birth_of_mesh_under_another_id(&mesh, &deleted_mesh_id)
             {
                 return Vec::new();
             }
@@ -5789,6 +5790,18 @@ impl DigestView {
             self.silence.send_modify(|v| *v += 1);
         }
         moved
+    }
+
+    /// The node ids of the births of `mesh` held, read under the lock: no digest is copied, only its id
+    /// (Q268: a count of a mesh's births never copies the view).
+    pub fn node_ids_of_mesh(&self, mesh: &str) -> Vec<String> {
+        self.inner.lock().unwrap().values().filter(|(d, _, _)| d.node.name.mesh == mesh).map(|(d, _, _)| d.node.node_id.as_str().to_string()).collect()
+    }
+
+    /// Whether a birth of `mesh` is held whose mesh id is set and is not `mesh_id`, read under the lock
+    /// (Q268): nothing is copied.
+    pub fn holds_birth_of_mesh_under_another_id(&self, mesh: &str, mesh_id: &Option<rdm_core::MeshId>) -> bool {
+        self.inner.lock().unwrap().values().any(|(d, _, _)| d.node.name.mesh == mesh && d.mesh_id.is_some() && d.mesh_id != *mesh_id)
     }
 
     /// Every digest held.
