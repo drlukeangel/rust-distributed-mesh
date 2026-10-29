@@ -934,6 +934,10 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
         until("the rotation is ca-rotated", BOUND, moved("CaRotated")).await;
         until("the rotation is retired", BOUND * 2, moved("Retired")).await;
 
+        // fabrics.get carries the rotation's progress and the CA under the new root.
+        let shown = until("fabrics.get shows the rotation retired", BOUND, async || fabric_get(&root).await.filter(|f| f.roots.as_ref().is_some_and(|r| r.phase == RootsPhase::Retired))).await;
+        assert!(!shown.roots.as_ref().unwrap().stalled, "a rotation retired is not stalled: {:?}", shown.roots);
+        assert!(shown.ca.is_some(), "fabrics.get carries the CA row: {shown:?}");
         let alone = vec![hex(&new.verifying_key())];
         for node in ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"] {
             until(&format!("{node} installs the new root alone"), BOUND, async || {

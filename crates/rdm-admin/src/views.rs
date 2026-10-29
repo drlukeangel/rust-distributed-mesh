@@ -329,7 +329,7 @@ pub fn meshes(view: &Topology) -> Vec<MeshView> {
 /// fabric record holds it.
 pub fn fabric(view: &Topology, build_id: Option<String>) -> FabricView {
     let f = view.fabric_view();
-    FabricView { next_expiry: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(),
+    FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(),
         id: f.id,
         name: f.name,
         status: scope_status(f.status),
@@ -415,16 +415,24 @@ fn fabrics_reply(me: &PathName, fabrics: Vec<FabricView>, filter: &Filter) -> St
 /// admin's rafka-time (fabric-certs.md §Tracking; no store read, query.md §1; none without an atlas),
 /// and `record`, what the Fabric row adds (its topology_storage_provider and the providers it left,
 /// storage.md §2).
-pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, records: Option<&Atlas>, now_ms: Option<u64>, record: Option<(Option<String>, Vec<String>)>, filter: &Filter) -> StatusReply {
+pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, records: Option<&Atlas>, now_ms: Option<u64>, record: Option<&crate::fabric_storage::FabricRecord>, filter: &Filter) -> StatusReply {
     let (next_expiry, stalled) = records.map(|r| crate::cert_renewal::fabric_watch(view, r, now_ms)).unwrap_or_default();
     let mut f = fabric(view, build_id);
     f.next_expiry = next_expiry;
     for m in f.meshes.iter_mut() {
         m.renewals = stalled.get(&m.name).map(|nodes| rdm_core::views::Renewals::Stalled { nodes: nodes.clone() });
     }
-    if let Some((provider, previous)) = record {
-        f.topology_storage_provider = provider;
-        f.previous_topology_storage_providers = previous;
+    if let Some(record) = record {
+        f.topology_storage_provider = record.topology_storage_provider.clone();
+        f.previous_topology_storage_providers = record.previous_topology_storage_providers.clone();
+        // The rotation and the CA as the Fabric row names them; a rotation not retired by the old
+        // anchor's bound is stalled (fabric-ca-renew.md "fabric.root.update, the caller op").
+        f.roots = record.roots.as_ref().map(|r| rdm_core::views::RootsView {
+            phase: r.phase,
+            expires_at: r.expires_at,
+            stalled: r.phase != rdm_core::status::RootsPhase::Retired && now_ms.is_some_and(|now| r.expires_at > 0 && now >= r.expires_at),
+        });
+        f.ca = record.ca.as_ref().map(|c| rdm_core::views::CaView { expires_at: c.expires_at });
     }
     fabrics_reply(me, vec![f], filter)
 }
@@ -437,6 +445,30 @@ mod tests {
     use crate::storage::{BirthFacts, CertDates, NodeRow};
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
+
+    /// fabric-ca-renew.md ("its progress is `fabrics.get`'s `roots { phase, expires_at }`"; "a rotation
+    /// not retired by then is surfaced on `fabrics.get` as `roots: stalled`"): the Fabric row's roots and
+    /// CA rows are answered; a rotation past its bound and not retired is stalled, a retired one never.
+    #[test]
+    fn fabrics_get_carries_the_rotation_and_the_ca_and_names_a_rotation_past_its_bound_stalled() {
+        use rdm_core::status::RootsPhase;
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let view = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".to_string(), status: ModelScopeStatus::Ready, provider: ModelProviderKind::Process }, meshes: Vec::new(), nodes: Vec::new() };
+        let row = |phase: RootsPhase| crate::fabric_storage::FabricRecord {
+            fabric_id: FabricId::mint(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(),
+            ca: Some(crate::fabric_storage::CaRow { expires_at: 9_000, previous_expires_at: 5_000, issuer_receipts: Default::default() }),
+            roots: Some(crate::fabric_storage::RootsRow { phase, roots: vec!["aa".into(), "bb".into()], expires_at: 3_000 }),
+        };
+        let answer = |phase: RootsPhase, now: u64| match fabric_answer_with_status(&me, &view, None, None, Some(now), Some(&row(phase)), &Filter::new()) {
+            StatusReply::Fabrics { mut fabrics } => fabrics.pop().expect("one fabric"),
+            other => panic!("expected Fabrics, got {other:?}"),
+        };
+        let early = answer(RootsPhase::Distributed, 2_000);
+        assert_eq!(early.roots, Some(rdm_core::views::RootsView { phase: RootsPhase::Distributed, expires_at: 3_000, stalled: false }));
+        assert_eq!(early.ca, Some(rdm_core::views::CaView { expires_at: 9_000 }));
+        assert!(answer(RootsPhase::CaRotated, 3_000).roots.unwrap().stalled, "past its bound and not retired: stalled");
+        assert!(!answer(RootsPhase::Retired, 4_000).roots.unwrap().stalled, "a retired rotation is never stalled");
+    }
 
     #[test]
     fn plural_reads_match_atlas_records_skip_inherited_predecessor_tags_and_emit_serve_and_reject_spans() {
@@ -572,7 +604,7 @@ mod tests {
                 Some(build_id.clone()),
                 Some(&atlas),
                 Some(2_000),
-                Some((Some("file".to_string()), vec!["memory".to_string()])),
+                Some(&crate::fabric_storage::FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: Some("file".to_string()), previous_topology_storage_providers: vec!["memory".to_string()], ca: None, roots: None }),
                 &Filter::new().eq("name", ["fabric1"]).eq("build_id", [build_id.clone()]),
             );
             match fabric_reply {

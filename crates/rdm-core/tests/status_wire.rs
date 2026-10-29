@@ -164,9 +164,10 @@ fn replies_match_the_frozen_sixty_three_variant_wire_schema() {
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31", "00")),
         (
             // id | name | status | provider | fabric_primary | admin_api_base | meshes | build_id Some("b") | next_expiry None
-            Fabric { fabric: FabricView { next_expiry: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), id: fabric(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()) } },
+            Fabric { fabric: FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: fabric(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()) } },
             // ... | topology_storage_provider None | previous_topology_storage_providers [] (storage.md §2)
-            concat!("23", "0c323132333435363738396162", "0766616272696331", "00", "00", "00", "00", "00", "010162", "00", "00", "00"),
+            // | roots None | ca None (fabric-ca-renew.md)
+            concat!("23", "0c323132333435363738396162", "0766616272696331", "00", "00", "00", "00", "00", "010162", "00", "00", "00", "00", "00"),
         ),
         (
             Connections {

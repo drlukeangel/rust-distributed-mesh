@@ -326,6 +326,34 @@ pub struct FabricView {
     /// Each provider the fabric left, in order, as its Fabric row names them (storage.md §2).
     #[serde(default)]
     pub previous_topology_storage_providers: Vec<String>,
+    /// The root rotation as the Fabric row's roots row names it (fabric-ca-renew.md): its phase, the
+    /// old anchor's bound, and whether that bound passed with the rotation not retired. `None` while no
+    /// rotation was accepted.
+    #[serde(default)]
+    pub roots: Option<RootsView>,
+    /// The fabric CA as the Fabric row's CA row names it: its expiry. `None` while no CA renewal
+    /// wrote the row.
+    #[serde(default)]
+    pub ca: Option<CaView>,
+}
+
+/// `fabrics.get`'s `roots { phase, expires_at }` (fabric-ca-renew.md "fabric.root.update, the caller
+/// op"): a rotation not retired by the old anchor's bound is `stalled`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootsView {
+    /// The rotation's phase.
+    pub phase: crate::status::RootsPhase,
+    /// The old anchor's bound, rafka-time ms.
+    pub expires_at: u64,
+    /// The bound passed and the rotation is not retired (`roots: stalled`).
+    pub stalled: bool,
+}
+
+/// `fabrics.get`'s `ca { expires_at }` (node-rpc-envelope.md, fabric.root.update's row).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaView {
+    /// When the fabric CA expires, rafka-time ms.
+    pub expires_at: u64,
 }
 
 /// The fabric-primary's atlas (`fabrics.atlas.get`; docs/plans/proposal/fabric-atlas.md):

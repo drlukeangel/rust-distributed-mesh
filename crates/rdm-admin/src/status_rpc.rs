@@ -1576,8 +1576,7 @@ impl StatusAuthority {
                 };
                 match self.builds.current_build().await {
                     Ok(current) => {
-                        let record = record.map(|r| (r.topology_storage_provider, r.previous_topology_storage_providers));
-                        crate::views::fabric_answer_with_status(me_name, view, current.into_build_id().map(|b| b.to_string()), self.atlas.get().map(|a| &**a), self.certs.as_ref().and_then(|c| c.now_ms()), record, &read.filter)
+                        crate::views::fabric_answer_with_status(me_name, view, current.into_build_id().map(|b| b.to_string()), self.atlas.get().map(|a| &**a), self.certs.as_ref().and_then(|c| c.now_ms()), record.as_ref(), &read.filter)
                     }
                     Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", op, &format!("{me_name} could not read its current Build: {e}")),
                 }
