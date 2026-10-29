@@ -59,6 +59,8 @@ mod build_op;
 mod executables;
 #[path = "build/mesh_self_heal.rs"]
 mod mesh_self_heal;
+#[path = "build/admission_gates.rs"]
+mod admission_gates;
 #[path = "fabric/issuance.rs"]
 mod issuance;
 #[path = "fabric/cert_renewal.rs"]
