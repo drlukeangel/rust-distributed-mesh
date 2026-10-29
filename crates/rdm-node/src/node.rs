@@ -1805,7 +1805,8 @@ fn serve_read(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 let Some(primary) = me.topology_view.primaries().mesh(&me.digest.node.name.mesh) else {
                     return Err(ReadReply::NotReady { reason: format!("{node} keeps no atlas to answer {op}, and holds no mesh-primary of {} to forward it to", me.digest.node.name.mesh) });
                 };
-                tracing::Span::current().record("mesh_primary", primary.node_id.to_string().as_str());
+                let to = me.topology_view.digest_view.current(me.topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| primary.node_id.to_string());
+                tracing::Span::current().record("mesh_primary", to.as_str());
                 match rdm_client::NodeRpc::new(&me.own.client).read(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), entity, &filter, &rdm_transport::CallOptions::default()).await {
                     Ok(rows) => rdm_client::read_frames(rows.into_rows(), op).map(|frames| (rows_len(&frames), frames)),
                     Err(rdm_client::CallEnd::Rejected { reason, detail }) if reason == "rejected-filter" => Err(ReadReply::RejectedFilter { reason: detail }),
@@ -1831,7 +1832,12 @@ fn serve_read(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     return Ok(ReadReply::NotReady { reason: format!("the caller left during the read: {e:?}") });
                 }
             }
-            span.record("outcome", "read");
+            // The answer by the data it carries, as the read's reply names it.
+            span.record("outcome", match entity {
+                Entity::Nodes => "nodes",
+                Entity::Meshes => "meshes",
+                _ => "fabrics",
+            });
             Ok(ReadReply::End { rows, frames: n })
         }
     })

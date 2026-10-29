@@ -469,7 +469,8 @@ impl NodeConfigs {
         };
         let answer = tracing::Instrument::instrument(carried, span.clone()).await;
         match &answer {
-            Ok(rows) => span.record("outcome", "read").record("detail", format!("{} rows", rows.len()).as_str()),
+            // The answer by the data it carries, as the read's reply names it (`nodes`, `meshes`, `fabrics`).
+            Ok(rows) => span.record("outcome", rows_name(rows)).record("detail", format!("{} rows", rows.len()).as_str()),
             Err(r) => span.record("outcome", r.name()).record("detail", format!("{r:?}").as_str()),
         };
         span.in_scope(|| match to {
@@ -477,6 +478,15 @@ impl NodeConfigs {
             ReadTo::MeshPrimary => tracing::info!("a read at a node-admin that is not a primary, forwarded to its own mesh-primary"),
         });
         answer
+    }
+}
+
+/// A read's rows by the reply that carries them: `nodes`, `meshes` or `fabrics`.
+pub(crate) fn rows_name(rows: &rdm_core::read::Rows) -> &'static str {
+    match rows {
+        rdm_core::read::Rows::Nodes(_) => "nodes",
+        rdm_core::read::Rows::Meshes(_) => "meshes",
+        rdm_core::read::Rows::Fabrics(_) => "fabrics",
     }
 }
 
