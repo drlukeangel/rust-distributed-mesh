@@ -1,5 +1,5 @@
-//! The product node runtime (`rdm-node`): what a product's role process is on the imported Mesh
-//! substrate, composed without depending on `rafka-node-admin-core` or `rafka-node-rpc-testkit`.
+//! The node runtime (`rdm-node`): what an application's role process runs to join its mesh,
+//! run its `pre_node_ready` hook and serve its Node RPC ops (`fabric-node-hooks.md`, `node-rpc.md`).
 //!
 //! # Where it sits
 //!
@@ -43,9 +43,13 @@
 //! `scripts/docs-site.sh` builds.
 #![deny(missing_docs)]
 
+/// A node's launch configuration read from its environment (`deployment-provider.md` §2.6).
 pub use rdm_core::launch::Launch;
+/// Core certificate, DTO, model, canonical-name and status contracts.
 pub use rdm_core::{certs, dto, model, names, status, NodeKind};
+/// The Node RPC client and server builder (`node-rpc.md`).
 pub use rdm_transport::{NodeRpcClient, ServerBuilder};
+/// The running node handle, its seams and its process signal helpers.
 pub use crate::node::{
     listen_for_stop,
     stop_requested, wait_for_signal, Node, NodeSeams, RunningNode,
@@ -153,9 +157,31 @@ pub async fn run(role: Role, types: &[&str]) -> Result<()> {
 }
 
 #[cfg(feature = "file-backend")]
-/// [`run`] for a product with a hook before Ready: `pre_node_ready` carries its
+/// [`run`] for a product with a hook before Ready (`fabric-node-hooks.md` "pre_node_ready"): `node_hooks` carries its
 /// `pre_node_ready` hook, and `serve_app` adds the product's own ops to the catalog before
-/// it is built. A hook that fails after the node came up Pending ends the process by name.
+/// it is built (`node-rpc.md` §9). A hook that fails after the node came up Pending ends the process by name.
+///
+/// # Examples
+///
+/// ```no_run
+/// use rdm_node::node_hooks::{HookOutcome, NodeHooks, NodeReadyCtx, PreNodeReady};
+/// use rdm_node::{read_launch, Role};
+/// use std::sync::Arc;
+///
+/// struct Ready;
+///
+/// #[async_trait::async_trait]
+/// impl PreNodeReady for Ready {
+///     async fn pre_node_ready(&self, _ctx: &NodeReadyCtx) -> HookOutcome {
+///         HookOutcome::Ok
+///     }
+/// }
+///
+/// async fn run_role() -> anyhow::Result<()> {
+///     let launch = read_launch()?;
+///     rdm_node::run_with(Role::of(&launch), &[], NodeHooks::new(Arc::new(Ready)), |b| b).await
+/// }
+/// ```
 pub async fn run_with(
     role: Role,
     types: &[&str],

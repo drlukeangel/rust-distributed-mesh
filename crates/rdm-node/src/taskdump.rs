@@ -19,6 +19,7 @@ pub async fn watched<F: Future>(_what: &'static str, fut: F) -> F::Output {
     fut.await
 }
 
+/// `fut`, awaited; when `RDM_TASKDUMP_AFTER_MS` elapses before `fut` finishes, dumps the watched future's await chain and the runtime's tasks to stderr.
 #[cfg(all(tokio_unstable, tokio_taskdump))]
 pub async fn watched<F: Future>(what: &'static str, fut: F) -> F::Output {
     use std::fmt::Write;

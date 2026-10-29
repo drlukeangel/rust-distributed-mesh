@@ -56,10 +56,10 @@ pub enum Frame {
         /// The step's own reason.
         reason: String,
     },
-    /// The fabric-primary seat moved while the workflow ran (a planned handover). Terminal for this
-    /// stream, not a failure: the Build goes on at the new seat, and the caller resumes it there.
+    /// The fabric-primary moved while the workflow ran (`node-rpc-envelope.md` "Frames, durable receipts and reattachment"). Terminal for this
+    /// stream, not a failure: the Build goes on at the new fabric-primary, and the caller resumes it there.
     FabricPrimaryMoved {
-        /// The admin (path.name) that holds the seat now, when the old seat's view named one.
+        /// The node-admin (`path.name`) that is the fabric-primary now, when the old fabric-primary's view named one.
         fabric_primary: Option<String>,
     },
 }
@@ -158,9 +158,8 @@ macro_rules! start_rows {
 
 /// The shutdown leg of `target` under `operation`: its stop call, whose one reply carries its
 /// `node.connections.delete { All }` receipt, to its `stopped` (the stop half of a delete under
-/// `retire-node`). A seat holder's seats move by
-/// node.primary.update before the operation is dispatched, never as a step of it (the approved
-/// proposal node-primary-update-fabric-mesh-and-node-type.md, Part D: the SeatTransfer step goes), so
+/// `node.delete`). A primary's role moves by
+/// `node.primary.update` before the operation is dispatched, never as a step of it (`lifecycles/node-primary-update.md` §1), so
 /// a node-admin target's rows are any target's.
 fn shutdown_rows(operation: &'static str) -> Vec<Row> {
     vec![
@@ -215,8 +214,8 @@ fn stop_rows() -> Vec<Row> {
     ]
 }
 
-/// node.delete's rows under its one key, `retire-node`: a live birth deletes its connections and stops first; an
-/// already stopped or proven-exited birth's runs no stop half and leaves no membership to remove
+/// `node.delete`'s rows (`lifecycles/node-delete.md` steps 1-4): a live birth deletes its connections and stops first; an
+/// already stopped or exited birth runs no stop half and leaves no membership to remove
 /// (`stop_half`), the same operation.
 fn delete_rows() -> Vec<Row> {
     let mut rows = vec![row("node.delete", "NodeDeleting", NodeStep::Delete, &[], false)];

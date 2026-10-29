@@ -148,9 +148,22 @@ impl Nodes {
         }
     }
 
-    /// `nodes.get` (Q167): every node row the fabric-primary holds that matches every pair of
+    /// `nodes.get` (`query.md` §1): every node row the fabric-primary holds that matches every pair of
     /// `filter`, by `path.name`; the empty filter is the fabric's topology, and nothing matching is the
     /// empty list (`[id: x]` is one node or none).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rdm_client::{birth_of_line, Filter, NodeView, Nodes, Peers};
+    ///
+    /// async fn ready_brokers(admin_stdout_line: &str) -> Result<Vec<NodeView>, String> {
+    ///     let birth = birth_of_line(admin_stdout_line).ok_or("not a birth line")??;
+    ///     let peers = Peers::at(&birth).await?;
+    ///     let nodes = Nodes::new(peers.carrier_at(birth.name));
+    ///     nodes.get(&Filter::new().eq("kind", ["broker"]).eq("status", ["ready"])).await.map_err(|e| e.to_string())
+    /// }
+    /// ```
     pub async fn get(&self, filter: &Filter) -> Result<Vec<NodeView>, CallEnd> {
         let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
         read_list(&self.carrier, &target, NodeOp::Get.span(), NodeOp::Get.name(), Entity::Nodes, None, filter, |r| match r {
@@ -225,7 +238,8 @@ impl Nodes {
         self.workflow(WorkflowKind::Create, BuildChange::Reconcile { topology_storage_provider: None, based_on, nodes }).await
     }
 
-    /// `node.stop` of `node`.
+    /// `node.stop` of `node` (`lifecycles/node-stop.md`): delete its connections, leave its mesh and stop, keeping its `node.id`, `incarnation`, `path.name` and data dir.
+    /// The stream is `Started`, then `node.connections.deleted` and `node.stopped`, ending `Complete` or `Failed { step, reason }`.
     pub async fn stop(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
         self.workflow(WorkflowKind::Stop(node.clone()), BuildChange::Stop { node: node.clone() }).await
     }
@@ -237,14 +251,15 @@ impl Nodes {
         self.workflow(WorkflowKind::Start(node.clone()), BuildChange::Start { node: node.clone() }).await
     }
 
-    /// `node.connections.delete { All }` of `node` as a Build (node-connections-delete.md step 0: a
-    /// seat holder's seats move first). The stream is `Started`, then `node.connections.deleted`,
+    /// `node.connections.delete { All }` of `node` as a Build (`lifecycles/node-connections-delete.md`: a
+    /// target that is a primary runs `node.primary.update` first). The stream is `Started`, then `node.connections.deleted`,
     /// ending `Complete`; the process keeps running.
     pub async fn delete_connections(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
         self.workflow(WorkflowKind::DeleteConnections(node.clone()), BuildChange::DeleteConnections { node: node.clone() }).await
     }
 
-    /// `node.delete` of `node`.
+    /// `node.delete` of `node` (`lifecycles/node-delete.md`): compose `node.stop` when the process is live, terminate its exact runtime through the provider, and release `node.id` and `path.name`.
+    /// The stream is `Started`, every `node.stop` event when live, and `node.deleted`, ending `Complete` or `Failed { step, reason }`.
     pub async fn delete(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
         self.workflow(WorkflowKind::Delete(node.clone()), BuildChange::RemoveNode { node: node.clone() }).await
     }
@@ -257,16 +272,16 @@ impl Nodes {
         self.workflow(WorkflowKind::Steps(steps.clone()), BuildChange::Steps { steps }).await
     }
 
-    /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md` C1): command the holder at
-    /// `holder` to move its mesh-primary seat (and the fabric-primary seat with it when it holds both)
+    /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary
+    /// to move its mesh-primary role (and the fabric-primary role with it when it is both)
     /// to its same-mesh successor.
     pub async fn primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         crate::NodeRpc::new(self.carrier.client()).primary_update(fabric, holder, build_id, attempt, &CallOptions::default()).await
     }
 
-    /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` C2): command the
-    /// fabric-primary holder at `holder` to move the fabric-primary seat (step 1 same-mesh successor
-    /// first, step 2 outside mesh primary when no same-mesh successor is Ready).
+    /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` "The fabric-primary"): command the
+    /// fabric-primary to move the fabric-primary role (step 1 same-mesh successor
+    /// first, step 2 another Ready mesh-primary when no same-mesh successor is Ready).
     pub async fn fabric_primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         crate::NodeRpc::new(self.carrier.client()).fabric_primary_update(fabric, holder, build_id, attempt, &CallOptions::default()).await
     }

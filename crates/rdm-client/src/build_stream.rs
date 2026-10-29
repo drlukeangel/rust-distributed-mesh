@@ -26,6 +26,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// What `build.create` submits (`Change`) and how the accepted Build started (`StartDisposition`).
 pub use rdm_core::build::{BuildChange as Change, Disposition as StartDisposition};
 
 /// The bound on connecting to the fabric-primary and writing the request. The stream after it has
@@ -105,10 +106,10 @@ pub enum BuildFrame {
         /// The number of chunks sent.
         chunks: u32,
     },
-    /// Terminal of `build.create`: the fabric-primary seat moved while the Build ran (a planned
-    /// handover). The Build goes on at the new seat; re-submit the same build id there.
+    /// Terminal of `build.create`: the fabric-primary moved while the Build ran (`node-rpc-envelope.md` "Frames, durable receipts and reattachment").
+    /// Deliberate outer-stream end naming the new fabric-primary; the caller resubmits the same `build_id` there.
     FabricPrimaryMoved {
-        /// The admin (path.name) that holds the seat now, when the old seat's view named one.
+        /// The node-admin (`path.name`) that is the fabric-primary now, when the old fabric-primary's view named one.
         fabric_primary: Option<String>,
     },
     /// Terminal of `build.delete`.
@@ -386,7 +387,21 @@ impl BuildCarrier {
         }
     }
 
-    /// `build.create`: accept `change` and follow the Build until it ends.
+    /// `build.create` (`node-rpc-envelope.md` "Build, op `0x20`"): accept `change` and follow the Build until it ends.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rdm_client::{birth_of_line, BuildCarrier, Change, Followed, Peers};
+    ///
+    /// async fn delete_fabric(admin_stdout_line: &str) -> Result<Followed, String> {
+    ///     let birth = birth_of_line(admin_stdout_line).ok_or("not a birth line")??;
+    ///     let peers = Peers::at(&birth).await?;
+    ///     let carrier: BuildCarrier = peers.carrier_at(birth.name);
+    ///     let stream = carrier.create(Change::DeleteFabric).await.map_err(|e| e.to_string())?;
+    ///     carrier.follow(stream).await.map_err(|e| e.to_string())
+    /// }
+    /// ```
     pub async fn create(&self, change: BuildChange) -> Result<BuildStream, CallEnd> {
         self.open(BuildRequest::Create { submit: BuildSubmit::Change(change) }).await
     }

@@ -138,9 +138,23 @@ impl<S: OperationStore> Operations<S> {
         &self.store
     }
 
-    /// Decide the request for `operation` on `input` and, unless it is a [`Decision::Conflict`],
+    /// Decide the request for `operation` on `input` (`node-rpc.md` §33, §43) and, unless it is a [`Decision::Conflict`],
     /// accept it once the store holds it (see the module docs). An `Err` is the store's: nothing was
     /// accepted, and the handler answers it as its fault.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rdm_node::operation::{Decision, OperationStore, Operations};
+    /// use rdm_transport::Acceptance;
+    ///
+    /// async fn handle<S>(ops: &Operations<S>, acceptance: &Acceptance, id: &str, input: &S::Input) -> Result<Decision<S::Output>, S::Error>
+    /// where
+    ///     S: OperationStore,
+    /// {
+    ///     ops.decide(acceptance, id, input).await
+    /// }
+    /// ```
     pub async fn decide(&self, acceptance: &Acceptance, operation: &str, input: &S::Input) -> Result<Decision<S::Output>, S::Error> {
         let span = tracing::info_span!("rdm.node_rpc.operation.create.via-accept", operation, decision = tracing::field::Empty, error = tracing::field::Empty);
         async {

@@ -44,8 +44,8 @@ pub struct RunningNode {
     /// stamps its records with rafka-time (the OrderKey's `writer_timestamp_ms`) reads it here and
     /// never from the OS clock.
     pub rafka_time: rdm_transport::clock::RafkaTime,
-    /// The member cert the accepting authority's signer issued for exactly this birth, as the
-    /// opaque bytes the join answer carried (`fabric-certs.md`). Empty when the authority is
+    /// The member cert the accepting primary's signer issued for this exact birth, as the
+    /// opaque bytes the join answer carried (`fabric-certs.md`). Empty when the accepting primary is
     /// configured with no certs. RDM never parses it.
     pub member_cert: Vec<u8>,
     /// The endpoint's protocol routers.

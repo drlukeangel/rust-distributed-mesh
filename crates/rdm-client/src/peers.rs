@@ -96,8 +96,8 @@ impl Peers {
     }
 
     /// The Build carrier whose calls start at the fabric-primary `fabric_primary`, when the caller
-    /// is told where the seat is: a stream that ended `FabricPrimaryMoved` names the admin that holds it now
-    /// (node-rpc-envelope.md TakeSeats: "the caller resubmits the same `build_id` to N"). Its birth
+    /// is told where the fabric-primary moved: a stream that ended `FabricPrimaryMoved` names the node-admin that is the fabric-primary now
+    /// (`node-rpc-envelope.md` "Frames, durable receipts and reattachment": the caller resubmits the same `build_id` there). Its birth
     /// is read from `entry`'s node list over Node RPC and made reachable here; a list that holds
     /// none is named.
     pub async fn carrier_following(&self, entry: &PathName, fabric_primary: &PathName) -> Result<crate::BuildCarrier, crate::CallEnd> {
@@ -107,7 +107,7 @@ impl Peers {
         Ok(self.carrier_at(fabric_primary.clone()))
     }
     /// Make reachable every node of `views` that carries its whole birth (endpoint, incarnation and
-    /// address) and is not deleted, retiring the node id a `path.name` held before: a view read
+    /// address) and is not deleted, replacing the node id a `path.name` held before: a view read
     /// while a node is pending names a node that cannot be dialled yet, and it is learned by the
     /// read that finds it ready.
     pub fn learn_known(&self, views: &[NodeView]) {
@@ -120,7 +120,7 @@ impl Peers {
         }
     }
 
-    /// Make reachable the birth a node-admin printed at start ([`BIRTH_LINE`]), retiring the node id
+    /// Make reachable the birth a node-admin printed at start ([`BIRTH_LINE`]), replacing the node id
     /// its `path.name` held before; a birth whose endpoint is no Iroh key is refused by name.
     pub fn learn_birth(&self, birth: &MeshNode) -> Result<(), String> {
         let endpoint_id = birth.endpoint_id.0.parse().map_err(|e| format!("the birth of {} ({}) names the endpoint {:?}, no Iroh key: {e}", birth.name, birth.node_id, birth.endpoint_id.0))?;

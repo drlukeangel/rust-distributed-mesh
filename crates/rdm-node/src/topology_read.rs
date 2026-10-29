@@ -33,7 +33,7 @@ pub struct TopologyDoor {
     /// The map this node stores (an admin's durable map of the births it knows), for a mesh it holds
     /// no gossiped snapshot of.
     stored: Option<StoredSource>,
-    /// Whether this node holds a seat holder's exact birth as proven gone.
+    /// Whether this node holds a recorded primary's exact birth as proven gone.
     gone: Option<GoneSource>,
     /// The caller's own whole row, when this node is the caller's mesh-primary (Q234).
     own_row: Option<OwnRowSource>,
@@ -85,7 +85,7 @@ impl TopologyDoor {
         self
     }
 
-    /// This node also tells a reader which recorded seat holders it holds as proven gone.
+    /// This node also tells a reader which recorded primaries it holds as proven gone.
     pub fn with_gone(mut self, gone: GoneSource) -> Self {
         self.gone = Some(gone);
         self
@@ -288,10 +288,10 @@ pub fn serve(b: ServerBuilder, slot: TopologySlot) -> ServerBuilder {
     })
 }
 
-/// What one topology read left installed.
+/// What one topology read left installed (`lifecycles/node-topology-get.md`).
 #[derive(Debug, Clone, Default)]
 pub struct TopologyRead {
-    /// Each mesh installed from a complete snapshot, with its members.
+    /// Each mesh installed from a complete snapshot, with its node digests.
     pub installed: Vec<ReadMesh>,
     /// Each mesh the target answered `Unchanged`: `(mesh, topology_version)`.
     pub unchanged: Vec<(String, u64)>,
@@ -300,9 +300,9 @@ pub struct TopologyRead {
     /// Each mesh the target answered from its stored map, with no version: births to reach, never
     /// installed and never the mesh's current topology.
     pub stored: Vec<StoredMesh>,
-    /// The seat records the target holds, in the order it sent them.
+    /// The primary records the target holds, in the order it sent them (`lifecycles/node-topology-get.md`).
     pub seats: Vec<(rdm_core::Seat, rdm_core::Primary, bool)>,
-    /// The rafka-time the target served and the seat it held when it served it. Every accepted
+    /// The rafka-time the target served and which primary it was when it served it (`lifecycles/node-topology-get.md`). Every accepted
     /// read carries it.
     pub rafka_time: Option<ServedTime>,
     /// The reader's own whole row and the row's revision, when the target is its mesh-primary (Q234).
@@ -320,7 +320,7 @@ pub struct ServedTime {
 
 impl TopologyRead {
     /// Adopt the rafka-time this read was served with into `time`, by the rule of the puller
-    /// `node_id` of `mesh` as its own seat records stand (the same [`crate::rafka_time::adopt_pulled`]
+    /// `node_id` of `mesh` as its own primary records stand (the same [`crate::rafka_time::adopt_pulled`]
     /// every pull goes through). `served_by` is the target's `path.name`.
     pub fn adopt_rafka_time(&self, time: &rdm_transport::clock::RafkaTime, topology_view: &TopologyView, node: &str, mesh: &str, node_id: &rdm_core::NodeId, served_by: &str) -> Result<rdm_transport::clock::Adopted, TimeNotAdopted> {
         let served = self.rafka_time.ok_or_else(|| TimeNotAdopted::Absent(format!("{served_by}: the topology answer carries no rafka-time")))?;
@@ -367,7 +367,7 @@ pub struct ReadMesh {
     pub publisher: PublisherId,
     /// The snapshot's `topology_version`.
     pub topology_version: u64,
-    /// The members of the snapshot.
+    /// The node digests of the snapshot.
     pub members: Vec<MeshDigest>,
 }
 
@@ -436,9 +436,9 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 /// the topology view names, installed through the topology view's own receiver. The one workflow a
 /// node-admin and every other node run.
 ///
-/// A top-up is a topology read repair (lifecycles/node-topology-get.md) and adopts no rafka-time:
-/// between its pulls a node keeps its rafka-time disciplined from its own authority's heartbeats only
-/// (origin-ordering.md, rafka-time), so a gap's repair neither stalls its reading nor clears its
+/// A top-up is a topology read repair (`lifecycles/node-topology-get.md`) and adopts no rafka-time:
+/// between its pulls a node keeps its rafka-time disciplined from its own primary's heartbeats only
+/// (`crate::rafka_time`), so a gap's repair neither stalls its reading nor clears its
 /// discipline's window or slew.
 pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_transport::topology::TopUpFetch {
     Arc::new(move |topology_view: TopologyView, primary: MeshDigest, meshes: Vec<String>| {
@@ -456,7 +456,7 @@ pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_transport::topology::TopU
 
 /// [`get_topology`] that installs nothing: each mesh is assembled by a receiver of its own, whole
 /// or not at all, and returned. A recovering admin reads a local node's topology only to know
-/// whom to reach; what it holds as members stays what it hears itself.
+/// whom to reach; what it holds as nodes stays what it hears itself.
 /// Read the topology from `target`.
 pub async fn read_topology(client: &NodeRpcClient, target: &NodeTarget, node: &str, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
     let mut receiver = rdm_transport::snapshot::SnapshotReceiver::default();

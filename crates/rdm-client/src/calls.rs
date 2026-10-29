@@ -517,8 +517,8 @@ impl<'a> NodeRpc<'a> {
         Ok(frames)
     }
 
-    /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary at
-    /// `holder` to move its primary (and the fabric-primary with it when it is both) to the successor the
+    /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary
+    /// to move its primary (and the fabric-primary with it when it is both) to the successor the
     /// election names in its own view.
     pub async fn primary_update(&self, _fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateRequest};
@@ -541,7 +541,7 @@ impl<'a> NodeRpc<'a> {
     }
 
     /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` "The fabric-primary"):
-    /// command the fabric-primary at `holder` to move the fabric-primary: its own mesh first, so both
+    /// command the fabric-primary to move the fabric-primary: its own mesh first, so both
     /// move together when a same-mesh node-admin is Ready, else another mesh's mesh-primary.
     pub async fn fabric_primary_update(&self, _fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};

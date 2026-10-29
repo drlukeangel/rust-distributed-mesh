@@ -33,6 +33,7 @@
 //! longer holds is dropped undialled (§9.5 step 1).
 
 use crate::storage::ConnectionsStorage;
+/// The direct-recovery reconciler tick and attempt types (`connections.md` §9.4).
 pub use crate::connection_reconnect::{RECONCILER_TICK, RecoveryAttempt, RecoveryDial};
 use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
 use rdm_core::reconnect::{first_failure, owed_direct_restored};

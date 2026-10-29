@@ -12,9 +12,9 @@
 //!   an event that happened while the attempt ran cannot strand the node. No timer and no sleep.
 //! - `Failed { reason }`: the node ends by name.
 //!
-//! The Day-0 root and a fabric-primary re-born from its durable map have no authority to pull from:
-//! their context says so ([`Authority::None`]) and the hook completes from local state
-//! (`gossip.md` section 9's targeted exception).
+//! The Day-0 root and a fabric-primary recovered from its durable map have no primary to pull from:
+//! their context says so and the hook completes from local state
+//! (`fabric-node-hooks.md` "What the context carries", `gossip.md` §9).
 //!
 //! One span per attempt (`rdm.mesh.node.update.via-pre-node-ready-attempt`) under the boot span carries
 //! the outcome and the blocker or reason; `via-ready` follows the successful attempt.
@@ -46,9 +46,9 @@ pub struct Birth {
     pub kind: NodeKind,
 }
 
-/// The admin that accepted this birth's `JoinNode`: the authority the hook pulls from. A start after
+/// The node-admin that accepted this birth's `JoinNode`: the accepting primary the hook pulls from (`fabric-node-hooks.md` "What the context carries"). A start after
 /// a stop reached it back over the call that commanded the start, holding no record of it
-/// (node-start.md step 2): it is known by the name its join answer gave and the endpoint it answered
+/// (`lifecycles/node-start.md` step 2): it is known by the name its join answer gave and the endpoint it answered
 /// on, and the hook calls it through `target`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptingAuthority {
@@ -62,10 +62,10 @@ pub struct AcceptingAuthority {
     pub target: rdm_transport::NodeTarget,
 }
 
-/// Why a birth has no authority to pull from.
+/// Why a birth has no accepting primary to pull from (`fabric-node-hooks.md` "What the context carries").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoAuthority {
-    /// The Day-0 root: no fabric authority exists before it.
+    /// The Day-0 root: no primary exists before it.
     Day0Root,
     /// An admin started on an inherited root (fabric recovery): it has no maker, and its hook reads the
     /// inherited storage.
@@ -121,7 +121,7 @@ pub struct NodeReadyCtx {
     pub start_kind: StartKind,
     /// The exact birth.
     pub birth: Birth,
-    /// The authority to pull from, or why there is none.
+    /// The accepting primary to pull from, or why there is none (`fabric-node-hooks.md` "What the context carries").
     pub authority: Authority,
     /// The process's one Node RPC client.
     pub client: Arc<NodeRpcClient>,
@@ -133,9 +133,9 @@ pub struct NodeReadyCtx {
     pub cancel: CancelToken,
     /// Rafka-time: the process's one instance, adopted by the join that was accepted.
     pub rafka_time: rdm_transport::clock::RafkaTime,
-    /// The member cert the accepting authority's signer issued for exactly this birth, as opaque
-    /// bytes (`fabric-certs.md`): empty when that authority is configured with no certs; `None`
-    /// for a birth that made no JoinNode (the Day-0 root, a recovery start).
+    /// The member cert the accepting primary's signer issued for this exact birth, as opaque
+    /// bytes (`fabric-certs.md`): empty when that primary is configured with no certs; `None`
+    /// for a birth that made no `JoinNode` (the Day-0 root, a recovery start).
     pub member_cert: Option<Vec<u8>>,
     /// Which attempt this is, from 1.
     pub attempt: u32,
@@ -144,8 +144,8 @@ pub struct NodeReadyCtx {
 }
 
 impl NodeReadyCtx {
-    /// The outcome for a pull the authority answered with its typed `NotReady`: wait for that
-    /// authority to be Ready.
+    /// The outcome for a pull the accepting primary answered with its typed `NotReady`: wait for that
+    /// primary to be Ready (`fabric-node-hooks.md` "The server side gates too").
     pub fn authority_not_ready(&self, reason: impl Into<String>) -> HookOutcome {
         HookOutcome::Blocked { reason: reason.into(), retry_on: RetryOn::PrimaryReady }
     }
@@ -174,10 +174,10 @@ pub enum HookOutcome {
     },
 }
 
-/// The one hook: run before Ready, for every birth.
+/// The one hook: run before Ready, for every birth (`fabric-node-hooks.md` "pre_node_ready").
 #[async_trait::async_trait]
 pub trait PreNodeReady: Send + Sync {
-    /// The step this node's role takes before it reports Ready, with `ctx.authority`.
+    /// The step this node's role takes before it reports Ready (`fabric-node-hooks.md` "pre_node_ready").
     async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome;
 }
 
@@ -203,7 +203,26 @@ impl NodeHooks {
         Self::default()
     }
 
-    /// This hook before Ready.
+    /// This hook before Ready (`fabric-node-hooks.md` "pre_node_ready").
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rdm_node::node_hooks::{HookOutcome, NodeHooks, NodeReadyCtx, PreNodeReady};
+    /// use std::sync::Arc;
+    ///
+    /// struct Warm;
+    ///
+    /// #[async_trait::async_trait]
+    /// impl PreNodeReady for Warm {
+    ///     async fn pre_node_ready(&self, _ctx: &NodeReadyCtx) -> HookOutcome {
+    ///         HookOutcome::Ok
+    ///     }
+    /// }
+    ///
+    /// let hooks = NodeHooks::new(Arc::new(Warm));
+    /// assert!(hooks.is_registered());
+    /// ```
     pub fn new(hook: Arc<dyn PreNodeReady>) -> Self {
         Self { before: Some(hook), ..Self::default() }
     }
@@ -228,7 +247,7 @@ impl NodeHooks {
 
 /// Which endpoints addressed this node with a down op, counted: a count survives an event that
 /// happened before anything waited on it. Keyed by the endpoint the transport proved for the call,
-/// so an authority no record names (a commander born after this node's stop, node-start.md step 2)
+/// so a commander no record names (a commander born after this node's stop, `lifecycles/node-start.md` step 2)
 /// is counted too.
 #[derive(Debug, Default)]
 pub struct Addressed {
@@ -283,7 +302,7 @@ impl Events {
         Self { digest_view, addressed }
     }
 
-    /// The counts now, for `authority`.
+    /// The counts now, for the accepting primary.
     pub fn mark(&self, authority: &Authority) -> Mark {
         let heard = *self.digest_view.heard_changes().borrow();
         match authority.accepted() {
