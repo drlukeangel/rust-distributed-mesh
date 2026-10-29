@@ -335,7 +335,10 @@ anything runs. Each gate reads one source. A gate that fails refuses by name and
 
 The operation carries the exact birth the gates pinned (node id and incarnation). The mesh-primary
 that runs it verifies that birth again against its own view at execution, so a birth replaced
-between acceptance and execution is refused there, by name.
+between acceptance and execution is refused there, by name. A pinned birth its view does not hold yet is
+incomplete evidence, not a replacement: the step ends incomplete and resumes on that same pinned birth
+when its view moves ([incomplete steps](node-rpc-envelope.md#caller-execution-and-certainty), Q253), never
+on a newer birth at its name.
 
 ---
 

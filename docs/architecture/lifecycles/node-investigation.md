@@ -39,7 +39,7 @@ needed is recovered by re-create (Q217). A
 node-admin's atlas is its topology and its in-flight commands over the meshes it is primary for, its own
 mesh as a mesh-primary and every mesh as the fabric-primary, each filled once from the node records as
 it takes that primary and narrowed off as it hands it away. A node-admin that is not the fabric-primary
-verifies its decision at the root with `fabrics.atlas.get` before it acts, and the root's answer wins. A
+verifies its decision at the root with `fabrics.atlas.get` before it acts, and the root's answer wins, except that a caller whose record it holds deleted stays deleted (Q217). A
 deleted caller is reported to the fabric-primary (`rdm.node_admin.node.update.via-returned-reported`),
 which terminates its runtime under `node.terminate:<path>@<incarnation>`; each decision is one
 `rdm.node_admin.node.update.via-refused-caller` span. A node that comes back after it was re-created is
