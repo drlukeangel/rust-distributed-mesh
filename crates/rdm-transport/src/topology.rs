@@ -828,16 +828,27 @@ impl StatusPublisher {
         } else { frame }
     }
 
-    /// The status as observed: a change is the frame to send at once. A publisher that holds the
-    /// role for the first time and observes the status `heard` from the previous publisher adopts
-    /// it: the lifecycle state did not change, so the fact keeps its old `changed_at_rafka_ms`. It
-    /// is silent until `checklist_complete` (every member of the publisher's checklist checked in for
-    /// this checklist); then the adopted fact is the frame to send, the first of its five sends, under
-    /// this publisher. A status that differs from the adopted one is a change like any other.
-    /// Without the role: nothing.
+    /// The status as observed: a change is the frame to send at once. Without the role: nothing.
+    ///
+    /// A mesh's status (Q272; mesh-investigation.md step 7: the joined node-admin, as mesh-primary,
+    /// authors its MeshStatus after its fresh planned-birth checklist): the publisher sends only a state
+    /// it holds. Holding nothing and hearing nothing, it sends nothing, whatever `status` (its own
+    /// projection) says. A heard state with an instant is adopted exactly, the state and its
+    /// `changed_at_rafka_ms` (fabric-primary.md §7: a takeover adopts the existing state and invents no
+    /// transition), and nothing is sent while the checklist is open; when it completes the state held
+    /// goes out, or the projection's forward change stamped then. A heard `pending` with no instant is
+    /// a mesh's first state (Day 0, a new mesh's first admin): stamped here, once, and sent at once.
+    /// A projection behind the state held never replaces it.
+    ///
+    /// The fabric's status: a publisher holding the role for the first time adopts the status heard
+    /// from the previous publisher when it is the one observed, silent until `checklist_complete`;
+    /// any other status is a change like any other.
     pub fn observe(&mut self, status: &str, heard: Option<StatusFact>, checklist_complete: bool, now: Instant, now_ms: u64) -> Option<Frame> {
         if !self.role {
             return None;
+        }
+        if matches!(self.scope, StatusScope::Mesh(_)) {
+            return self.observe_mesh(status, heard, checklist_complete, now, now_ms).map(|f| self.frame(&f));
         }
         if self.schedule.held().is_none() {
             if let Some(h) = heard.filter(|h| h.status == status) {
@@ -848,6 +859,28 @@ impl StatusPublisher {
             return checklist_complete.then(|| self.schedule.republish(now)).flatten().map(|f| self.frame(&f));
         }
         self.schedule.observe(status, now, now_ms).map(|f| self.frame(&f))
+    }
+
+    /// [`Self::observe`] for a mesh: the fact to send, if any.
+    fn observe_mesh(&mut self, status: &str, heard: Option<StatusFact>, checklist_complete: bool, now: Instant, now_ms: u64) -> Option<StatusFact> {
+        if self.schedule.held().is_none() {
+            let h = heard.filter(|h| mesh_state_rank(&h.status).is_some())?;
+            if h.changed_at_rafka_ms == 0 {
+                return (h.status == "pending").then(|| self.schedule.observe(&h.status, now, now_ms)).flatten();
+            }
+            self.schedule.adopt(h);
+        }
+        let held = self.schedule.held()?.clone();
+        let forward = mesh_state_rank(status).zip(mesh_state_rank(&held.status)).is_some_and(|(projected, held)| projected > held);
+        // A forward change is stamped after the state it replaces: a holder takes only a newer instant.
+        let stamp = now_ms.max(held.changed_at_rafka_ms + 1);
+        if self.schedule.awaiting_checklist() {
+            if !checklist_complete {
+                return None;
+            }
+            return if forward { self.schedule.observe(status, now, stamp) } else { self.schedule.republish(now) };
+        }
+        forward.then(|| self.schedule.observe(status, now, stamp)).flatten()
     }
 
     /// Whether the publisher holds an adopted status it has not republished: its checklist is open.
@@ -867,6 +900,12 @@ impl StatusPublisher {
     pub fn next_due(&self) -> Option<Instant> {
         self.role.then(|| self.schedule.next_due()).flatten()
     }
+}
+
+/// A mesh's lifecycle state by its order (states.md: a mesh is `pending` -> `ready` -> `leaving` ->
+/// `dead`); `None` for any other word.
+fn mesh_state_rank(status: &str) -> Option<u8> {
+    ["pending", "ready", "leaving", "dead"].iter().position(|s| *s == status).map(|p| p as u8)
 }
 
 /// The mesh status a `Frame::MeshStatus` carries for a ready mesh (states.md: a mesh is
@@ -5929,11 +5968,12 @@ mod tests {
         let author = test_author();
         publisher.set_role(true); publisher.author = Some((author.clone(), 1));
         let now = std::time::Instant::now();
-        let first = publisher.observe("ready", None, true, now, 100).unwrap();
+        let first_state = super::StatusFact { status: "pending".into(), changed_at_rafka_ms: 0 };
+        let first = publisher.observe("pending", Some(first_state), true, now, 100).unwrap();
         publisher.author = Some((author, 2));
         let repeated = publisher.due(now + super::STATUS_EVERY).unwrap();
         assert_eq!(first.context(), repeated.context(), "a reinforcement is the original event even when the held committed row advanced");
-        let changed = publisher.observe("deleting", None, true, now + super::STATUS_EVERY, 101).unwrap();
+        let changed = publisher.observe("ready", None, true, now + super::STATUS_EVERY, 101).unwrap();
         assert_eq!(changed.context().unwrap().primary_revision(), Some(2), "a new fact takes the current held committed revision");
     }
 
@@ -6264,7 +6304,8 @@ mod tests {
         let mut publisher = StatusPublisher::new("mesh1.admin.1", StatusScope::Mesh("mesh1".into()));
         publisher.set_role(true);
         let peer = DigestView::default();
-        let ready = publisher.observe("ready", None, true, now, 10).expect("the first status is a change");
+        let held = StatusFact { status: "ready".into(), changed_at_rafka_ms: 10 };
+        let ready = publisher.observe("ready", Some(held), true, now, 10).expect("the held ready is sent once its checklist completes");
         assert!(peer.statuses.take(&ready, &fabric));
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(peer.record(digest(&id, &inc, None, MemberStatus::Ready, 100)));

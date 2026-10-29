@@ -2187,7 +2187,9 @@ impl StatusAuthority {
             // The hand-off's state is this admin's held MeshStatus at the instant it carries, so its
             // publisher republishes it with that changed_at once its checklist completes
             // (mesh-investigation.md step 7: "republishes its held MeshStatus, preserving changed_at").
-            if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) && *at > 0 {
+            // A hand-off with no instant (a new mesh's first admin handed Pending) reaches the publisher
+            // too: it is the mesh's first state, which the publisher stamps once (Q272).
+            if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
                 if let Some(digest_view) = &self.digest_view {
                     let held = rdm_transport::topology::Frame::MeshStatus { mesh: mesh.clone(), status: mesh_status_name(*state).to_string(), publisher: self.held_name().await.to_string(), forwarded_by: None, changed_at_rafka_ms: *at };
                     let taken = digest_view.statuses.take(&held, &self.fabric_id);
@@ -2272,29 +2274,40 @@ impl StatusAuthority {
         reply
     }
 
-    /// Initial fabric bootstrap: the Day-0 root has no upstream authority to hand it its mesh's
-    /// Pending, so it applies it to itself (e4.s11 "single-admin recovery root"). Only Pending, only
-    /// for its own mesh; the seat check does not apply because no seat exists yet. The same span
-    /// as every decision, with the sender named as itself.
-    pub(crate) async fn self_apply_mesh_pending(&self, mesh_id: &MeshId) -> StatusReply {
+    /// The admin with no upstream fabric-primary applies its own mesh's state (Q272): the Day-0 root its
+    /// new mesh's `Pending`, with no instant (`at` 0), the mesh's first state; the adoption launch its
+    /// Mesh record's state at its own instant, which its publisher adopts and republishes once its
+    /// checklist completes, as any successor's (mesh-investigation.md step 7). The applied state is held
+    /// as this admin's MeshStatus, so its publisher holds what it sends.
+    pub(crate) async fn self_apply_mesh(&self, mesh_id: &MeshId, mesh: &str, state: MeshState, at: u64) -> StatusReply {
         let me_name = self.held_name().await;
         let receiver_is_primary = self.topology.read().await.own(&self.node_id).is_some_and(|n| n.is_primary);
-        let (decided, effect) = apply_mesh(&self.declared.lock().unwrap(), mesh_id, MeshState::Pending, 0);
+        let (decided, effect) = apply_mesh(&self.declared.lock().unwrap(), mesh_id, state, at);
         let reply = match effect {
             Some(effect) => self.persist_then_commit(effect).await,
             None => decided,
         };
+        let day0 = state == MeshState::Pending && at == 0;
+        let mut taken = false;
+        if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
+            if let Some(digest_view) = &self.digest_view {
+                let held = rdm_transport::topology::Frame::MeshStatus { mesh: mesh.to_string(), status: mesh_status_name(state).to_string(), publisher: me_name.to_string(), forwarded_by: None, changed_at_rafka_ms: at };
+                taken = digest_view.statuses.take(&held, &self.fabric_id);
+            }
+        }
         tracing::info_span!(
             "rdm.node_admin.status.update.via-declaration",
             node = %me_name,
             op = "apply-mesh-state",
-            state = "Pending",
+            state = ?state,
+            changed_at_rafka_ms = at,
+            taken,
             sender = %me_name,
             outcome = reply.name(),
-            detail = "self-applied: initial fabric bootstrap, no upstream authority",
+            detail = if day0 { "self-applied: initial fabric bootstrap, no upstream authority" } else { "self-applied: the adoption launch, its Mesh record's state" },
             receiver_is_primary,
         )
-        .in_scope(|| tracing::info!("the Day-0 root applies its own mesh's Pending"));
+        .in_scope(|| tracing::info!("the admin with no upstream fabric-primary applies its own mesh's state"));
         reply
     }
 }

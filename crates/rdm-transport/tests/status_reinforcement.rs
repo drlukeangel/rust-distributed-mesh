@@ -64,9 +64,11 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
 
         // A changed mesh status: the frame at once, then exactly four repeats one second apart, then
         // nothing however long the clock runs; every send is the same fact at the same instant.
+        // The mesh's first state is a heard Pending with no instant (Q272): stamped here, once.
+        let first_state = rdm_transport::topology::StatusFact { status: "pending".into(), changed_at_rafka_ms: 0 };
         let mut mesh = StatusPublisher::new(me, StatusScope::Mesh("mesh1".into()));
         mesh.set_role(true);
-        let first = mesh.observe("pending", None, true, base, 1_000).expect("a change is sent at once");
+        let first = mesh.observe("pending", Some(first_state.clone()), true, base, 1_000).expect("a change is sent at once");
         let repeats = sweep(&mut mesh, base, ms(0), Duration::from_secs(120), ms(100));
         let offsets: Vec<u64> = repeats.iter().map(|(o, _)| *o).collect();
         assert_eq!(STATUS_SENDS, 5);
@@ -107,9 +109,9 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
 
         // Only the role holder authors: without the role nothing is sent; losing the role ends the sends still to come.
         let mut not_primary = StatusPublisher::new(peer, StatusScope::Mesh("mesh2".into()));
-        assert!(not_primary.observe("ready", None, true, base, 1).is_none(), "a node that is not the primary authors nothing");
+        assert!(not_primary.observe("pending", Some(first_state.clone()), true, base, 1).is_none(), "a node that is not the primary authors nothing");
         not_primary.set_role(true);
-        assert!(not_primary.observe("ready", None, true, base, 2).is_some());
+        assert!(not_primary.observe("pending", Some(first_state.clone()), true, base, 2).is_some());
         not_primary.set_role(false);
         assert!(sweep(&mut not_primary, base, ms(0), Duration::from_secs(10), ms(100)).is_empty(), "a primary that lost the role sends no more");
         // A successor that hears the status it observes adopts it: no transition is invented, so nothing
@@ -127,12 +129,14 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         let rest = sweep(&mut successor, base, ms(12_000), Duration::from_secs(10), ms(100));
         assert_eq!(rest.len(), 4, "the republished fact is five identical sends: {rest:?}");
         assert!(rest.iter().all(|(_, f)| ts(f) == 2));
-        // A status that differs from the adopted one while the checklist is open is a change like any other.
+        // A forward change while the checklist is open sends nothing; it goes out, stamped then, when
+        // the checklist completes (Q272).
         let mut moved_on = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
         moved_on.set_role(true);
         assert!(moved_on.observe("ready", Some(heard.clone()), false, base, 80).is_none());
-        let changed = moved_on.observe("leaving", Some(heard), false, base, 81).expect("a different status is a change");
-        assert_eq!((ts(&changed), status_of(&changed)), (81, "leaving"));
+        assert!(moved_on.observe("leaving", Some(heard.clone()), false, base, 81).is_none(), "nothing is sent while the checklist is open");
+        let changed = moved_on.observe("leaving", Some(heard), true, base, 82).expect("the forward change goes out when the checklist completes");
+        assert_eq!((ts(&changed), status_of(&changed)), (82, "leaving"));
         assert!(!moved_on.awaiting_checklist());
 
         // Forwarding: a peer mesh's primary keeps the original publisher and instant, names itself
@@ -205,6 +209,12 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         topology_view.primaries().take(rdm_core::Seat::FabricPrimary, &holder);
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
+        // The mesh's first state, as a hand-off or the Day-0 self-apply holds it (Q272): Pending with no
+        // instant, stamped by the publisher; ready is then the projection's forward change.
+        let pending = Frame::MeshStatus { mesh: "mesh1".into(), status: "pending".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 0 };
+        assert!(topology_view.digest_view.statuses.take(&pending, &fabric));
+        backbone.announce_statuses("ready", "ready", true, true).await;
+        assert_eq!(topology_view.mesh_status("mesh1").map(|s| s.status), Some("pending".to_string()), "the first state is sent first");
         backbone.announce_statuses("ready", "ready", true, true).await;
         let (m, f) = (topology_view.mesh_status("mesh1").expect("the mesh status is held"), topology_view.fabric_status().expect("the fabric status is held"));
         assert_eq!((m.publisher.as_str(), m.status.as_str()), (me, "ready"));
@@ -240,8 +250,12 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         };
         let mut sender_proof = serde_json::Map::new();
         for (label, scope, held_at) in [("mesh", "mesh:mesh1".to_string(), m.changed_at_rafka_ms), ("fabric", format!("fabric:{fabric}"), f.changed_at_rafka_ms)] {
-            let sends = sends_of(scope.clone());
-            assert_eq!(sends.len(), 5, "{label}: five send spans for one change, none for the unchanged announce, none before the role: {sends:?}");
+            // The mesh's first state, Pending, went out once before ready replaced it (Q272).
+            let all = sends_of(scope.clone());
+            let first_state = usize::from(label == "mesh");
+            assert_eq!(all.len(), 5 + first_state, "{label}: five send spans for one change (and the mesh's first state once), none for the unchanged announce, none before the role: {all:?}");
+            let sends: Vec<_> = all.into_iter().filter(|(_, at)| *at == held_at).collect();
+            assert_eq!(sends.len(), 5, "{label}: five sends of the held change: {sends:?}");
             assert!(sends.iter().all(|(_, at)| *at == held_at), "{label}: all five sends carry the one changed_at_rafka_ms {held_at}: {sends:?}");
             let offsets_ms: Vec<u64> = sends.iter().map(|(t, _)| (t - sends[0].0) / 1_000_000).collect();
             for (k, o) in offsets_ms.iter().enumerate() {
@@ -271,4 +285,50 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         });
         std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     });
+}
+
+/// CONTRACT (Q272; fabric-primary.md §7: a takeover "adopts that exact state" and invents no
+/// transition; mesh-investigation.md step 7): a mesh's publisher sends only a state it holds. Holding
+/// nothing and hearing nothing it is silent, whatever its projection says; a heard state with an
+/// instant is adopted exactly and sent, that instant, when its checklist completes, whatever the
+/// projection says; a heard Pending with no instant is the mesh's first state, stamped once and sent
+/// at once; a projection behind the held state never replaces it. Must NOT happen: a successor
+/// authoring ready at its own instant before it is handed the mesh's state (the 2805 cell's red at
+/// 4d6bb4e95: ready sent 150 ms before the hand-off of ready at the older instant).
+#[test]
+fn a_mesh_status_publisher_sends_only_a_state_it_holds() {
+    let base = Instant::now();
+    let fact = |status: &str, at: u64| rdm_transport::topology::StatusFact { status: status.into(), changed_at_rafka_ms: at };
+    let publisher = || {
+        let mut p = StatusPublisher::new("mesh2.admin.1", StatusScope::Mesh("mesh2".into()));
+        p.set_role(true);
+        p
+    };
+
+    let mut silent = publisher();
+    assert!(silent.observe("ready", None, true, base, 100).is_none(), "nothing held, nothing heard: nothing sent, the projection notwithstanding");
+    assert!(silent.due(base + Duration::from_secs(5)).is_none());
+
+    let mut successor = publisher();
+    assert!(successor.observe("pending", Some(fact("ready", 40)), false, base, 100).is_none(), "ready at 40 heard, pending projected, the checklist open: nothing sent");
+    let sent = successor.observe("pending", Some(fact("ready", 40)), true, base, 101).expect("the checklist complete sends the state held");
+    assert_eq!((status_of(&sent), ts(&sent)), ("ready", 40), "the adopted state at its own instant, not the projection's");
+    assert!(successor.observe("pending", None, true, base, 102).is_none(), "a projection behind the held state never replaces it");
+
+    let mut first = publisher();
+    let stamped = first.observe("ready", Some(fact("pending", 0)), false, base, 200).expect("a mesh's first state is sent at once");
+    assert_eq!((status_of(&stamped), ts(&stamped)), ("pending", 200), "Pending with no instant is stamped here");
+    let forward = first.observe("ready", Some(fact("pending", 0)), false, base, 201).expect("the projection's forward change follows");
+    assert_eq!((status_of(&forward), ts(&forward)), ("ready", 201));
+    assert!(first.observe("ready", Some(fact("pending", 0)), false, base, 202).is_none(), "the first state is stamped once");
+
+    // Q144: Pending at an instant heard, ready projected: nothing while the checklist is open, then
+    // ready stamped at the checklist's completion.
+    let mut guard = publisher();
+    assert!(guard.observe("ready", Some(fact("pending", 30)), false, base, 300).is_none());
+    let ready = guard.observe("ready", Some(fact("pending", 30)), true, base, 301).expect("ready goes out once the checklist completes");
+    assert_eq!((status_of(&ready), ts(&ready)), ("ready", 301));
+
+    let mut wordless = publisher();
+    assert!(wordless.observe("ready", Some(fact("degraded", 50)), true, base, 400).is_none(), "only the four lifecycle words are adopted");
 }

@@ -557,6 +557,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             Some(a)
         }
     };
+    // The adoption launch's own mesh's state, the greatest its Mesh record holds: what it applies to
+    // itself at its own instant and republishes once its checklist completes (Q272).
+    let adopted_mesh_state = adoption.as_ref().map(|a| a.mesh.states.iter().max().copied().unwrap_or(rdm_core::status::MeshState::Pending));
     let inherited = match (&cfg.launch, own_row) {
         _ if adoption.is_some() => adoption.as_ref().map(|a| a.lost.clone()),
         (None, Some(own)) => {
@@ -2172,6 +2175,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let pre_node_ready_state = pre_node_ready_cell.clone();
                                         let (digest, digest_view, provider, topology_view) = (digest.clone(), digest_view.clone(), provider_dyn.clone(), topology_view.clone());
                                         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
+                                        let rafka_time_at_apply = rafka_time.clone();
                                         // The adoption launch's attempt completes once it is Ready (Q156).
                                         let adopted = adoption_claim.clone().map(|c| (c, journal.clone(), mesh_claims.clone()));
                                         let (hydrated, start_progress, entering_gate) = (builds_dyn.clone(), progress.clone(), entering.clone());
@@ -2220,14 +2224,23 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 match pending_gate(&me, &mesh_name, day0.is_some(), pending_applied, enters_existing_mesh) {
                                                     PendingGate::Clear => {}
                                                     PendingGate::Blocked(why) => blocked.push(why),
-                                                    PendingGate::SelfApply => match authority.get() {
-                                                        Some(auth) => {
-                                                            let reply = auth.self_apply_mesh_pending(&mesh_id).await;
+                                                    // The Day-0 root applies its new mesh's Pending with no instant; the adoption
+                                                    // launch its Mesh record's state at its own instant (Q272).
+                                                    PendingGate::SelfApply => match (authority.get(), adopted_mesh_state) {
+                                                        (Some(_), Some(_)) if rafka_time_at_apply.try_now_ms().is_none() => {
+                                                            blocked.push(format!("{me}: no rafka-time yet to stamp its mesh's state with"))
+                                                        }
+                                                        (Some(auth), state) => {
+                                                            let (state, at) = match state {
+                                                                Some(state) => (state, rafka_time_at_apply.try_now_ms().unwrap_or(0)),
+                                                                None => (rdm_core::status::MeshState::Pending, 0),
+                                                            };
+                                                            let reply = auth.self_apply_mesh(&mesh_id, &mesh_name, state, at).await;
                                                             if !matches!(reply, rdm_core::status::StatusReply::Applied | rdm_core::status::StatusReply::AlreadyApplied) {
-                                                                blocked.push(format!("{me}: its mesh's Pending is not applied (self-apply answered {reply:?})"));
+                                                                blocked.push(format!("{me}: its mesh's {state:?} is not applied (self-apply answered {reply:?})"));
                                                             }
                                                         }
-                                                        None => blocked.push(format!("{me}: no view yet to apply its mesh's Pending to itself")),
+                                                        (None, _) => blocked.push(format!("{me}: no view yet to apply its mesh's state to itself")),
                                                     },
                                                 }
                                                 if blocked.is_empty() {
