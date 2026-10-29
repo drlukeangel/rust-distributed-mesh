@@ -234,6 +234,7 @@ mod build_reattach;
 mod build_executables;
 mod node_create;
 mod node_delete;
+mod node_mesh_leave;
 
 #[allow(dead_code)]
 #[path = "../../../tools/test-support/gossip_wire.rs"]
