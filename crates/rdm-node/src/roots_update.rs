@@ -20,14 +20,14 @@ pub fn install_roots(registry: &ConnectionsRegistry, node: &str, node_id: &NodeI
         reason
     };
     if roots.is_empty() || roots.len() > 2 {
-        return StatusReply::RejectedCert { reason: refused(format!("{} roots: a fabric trusts one root, or two during a root rotation", roots.len())) };
+        return rdm_core::reply::status::rejected_cert(refused(format!("{} roots: a fabric trusts one root, or two during a root rotation", roots.len())));
     }
     let mut set: Vec<VerifyingKey> = Vec::new();
     for hex in roots {
         let key = rdm_core::launch::decode_hex("a root", hex).ok().and_then(|b| <[u8; 32]>::try_from(b).ok()).and_then(|b| VerifyingKey::from_bytes(&b).ok());
         match key {
             Some(k) => set.push(k),
-            None => return StatusReply::RejectedCert { reason: refused(format!("root `{hex}` is not an ed25519 public key")) },
+            None => return rdm_core::reply::status::rejected_cert(refused(format!("root `{hex}` is not an ed25519 public key"))),
         }
     }
     let cert = registry.member_cert();
