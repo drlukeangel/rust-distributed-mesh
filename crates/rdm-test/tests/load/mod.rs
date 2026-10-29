@@ -18,6 +18,9 @@ struct Profile {
 }
 
 const L1: Profile = Profile { name: "L1", meshes: 2, admins: 2, rpcs: 8, bring_up: Duration::from_secs(15) };
+const L2: Profile = Profile { name: "L2", meshes: 4, admins: 2, rpcs: 10, bring_up: Duration::from_secs(25) };
+const L3: Profile = Profile { name: "L3", meshes: 10, admins: 2, rpcs: 8, bring_up: Duration::from_secs(40) };
+const L4: Profile = Profile { name: "L4", meshes: 10, admins: 3, rpcs: 17, bring_up: Duration::from_secs(60) };
 
 fn owner(test: &str) -> Owner {
     Owner {
@@ -259,6 +262,61 @@ const M6_WINDOW: Duration = Duration::from_secs(60);
 /// M7's steady window (load-testing.md: 5 minutes at steady state).
 const STEADY: Duration = Duration::from_secs(300);
 
+/// Milliseconds from now until every node-admin in `admins` holds `node` in its own topology with
+/// `status` (and, given `not_id`, as a birth other than that node id): polled every 50 ms, bounded at
+/// 120 s.
+async fn every_admin_holds(estate: &Estate, admins: &[rdm_core::PathName], node: &rdm_core::PathName, status: &str, not_id: Option<&str>) -> f64 {
+    let t = Instant::now();
+    let mut left: Vec<&rdm_core::PathName> = admins.iter().collect();
+    while !left.is_empty() {
+        assert!(t.elapsed() < Duration::from_secs(120), "{node}: {left:?} did not hold it {status} within 120 s");
+        let mut still = Vec::new();
+        for a in left {
+            let held = estate.held_values_at(a).await.into_iter().any(|v| v["name"] == node.to_string() && s(&v["status"]) == status && not_id.is_none_or(|id| s(&v["node_id"]) != id));
+            if !held {
+                still.push(a);
+            }
+        }
+        left = still;
+        if !left.is_empty() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    t.elapsed().as_millis() as f64
+}
+
+/// A span's start, in Unix nanoseconds.
+fn start_ns(sp: &&Value) -> u64 {
+    sp["start_unix_nano"].as_u64().or_else(|| sp["start_unix_nano"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0)
+}
+
+/// M3 from the spans, all at or after `since`: the mesh-primary's write of `member`'s `status` (a stop: its
+/// admission of the stop command, `from-command-admitted` leaving; a start: its `from-node-started`) to the
+/// last node-admin of
+/// `admins` applying it to its own topology (`via-member-state`, `via-projected-status`, or that write
+/// itself). `Err` names the node-admins no span shows applying it.
+fn spread_from_spans(spans: &[Value], admins: &[rdm_core::PathName], member: &str, status: &str, since: u64) -> Result<f64, Vec<String>> {
+    let a = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let is = |sp: &Value| a(sp, "status").eq_ignore_ascii_case(status);
+    let writes = |sp: &Value| match s(&sp["name"]).as_str() {
+        "rdm.mesh.topology.update.from-command-admitted" => status == "leaving" && a(sp, "member") == member && is(sp),
+        "rdm.mesh.topology.update.from-node-started" => status == "ready" && a(sp, "member") == member && is(sp),
+        _ => false,
+    };
+    let applies = |sp: &Value| writes(sp) || (matches!(s(&sp["name"]).as_str(), "rdm.mesh.topology.update.via-member-state" | "rdm.mesh.topology.update.via-projected-status") && a(sp, "member") == member && is(sp));
+    let after: Vec<&Value> = spans.iter().filter(|sp| start_ns(sp) >= since).collect();
+    let origin = after.iter().filter(|sp| writes(sp)).map(start_ns).min().ok_or_else(|| vec![format!("the mesh-primary's write of {member} {status}")])?;
+    let mut last = origin;
+    let mut missing = Vec::new();
+    for admin in admins {
+        match after.iter().filter(|sp| applies(sp) && a(sp, "node") == admin.to_string()).map(start_ns).min() {
+            Some(at) => last = last.max(at),
+            None => missing.push(admin.to_string()),
+        }
+    }
+    if missing.is_empty() { Ok((last - origin) as f64 / 1e6) } else { Err(missing) }
+}
+
 fn now_ns() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
 }
@@ -332,6 +390,48 @@ async fn load_profile_l1_baseline() {
 #[ignore = "load: run by scripts/rdm-load.sh --no-evidence"]
 async fn load_profile_l1_no_evidence() {
     run_profile(&L1, "load_profile_l1_no_evidence", false).await;
+}
+
+/// L2, the 4-mesh, 48-node profile (load-testing.md Steps, 3): every measure L1 takes, at this profile's M1 target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh"]
+async fn load_profile_l2_baseline() {
+    run_profile(&L2, "load_profile_l2_baseline", true).await;
+}
+
+/// L2 with no span evidence written: the pass M6 and M8 are read from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh --no-evidence"]
+async fn load_profile_l2_no_evidence() {
+    run_profile(&L2, "load_profile_l2_no_evidence", false).await;
+}
+
+/// L3, the 10-mesh, 100-node profile (load-testing.md Steps, 3): every measure L1 takes, at this profile's M1 target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh"]
+async fn load_profile_l3_baseline() {
+    run_profile(&L3, "load_profile_l3_baseline", true).await;
+}
+
+/// L3 with no span evidence written: the pass M6 and M8 are read from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh --no-evidence"]
+async fn load_profile_l3_no_evidence() {
+    run_profile(&L3, "load_profile_l3_no_evidence", false).await;
+}
+
+/// L4, the 10-mesh, 200-node profile (load-testing.md Steps, 3): every measure L1 takes, at this profile's M1 target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh"]
+async fn load_profile_l4_baseline() {
+    run_profile(&L4, "load_profile_l4_baseline", true).await;
+}
+
+/// L4 with no span evidence written: the pass M6 and M8 are read from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh --no-evidence"]
+async fn load_profile_l4_no_evidence() {
+    run_profile(&L4, "load_profile_l4_no_evidence", false).await;
 }
 
 /// Run profile `p`. With `evidence` off no node writes span evidence (load-testing.md "Conditions": the
@@ -418,6 +518,76 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
         for (channel, kbs) in per_channel {
             rows.value("M7", &format!("largest node, {channel}"), "KB/s", kbs, None);
         }
+    }
+
+    // M3: a node's change to the last node-admin's own view holding it (load-testing.md M3): a node.stop
+    // of one rpc node, from its Complete to every node-admin's own topology (node.topology.get) holding it
+    // stopped, then its node.start to every node-admin holding it ready; 20 samples each.
+    let admins: Vec<rdm_core::PathName> = meshes.iter().flat_map(|m| (1..=p.admins).map(move |i| format!("{m}.admin.{i}").parse().unwrap())).collect();
+    let subject: rdm_core::PathName = format!("{}.rpc.1", meshes[0]).parse().unwrap();
+    // With evidence the sample is read from the spans: the mesh-primary's write of the status to the last
+    // node-admin applying it to its own topology; without, from the call's Complete to every node-admin's
+    // `node.topology.get` holding it, polled.
+    let (mut stops, mut starts, mut unseen) = (Vec::new(), Vec::new(), std::collections::BTreeSet::new());
+    for _ in 0..20 {
+        // A stop reaches a node's own topology as `leaving` (the held statuses: pending, ready,
+        // connections-deleting, leaving); the row's stopped is the mesh-primary's.
+        for (status, out) in [("leaving", &mut stops), ("ready", &mut starts)] {
+            let since = now_ns();
+            let objs = estate.nodes_obj().await;
+            let call = if status == "leaving" { objs.stop(&subject).await } else { objs.start(&subject).await };
+            let _ = Estate::workflow(&format!("{status} of {subject}"), call).await;
+            let polled = every_admin_holds(&estate, &admins, &subject, status, None).await;
+            if status == "leaving" {
+                estate.until_stopped_at_the_fabric_primary(&subject).await;
+            }
+            if !evidence {
+                out.push(polled);
+                continue;
+            }
+            match spread_from_spans(&estate.spans(), &admins, &subject.to_string(), status, since) {
+                Ok(ms) => out.push(ms),
+                Err(missing) => unseen.extend(missing),
+            }
+        }
+    }
+    rows.time("M3", "a stop to every node-admin's own view", stops, Some(4000.0), None);
+    rows.time("M3", "a start to every node-admin's own view", starts, Some(4000.0), None);
+    if !unseen.is_empty() {
+        println!("[load] M3: no span names the change applied at {unseen:?}: those samples are left out");
+    }
+
+    // M4: a SIGKILLed rpc node, kills spread across every mesh: the kill to its re-created birth Ready in
+    // every node-admin's own view; with evidence, the kill to the first stale mark of it
+    // (`via-member-stale`) and that mark to Ready on their own; 10 kills.
+    let (mut to_ready, mut to_mark, mut mark_to_ready) = (Vec::new(), Vec::new(), Vec::new());
+    for k in 0..10usize {
+        let mesh = &meshes[k % meshes.len()];
+        let victim: rdm_core::PathName = format!("{mesh}.rpc.{}", (k / meshes.len()) as u32 % p.rpcs + 1).parse().unwrap();
+        let before = estate.held_values_at(&admins[0]).await.into_iter().find(|v| v["name"] == victim.to_string()).map(|v| s(&v["node_id"]));
+        let killed_ns = now_ns();
+        estate.kill_node(&victim.to_string()).await;
+        let ms = every_admin_holds(&estate, &admins, &victim, "ready", before.as_deref()).await;
+        let ready_ns = killed_ns + (ms * 1e6) as u64;
+        to_ready.push(ms);
+        if evidence {
+            let spans = estate.spans();
+            let mark = named(&spans, "rdm.mesh.topology.update.via-member-stale")
+                .into_iter()
+                .filter(|sp| s(&sp["attributes"]["member"]) == victim.to_string())
+                .map(|sp| start_ns(&sp))
+                .filter(|at| *at >= killed_ns)
+                .min();
+            if let Some(at) = mark {
+                to_mark.push((at - killed_ns) as f64 / 1e6);
+                mark_to_ready.push(ready_ns.saturating_sub(at) as f64 / 1e6);
+            }
+        }
+    }
+    rows.time("M4", "the kill to Ready", to_ready, Some(60_000.0), None);
+    if evidence {
+        rows.time("M4", "the kill to the stale mark", to_mark, Some(32_000.0), None);
+        rows.time("M4", "the stale mark to Ready", mark_to_ready, Some(25_000.0), None);
     }
 
     // M5: one node added then removed, each its own Build, accepted to complete; 20 samples each.

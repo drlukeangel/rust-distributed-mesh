@@ -33,4 +33,4 @@ fi
 # exports for every other run. Each row records the cadence it ran at.
 export RDM_STALENESS_MS=30000 RDM_GOSSIP_INTERVAL_MS=2000 RDM_BACKBONE_INTERVAL_MS=5000
 echo "rdm-load: profile $profile, nodes from $bins, cadence staleness ${RDM_STALENESS_MS} ms, gossip ${RDM_GOSSIP_INTERVAL_MS} ms, backbone ${RDM_BACKBONE_INTERVAL_MS} ms"
-RDM_BIN_DIR="$bins" scripts/cells.sh rdm-test main -- "load::load_profile_${lower}_${cell}" --exact --ignored --nocapture 2>&1 | grep -E '^\[load\]|^test |test result|panicked|missed'
+RDM_BIN_DIR="$bins" scripts/cells.sh rdm-test main -- "load::load_profile_${lower}_${cell}" --exact --ignored --nocapture 2>&1 | grep -E '^\[load\]|^test |test result|panicked|missed| did not |assertion'
