@@ -342,14 +342,22 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
     let shape: Vec<(&str, u32, u32)> = meshes.iter().map(|m| (m.as_str(), p.admins, p.rpcs)).collect();
 
     // M1, M2: the Day-0 Build of the whole shape, submitted to the bootstrap admin, to the fabric's ready.
+    // Each phase's end is reported beside the whole, so a bring-up that grows names the phase it grew in.
     let t0 = Instant::now();
     let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", if evidence { &[] } else { &[("RDM_EVIDENCE_DIR", "")] }).await;
+    let admin_up = t0.elapsed();
     let mut stream = estate.submit_shape("fabric1", &shape).await;
     let _ = Estate::until_complete(&mut stream).await;
+    let complete = t0.elapsed();
     estate.settles_to(&shape, Duration::from_secs(300)).await;
+    let settled = t0.elapsed();
     estate.until_fabric_ready(Duration::from_secs(300)).await;
     let bring_up = t0.elapsed();
-    rows.time("M1", "bring-up, launch to ready", vec![bring_up.as_millis() as f64], Some(p.bring_up.as_millis() as f64), None);
+    let ms = |d: Duration| vec![d.as_millis() as f64];
+    rows.time("M1", "bring-up: day-0 admin up", ms(admin_up), None, None);
+    rows.time("M1", "bring-up: the Day-0 Build complete", ms(complete), None, None);
+    rows.time("M1", "bring-up: every node ready in the view", ms(settled), None, None);
+    rows.time("M1", "bring-up, launch to ready", ms(bring_up), Some(p.bring_up.as_millis() as f64), None);
     if evidence {
         let spans = estate.spans();
         let creates = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "Complete" && sp["attributes"]["outcome"] == "complete").count();
