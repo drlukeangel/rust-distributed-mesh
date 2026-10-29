@@ -153,3 +153,354 @@ fn whom(to: &JoinTo) -> String {
         JoinTo::Commander(commander) => format!("the admin whose call commanded it (endpoint {})", *commander.borrow()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{FabricIdentity, ProviderKind};
+    use crate::wire::{answer_to_wire, JoinControl};
+    use rdm_core::catalog::OpOwner;
+    use rdm_core::join::{Join, JoinReply, JoinRequest};
+    use rdm_core::{EndpointId, FabricId, IncarnationId, MeshId, MeshNode};
+    use rdm_transport::ServerBuilder;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    struct TestJoinNode {
+        ep: iroh::Endpoint,
+        digest: MeshDigest,
+        fabric_id: FabricId,
+        mesh_id: MeshId,
+        entered: Arc<Mutex<Vec<Option<PathName>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl MeshJoin for TestJoinNode {
+        type Error = StartFailed;
+
+        fn join_digest(&self) -> MeshDigest {
+            self.digest.clone()
+        }
+
+        async fn enter_channel(
+            &mut self,
+            step: tracing::Span,
+            joined: Option<&JoinAnswer>,
+        ) -> Result<TopologyView, Self::Error> {
+            let handed_name = joined.and_then(|j| j.control.name.clone());
+            self.entered.lock().unwrap().push(handed_name.clone());
+            let node_name = handed_name
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| self.digest.node.name.to_string());
+            tracing::info_span!(
+                parent: &step,
+                "rdm.node.mesh.update.via-joined",
+                node = %node_name,
+                mesh = %self.digest.node.name.mesh,
+                mesh_id = %self.mesh_id,
+                which = "own"
+            )
+            .in_scope(|| tracing::info!("entered mesh channel"));
+            drop(step);
+            let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
+            clock.adopt(4_200_000);
+            let g = iroh_gossip::net::Gossip::builder().spawn(self.ep.clone());
+            TopologyView::join(
+                &g,
+                &self.ep,
+                &self.fabric_id,
+                &self.digest.node.name.mesh,
+                &self.mesh_id,
+                &node_name,
+                clock,
+                Vec::new(),
+                &[],
+            )
+            .await
+            .map_err(|e| StartFailed {
+                step: "node.channel",
+                reason: e.to_string(),
+            })
+        }
+    }
+
+    // @feature: node-mesh-join
+    /// Page: docs/architecture/lifecycles/node-mesh-join.md:5
+    /// "A primitive (R-MJ1). A mesh is a channel on the one fabric network, and `node.mesh.join` puts a
+    /// node on it: the node reports to its primary with `JoinNode` on op `0x1D`, and on acceptance
+    /// joins that mesh, `f(FabricId, MeshId)`... Progress is `joining`, completion `node.mesh.joined`."
+    /// Page: docs/architecture/lifecycles/node-mesh-join.md:28
+    /// "Order: Report accepted first, then the mesh; the handed name, rafka-time and cert installed before anything is published"
+    #[test]
+    fn node_mesh_join_reports_pending_digest_refuses_mismatch_and_installs_handed_name_and_rafka_time_before_entering_channel() {
+        let dir = std::env::temp_dir().join(format!("rdm-node-mesh-join-unit-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-node-mesh-join-unit")
+            .expect("evidence capture starts");
+
+        capture.run(2, async {
+            let fabric_id = FabricId::mint();
+            let mesh_id = MeshId::mint();
+            let admin_id = NodeId::mint();
+            let admin_incarnation = IncarnationId::mint();
+            let admin_name: PathName = "mesh1.admin.1".parse().unwrap();
+
+            // Verify `whom(&JoinTo)` formatting for both launcher and commander targets.
+            let sample_key = iroh::SecretKey::generate().public();
+            let launcher_to = JoinTo::Launcher {
+                target: NodeTarget::ExactNode(admin_id.clone()),
+                endpoint: sample_key,
+                name: admin_name.clone(),
+            };
+            assert_eq!(whom(&launcher_to), "mesh1.admin.1");
+            let (_tx, rx) = tokio::sync::watch::channel(sample_key);
+            let commander_to = JoinTo::Commander(rx);
+            assert!(whom(&commander_to).contains(&sample_key.to_string()));
+
+            // Set up an in-process Join (0x1D) server representing the accepting primary.
+            let admin_key = iroh::SecretKey::generate();
+            let admin_ep = rdm_transport::endpoint::bind(
+                admin_key.clone(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+            let admin_addr = admin_ep
+                .bound_sockets()
+                .into_iter()
+                .find(|a| a.is_ipv4())
+                .unwrap();
+
+            let observed_statuses: Arc<Mutex<Vec<MemberStatus>>> = Arc::default();
+            let next_reply: Arc<Mutex<Option<JoinReply>>> = Arc::default();
+
+            let statuses_slot = observed_statuses.clone();
+            let reply_slot = next_reply.clone();
+            let server = ServerBuilder::new()
+                .serve::<Join, _, _>(
+                    OpOwner::Product("rdm".into()),
+                    move |_peer: rdm_transport::PeerContext, req: JoinRequest| {
+                        let statuses_slot = statuses_slot.clone();
+                        let reply_slot = reply_slot.clone();
+                        async move {
+                            let JoinRequest::JoinNode { digest, .. } = req;
+                            let decoded = MeshDigest::try_from(digest).expect("decode WireDigest");
+                            statuses_slot.lock().unwrap().push(decoded.status);
+                            Ok(reply_slot
+                                .lock()
+                                .unwrap()
+                                .take()
+                                .expect("next JoinReply armed"))
+                        }
+                    },
+                )
+                .build(rdm_transport::ServedBirth {
+                    node_id: admin_id.to_string(),
+                    incarnation: admin_incarnation.to_string(),
+                })
+                .unwrap();
+            let _router = iroh::protocol::Router::builder(admin_ep.clone())
+                .accept(rdm_transport::ALPN, server)
+                .spawn();
+
+            // Client side (the joining node).
+            let node_key = iroh::SecretKey::generate();
+            let node_ep = rdm_transport::endpoint::bind(
+                node_key.clone(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+            let node_addr = node_ep
+                .bound_sockets()
+                .into_iter()
+                .find(|a| a.is_ipv4())
+                .unwrap();
+            let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
+            resolver.apply(
+                rdm_transport::ResolvedNode {
+                    node_id: admin_id.clone(),
+                    name: admin_name.clone(),
+                    endpoint_id: admin_key.public(),
+                    transport_addr: admin_addr,
+                    incarnation: admin_incarnation.clone(),
+                },
+                None,
+            );
+            let client = NodeRpcClient::new(node_ep.clone(), resolver).with_caller_system("rdm");
+
+            let node_id = NodeId::mint();
+            let node_incarnation = IncarnationId::mint();
+            let initial_name: PathName = "mesh1.rpc.1".parse().unwrap();
+            let handed_name: PathName = "mesh1.rpc.2".parse().unwrap();
+
+            // Start with status = Ready in the raw digest to prove `node_mesh_join` forces Pending on the wire.
+            let digest = MeshDigest {
+                held_hash: Default::default(),
+                fabric_id: fabric_id.clone(),
+                node: MeshNode {
+                    node_id: node_id.clone(),
+                    name: initial_name.clone(),
+                    endpoint_id: EndpointId(node_key.public().to_string()),
+                    incarnation: node_incarnation.clone(),
+                    supersedes: None,
+                    transport_addr: node_addr,
+                    runtime: None,
+                },
+                status: MemberStatus::Ready,
+                node_state: Default::default(),
+                admin_api_base: None,
+                emitted_at_rafka_ms: 0,
+                digest_seq: 1,
+                mesh_id: Some(mesh_id.clone()),
+                in_flight: None,
+                load: None,
+                gossip: None,
+                data_dir: Some("/var/lib/rdm/mesh1.rpc.1".into()),
+                is_primary: None,
+                is_fabric_primary: None,
+            };
+
+            let entered = Arc::new(Mutex::new(Vec::new()));
+            let mut joiner = TestJoinNode {
+                ep: node_ep,
+                digest,
+                fabric_id: fabric_id.clone(),
+                mesh_id: mesh_id.clone(),
+                entered: entered.clone(),
+            };
+            let to = JoinTo::Launcher {
+                target: NodeTarget::ExactNode(admin_id.clone()),
+                endpoint: admin_key.public(),
+                name: admin_name.clone(),
+            };
+            let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
+
+            // 1. Refused report (`JoinMismatch`): fails immediately with `StartFailed { step: "node.join", .. }`
+            //    and never enters the mesh channel.
+            *next_reply.lock().unwrap() = Some(JoinReply::JoinMismatch {
+                field: "incarnation".into(),
+                deployed: "0000000000000001".into(),
+                reported: node_incarnation.to_string(),
+            });
+            let err = match node_mesh_join(
+                &mut joiner,
+                JoinCall {
+                    name: initial_name.to_string(),
+                    node_id: &node_id,
+                    mesh: "mesh1",
+                    mesh_id: mesh_id.as_str(),
+                    client: &client,
+                    rafka_time: &rafka_time,
+                    to: &to,
+                    authority: "mesh1.admin.1",
+                    operation: "node.create:mesh1.rpc.1",
+                    report_parent: None,
+                    reported: tracing::Span::none(),
+                    channel_parent: None,
+                },
+            )
+            .await
+            {
+                Ok(_) => panic!("refused JoinNode must fail node_mesh_join"),
+                Err(e) => e,
+            };
+            assert_eq!(err.step, "node.join");
+            assert!(
+                err.reason.contains("was refused its join by mesh1.admin.1: incarnation"),
+                "unexpected refusal reason: {}",
+                err.reason
+            );
+            assert!(
+                entered.lock().unwrap().is_empty(),
+                "a refused report must not enter any mesh channel"
+            );
+
+            // 2. Accepted report (`Joined`): installs the handed name, adopts rafka-time, and enters the channel.
+            let answer = JoinAnswer {
+                served_by: admin_name.to_string(),
+                control: JoinControl {
+                    provider: ProviderKind::Process,
+                    fabric: Some(FabricIdentity {
+                        fabric_id: fabric_id.clone(),
+                        name: "fabric1".into(),
+                    }),
+                    build: None,
+                    rafka_time_ms: 4_200_000,
+                    member_cert: Vec::new(),
+                    name: Some(handed_name.clone()),
+                    config: Some(BTreeMap::from([(
+                        "log_level".to_string(),
+                        "info".to_string(),
+                    )])),
+                    cert_policy: None,
+                },
+                statuses: Vec::new(),
+            };
+            *next_reply.lock().unwrap() = Some(JoinReply::Joined {
+                answer: answer_to_wire(&answer).expect("encode JoinAnswer"),
+            });
+
+            let reported_span = tracing::info_span!(
+                "rdm.mesh.node.update.via-join",
+                node = %initial_name,
+                served_by = tracing::field::Empty,
+                endpoint = tracing::field::Empty,
+                installed = tracing::field::Empty
+            );
+            let joined = node_mesh_join(
+                &mut joiner,
+                JoinCall {
+                    name: initial_name.to_string(),
+                    node_id: &node_id,
+                    mesh: "mesh1",
+                    mesh_id: mesh_id.as_str(),
+                    client: &client,
+                    rafka_time: &rafka_time,
+                    to: &to,
+                    authority: "mesh1.admin.1",
+                    operation: "node.create:mesh1.rpc.1",
+                    report_parent: None,
+                    reported: reported_span,
+                    channel_parent: None,
+                },
+            )
+            .await
+            .expect("accepted JoinNode must complete node_mesh_join");
+
+            // Both reports presented status = Pending on the wire.
+            assert_eq!(
+                *observed_statuses.lock().unwrap(),
+                vec![MemberStatus::Pending, MemberStatus::Pending]
+            );
+            assert_eq!(joined.name, handed_name.to_string());
+            assert_eq!(joined.through.name, admin_name);
+            assert!(
+                rafka_time.now_ms() >= 4_200_000,
+                "rafka_time must adopt the answer's rafka_time_ms"
+            );
+            assert_eq!(
+                *entered.lock().unwrap(),
+                vec![Some(handed_name)],
+                "enter_channel must receive the handed name before publishing"
+            );
+        });
+
+        let spans = capture.spans().expect("captured spans");
+        let _ = std::fs::remove_dir_all(&dir);
+        for required in [
+            "rdm.node.mesh.update.via-joining",
+            "rdm.mesh.entry.reject.via-topology-pull-failed",
+            "rdm.mesh.entry.update.via-topology-pulled",
+            "rdm.mesh.node.update.via-topology-joined",
+            "rdm.node.mesh.update.via-joined",
+        ] {
+            assert!(
+                spans.iter().any(|s| s["name"] == required),
+                "expected span {required} in node_mesh_join unit cell"
+            );
+        }
+    }
+}
+
