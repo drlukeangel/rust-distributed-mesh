@@ -193,15 +193,9 @@ mod tests {
     /// - `docs/architecture/lifecycles/node-status.md:18` — "- a failed delivery gains a viable route;"
     /// - `docs/architecture/lifecycles/node-status.md:19` — "- the primary addresses this node with the state's down call."
     /// - `docs/architecture/lifecycles/node-status.md:21` — "Typed replies, including named refusals, are terminal. One coalesced wake drives the work, never a timer. An unreachable target schedules no report."
-    /// - `docs/architecture/lifecycles/node-status.md:22` — "`node.get` maps the exact-instance read to ProbeNodeState; its Current reply reasserts held status and does not manufacture a transition or a new change timestamp."
+    /// - `docs/architecture/lifecycles/node-status.md:21-22` — "The exact-instance read is [node.tickle](node-tickle.md)'s probe, `ProbeNodeState`; its Current reply reasserts held status and does not manufacture a transition or a new change timestamp."
     /// - `docs/architecture/lifecycles/node-status.md:26` — "A node reports to its mesh's primary, which sets its status. A report is an owed message ([Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes)) and names the operation that produced the state when one did ([DeclaredOperation](../node-rpc-envelope.md#status-op-0x1b-rdm)): a stop's `Stopped`, from which the mesh-primary publishes NodeStopped ([node.stop](node-stop.md) step 5), and a start's `Pending` and `Ready`."
-    /// - `docs/architecture/lifecycles/node-status.md:38` — "| Caller / receiver | The node's mesh-primary, downward to the exact accepted node |"
-    /// - `docs/architecture/lifecycles/node-status.md:39` — "| Kept | node.id, incarnation, endpoint key, port, immutable path and runtime |"
-    /// - `docs/architecture/lifecycles/node-status.md:40` — "| Mapping | ApplyNodeState on the [Status schema](../node-rpc-envelope.md#status-op-0x1b-rdm); connections-deleting is entered only by [node.connections.delete](node-connections-delete.md) with `{ scope: All }` |"
-    /// - `docs/architecture/lifecycles/node-status.md:41` — "| Result | a typed reply, or a named typed refusal |"
-    /// - `docs/architecture/lifecycles/node-status.md:42` — "| Completion | Stream result for the accepted exact subject; no runtime exit inferred |"
-    /// - `docs/architecture/lifecycles/node-status.md:44` — "Workflow actions run the status apply; how a node leaves the stopped status is [Stopped nodes](states.md#stopped-nodes)."
-    /// - `docs/architecture/lifecycles/node-status.md:50` — "A refusal is typed and named; the workflow that ran the apply records it as its own step's `Failed { step, reason }`."
+    /// - `docs/architecture/lifecycles/node-status.md:36` — "No node status is applied downward. … `ApplyNodeState` is reserved on the Status schema and refused by name." (Q281)
     /// - `docs/architecture/lifecycles/node-status.md:55` — "Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans)."
     #[tokio::test]
     async fn node_status_report_eligible_events_probe_reassert_and_status_apply_conformance() {
@@ -447,7 +441,7 @@ mod tests {
             StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }
         );
 
-        // node-status.md:38-42, 50-51 — ApplyNodeState(ConnectionsDeleting) is refused with a named typed refusal
+        // node-status.md:36 (Q281) — ApplyNodeState is reserved and refused by name; ApplyNodeState(ConnectionsDeleting) is refused with a named typed refusal
         // because connections-deleting is entered only by node.connections.delete { scope: All }; node.id,
         // incarnation, endpoint key, port, and immutable path are kept unchanged; and the workflow step
         // classifies the refusal as Refused (recorded as Failed { step, reason }).
