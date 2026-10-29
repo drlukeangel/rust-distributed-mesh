@@ -919,7 +919,7 @@ async fn silent_case(run: &Run) {
 /// CONTRACT (#2782): real stalls of a real estate (mesh1 with two node-admins, both the testkit's
 /// faulted admin, and rpc nodes), each held and released through its own door or signal, are judged
 /// by the semantic detector, never by a timeout. Cuts: a deployment step (create `WaitForBind`), a
-/// removal step on a serving node (delete `NodeDeleting`),
+/// removal step held at its receipt (delete `NodeDeleting`, the node deleting and not routable),
 /// the accepted Build durable, and current from then on (the
 /// fabric-primary admin held), a joining admin held at its Ready gate on the provider domain and another
 /// held at the topology read it makes while it hydrates (node-start.md step 4), and a non-primary rpc node
@@ -983,7 +983,9 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         true,
     )
     .await;
-    // A removal step on a node that keeps serving until the delete reaches it.
+    // A removal step held at its receipt: the node's row is Deleting from node.delete's adopted claim
+    // (states.md "Who sets each state": node deleting), and deleting is a routing stop from the moment a
+    // peer holds it (states.md "Routing"), so the cut's position implies the node is not routable.
     let step = DeleteStep::NodeDeleting.name();
     door_case(
         &run,
@@ -994,7 +996,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         Trigger::Delete(node.into()),
         Shape::Delete { node: node.into() },
         Watch::Node(node.into()),
-        true,
+        false,
     )
     .await;
     // Two rpc nodes, so the frozen one is not its node type's primary nor the only one; then the frozen node.
