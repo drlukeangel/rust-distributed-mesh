@@ -9,8 +9,8 @@
 //! pair; `BuildCarrier::follow` follows a stream to its terminal and reattaches on its own whenever the
 //! stream breaks or ends `FabricPrimaryMoved`, keeping each completed step once.
 //!
-//! Here the Build is one step, `node.connections.delete { All }` of a node (its connections are closed
-//! and it keeps running on its mesh). The caller keeps only its Build id from the first stream and drops
+//! Here the call is one step, `node.connections.delete { All }` of a node (its connections are closed
+//! and it keeps running on its mesh), run as the next attempt of the fabric's current Build. The caller keeps only its Build id from the first stream and drops
 //! the stream, as a restarted caller would; then it reattaches by id and follows the Build to its end.
 //!
 //! Build: `cargo build --example build_reattach` in `demo/`. Run against a live estate:
@@ -40,9 +40,12 @@ async fn main() -> Result<()> {
     let accepted = Nodes::new(carrier.clone()).steps(vec![Step::DeleteConnections { node: node.clone() }]).await?.accepted().clone();
     println!("accepted: Build {} attempt {}; the stream is dropped", accepted.build_id.log(), accepted.attempt);
 
-    // Reattach by id: the receipts so far, and the stream again.
+    // Reattach by id: the receipts so far, and the stream again. The receipts are every attempt's: a
+    // call on a node runs as an attempt of the fabric's current Build, so its earlier attempts' are there too.
     let again = carrier.reattach(&accepted.build_id).await?;
-    for r in &again.receipts {
+    let (ours, earlier): (Vec<_>, Vec<_>) = again.receipts.iter().partition(|r| r.attempt >= accepted.attempt);
+    println!("reattached: {} receipt(s) of earlier attempts, {} of this one", earlier.len(), ours.len());
+    for r in ours {
         println!("receipt: attempt {} {} {} {:?}", r.attempt, r.operation, r.step, r.result);
     }
     // Follow it to its end; a break on the way is reattached the same way.
