@@ -635,4 +635,57 @@ mod tests {
             assert!(e.starts_with(ENV_ROOTS) && e.contains(says), "{e}");
         }
     }
+
+    // @feature: named-listeners
+    /// CONTRACT (docs/architecture/node-rpc-envelope.md:1033):
+    /// "`listeners` is each listener the application's wiring declares on the birth's kind, by name,
+    ///  at the address the birth bound: the IP address node-admin assigned and a nonzero port the
+    ///  operating system chose (Q151)."
+    #[test]
+    fn named_listeners_encode_and_decode_through_rdm_listeners_and_refuse_malformed_entries_by_name() {
+        let entries: Vec<(String, SocketAddr)> = vec![
+            ("kafka".into(), "127.0.0.1:0".parse().unwrap()),
+            ("rest".into(), "127.0.0.1:41010".parse().unwrap()),
+            ("proxy".into(), "127.0.0.1:41011".parse().unwrap()),
+        ];
+        let encoded = encode_listeners(&entries);
+        assert_eq!(
+            encoded,
+            "kafka=127.0.0.1:0,rest=127.0.0.1:41010,proxy=127.0.0.1:41011"
+        );
+        assert_eq!(decode_listeners(&encoded).unwrap(), entries);
+        assert!(decode_listeners("").unwrap().is_empty());
+
+        let base_env = BTreeMap::from([
+            (ENV_FABRIC.to_string(), "fabric1".to_string()),
+            (ENV_FABRIC_ID.to_string(), FabricId::mint().to_string()),
+            (ENV_NODE_NAME.to_string(), "mesh1.gateway.1".to_string()),
+            (ENV_NODE_ID.to_string(), NodeId::mint().to_string()),
+            (ENV_INCARNATION.to_string(), IncarnationId::mint().to_string()),
+            (ENV_TRANSPORT_ADDR.to_string(), "127.0.0.1:0".to_string()),
+            (ENV_DATA_DIR.to_string(), "/tmp/x".to_string()),
+            (ENV_STORE_DIR.to_string(), "/tmp/store".to_string()),
+            (ENV_LISTENERS.to_string(), encoded),
+        ]);
+        let launch = Launch::from_env(|k| base_env.get(k).cloned()).expect("valid launch");
+        assert_eq!(launch.listeners, entries);
+        let written = launch.to_env();
+        assert_eq!(
+            Launch::from_env(|k| written.get(k).cloned())
+                .expect("parsed launch")
+                .listeners,
+            entries
+        );
+
+        for (bad, expected) in [
+            ("kafka", "RDM_LISTENERS entry `kafka` is not name=addr"),
+            ("kafka=not-an-addr", "address in `kafka=not-an-addr`"),
+        ] {
+            let mut bad_env = base_env.clone();
+            bad_env.insert(ENV_LISTENERS.to_string(), bad.to_string());
+            let err = Launch::from_env(|k| bad_env.get(k).cloned())
+                .expect_err("malformed RDM_LISTENERS must be refused");
+            assert!(err.contains(expected), "expected `{expected}` in `{err}`");
+        }
+    }
 }
