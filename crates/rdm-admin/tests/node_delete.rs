@@ -646,3 +646,468 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
     }
     crate::assert_own_story(capture.all_names().iter().map(String::as_str));
 }
+
+// @feature: node-delete
+/// CONTRACT (docs/architecture/lifecycles/node-delete.md:17-19, 26-35, 55-60):
+/// "OS-suspended target: The provider reports the exact runtime `os-stopped`: the stop is skipped
+/// by name (a suspended process answers no call) and the delete begins at `TerminateRuntime` on the
+/// exact handle, as `terminate(Immediate)` ... the delete completes only on the provider's `Exited`."
+/// "1. For a live process compose the whole node.stop. For a crashed process those stop steps are
+/// already done; do not fabricate node replies or receipts. 2. Terminate and inspect the exact runtime
+/// through provider control."
+/// Injects one fault per step of `node.delete`:
+/// - OS-suspended target (`OsStopped`) that remains `OsStopped` after `terminate(Immediate)` -> skips
+///   `StopNode` and `AwaitNodeLeft` by name (`rdm.node_admin.node.delete.via-os-stopped`) and fails
+///   `TerminateRuntime` with no `NodeDeleted`;
+/// - Cut after `NodeDeleting` and `TerminateRuntime` before `NodeDeleted` -> next attempt reuses
+///   `NodeDeleting` and `TerminateRuntime` without re-stopping or re-terminating and completes
+///   `NodeDeleted`, `RemoveTopologyMembership`, and `Complete`;
+/// - Lost reply at `StopNode` (`CommandAdmission::Indeterminate`) on a live delete -> records
+///   `Completion::NotAwaited` at `AwaitNodeLeft` without fabricating a `stopped` event, terminates the
+///   exact runtime through the provider, and completes `NodeDeleted` from the provider's `Exited`.
+#[test]
+fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
+    use rdm_admin::build_state::BuildStepReceipt;
+    use rdm_admin::deployment::pipeline::TerminalReceipt;
+    use std::collections::VecDeque;
+
+    struct ScriptedDeleteProvider {
+        inspects: Mutex<VecDeque<DeploymentStatus>>,
+        terminates: Mutex<Vec<(DeploymentId, TerminationMode)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for ScriptedDeleteProvider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            rdm_core::runtime::process_control_domain().expect("process control domain")
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+            Err(DeployError::Spawn {
+                node: spec.node.to_string(),
+                reason: "node_delete_step_faults spawns nothing".into(),
+            })
+        }
+        async fn terminate(
+            &self,
+            handle: &DeploymentHandle,
+            mode: TerminationMode,
+        ) -> Result<(), DeployError> {
+            self.terminates.lock().unwrap().push((handle.deployment_id.clone(), mode));
+            Ok(())
+        }
+        async fn inspect(&self, _handle: &DeploymentHandle) -> DeploymentStatus {
+            self.inspects
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(DeploymentStatus::Exited { code: Some(0) })
+        }
+        async fn signal_stop(&self, _handle: &DeploymentHandle) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn find(&self, _spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+            Ok(Found::NeverLaunched)
+        }
+    }
+
+    struct IndeterminateStopObserver {
+        commands: Mutex<Vec<(PathName, NodeCommand)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl NodeObserver for IndeterminateStopObserver {
+        async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
+            None
+        }
+        async fn ready(&self, _: &Node) -> Result<(), String> {
+            Ok(())
+        }
+        async fn send_command(
+            &self,
+            node: &Node,
+            cmd: NodeCommand,
+            _ctx: &CommandContext,
+        ) -> CommandAdmission {
+            self.commands.lock().unwrap().push((node.name.clone(), cmd));
+            CommandAdmission::Indeterminate {
+                reason: "stop stream cut before Stopped".into(),
+                code: rdm_core::outcome::Code::Unavailable,
+            }
+        }
+        async fn await_completion(
+            &self,
+            _node: &Node,
+            _cmd: NodeCommand,
+            _ctx: &CommandContext,
+            _within: Duration,
+        ) -> Completion {
+            Completion::Deadline {}
+        }
+    }
+
+    let capture = Capture::new("node_delete_step_faults");
+    let dispatch = capture.dispatch.clone();
+    let d = dispatch.clone();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+        .build()
+        .unwrap();
+    let _guard = tracing::dispatcher::set_default(&dispatch);
+
+    rt.block_on(async {
+        let root_dir = std::env::temp_dir().join(format!(
+            "rdm-node-delete-faults-{}-{}",
+            std::process::id(),
+            BuildId::mint()
+        ));
+        std::fs::create_dir_all(&root_dir).unwrap();
+
+        let admin_name: PathName = "mesh1.admin.1".parse().unwrap();
+        let mut admin_node = Node::allocated(admin_name.clone());
+        admin_node.status = NodeStatus::Ready;
+        admin_node.is_primary = true;
+        admin_node.is_fabric_primary = true;
+        admin_node.incarnation_id = Some(IncarnationId::mint());
+        let admin_id = admin_node.node_id.clone();
+
+        let target_name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let target_id = NodeId::mint();
+        let target_incarnation = IncarnationId::mint();
+        let deployment_id = DeploymentId::mint();
+        let target_data_dir = root_dir.join(format!("{target_name}-{target_id}"));
+        std::fs::create_dir_all(&target_data_dir).unwrap();
+
+        let mut target_node = Node::allocated(target_name.clone());
+        target_node.node_id = target_id.clone();
+        target_node.incarnation_id = Some(target_incarnation.clone());
+        target_node.deployment_id = Some(deployment_id.clone());
+        target_node.provider = Some(ProviderKind::Process);
+        target_node.data_dir = Some(target_data_dir.display().to_string());
+        target_node.status = NodeStatus::Ready;
+
+        let store = Arc::new(MemoryNodesStorage::default());
+        let mut initial_row = NodeRow::new(target_name.clone(), target_id.clone(), NodeStatus::Ready);
+        initial_row.birth_mut(&target_incarnation, &target_name);
+        store.write_record(&initial_row).await.unwrap();
+
+        let view = Arc::new(RwLock::new(Topology {
+            fabric: Fabric {
+                id: rdm_core::FabricId::mint(),
+                name: "fabric1".into(),
+                status: ScopeStatus::Ready,
+                provider: ProviderKind::Process,
+            },
+            meshes: vec![Mesh {
+                id: Some(rdm_core::MeshId::mint()),
+                name: "mesh1".into(),
+                status: ScopeStatus::Ready,
+            }],
+            nodes: vec![admin_node, target_node.clone()],
+        }));
+
+        let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(
+            admin_name.clone(),
+            admin_id.clone(),
+            view,
+            store.clone(),
+        ));
+        rows.written().hold(&initial_row);
+
+        let fact = RuntimeFact::of_this_process(deployment_id.as_str()).unwrap();
+        let (pid, start) = match fact.locator {
+            RuntimeLocator::Process { pid, start } => (pid, start),
+            other => panic!("unexpected locator: {other:?}"),
+        };
+        let handle = DeploymentHandle {
+            deployment_id: deployment_id.clone(),
+            provider: ProviderKind::Process,
+            pid: Some(pid),
+            start: Some(start),
+            container: None,
+            domain: Some(fact.control_domain.clone()),
+        };
+
+        let template = LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: rdm_core::FabricId::mint(),
+            executable: std::env::current_exe().unwrap(),
+            seeds: vec![],
+            launcher: rdm_core::launch::Launcher {
+                name: admin_name.clone(),
+                node_id: admin_id,
+                incarnation: IncarnationId::mint(),
+            },
+            env: BTreeMap::new(),
+            data_root: root_dir.clone(),
+            store_dir: root_dir.clone(),
+            issuing: None,
+            roots: Default::default(),
+            connections_delete_deadline: Duration::from_secs(5),
+            declared: Default::default(),
+            binding: None,
+        };
+
+        let builds = MemoryBuildStateAdapter::new();
+        let build_id = BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted {
+                build_id: build_id.clone(),
+                topology: FabricTopology::root(
+                    "fabric1",
+                    "mesh1",
+                    rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
+                ),
+                submitted_change: None,
+                submitted_at_ms: 1000,
+            })
+            .await
+            .unwrap();
+
+        let provider = ScriptedDeleteProvider {
+            inspects: Mutex::new(VecDeque::from([
+                // Attempt 1: inspected as OsStopped at delete start (skips StopNode/AwaitNodeLeft),
+                // then still OsStopped after terminate(Immediate) -> fails TerminateRuntime.
+                DeploymentStatus::OsStopped,
+                DeploymentStatus::OsStopped,
+                // Build 2 attempt 1: live target (Running at stop_skipped_os_stopped), then Exited after terminate.
+                DeploymentStatus::Running,
+                DeploymentStatus::Exited { code: Some(0) },
+            ])),
+            terminates: Mutex::new(Vec::new()),
+        };
+        let observer = IndeterminateStopObserver {
+            commands: Mutex::new(Vec::new()),
+        };
+        let events = RecordingEvents {
+            events: Mutex::new(Vec::new()),
+        };
+        let sink = SinkWithRows {
+            removed_births: Mutex::new(Vec::new()),
+            rows: rows.clone(),
+        };
+        let joins = Joins::default();
+        let pipeline = DeploymentPipeline {
+            provider: &provider,
+            joins: &joins,
+            observer: &observer,
+            sink: &sink,
+            lifecycle: &events,
+            builds: &builds,
+            template: &template,
+            timeouts: Timeouts::default(),
+        };
+
+        // 1. Attempt 1: OS-suspended target (`OsStopped`) skips `StopNode`/`AwaitNodeLeft`, calls
+        // `terminate(Immediate)`, and fails `TerminateRuntime` when still `OsStopped`.
+        builds
+            .claim_attempt(&BuildAttemptClaim {
+                claimant: None,
+                mesh: None,
+                build_id: build_id.clone(),
+                attempt: 1,
+                executor: admin_name.to_string(),
+            })
+            .await
+            .unwrap();
+        let err1 = pipeline
+            .delete_node(&DeleteRequest {
+                build_id: build_id.clone(),
+                attempt: 1,
+                node: target_node.clone(),
+                handle: handle.clone(),
+                unreached: false,
+            })
+            .await
+            .expect_err("OsStopped after terminate(Immediate) must fail TerminateRuntime");
+        assert_eq!(err1.step, DeleteStep::TerminateRuntime.name());
+        assert!(
+            err1.reason.contains("suspended after the stop ladder (os-stopped)"),
+            "unexpected reason: {}",
+            err1.reason
+        );
+        assert!(
+            observer.commands.lock().unwrap().is_empty(),
+            "OS-suspended delete must skip StopNode and send no command"
+        );
+        assert_eq!(
+            *provider.terminates.lock().unwrap(),
+            vec![(deployment_id.clone(), TerminationMode::Immediate)],
+            "OS-suspended delete must call terminate(Immediate)"
+        );
+
+        // 2. Attempt 2 is cut after recording `NodeDeleting` and `TerminateRuntime` (`Complete`) before
+        // `NodeDeleted`; Attempt 3 reuses both receipts without calling `provider.terminate` or sending
+        // `StopNode`, and completes `NodeDeleted`, `RemoveTopologyMembership`, and `Complete`.
+        builds
+            .claim_attempt(&BuildAttemptClaim {
+                claimant: None,
+                mesh: None,
+                build_id: build_id.clone(),
+                attempt: 2,
+                executor: admin_name.to_string(),
+            })
+            .await
+            .unwrap();
+        let deleting_op = LifecycleOp {
+            build_id: build_id.to_string(),
+            attempt: 2,
+            operation: format!("node.delete:{target_name}"),
+            node_id: target_id.clone(),
+            incarnation: target_incarnation.clone(),
+            name: target_name.clone(),
+            event_at_rafka_ms: 1_000_000,
+            traceparent: None,
+            tracestate: None,
+        };
+        builds
+            .append_step_receipt(&BuildStepReceipt {
+                mesh: None,
+                build_id: build_id.clone(),
+                attempt: 2,
+                operation: format!("node.delete:{target_name}"),
+                step: DeleteStep::NodeDeleting.name().into(),
+                outcome: StepOutcome::Complete,
+                output: Some(serde_json::to_value(&deleting_op).unwrap()),
+                executor: Some(admin_name.to_string()),
+            })
+            .await
+            .unwrap();
+        let term_receipt = TerminalReceipt {
+            node: target_name.to_string(),
+            node_id: target_id.to_string(),
+            incarnation_id: target_incarnation.to_string(),
+            runtime: None,
+            exit_code: Some(9),
+            verdict: Some("os-stopped".into()),
+            data_dir: target_node.data_dir.clone(),
+        };
+        builds
+            .append_step_receipt(&BuildStepReceipt {
+                mesh: None,
+                build_id: build_id.clone(),
+                attempt: 2,
+                operation: format!("node.delete:{target_name}"),
+                step: DeleteStep::TerminateRuntime.name().into(),
+                outcome: StepOutcome::Complete,
+                output: Some(serde_json::to_value(&term_receipt).unwrap()),
+                executor: Some(admin_name.to_string()),
+            })
+            .await
+            .unwrap();
+
+        builds
+            .claim_attempt(&BuildAttemptClaim {
+                claimant: None,
+                mesh: None,
+                build_id: build_id.clone(),
+                attempt: 3,
+                executor: admin_name.to_string(),
+            })
+            .await
+            .unwrap();
+        let out3 = pipeline
+            .delete_node(&DeleteRequest {
+                build_id: build_id.clone(),
+                attempt: 3,
+                node: target_node.clone(),
+                handle: handle.clone(),
+                unreached: false,
+            })
+            .await
+            .expect("attempt 3 must reuse TerminateRuntime and complete NodeDeleted");
+        assert_eq!(out3.exit_code, Some(9));
+        assert_eq!(
+            provider.terminates.lock().unwrap().len(),
+            1,
+            "attempt 3 must reuse TerminateRuntime without calling provider.terminate again"
+        );
+        assert!(observer.commands.lock().unwrap().is_empty());
+
+        // 3. Live target whose `StopNode` reply is lost (`CommandAdmission::Indeterminate`): under
+        // `delete_node` (`StopProof::Lenient`), `AwaitNodeLeft` records `Completion::NotAwaited` without
+        // fabricating a `stopped` event, and the delete proceeds to `TerminateRuntime`, verifies `Exited`,
+        // and completes `NodeDeleted`.
+        store.write_record(&initial_row).await.unwrap();
+        rows.written().hold(&initial_row);
+        events.events.lock().unwrap().clear();
+
+        let build_id_live = BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted {
+                build_id: build_id_live.clone(),
+                topology: FabricTopology::root(
+                    "fabric1",
+                    "mesh1",
+                    rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
+                ),
+                submitted_change: None,
+                submitted_at_ms: 2000,
+            })
+            .await
+            .unwrap();
+        builds
+            .claim_attempt(&BuildAttemptClaim {
+                claimant: None,
+                mesh: None,
+                build_id: build_id_live.clone(),
+                attempt: 1,
+                executor: admin_name.to_string(),
+            })
+            .await
+            .unwrap();
+        let out_live = pipeline
+            .delete_node(&DeleteRequest {
+                build_id: build_id_live.clone(),
+                attempt: 1,
+                node: target_node.clone(),
+                handle: handle.clone(),
+                unreached: false,
+            })
+            .await
+            .expect("live delete with lost stop reply must still terminate runtime and complete");
+        assert_eq!(out_live.exit_code, Some(0));
+        assert_eq!(observer.commands.lock().unwrap().len(), 1);
+        let live_events: Vec<&str> = events
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, _, _, _)| *k)
+            .collect();
+        assert_eq!(
+            live_events,
+            vec!["deleting", "deleted"],
+            "lost stop reply must not fabricate a stopped event before deleted: {live_events:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root_dir);
+    });
+
+    drop(rt);
+
+    let os_stopped_spans = capture.named("rdm.node_admin.node.delete.via-os-stopped");
+    assert_eq!(
+        os_stopped_spans.len(),
+        1,
+        "expected rdm.node_admin.node.delete.via-os-stopped span on attempt 1"
+    );
+    assert_eq!(
+        os_stopped_spans[0].attributes.get("skipped").map(String::as_str),
+        Some("StopNode AwaitNodeLeft")
+    );
+    let step_spans = capture.named("rdm.node_admin.deployment.update.via-step");
+    assert!(
+        step_spans.iter().any(|s| {
+            s.attributes.get("step").map(String::as_str) == Some(DeleteStep::TerminateRuntime.name())
+                && s.attributes.get("attempt").map(String::as_str) == Some("3")
+                && s.attributes.get("outcome").map(String::as_str) == Some("reused")
+        }),
+        "expected reused TerminateRuntime span on attempt 3"
+    );
+    crate::assert_own_story(capture.all_names().iter().map(String::as_str));
+}
