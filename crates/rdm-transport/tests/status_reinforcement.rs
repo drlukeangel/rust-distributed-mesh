@@ -17,21 +17,21 @@ use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
 fn ts(f: &Frame) -> u64 {
-    match f {
+    match f.data() {
         Frame::MeshStatus { changed_at_rafka_ms, .. } | Frame::FabricStatus { changed_at_rafka_ms, .. } => *changed_at_rafka_ms,
         other => panic!("not a status frame: {other:?}"),
     }
 }
 
 fn publisher_of(f: &Frame) -> &str {
-    match f {
+    match f.data() {
         Frame::MeshStatus { publisher, .. } | Frame::FabricStatus { publisher, .. } => publisher,
         other => panic!("not a status frame: {other:?}"),
     }
 }
 
 fn status_of(f: &Frame) -> &str {
-    match f {
+    match f.data() {
         Frame::MeshStatus { status, .. } | Frame::FabricStatus { status, .. } => status,
         other => panic!("not a status frame: {other:?}"),
     }
@@ -152,7 +152,10 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
 
         // A holder keeps a status until the next change, refuses an older one, and replays the
         // original authorship: a replayed status is never restated as the replayer's own.
+        // Held as gossip delivers it: under its author's context (a status held without one is not
+        // replayed, Q272).
         let status_view = StatusView::default();
+        let fwd = crate::gossip_wire::authored(&fwd);
         assert!(status_view.take(&fwd, &fabric));
         assert!(!status_view.take(&fwd, &fabric), "the same frame again is not taken twice");
         let older = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 500 };
@@ -160,9 +163,9 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         assert_eq!(status_view.mesh("mesh1").unwrap().status, "pending");
         let replay = status_view.held_frames(&fabric, peer);
         assert_eq!(replay.len(), 1);
-        assert!(matches!(&replay[0], Frame::MeshStatus { publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, .. } if publisher == me && by == peer));
+        assert!(matches!(replay[0].data(), Frame::MeshStatus { publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, .. } if publisher == me && by == peer));
         let own = status_view.held_frames(&fabric, me);
-        assert!(matches!(&own[0], Frame::MeshStatus { forwarded_by: None, .. }), "the author's own replay names no forwarder");
+        assert!(matches!(own[0].data(), Frame::MeshStatus { forwarded_by: None, .. }), "the author's own replay names no forwarder");
         // A republish keeps the old instant: under a NEW publisher it is a different frame from the one
         // held and is taken (the view holds the later publisher's authorship); the very same publisher
         // with the same instant is a repeat and is not.
