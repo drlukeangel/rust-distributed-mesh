@@ -139,6 +139,10 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
 
         running.leave().await;
     });
+    // The on_fabric_ready span closes after the hook returns, in the poll that sent the ready context
+    // (`fabric_status.rs`, `notify_fabric_ready`): the runtime's shutdown waits for that poll to end, so
+    // every span below is finished before it is read.
+    drop(rt);
 
     let _ = std::fs::remove_dir_all(&dir);
 

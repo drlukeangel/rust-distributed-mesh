@@ -232,6 +232,10 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
 
         (prop_opened.build_id.log().to_string(), resize_opened.build_id.log().to_string())
     });
+    // The on_fabric_ready span closes after the hook returns, on a spawned task (`fabric_status.rs`,
+    // `notify_fabric_ready`): the runtime's shutdown waits for it, so every span below is finished
+    // before it is read.
+    drop(rt);
 
     let _ = std::fs::remove_dir_all(&dir);
 
