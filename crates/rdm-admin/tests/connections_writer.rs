@@ -93,12 +93,12 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// §10: a Direct Connected beside an active Proxy owes the Proxy's retirement, written durably
+/// §10: a Direct Connected beside an active Proxy owes the Proxy's delete, written durably
 /// as Disconnected(direct-restored); the route cuts back once it lands (the refused-write cell
 /// below proves the Proxy stays effective until then).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_cuts_back() {
-    let dir = data_dir("retire");
+    let dir = data_dir("delete");
     let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
@@ -106,12 +106,12 @@ async fn a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_
     writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 11)).await.unwrap();
     writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), 12)).await.unwrap();
     writer.direct_connected(&resolved(&dest));
-    // The observation's own write has landed and settled the retirement it owed.
+    // The observation's own write has landed and settled the delete it owed.
     writer.observations_landed().await;
-    let retired = storage.history().await.unwrap().into_iter().last().unwrap();
-    assert_eq!((retired.kind, retired.state, retired.reason.as_deref()), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored")));
+    let deleted = storage.history().await.unwrap().into_iter().last().unwrap();
+    assert_eq!((deleted.kind, deleted.state, deleted.reason.as_deref()), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored")));
     assert_eq!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true });
-    assert_eq!(writer.disconnect_owed().await.unwrap(), 0, "nothing owed once the retirement landed");
+    assert_eq!(writer.disconnect_owed().await.unwrap(), 0, "nothing owed once the delete landed");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -191,9 +191,9 @@ async fn proxied(tag: &str, failed_at: u64) -> (std::path::PathBuf, ConnectionEn
 /// CONTRACT (connections.md §10 and §13 G, R-CN1): a connection this source accepts from the
 /// exact destination birth it reaches through its Proxy is a recovery trigger, never Direct
 /// evidence. The accept writes nothing; it wakes the source's reconciler, which makes one dial of
-/// the source's own; only that dial's Direct Connected owes the Proxy's retirement, and the route
-/// cuts back once the retirement lands. What must NOT happen: a Direct row written for the accept,
-/// or the Proxy retired before the source's own dial connected.
+/// the source's own; only that dial's Direct Connected owes the Proxy's delete, and the route
+/// cuts back once the delete lands. What must NOT happen: a Direct row written for the accept,
+/// or the Proxy deleted before the source's own dial connected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_source_dial_whose_connected_disconnects_the_proxy() {
     let (dir, me, dest, storage, held, writer, _) = proxied("accept-trigger", now_ms() - 60_000).await;
@@ -213,7 +213,7 @@ async fn an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_sourc
     assert_eq!(
         after,
         vec![(ConnectionKind::Direct, ConnectionState::Connected, None), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored".to_string()))],
-        "the source's own Direct Connected, then the retirement it owed"
+        "the source's own Direct Connected, then the delete it owed"
     );
     until("the attempt is spent once Direct is Connected", || writer.recovery_pending().is_empty()).await;
     assert_eq!(dial.calls().len(), 1, "one dial");
@@ -250,7 +250,7 @@ async fn repeated_accepts_coalesce_into_one_attempt_that_waits_for_the_series_ba
 /// CONTRACT (connections.md §9.3, §9.5 step 4, R-CN1 (5)): when the dial an accept woke fails, the
 /// Proxy stays the route, the failure is the series' next Failed row (same round, next ordinal),
 /// and the pending attempt is rescheduled from that row's backoff. What must NOT happen: the Proxy
-/// retired, a second dial before the new backoff ends, or the attempt forgotten.
+/// deleted, a second dial before the new backoff ends, or the attempt forgotten.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_dial_after_an_accept_keeps_the_proxy_and_reschedules_from_its_own_failed_row() {
     let (dir, me, dest, storage, held, writer, _) = proxied("accept-failed-dial", now_ms() - 60_000).await;
@@ -263,7 +263,7 @@ async fn a_failed_dial_after_an_accept_keeps_the_proxy_and_reschedules_from_its_
     let latest = storage.history().await.unwrap().into_iter().last().unwrap();
     assert_eq!((latest.kind, latest.state, latest.recovery.map(|r| (r.recovery_round, r.attempt_ordinal))), (ConnectionKind::Direct, ConnectionState::Failed, Some((1, 2))), "the series' next Failed row: {latest:?}");
     assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays the route");
-    assert!(writer.owed().is_empty(), "no retirement is owed");
+    assert!(writer.owed().is_empty(), "no delete is owed");
     let due = rdm_core::reconnect::next_due(&latest).unwrap();
     until("the attempt is rescheduled from the new row", || writer.recovery_pending().iter().any(|p| p.destination == dest && p.due_ms == due)).await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -298,7 +298,7 @@ async fn an_accept_from_another_birth_arms_nothing_and_an_attempt_for_a_gone_bir
 }
 
 /// A storage that refuses the next N index writes by name: the writer's reconciliation of an
-/// owed retirement (connections.md §10) is proven against it.
+/// owed delete (connections.md §10) is proven against it.
 struct RefusingIndex {
     inner: Arc<dyn ConnectionsStorage>,
     refuse: std::sync::atomic::AtomicU32,
@@ -329,13 +329,13 @@ impl ConnectionsStorage for RefusingIndex {
     }
 }
 
-/// §10: a Direct Connected beside an active Proxy owes the Proxy's retirement; a refused
-/// retirement write leaves the Proxy effective and the obligation standing, derived again from
+/// §10: a Direct Connected beside an active Proxy owes the Proxy's delete; a refused
+/// delete write leaves the Proxy effective and the obligation standing, derived again from
 /// the rows; once the write lands, new calls cut back to Direct. The bounded reconciler lands it
 /// by itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands() {
-    let dir = data_dir("refused-retirement");
+    let dir = data_dir("refused-delete");
     let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
     let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
@@ -344,27 +344,27 @@ async fn a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands()
     writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), 11)).await.unwrap();
     // The Direct comes back (recorded durably here, as a dial's own report would land it).
     writer.record(row(&me, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 12)).await.unwrap();
-    assert_eq!(writer.owed().len(), 1, "the Proxy's retirement is owed");
-    // The retirement's index write is refused: the Proxy stays effective, the obligation stands.
+    assert_eq!(writer.owed().len(), 1, "the Proxy's delete is owed");
+    // The delete's index write is refused: the Proxy stays effective, the obligation stands.
     storage.refuse.store(1, std::sync::atomic::Ordering::SeqCst);
     assert!(writer.settle_owed().await.is_err(), "the refused write is named");
     assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }), "new calls keep the Proxy");
     assert_eq!(writer.owed().len(), 1);
-    assert!(!storage.connections().await.unwrap().iter().any(|r| r.kind == ConnectionKind::Proxy && r.state == ConnectionState::Disconnected), "nothing durable says the Proxy retired");
+    assert!(!storage.connections().await.unwrap().iter().any(|r| r.kind == ConnectionKind::Proxy && r.state == ConnectionState::Disconnected), "nothing durable says the Proxy deleted");
     // The bounded reconciler attempts it again until it lands; then Direct is effective.
     let _task = writer.spawn_reconciler(std::time::Duration::from_millis(50), None);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }) {
-        assert!(std::time::Instant::now() < deadline, "the retirement never landed");
+        assert!(std::time::Instant::now() < deadline, "the delete never landed");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true }));
     assert!(writer.owed().is_empty());
-    let retired: Vec<NodeConnection> = storage.connections().await.unwrap().into_iter().filter(|r| r.kind == ConnectionKind::Proxy).collect();
-    assert_eq!(retired.len(), 1);
-    assert_eq!(retired[0].state, ConnectionState::Disconnected);
-    assert_eq!(retired[0].reason.as_deref(), Some(rdm_core::reconnect::DIRECT_RESTORED));
-    assert!(storage.history().await.unwrap().iter().any(|r| r.kind == ConnectionKind::Proxy && r.state == ConnectionState::Disconnected), "the retirement joined the raw log");
+    let deleted: Vec<NodeConnection> = storage.connections().await.unwrap().into_iter().filter(|r| r.kind == ConnectionKind::Proxy).collect();
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(deleted[0].state, ConnectionState::Disconnected);
+    assert_eq!(deleted[0].reason.as_deref(), Some(rdm_core::reconnect::DIRECT_RESTORED));
+    assert!(storage.history().await.unwrap().iter().any(|r| r.kind == ConnectionKind::Proxy && r.state == ConnectionState::Disconnected), "the delete joined the raw log");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -806,7 +806,7 @@ fn an_attempt_its_dials_reply_spent_is_not_armed_again_by_another_destinations_r
 /// row's `next_due`; an inbound accept arriving while the item is pending coalesces into it
 /// (`outcome = "coalesced"`), never creating a second attempt and never skipping the backoff the
 /// durable rows set; when the rescheduled `due_ms` arrives, the reconciler dials again, and on
-/// success its Direct Connected retires the Proxy (`Proxy Disconnected(direct-restored)`), cuts
+/// success its Direct Connected deletes the Proxy (`Proxy Disconnected(direct-restored)`), cuts
 /// the route back to Direct, and spends the pending item.
 #[test]
 fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts() {
@@ -856,13 +856,13 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         assert_eq!(dial.calls().len(), 1, "the accept did not skip the backoff the durable rows set");
 
-        // 5. When due2 arrives, the reconciler dials attempt 2, which connects, retires the Proxy, and spends the item.
+        // 5. When due2 arrives, the reconciler dials attempt 2, which connects, deletes the Proxy, and spends the item.
         until("the reconciler dials attempt 2 at due2", || dial.calls().len() == 2).await;
         let (dial2_dest, dial2_at) = dial.calls()[1].clone();
         assert_eq!(dial2_dest, dest);
         assert!(dial2_at >= due2, "attempt 2 waited for due2: dialled at {dial2_at} ms, due at {due2} ms");
         dial.go.add_permits(1);
-        until("the route cuts back to Direct after Proxy retirement", || matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true })).await;
+        until("the route cuts back to Direct after Proxy delete", || matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true })).await;
         until("the pending item is spent once Direct is Connected", || writer.recovery_pending().is_empty()).await;
         // The dial decides from its own result and never waits for its row (Q169): its span,
         // the parent of the row's, ends once that row has landed.
@@ -880,9 +880,9 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
     let triggers = named("rdm.node_admin.connection.update.via-accept-trigger");
     assert_eq!(triggers.len(), 1);
     assert_eq!(triggers[0]["attributes"]["outcome"], "coalesced", "the accept while pending coalesced into the due-time item: {:?}", triggers[0]);
-    let retirements = named("rdm.node_admin.connection.update.via-retirement");
-    assert_eq!(retirements.len(), 1);
-    assert_eq!(retirements[0]["attributes"]["outcome"], "landed");
+    let deletes = named("rdm.node_admin.connection.update.via-retirement");
+    assert_eq!(deletes.len(), 1);
+    assert_eq!(deletes[0]["attributes"]["outcome"], "landed");
     let spent = named("rdm.node_admin.connection.remove.via-recovery-attempt");
     assert_eq!(spent.len(), 1);
     assert_eq!(spent[0]["attributes"]["reason"], "direct-connected");
@@ -973,11 +973,11 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
         writer.record_data_plane(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), now_ms()));
         writer.observations_landed().await;
         assert_eq!(held.lock().unwrap().own_active_proxies().len(), 1, "the Proxy is held");
-        // The reconnect attempt connects; its Direct Connected owes the Proxy's retirement.
+        // The reconnect attempt connects; its Direct Connected owes the Proxy's delete.
         let dial = CellDial::new(&writer, resolved(&dest), vec![Ok(())]);
         dial.go.add_permits(1);
         let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(25), Some(dial.dial()));
-        until("the attempt connects and the Proxy's retirement lands", || held.lock().unwrap().own_active_proxies().is_empty()).await;
+        until("the attempt connects and the Proxy's delete lands", || held.lock().unwrap().own_active_proxies().is_empty()).await;
         writer.observations_landed().await;
         // A first failure toward another destination, then the connection to the destination dropped.
         writer.direct_failed(&resolved(&other), "refused by the cell");
@@ -1005,8 +1005,8 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
             assert!(!attr(sp, "reason").unwrap().is_empty(), "a Failed or Disconnected transition names its reason: {sp}");
         }
     }
-    let retirement = named("rdm.node_admin.connection.update.via-retirement");
-    assert_eq!(retirement.iter().map(|sp| (attr(sp, "kind"), attr(sp, "state"), attr(sp, "reason"), attr(sp, "outcome"))).collect::<Vec<_>>(), vec![(Some("proxy".into()), Some("disconnected".into()), Some("direct-restored".into()), Some("landed".into()))], "{retirement:?}");
+    let delete = named("rdm.node_admin.connection.update.via-retirement");
+    assert_eq!(delete.iter().map(|sp| (attr(sp, "kind"), attr(sp, "state"), attr(sp, "reason"), attr(sp, "outcome"))).collect::<Vec<_>>(), vec![(Some("proxy".into()), Some("disconnected".into()), Some("direct-restored".into()), Some("landed".into()))], "{delete:?}");
     let drop = named("rdm.node_admin.connection.update.via-connection-delete");
     assert_eq!(drop.iter().map(|sp| (attr(sp, "destination"), attr(sp, "kind"), attr(sp, "state"))).collect::<Vec<_>>(), vec![(Some(names.2.clone()), Some("direct".into()), Some("disconnected".into()))], "{drop:?}");
     let failed: Vec<&&serde_json::Value> = transitions.iter().filter(|sp| attr(sp, "state").as_deref() == Some("failed")).collect();

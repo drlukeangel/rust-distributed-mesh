@@ -1362,7 +1362,7 @@ pub struct BirthIndex {
     /// The recovery index, in three parts the facts fill in whatever order they arrive (gossip and
     /// catch-up deliver in any order; once all three are held the answer is the same in every
     /// order, while a log that holds a recovery's deletion and its `Complete` but not yet its
-    /// `Opened` answers it as a standalone retire's): every deleting workflow's (`retire-node`)
+    /// `Opened` answers it as a standalone delete's): every deleting workflow's (`retire-node`)
     /// `NodeDeleted` by the birth `(node_id, incarnation)` it names, to its path, operation, Build
     /// and attempt...
     recovery_deletes: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(crate::model::PathName, String, LaneOf, u32)>>,

@@ -1904,7 +1904,7 @@ mod tests {
     /// its mesh.delete again or deletes its last admin unasked. Only the Build that admitted its
     /// mesh.delete and holds no completion of it plans it again, to resume from the receipts; a
     /// deleting mesh (not yet Dead) is planned as before. Must NOT happen: a later Build re-running
-    /// mesh.delete on a deleted mesh, or retiring its last admin, whose end is a separate node.delete.
+    /// mesh.delete on a deleted mesh, or deleting its last admin, whose end is a separate node.delete.
     #[test]
     fn a_deleted_mesh_is_planned_only_by_the_build_that_admitted_its_mesh_delete_and_holds_no_completion() {
         let cur = t(&[("mesh1", 2, 3)]);

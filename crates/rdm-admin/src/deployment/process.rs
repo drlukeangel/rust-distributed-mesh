@@ -833,7 +833,7 @@ mod tests {
     /// launch apart: a launch it spawned whose process runs is `Running` with its exact handle; the
     /// same launch once its process exited is `Exited`; a launch never spawned in the data dir (no
     /// record, or the record of another launch) is `NeverLaunched`. Must NOT happen: an exited launch
-    /// read as never launched, so a re-run relaunches it under the same incarnation.
+    /// read as never launched, so a re-run starts it under the same incarnation.
     #[tokio::test]
     async fn find_tells_a_running_launch_an_exited_one_and_one_never_launched_apart() {
         let dir = crate::test_support::tempdir("process-find-three");

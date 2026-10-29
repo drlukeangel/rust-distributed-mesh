@@ -99,7 +99,7 @@ fn daemon_state(id: &str) -> String {
 /// a launch whose container runs is `Running`; once this provider terminated it (which removes the
 /// container, so the daemon holds nothing by its name) it is `Exited`, to this provider and to a fresh
 /// one that never saw it. Must NOT happen: a launch that ran read as never launched once its container
-/// is gone, so a re-run relaunches it under the same incarnation.
+/// is gone, so a re-run starts it under the same incarnation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn find_tells_a_running_container_launch_a_terminated_one_and_one_never_launched_apart() {
     let fabric = fabric_name("find-three");

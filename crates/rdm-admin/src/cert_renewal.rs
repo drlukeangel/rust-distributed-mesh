@@ -596,7 +596,7 @@ fn roots_key(node_id: &NodeId, incarnation: &IncarnationId, phase: rdm_core::sta
 }
 
 /// Whether every live birth of `view` holds a member cert issued under the new CA (fabric-ca-renew.md
-/// step 4: the rotation retires the old root only once nothing chains to it). A row keeps a cert's
+/// step 4: the rotation replaces the old root only once nothing chains to it). A row keeps a cert's
 /// dates, not the cert: a member cert chains to the new root when its issuer is its mesh's first issuer
 /// under the new CA or a later one, so its `issuer_expires_at` is at or past that mesh's receipt on the
 /// CA row; every issuer under the old CA was minted before the new CA, and expires before the receipt.

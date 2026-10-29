@@ -1295,7 +1295,7 @@ impl StatusDoor {
                 };
                 let installed = rdm_node::roots_update::install_roots(&registry, &me, node_id, incarnation, roots, *phase, secret.is_some());
                 // The root secret a node-admin is carried (fabric-ca-renew.md step 2 and step 5): held as the
-                // next root through the overlap, the fabric's root once the set retires the old one; kept
+                // next root through the overlap, the fabric's root once the set replaces the old one; kept
                 // only once the set it rides with is installed.
                 if let (StatusReply::RootsUpdated { .. }, Some(secret), Some(certs)) = (&installed, secret, &self.certs) {
                     let kept = rdm_core::certs::decode_key(&secret.0).and_then(|k| if *phase == rdm_core::status::RootsPhase::Retired { certs.replace_root_with(k) } else { certs.hold_next_root(k) });
@@ -3961,8 +3961,8 @@ mod tests {
         for s in by_incarnation.iter().chain(&by_deletion) {
             eprintln!("span {} trace_id={} {:?}", s.name, s.trace_id, s.attributes);
         }
-        assert_eq!(by_incarnation.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(restarted.node_id.to_string(), "deleted".to_string())], "the restarted node's old birth is retired for its new incarnation");
-        assert_eq!(by_deletion.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(deleted.node_id.to_string(), "deleted".to_string())], "the deleted node's birth is retired for its deletion");
+        assert_eq!(by_incarnation.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(restarted.node_id.to_string(), "deleted".to_string())], "the restarted node's old birth is deleted for its new incarnation");
+        assert_eq!(by_deletion.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(deleted.node_id.to_string(), "deleted".to_string())], "the deleted node's birth is deleted for its deletion");
         use crate::storage::NodesStorage as _;
         let rows: Vec<String> = Declaration::of_records(&status.nodes("mesh1").await.unwrap()).into_iter().map(|r| r.node_id.to_string()).collect();
         assert_eq!(rows, vec![standing.node_id.to_string()], "only the birth the view still holds keeps its declared-state row");

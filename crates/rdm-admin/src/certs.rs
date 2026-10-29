@@ -310,7 +310,7 @@ pub struct CertIssuer {
     /// The data dir its fabric CA is kept beside (`fabric-ca`), once known: a renewed or installed CA
     /// is kept there, so a restart reads back the current one (fabric-certs.md §Custody).
     kept: std::sync::OnceLock<std::path::PathBuf>,
-    /// The next root a root rotation carried to this admin (`ca-secret-next`), until it retires the
+    /// The next root a root rotation carried to this admin (`ca-secret-next`), until it replaces the
     /// old one (fabric-ca-renew.md "fabric.root.update").
     next_root: Mutex<Option<SigningKey>>,
 }
@@ -541,7 +541,7 @@ impl CertIssuer {
 
     /// `fabric.root.update` step 3: a new fabric CA signed by the next root this admin holds, held from
     /// now on and kept; every mesh's issuer minted under the old CA is due from then on. The root it
-    /// signs with stays the next root until the rotation retires the old one. Returns the new CA and
+    /// signs with stays the next root until the rotation replaces the old one. Returns the new CA and
     /// the expiry of the one it replaces; `None` without a next root or certs.
     pub fn renew_ca_under_next_root(&self) -> Result<Option<(CaKey, u64)>, IssueFailure> {
         let now_ms = self.now("the fabric CA")?;
@@ -965,7 +965,7 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:67
     /// "5. `node.roots.update { [new] }` to every node. The row goes `retired` on the last receipt, and the old secret is destroyed on every admin."
     #[test]
-    fn a_root_rotation_holds_the_next_root_mints_the_ca_under_it_and_retires_the_old() {
+    fn a_root_rotation_holds_the_next_root_mints_the_ca_under_it_and_replaces_the_old() {
         let (old, new) = (rdm_core::certs::mint_key(), rdm_core::certs::mint_key());
         let dir = std::env::temp_dir().join(format!("rdm-root-rotation-{}", rdm_core::certs::encode_key(&rdm_core::certs::mint_key())));
         std::fs::create_dir_all(&dir).unwrap();
@@ -981,7 +981,7 @@ mod tests {
         assert_eq!(minted.cert().ca.cert, ca.cert().cert);
         assert!(rdm_core::certs::verify_issuer(minted.cert(), &[new.verifying_key()]).is_ok(), "the issuer chains to the new root");
         assert!(rdm_core::certs::verify_issuer(minted.cert(), &[old.verifying_key()]).is_err(), "and not to the old");
-        assert_eq!(issuer.root(), Some(old.verifying_key()), "the old root stays the root until the rotation retires it");
+        assert_eq!(issuer.root(), Some(old.verifying_key()), "the old root stays the root until the rotation replaces it");
         issuer.replace_root_with(new.clone()).unwrap();
         assert_eq!(issuer.root(), Some(new.verifying_key()));
         assert_eq!(issuer.next_root(), None);

@@ -1338,7 +1338,7 @@ mod writer {
     /// provider proves A's deployment launched and exited, `Found::Exited`). B, holding none of A's
     /// receipts, does not continue that birth: it withdraws its
     /// claim (that birth's key only), mints a new birth, claims the free name for it and reaches
-    /// `DeployRuntime` with a deployment of its own. Must NOT happen: B relaunching the exited birth
+    /// `DeployRuntime` with a deployment of its own. Must NOT happen: B starting the exited birth
     /// under A's node id, incarnation and deployment.
     #[test]
     fn a_create_whose_lost_executor_launched_its_claimed_birth_which_exited_decides_a_new_birth() {
@@ -1414,7 +1414,7 @@ mod writer {
     /// process provider, which tells a launch that exited from one never launched: B withdraws A's
     /// claim (that birth's key only), mints a new birth, claims the free name for it and reaches
     /// `DeployRuntime` with a deployment of its own. Must NOT happen: B reading the exited launch as
-    /// never launched and relaunching it under A's node id, incarnation and deployment.
+    /// never launched and starting it under A's node id, incarnation and deployment.
     #[test]
     fn a_create_whose_lost_executor_launched_a_birth_that_exited_before_its_runtime_record_decides_a_new_birth() {
         let cap = capture();

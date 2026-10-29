@@ -292,7 +292,7 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     if node.kind != NodeKind::NodeAdmin {
         // Any other cohort's seat: its holder's seat moves first, by node.primary.update its mesh-primary
         // commands and writes (proposal Part C1: "One primitive moves the primary of any (mesh,
-        // node_type) cohort"; Q3), except when retiring the cohort's only live node. A holder with
+        // node_type) cohort"; Q3), except when deleting the cohort's only live node. A holder with
         // no other node of its type is still named for non-delete actions: the update refuses it by Q7's
         // name (the Build door refuses it first, `control_plane::last_admin`).
         let holder = t.node(node)?.clone();

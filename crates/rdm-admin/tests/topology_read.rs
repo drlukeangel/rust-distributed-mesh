@@ -483,20 +483,20 @@ fn a_read_from_a_peer_mesh_returns_the_readers_own_mesh_but_holds_none_of_it_as_
 /// holds the member as deleting (its overlay names the operation) rather than as a plain member.
 #[test]
 fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overlay() {
-    let cap = capture("retiring");
+    let cap = capture("deleting");
     cap.run(async {
         let fabric = FabricId::mint();
         let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
         open(&server, &fabric);
         let members: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh3", "rpc", k)).collect();
-        let retiring = &members[1];
+        let deleting = &members[1];
         let op = rdm_core::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.delete:mesh3.rpc.2".into(),
-            node_id: retiring.node.node_id.clone(),
-            incarnation: retiring.node.incarnation.clone(),
-            name: retiring.node.name.clone(),
+            node_id: deleting.node.node_id.clone(),
+            incarnation: deleting.node.incarnation.clone(),
+            name: deleting.node.name.clone(),
             event_at_rafka_ms: 1,
             traceparent: None,
             tracestate: None,
@@ -506,7 +506,7 @@ fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overla
         hold(&server.topology_view, &s);
         let t = target_of(&caller, &server);
         let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, Some("mesh3"), None).await.unwrap();
-        assert_eq!(read.installed[0].members.len(), 3, "the retiring member is still listed");
+        assert_eq!(read.installed[0].members.len(), 3, "the deleting member is still listed");
         let (in_flight, _) = caller.topology_view.digest_view.overlays_of("mesh3");
         assert_eq!(in_flight, vec![op], "the reader holds the deletion as an overlay");
         server.ep.close().await;
