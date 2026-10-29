@@ -1260,7 +1260,7 @@ async fn the_fabric_primary_claims_the_recovery_of_a_meshs_only_node_admin_for_i
 }
 
 // @feature: node-recovery
-/// CONTRACT (docs/architecture/lifecycles/node-recovery.md:80-95):
+/// CONTRACT (docs/architecture/lifecycles/node-recovery.md:80-98, 172-174):
 /// "3. node.delete of the target instance, as a target with no RPC to the old process and no stop
 /// frames. Its first step is `TerminateRuntime { node_id, incarnation, handle }` on the exact runtime
 /// handle recorded at launch, read at the step's instant and never skipped for what it reads, except
@@ -1271,7 +1271,11 @@ async fn the_fabric_primary_claims_the_recovery_of_a_meshs_only_node_admin_for_i
 /// 4. node.create at the same path.name, its spec naming the old data dir when the verdict was `exited`
 /// (or a newly allocated data dir otherwise ...): it loads the endpoint key from the kept data dir
 /// (or mints a new endpoint key in the fresh data dir) and binds port 0, with a new node.id,
-/// incarnation and port."
+/// incarnation and port.
+/// 5. Create runs the whole start with FirstStart and `inherited = true` over the kept data dir (or
+/// `inherited = false` over a newly allocated one), and ends node.created."
+/// "Trace propagation, step spans and correlation follow the runtime spans. The investigation's steps,
+/// its verdict and the submit each have a span on the mesh-primary."
 #[test]
 fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
     use rdm_admin::build::BuildId;
@@ -1301,6 +1305,7 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
         terminate_errs: Mutex<VecDeque<Option<String>>>,
         terminates: Mutex<Vec<(DeploymentId, TerminationMode)>>,
         spawn_calls: AtomicUsize,
+        spawn_inherited: Mutex<Vec<Option<String>>>,
         joins: Arc<Joins>,
         pending_report: Mutex<Option<JoinReport>>,
         fabric_id: FabricId,
@@ -1316,6 +1321,10 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
         }
         async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
             let n = self.spawn_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            self.spawn_inherited
+                .lock()
+                .unwrap()
+                .push(spec.env.get("RDM_INHERITED_DATA_DIR").cloned());
             let pid = 5000 + n as u32;
             let handle = DeploymentHandle {
                 deployment_id: spec.deployment_id.clone(),
@@ -1555,6 +1564,7 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
             ])),
             terminates: Mutex::new(Vec::new()),
             spawn_calls: AtomicUsize::new(0),
+            spawn_inherited: Mutex::new(Vec::new()),
             joins: joins.clone(),
             pending_report: Mutex::new(None),
             fabric_id: fabric_id.clone(),
@@ -1778,6 +1788,107 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
             "exited recovery create must retain the endpoint key from the inherited data dir"
         );
         assert_ne!(created_inherited.node.node_id, old_id);
+        assert_eq!(
+            *provider.spawn_inherited.lock().unwrap(),
+            vec![Some("0".into()), Some("1".into())],
+            "Step 5: newly allocated data dir passes RDM_INHERITED_DATA_DIR=0 (inherited = false) and kept data dir passes RDM_INHERITED_DATA_DIR=1 (inherited = true)"
+        );
+
+        // Observability contract (node-recovery.md:172-174): the investigation's steps, its verdict
+        // and the submit each have a span on the mesh-primary.
+        struct UnreachedTickle;
+        #[async_trait::async_trait]
+        impl rdm_admin::offline::TickleCalls for UnreachedTickle {
+            fn caller(&self) -> String {
+                "mesh1.admin.1".into()
+            }
+            fn deadline(&self) -> Duration {
+                Duration::from_millis(50)
+            }
+            async fn direct(
+                &self,
+                _: &Node,
+                _: &rdm_core::status::StatusRequest,
+            ) -> rdm_admin::offline::ProbeEnd {
+                rdm_admin::offline::ProbeEnd::Other {
+                    end: "NotSent",
+                    detail: "timeout".into(),
+                }
+            }
+            async fn via_peer(
+                &self,
+                _: &Node,
+                _: &Node,
+                _: &rdm_core::status::StatusRequest,
+            ) -> rdm_admin::offline::ProbeEnd {
+                rdm_admin::offline::ProbeEnd::Other {
+                    end: "NotSent",
+                    detail: "timeout".into(),
+                }
+            }
+            fn carriers(&self, _: &Topology, _: &Node) -> Vec<Node> {
+                Vec::new()
+            }
+            async fn leads(&self, _: &Topology, _: &Node) -> Result<Vec<Node>, String> {
+                Ok(Vec::new())
+            }
+        }
+        let inv_view = view();
+        let finding = rdm_admin::node_investigation::investigate(
+            &old_node,
+            &inv_view,
+            &UnreachedTickle,
+            async {
+                let inspected = rdm_admin::deployment::provider::Inspected::Exited(Some(137));
+                rdm_admin::node_investigation::span_inspection(
+                    "mesh1.admin.1",
+                    &old_node,
+                    &inspected,
+                    Some(&old_handle),
+                    "mesh-primary provider inspection verdict",
+                );
+                inspected.into()
+            },
+        )
+        .await;
+        assert_eq!(finding.name(), "exited");
+        let submit_builds = Arc::new(MemoryBuildStateAdapter::new());
+        let submit_view = view();
+        let submit_target = submit_view.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().clone();
+        let accepted = AcceptedStore::seeded(
+            &*submit_builds,
+            submit_view.fabric.id.clone(),
+            FabricTopology::of_observed(&submit_view),
+            "mesh1.admin.1",
+        )
+        .await
+        .unwrap();
+        let cp = ControlPlane::new(
+            submit_builds.clone(),
+            accepted,
+            "mesh1.admin.1".parse().unwrap(),
+            submit_view,
+            crate::adopted_time(),
+        );
+        let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
+        settle_other(&submit_builds, &b0).await;
+        cp.topology
+            .write()
+            .await
+            .nodes
+            .iter_mut()
+            .filter(|n| n.node_id == submit_target.node_id)
+            .for_each(|n| n.status = NodeStatus::Dead);
+        let opened_rec = cp
+            .open_recovery(
+                "node-recovery",
+                submit_target.name.clone(),
+                submit_target.node_id.clone(),
+                submit_target.incarnation_id.clone().unwrap(),
+            )
+            .await
+            .expect("mesh-primary recovery submit succeeds");
+        assert!(matches!(opened_rec, Recovery::Opened(_)));
 
         let _ = std::fs::remove_dir_all(&root_dir);
     });
@@ -1799,5 +1910,28 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
                 && a.get("outcome").map(String::as_str) == Some("reused")
         }),
         "expected reused DeployRuntime span on resumed recovery create: {step_spans:?}"
+    );
+    assert!(
+        step_spans.iter().any(|(_, a)| {
+            a.get("step").map(String::as_str) == Some(CreateStep::Complete.name())
+                && a.get("outcome").map(String::as_str) == Some("complete")
+        }),
+        "expected CreateStep::Complete span ending node.created: {step_spans:?}"
+    );
+    assert!(
+        !capture.spans("rdm.node.tickle.resolve.via-direct").is_empty(),
+        "investigation step span emitted on mesh-primary"
+    );
+    assert!(
+        !capture.spans("rdm.node.tickle.returns-unknown.via-unreached").is_empty(),
+        "investigation unreached span emitted on mesh-primary"
+    );
+    assert!(
+        !capture.spans("rdm.node_admin.node.resolve.via-provider-inspection").is_empty(),
+        "investigation verdict span emitted on mesh-primary"
+    );
+    assert!(
+        !capture.spans("rdm.node_admin.build.update.via-claim-decision").is_empty(),
+        "recovery submit/claim span emitted on mesh-primary"
     );
 }
