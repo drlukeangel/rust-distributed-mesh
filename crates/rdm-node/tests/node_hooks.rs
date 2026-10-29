@@ -11,7 +11,7 @@ use rdm_core::{
 };
 use rdm_node::node_hooks::{
     Addressed, Authority, Birth, End, Events, HookOutcome, NoAuthority, NodeHooks, NodeReadyCtx,
-    PreNodeReady, RetryOn, StartKind, Step,
+    OnNodeReady, PreNodeReady, RetryOn, StartKind, Step,
 };
 use rdm_transport::topology::TopologyView;
 use rdm_transport::{
@@ -270,5 +270,248 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
                 && s["attributes"]["cleared_by"] == "target-reachable"
         }),
         "expected via-pre-node-ready-blocked span with cleared_by=target-reachable: {spans:?}"
+    );
+}
+
+struct OkPreHook;
+#[async_trait::async_trait]
+impl PreNodeReady for OkPreHook {
+    async fn pre_node_ready(&self, _ctx: &NodeReadyCtx) -> HookOutcome {
+        HookOutcome::Ok
+    }
+}
+
+struct PeerCallingAfterHook {
+    entered: Arc<tokio::sync::Notify>,
+    proceed: Arc<tokio::sync::Notify>,
+    peer_id: NodeId,
+    pong_tx: Mutex<Option<tokio::sync::oneshot::Sender<Vec<u8>>>>,
+}
+
+#[async_trait::async_trait]
+impl OnNodeReady for PeerCallingAfterHook {
+    async fn on_node_ready(&self, ctx: &NodeReadyCtx) {
+        self.entered.notify_one();
+        self.proceed.notified().await;
+        let (out, _) = ctx
+            .client
+            .call::<Ping>(
+                &NodeTarget::ExactNode(self.peer_id.clone()),
+                &PingRequest::Ping {
+                    payload: b"from-on-node-ready".to_vec(),
+                },
+                &CallOptions::default(),
+            )
+            .await;
+        if let RpcOutcome::Reply(r) = out {
+            if let PingReply::Pong { payload } = r.into_value() {
+                if let Some(tx) = self.pong_tx.lock().unwrap().take() {
+                    let _ = tx.send(payload);
+                }
+            }
+        }
+    }
+}
+
+// @feature: on-node-ready
+/// CONTRACT: docs/architecture/fabric-node-hooks.md:119
+/// "After the node reports node.started, RDM calls `on_node_ready` once, with the node's
+/// `NodeReadyCtx`, on a task of its own. It is for optional work that does not gate readiness."
+#[test]
+fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_peer_over_node_rpc() {
+    let dir = std::env::temp_dir().join(format!("rdm-on-node-ready-func-{}", NodeId::mint()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-on-node-ready-functional")
+        .expect("evidence capture starts");
+
+    let node_name = PathName::new("mesh1", NodeKind::RpcNode, 1);
+    let node_name_for_assert = node_name.clone();
+    capture.run(2, async move {
+        let node_id = NodeId::mint();
+        let node_inc = IncarnationId::mint();
+        let node_key = SecretKey::generate();
+        let node_ep = rdm_transport::endpoint::bind(
+            node_key.clone(),
+            "127.0.0.1:0".parse().expect("addr"),
+        )
+        .await
+        .expect("bind node ep");
+        let node_addr = node_ep
+            .bound_sockets()
+            .into_iter()
+            .find(|a| a.is_ipv4())
+            .expect("ipv4");
+
+        let peer_id = NodeId::mint();
+        let peer_inc = IncarnationId::mint();
+        let peer_name = PathName::new("mesh1", NodeKind::RpcNode, 2);
+        let peer_key = SecretKey::generate();
+        let peer_ep = rdm_transport::endpoint::bind(
+            peer_key.clone(),
+            "127.0.0.1:0".parse().expect("addr"),
+        )
+        .await
+        .expect("bind peer ep");
+        let peer_addr = peer_ep
+            .bound_sockets()
+            .into_iter()
+            .find(|a| a.is_ipv4())
+            .expect("ipv4");
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let proceed = Arc::new(tokio::sync::Notify::new());
+        let (pong_tx, pong_rx) = tokio::sync::oneshot::channel();
+        let after_hook = Arc::new(PeerCallingAfterHook {
+            entered: entered.clone(),
+            proceed: proceed.clone(),
+            peer_id: peer_id.clone(),
+            pong_tx: Mutex::new(Some(pong_tx)),
+        });
+        let hooks = NodeHooks::new(Arc::new(OkPreHook)).with_on_node_ready(after_hook);
+        let gate = hooks.gate();
+
+        let node_server = ServerBuilder::new()
+            .serve_gated::<Ping, _, _>(
+                OpOwner::Core,
+                gate.clone(),
+                |_peer, req: PingRequest| async move {
+                    let PingRequest::Ping { payload } = req;
+                    Ok(PingReply::Pong { payload })
+                },
+            )
+            .build(ServedBirth {
+                node_id: node_id.to_string(),
+                incarnation: node_inc.to_string(),
+            })
+            .expect("build node server");
+        let node_router = Router::builder(node_ep.clone())
+            .accept(ALPN, node_server)
+            .spawn();
+
+        let peer_server = ServerBuilder::new()
+            .serve::<Ping, _, _>(OpOwner::Core, |_peer, req: PingRequest| async move {
+                let PingRequest::Ping { payload } = req;
+                Ok(PingReply::Pong { payload })
+            })
+            .build(ServedBirth {
+                node_id: peer_id.to_string(),
+                incarnation: peer_inc.to_string(),
+            })
+            .expect("build peer server");
+        let peer_router = Router::builder(peer_ep.clone())
+            .accept(ALPN, peer_server)
+            .spawn();
+
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(ResolvedNode {
+            node_id: node_id.clone(),
+            name: node_name.clone(),
+            endpoint_id: node_key.public(),
+            transport_addr: node_addr,
+            incarnation: node_inc.clone(),
+        });
+        resolver.insert(ResolvedNode {
+            node_id: peer_id,
+            name: peer_name,
+            endpoint_id: peer_key.public(),
+            transport_addr: peer_addr,
+            incarnation: peer_inc,
+        });
+        let client = Arc::new(NodeRpcClient::new(node_ep.clone(), resolver.clone()));
+        let external_client = Arc::new(NodeRpcClient::new(peer_ep.clone(), resolver));
+
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(node_ep.clone());
+        let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
+        let _ = rafka_time.adopt(1_000);
+        let fabric_id = FabricId::mint();
+        let mesh_id = MeshId::mint();
+        let topology_view = TopologyView::join(
+            &gossip,
+            &node_ep,
+            &fabric_id,
+            "mesh1",
+            &mesh_id,
+            &node_name.to_string(),
+            Arc::new(rafka_time.clone()),
+            Vec::new(),
+            &[],
+        )
+        .await
+        .expect("join topology view");
+
+        let driver = hooks
+            .driver(
+                NodeReadyCtx {
+                    start_kind: StartKind::FirstStart,
+                    birth: Birth {
+                        name: node_name,
+                        node_id: node_id.clone(),
+                        incarnation: node_inc,
+                        fabric_id,
+                        mesh_id,
+                        kind: NodeKind::RpcNode,
+                    },
+                    authority: Authority::None(NoAuthority::Day0Root),
+                    client,
+                    topology_view: topology_view.clone(),
+                    cancel: CancelToken::new(),
+                    rafka_time,
+                    member_cert: None,
+                    attempt: 0,
+                    inherited: false,
+                },
+                Events::new(topology_view.digest_view.clone(), Addressed::new()),
+                tracing::Span::none(),
+            )
+            .expect("driver");
+
+        // 1. `pre_node_ready` passes and opens the gate; `spawn_on_node_ready` launches on its own task.
+        assert!(matches!(driver.attempt().await, Step::Passed));
+        assert!(gate.is_open());
+        driver.spawn_on_node_ready();
+        entered.notified().await;
+
+        // 2. While `on_node_ready` is still blocked waiting on `proceed`, the node is already serving
+        //    gated app RPCs (`on_node_ready` does not gate readiness).
+        let (served_while_after_running, _) = external_client
+            .call::<Ping>(
+                &NodeTarget::ExactNode(node_id),
+                &PingRequest::Ping {
+                    payload: b"already-ready".to_vec(),
+                },
+                &CallOptions::default(),
+            )
+            .await;
+        match served_while_after_running {
+            RpcOutcome::Reply(r) => {
+                assert_eq!(
+                    r.into_value(),
+                    PingReply::Pong {
+                        payload: b"already-ready".to_vec()
+                    }
+                );
+            }
+            other => panic!("expected Pong while on_node_ready is running, got {other:?}"),
+        }
+
+        // 3. Unblock `on_node_ready` and verify it calls the peer over `ctx.client`.
+        proceed.notify_one();
+        let peer_pong = pong_rx.await.expect("on_node_ready received peer pong");
+        assert_eq!(peer_pong, b"from-on-node-ready".to_vec());
+
+        let _ = node_router.shutdown().await;
+        let _ = peer_router.shutdown().await;
+        node_ep.close().await;
+        peer_ep.close().await;
+    });
+
+    let spans = capture.spans().expect("captured spans");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        spans.iter().any(|s| {
+            s["name"] == "rdm.mesh.node.update.via-on-node-ready"
+                && s["attributes"]["node"] == node_name_for_assert.to_string()
+        }),
+        "expected rdm.mesh.node.update.via-on-node-ready span: {spans:?}"
     );
 }

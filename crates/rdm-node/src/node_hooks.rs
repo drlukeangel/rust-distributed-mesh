@@ -905,4 +905,205 @@ mod tests {
             "expected via-pre-node-ready-blocked span with cleared_by=primary-addressed"
         );
     }
+
+    // @feature: on-node-ready
+    #[test]
+    fn spawn_on_node_ready_runs_once_on_own_task_under_boot_span_and_aborts_when_birth_is_cancelled() {
+        // docs/architecture/fabric-node-hooks.md:119 — "After the node reports node.started, RDM
+        // calls `on_node_ready` once, with the node's `NodeReadyCtx`, on a task of its own. It is
+        // for optional work that does not gate readiness."
+        struct PassBefore;
+        #[async_trait::async_trait]
+        impl PreNodeReady for PassBefore {
+            async fn pre_node_ready(&self, _ctx: &NodeReadyCtx) -> HookOutcome {
+                HookOutcome::Ok
+            }
+        }
+
+        struct RecordAfter {
+            seen_nodes: Mutex<Vec<PathName>>,
+            done_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        }
+        #[async_trait::async_trait]
+        impl OnNodeReady for RecordAfter {
+            async fn on_node_ready(&self, ctx: &NodeReadyCtx) {
+                self.seen_nodes.lock().unwrap().push(ctx.birth.name.clone());
+                if let Some(tx) = self.done_tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+
+        struct HangUntilCancelledAfter {
+            entered: Arc<tokio::sync::Notify>,
+            dropped_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        }
+        struct DropGuard(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for DropGuard {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        #[async_trait::async_trait]
+        impl OnNodeReady for HangUntilCancelledAfter {
+            async fn on_node_ready(&self, _ctx: &NodeReadyCtx) {
+                let _guard = DropGuard(self.dropped_tx.lock().unwrap().take());
+                self.entered.notify_one();
+                std::future::pending::<()>().await;
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("rdm-on-node-ready-unit-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-on-node-ready-unit")
+            .expect("evidence capture starts");
+
+        let expected_name = PathName::new("mesh1", NodeKind::RpcNode, 1);
+        let expected_name_for_assert = expected_name.clone();
+        capture.run(2, async move {
+            let ep = rdm_transport::endpoint::bind(
+                iroh::SecretKey::generate(),
+                "127.0.0.1:0".parse().expect("addr"),
+            )
+            .await
+            .expect("bind ep");
+            let resolver = Arc::new(rdm_transport::StaticResolver::new());
+            let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver));
+            let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+            let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
+            let _ = rafka_time.adopt(1_000);
+            let fabric_id = FabricId::mint();
+            let mesh_id = MeshId::mint();
+            let topology_view = TopologyView::join(
+                &gossip,
+                &ep,
+                &fabric_id,
+                "mesh1",
+                &mesh_id,
+                &expected_name.to_string(),
+                Arc::new(rafka_time.clone()),
+                Vec::new(),
+                &[],
+            )
+            .await
+            .expect("join topology view");
+
+            let birth = Birth {
+                name: expected_name.clone(),
+                node_id: NodeId::mint(),
+                incarnation: IncarnationId::mint(),
+                fabric_id,
+                mesh_id,
+                kind: NodeKind::RpcNode,
+            };
+
+            // 1. Without `with_on_node_ready`, `spawn_on_node_ready` is a no-op.
+            let no_after_hooks = NodeHooks::new(Arc::new(PassBefore));
+            let no_after_driver = no_after_hooks
+                .driver(
+                    NodeReadyCtx {
+                        start_kind: StartKind::FirstStart,
+                        birth: birth.clone(),
+                        authority: Authority::None(NoAuthority::Day0Root),
+                        client: client.clone(),
+                        topology_view: topology_view.clone(),
+                        cancel: CancelToken::new(),
+                        rafka_time: rafka_time.clone(),
+                        member_cert: None,
+                        attempt: 0,
+                        inherited: false,
+                    },
+                    Events::new(DigestView::default(), Addressed::new()),
+                    tracing::Span::none(),
+                )
+                .expect("driver");
+            assert!(matches!(no_after_driver.attempt().await, Step::Passed));
+            no_after_driver.spawn_on_node_ready();
+
+            // 2. With `with_on_node_ready`, `spawn_on_node_ready` runs `on_node_ready` once on its
+            //    own task with `NodeReadyCtx` under `rdm.mesh.node.update.via-on-node-ready`.
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            let after = Arc::new(RecordAfter {
+                seen_nodes: Mutex::new(Vec::new()),
+                done_tx: Mutex::new(Some(done_tx)),
+            });
+            let hooks = NodeHooks::new(Arc::new(PassBefore)).with_on_node_ready(after.clone());
+            let boot_span = tracing::info_span!("rdm.mesh.node.create.via-boot", node = %birth.name);
+            let driver = hooks
+                .driver(
+                    NodeReadyCtx {
+                        start_kind: StartKind::FirstStart,
+                        birth: birth.clone(),
+                        authority: Authority::None(NoAuthority::Day0Root),
+                        client: client.clone(),
+                        topology_view: topology_view.clone(),
+                        cancel: CancelToken::new(),
+                        rafka_time: rafka_time.clone(),
+                        member_cert: None,
+                        attempt: 0,
+                        inherited: false,
+                    },
+                    Events::new(DigestView::default(), Addressed::new()),
+                    boot_span,
+                )
+                .expect("driver");
+            assert!(matches!(driver.attempt().await, Step::Passed));
+            driver.spawn_on_node_ready();
+            done_rx.await.expect("on_node_ready completed on its own task");
+            assert_eq!(*after.seen_nodes.lock().unwrap(), vec![expected_name]);
+
+            // 3. Cancelling the birth aborts an in-flight `on_node_ready` task and drops its future.
+            let cancel = CancelToken::new();
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+            let hang_after = Arc::new(HangUntilCancelledAfter {
+                entered: entered.clone(),
+                dropped_tx: Mutex::new(Some(dropped_tx)),
+            });
+            let cancel_hooks =
+                NodeHooks::new(Arc::new(PassBefore)).with_on_node_ready(hang_after);
+            let cancel_driver = cancel_hooks
+                .driver(
+                    NodeReadyCtx {
+                        start_kind: StartKind::FirstStart,
+                        birth,
+                        authority: Authority::None(NoAuthority::Day0Root),
+                        client,
+                        topology_view,
+                        cancel: cancel.clone(),
+                        rafka_time,
+                        member_cert: None,
+                        attempt: 0,
+                        inherited: false,
+                    },
+                    Events::new(DigestView::default(), Addressed::new()),
+                    tracing::Span::none(),
+                )
+                .expect("driver");
+            assert!(matches!(cancel_driver.attempt().await, Step::Passed));
+            cancel_driver.spawn_on_node_ready();
+            entered.notified().await;
+            cancel.cancel();
+            dropped_rx
+                .await
+                .expect("cancelling the birth drops the in-flight on_node_ready future");
+
+            ep.close().await;
+        });
+
+        let spans = capture.spans().expect("captured spans");
+        let _ = std::fs::remove_dir_all(&dir);
+        let on_ready_spans: Vec<&serde_json::Value> = spans
+            .iter()
+            .filter(|s| s["name"] == "rdm.mesh.node.update.via-on-node-ready")
+            .collect();
+        assert!(
+            on_ready_spans
+                .iter()
+                .any(|s| s["attributes"]["node"] == expected_name_for_assert.to_string()),
+            "expected rdm.mesh.node.update.via-on-node-ready span for node: {on_ready_spans:?}"
+        );
+    }
 }
