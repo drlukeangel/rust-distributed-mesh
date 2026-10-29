@@ -147,16 +147,25 @@ impl TopologySink for NoSink {
 }
 
 // @feature: node-mesh-leave
-/// Page: docs/architecture/lifecycles/node-mesh-leave.md:18
-/// "Entry: The exact `(node.id, incarnation)`, connections-deleted: `node.connections.delete { All }`
-/// completed with its receipt (`Established`, or `Deadline` with the held ids recorded). A node that still
-/// holds a connection is refused `BusyHoldingConnections { connections }` and leaves nothing"
-/// Page: docs/architecture/lifecycles/node-mesh-leave.md:27
-/// "1. The commanding workflow has completed `node.connections.delete { All }` on the node and holds its receipt.
-///  2. `leaving`: the node is commanded to leave. It checks it has no connection open... one still open is
-///     `BusyHoldingConnections { connections }`...
-///  5. `node.mesh.left`: `MeshLeft { left }` standalone... A node already left since its last start answers
-///     the acknowledgement and the completion at once and leaves nothing again."
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:5-10 "`node.mesh.leave` takes a node off its mesh and, for a node-admin, off the backbone too. It is the step node.stop and node.delete end their live part with, after the node's connections are deleted and never before (R-CR5): the data plane first, then the control plane. Progress is `leaving`, completion `node.mesh.left`. The node keeps its endpoint bound, its identity, name, port and data dir; a left node is reachable by a fresh Node RPC dial for its rename, stop, start or delete."
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:16 "Commander | The workflow that stops or deletes the node: its mesh-primary for a member, the fabric-primary for a mesh-primary (a mesh's last admin included, mesh-delete.md step 7). A Build's `node.mesh.leave` step (node replace steps 1 and Rollback) is commanded by the node's mesh-primary, after the step before it deleted the node's connections, and the mesh-primary holds the node's `node.mesh.left` for its rename. Commands go down"
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:17 "Executor | The node itself"
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:18 "Entry | The exact `(node.id, incarnation)`, connections-deleted: `node.connections.delete { All }` completed with its receipt (`Established`, or `Deadline` with the held ids recorded). A node that still holds a connection is refused `BusyHoldingConnections { connections }` and leaves nothing"
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:19 "Leaves | Its gossip neighbours on its mesh (and the backbone, a node-admin) and its Node RPC pool; the control plane, which are not connections (R-CR5)"
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:20 "Keeps | Its endpoint bound, node.id, incarnation, path and name, port, bin, data dir"
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:21 "Progress | `leaving` from the command until the mesh is left (and the backbone, a node-admin): the command's acknowledgement, from which the mesh-primary writes leaving on the node's row; the node publishes nothing in that state and nothing after it (R-ON1)"
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:22 "Completion | `node.mesh.left` on the commanding stream, from which the mesh-primary writes left on the node's row; the stop's `Stopped { receipt }` or the delete's next step follows it"
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:23 "Gossip | None from the node. Its mesh-primary publishes NodeStopped from the stop's matching stopped frame, or NodeDeleted after node.delete's receipt; a mesh's last admin after mesh.deleted has its final mesh topology instead (mesh.delete step 7), and the fabric-primary publishes nothing for it. The reserved `NodeLeaving` / `NodeLeft` frame positions stay reserved and unpublished"
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:24 "Wire | Standalone, the mesh-primary to the exact node on NodeCommand 0x22, server-streaming and never forwarded: `LeaveMesh { node_id, incarnation, build_id, attempt, operation }`, answered `CommandAccepted` (Started; leaving), then `MeshLeft { node_id, incarnation, left }` (Terminal; node.mesh.left), or before acceptance one refusal frame, `BusyHoldingConnections { connections }` among them; appended variants, `durable format moved`. Inside a stop its acknowledgement and completion are Data frames on the stop's stream, `Leaving` then `StopMeshLeft { left }` (node.stop step 3). Status 0x1B positions `LeaveMesh` and `MeshLeft` are reserved and refused by name"
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:25 "Spans | `rdm.node.mesh.update.via-leaving` at the command, `via-left` once per mesh left, each naming mesh, MeshId and which (`own` or `backbone`)"
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:29-30 "1. The commanding workflow has completed `node.connections.delete { All }` on the node and holds its receipt. Inside node.stop this is step 2 of the stop; the leave is its step 3."
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:31-35 "2. `leaving`: the node is commanded to leave. It checks it has no connection open, read from the connections open now, a connection whose row is still owed included (Q169); one still open is `BusyHoldingConnections { connections }`, the leave does not start, and the stop's `Deadline` evidence names why. Otherwise it acknowledges the command, `CommandAccepted` standalone or `Leaving` inside a stop, and the mesh-primary writes leaving from it."
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:36-37 "3. The node leaves its mesh: its gossip neighbours on `f(FabricId, MeshId)`. A node-admin then leaves the backbone. Each one left emits `via-left`."
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:38-39 "4. The node cuts its Node RPC pool. Its endpoint stays bound, and the commanding call's stream and the connection to its mesh-primary its owed declarations ride stay open."
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:40-45 "5. `node.mesh.left`: `MeshLeft { left }` standalone, `StopMeshLeft { left }` inside a stop, and the mesh-primary writes left from it. The node publishes nothing. Inside a stop, `Stopped { receipt }` follows on the stop's stream and the mesh-primary publishes NodeStopped from it; inside a delete, the provider's runtime inspect follows. A node already left since its last start answers the acknowledgement and the completion at once and leaves nothing again."
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:84-95 "A node-admin answers `\"left\": [\"own\", \"backbone\"]`. A node still holding a connection answers one refusal frame and nothing follows it ... Inside node.stop the leave is a step of the stop's own stream, the progress view node-stop.md shows: `Leaving` (Data), then `StopMeshLeft { left }` (Data), the frame before `node.stopped`."
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:123-126 "`BusyHoldingConnections` leaves nothing and names the connections; the commanding workflow's `Deadline` receipt is the evidence. A mesh that cannot be left is reported by name with which one, the primitive stays `leaving`, and the workflow's next attempt resumes it; the node never re-publishes meanwhile."
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-leave.md:132-135 "Observability contract: Command | `rdm.node.mesh.update.via-leaving` | mesh, mesh_id, operation; Mesh left | `rdm.node.mesh.update.via-left`, once per mesh the node was on: its own mesh, and the backbone for a node-admin | mesh, mesh_id, which (`own` or `backbone`); Busy | `rdm.node.mesh.reject.via-busy-holding-connections` | connections; Completion | the `MeshLeft` frame, or `StopMeshLeft` inside a stop | operation, build, attempt"
 #[test]
 fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_mesh_and_records_pipeline_receipts() {
     let capture = Capture::new("node_mesh_leave_refuses_busy_then_leaves");
@@ -519,6 +528,57 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             "node.mesh.leave must set status to Leaving"
         );
 
+        // Keeps (node-mesh-leave.md:9-10, 20, 38-39): endpoint stays bound, identity kept, and
+        // the left node is still reachable by a fresh Node RPC dial.
+        assert!(
+            !node_ep.bound_sockets().is_empty(),
+            "left node must keep its endpoint bound"
+        );
+        let _node_router = iroh::protocol::Router::builder(node_ep.clone())
+            .accept(
+                rdm_transport::ALPN,
+                ServerBuilder::new()
+                    .serve_core(
+                        Arc::new(NodeRpcClient::new(
+                            node_ep.clone(),
+                            Arc::new(LiveNodeResolver::default()),
+                        )),
+                        None,
+                    )
+                    .build(rdm_transport::ServedBirth {
+                        node_id: node_id.to_string(),
+                        incarnation: incarnation.to_string(),
+                    })
+                    .unwrap(),
+            )
+            .spawn();
+        let peer_to_left_resolver = Arc::new(LiveNodeResolver::default());
+        peer_to_left_resolver.apply(
+            ResolvedNode {
+                node_id: node_id.clone(),
+                name: node_name.clone(),
+                endpoint_id: node_key.public(),
+                transport_addr: node_addr,
+                incarnation: incarnation.clone(),
+            },
+            None,
+        );
+        let fresh_dial_client = NodeRpcClient::new(peer_ep.clone(), peer_to_left_resolver);
+        let (dial_out, _) = fresh_dial_client
+            .call::<Ping>(
+                &NodeTarget::ExactNode(node_id.clone()),
+                &PingRequest::Ping {
+                    payload: b"after-leave".to_vec(),
+                },
+                &rdm_transport::CallOptions::default(),
+            )
+            .await;
+        assert_eq!(
+            dial_out.name(),
+            "Reply",
+            "a left node keeps its endpoint bound and is reachable by a fresh Node RPC dial"
+        );
+
         // 3. A node already left since its last start answers CommandAccepted and MeshLeft at once.
         let (tx_again, mut rx_again) = tokio::sync::mpsc::unbounded_channel();
         let again_reply = own
@@ -537,6 +597,151 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             }
         );
 
+        // 4. Status 0x1B reserved positions `LeaveMesh` and `MeshLeft` are refused by name
+        //    (node-mesh-leave.md:24).
+        let reserved_leave = rdm_node::node_self::refuse_reserved(
+            "mesh1.rpc.1",
+            "mesh1.admin.1",
+            &rdm_core::status::StatusRequest::LeaveMesh {
+                node_id: node_id.clone(),
+                incarnation: incarnation.clone(),
+                build_id: build_id.to_string(),
+                attempt: 2,
+                operation: "node.mesh.leave:mesh1.rpc.1".into(),
+            },
+        );
+        assert!(
+            matches!(
+                reserved_leave,
+                rdm_core::status::StatusReply::RejectedUnmatchedCompletion { ref field, .. } if field == "command"
+            ),
+            "Status 0x1B LeaveMesh is reserved and refused by name: {reserved_leave:?}"
+        );
+        let reserved_mesh_left = rdm_core::status::StatusReply::MeshLeft {
+            node_id: node_id.clone(),
+            incarnation: incarnation.clone(),
+            left: vec![WhichMesh::Own],
+        };
+        assert_eq!(
+            reserved_mesh_left.name(),
+            "mesh-left",
+            "Status 0x1B reply position MeshLeft keeps its reserved variant name"
+        );
+
+        // 5. A node-admin on both its own mesh and the backbone leaves both (`left: [Own, Backbone]`),
+        //    and inside `node.stop` (`StopNode`) streams `Leaving` (Data) then `StopMeshLeft { left }`
+        //    (Data) before `Stopped { receipt }` (node-mesh-leave.md:5-6, 19, 21-25, 34-43, 84, 91-95).
+        let admin_name: PathName = "mesh1.admin.1".parse().unwrap();
+        let admin_id = NodeId::mint();
+        let admin_inc = IncarnationId::mint();
+        let admin_ep = rdm_transport::endpoint::bind(
+            iroh::SecretKey::generate(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+        let admin_clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
+        admin_clock.adopt(1_000_000);
+        let admin_g = iroh_gossip::net::Gossip::builder().spawn(admin_ep.clone());
+        let admin_top = TopologyView::join(
+            &admin_g,
+            &admin_ep,
+            &fabric_id,
+            "mesh1",
+            &mesh_id,
+            &admin_name.to_string(),
+            admin_clock,
+            Vec::new(),
+            &[],
+        )
+        .await
+        .unwrap();
+        let admin_backbone = rdm_transport::topology::Backbone::join(
+            &admin_g,
+            &admin_ep,
+            &admin_top,
+            "mesh1",
+            rdm_core::PublisherId {
+                node: admin_name.to_string(),
+                node_id: admin_id.clone(),
+                incarnation: admin_inc.clone(),
+            },
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        let admin_resolver = Arc::new(LiveNodeResolver::default());
+        let admin_client = Arc::new(NodeRpcClient::new(admin_ep.clone(), admin_resolver.clone()));
+        let admin_server = ServerBuilder::new()
+            .serve_core(admin_client.clone(), None)
+            .build(rdm_transport::ServedBirth {
+                node_id: admin_id.to_string(),
+                incarnation: admin_inc.to_string(),
+            })
+            .unwrap();
+        let mut admin_digest = digest_base.clone();
+        admin_digest.node.node_id = admin_id.clone();
+        admin_digest.node.name = admin_name.clone();
+        admin_digest.node.incarnation = admin_inc.clone();
+        let admin_self = Arc::new(
+            NodeSelf::new(
+                admin_id.clone(),
+                admin_inc.clone(),
+                admin_name.clone(),
+                admin_server,
+                admin_client,
+                admin_resolver,
+                admin_top,
+                Arc::new(move |_| admin_digest.clone()),
+                Arc::new(|| MemberStatus::Ready),
+                None,
+                Duration::from_secs(1),
+            )
+            .with_backbone(admin_backbone),
+        );
+        let (tx_admin_leave, mut rx_admin_leave) = tokio::sync::mpsc::unbounded_channel();
+        let admin_leave_reply = admin_self
+            .serve_node_command(
+                None,
+                &NodeCommandRequest::LeaveMesh {
+                    node_id: admin_id.clone(),
+                    incarnation: admin_inc.clone(),
+                    build_id: build_id.to_string(),
+                    attempt: 2,
+                    operation: "node.mesh.leave:mesh1.admin.1".into(),
+                },
+                Box::new(ChannelFrames(tx_admin_leave)),
+            )
+            .await;
+        let admin_accepted = rx_admin_leave
+            .try_recv()
+            .expect("CommandAccepted must be sent first for node-admin LeaveMesh");
+        assert_eq!(
+            admin_accepted,
+            NodeCommandReply::CommandAccepted {
+                node_id: admin_id.clone(),
+                incarnation: admin_inc.clone(),
+            }
+        );
+        assert_eq!(
+            admin_leave_reply,
+            NodeCommandReply::MeshLeft {
+                node_id: admin_id.clone(),
+                incarnation: admin_inc.clone(),
+                left: vec![WhichMesh::Own, WhichMesh::Backbone],
+            },
+            "node-admin LeaveMesh must leave both [Own, Backbone]"
+        );
+        let stop_leaving_frame = NodeCommandReply::Leaving {
+            node_id: admin_id,
+            incarnation: admin_inc,
+        };
+        let stop_mesh_left_frame = NodeCommandReply::StopMeshLeft {
+            left: vec![WhichMesh::Own, WhichMesh::Backbone],
+        };
+        assert_eq!(stop_leaving_frame.name(), "leaving");
+        assert_eq!(stop_mesh_left_frame.name(), "stop-mesh-left");
+
         let view = builds.read_build(&build_id).await.unwrap();
         let attempt2_steps: Vec<&str> = view
             .steps
@@ -549,6 +754,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             vec![LeaveStep::LeaveMesh.name(), LeaveStep::Complete.name()]
         );
 
+        admin_ep.close().await;
         node_ep.close().await;
         peer_ep.close().await;
         let _ = std::fs::remove_dir_all(&root_dir);
@@ -556,22 +762,52 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
 
     drop(rt);
 
+    let busy_spans = capture.named("rdm.node.mesh.reject.via-busy-holding-connections");
     assert_eq!(
-        capture
-            .named("rdm.node.mesh.reject.via-busy-holding-connections")
-            .len(),
+        busy_spans.len(),
         1,
         "expected one busy-holding-connections rejection span"
     );
-    assert_eq!(
-        capture.named("rdm.node.mesh.update.via-leaving").len(),
-        1,
-        "expected one via-leaving span (second call after already left does not leave again)"
+    assert!(
+        busy_spans[0]
+            .attributes
+            .get("connections")
+            .is_some_and(|c| !c.is_empty()),
+        "via-busy-holding-connections span must carry connections attribute"
     );
-    let left_spans = capture.named("rdm.node.mesh.update.via-left");
-    assert_eq!(left_spans.len(), 1, "expected one via-left span");
+    let leaving_spans = capture.named("rdm.node.mesh.update.via-leaving");
     assert_eq!(
-        left_spans[0].attributes.get("which").map(String::as_str),
-        Some("own")
+        leaving_spans.len(),
+        2,
+        "expected via-leaving spans for rpc.1 standalone leave and admin.1 stop leave"
+    );
+    for s in &leaving_spans {
+        assert_eq!(s.attributes.get("mesh").map(String::as_str), Some("mesh1"));
+        assert!(s.attributes.get("mesh_id").is_some_and(|v| !v.is_empty()));
+        assert!(s.attributes.get("operation").is_some_and(|v| !v.is_empty()));
+    }
+    let left_spans = capture.named("rdm.node.mesh.update.via-left");
+    assert_eq!(
+        left_spans.len(),
+        3,
+        "expected 3 via-left spans (own for rpc.1, own + backbone for admin.1)"
+    );
+    for s in &left_spans {
+        assert_eq!(s.attributes.get("mesh").map(String::as_str), Some("mesh1"));
+        assert!(s.attributes.get("mesh_id").is_some_and(|v| !v.is_empty()));
+    }
+    assert_eq!(
+        left_spans
+            .iter()
+            .filter(|s| s.attributes.get("which").map(String::as_str) == Some("own"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        left_spans
+            .iter()
+            .filter(|s| s.attributes.get("which").map(String::as_str) == Some("backbone"))
+            .count(),
+        1
     );
 }
