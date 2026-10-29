@@ -90,7 +90,6 @@ The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/n
 | What | Where |
 |---|---|
 | small per-node settings | the node's `config` map: mine, RDM never reads it; replaced whole by `node.config.update`, a node's own (`config_update`) going up through its mesh-primary and a caller's down from the fabric-primary; a Build's `config` supersedes the node's current map, whoever set it, so read the node's current config (`nodes.get`) before composing a Build: every write is a PUT (Q236); at most 32 keys and 2048 bytes ([node-config-update.md](../architecture/lifecycles/node-config-update.md), [gossip.md §3.1](../architecture/gossip.md#31-frame-catalog)) |
-| mesh and fabric attributes | `mesh.config.*`, `fabric.config.*` ([node-rpc-envelope.md](../architecture/node-rpc-envelope.md#typed-objects-mapped-to-wire-and-execution-owners)) |
 | labels to select nodes by | `tags`: see [Tags](#tags) below |
 | a node's durable data | under its `RDM_DATA_DIR`; carried across stop and start, recovery and replacement by its path's storage policy ([node-storage-runbook.md](node-storage-runbook.md)) |
 | my rows and events | my own storage, and my events on gossip ([gossip.md §8](../architecture/gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); RDM orders nothing of mine |

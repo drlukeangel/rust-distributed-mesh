@@ -33,7 +33,7 @@ Nothing is cut and nothing reconnects at any step of either.
 
 | Field | Contract |
 |---|---|
-| Caller | The embedding app or a person, to the fabric-primary; a single call like `fabric.update` |
+| Caller | The embedding app or a person, to the fabric-primary; a single call |
 | Request | `fabric.root.update { secret }`, the new anchor's secret |
 | Reply | `fabric.root.updated` once the rotation is accepted (the roots row `minted`); its progress is `fabrics.get`'s `roots { phase, expires_at }`. Refused by name while a rotation is in flight (`rotation-in-progress`) and for a root already trusted (`root-already-trusted`) |
 | Phases | `minted` → `distributed` (both anchors trusted everywhere) → `ca-rotated` → `retired` (one anchor again); the roots row is durable and a successor continues from it |
