@@ -86,6 +86,22 @@ Every term below links to the architecture pages that define it.
 - **receipt** ([Build](architecture/build.md)): The durable record written as a Build step reaches
   an execution milestone or terminal outcome (`Complete` or `Failed`), allowing a successor
   executor to resume without repeating completed work.
+- **Build floor** ([Node start](architecture/lifecycles/node-start.md),
+  [Node mesh join](architecture/lifecycles/node-mesh-join.md),
+  [Gossip](architecture/gossip.md)): The minimum `(BuildId, attempt)` a joining or starting
+  `node-admin` must hold in its local Build log before it can report `NodeStarted` and become
+  `Ready`, named by the accepting primary in its `JoinNode` (`0x1D`) answer and fetched when
+  missing via `FetchCurrentBuild` or `FetchBuildFacts` (`0x1F`).
+- **checklist (planned-birth checklist)** ([States](architecture/lifecycles/states.md)): The
+  per-primary list of planned exact births from the accepted Build that must complete their owed
+  check-in (`Budget::Owed`) for a state command before the primary reports the state's upward
+  completion.
+- **hand-off (mesh state hand-off)** ([States](architecture/lifecycles/states.md),
+  [Node-admin lifecycle](architecture/node-admin-lifecycle.md),
+  [Node RPC envelope](architecture/node-rpc-envelope.md)): Either the `ApplyMeshState(Pending)`
+  call (`Status`, `0x1B`) sent by the launching `node-admin` to a new mesh's first `node-admin`
+  once it answers `Ping`, or the `fabric-primary`'s next claim and `build.attempt.run` call when
+  handing a Build attempt to the executor named by `executor_for`.
 - **deployment provider** ([Deployment provider](architecture/deployment-provider.md)): The
   environment policy (`MESH_SPAWN_TYPE=process|container`) that launches, inspects, and terminates
   node runtimes within a provider control domain (a host PID namespace for `process`, or a Docker
@@ -113,6 +129,12 @@ Every term below links to the architecture pages that define it.
   held by a primary (`mesh-primary` for its own mesh; `fabric-primary` for every mesh), populated
   from the stores at start or hand-over and updated on each write to answer external `fabrics.get`,
   `meshes.get`, and `nodes.get` queries without scanning disk.
+- **hydration sync** ([Node start](architecture/lifecycles/node-start.md),
+  [Node topology get](architecture/lifecycles/node-topology-get.md),
+  [Query](architecture/query.md)): The [`node.topology.get`](architecture/lifecycles/node-topology-get.md)
+  (`0x1E`) read a node performs during [`node.start`](architecture/lifecycles/node-start.md) after
+  `pre_node_ready`, installing complete mesh snapshots together with the node's own whole row, the
+  recorded primaries (with lost births marked gone), and each mesh's `MeshId`.
 - **staleness floor** ([Gossip](architecture/gossip.md),
   [Elections](architecture/fabric-node-lifecycle-elections.md)): The silence bound
   (`RDM_STALENESS_MS`) past which an unheard peer is inferred stale (`PendingReconnect`) or an
@@ -175,3 +197,18 @@ Every term below links to the architecture pages that define it.
   `mesh-primary` runs when a node is unheard past the staleness floor, probing the birth with
   `node.tickle` and reading its runtime state via `node.runtime.inspect` before deciding whether to
   wait, reconnect, or recover the node via [`node.recovery`](architecture/lifecycles/node-recovery.md).
+- **node investigation verdicts (`reached`, `running`, `os-stopped`, `exited`, `unproven`)**
+  ([node investigation](architecture/lifecycles/node-investigation.md)): The five possible outcomes
+  of [node investigation](architecture/lifecycles/node-investigation.md) on one exact birth.
+  `reached` means the exact birth answered `node.tickle` (with no command left unanswered past the
+  staleness floor) and is commanded back via [`node.mesh.join`](architecture/lifecycles/node-mesh-join.md);
+  any other verdict comes from [`node.runtime.inspect`](architecture/lifecycles/node-runtime-inspect.md)
+  and re-creates the node at the same `path.name` with a new `node.id` (over the inherited data dir
+  when `exited`, or a newly allocated data dir otherwise).
+- **adoption launch** ([Fabric recovery](architecture/lifecycles/fabric-recovery.md),
+  [Node-admin lifecycle](architecture/node-admin-lifecycle.md)): A person- or script-started
+  `node-admin` launched at the lost `fabric-primary`'s `path.name` (with `RDM_FABRIC_ID`,
+  `RDM_MESH_ID`, and `RDM_STORE_DIR`, and no launcher) when every `node-admin` of every mesh is
+  lost. It mints a new `node.id`, claims the `fabric-recovery` attempt of the current Build before
+  any other write, refuses with `NameHeld` if any `node-admin` answers, and restores the
+  `mesh-primary` and `fabric-primary` roles once `Ready`.
