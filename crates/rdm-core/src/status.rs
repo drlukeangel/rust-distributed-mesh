@@ -648,6 +648,25 @@ pub enum StatusRequest {
         /// The row's revision as written (P1: every install is ordered by it).
         revision: u64,
     },
+    /// Downward (`node.roots.update`; fabric-ca-renew.md "node.roots.update, the primitive"): the
+    /// fabric-primary installs the fabric's trusted root set on one exact birth, answered
+    /// [`StatusReply::RootsUpdated`], or [`StatusReply::RejectedRootStillChained`] for a set that drops a
+    /// root the birth still admits a chain under. One or two roots, never none; the root secret only to
+    /// a node-admin. Appended last: no variant before it moves.
+    ///
+    /// Position 35 on the wire.
+    UpdateRoots {
+        /// The node.
+        node_id: NodeId,
+        /// Its incarnation: the exact birth.
+        incarnation: IncarnationId,
+        /// The root public keys the birth trusts from now on, each an ed25519 public key as hex.
+        roots: Vec<String>,
+        /// The rotation's phase this set belongs to.
+        phase: RootsPhase,
+        /// The new root's secret, carried to a node-admin only.
+        secret: Option<RootSecretHex>,
+    },
 }
 
 /// A read as one shape (Q167): the entity, the exact birth a `connections.get` reads, and the filter.
@@ -702,6 +721,42 @@ impl std::fmt::Debug for IssuingKeyHex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "IssuingKeyHex({} hex digits)", self.0.len())
     }
+}
+
+/// A root's secret carried by [`StatusRequest::UpdateRoots`] to a node-admin, as hex: its debug form
+/// names its length, never its value.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RootSecretHex(pub String);
+
+impl std::fmt::Debug for RootSecretHex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RootSecretHex({} hex digits)", self.0.len())
+    }
+}
+
+/// A root rotation's phase (fabric-ca-renew.md "fabric.root.update"): `minted` -> `distributed` (both
+/// anchors trusted everywhere) -> `ca-rotated` -> `retired` (one anchor again). Positional order is
+/// part of the wire schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RootsPhase {
+    /// The new root's secret is written beside the old one on the fabric-primary.
+    ///
+    /// Position 0 on the wire.
+    Minted,
+    /// Every node trusts both roots.
+    ///
+    /// Position 1 on the wire.
+    Distributed,
+    /// The CA is renewed under the new root, every issuer re-minted.
+    ///
+    /// Position 2 on the wire.
+    CaRotated,
+    /// Every node trusts the new root alone; the old secret is destroyed.
+    ///
+    /// Position 3 on the wire.
+    Retired,
 }
 
 /// Which mesh channel a `node.mesh.join` joined or a `node.mesh.leave` left
@@ -1039,6 +1094,7 @@ impl StatusRequest {
             Self::LeaveMesh { .. } => "node.mesh.leave",
             Self::RenewCert { .. } => "node.cert.renew",
             Self::UpdateIssuer { .. } => "node.issuer.update",
+            Self::UpdateRoots { .. } => "node.roots.update",
         }
     }
 }
@@ -1709,6 +1765,26 @@ pub enum StatusReply {
         /// Why, by name, naming the pair; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
+    /// The receipt of `UpdateRoots` (`node.roots.update`): the exact birth trusts `roots` from now on.
+    /// Appended last: no variant before it moves.
+    ///
+    /// Position 58 on the wire.
+    RootsUpdated {
+        /// The node.
+        node_id: NodeId,
+        /// Its incarnation.
+        incarnation: IncarnationId,
+        /// The roots it trusts now, as hex.
+        roots: Vec<String>,
+    },
+    /// `UpdateRoots` refused by name (`root-still-chained`): the set drops a root the birth still
+    /// admits a chain under. Nothing is installed. Appended last: no variant before it moves.
+    ///
+    /// Position 59 on the wire.
+    RejectedRootStillChained {
+        /// The root, as hex.
+        root: String,
+    },
 }
 
 /// The event a Blocked `pre_node_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -1956,6 +2032,8 @@ impl StatusReply {
             Self::RejectedCert { .. } => "rejected-cert",
             Self::Fabrics { .. } => "fabrics",
             Self::RejectedFilter { .. } => "rejected-filter",
+            Self::RootsUpdated { .. } => "roots-updated",
+            Self::RejectedRootStillChained { .. } => "root-still-chained",
         }
     }
 }
@@ -1996,8 +2074,8 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 35;
-    const REPLY_VARIANTS: u32 = 58;
+    const REQUEST_VARIANTS: u32 = 36;
+    const REPLY_VARIANTS: u32 = 60;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -2062,6 +2140,8 @@ impl NodeProtocol for Status {
             StatusReply::RejectedCert { .. } => "rejected-cert",
             StatusReply::Fabrics { .. } => "fabrics",
             StatusReply::RejectedFilter { .. } => "rejected-filter",
+            StatusReply::RootsUpdated { .. } => "roots-updated",
+            StatusReply::RejectedRootStillChained { .. } => "root-still-chained",
         }
     }
 
@@ -2129,6 +2209,8 @@ impl NodeProtocol for Status {
             StatusReply::RejectedCert { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
             StatusReply::Fabrics { .. } => ReplyKind::Success,
             StatusReply::RejectedFilter { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
+            StatusReply::RootsUpdated { .. } => ReplyKind::Success,
+            StatusReply::RejectedRootStillChained { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
         }
     }
 

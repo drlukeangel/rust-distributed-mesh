@@ -801,7 +801,7 @@ async fn start_booted(
                                 listeners: listener_addrs.clone(),
                             }));
                             let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
-                            let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats() }));
+                            let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats(), data_connections: data_connections.clone() }));
                             ready.store(true, std::sync::atomic::Ordering::SeqCst);
                             *publisher.lock().unwrap() = Some(spawn_publisher(&topology_view, &digest, &status, &server));
                             // The owed declarations' one sender (Q210): whatever this birth owes its mesh-primary is
@@ -1727,6 +1727,8 @@ pub(crate) struct Kicked {
     pre_node_ready: Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>>,
     /// This node's server counters: its in-flight calls decide whether it may take a new name.
     stats: Arc<rdm_transport::ServerStats>,
+    /// The registry whose root set `node.roots.update` replaces.
+    data_connections: rdm_transport::connections::ConnectionsRegistry,
 }
 
 type KickSlot = Arc<std::sync::OnceLock<Arc<Kicked>>>;
@@ -1868,7 +1870,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             }
             let incarnation = match (&req, &read) {
                 (_, Some(rdm_core::status::Read { node: Some((_, incarnation)), .. })) => incarnation,
-                (StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. }, _) => incarnation,
+                (StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. } | StatusRequest::UpdateRoots { incarnation, .. }, _) => incarnation,
                 // No handler on this door for the request: not handled here (R24), decided by dispatch alone.
                 _ => return Ok(crate::node_self::request_not_handled(&me.topology_view.held_name(&me.digest.node.name).to_string(), &req)),
             };
@@ -1885,6 +1887,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             match req {
                 // node.cert.renew: its issuing authority installs a fresh member cert on this birth.
                 StatusRequest::RenewCert { cert, .. } => Ok(me.own.renew_cert(&cert)),
+                // node.roots.update: an rpc node keeps no root secret; only the public set is installed.
+                StatusRequest::UpdateRoots { node_id, incarnation, roots, phase, .. } => {
+                    let node = me.topology_view.held_name(&me.digest.node.name).to_string();
+                    Ok(crate::roots_update::install_roots(&me.data_connections, &node, &node_id, &incarnation, &roots, phase, false))
+                }
                 StatusRequest::ProbeNodeState { .. } => {
                     // A stopped node is Leaving with a live process: it says so and presents nothing.
                     if me.own.is_stopped() {

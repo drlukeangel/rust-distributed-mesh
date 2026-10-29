@@ -713,7 +713,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
-        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::NodeConfigUpdated { .. } => {
+        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateRoots { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::NodeConfigUpdated { .. } => {
             (crate::node_self::request_not_handled(&me_name.to_string(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state, changed_at_rafka_ms } => {
@@ -1274,6 +1274,18 @@ impl StatusAuthority {
             StatusRequest::UpdateIssuer { incarnation, key, cert, .. } => {
                 let from = sender.as_ref().map(|n| n.name.to_string()).or_else(|| peer.map(|k| k.fmt_short().to_string())).unwrap_or_default();
                 return self.update_own_issuer(&view, &from, incarnation, key, cert).await;
+            }
+            // node.roots.update (fabric-ca-renew.md "node.roots.update, the primitive"): this admin's exact
+            // birth installs the fabric's trusted root set.
+            StatusRequest::UpdateRoots { node_id, incarnation, roots, phase, .. } => {
+                let me = self.held_name_in(&view).to_string();
+                if view.own(&self.node_id).and_then(|n| n.incarnation_id.as_ref()) != Some(incarnation) {
+                    return rdm_core::reply::stale(view.own(&self.node_id).and_then(|n| n.incarnation_id.clone()).unwrap_or_else(|| incarnation.clone()));
+                }
+                let Some(registry) = self.own.get().and_then(|o| o.registry()) else {
+                    return rdm_core::reply::status::not_ready(format!("{me} holds no connections registry yet; {} is refused", req.op()));
+                };
+                return rdm_node::roots_update::install_roots(&registry, &me, node_id, incarnation, roots, *phase, false);
             }
             _ => {}
         }

@@ -297,3 +297,37 @@ fn a_start_hold_and_a_settlement_never_wait_behind_a_refused_writes_backoff() {
         dest.shutdown().await;
     });
 }
+
+/// CONTRACT (fabric-ca-renew.md "node.roots.update, the primitive": "one or two roots, never none";
+/// "a set that drops a root the node still admits a chain under is refused by name
+/// (`root-still-chained`)"): a birth whose member cert chains under root A installs [A, B] and answers
+/// `RootsUpdated`; a set of B alone, which drops A while its cert still chains under A, is refused
+/// `RejectedRootStillChained` naming A and nothing is installed; no root, three roots and a value that
+/// is no key are refused by name. Must NOT happen: a birth left trusting no root its own cert chains to.
+#[tokio::test]
+async fn a_root_set_that_drops_the_root_a_births_cert_chains_under_is_refused_by_name() {
+    use rdm_core::certs::{BirthIdentity, CaKey, IssuingKey};
+    use rdm_core::status::{RootsPhase, StatusReply};
+    let node = Node::boot("mesh1.rpc.1", Arc::new(MemoryConnectionsStorage::default())).await;
+    let (root_a, root_b) = (rdm_core::certs::mint_key(), rdm_core::certs::mint_key());
+    let ca = CaKey::mint(&root_a, 3600, 1_000);
+    let issuing = IssuingKey::mint(&ca, "mesh1", 1_000, 2_000_000).unwrap();
+    let birth = BirthIdentity { node_id: node.birth.node_id.clone(), incarnation: node.birth.incarnation.clone(), name: node.birth.name.clone(), mesh: "mesh1".into(), endpoint_key: rdm_core::EndpointId(node.resolved.endpoint_id.to_string()) };
+    let cert = rdm_core::certs::issue(&issuing, &birth, 1_000, 1_000_000).unwrap();
+    node.registry.set_member_cert(rdm_core::certs::cert_to_bytes(&cert));
+    node.registry.roots().replace(vec![root_a.verifying_key()]);
+    let hex = |k: &rdm_core::certs::SigningKey| rdm_core::launch::encode_hex(k.verifying_key().as_bytes());
+    let install = |roots: Vec<String>| rdm_node::roots_update::install_roots(&node.registry, "mesh1.rpc.1", &node.birth.node_id, &node.birth.incarnation, &roots, RootsPhase::Distributed, false);
+
+    let both = install(vec![hex(&root_a), hex(&root_b)]);
+    assert!(matches!(&both, StatusReply::RootsUpdated { roots, .. } if roots.len() == 2), "{both:?}");
+    assert_eq!(node.registry.roots().current(), vec![root_a.verifying_key(), root_b.verifying_key()]);
+
+    let dropped = install(vec![hex(&root_b)]);
+    assert_eq!(dropped, StatusReply::RejectedRootStillChained { root: hex(&root_a) });
+    assert_eq!(node.registry.roots().current().len(), 2, "nothing is installed on a refusal");
+
+    for bad in [vec![], vec![hex(&root_a), hex(&root_b), hex(&root_a)], vec!["not-a-key".to_string()]] {
+        assert!(matches!(install(bad.clone()), StatusReply::RejectedCert { .. }), "{bad:?} is refused by name");
+    }
+}

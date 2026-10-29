@@ -613,6 +613,11 @@ impl ConnectionsRegistry {
         *self.inner.member_cert.lock().unwrap() = cert;
     }
 
+    /// The member cert bytes this registry presents on outbound dials: empty for a node with no certs.
+    pub fn member_cert(&self) -> Vec<u8> {
+        self.inner.member_cert.lock().unwrap().clone()
+    }
+
     /// Whether `alpn` is registered on this registry.
     pub fn has_alpn(&self, alpn: &[u8]) -> bool {
         self.inner.slots.lock().unwrap().contains_key(alpn)

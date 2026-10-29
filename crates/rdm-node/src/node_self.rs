@@ -435,6 +435,12 @@ impl NodeSelf {
         self.data_connections.lock().unwrap().as_ref().map(|r| r.roots().current()).unwrap_or_default()
     }
 
+    /// The registry this birth's admissions are judged on, once the process handed it one: whose root set
+    /// `node.roots.update` replaces.
+    pub fn registry(&self) -> Option<rdm_transport::connections::ConnectionsRegistry> {
+        self.data_connections.lock().unwrap().clone()
+    }
+
     /// The connections this birth holds now (R-CR1), from its connections writer; refused by name
     /// when the process has not handed it one, so nothing is decided on a set it cannot read.
     pub async fn held_routes(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, String> {

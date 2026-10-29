@@ -56,6 +56,7 @@ pub use crate::node::{
 };
 
 pub mod node_hooks;
+pub mod roots_update;
 pub mod connection_reconnect;
 pub mod connections_writer;
 pub mod held_name;
