@@ -175,12 +175,15 @@ pub struct Renewals {
     /// The fabric-primary's copy of every node-admin's signing cert dates, by mesh: the dates it
     /// minted and each `IssuerUpdated` confirmed, a mesh's filled from its records once.
     signing: Mutex<HashMap<String, HashMap<(NodeId, IncarnationId), SigningCertDates>>>,
+    /// The meshes whose issuer is re-minted under the fabric CA this admin renewed (fabric-ca-renew.md
+    /// step 2), each until its next issuing key is minted.
+    ca_due: Mutex<BTreeSet<String>>,
 }
 
 impl Renewals {
     /// The renewal ticks of the admin `me`.
     pub fn new(me: PathName, node_id: NodeId, issuer: Arc<CertIssuer>, nodes_storage: Arc<dyn NodesStorage>, caches: crate::record_cache::Caches, client: Arc<NodeRpcClient>, install_own: InstallOwn) -> Arc<Self> {
-        Arc::new(Self { me, node_id, issuer, nodes_storage, caches, client, install_own, in_flight: Mutex::default(), updating: Mutex::default(), issued: Mutex::default(), signing: Mutex::default() })
+        Arc::new(Self { me, node_id, issuer, nodes_storage, caches, client, install_own, in_flight: Mutex::default(), updating: Mutex::default(), issued: Mutex::default(), signing: Mutex::default(), ca_due: Mutex::default() })
     }
 
     /// Whether this admin writes the record of `n` in `view`: the primary of `n`'s mesh, or the
@@ -371,6 +374,7 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
         return;
     }
     let Some(now) = r.issuer.now_ms() else { return };
+    renew_ca(r, view, now);
     for m in &view.meshes {
         let admins: Vec<(Node, IncarnationId)> = view.births().filter(|n| n.mesh == m.name && n.kind == NodeKind::NodeAdmin).filter_map(|n| Some((n.clone(), n.incarnation_id.clone()?))).collect();
         // Every admin's dates of the mesh, a re-created admin's predecessor's included: the schedule is theirs.
@@ -385,10 +389,11 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
         let newest = rows.values().max_by_key(|row| row.expires_at);
         let newest_row = newest.map(|row| row.expires_at).unwrap_or(0);
         let held = r.issuer.held_mint(&m.name).filter(|mint| mint.expires_at >= newest_row);
-        let due = match &held {
-            Some(mint) => now >= mint.renew_at,
-            None => newest.is_some_and(|row| now >= row.renew_at),
-        };
+        let due = r.ca_due.lock().unwrap().contains(&m.name)
+            || match &held {
+                Some(mint) => now >= mint.renew_at,
+                None => newest.is_some_and(|row| now >= row.renew_at),
+            };
         let current = match (due, held) {
             (true, held) => match mint_next(r, &m.name, held.map(|h| h.expires_at).unwrap_or(newest_row)) {
                 Some(mint) => mint,
@@ -420,11 +425,39 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
     }
 }
 
+/// `fabric.ca.renew` (fabric-ca-renew.md) on the fabric-primary's tick: once the fabric CA has lived
+/// `RDM_CERT_RENEW_AT` of its TTL, a new CA is minted under the same root and held from then on, and
+/// every mesh of `view` is due for `mesh.issuer.renew` under it. The trust set is unchanged: the new CA
+/// chains to the root every node already trusts. One span, `rdm.node_admin.ca.update.via-renewal`.
+fn renew_ca(r: &Renewals, view: &Topology, now: u64) {
+    let Some((_, expires, renew_at)) = r.issuer.ca_dates() else { return };
+    if now < renew_at {
+        return;
+    }
+    let meshes: Vec<String> = view.meshes.iter().map(|m| m.name.clone()).collect();
+    let span = tracing::info_span!("rdm.node_admin.ca.update.via-renewal", ca_expires_at = tracing::field::Empty, previous_ca_expires_at = expires, meshes = meshes.len(), outcome = tracing::field::Empty);
+    match r.issuer.renew_ca() {
+        Ok(Some((ca, previous))) => {
+            span.record("ca_expires_at", ca.expiry_ms());
+            span.record("previous_ca_expires_at", previous);
+            span.record("outcome", "minted");
+            r.ca_due.lock().unwrap().extend(meshes);
+            span.in_scope(|| tracing::info!("the fabric CA is renewed under the same root: every mesh's issuer is re-minted under it"));
+        }
+        Ok(None) => {}
+        Err(e) => {
+            span.record("outcome", "refused");
+            span.in_scope(|| tracing::warn!(error = %e, "the fabric CA could not be renewed: tried again next tick"));
+        }
+    }
+}
+
 /// Mint the next issuing key of `mesh` after the one expiring at `previous_expiry`, held here.
 fn mint_next(r: &Renewals, mesh: &str, previous_expiry: u64) -> Option<IssuerMint> {
     let span = tracing::info_span!("rdm.node_admin.issuer.create.via-renewal", mesh, issuer_expires_at = tracing::field::Empty, previous_issuer_expires_at = previous_expiry, admins = tracing::field::Empty, reason = tracing::field::Empty, outcome = tracing::field::Empty);
     match r.issuer.renew_issuer(mesh) {
         Ok((_, mint)) => {
+            r.ca_due.lock().unwrap().remove(mesh);
             span.record("issuer_expires_at", mint.expires_at);
             span.record("outcome", "minted");
             span.in_scope(|| tracing::info!("the mesh's issuing key is renewed under the root"));

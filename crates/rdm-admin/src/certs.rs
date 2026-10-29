@@ -224,6 +224,7 @@ fn read_ca(path: &Path) -> Result<Option<CaKey>, String> {
 }
 
 /// What an admin signs with.
+#[derive(Clone)]
 enum Material {
     /// No certs, by name.
     NoCerts,
@@ -267,7 +268,8 @@ pub struct IssuerMint {
 /// A node-admin's cert material together with the rafka-time it issues on: what the join door and
 /// the deployment executor call.
 pub struct CertIssuer {
-    material: Material,
+    /// The root and the fabric CA under it: renewed in place by `fabric.ca.renew`.
+    material: std::sync::RwLock<Material>,
     time: RafkaTime,
     /// The issuing key of each mesh this admin signs for: minted once under the fabric CA, or the one
     /// it was given.
@@ -282,14 +284,14 @@ pub struct CertIssuer {
 impl CertIssuer {
     /// The explicit choice of no certs, on `time`.
     pub fn no_certs(time: RafkaTime) -> Self {
-        Self { material: Material::NoCerts, time, issuers: Mutex::default(), mints: Mutex::default(), policy: Mutex::default() }
+        Self { material: std::sync::RwLock::new(Material::NoCerts), time, issuers: Mutex::default(), mints: Mutex::default(), policy: Mutex::default() }
     }
 
     /// An issuer holding the fabric's root `secret`, the fabric CA `ca`, and its own mesh's issuing key
     /// `issuing` when its launch gave it one, on `time`.
     pub fn with_root(secret: SigningKey, ca: CaKey, issuing: Option<IssuingKey>, time: RafkaTime) -> Self {
         let issuers = issuing.into_iter().map(|k| (k.mesh().to_string(), k)).collect();
-        Self { material: Material::Root(secret, ca), time, issuers: Mutex::new(issuers), mints: Mutex::default(), policy: Mutex::default() }
+        Self { material: std::sync::RwLock::new(Material::Root(secret, ca)), time, issuers: Mutex::new(issuers), mints: Mutex::default(), policy: Mutex::default() }
     }
 
     /// Hold `policy`, the fabric's cert policy, from now on (fabric-certs.md §Tracking: read once by
@@ -306,7 +308,7 @@ impl CertIssuer {
 
     /// Whether this admin was started with no certs: it issues nothing and renews nothing.
     pub fn is_no_certs(&self) -> bool {
-        matches!(self.material, Material::NoCerts)
+        matches!(self.material(), Material::NoCerts)
     }
 
     /// This admin's rafka-time now, when it holds one: what its issues and renewals are judged on.
@@ -317,7 +319,7 @@ impl CertIssuer {
     /// The member cert of `birth` issued at its join, with what the birth's cert row records of it:
     /// [`Self::member`], spanned `rdm.node_admin.cert.create.via-join`.
     pub fn issue_member(&self, birth: &BirthIdentity) -> Result<MemberIssue, IssueFailure> {
-        if matches!(self.material, Material::NoCerts) {
+        if matches!(self.material(), Material::NoCerts) {
             let now = self.time.try_now_ms().unwrap_or(0);
             tracing::info_span!("rdm.node_admin.cert.create.via-no-certs-configured", node = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), issued_at_rafka_ms = now)
                 .in_scope(|| tracing::info!("this node-admin is configured with no certs: the member cert is empty"));
@@ -392,7 +394,8 @@ impl CertIssuer {
     /// now on in place of the one held.
     pub fn renew_issuer(&self, mesh: &str) -> Result<(IssuingKey, IssuerMint), IssueFailure> {
         let now_ms = self.now("a mesh's issuing material")?;
-        let Material::Root(_, ca) = &self.material else {
+        let material = self.material();
+        let Material::Root(_, ca) = &material else {
             unreachable!("a no-certs admin renews no issuer of mesh {mesh}: its caller reads is_no_certs first")
         };
         let (key, mint) = self.mint_issuer(ca, mesh, now_ms)?;
@@ -419,9 +422,48 @@ impl CertIssuer {
         Ok((key, mint))
     }
 
+    fn material(&self) -> Material {
+        self.material.read().unwrap().clone()
+    }
+
+    /// The fabric CA's expiry and renew point (fabric-ca-renew.md "When": once the CA has lived
+    /// `RDM_CERT_RENEW_AT` of its TTL), when this admin holds the root.
+    pub fn ca_dates(&self) -> Option<(u64, u64, u64)> {
+        let Material::Root(_, ca) = self.material() else { return None };
+        // The CA cert names its expiry alone; it was minted the policy's CA TTL before it.
+        let expires = ca.expiry_ms();
+        let issued = expires.saturating_sub(self.policy().ca_ttl_secs.saturating_mul(1000));
+        let renew_at = issued.saturating_add(expires.saturating_sub(issued).saturating_mul(self.policy().renew_at_permille as u64) / 1000);
+        Some((issued, expires, renew_at))
+    }
+
+    /// `fabric.ca.renew` step 1 (fabric-ca-renew.md): a new fabric CA keypair, its cert signed by the
+    /// root this admin holds, living the policy's CA TTL from now, held from now on in place of the one
+    /// held. Returns the new CA and the expiry of the one it replaces; `None` for an admin configured
+    /// with no certs. Every mesh's issuer minted under the old CA is due from then on
+    /// ([`Self::issuer_under_current_ca`]).
+    pub fn renew_ca(&self) -> Result<Option<(CaKey, u64)>, IssueFailure> {
+        let now_ms = self.now("the fabric CA")?;
+        let mut material = self.material.write().unwrap();
+        let Material::Root(root, old) = &*material else {
+            return Ok(None);
+        };
+        let ca = CaKey::mint(root, self.policy().ca_ttl_secs, now_ms);
+        let previous = old.expiry_ms();
+        *material = Material::Root(root.clone(), ca.clone());
+        Ok(Some((ca, previous)))
+    }
+
+    /// Whether the issuing key this admin holds for `mesh` was minted under the fabric CA it holds now:
+    /// one minted under an older CA is due for `mesh.issuer.renew` (fabric-ca-renew.md step 2).
+    pub fn issuer_under_current_ca(&self, mesh: &str) -> bool {
+        let Material::Root(_, ca) = self.material() else { return true };
+        self.held_issuer(mesh).is_none_or(|k| k.cert().ca.cert == ca.cert().cert)
+    }
+
     /// The fabric root's public key, when this admin holds the root.
     pub fn root(&self) -> Option<VerifyingKey> {
-        match &self.material {
+        match &self.material() {
             Material::Root(secret, _) => Some(secret.verifying_key()),
             Material::NoCerts => None,
         }
@@ -438,7 +480,7 @@ impl CertIssuer {
         if let Some(key) = issuers.get(mesh) {
             return Ok((key.clone(), None));
         }
-        match &self.material {
+        match &self.material() {
             Material::Root(_, ca) => {
                 let (key, mint) = self.mint_issuer(ca, mesh, now_ms)?;
                 tracing::info_span!("rdm.node_admin.cert.create.via-mesh-birth", mesh, issued_at_rafka_ms = now_ms, issuer_expires_at_rafka_ms = key.expiry_ms(), outcome = "issued")
@@ -467,14 +509,15 @@ impl CertIssuer {
 
     /// [`Self::issuing_material`], with the issuer it minted first, if any (`mesh.issuer.create`).
     pub fn issuing_material_minting(&self, mesh: &str) -> Result<(Option<IssuingMaterial>, Option<IssuerMint>), IssueFailure> {
-        if matches!(self.material, Material::NoCerts) {
+        if matches!(self.material(), Material::NoCerts) {
             tracing::info_span!("rdm.node_admin.cert.create.via-no-certs-configured", mesh)
                 .in_scope(|| tracing::info!("this node-admin is configured with no certs: the admin is launched with no issuing material"));
             return Ok((None, None));
         }
         let now_ms = self.now("a mesh's issuing material")?;
         let (key, minted) = self.issuer_for(mesh, now_ms)?;
-        let Material::Root(root, ca) = &self.material else { unreachable!("a no-certs issuer hands no issuing material") };
+        let material = self.material();
+        let Material::Root(root, ca) = &material else { unreachable!("a no-certs issuer hands no issuing material") };
         Ok((Some(IssuingMaterial::of(&key, root, ca)), minted))
     }
 }
@@ -719,5 +762,30 @@ mod tests {
         let d = dir.join(name);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    // @feature: node-lifecycle
+    /// CONTRACT (fabric-ca-renew.md "fabric.ca.renew": "1 mint a new CA keypair and sign its cert with
+    /// the root; ... 2 mesh.issuer.renew for every mesh under the new CA"; "Trust set: Unchanged: the
+    /// new CA chains to the same anchor"): a renewed CA is signed by the same root; the issuer held
+    /// before it is no longer under the current CA, and one renewed after it is, chaining to the same
+    /// root. Must NOT happen: a renewal that changes the root, or an issuer minted under the old CA
+    /// after it.
+    #[test]
+    fn a_renewed_fabric_ca_chains_to_the_same_root_and_leaves_older_issuers_due() {
+        let root = rdm_core::certs::mint_key();
+        let issuer = CertIssuer::with_root(root.clone(), ca_of(&root), None, time_at(1_000));
+        let (before, _) = issuer.renew_issuer("mesh1").expect("an issuer under the first CA");
+        assert!(issuer.issuer_under_current_ca("mesh1"));
+        let first_ca_expiry = issuer.ca_dates().unwrap().1;
+        let (_ca, previous) = issuer.renew_ca().unwrap().expect("a root holder renews its CA");
+        assert_eq!(previous, first_ca_expiry);
+        assert_eq!(issuer.root(), Some(root.verifying_key()), "the root is unchanged");
+        assert!(!issuer.issuer_under_current_ca("mesh1"), "the issuer minted under the old CA is due");
+        let (after, _) = issuer.renew_issuer("mesh1").unwrap();
+        assert!(issuer.issuer_under_current_ca("mesh1"));
+        assert_ne!(before.cert().ca.cert, after.cert().ca.cert);
+        assert!(rdm_core::certs::verify_issuer(after.cert(), &[root.verifying_key()]).is_ok(), "the renewed issuer chains to the same root");
+        assert!(CertIssuer::no_certs(time_at(1_000)).renew_ca().unwrap().is_none(), "an admin with no certs renews nothing");
     }
 }
