@@ -648,13 +648,18 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
 }
 
 // @feature: node-delete
-/// CONTRACT (docs/architecture/lifecycles/node-delete.md:17-19, 26-35, 55-60):
+/// CONTRACT (docs/architecture/lifecycles/node-delete.md:17-19, 26-39, 55-60, 82-83, 87-88):
 /// "OS-suspended target: The provider reports the exact runtime `os-stopped`: the stop is skipped
 /// by name (a suspended process answers no call) and the delete begins at `TerminateRuntime` on the
 /// exact handle, as `terminate(Immediate)` ... the delete completes only on the provider's `Exited`."
 /// "1. For a live process compose the whole node.stop. For a crashed process those stop steps are
 /// already done; do not fabricate node replies or receipts. 2. Terminate and inspect the exact runtime
 /// through provider control."
+/// "5. Block the old `(node.id, incarnation)` in the peer-location view. Peers refuse a late digest of
+/// the deleted birth under the frame catalog's receiver rules, even when a successor uses the same
+/// endpoint key."
+/// "Failures and stream certainty follow the caller execution contract."
+/// "Trace propagation, step spans and correlation follow the runtime spans."
 /// Injects one fault per step of `node.delete`:
 /// - OS-suspended target (`OsStopped`) that remains `OsStopped` after `terminate(Immediate)` -> skips
 ///   `StopNode` and `AwaitNodeLeft` by name (`rdm.node_admin.node.delete.via-os-stopped`) and fails
@@ -1085,6 +1090,76 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             "lost stop reply must not fabricate a stopped event before deleted: {live_events:?}"
         );
 
+        // Step 5 (node-delete.md:37-39): block the old `(node.id, incarnation)` in the peer-location
+        // view; peers refuse a late digest of the deleted birth even when a successor uses the same
+        // endpoint key.
+        let peer_view = rdm_transport::topology::DigestView::default();
+        let shared_endpoint = EndpointId("shared-retained-endpoint-key".into());
+        let old_digest = rdm_core::MeshDigest {
+            held_hash: Default::default(),
+            fabric_id: template.fabric_id.clone(),
+            node: rdm_core::MeshNode {
+                node_id: target_id.clone(),
+                name: target_name.clone(),
+                endpoint_id: shared_endpoint.clone(),
+                transport_addr: "127.0.0.1:41001".parse().unwrap(),
+                incarnation: target_incarnation.clone(),
+                supersedes: None,
+                runtime: None,
+            },
+            status: rdm_core::MemberStatus::Ready,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 1_000,
+            data_dir: None,
+            mesh_id: None,
+            in_flight: None,
+            load: None,
+            gossip: None,
+            is_primary: None,
+            is_fabric_primary: None,
+        };
+        assert!(peer_view.record(old_digest.clone()));
+        assert!(peer_view.depart(LifecycleOp {
+            build_id: build_id_live.to_string(),
+            attempt: 1,
+            operation: format!("node.delete:{target_name}"),
+            node_id: target_id.clone(),
+            incarnation: target_incarnation.clone(),
+            name: target_name.clone(),
+            event_at_rafka_ms: 2_000,
+            traceparent: None,
+            tracestate: None,
+        }));
+        let (successor_id, successor_inc) = (NodeId::mint(), IncarnationId::mint());
+        let successor_digest = rdm_core::MeshDigest {
+            node: rdm_core::MeshNode {
+                node_id: successor_id.clone(),
+                name: target_name.clone(),
+                endpoint_id: shared_endpoint,
+                transport_addr: "127.0.0.1:41002".parse().unwrap(),
+                incarnation: successor_inc.clone(),
+                supersedes: None,
+                runtime: None,
+            },
+            digest_seq: 1,
+            emitted_at_rafka_ms: 3_000,
+            ..old_digest.clone()
+        };
+        assert!(peer_view.record(successor_digest), "successor with the same endpoint key is admitted");
+        let late_old_digest = rdm_core::MeshDigest {
+            digest_seq: 99,
+            emitted_at_rafka_ms: 4_000,
+            ..old_digest
+        };
+        assert!(
+            !peer_view.record(late_old_digest),
+            "late digest of the deleted birth is refused even when a successor uses the same endpoint key"
+        );
+        assert!(peer_view.get(target_id.as_str()).is_none());
+        assert!(peer_view.get(successor_id.as_str()).is_some());
+
         let _ = std::fs::remove_dir_all(&root_dir);
     });
 
@@ -1104,10 +1179,26 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
     assert!(
         step_spans.iter().any(|s| {
             s.attributes.get("step").map(String::as_str) == Some(DeleteStep::TerminateRuntime.name())
+                && s.attributes.get("attempt").map(String::as_str) == Some("1")
+                && s.attributes.get("outcome").map(String::as_str) == Some("failed")
+        }),
+        "expected failed TerminateRuntime span on attempt 1"
+    );
+    assert!(
+        step_spans.iter().any(|s| {
+            s.attributes.get("step").map(String::as_str) == Some(DeleteStep::TerminateRuntime.name())
                 && s.attributes.get("attempt").map(String::as_str) == Some("3")
                 && s.attributes.get("outcome").map(String::as_str) == Some("reused")
         }),
         "expected reused TerminateRuntime span on attempt 3"
+    );
+    assert!(
+        step_spans.iter().any(|s| {
+            s.attributes.get("step").map(String::as_str) == Some(DeleteStep::Complete.name())
+                && s.attributes.get("attempt").map(String::as_str) == Some("3")
+                && s.attributes.get("outcome").map(String::as_str) == Some("complete")
+        }),
+        "expected complete Complete span on attempt 3"
     );
     crate::assert_own_story(capture.all_names().iter().map(String::as_str));
 }
