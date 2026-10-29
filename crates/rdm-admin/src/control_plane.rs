@@ -570,7 +570,10 @@ impl ControlPlane {
                 }
             }
             topology.pinned = pinned;
-            let operations = crate::accepted::plan(&topology, &observed, None).operations;
+            // A peer mesh held unheard is held as a mesh (R-D1): its births under a silence mark are planned
+            // as they stand, and gate 6 below reads what the request changes there.
+            let held: std::collections::BTreeSet<String> = topology.meshes.keys().filter(|m| **m != self.me.mesh && self.peer_mesh.get().and_then(|f| f(m)).is_some_and(|p| p.unheard_ms.is_some())).cloned().collect();
+            let operations = crate::accepted::plan_holding(&topology, &observed, &held).operations;
             // A Build whose plan holds the fabric delete, the whole plan, is exempt from the
             // build-in-progress refusal, R-BI7 and R-PC1: it interrupts the Build in progress, and its own
             // mesh.delete and node.delete steps, and only those, run before the first ready

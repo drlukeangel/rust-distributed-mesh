@@ -739,7 +739,17 @@ fn reconciled(current: &FabricTopology, nodes: &[NodeSpec], recorded: &Recorded)
 /// what observed reality already satisfies is not planned. Creates come before deletions, meshes
 /// in name order, nodes in path order.
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
-    plan_with(topology, observed, action, ActionProgress::default(), &BTreeSet::new(), &[], None, None)
+    plan_with(topology, observed, action, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[], None, None)
+}
+
+/// [`plan`] at a Build's acceptance, `held` the peer meshes the fabric-primary holds unheard (R-D1: a peer
+/// mesh held unheard is held as a mesh, and its nodes are not restarted, replaced or deleted from here until
+/// it is heard again). A birth of one of them under a silence mark satisfies its path: the mark is never
+/// itself a reason to act (states.md, "Node row silence marks"), so gate 6 reads only what the request
+/// changes there. The drive plans every pass without the hold and stops at such a path by name until the
+/// mesh is heard (Q221).
+pub fn plan_holding(topology: &FabricTopology, observed: &Topology, held: &BTreeSet<String>) -> BuildPlan {
+    plan_with(topology, observed, None, ActionProgress::default(), &BTreeSet::new(), held, &[], None, None)
 }
 
 /// How far an attempt's action got, from the Build's receipts. The view alone cannot say: a stopped
@@ -923,7 +933,7 @@ pub fn plan_for_build_with(build: &crate::build_state::BuildProjection, observed
     // the path's replacement follows it as the next attempt's (proposal executable-bindings-at-create.md
     // rule 5: "never in the same attempt").
     let topology_steps: Vec<crate::build_state::BuildStepReceipt> = build.steps.iter().filter(|s| !build.attempt_actions.contains_key(&s.attempt)).cloned().collect();
-    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed), &build.steps, replacing.map(|r| (r, topology_steps.as_slice())), atlas)
+    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed), &BTreeSet::new(), &build.steps, replacing.map(|r| (r, topology_steps.as_slice())), atlas)
 }
 
 /// The replacements `topology` owes against `observed` and `recorded` before any attempt ran: what a
@@ -1243,6 +1253,7 @@ fn plan_with(
     action: Option<&AttemptAction>,
     progress: ActionProgress,
     open_deletes: &BTreeSet<String>,
+    held: &BTreeSet<String>,
     steps: &[crate::build_state::BuildStepReceipt],
     replacements: Option<(&Recorded, &[crate::build_state::BuildStepReceipt])>,
     atlas: Option<&AtlasBirth>,
@@ -1428,7 +1439,9 @@ fn plan_with(
                 let key = format!("node.create:{p}");
                 steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete)
             };
-            if !observed.node(p).is_some_and(|n| n.status.is_live() || (n.stopped && create_done())) {
+            // A held peer mesh's birth under a silence mark satisfies its path ([`plan_holding`]).
+            let held_silent = |n: &crate::model::Node| held.contains(name) && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead);
+            if !observed.node(p).is_some_and(|n| n.status.is_live() || (n.stopped && create_done()) || held_silent(n)) {
                 // The executable the path's entry names (a request named it).
                 ops.push(BuildOperation::CreateNode { node: p.clone(), over: None, executable: target_executable(topology, p).cloned(), entry: None });
             }
@@ -1717,7 +1730,7 @@ mod tests {
             executor: Some("mesh2.admin.1".into()),
         };
         assert_eq!(
-            plan_with(&compiled, &o, None, ActionProgress::default(), &BTreeSet::new(), &[mesh_deleted.clone()], None, None).operations,
+            plan_with(&compiled, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[mesh_deleted.clone()], None, None).operations,
             vec![delete_of(&o, "mesh1.admin.1"), shutdown("mesh3"), shutdown("mesh2"), deleted],
             "step 2: mesh1's mesh.deleted stands, so its mesh-primary's node.delete takes its place"
         );
@@ -1732,7 +1745,7 @@ mod tests {
         let gdeleted = BuildOperation::DeleteFabric { fabric_id: gone.fabric.id.clone() };
         let begun = crate::build_state::BuildStepReceipt { attempt: 2, operation: "node.delete:mesh1.admin.1".into(), step: "TerminateRuntime".into(), output: None, ..mesh_deleted.clone() };
         assert_eq!(
-            plan_with(&compiled, &gone, None, ActionProgress::default(), &BTreeSet::new(), &[mesh_deleted, begun], None, None).operations,
+            plan_with(&compiled, &gone, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[mesh_deleted, begun], None, None).operations,
             vec![delete_of(&o, "mesh1.admin.1"), gshutdown("mesh3"), gshutdown("mesh2"), gdeleted],
             "the begun node.delete of a deleted mesh's final primary the view no longer holds is still owed"
         );
@@ -1797,6 +1810,34 @@ mod tests {
         assert_eq!(plan(&cur, &o2, None).operations, vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2 }]);
     }
 
+    /// CONTRACT (states.md "Node row silence marks": "never themselves a reason to act"; R-D1: a peer mesh
+    /// held unheard is held as a mesh; Q221 gate 6): at acceptance, a birth of a peer mesh the
+    /// fabric-primary holds unheard under a silence mark satisfies its path, so a request that adds a node to
+    /// the fabric-primary's own mesh plans that create alone; a path the request changes in the held mesh is
+    /// still planned, for gate 6 to refuse; a mesh not held plans the silent path again as ever.
+    /// Must NOT happen: a create planned in the held mesh from its silence marks alone.
+    #[test]
+    fn a_held_peer_meshs_silent_births_satisfy_their_paths_at_acceptance() {
+        let mut o = mn();
+        o.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
+        for (name, status, primary) in [("mesh2.admin.1", NodeStatus::PendingReconnect, true), ("mesh2.rpc.1", NodeStatus::Dead, true), ("mesh2.rpc.2", NodeStatus::PendingReconnect, false)] {
+            o.nodes.push(n(name, status, primary));
+        }
+        let mut cur = t(&[("mesh1", 2, 4), ("mesh2", 1, 2)]);
+        cur.meshes.get_mut("mesh2").unwrap().mesh_id = o.meshes[1].id.clone().unwrap();
+        cur.meshes.get_mut("mesh1").unwrap().mesh_id = o.meshes[0].id.clone().unwrap();
+        let held: BTreeSet<String> = ["mesh2".to_string()].into();
+        let created = |p: &str| BuildOperation::CreateNode { node: p.parse().unwrap(), over: None, executable: None, entry: None };
+        assert_eq!(plan_holding(&cur, &o, &held).operations, vec![created("mesh1.rpc.4")], "the own mesh's added path alone");
+        let grown = t(&[("mesh1", 2, 4), ("mesh2", 1, 3)]);
+        let mut grown = grown;
+        grown.meshes.get_mut("mesh2").unwrap().mesh_id = o.meshes[1].id.clone().unwrap();
+        grown.meshes.get_mut("mesh1").unwrap().mesh_id = o.meshes[0].id.clone().unwrap();
+        assert_eq!(plan_holding(&grown, &o, &held).operations, vec![created("mesh1.rpc.4"), created("mesh2.rpc.3")], "a path the request adds in the held mesh is planned");
+        let keys: Vec<String> = plan_holding(&cur, &o, &BTreeSet::new()).operations.iter().map(|op| op.key()).collect();
+        assert_eq!(keys, ["node.create:mesh1.rpc.4", "node.create:mesh2.admin.1", "node.create:mesh2.rpc.1", "node.create:mesh2.rpc.2"], "not held: the silent paths are planned again");
+    }
+
     /// CONTRACT (mesh-delete.md steps 5-7): a deleted mesh (its row Dead at mesh.deleted) whose last
     /// admin lives on is done for every Build: the plan names nothing of it, so no later Build runs
     /// its mesh.delete again or deletes its last admin unasked. Only the Build that admitted its
@@ -1813,7 +1854,7 @@ mod tests {
         assert_eq!(plan(&cur, &o, None).operations, vec![], "a deleted mesh with its last admin alive is planned by no Build");
         let open: BTreeSet<String> = ["mesh2".to_string()].into();
         assert_eq!(
-            plan_with(&cur, &o, None, ActionProgress::default(), &open, &[], None, None).operations,
+            plan_with(&cur, &o, None, ActionProgress::default(), &open, &BTreeSet::new(), &[], None, None).operations,
             vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2.clone() }],
             "the Build that admitted its mesh.delete and holds no completion resumes it"
         );
@@ -1840,7 +1881,7 @@ mod tests {
         let delete = AttemptAction::Delete { path: path.clone(), node_id: node_id.clone(), from_incarnation: birth.clone() };
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![delete_of(&o, "mesh2.admin.1")]);
         let finished = ActionProgress { started: true, finished: true, ..ActionProgress::default() };
-        assert_eq!(plan_with(&cur, &o, Some(&delete), finished, &BTreeSet::new(), &[], None, None).operations, vec![], "nothing once its Complete names the birth");
+        assert_eq!(plan_with(&cur, &o, Some(&delete), finished, &BTreeSet::new(), &BTreeSet::new(), &[], None, None).operations, vec![], "nothing once its Complete names the birth");
         o.nodes.retain(|n| n.name != path);
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![], "nothing once the view no longer holds it");
         let old: PathName = "mesh1.rpc.3.old".parse().unwrap();
@@ -1897,11 +1938,11 @@ mod tests {
             executor: Some("mesh1.admin.1".into()),
         };
         let steps = [held];
-        assert_eq!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &steps, None, None).operations, vec![delete_of(&o, "mesh1.rpc.3")], "once its Complete is receipted the stopped path's create is never planned again");
-        assert_eq!(plan_with(&pinned(t(&[("mesh1", 2, 3)]), &o), &o, None, ActionProgress::default(), &BTreeSet::new(), &steps, None, None).operations, vec![], "the settled topology with a held stopped birth plans nothing");
+        assert_eq!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &steps, None, None).operations, vec![delete_of(&o, "mesh1.rpc.3")], "once its Complete is receipted the stopped path's create is never planned again");
+        assert_eq!(plan_with(&pinned(t(&[("mesh1", 2, 3)]), &o), &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &steps, None, None).operations, vec![], "the settled topology with a held stopped birth plans nothing");
         let mut failed = steps[0].clone();
         failed.outcome = crate::build_state::StepOutcome::Failed { reason: "x".into(), code: rdm_core::outcome::Code::Unavailable };
-        assert!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &[failed], None, None).operations.iter().any(|op| op.key() == "node.create:mesh1.rpc.1"), "a create that did not complete is planned again");
+        assert!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[failed], None, None).operations.iter().any(|op| op.key() == "node.create:mesh1.rpc.1"), "a create that did not complete is planned again");
     }
 
     /// CONTRACT: a replaced predecessor (`<path>.old`) is neither the live birth at `<path>` nor a missing
