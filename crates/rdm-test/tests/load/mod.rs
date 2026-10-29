@@ -180,22 +180,24 @@ fn rss_gb(pid: u32) -> Option<f64> {
 /// from (load-testing.md: a finding is read as a flame before any number moves). The profiler's own cost
 /// is in that run's M8, which `Rows` marks `profiled`.
 fn profile_one_per_role(procs: &[(&'static str, u32, u64)], window: Duration) -> Vec<std::process::Child> {
-    let Ok(dir) = std::env::var("RDM_LOAD_PERF") else { return Vec::new() };
-    std::fs::create_dir_all(&dir).unwrap();
     let mut seen = std::collections::BTreeSet::new();
-    procs
-        .iter()
-        .filter(|(role, ..)| seen.insert(*role))
-        .map(|(role, pid, _)| {
-            let out = format!("{dir}/{role}.{pid}.perf.data");
-            println!("[load] profiling {role} pid {pid} over {} s into {out}", window.as_secs());
-            std::process::Command::new("perf")
-                .args(["record", "-q", "-F", "499", "-g", "-p", &pid.to_string(), "-o", &out, "--", "sleep", &window.as_secs().to_string()])
-                .stdout(std::process::Stdio::null())
-                .spawn()
-                .expect("perf runs")
-        })
-        .collect()
+    procs.iter().filter(|(role, ..)| seen.insert(*role)).filter_map(|(role, pid, _)| profile_one(role, *pid, window)).collect()
+}
+
+/// With `RDM_LOAD_PERF` naming a directory, `pid`'s CPU profile over `window` into
+/// `<dir>/<label>.<pid>.perf.data`; `None` without it.
+fn profile_one(label: &str, pid: u32, window: Duration) -> Option<std::process::Child> {
+    let dir = std::env::var("RDM_LOAD_PERF").ok()?;
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = format!("{dir}/{label}.{pid}.perf.data");
+    println!("[load] profiling {label} pid {pid} over {} s into {out}", window.as_secs());
+    Some(
+        std::process::Command::new("perf")
+            .args(["record", "-q", "-F", "499", "-g", "-p", &pid.to_string(), "-o", &out, "--", "sleep", &window.as_secs().to_string()])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("perf runs"),
+    )
 }
 
 fn role_of(dir: &std::path::Path) -> &'static str {
@@ -362,7 +364,12 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
         let pid = estate.live_runtimes().into_iter().find(|(d, _)| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{at}-")))).map(|(_, pid)| pid);
         for (callers, target) in [(32, true), (128, false)] {
             let (t0, c0) = (pid.and_then(cpu_ticks), cpu_ticks(std::process::id()));
+            // With `RDM_LOAD_PERF`, the node's CPU profile over the held concurrency's window.
+            let profile = pid.filter(|_| target).and_then(|pid| profile_one(&format!("m6-{at}"), pid, M6_WINDOW));
             let (latencies, errors, secs) = rpc_load(&estate, &at, callers, M6_WINDOW).await;
+            if let Some(mut p) = profile {
+                let _ = p.wait();
+            }
             let what = format!("topology.get at {at}, {callers} callers");
             let rate = latencies.len() as f64 / secs;
             if target {

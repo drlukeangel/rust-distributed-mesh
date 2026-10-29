@@ -243,3 +243,41 @@ as it ran (rows in `981a3a827.jsonl`).
 
 **Next.** A CPU profile of the node during M6 (`--perf`, its window moved to M6's) to see where the 0.59 ms
 goes, and M6 from two client processes to see whether the connection is the ceiling. Then M3 and M4.
+
+---
+
+## E8: where the node's CPU goes under Node RPC load (2026-10-28)
+
+**What.** L1 with evidence off at `4c4dc85cb`, M6 as E7, with the node's CPU profile over the 32-caller window
+(`--perf`, `perf record -F 499 -g` of `mesh2.admin.2`; files in
+`$HOME/rust-distributed-mesh-deploy/load/perf-m6-4c4dc85cb/`). M6 again: 7,676/s, p99 7 ms, the node at 4.6
+cores.
+
+**Why.** E7 put the node at about 0.59 ms of CPU per `node.topology.get` of a 10-member mesh, and the
+ceiling near 7,500/s with neither side short of cores.
+
+**Outcome.** The node's samples, inclusive:
+
+| where | share |
+|---|---|
+| serving the read (`rdm_node::topology_read::TopologyDoor::serve`) | 60 % |
+| of which `DigestView::all`, a fresh `Vec<MeshDigest>` of the whole view per read | 14 % |
+| of which `rdm_admin::admin::projection::incumbency_of`, another whole-view copy per read | 14 % |
+| of which chunking the reply (`snapshot::chunks_measured`, `chunking::pack_in_order`) | 15 % |
+| of which encoding the reply (`TopologyReply` through postcard) | 6 % |
+| writing the reply frames and reading the acks (`stream::write_frame`, `read_acks`) | 18 % |
+| the QUIC connection driver | 7 % |
+
+By self time the top is the allocator and copies (`malloc`, `memcpy`, `free`, `malloc_consolidate`: about
+30 %), with `String::clone` and `MeshDigest::clone` under the view copies.
+
+**Read.**
+- The ceiling is RDM's own read path, not the transport: each read copies the whole view at least twice
+  (`DigestView::all` and `incumbency_of`) and then chunks and encodes it, and the allocator carries most of
+  that cost. That is the 0.59 ms per read.
+- The cost grows with the view, so it grows with the fabric. At L1 it is 3.9 times inside the target. A
+  read path that hands out the view it holds instead of copying it would cut most of it; that is a change to
+  the mesh topology view (CLAUDE.md: Luke's permission and a flame), asked of Luke with this profile, and
+  re-read at L2 either way.
+
+**Next.** L2 with M6, M7 and both profiles; M3 and M4 at L1.

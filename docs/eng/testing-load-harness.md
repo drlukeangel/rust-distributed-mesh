@@ -24,8 +24,9 @@ box. Only the driver runs them (`--ignored`).
 scripts/rdm-load.sh L1            # the 20-node baseline
 scripts/rdm-load.sh L1 --debug    # the same on the gate's debug build, for comparison
 scripts/rdm-load.sh L1 --no-evidence   # no node writes span evidence: the pass M6 and M8 are read from
-scripts/rdm-load.sh L1 --no-evidence --perf=<dir>   # also a CPU profile (perf record -g) of one node of each
-                                                    # role over M8's idle window; its rows are marked profiled
+scripts/rdm-load.sh L1 --no-evidence --perf=<dir>   # also CPU profiles (perf record -g): one node of each role
+                                                    # over M8's idle window, and M6's node over its 32-caller
+                                                    # window; the run's rows are marked profiled
 ```
 
 The driver:
