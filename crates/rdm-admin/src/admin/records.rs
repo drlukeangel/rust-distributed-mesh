@@ -924,3 +924,95 @@ impl TopologySink for Records {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CONTRACT: docs/architecture/lifecycles/fabric-recovery.md:172 "No node-admin is alive, the fabric's other nodes alive or not. Nothing inside the fabric brings an admin back: a person or a script launches a node-admin at the lost fabric-primary's path.name, with no launcher, given the fabric id, its mesh and the store root, which must hold that fabric or the start is refused by name. It adopts what the store holds and mints no fabric or mesh id; it is a new birth with its own node.id."
+    #[test]
+    fn adoption_launch_from_env_parses_lost_admin_path_and_refuses_invalid_inputs() {
+        let env_of = |pairs: &[(&str, &str)]| {
+            let map: BTreeMap<String, String> = pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect();
+            move |k: &str| map.get(k).cloned()
+        };
+
+        // Day 0 (no RDM_NODE_NAME): adopt is None, fabric_id and node_id are minted.
+        let day0 = AdminConfig::from_env(env_of(&[("RDM_STORE_DIR", "/tmp/rdm-store")]))
+            .expect("Day-0 config succeeds");
+        assert!(day0.adopt.is_none());
+        assert!(!day0.fabric_id_named);
+
+        // Valid adoption launch at mesh1.admin.1: adopts RDM_FABRIC_ID and RDM_MESH, mints no mesh_id, mints its own node_id.
+        let adopted = AdminConfig::from_env(env_of(&[
+            ("RDM_NODE_NAME", "mesh1.admin.1"),
+            ("RDM_FABRIC_ID", "fab000000001"),
+            ("RDM_MESH", "mesh1"),
+            ("RDM_STORE_DIR", "/tmp/rdm-store"),
+        ]))
+        .expect("valid adoption launch config succeeds");
+        assert_eq!(adopted.adopt, Some("mesh1.admin.1".parse().unwrap()));
+        assert_eq!(adopted.fabric_id, FabricId::parse("fab000000001").unwrap());
+        assert!(adopted.fabric_id_named);
+        assert_eq!(adopted.mesh, "mesh1");
+        assert!(adopted.mesh_id.is_none());
+        assert_ne!(adopted.node_id, day0.node_id);
+
+        // Refused when RDM_LAUNCHER is set without RDM_NODE_ID.
+        let err = AdminConfig::from_env(env_of(&[
+            ("RDM_NODE_NAME", "mesh1.admin.1"),
+            ("RDM_LAUNCHER", "mesh1.admin.2"),
+            ("RDM_FABRIC_ID", "fab000000001"),
+            ("RDM_MESH", "mesh1"),
+            ("RDM_STORE_DIR", "/tmp/rdm-store"),
+        ]))
+        .unwrap_err();
+        assert!(err.contains("RDM_LAUNCHER=mesh1.admin.2 is set without RDM_NODE_ID"), "{err}");
+
+        // Refused when RDM_NODE_NAME is not a node-admin.
+        let err = AdminConfig::from_env(env_of(&[
+            ("RDM_NODE_NAME", "mesh1.rpc.1"),
+            ("RDM_FABRIC_ID", "fab000000001"),
+            ("RDM_MESH", "mesh1"),
+            ("RDM_STORE_DIR", "/tmp/rdm-store"),
+        ]))
+        .unwrap_err();
+        assert!(err.contains("names a rpc-node"), "{err}");
+
+        // Refused when RDM_FABRIC_ID is missing.
+        let err = AdminConfig::from_env(env_of(&[
+            ("RDM_NODE_NAME", "mesh1.admin.1"),
+            ("RDM_MESH", "mesh1"),
+            ("RDM_STORE_DIR", "/tmp/rdm-store"),
+        ]))
+        .unwrap_err();
+        assert!(err.contains("RDM_FABRIC_ID is required"), "{err}");
+
+        // Refused when RDM_MESH is missing or differs from RDM_NODE_NAME's mesh.
+        let err = AdminConfig::from_env(env_of(&[
+            ("RDM_NODE_NAME", "mesh1.admin.1"),
+            ("RDM_FABRIC_ID", "fab000000001"),
+            ("RDM_MESH", "mesh2"),
+            ("RDM_STORE_DIR", "/tmp/rdm-store"),
+        ]))
+        .unwrap_err();
+        assert!(err.contains("RDM_MESH=mesh2 and RDM_NODE_NAME=mesh1.admin.1"), "{err}");
+
+        // Refused when RDM_MESH_PRIMARY or RDM_FABRIC_PRIMARY is set with RDM_NODE_NAME.
+        for flag in ["RDM_MESH_PRIMARY", "RDM_FABRIC_PRIMARY"] {
+            let err = AdminConfig::from_env(env_of(&[
+                ("RDM_NODE_NAME", "mesh1.admin.1"),
+                ("RDM_FABRIC_ID", "fab000000001"),
+                ("RDM_MESH", "mesh1"),
+                ("RDM_STORE_DIR", "/tmp/rdm-store"),
+                (flag, "1"),
+            ]))
+            .unwrap_err();
+            assert!(err.contains(&format!("{flag} is set with RDM_NODE_NAME=mesh1.admin.1")), "{err}");
+        }
+    }
+}
+
+

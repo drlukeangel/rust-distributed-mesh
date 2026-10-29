@@ -600,3 +600,297 @@ impl Answers for ProbeAnswers {
         futures_util::future::join_all(probes).await.into_iter().flatten().collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::accepted::FabricTopology;
+    use crate::build::BuildId;
+    use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
+    use crate::fabric_storage::{FabricIdentity, FabricRecord, FabricStorage, MemoryFabricStorage};
+    use crate::node_rows::{WriteRecord as _, WrittenRows};
+    use crate::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshRecord, MeshStorage as _, NodeRow};
+    use std::path::PathBuf;
+
+    struct StubAnswers {
+        finding: Finding,
+        answering: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl Answers for StubAnswers {
+        async fn investigate(&self, _lost: &crate::storage::NodeRecord) -> Finding {
+            self.finding.clone()
+        }
+        async fn admins_answering(&self) -> Vec<String> {
+            self.answering.clone()
+        }
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/fabric-recovery.md:172 "Before any recovery mutation other than the claim itself, it claims the fabric-recovery attempt of the current Build for that mesh; a second launch's claim loses and it exits. Concurrent adoption launches resolve to the same recovery attempt for the exact lost birth, read from the Build journal on the store; while that attempt is active, no other launch opens a competing attempt for that birth. It installs the recorded primaries before electing (Q149) and runs node investigation on the lost birth: reached, or any node-admin answering before its first mutation, it is refused NameHeld and exits, closing the attempt through the failure path. Otherwise the claimed attempt releases the name, re-creates the birth as itself, adopts rafka-time from live members, and restores it as fabric-primary by step 4 once Ready"
+    #[test]
+    fn adoption_read_claim_check_fail_release_name_and_complete_decide_on_store_records_and_emit_spans() {
+        let capture = crate::span_capture::Capture::new(
+            "adoption_read_claim_check_fail_release_name_and_complete_decide_on_store_records_and_emit_spans",
+        );
+        let dispatch = capture.dispatch.clone();
+        let d = dispatch.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = tracing::dispatcher::set_default(&d);
+
+        rt.block_on(async move {
+            let path: PathName = "mesh1.admin.1".parse().unwrap();
+            let fabric_id = FabricId::parse("fab000000001").unwrap();
+            let mesh_id = MeshId::parse("meshd0000001").unwrap();
+            let store = PathBuf::from("/tmp/rdm-adoption-unit");
+
+            let fabric_store = MemoryFabricStorage::default();
+            let mesh_store = MemoryMeshStorage::default();
+            let nodes_store = MemoryNodesStorage::default();
+            let builds_store = MemoryBuildStateAdapter::default();
+            let contexts = crate::build_claim::AttemptContexts::in_memory();
+
+            // 1. Missing Fabric record refuses by name.
+            let err = read(
+                &path,
+                &fabric_id,
+                &store,
+                Some("process"),
+                &fabric_store,
+                &mesh_store,
+                &nodes_store,
+                &builds_store,
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("holds no Fabric record"), "{err}");
+
+            // Populate Fabric record with provider = Process; differing MESH_SPAWN_TYPE is refused.
+            let mut f_rec = FabricRecord::new(FabricIdentity {
+                fabric_id: fabric_id.clone(),
+                name: "fabric1".into(),
+            });
+            f_rec.provider = Some(ProviderKind::Process);
+            fabric_store.put_fabric(&f_rec).await.unwrap();
+
+            let err = read(
+                &path,
+                &fabric_id,
+                &store,
+                Some("container"),
+                &fabric_store,
+                &mesh_store,
+                &nodes_store,
+                &builds_store,
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("MESH_SPAWN_TYPE=container and the Fabric record names provider process"), "{err}");
+
+            // Populate live mesh1 record and lost fabric-primary row at mesh1.admin.1, plus current Build.
+            crate::storage::claim_mesh(
+                &mesh_store,
+                None,
+                &MeshRecord::new(mesh_id.clone(), "mesh1"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            let lost_id = NodeId::mint();
+            let lost_inc = IncarnationId::mint();
+            let mut row = NodeRow::new(path.clone(), lost_id.clone(), NodeStatus::Ready);
+            row.mesh_id = Some(mesh_id.clone());
+            let b = row.birth_mut(&lost_inc, &path);
+            b.is_primary = Some(1);
+            b.is_fabric_primary = Some(1);
+            nodes_store.write_record(&row).await.unwrap();
+
+            let build_id = BuildId::mint();
+            crate::build_state::accept(
+                &builds_store,
+                &BuildAccepted {
+                    build_id: build_id.clone(),
+                    topology: FabricTopology::root("fabric1", "mesh1", mesh_id.clone()),
+                    submitted_change: None,
+                    submitted_at_ms: 1000,
+                },
+                None,
+                "mesh1.admin.1",
+                "day-0",
+            )
+            .await
+            .unwrap();
+
+            let adoptable = read(
+                &path,
+                &fabric_id,
+                &store,
+                Some("process"),
+                &fabric_store,
+                &mesh_store,
+                &nodes_store,
+                &builds_store,
+            )
+            .await
+            .expect("adoptable store succeeds");
+            assert_eq!(adoptable.lost.node_id, lost_id);
+            assert_eq!(adoptable.lost.incarnation_id, lost_inc);
+            assert_eq!(adoptable.current.build_id, build_id);
+
+            // 2. First adoption launch claims attempt 1; concurrent second launch resolves to attempt 1 and loses.
+            let me_1 = NodeId::mint();
+            let claimed_1 = claim(
+                &path,
+                &me_1,
+                &adoptable,
+                &builds_store,
+                &mesh_store,
+                &contexts,
+                2000,
+            )
+            .await
+            .expect("first launch wins recovery claim");
+            assert_eq!(claimed_1.row.attempt, 1);
+
+            let adoptable_2 = read(
+                &path,
+                &fabric_id,
+                &store,
+                Some("process"),
+                &fabric_store,
+                &mesh_store,
+                &nodes_store,
+                &builds_store,
+            )
+            .await
+            .unwrap();
+            let me_2 = NodeId::mint();
+            let lost_claim = claim(
+                &path,
+                &me_2,
+                &adoptable_2,
+                &builds_store,
+                &mesh_store,
+                &contexts,
+                2001,
+            )
+            .await
+            .unwrap_err();
+            assert!(lost_claim.contains("this launch's claim lost"), "{lost_claim}");
+
+            // 3. Check refuses NameHeld when an admin answers, and fail closes attempt 1 and releases in-flight.
+            let refused = check(
+                &claimed_1,
+                &StubAnswers {
+                    finding: Finding::Exited { code: Some(0) },
+                    answering: vec!["mesh1.admin.2".into()],
+                },
+            )
+            .await
+            .expect_err("answering admin refuses NameHeld");
+            assert!(refused.reason.contains("NameHeld"), "{}", refused.reason);
+            assert_eq!(refused.answered, "mesh1.admin.2");
+
+            fail(&claimed_1, &builds_store, &mesh_store, &refused)
+                .await
+                .expect("fail closes attempt and releases in-flight");
+            assert!(mesh_store.in_flight("mesh1").await.unwrap().is_none());
+
+            // 4. Subsequent adoption launch claims attempt 2, passes check, releases name, and completes.
+            let adoptable_3 = read(
+                &path,
+                &fabric_id,
+                &store,
+                Some("process"),
+                &fabric_store,
+                &mesh_store,
+                &nodes_store,
+                &builds_store,
+            )
+            .await
+            .unwrap();
+            let me_3 = NodeId::mint();
+            let claimed_3 = claim(
+                &path,
+                &me_3,
+                &adoptable_3,
+                &builds_store,
+                &mesh_store,
+                &contexts,
+                3000,
+            )
+            .await
+            .expect("launch after failed attempt wins attempt 2");
+            assert_eq!(claimed_3.row.attempt, 2);
+
+            let finding = check(
+                &claimed_3,
+                &StubAnswers {
+                    finding: Finding::Exited { code: Some(0) },
+                    answering: Vec::new(),
+                },
+            )
+            .await
+            .expect("no admin answering passes check");
+            assert_eq!(finding, Finding::Exited { code: Some(0) });
+
+            let written = WrittenRows::default();
+            release_name(&claimed_3, &me_3, &nodes_store, &written, &builds_store)
+                .await
+                .expect("release_name marks lost birth Deleted and claims path for me_3");
+
+            complete(&claimed_3, &me_3, &builds_store, &mesh_store)
+                .await
+                .expect("complete writes Complete and Converged receipts and releases in-flight");
+            assert!(mesh_store.in_flight("mesh1").await.unwrap().is_none());
+
+            // Attempting to claim again for an already-recovered birth is refused by name.
+            let me_4 = NodeId::mint();
+            let already = claim(
+                &path,
+                &me_4,
+                &adoptable_3,
+                &builds_store,
+                &mesh_store,
+                &contexts,
+                4000,
+            )
+            .await
+            .unwrap_err();
+            assert!(already.contains("was recovered already"), "{already}");
+        });
+
+        let claims = capture.named("rdm.node_admin.fabric.update.via-adoption-claim");
+        let outcomes: Vec<_> = claims
+            .iter()
+            .filter_map(|s| s.attributes.get("outcome").map(String::as_str))
+            .collect();
+        assert_eq!(outcomes, vec!["won", "lost", "won", "already-recovered"]);
+
+        let checks = capture.named("rdm.node_admin.fabric.update.via-adoption-check");
+        let check_outcomes: Vec<_> = checks
+            .iter()
+            .filter_map(|s| s.attributes.get("outcome").map(String::as_str))
+            .collect();
+        assert_eq!(check_outcomes, vec!["name-held", "clear"]);
+
+        let fails = capture.named("rdm.node_admin.build.update.via-adoption-failed");
+        assert_eq!(fails.len(), 1);
+        assert_eq!(
+            fails[0].attributes.get("outcome").map(String::as_str),
+            Some("closed")
+        );
+
+        let completes = capture.named("rdm.node_admin.build.update.via-adoption-complete");
+        assert_eq!(completes.len(), 1);
+        assert_eq!(
+            completes[0].attributes.get("outcome").map(String::as_str),
+            Some("converged")
+        );
+    }
+}
+
