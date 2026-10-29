@@ -388,10 +388,15 @@ fn rshape_consumer_imports_exact_candidate_without_private_paths() {
     plant("rshape-consumer-receipt-rev-mismatch", "a package at another rev", check_build_receipt(&moved, &good_manifest));
     let pathpkg = json!({"packages": [{"name": "rdm-node", "source": null, "manifest_path": "/checkout/crates/rdm-node/Cargo.toml"}]});
     plant("rshape-consumer-path-dependency", "a path package in metadata", check_build_receipt(&pathpkg, &good_manifest));
+    // A receipt is this tree's evidence only when its candidate is the tree's commit: a receipt an
+    // earlier build of another commit left in the checkout's target says nothing about this one.
     let built = root().join("target/i143-rshape/consumer-build");
-    let receipt_checked = if built.join("metadata.json").exists() && built.join("manifest.json").exists() {
+    let head = std::process::Command::new("git").arg("-C").arg(root()).args(["rev-parse", "HEAD"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let manifest: Option<Value> = std::fs::read(built.join("manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    let of_this_tree = manifest.as_ref().is_some_and(|b| b["candidate_sha"].as_str().is_some() && b["candidate_sha"].as_str() == head.as_deref());
+    let receipt_checked = if of_this_tree && built.join("metadata.json").exists() {
         let m: Value = serde_json::from_slice(&std::fs::read(built.join("metadata.json")).unwrap()).unwrap();
-        let b: Value = serde_json::from_slice(&std::fs::read(built.join("manifest.json")).unwrap()).unwrap();
+        let b = manifest.unwrap();
         let v = check_build_receipt(&m, &b);
         assert!(v.is_empty(), "the consumer build receipt breaks its import rules:\n{}", v.join("\n"));
         b["candidate_sha"].as_str().map(str::to_string)
