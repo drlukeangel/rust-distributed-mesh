@@ -220,8 +220,12 @@ fn check_sources(files: &[(String, String)]) -> Vec<String> {
                     v.push(format!("rshape-consumer-topology-shortcut: {path}:{} uses `{banned}`; spawn, restart, replace and delete go through a Build", i + 1));
                 }
             }
-            if l.starts_with("use ") || l.contains("::") {
-                for word in l.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            // A crate is named only at a path's root in Rust source: a segment after `::` is a module of
+            // the crate before it (`rdm_admin::rafka_time` is RDM's rafka-time module), and a Markdown file
+            // imports nothing.
+            if path.ends_with(".rs") && (l.starts_with("use ") || l.contains("::")) {
+                let roots = l.split("::").enumerate().filter_map(|(at, part)| if at == 0 { Some(part) } else { part.find(|c: char| !(c.is_alphanumeric() || c == '_')).map(|end| &part[end..]) });
+                for word in roots.flat_map(|part| part.split(|c: char| !(c.is_alphanumeric() || c == '_'))) {
                     if let Some(krate) = word.strip_prefix("rafka_") {
                         let pkg = format!("rafka-{}", krate.replace('_', "-"));
                         if pkg != "rafka-admin-ui" && !APPROVED_RDM.contains(&pkg.as_str()) {

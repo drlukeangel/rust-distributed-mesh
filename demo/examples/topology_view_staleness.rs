@@ -8,7 +8,7 @@
 //!   past it, the node's pruner marks the member [`NodeStatus::PendingReconnect`] (soft and
 //!   reversible, never death).
 //! - [`gossip_interval`] (default 2 s): how often a member publishes its mesh digest.
-//! - [`backbone_gossip_interval`] (default 2 s): how often a mesh-primary publishes on the backbone.
+//! - [`backbone_gossip_interval`] (default 5 s): how often a mesh-primary publishes on the backbone.
 //!
 //! Build: `cargo build --example topology_view_staleness` in `demo/`.
 //! Run against a live estate (`scripts/demo-estate.sh up`):
@@ -20,20 +20,10 @@ use anyhow::{anyhow, Context, Result};
 use rdm_client::{await_fact, Filter, MeshNode, NodeStatus, NodeView, Nodes, PathName, Peers};
 use rdm_core::cadence::{backbone_gossip_interval, gossip_interval, staleness_floor};
 use rdm_core::{NodeKind, RuntimeFact, RuntimeLocator};
+use rdm_admin::deployment::process::ProcessDeploymentProvider;
+use rdm_admin::deployment::provider::{adopt, DeploymentProvider, TerminationMode};
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
-
-fn signal(pid: u32, sig: &str) -> Result<()> {
-    let status = Command::new("kill")
-        .args([sig, &pid.to_string()])
-        .status()
-        .with_context(|| format!("failed to invoke kill {sig} {pid}"))?;
-    if !status.success() {
-        return Err(anyhow!("kill {sig} {pid} exited with {status}"));
-    }
-    Ok(())
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -77,7 +67,12 @@ async fn main() -> Result<()> {
         before.name, before.node_id, before.incarnation_id, before.status
     );
 
-    signal(pid, "-STOP")?;
+    // The member goes silent: its runtime ends through the deployment provider, as an application's own
+    // tooling would end it (the demo starts, signals or removes no process itself). Its digests stop, and
+    // silence is all the view sees.
+    let provider = ProcessDeploymentProvider::new();
+    let handle = adopt(&provider, &fact).map_err(|e| anyhow!(e))?;
+    provider.terminate(&handle, TerminationMode::Immediate).await.map_err(|e| anyhow!("{e}"))?;
     let target_filter = Filter::new()
         .eq("path", [target.path()])
         .eq("name", [target.name()]);
@@ -102,8 +97,6 @@ async fn main() -> Result<()> {
         |n| format!("status={:?}", n.status),
     )
     .await;
-    // Always resume the process even if the wait failed.
-    let _ = signal(pid, "-CONT");
     let stale = stale_res?;
     println!(
         "stale past staleness_floor: node={} node_id={} incarnation={:?} status={:?}",
@@ -113,7 +106,7 @@ async fn main() -> Result<()> {
     let resumed = await_fact(
         "node",
         &entry.to_string(),
-        "resumed member returns to Ready on next gossip digest",
+        "the silent member's path is Ready again as a new birth (node recovery)",
         wait_bound,
         || async {
             nodes
@@ -126,13 +119,12 @@ async fn main() -> Result<()> {
                     detail: format!("no row for {target}"),
                 })
         },
-        |n| n.status == NodeStatus::Ready && n.node_id == before.node_id,
+        |n| n.status == NodeStatus::Ready && n.node_id != before.node_id,
         |n| format!("status={:?} node_id={}", n.status, n.node_id),
     )
     .await?;
-    assert_eq!(resumed.incarnation_id, before.incarnation_id);
     println!(
-        "resumed after fresh digest: node={} node_id={} incarnation={:?} status={:?}",
+        "recovered after the silence: node={} node_id={} incarnation={:?} status={:?}",
         resumed.name, resumed.node_id, resumed.incarnation_id, resumed.status
     );
     Ok(())
