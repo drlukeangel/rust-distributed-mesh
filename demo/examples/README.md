@@ -64,6 +64,7 @@ Every program exports its spans to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http:
 | [rafka_time.rs](rafka_time.rs) | caller | `rafka-time` | Reading a live node's served `RafkaTime` over `GetTopology` (op `0x1E`), verifying `Puller::MeshPrimary` adoption rules (`adopt_pulled` refusing `ServedByAReplica` and `AMeshPrimaryTakesOnlyTheFabricPrimary`), and `Clock::observe` stepping forward (`Observed::Stepped`) while ignoring older stamps (`Ignored::NotNewer`). |
 | [fabric_delete.rs](fabric_delete.rs) | caller | `fabric.delete` | Full fabric teardown (`Change::DeleteFabric`): leaf-inward `mesh.delete` of each mesh, `node.delete` of each other mesh's final primary, `fabric.deleted` (`BuildFrame::Complete`), and the separate `node.delete` of the surviving fabric-primary from outside (`NodeEvent::Deleted`). |
 | [ping.rs](ping.rs) | caller | `ping` `0x01` | Direct-hop liveness probe (`PingRequest::Ping` -> `PingReply::Pong`) to a node-admin and a role member, and `call_via::<Ping>` refused before sending with `NotSentReason::NotForwardable`. |
+| [node_cert_renew.rs](node_cert_renew.rs) | caller | `node.cert.renew` | Renewing a live member's certificate (`CertIssuer::renewal`, `StatusRequest::RenewCert` -> `StatusReply::CertRenewed { expires_at }`), `installed_dates`, and `stalled` past one staleness floor. |
 
 The examples that change the fabric (`node_name_update`, `node_mesh_leave`, `forward`, `node_tags`,
 `build_reattach`, `node_primary_update`, `fabric_primary_update`, `executable_dirs`,
