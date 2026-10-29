@@ -1740,10 +1740,13 @@ fn a_ready_nodes_rename_is_refused_admitting_connections_and_nothing_is_claimed_
     eprintln!("trace {trace_id}: {NAME_SPAN} from=mesh1.rpc.8 name=3 traffic=Ready connections=none-deleted outcome=rejected-admitting-connections");
 }
 
-/// CONTRACT (node-name-update.md Precondition: "The node is live and admits no connection: this
-/// mesh-primary holds the birth's `node.connections.deleted` of an `All`, then its `node.mesh.left`
-/// ..., and it holds zero connections"; steps 4-5; Completion "The left node: `node.name.updated` after
-/// `Applied`"): the successor `mesh1.rpc.8`, ConnectionsDeleting in the mesh-primary's view, is
+/// CONTRACT (`docs/architecture/lifecycles/node-name-update.md:16` — "Precondition: The node is live
+/// and admits no connection: this mesh-primary holds the birth's `node.connections.deleted` of an `All`,
+/// then its `node.mesh.left` (`node.mesh.leave`), and it holds zero connections" and
+/// `docs/architecture/lifecycles/node-name-update.md:18` — "The move is the name claim at the new
+/// path.name (`NameHeld { by: node.id }` names the node it is for), then one write of the node's record
+/// carrying `renamed_from: <old path.name>`, then the old claim's release"; steps 4-5; Completion "The
+/// left node: `node.name.updated` after `Applied`"): the successor `mesh1.rpc.8`, ConnectionsDeleting in the mesh-primary's view, is
 /// refused the rename to `3` `RejectedAdmittingConnections { status: ConnectionsDeleting,
 /// held_connections: [] }`, nothing claimed and nothing told. A caller's `node.connections.delete {
 /// All }` through the mesh-primary is carried to the exact birth and answered with the birth's
@@ -1755,6 +1758,7 @@ fn a_ready_nodes_rename_is_refused_admitting_connections_and_nothing_is_claimed_
 /// `Applied`. A start begins the birth's next cycle: neither receipt is carried over, and a rename after
 /// it is refused again. What must NOT happen: a node whose connections were not deleted, or one still
 /// on its mesh, taking another name, or a started one renamed on its last cycle's receipts.
+// @feature: node-name-update
 #[test]
 fn a_nodes_rename_is_refused_until_its_connections_are_deleted_and_it_has_left_its_mesh_then_applied() {
     let cap = capture();

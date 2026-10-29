@@ -311,3 +311,129 @@ fn release_pending(me: &PathName, node_id: &rdm_core::NodeId, to: &PathName, fro
     span.record("answered", "release-pending").record("detail", detail.as_str());
     rdm_core::reply::status::bounded_name_not_applied(&to.to_string(), "release-pending", &detail)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, NodeId, NodeStatus, ProviderKind, ScopeStatus};
+    use crate::status_rpc::ConnectionsDeletedReceipt;
+    use crate::storage::MemoryNodesStorage;
+
+    // CONTRACT (`docs/architecture/lifecycles/node-name-update.md:16` — "Precondition: The node is live
+    // and admits no connection: this mesh-primary holds the birth's `node.connections.deleted` of an
+    // `All`, then its `node.mesh.left` (`node.mesh.leave`), and it holds zero connections. A stopped node
+    // is never renamed; a ready node, or one still holding a connection, is refused." and
+    // `docs/architecture/lifecycles/node-name-update.md:17` — "Validation: The exact birth matches the
+    // held record, else `RejectedStaleIncarnation { held }`; the receiver is the node's writer, else
+    // `ReceiverNotPrimary { needed }` (R-RX5); the precondition holds, else
+    // `RejectedAdmittingConnections { status, held_connections }`; the name is within the name grammar,
+    // else `RejectedName { reason }`."): `admission_of` refuses stopped nodes, missing/partial/held
+    // connection receipts, and nodes still on their mesh, and admits a live left birth with zero held
+    // connections; `update` enforces exact birth, writer role, admission precondition, and name grammar
+    // before touching storage.
+    // @feature: node-name-update
+    #[tokio::test]
+    async fn admission_and_validation_enforce_exact_birth_writer_quiet_left_state_and_name_grammar() {
+        let mut subject = Node::allocated("mesh1.rpc.1".parse().unwrap());
+        subject.status = NodeStatus::ConnectionsDeleting;
+        let inc = IncarnationId::mint();
+        subject.incarnation_id = Some(inc.clone());
+
+        let mut stopped = subject.clone();
+        stopped.stopped = true;
+        stopped.status = NodeStatus::Leaving;
+        let stopped_adm = admission_of(&stopped, None, true);
+        assert_eq!(stopped_adm.labels, ("Stopped".into(), "stopped", "stopped"));
+        assert!(stopped_adm.quiet.is_err());
+
+        let none_adm = admission_of(&subject, None, false);
+        assert_eq!(none_adm.labels, ("ConnectionsDeleting".into(), "none-deleted", "on-mesh"));
+        assert!(none_adm.quiet.is_err());
+
+        let partial = ConnectionsDeletedReceipt {
+            all: false,
+            held: vec![],
+            status_at_cut: NodeStatus::ConnectionsDeleting,
+        };
+        assert_eq!(admission_of(&subject, Some(&partial), true).labels.1, "partial");
+
+        let conn = ConnectionId::mint();
+        let held_rec = ConnectionsDeletedReceipt {
+            all: true,
+            held: vec![conn.clone()],
+            status_at_cut: NodeStatus::ConnectionsDeleting,
+        };
+        let held_adm = admission_of(&subject, Some(&held_rec), true);
+        assert_eq!(held_adm.labels.1, "held");
+        assert_eq!(held_adm.quiet.unwrap_err().1, vec![conn]);
+
+        let clean_rec = ConnectionsDeletedReceipt {
+            all: true,
+            held: vec![],
+            status_at_cut: NodeStatus::ConnectionsDeleting,
+        };
+        assert!(admission_of(&subject, Some(&clean_rec), false).quiet.is_err());
+        let ok_adm = admission_of(&subject, Some(&clean_rec), true);
+        assert_eq!(ok_adm.labels, ("ConnectionsDeleting".into(), "deleted", "left"));
+        assert!(ok_adm.quiet.is_ok());
+
+        let mut admin1 = Node::allocated("mesh1.admin.1".parse().unwrap());
+        admin1.status = NodeStatus::Ready;
+        admin1.is_primary = true;
+        admin1.is_fabric_primary = true;
+        admin1.incarnation_id = Some(IncarnationId::mint());
+        let admin2 = Node::allocated("mesh1.admin.2".parse().unwrap());
+
+        let view = RwLock::new(Topology {
+            fabric: Fabric {
+                id: FabricId::mint(),
+                name: "fabric1".into(),
+                status: ScopeStatus::Ready,
+                provider: ProviderKind::Process,
+            },
+            meshes: vec![Mesh {
+                id: Some(MeshId::mint()),
+                name: "mesh1".into(),
+                status: ScopeStatus::Ready,
+            }],
+            nodes: vec![admin1.clone(), admin2.clone(), subject.clone()],
+        });
+        let storage = MemoryNodesStorage::default();
+        let moved = crate::status_rpc::RowMoved::default();
+        let rename_slot = crate::status_rpc::Rename::default();
+        let doors = || NameDoors { configs: None, moved: &moved, rename: &rename_slot };
+
+        // 1. Stale incarnation -> RejectedStaleIncarnation
+        let stale_req = StatusRequest::UpdateName {
+            node_id: subject.node_id.clone(),
+            incarnation: IncarnationId::mint(),
+            name: "1.old".into(),
+        };
+        assert_eq!(
+            update(&admin1.name, &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), true, &stale_req).await,
+            StatusReply::RejectedStaleIncarnation { held: inc.clone() }
+        );
+
+        // 2. Non-primary -> ReceiverNotPrimary
+        let valid_req = StatusRequest::UpdateName {
+            node_id: subject.node_id.clone(),
+            incarnation: inc.clone(),
+            name: "1.old".into(),
+        };
+        assert!(matches!(
+            update(&admin2.name, &admin2.node_id, &view, &storage, doors(), Some(&clean_rec), true, &valid_req).await,
+            StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }
+        ));
+
+        // 3. Invalid name grammar -> RejectedName
+        let bad_name_req = StatusRequest::UpdateName {
+            node_id: subject.node_id.clone(),
+            incarnation: inc,
+            name: "Bad_Name".into(),
+        };
+        assert!(matches!(
+            update(&admin1.name, &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), true, &bad_name_req).await,
+            StatusReply::RejectedName { .. }
+        ));
+    }
+}
