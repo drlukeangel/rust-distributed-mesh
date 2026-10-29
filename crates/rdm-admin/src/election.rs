@@ -160,7 +160,7 @@ pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
         let record = if *kind == NodeKind::NodeAdmin { inc.meshes.get(mesh) } else { inc.cohorts.get(&(mesh.clone(), *kind)) };
         let winner = match record {
             Some(h) => match holding(nodes, h, inc) {
-                Holding::Living(i) if nodes[i].mesh == *mesh && nodes[i].kind == *kind => Some(i),
+                Holding::Living(i) if nodes[i].kind == *kind => (nodes[i].mesh == *mesh).then_some(i),
                 Holding::Unseen => None,
                 _ => lowest_ready(nodes, members, inc),
             },

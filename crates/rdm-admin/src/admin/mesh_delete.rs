@@ -91,6 +91,10 @@ impl AdminRunner {
         let build = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?;
         let (steps, run) = (build.steps.clone(), build.run_of(attempt));
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.to_string() };
+        for t in crate::build_state::primaries_taken(&steps) {
+            self.digest_view.seats.mark_gone(t.lost_incarnation.clone());
+            self.records.offline.lock().unwrap().insert((t.lost_node_id, t.lost_incarnation));
+        }
         // The view is projected now: a primary an earlier attempt deleted holds no seat here, so the
         // admin created for its mesh, or the one that survived it, is read seated.
         self.refresh_view().await;

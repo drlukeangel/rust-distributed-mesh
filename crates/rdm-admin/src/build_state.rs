@@ -764,6 +764,15 @@ pub struct PrimariesTaken {
     pub held: Vec<String>,
 }
 
+/// Every [`PrimariesTaken`] transition recorded in `steps`, in step order.
+pub fn primaries_taken(steps: &[BuildStepReceipt]) -> Vec<PrimariesTaken> {
+    steps
+        .iter()
+        .filter(|r| r.mesh.is_none() && r.step == STEP_PRIMARIES_TAKEN && r.outcome == StepOutcome::Complete)
+        .filter_map(|r| r.output.clone().and_then(|v| serde_json::from_value::<PrimariesTaken>(v).ok()))
+        .collect()
+}
+
 /// A step receipt's key within its attempt: its operation and step.
 pub fn receipt_key(r: &BuildStepReceipt) -> String {
     format!("{} {}", r.operation, r.step)
