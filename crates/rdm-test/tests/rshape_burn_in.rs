@@ -5890,10 +5890,14 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
         let (own, other) = if *mesh == near_mesh { (&near, &far) } else { (&far, &near) };
         // What this admin holds itself (query.md §2; never the atlas read, which a cut-off mesh-primary
         // carries up to the fabric-primary and cannot answer during the cut, query.md §1): its own mesh
-        // ready, and the other mesh no longer heard (silent past the floor, it has left the admin's topology).
+        // ready; and the other mesh unheard, which a node-admin records when its direct backbone receipt of
+        // that mesh stops (gossip.md §3.2: rdm.mesh.topology.update.via-mesh-silent), never by ageing the
+        // other mesh's members out of its topology.
+        let other_mesh = if *mesh == near_mesh { far_mesh.clone() } else { near_mesh.clone() };
         wait_for(&format!("{name} holds its own mesh ready and the other mesh unheard"), window * 6 + Duration::from_secs(40), || async {
             let v = f.estate.held_values_at(&Estate::path(name)).await;
-            (!v.is_empty() && holds_all_ready(&v, own) && other.iter().all(|o| !v.iter().any(|n| n["name"] == o.as_str() && n["status"] == "ready"))).then_some(())
+            let silent = named(&f.estate.spans(), "rdm.mesh.topology.update.via-mesh-silent").into_iter().any(|sp| sp["attributes"]["node"] == name.as_str() && sp["attributes"]["mesh"] == other_mesh.as_str() && start_ns(sp) >= cut_at);
+            (!v.is_empty() && holds_all_ready(&v, own) && silent).then_some(())
         })
         .await;
     }
@@ -6022,10 +6026,14 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
         let (own, other) = if *mesh == near_mesh { (&near, &far) } else { (&far, &near) };
         // What this admin holds itself (query.md §2; never the atlas read, which a cut-off mesh-primary
         // carries up to the fabric-primary and cannot answer during the cut, query.md §1): its own mesh
-        // ready, and the other mesh no longer heard (silent past the floor, it has left the admin's topology).
+        // ready; and the other mesh unheard, which a node-admin records when its direct backbone receipt of
+        // that mesh stops (gossip.md §3.2: rdm.mesh.topology.update.via-mesh-silent), never by ageing the
+        // other mesh's members out of its topology.
+        let other_mesh = if *mesh == near_mesh { far_mesh.clone() } else { near_mesh.clone() };
         wait_for(&format!("{name} holds its own mesh ready and the other mesh unheard"), window * 6 + Duration::from_secs(40), || async {
             let v = f.estate.held_values_at(&Estate::path(name)).await;
-            (!v.is_empty() && holds_all_ready(&v, own) && other.iter().all(|o| !v.iter().any(|n| n["name"] == o.as_str() && n["status"] == "ready"))).then_some(())
+            let silent = named(&f.estate.spans(), "rdm.mesh.topology.update.via-mesh-silent").into_iter().any(|sp| sp["attributes"]["node"] == name.as_str() && sp["attributes"]["mesh"] == other_mesh.as_str() && start_ns(sp) >= cut_at);
+            (!v.is_empty() && holds_all_ready(&v, own) && silent).then_some(())
         })
         .await;
     }
