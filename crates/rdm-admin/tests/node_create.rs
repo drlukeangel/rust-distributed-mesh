@@ -21,6 +21,7 @@ use rdm_admin::model::{
 };
 use rdm_admin::node_commands::NodeCommand;
 use rdm_admin::node_rows::WriteRecord as _;
+use rdm_admin::storage::NodesStorage as _;
 use rdm_admin::topology::Topology;
 use rdm_core::{MemberStatus, MeshDigest, MeshNode, RuntimeFact, RuntimeLocator};
 use std::collections::BTreeMap;
@@ -99,6 +100,11 @@ impl DeploymentProvider for ImmediateReportProvider {
     }
 
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        assert_eq!(
+            spec.transport.port(),
+            0,
+            "node.create must bind port 0 and never pick, reserve or predict a transport port"
+        );
         *self.spawn_calls.lock().unwrap() += 1;
         let refused = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason };
         let fact = RuntimeFact::of_this_process(&spec.deployment_id.to_string()).map_err(refused)?;
@@ -223,14 +229,27 @@ impl TopologySink for RecordingSink {
     }
 }
 
-/// Page: `docs/architecture/lifecycles/node-create.md:37`
-/// "1. Record the exact deployment, prepare its identity/data dir and launch its executable.
-/// The executor never picks, reserves or predicts a transport port. Before this step the
-/// node's row writer claims the name, reading the row at it; `NameHeld { by: node.id }` refuses a
-/// held name and nothing is launched."
-/// Page: `docs/architecture/lifecycles/node-create.md:51`
-/// "5. On acceptance it installs the actual address and completes WaitForBind / WaitForMeshJoin
-/// from the validated report, never from gossip."
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:5-6 "`node.create(spec)` creates a logical node and composes the whole node.start workflow with `start_kind = FirstStart`."
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:13 "Caller | Accepted control/Build caller through the typed object"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:14 "Executor | Accepted node-admin executor; mesh-primary for an ordinary node"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:15 "Identity | New node.id and incarnation; immutable path and claimed name"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:16 "Endpoint key | Mint into a new data dir, or load the key from an inherited data dir"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:17 "Port | Bind port 0; advertise the actual OS-assigned transport_addr"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:18 "Spec | The create spec: the node's properties, flat (Q166): its executable (path, sha256, image), storage, placement, tags and config, and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism. The executable is the create's input and nothing else's: recorded on the row at the claim, re-hashed at the launch, never changed for the birth"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:19 "Progress | Every event of the complete `node.start`, then `node.created`"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:20 "Hooks | The composed node.start's: `pre_node_ready`, blocking, with `start_kind = FirstStart`, and `on_node_ready`, a notice after `node.started`"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:21 "Completion | The composed node.start ends with `node.started`; `node.created` follows it"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:22 "Wire | Typed-object mapping; no new op number in this workflow"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:27-31 "There is no mesh create call: a mesh comes into being with its first node-admin. node.create names its mesh, and the fabric-primary, which drives every node.create and holds the complete accepted topology, decides from that topology: mesh absent is mesh.create, this arm's own page; mesh present, the node joins like any other node. The decision is taken from the accepted topology, never by looking whether a channel exists and then creating it."
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:37-41 "1. Record the exact deployment, prepare its identity/data dir and launch its executable. The executor never picks, reserves or predicts a transport port. Before this step the node's row writer claims the name, reading the row at it; `NameHeld { by: node.id }` refuses a held name and nothing is launched."
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:42-44 "2. The process loads `endpoint_id` and binds port 0. In the exact-address configuration, endpoint startup neither awaits nor launches host-interface enumeration. The advertised ip:port is the actual bound address, not a guessed port or outgoing socket."
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:45-48 "3. Once identity, data dir, launch and bind complete, compose node.start with FirstStart; `node.created` follows the whole start (step 6). The process's first outbound Node RPC is the report of node.mesh.join: a node-admin joins its maker; an ordinary node joins its mesh-primary."
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:49-51 "4. The accepting primary validates the reported digest against the deployment, the name against the create spec at a first start, and refuses a mismatch by name, installing nothing and releasing no wait"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:52-54 "5. On acceptance it installs the actual address and completes WaitForBind / WaitForMeshJoin from the validated report, never from gossip. A JoinNode after deployment abandonment is refused by name."
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:55-56 "6. The rest of the composed start runs from the join answer through `node.started`. Create then ends with `node.created`."
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:76-84 "Started -> [node.start(FirstStart): node.joined, node.started] -> node.created ... A topology Digest cannot complete the caller's stream or the deployment wait"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:88-90 "Follow the create steps, then the complete start sequence. `node.created` proves creation; it does not claim the node is ready."
+/// CONTRACT: docs/architecture/lifecycles/node-create.md:108-114 "Failures and stream certainty follow the caller execution contract ... Trace propagation, step spans and correlation follow the runtime spans."
 #[test]
 fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_from_validated_report()
 {
@@ -285,8 +304,8 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(
             me.clone(),
             me_id.clone(),
-            view,
-            store,
+            view.clone(),
+            store.clone(),
         ));
         let sink = RecordingSink {
             rows,
@@ -332,7 +351,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             executable: binding.executable.clone(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher {
-                name: me,
+                name: me.clone(),
                 node_id: me_id,
                 incarnation: IncarnationId::mint(),
             },
@@ -343,7 +362,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             declared: Default::default(),
-            binding: Some(binding),
+            binding: Some(binding.clone()),
         };
 
         let pipeline = DeploymentPipeline {
@@ -356,6 +375,47 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             template: &template,
             timeouts: Timeouts::default(),
         };
+
+        // Endpoint key (node-create.md:16): mint into a new data dir, or load the key from an
+        // inherited data dir.
+        let key_dir = data_root.join("inherited-key-check");
+        let minted_key = rdm_node::node::load_or_mint_key(&key_dir).unwrap();
+        let loaded_key = rdm_node::node::load_or_mint_key(&key_dir).unwrap();
+        assert_eq!(
+            minted_key.public(),
+            loaded_key.public(),
+            "inherited data dir loads the existing endpoint key instead of minting a new one"
+        );
+
+        // Mesh-absent vs mesh-present decision from accepted topology (node-create.md:27-31).
+        let mesh1_id = view.read().await.meshes[0].id.clone().unwrap();
+        let mesh2_id = rdm_core::MeshId::mint();
+        let mut accepted_top = FabricTopology::root("fabric1", "mesh1", mesh1_id);
+        accepted_top.meshes.get_mut("mesh1").unwrap().nodes = std::collections::BTreeSet::from([
+            "mesh1.admin.1".parse().unwrap(),
+            "mesh1.rpc.2".parse().unwrap(),
+        ]);
+        accepted_top.meshes.insert(
+            "mesh2".into(),
+            rdm_admin::accepted::MeshTopology {
+                name: "mesh2".into(),
+                mesh_id: mesh2_id.clone(),
+                nodes: std::collections::BTreeSet::from(["mesh2.admin.1".parse().unwrap()]),
+                spec_by_path: Default::default(),
+            },
+        );
+        let planned_ops = rdm_admin::accepted::plan(&accepted_top, &*view.read().await, None).operations;
+        assert!(
+            planned_ops.contains(&rdm_admin::build::BuildOperation::CreateMesh {
+                mesh: "mesh2".into(),
+                mesh_id: mesh2_id,
+            }),
+            "absent mesh in accepted topology plans mesh.create before its first node-admin"
+        );
+        assert!(
+            !planned_ops.iter().any(|op| matches!(op, rdm_admin::build::BuildOperation::CreateMesh { mesh, .. } if mesh == "mesh1")),
+            "present mesh in accepted topology plans no CreateMesh"
+        );
 
         // 1. A held name at `mesh1.rpc.1` is refused at PrepareStorage before DeployRuntime is called.
         let held_req = CreateRequest {
@@ -384,9 +444,29 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             "nothing may be launched when the name claim is refused"
         );
 
-        // 2. Creating an available path `mesh1.rpc.2` completes all steps through Complete from the
-        //    validated join report while gossip is silent.
+        // 2. Creating an available path `mesh1.rpc.2` with a full create spec (`EntrySpec`) records
+        //    its executable (path, sha256), config and tags on the row at claim,
+        //    verifies the executable sha256 at launch, and completes all steps through Complete from
+        //    the validated join report while gossip is silent.
         let new_path: PathName = "mesh1.rpc.2".parse().unwrap();
+        let create_op = rdm_admin::build::BuildOperation::CreateNode {
+            node: new_path.clone(),
+            over: None,
+            executable: None,
+            entry: None,
+        };
+        assert_eq!(create_op.key(), "node.create:mesh1.rpc.2");
+        assert_eq!(
+            rdm_admin::executor::executor_for(&create_op, &*view.read().await),
+            Some(me),
+            "mesh-primary is executor for an ordinary node's node.create"
+        );
+
+        let entry_spec = rdm_admin::build::EntrySpec {
+            executable: Some(binding.clone()),
+            config: BTreeMap::from([("role".into(), "worker".into())]),
+            tags: std::collections::BTreeSet::from(["tier1".into()]),
+        };
         let create_req = CreateRequest {
             build_id: build_id.clone(),
             attempt: 1,
@@ -394,19 +474,107 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             spec: &RPC_NODE,
             data_dir: None,
             held_runtimes: Vec::new(),
-            entry: None,
+            entry: Some(entry_spec),
         };
         let created = pipeline
             .create(&create_req)
             .await
             .expect("node.create on available path must complete");
         assert_eq!(created.node.name, new_path);
+        assert!(created.node.incarnation_id.is_some());
         assert_eq!(
             created.node.transport_addr,
             Some("127.0.0.1:45678".parse().unwrap()),
             "the validated report's bound transport_addr is installed on the node"
         );
         assert_eq!(*provider.spawn_calls.lock().unwrap(), 1);
+
+        let written_row = store
+            .node_at(&new_path)
+            .await
+            .unwrap()
+            .expect("node row written at claim");
+        assert_eq!(written_row.node_id, created.node.node_id);
+        assert_eq!(
+            written_row.executable.as_ref().map(|e| e.sha256.as_str()),
+            Some(binding.sha256.as_str()),
+            "executable sha256 recorded on the row at claim"
+        );
+        assert_eq!(
+            written_row.config.get("role").map(String::as_str),
+            Some("worker"),
+            "create spec config recorded on the row at claim"
+        );
+
+        // Hooks contract (node-create.md:5-6, 20): FirstStart is the start_kind for node.create's
+        // composed node.start (`pre_node_ready` blocking with `FirstStart`, `on_node_ready` notice).
+        assert_ne!(
+            rdm_node::node_hooks::StartKind::FirstStart,
+            rdm_node::node_hooks::StartKind::AfterStop
+        );
+
+        // Steps 4 & 5 (node-create.md:49-54): join mismatch at FirstStart is refused by name
+        // (`Standing::Mismatch`), installing nothing and releasing no wait; JoinNode after
+        // deployment abandonment is refused by name (`Standing::Abandoned`).
+        let exp_id = NodeId::mint();
+        let exp_inc = IncarnationId::mint();
+        let exp_path: PathName = "mesh1.rpc.3".parse().unwrap();
+        let exp_ep = EndpointId(loaded_key.public().to_string());
+        let exp_fact = RuntimeFact::of_this_process(&rdm_admin::model::DeploymentId::mint().to_string()).unwrap();
+        let exp_rx = joins.expect(rdm_admin::join::Deployed {
+            name: exp_path.clone(),
+            node_id: exp_id.clone(),
+            incarnation: exp_inc.clone(),
+            supersedes: None,
+            endpoint_id: exp_ep.clone(),
+            runtime: exp_fact.clone(),
+            data_dir: key_dir.display().to_string(),
+            last_accepted_name: None,
+            held: false,
+            listeners: Vec::new(),
+        });
+        let mut wrong_name_digest = MeshDigest {
+            held_hash: Default::default(),
+            fabric_id: rdm_core::FabricId::mint(),
+            node: MeshNode {
+                node_id: exp_id.clone(),
+                name: "mesh1.rpc.99".parse().unwrap(),
+                endpoint_id: exp_ep,
+                transport_addr: "127.0.0.1:45680".parse().unwrap(),
+                incarnation: exp_inc,
+                supersedes: None,
+                runtime: Some(exp_fact),
+            },
+            status: MemberStatus::Pending,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 0,
+            emitted_at_rafka_ms: 0,
+            data_dir: Some(key_dir.display().to_string()),
+            mesh_id: None,
+            in_flight: None,
+            load: None,
+            gossip: None,
+            is_primary: None,
+            is_fabric_primary: None,
+        };
+        assert!(matches!(
+            joins.standing(&wrong_name_digest, &[]),
+            rdm_admin::join::Standing::Mismatch(_)
+        ));
+        assert!(
+            exp_rx.borrow().is_none(),
+            "mismatched join report installs nothing and releases no wait"
+        );
+        wrong_name_digest.node.name = exp_path;
+        joins.end(&exp_id, &build_id.to_string(), 1);
+        assert!(
+            matches!(
+                joins.standing(&wrong_name_digest, &[]),
+                rdm_admin::join::Standing::Abandoned(_)
+            ),
+            "JoinNode after deployment abandonment is refused by name"
+        );
 
         let proj = builds.read_build(&build_id).await.unwrap();
         let rpc2_steps: Vec<(&str, StepOutcome)> = proj
@@ -421,7 +589,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             .collect();
         assert_eq!(
             rpc2_steps, expected,
-            "every CreateStep::ORDER receipt for mesh1.rpc.2 must be Complete in order"
+            "every CreateStep::ORDER receipt for mesh1.rpc.2 must be Complete in order (WaitForMeshJoin=node.joined -> WaitForNodeReady=node.started -> Complete=node.created)"
         );
     });
     drop(rt);
@@ -460,6 +628,11 @@ impl DeploymentProvider for StepFaultProvider {
     }
 
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        assert_eq!(
+            spec.transport.port(),
+            0,
+            "node.create must bind port 0 and never pick, reserve or predict a transport port"
+        );
         *self.spawn_calls.lock().unwrap() += 1;
         let refused = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason };
         let fact = RuntimeFact::of_this_process(&spec.deployment_id.to_string()).map_err(refused)?;
