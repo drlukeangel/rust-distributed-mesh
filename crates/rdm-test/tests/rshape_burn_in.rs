@@ -2012,6 +2012,16 @@ impl Run {
                 if b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= attempt && stopped {
                     let fp = self.fabric(f).await.map(|v| s(&v["fabric_primary"])).unwrap_or_default();
                     let v = ask(&f.estate, &fp, BuildChange::Start { node: path_of(node) }).await;
+                    // A mesh whose own attempt is open (a recovery the mesh-primary opened on the same
+                    // Build as the stop completed) refuses the start by name (build.md §4.4: "The node's
+                    // mesh holds no attempt of its own | build-in-progress, naming the mesh"): the start
+                    // is sent again once the Build reads complete past that attempt.
+                    if v["reply"] == "build-in-progress" && v["current_build_id"] == build_id {
+                        progress(&format!("the restart's node.start of {node} at {fp} refused while mesh {} holds an attempt of {build_id}: sent again once it ends", s(&v["mesh"])));
+                        self.refused_writes.push(json!({"sent_to": fp, "reply": v["reply"], "path": node, "route": "node.start", "held_by": v["held_by"], "mesh": v["mesh"], "t_ms": now_ms()}));
+                        attempt = b["attempt"].as_u64().unwrap_or(attempt) + 1;
+                        continue;
+                    }
                     assert_eq!(v["reply"], "started", "the restart's node.start of {node} at {fp}: {v}");
                     attempt = v["attempt"].as_u64().unwrap_or_else(|| panic!("Started names the attempt it opened: {v}"));
                     self.actions.push(json!({"t_ms": now_ms(), "action": format!("node.start of {node}"), "via": "node.start", "subject": node, "attempt": attempt, "build_id": build_id, "accepted_by": fp}));
