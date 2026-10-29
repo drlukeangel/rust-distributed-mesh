@@ -1054,6 +1054,11 @@ pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, d
         tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %opened.build_id.log(), lane = %mesh, attempt = opened.attempt, mesh = %mesh, node = %me, error = %e)
             .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
     }
+    // A mesh's drift attempt ended on this admin: the reconcile loop runs its next pass on it
+    // (`Woken::Submitted`), so a drive refused for this mesh's in-flight row (R-BI7) claims again
+    // now, never on whatever event happens next (the returned birth's termination, held behind this
+    // recovery, waited forever in the soak at 9244b8cf8).
+    control.build_submitted.notify_waiters();
     Ok(Recovered::Ran { opened, terminal })
 }
 
