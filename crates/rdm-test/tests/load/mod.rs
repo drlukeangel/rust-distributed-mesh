@@ -262,9 +262,10 @@ const M6_WINDOW: Duration = Duration::from_secs(60);
 /// M7's steady window (load-testing.md: 5 minutes at steady state).
 const STEADY: Duration = Duration::from_secs(300);
 
-/// Milliseconds from now until every node-admin in `admins` holds `node` in its own topology with
-/// `status` (and, given `not_id`, as a birth other than that node id): polled every 50 ms, bounded at
-/// 120 s.
+/// Milliseconds from now until every node-admin in `admins` holds `node` in its own topology as `status`
+/// says: `ready` (given `not_id`, as a birth other than that node id), or `leaving`, a stop, which a
+/// node-admin holds as leaving or no longer holds at all (a stopped node leaves the view). Polled every
+/// 50 ms, bounded at 120 s.
 async fn every_admin_holds(estate: &Estate, admins: &[rdm_core::PathName], node: &rdm_core::PathName, status: &str, not_id: Option<&str>) -> f64 {
     let t = Instant::now();
     let mut left: Vec<&rdm_core::PathName> = admins.iter().collect();
@@ -272,7 +273,9 @@ async fn every_admin_holds(estate: &Estate, admins: &[rdm_core::PathName], node:
         assert!(t.elapsed() < Duration::from_secs(120), "{node}: {left:?} did not hold it {status} within 120 s");
         let mut still = Vec::new();
         for a in left {
-            let held = estate.held_values_at(a).await.into_iter().any(|v| v["name"] == node.to_string() && s(&v["status"]) == status && not_id.is_none_or(|id| s(&v["node_id"]) != id));
+            let values = estate.held_values_at(a).await;
+            let mine: Vec<&Value> = values.iter().filter(|v| v["name"] == node.to_string() && not_id.is_none_or(|id| s(&v["node_id"]) != id)).collect();
+            let held = if status == "leaving" { mine.iter().all(|v| s(&v["status"]) != "ready") } else { mine.iter().any(|v| s(&v["status"]) == status) };
             if !held {
                 still.push(a);
             }
