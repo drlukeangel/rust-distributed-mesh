@@ -1313,3 +1313,75 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
     }
     tokio::join!(at_cut("DeleteConnections"), at_cut("Complete"));
 }
+
+/// CONTRACT (docs/architecture/lifecycles/node-investigation.md: "A caller whose record is deleted is
+/// deleted, its runtime terminated, never re-admitted"; Q217): a node-admin (`mesh2.admin.1`) is
+/// os-stopped, its successor (`mesh2.admin.2`) takes `mesh2`'s primary role, commands it back through
+/// `node.mesh.join`, and runs its recovery's `node.delete` to `NodeDeleted` (its row written `Deleted`,
+/// before `node.create` writes a re-created birth). Resumed there, `mesh2.admin.1` answers the command
+/// with `JoinNode`: its join is refused by name (`JoinMismatch` on `status`) and decided at the `join`
+/// door as `delete-deleted-birth`, never `re-admit`, reported to the fabric-primary (`via-returned-reported`
+/// outcome `opened`), and its runtime is terminated while the re-created birth holds `mesh2.admin.1`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_os_stopped_node_admin_recovered_and_resumed_has_its_join_refused_on_status_and_is_deleted() {
+    let test = "an_os_stopped_node_admin_recovered_and_resumed_has_its_join_refused_on_status_and_is_deleted";
+    let Suspended { mut estate, mut stream, door, rt, node_id, .. } = suspended_executor(test).await;
+    let recovering = Door::at(&estate, "mesh2.admin.2").await;
+    recovering.arm("recovery", json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete", "node": SUSPENDED})).await;
+
+    let _cut = recovering.wait_held("recovery").await;
+    let resumed = rt.apply(rdm_test::process_faults::Fault::Continue).expect("the suspended runtime is resumed");
+    assert_ne!(resumed.state_after, Some('T'), "{resumed:?}");
+    door.release("held").await;
+
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    wait_for("the resumed birth's join is refused on status at mesh2.admin.2", crate::node_recovery_due(), || async {
+        spans_named(&estate.spans(), "rdm.node_admin.node.reject.via-join-mismatch")
+            .into_iter()
+            .find(|sp| attr(sp, "node") == SUSPENDED && attr(sp, "field") == "status" && attr(sp, "deployed").contains(&node_id))
+            .cloned()
+    })
+    .await;
+    recovering.release("recovery").await;
+
+    started_to_the_end(&mut stream, "the next attempt completes the held start").await;
+    let recovered = re_created(&estate, SUSPENDED, &node_id).await;
+    wait_for("the resumed birth's runtime ended", crate::node_recovery_due() * 2, || async { rt.check().is_err().then_some(()) }).await;
+    let held = estate.node_value(SUSPENDED).await;
+    assert_eq!((s(&held["node_id"]), s(&held["status"])), (s(&recovered["node_id"]), "ready".to_string()), "the re-created birth holds its path.name: {held}");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let mismatch = spans_named(&spans, "rdm.node_admin.node.reject.via-join-mismatch")
+        .into_iter()
+        .find(|sp| attr(sp, "node") == SUSPENDED && attr(sp, "field") == "status" && attr(sp, "deployed").contains(&node_id))
+        .cloned()
+        .unwrap_or_else(|| panic!("expected via-join-mismatch on status for {node_id}: {:#?}", spans_named(&spans, "rdm.node_admin.node.reject.via-join-mismatch")));
+    assert!(attr(&mismatch, "deployed").contains("is deleted"), "the refusal names the deleted row: {mismatch}");
+
+    let decisions: Vec<Value> = spans_named(&spans, "rdm.node_admin.node.update.via-refused-caller")
+        .into_iter()
+        .filter(|sp| attr(sp, "node_id") == node_id)
+        .cloned()
+        .collect();
+    assert!(!decisions.is_empty(), "the refused caller is decided: {decisions:#?}");
+    assert!(decisions.iter().all(|d| attr(d, "decision") != "re-admit"), "a deleted birth is never re-admitted: {decisions:#?}");
+    let join_decided = decisions
+        .iter()
+        .find(|d| attr(d, "door") == "join" && attr(d, "decision") == "delete-deleted-birth" && attr(d, "outcome") == "terminate-reported")
+        .unwrap_or_else(|| panic!("expected join door decision delete-deleted-birth with terminate-reported: {decisions:#?}"));
+    assert_eq!(attr(join_decided, "own"), "delete-deleted-birth", "{join_decided}");
+
+    let reported = spans_named(&spans, "rdm.node_admin.node.update.via-returned-reported")
+        .into_iter()
+        .find(|sp| attr(sp, "node_id") == node_id && attr(sp, "outcome") == "opened")
+        .cloned()
+        .unwrap_or_else(|| panic!("expected via-returned-reported outcome opened for {node_id}"));
+    assert_eq!(attr(&reported, "returned"), SUSPENDED, "{reported}");
+    let terminated = spans_named(&spans, "rdm.node_admin.build.update.via-terminate-returned")
+        .into_iter()
+        .find(|sp| attr(sp, "node_id") == node_id)
+        .cloned()
+        .expect("the fabric-primary opens the resumed birth's termination");
+    estate.record_trace_url(&s(&terminated["trace_id"]));
+}
