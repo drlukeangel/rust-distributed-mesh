@@ -512,3 +512,73 @@ fn a_consumer_that_acknowledges_before_it_records_fails_the_conformance_harness(
     let failure = report.outcome(check).and_then(|o| o.failure.clone()).unwrap_or_default();
     assert!(failure.contains("Terminal") && failure.contains("accepted() was called before it was recorded"), "the early acknowledgement of the terminal is named: {}", report.summary());
 }
+
+/// CONTRACT (docs/architecture/node-rpc.md:793 §31: "The caller acks a frame once its owner can recover
+/// the accepted progress or result (§43)"; docs/architecture/node-rpc.md:1042-1043 §43: "a response is
+/// itself an owed message, correlated to its invocation and acknowledged by the caller once its owner can
+/// recover it"): under 8 concurrent consumers running the `accepted-after-record` check repeatedly,
+/// every stream frame is acked once its owner records and accepts it (`acks_sent` and `acks_received`
+/// equal the recorded frame count on every stream, and the producer owes nothing).
+#[test]
+#[ignore = "page/code difference: node-rpc §31 / rdm#206"]
+fn every_stream_frame_is_acked_once_its_owner_can_recover_it_under_concurrent_consumers() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-conformance-accepted-after-record-concurrent").expect("the cell's evidence file can be created");
+    capture.run(8, async {
+        let check = rdm_test::conformance::Check::AcceptedAfterRecord;
+        for batch in 0..8 {
+            let mut tasks = Vec::new();
+            for lane in 0..8 {
+                let mut fixture = count_fixture(count_consumer());
+                fixture.answered = count(1, 8, Mode::Normal);
+                tasks.push(tokio::spawn(async move {
+                    let report = rdm_test::conformance::streaming_checks(&fixture, &[check]).await;
+                    (batch, lane, report)
+                }));
+            }
+            for t in tasks {
+                let (batch, lane, report) = t.await.expect("check task completed");
+                assert!(
+                    report.failed().is_empty(),
+                    "batch {batch} consumer {lane}: every recorded frame must be acked once its owner can recover it:\n{}",
+                    report.summary()
+                );
+            }
+        }
+        let r = rig().await;
+        let consume = count_consumer();
+        for batch in 0..250 {
+            let mut tasks = Vec::new();
+            for _ in 0..8 {
+                let client = r.client.clone();
+                let target = r.target.clone();
+                let consume = consume.clone();
+                tasks.push(tokio::spawn(async move {
+                    let (mut s, _) = client
+                        .call_stream::<Count>(&target, &count(1, 8, Mode::Normal), &CallOptions::default())
+                        .await
+                        .map_err(|(o, _)| format!("{o:?}"))
+                        .expect("stream opens");
+                    let mut recorded = 0usize;
+                    while let Some(StreamItem::Frame(_, _)) = s.next().await {
+                        recorded += 1;
+                        s.accepted().await;
+                    }
+                    let _ = consume;
+                    recorded
+                }));
+            }
+            for t in tasks {
+                assert_eq!(t.await.unwrap(), 3, "batch {batch}: Started, Item, Done recorded and accepted");
+            }
+        }
+        let expected_acks = 250 * 8 * 3;
+        let sent = rdm_transport::DeliveryStats::get(&r.client.delivery().stats().acks_sent);
+        assert_eq!(sent, expected_acks, "every recorded frame's ack is written by the caller");
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let dropped: Vec<_> = spans
+        .iter()
+        .filter(|s| s["name"] == "rdm.node_rpc.delivery.reject.via-ack-without-invocation" || s["name"] == "rdm.node_rpc.delivery.reject.via-ack-not-written")
+        .collect();
+    assert!(dropped.is_empty(), "no stream frame's ack is dropped: {dropped:#?}");
+}
