@@ -3275,6 +3275,7 @@ Each open i143 unit, its rafka-v2 issue and where it stands. A unit leaves this 
 | rdm#85 | Q237: a node's point read of another node's row from the store | built in lane 3 (i143-rdm85-node-row-read): `RunningNode::node_row(id | name)`; the row family and its file reader moved to `rdm_node::nodes_storage`, the store opened on the first read; query.md §1's node paragraph and line; for the lead's review |
 | rdm#86 | Q224: a mesh-primary's own Atlas answers its mesh's reads, passing others up | open; with rdm#84 |
 | rdm#87 | Q167 R-RD5: builds.get with the filter | open; its source waits on Luke's answer below |
+| rdm#187 | Q265 step 1: rdm-load, the harness and L1 (M1, M2, M5, M8); docs/plans/proposal/load-testing.md ruled 2026-10-28 by the lead, delegated by Luke, with arch-1: 200 nodes across 10 meshes the first size, targets as targets (M4 from the kill on node-recovery.md's timeline, M6 one node-admin at a time, 20-sample targets on the maximum, M2/M9 no target, M10 growth limits, M1 per profile, frozen conditions) | open; next free lane; then L2-L4 each red row a unit, M9, M10, chaos at scale, multi-host |
 
 Open with Luke or the architects (no unit until ruled):
 - Q231: decided A (Luke, 2026-10-28): the caller's trace context passes end to end and is handed to the application at its notices (LifecycleOp, the accepted Connection); building rdm#115.
@@ -3283,6 +3284,7 @@ Open with Luke or the architects (no unit until ruled):
 - states.md:13 names the node's state `ready`; Q233 and the query page say `ready`.
 - fabric-recovery.md:60-61 (a reached lost fabric-primary "is commanded back through node.mesh.join") against node-mesh-join.md:22 (only the fabric-primary commands a mesh-primary); the code follows node-mesh-join.
 - The proposals docs/plans/proposal/query-page.md (query.md) and q235-node-config-flow.md: the architects' review and Luke's yes on the page text.
+- Q262 (RDM's docs tooling, delegated to the lead): rustdoc for the API and an mdBook guide from this repo, built locally by scripts/docs-site.sh, no CI (rdm#184 landed 0e0a8953e); the rdm-docgen trim and the move of the wire, frame and status tables onto rustdoc are owed, no unit until sized.
 
 Running outside the units: the learning-soak loop in lane 5 (each iteration kept under kept/soak-<sha>-<n>); the final tail at one SHA once the units above have landed.
 

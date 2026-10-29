@@ -54,29 +54,54 @@ before it passes.
 | # | measure | how, from spans | |
 |---|---|---|---|
 | M1 | bring-up | the Day-0 Build's acceptance to the fabric's ready (`via-on-fabric-ready`) | per profile |
-| M2 | create rate | node creates per second across the Day-0 Build's sections (`deployment.update.via-step` Complete per node) | per profile |
+| M2 | create rate | node creates per second across the Day-0 Build's sections (`deployment.update.via-step` Complete per node) | per profile; reported, no target |
 | M3 | view convergence | a node's change (a stop, a start) to the last node-admin's view holding it (`topology.update.via-view-rebuild changed=true`) | 20 samples |
-| M4 | recovery | a SIGKILLed node's stale mark (`via-member-stale`) to its re-created birth Ready, across all meshes | k kills per profile |
+| M4 | recovery | a SIGKILLed node: the kill (the harness's own span) to its re-created birth Ready, with the kill to the stale mark (`via-member-stale`) and the mark to Ready each reported on their own; kills spread across every mesh | 10 kills per profile |
 | M5 | Build latency | a single-node `node.create` and `node.delete` Build, accepted to `on_build_ended` | 20 samples |
-| M6 | Node RPC | calls per second and p50/p99 per op (Status, Build, Join, Topology), direct and carried, at a held concurrency per node-admin | 60 s per op |
+| M6 | Node RPC | completions per second and p50/p99 per op (Status, Build, Join, Topology), direct and carried, at a held concurrency against one node-admin at a time while the others idle; errors and timeouts counted and reported, never counted as completions. One further run loads every node-admin at once and is reported with no target | 60 s per op |
 | M7 | gossip cost | bytes per second per node on the mesh channel and the backbone (`channel.update.via-publish` bytes) at steady state | 5 min steady |
 | M8 | node-admin cost | CPU cores and RSS per node-admin and per node, idle and during M2/M4 | `/proc` samples |
-| M9 | data plane | connection open latency and bytes per second, Direct and Proxy, N sources × M destinations | 60 s |
-| M10 | soak at scale | M7 and M8 over 4 h at the largest passing profile: RSS, open files and span volume never grow without bound | L4 or the largest passing |
+| M9 | data plane | connection open latency and bytes per second, Direct and Proxy, N sources × M destinations | 60 s; reported, no target |
+| M10 | soak at scale | M7 and M8 over 4 h at the largest passing profile; the first 30 minutes are not read, and between the first and the last hour after them every process's RSS grows under 10 %, its open-file count under 5 %, and the span volume per node per minute stays within 10 % of the first hour's | once, at the largest passing profile |
 
 ### Targets
 
-Proposed, for this box (20 cores, 121 GB); each is to be confirmed or replaced (Q265):
+Ruled Q265 (the lead, delegated by Luke, with arch-1, 2026-10-28). The targets are targets, not measured
+capacity: nothing has been measured above 20 nodes, and a measure outside its target is a finding whose
+slowest trace is read as a flame (Steps, 3), never a target moved to pass. For this box (20 cores, 121 GB):
 
-| measure | target at L4 (200 nodes, 10 meshes) |
-|---|---|
-| M1 bring-up | under 60 s |
-| M3 view convergence | p99 under 2 gossip intervals (4 s at the 2 s default) |
-| M4 recovery | p99 under the staleness floor + 10 s (40 s at the defaults) |
-| M5 Build latency | p99 under 5 s for one node |
-| M6 Node RPC | at least 2,000 calls/s per node-admin at p99 under 50 ms (Status, direct) |
-| M7 gossip cost | under 50 KB/s per node at steady state |
-| M8 node-admin cost | idle under 0.10 cores and 0.5 GB (the alert thresholds in CLAUDE.md's env table); no growth over M10 |
+| measure | L1 (20) | L2 (48) | L3 (100) | L4 (200) |
+|---|---|---|---|---|
+| M1 bring-up | under 15 s | under 25 s | under 40 s | under 60 s |
+| M3 view convergence | under 2 gossip intervals (4 s at the 2 s default) | same | same | same |
+| M4 recovery, the kill to Ready | under 60 s | same | same | same |
+| M4 recovery, the kill to the stale mark | under the staleness floor + 1 gossip interval (32 s) | same | same | same |
+| M4 recovery, the stale mark to Ready | under half a staleness floor + 10 s (25 s) | same | same | same |
+| M5 Build latency | under 5 s for one node | same | same | same |
+| M6 Node RPC | at least 2,000 completions/s against one node-admin at p99 under 50 ms (Status, direct) | same | same | same |
+| M7 gossip cost | under 50 KB/s per node at steady state | same | same | same |
+| M8 node-admin cost | idle under 0.10 cores and 0.5 GB (the alert thresholds in CLAUDE.md's env table) | same | same | same |
+| M10 soak | the growth limits above, at the largest passing profile | | | |
+
+M4's three targets follow [node-recovery.md](../../architecture/lifecycles/node-recovery.md) step 1 and 2: a
+killed node is heard by silence, its stale mark comes once it is unheard past the staleness floor, and the
+investigation runs half a floor after the mark; so the kill to Ready is the floor, half a floor, the
+verdict and the create, and no shorter at the defaults.
+
+**Samples.** Where a measure has 20 samples (M3, M5) or 10 (M4) its target is on the maximum; p50 and p99
+are reported beside it and the row carries n. At the largest passing profile M3 and M5 run once more with
+100 samples and the target is read on p99 there, before M10.
+
+**Passing and advancing.** A profile passes when M1, M3, M4, M5, M6, M7 and M8 are inside their targets at
+that profile. M2 and M9 are reported with no target. M10 runs once, at the largest passing profile. The
+next profile runs only when the one before passes.
+
+**Conditions.** Every run is on the gate's build (`scripts/cells.sh`, the build every gate and soak
+measures), at the defaults (`RDM_GOSSIP_INTERVAL_MS` 2000, `RDM_STALENESS_MS` 30000, the cert TTLs), with
+`RDM_EVIDENCE_DIR` set and OTLP export to the collector on .99, and alone on the box: no gate, soak or cell
+runs beside it (the gate's leaked-process step kills a run's nodes). A row is compared only with a row
+taken under the same conditions; the row carries the SHA, the profile and the box. A changed cadence,
+build, telemetry setting or host is a new baseline, never a comparison.
 
 ### Chaos at scale
 
@@ -93,11 +118,11 @@ separate step.
 ## Steps
 
 1. The harness and L1, with M1, M2, M5, M8: the baseline row at L1 must match today's R-shape numbers
-   (bring-up of the 2/2/3/3 × 2 estate is about 7-9 s, i143-prd.md e10.s2).
+   (bring-up of the 2/2/3/3 × 2 estate is about 7-9 s, i143-prd.md e10.s2). rdm#187.
 2. M3, M4, M6, M7 at L1.
 3. L2, then L3, then L4. Each red row is a unit: the trace of its slowest sample read as a flame, the
    cause fixed at its root (no tuning a constant to pass without the flame that shows why).
-4. M9, then M10 at the largest passing profile.
+4. M9, the 100-sample M3 and M5 run, then M10 at the largest passing profile.
 5. Chaos at scale at that profile.
 6. Multi-host.
 
@@ -108,7 +133,16 @@ separate step.
 - `docs/eng/testing-lane-scripts.md` §6 gains the `scripts/rdm-load.sh` row.
 - No architecture page changes: the harness measures; it changes no contract.
 
-## Open questions
+## Rulings
 
-- **Q265: the targets.** Are the targets above the right line, and is 200 nodes across 10 meshes the size
-  RDM must hold first? Dev recommendation: yes, these on this box first, then multi-host.
+- **Q265: the targets.** Ruled by the lead, delegated by Luke, with arch-1 (2026-10-28): 200 nodes across
+  10 meshes is the first size, on this box, then multi-host; the targets above stand as targets, not
+  measured capacity. arch-1's five points, each kept and applied above except where the page decides
+  otherwise: (1) M4 is measured from the kill, with the kill to the mark and the mark to Ready reported on
+  their own; arch-1's 60 s is not from the kill: node-recovery.md's timeline (the mark at the floor, the
+  investigation half a floor later) puts the kill to Ready at about 50 s at the defaults, so the target is
+  60 s from the kill and 25 s from the mark; (2) M6 loads one node-admin at a time, counts completions and
+  reports errors and timeouts, the all-at-once run reported with no target; (3) a 20-sample target is on
+  the maximum, a p99 target only at 100 samples; (4) M2 and M9 are reported with no target and M10 has
+  growth limits after its first 30 minutes; (5) M1 has a target per profile, the other targets are the
+  same at every profile, and the measures that pass a profile are named. The conditions are frozen.
