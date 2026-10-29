@@ -54,9 +54,10 @@ Every program exports its spans to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http:
 | [node_tickle.rs](node_tickle.rs) | caller | `node.tickle` | The reach ladder over one exact birth (`tickle`): direct probe (`Tickle::Reached`), via-peer probe (`TickleCalls::via_peer`) carried through an eligible live peer of the node's mesh, `birth_answered`, and the refusal when a node holds no `incarnation_id`. |
 | [node_runtime_inspect.rs](node_runtime_inspect.rs) | caller | `node.runtime.inspect` | The runtime inspection workflow (`inspect_runtime`): verifying a live member's `RuntimeFact` (`Inspected::Running`), refusing a foreign control domain (`Inspected::Unavailable`), and inspecting an exited runtime without and with a matching `ExitRecord` (`Exited(None)` and `Exited(Some(code))`). |
 | [data_dir_lost_recovery.rs](data_dir_lost_recovery.rs) | caller | `data-dir-lost-recovery` | A member whose runtime process exited and whose inherited `data_dir` is absent: after holding across `RDM_DATA_DIR_GONE_FLOORS` staleness floors (`data_dir_gone_hold_ms()`), the mesh-primary records `data-dir-lost` and recovers the member at the same `path.name` over a newly allocated `data_dir` with a newly minted `endpoint_id`, `node_id`, and `incarnation_id`. |
+| [stopped_node_collection.rs](stopped_node_collection.rs) | caller | `RDM_STOPPED_NODE_TTL` | A stopped member collected after `RDM_STOPPED_NODE_TTL`: `nodes.stop` leaves the birth `Stopped` with its stop receipt in the Build log, and the fabric-primary's sweep ages the receipt and submits an ordinary `node.delete` Build once the TTL expires. |
 
 The examples that change the fabric (`node_name_update`, `node_mesh_leave`, `forward`, `node_tags`,
 `build_reattach`, `node_primary_update`, `fabric_primary_update`, `executable_dirs`,
 `fabric_recovery`, `fabric_primary_takeover`, `mesh_investigation`, `node_recovery`,
-`data_dir_lost_recovery`) act on the node
+`data_dir_lost_recovery`, `stopped_node_collection`) act on the node
 they are given; run them against a demo estate, not a fabric that carries traffic.
