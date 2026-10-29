@@ -226,12 +226,16 @@ mod tests {
     }
 
     // @feature: node-mesh-join
-    /// Page: docs/architecture/lifecycles/node-mesh-join.md:5
-    /// "A primitive (R-MJ1). A mesh is a channel on the one fabric network, and `node.mesh.join` puts a
-    /// node on it: the node reports to its primary with `JoinNode` on op `0x1D`, and on acceptance
-    /// joins that mesh, `f(FabricId, MeshId)`... Progress is `joining`, completion `node.mesh.joined`."
-    /// Page: docs/architecture/lifecycles/node-mesh-join.md:28
-    /// "Order: Report accepted first, then the mesh; the handed name, rafka-time and cert installed before anything is published"
+    /// CONTRACT (`docs/architecture/lifecycles/node-mesh-join.md:37-41`, `61-66`, `262-269`, `277-281`):
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:37-38`: "1. The node holds its bound endpoint; port 0 was bound at launch, or the stopped process still holds its port. Nothing predicts or reserves a port."
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:39-41`: "2. `joining`: the node calls `JoinNode { digest }` on its accepting primary. It serves calls on its bound endpoint while the report is outstanding, under the Node RPC readiness gate."
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:61-62`: "7. The node installs the handed name, the row's, at every join (R-JN1); adopts the rafka-time as it stands, at every join (origin-ordering.md); and installs the member cert, at every join (Q87)."
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:63-65`: "8. The node joins its mesh, `f(FabricId, MeshId)`; a node-admin joins the backbone too. Each one joined emits `via-joined`. A mesh with no live listener is created again under its own MeshId by this first listener."
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:66`: "9. `node.mesh.joined`. The node's first `Digest` heartbeat follows."
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:262-269`: "A refused report fails the primitive by the refusal's name, nothing joined. An uncertain answer is not `Joined`: the node retries the identical report and the primary's installed report resolves it. A mesh that cannot be joined after an accepted report leaves the primitive in `joining`, named with which one, and the commanding workflow's next attempt resumes from the accepted report"
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:277`: "| Mesh joined | node | `rdm.node.mesh.update.via-joined`, once per mesh the node is now on: its own mesh, and the backbone for a node-admin | mesh, mesh_id, which (`own` or `backbone`) |"
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:278`: "| Completion | node, commander | the `node.mesh.joined` frame or the `MeshJoined` reply | operation, build, attempt |"
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:280-281`: "The report call and its serve carry the runtime causal edge; trace propagation follows the runtime spans."
     #[test]
     fn node_mesh_join_reports_pending_digest_refuses_mismatch_and_installs_handed_name_and_rafka_time_before_entering_channel() {
         let dir = std::env::temp_dir().join(format!("rdm-node-mesh-join-unit-{}", NodeId::mint()));
@@ -501,6 +505,198 @@ mod tests {
                 "expected span {required} in node_mesh_join unit cell"
             );
         }
+        let via_joined = spans
+            .iter()
+            .find(|s| s["name"] == "rdm.node.mesh.update.via-joined")
+            .expect("via-joined span");
+        assert_eq!(via_joined["attributes"]["mesh"], "mesh1");
+        assert_eq!(via_joined["attributes"]["which"], "own");
+
+        let call_traces: std::collections::BTreeSet<&str> = spans
+            .iter()
+            .filter(|s| s["name"] == "rdm.node_rpc.request.update.via-call")
+            .filter_map(|s| s["trace_id"].as_str())
+            .collect();
+        let serve_traces: std::collections::BTreeSet<&str> = spans
+            .iter()
+            .filter(|s| s["name"] == "rdm.node_rpc.request.serve.via-direct")
+            .filter_map(|s| s["trace_id"].as_str())
+            .collect();
+        assert!(
+            !call_traces.is_disjoint(&serve_traces),
+            "report call and serve must share a trace_id causal edge"
+        );
+    }
+
+    /// CONTRACT (`docs/architecture/lifecycles/node-mesh-join.md:275` —
+    /// "| Report sent | node | `rdm.node.mesh.update.via-joining` | mesh, mesh_id, primary, operation |"):
+    /// `node_mesh_join` emits `rdm.node.mesh.update.via-joining` carrying `mesh`, `mesh_id`,
+    /// `primary`, and `operation`.
+    #[test]
+    #[ignore = "page/code difference: node-mesh-join.md §Observability contract"]
+    fn report_sent_via_joining_span_carries_primary_field() {
+        let dir = std::env::temp_dir().join(format!("rdm-node-mesh-join-obs-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-node-mesh-join-obs")
+            .expect("evidence capture starts");
+
+        capture.run(2, async {
+            let fabric_id = FabricId::mint();
+            let mesh_id = MeshId::mint();
+            let admin_id = NodeId::mint();
+            let admin_incarnation = IncarnationId::mint();
+            let admin_name: PathName = "mesh1.admin.1".parse().unwrap();
+
+            let admin_key = iroh::SecretKey::generate();
+            let admin_ep = rdm_transport::endpoint::bind(
+                admin_key.clone(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+            let admin_addr = admin_ep
+                .bound_sockets()
+                .into_iter()
+                .find(|a| a.is_ipv4())
+                .unwrap();
+
+            let answer = JoinAnswer {
+                served_by: admin_name.to_string(),
+                control: JoinControl {
+                    provider: ProviderKind::Process,
+                    fabric: Some(FabricIdentity {
+                        fabric_id: fabric_id.clone(),
+                        name: "fabric1".into(),
+                    }),
+                    build: None,
+                    rafka_time_ms: 4_200_000,
+                    member_cert: Vec::new(),
+                    name: Some("mesh1.rpc.1".parse().unwrap()),
+                    config: None,
+                    cert_policy: None,
+                },
+                statuses: Vec::new(),
+            };
+            let reply_bytes = answer_to_wire(&answer).expect("encode JoinAnswer");
+            let server = ServerBuilder::new()
+                .serve::<Join, _, _>(
+                    OpOwner::Product("rdm".into()),
+                    move |_peer: rdm_transport::PeerContext, _req: JoinRequest| {
+                        let reply_bytes = reply_bytes.clone();
+                        async move {
+                            Ok(JoinReply::Joined {
+                                answer: reply_bytes,
+                            })
+                        }
+                    },
+                )
+                .build(rdm_transport::ServedBirth {
+                    node_id: admin_id.to_string(),
+                    incarnation: admin_incarnation.to_string(),
+                })
+                .unwrap();
+            let _router = iroh::protocol::Router::builder(admin_ep.clone())
+                .accept(rdm_transport::ALPN, server)
+                .spawn();
+
+            let node_key = iroh::SecretKey::generate();
+            let node_ep = rdm_transport::endpoint::bind(
+                node_key.clone(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+            let node_addr = node_ep
+                .bound_sockets()
+                .into_iter()
+                .find(|a| a.is_ipv4())
+                .unwrap();
+            let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
+            resolver.apply(
+                rdm_transport::ResolvedNode {
+                    node_id: admin_id.clone(),
+                    name: admin_name.clone(),
+                    endpoint_id: admin_key.public(),
+                    transport_addr: admin_addr,
+                    incarnation: admin_incarnation.clone(),
+                },
+                None,
+            );
+            let client = NodeRpcClient::new(node_ep.clone(), resolver).with_caller_system("rdm");
+            let node_id = NodeId::mint();
+            let digest = MeshDigest {
+                held_hash: Default::default(),
+                fabric_id: fabric_id.clone(),
+                node: MeshNode {
+                    node_id: node_id.clone(),
+                    name: "mesh1.rpc.1".parse().unwrap(),
+                    endpoint_id: EndpointId(node_key.public().to_string()),
+                    incarnation: IncarnationId::mint(),
+                    supersedes: None,
+                    transport_addr: node_addr,
+                    runtime: None,
+                },
+                status: MemberStatus::Pending,
+                node_state: Default::default(),
+                admin_api_base: None,
+                emitted_at_rafka_ms: 0,
+                digest_seq: 1,
+                mesh_id: Some(mesh_id.clone()),
+                in_flight: None,
+                load: None,
+                gossip: None,
+                data_dir: None,
+                is_primary: None,
+                is_fabric_primary: None,
+            };
+            let mut joiner = TestJoinNode {
+                ep: node_ep,
+                digest,
+                fabric_id,
+                mesh_id: mesh_id.clone(),
+                entered: Arc::default(),
+            };
+            let to = JoinTo::Launcher {
+                target: NodeTarget::ExactNode(admin_id),
+                endpoint: admin_key.public(),
+                name: admin_name,
+            };
+            let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
+            let _ = node_mesh_join(
+                &mut joiner,
+                JoinCall {
+                    name: "mesh1.rpc.1".into(),
+                    node_id: &node_id,
+                    mesh: "mesh1",
+                    mesh_id: mesh_id.as_str(),
+                    client: &client,
+                    rafka_time: &rafka_time,
+                    to: &to,
+                    authority: "mesh1.admin.1",
+                    operation: "node.create:mesh1.rpc.1",
+                    report_parent: None,
+                    reported: tracing::Span::none(),
+                    channel_parent: None,
+                },
+            )
+            .await
+            .unwrap();
+        });
+
+        let spans = capture.spans().expect("captured spans");
+        let _ = std::fs::remove_dir_all(&dir);
+        let joining = spans
+            .iter()
+            .find(|s| s["name"] == "rdm.node.mesh.update.via-joining")
+            .expect("via-joining span");
+        assert_eq!(joining["attributes"]["mesh"], "mesh1");
+        assert_eq!(joining["attributes"]["operation"], "node.create:mesh1.rpc.1");
+        assert_eq!(
+            joining["attributes"]["primary"].as_str(),
+            Some("mesh1.admin.1"),
+            "node-mesh-join.md:275 specifies field `primary` on rdm.node.mesh.update.via-joining, got attributes: {}",
+            joining["attributes"]
+        );
     }
 }
 

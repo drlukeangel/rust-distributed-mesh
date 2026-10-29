@@ -765,4 +765,166 @@ mod tests {
         joins.end(&dep.node_id, "3qcfk1kq47m9", 2);
         assert!(joins.expect(restart).borrow().is_none(), "a held deployment's report is not kept for its next registration");
     }
+
+    /// CONTRACT (`docs/architecture/lifecycles/node-mesh-join.md:42-60`, `276`):
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:42-48`: "3. The primary verifies the digest against the deployment it recorded: exact birth, deployment id, path, mesh, name. A first start's name is checked against the create spec; a held birth's name must be the row's or the one last accepted for that birth (R-JN1), and the digest is installed under the row's name. A difference is `JoinMismatch`; nothing is installed and no wait is released. A join for a deployment that ended before it arrived is `DeploymentAbandoned`. A primary that is not this birth's answers `NotPrimary { primary }` and the node reports to the one named."
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:49-50`: "4. On acceptance the primary installs the reported address for that exact birth and drops pooled connections and pending work aimed at the birth's old address."
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:51-56`: "5. At a first start the primary completes the deployment's WaitForBind / WaitForMeshJoin from the validated report. At every join, a first start, a start after a stop and a commanded re-entry alike (Q87), it issues the birth's member cert (`node.cert.create`: signed for the exact birth with the mesh's issuing key, 24 h, and its cert row written; a refused issuance refuses the join by name, fabric certs). A start of a stopped node or a standalone rejoin has no deployment wait."
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:57-60`: "6. The primary answers `Joined`: who served it, the control snapshot (provider, fabric identity, shutdown if any, the Build floor, rafka-time now, the member cert, the row's name, the row's config) and the statuses it holds with their original authors and instants. An primary that holds no rafka-time answers `NotReady` naming why and builds no answer."
+    /// - `docs/architecture/lifecycles/node-mesh-join.md:276`: "| Report served | primary | `rdm.node_rpc.request.serve.via-direct`, then `rdm.node_admin.node.update.via-join`; a mismatch `rdm.node_admin.node.reject.via-join-mismatch` naming the field | exact birth, field |"
+    #[test]
+    fn join_door_serve_verifies_digest_installs_address_issues_cert_and_answers_joined_or_refusal() {
+        let dir = std::env::temp_dir().join(format!("rdm-join-door-test-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-join-door-test")
+            .expect("evidence capture starts");
+
+        capture.run(2, async {
+            let joins = Arc::new(Joins::default());
+            let time = rdm_transport::clock::RafkaTime::unadopted();
+            let root = rdm_core::certs::mint_key();
+            let ca = rdm_core::certs::CaKey::mint(&root, rdm_core::certs::CA_CERT_TTL_SECS, 1_000_000);
+            let issuer = Arc::new(crate::certs::CertIssuer::with_root(root, ca, None, time.clone()));
+            let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+            let written = Arc::new(crate::node_rows::WrittenRows::default());
+            let installed_addrs: Arc<Mutex<Vec<SocketAddr>>> = Arc::default();
+            let installed_clone = installed_addrs.clone();
+
+            let door = JoinDoor {
+                me: "mesh1.admin.1".parse().unwrap(),
+                joins: joins.clone(),
+                answer: Arc::new(|| {
+                    Box::pin(async {
+                        Ok(JoinAnswer {
+                            served_by: "mesh1.admin.1".into(),
+                            control: crate::wire::JoinControl {
+                                provider: crate::model::ProviderKind::Process,
+                                fabric: Some(crate::model::FabricIdentity {
+                                    fabric_id: rdm_core::FabricId::mint(),
+                                    name: "fab".into(),
+                                }),
+                                build: None,
+                                rafka_time_ms: 5_000_000,
+                                member_cert: Vec::new(),
+                                name: None,
+                                config: None,
+                                cert_policy: None,
+                            },
+                            statuses: Vec::new(),
+                        })
+                    })
+                }),
+                install: Arc::new(move |d| {
+                    installed_clone.lock().unwrap().push(d.node.transport_addr);
+                }),
+                types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+                known: Arc::new(|| Box::pin(async {})),
+                pending: Arc::new(|_, _| Box::pin(async {})),
+                primary: Arc::new(|| Some("mesh1.admin.2".into())),
+                issuer,
+                nodes: Some((storage.clone(), written)),
+                atlas: None,
+            };
+
+            let dep_key = iroh::SecretKey::generate().public();
+            let mut dep = deployed();
+            dep.endpoint_id = EndpointId(dep_key.to_string());
+
+            // 1. Unknown birth -> `NotPrimary { primary }`.
+            let unknown_req = JoinRequest::JoinNode {
+                digest: (&digest_of(&dep)).into(),
+                types: Vec::new(),
+                listeners: Vec::new(),
+            };
+            assert_eq!(
+                door.serve(dep.endpoint_id.clone(), unknown_req).await,
+                JoinReply::NotPrimary {
+                    primary: Some("mesh1.admin.2".into())
+                }
+            );
+
+            // 2. Ended deployment before report arrived -> `DeploymentAbandoned`.
+            let _ = joins.expect(dep.clone());
+            joins.end(&dep.node_id, "3qcfk1kq47m9", 2);
+            let ab_req = JoinRequest::JoinNode {
+                digest: (&digest_of(&dep)).into(),
+                types: Vec::new(),
+                listeners: Vec::new(),
+            };
+            assert_eq!(
+                door.serve(dep.endpoint_id.clone(), ab_req).await,
+                JoinReply::DeploymentAbandoned {
+                    build_id: "3qcfk1kq47m9".into(),
+                    attempt: 2,
+                    node_id: dep.node_id.clone(),
+                    incarnation: dep.incarnation.clone(),
+                }
+            );
+
+            // 3. Mismatch -> `JoinMismatch` and `rdm.node_admin.node.reject.via-join-mismatch` naming the field;
+            //    nothing is installed and no wait is released.
+            let wait_rx = joins.expect(dep.clone());
+            let mut bad_digest = digest_of(&dep);
+            bad_digest.node.incarnation = IncarnationId::mint();
+            let bad_req = JoinRequest::JoinNode {
+                digest: (&bad_digest).into(),
+                types: Vec::new(),
+                listeners: Vec::new(),
+            };
+            assert!(matches!(
+                door.serve(dep.endpoint_id.clone(), bad_req).await,
+                JoinReply::JoinMismatch { ref field, .. } if field == "incarnation"
+            ));
+            assert!(installed_addrs.lock().unwrap().is_empty());
+            assert!(wait_rx.borrow().is_none());
+
+            // 4. Primary holding no rafka-time answers `NotReady` naming why and builds no answer (Step 6).
+            let good_digest = digest_of(&dep);
+            let good_req = JoinRequest::JoinNode {
+                digest: (&good_digest).into(),
+                types: Vec::new(),
+                listeners: Vec::new(),
+            };
+            assert!(matches!(
+                door.serve(dep.endpoint_id.clone(), good_req.clone()).await,
+                JoinReply::NotReady { ref reason } if reason.contains("rafka-time")
+            ));
+
+            // 5. Once rafka-time is held, `serve` issues the member cert, writes the cert row on `NodesStorage`,
+            //    installs the reported address, releases `WaitForBind` / `WaitForMeshJoin`, and answers `Joined`.
+            time.adopt(5_000_000);
+            match door.serve(dep.endpoint_id.clone(), good_req).await {
+                JoinReply::Joined { answer } => {
+                    let decoded = crate::wire::answer_from_wire(&answer).expect("decode JoinAnswer");
+                    assert_eq!(decoded.served_by, "mesh1.admin.1");
+                    assert_eq!(decoded.control.name, Some(dep.name.clone()));
+                    assert!(!decoded.control.member_cert.is_empty(), "member cert issued on join");
+                }
+                other => panic!("expected Joined, got {other:?}"),
+            }
+            assert_eq!(
+                *installed_addrs.lock().unwrap(),
+                vec![good_digest.node.transport_addr]
+            );
+            assert!(wait_rx.borrow().is_some(), "WaitForBind / WaitForMeshJoin released");
+            let stored_row = storage
+                .node(&dep.node_id)
+                .await
+                .unwrap()
+                .expect("cert row written on NodesStorage");
+            assert!(
+                stored_row.birth(&dep.incarnation).and_then(|b| b.cert.as_ref()).is_some(),
+                "birth cert dates written on NodeRow"
+            );
+        });
+
+        let spans = capture.spans().expect("captured spans");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(spans.iter().any(|s| s["name"] == "rdm.node_admin.node.update.via-join"));
+        let mm = spans
+            .iter()
+            .find(|s| s["name"] == "rdm.node_admin.node.reject.via-join-mismatch")
+            .expect("via-join-mismatch span");
+        assert_eq!(mm["attributes"]["field"], "incarnation");
+    }
 }
