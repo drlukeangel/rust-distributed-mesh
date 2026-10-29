@@ -53,8 +53,10 @@ Every program exports its spans to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http:
 | [node_investigation.rs](node_investigation.rs) | caller | `node.investigation` | The two-step node-investigation workflow (`investigate`): probing the exact birth via `node.tickle` first (returning `Finding::Reached` without touching the OS runtime) and, when `tickle` ends `Unreached`, inspecting the node's `RuntimeFact` via `node.runtime.inspect` (`Finding::Running`). |
 | [node_tickle.rs](node_tickle.rs) | caller | `node.tickle` | The reach ladder over one exact birth (`tickle`): direct probe (`Tickle::Reached`), via-peer probe (`TickleCalls::via_peer`) carried through an eligible live peer of the node's mesh, `birth_answered`, and the refusal when a node holds no `incarnation_id`. |
 | [node_runtime_inspect.rs](node_runtime_inspect.rs) | caller | `node.runtime.inspect` | The runtime inspection workflow (`inspect_runtime`): verifying a live member's `RuntimeFact` (`Inspected::Running`), refusing a foreign control domain (`Inspected::Unavailable`), and inspecting an exited runtime without and with a matching `ExitRecord` (`Exited(None)` and `Exited(Some(code))`). |
+| [data_dir_lost_recovery.rs](data_dir_lost_recovery.rs) | caller | `data-dir-lost-recovery` | A member whose runtime process exited and whose inherited `data_dir` is absent: after holding across `RDM_DATA_DIR_GONE_FLOORS` staleness floors (`data_dir_gone_hold_ms()`), the mesh-primary records `data-dir-lost` and recovers the member at the same `path.name` over a newly allocated `data_dir` with a newly minted `endpoint_id`, `node_id`, and `incarnation_id`. |
 
 The examples that change the fabric (`node_name_update`, `node_mesh_leave`, `forward`, `node_tags`,
 `build_reattach`, `node_primary_update`, `fabric_primary_update`, `executable_dirs`,
-`fabric_recovery`, `fabric_primary_takeover`, `mesh_investigation`, `node_recovery`) act on the node
+`fabric_recovery`, `fabric_primary_takeover`, `mesh_investigation`, `node_recovery`,
+`data_dir_lost_recovery`) act on the node
 they are given; run them against a demo estate, not a fabric that carries traffic.
