@@ -36,7 +36,6 @@ use std::time::Duration;
 
 const CELL: &str = "mesh_member_recovers_delta_gap_from_own_primary";
 const MEMBER: &str = "mesh1.rpc.1";
-const HELD: &str = "mesh2.rpc.2";
 
 fn owner() -> Owner {
     Owner {
@@ -209,7 +208,17 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let mesh1_id = fabric_view.meshes.iter().find(|m| m.name == "mesh1").and_then(|m| m.id.clone()).expect("the fabric view names mesh1's id");
 
     let observer = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
-    let mut hold = Held { pid: estate.pid_of(HELD).await, held: false };
+    // The held rpc node is mesh2's rpc node that is not its rpc primary: a primary unheard past the
+    // staleness floor is superseded by the lowest Ready node of its type (fabric-node-lifecycle-elections.md),
+    // a second change the healthy control below does not make. Which of the two holds the primary is the
+    // NodeIds' draw (the lowest complete NodeId), so it is read from the settled view.
+    let held: String = nodes
+        .iter()
+        .find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode && !n.is_primary)
+        .map(|n| n.name.to_string())
+        .unwrap_or_else(|| panic!("mesh2 holds an rpc node that is not its rpc primary: {nodes:?}"));
+    let held = held.as_str();
+    let mut hold = Held { pid: estate.pid_of(held).await, held: false };
 
     // Joined: the observer is a new neighbour of mesh1's primary, which puts the stripped full of
     // every source it has published into the Mesh.
@@ -337,7 +346,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // ---- a member cut off from every other process hears the full when it is heard again
     let nodes_json: Vec<Value> = nodes.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
     let ports_of = |names: &[&str]| udp_ports(&nodes_json, &names.iter().map(|n| n.to_string()).collect::<Vec<_>>());
-    let mut others = ports_of(&["mesh1.admin.1", "mesh2.admin.1", "mesh2.rpc.1", HELD]);
+    let mut others = ports_of(&["mesh1.admin.1", "mesh2.admin.1", "mesh2.rpc.1", "mesh2.rpc.2"]);
     others.push(observer.endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port());
     let cut = Partition::start(&ports_of(&[MEMBER]), &others).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the member's traffic: {why}"));
     let cut_at = now_ns();
