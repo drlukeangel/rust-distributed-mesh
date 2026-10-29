@@ -983,4 +983,108 @@ mod tests {
         let renewed = cert_of(store.clone(), me.node_id.clone(), incarnation.clone()).await.expect("the birth's cert dates");
         assert!(renewed.issued_at > joined.issued_at && renewed.renew_at > 1_000_000, "the record names the renewed cert, written once installed: {renewed:?}");
     }
+
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:10
+    /// "- `fabric.ca.renew` rotates the CA internally, on policy, with nothing pushed to any node but the ordinary issuer and member renewals: the new CA chains to the same anchor, so every verifier's trust set is unchanged."
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:24
+    /// "| When | Its own tick, once the CA has lived `RDM_CERT_RENEW_AT` of its TTL (`RDM_CA_CERT_TTL_SECS`, default 365 days); also run by `fabric.root.update` step 3, under the new anchor |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:25
+    /// "| Steps | 1 mint a new CA keypair and sign its cert with the root; write the CA row; 2 [mesh.issuer.renew](mesh-issuer-renew.md) for every mesh under the new CA, each `node.issuer.update` carrying the new CA material; members renew under the new issuers at their own points |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:28
+    /// "| Receipt | The CA row carries each mesh's issuer receipt; complete when every mesh in the view has one |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:30
+    /// "| Spans | `rdm.node_admin.ca.update.via-renewal` (ca_expires_at, previous_ca_expires_at, meshes, outcome) on the fabric-primary, and each `mesh.issuer.renew`'s spans |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:40
+    /// "| Steps | 1 write the new root secret beside the old one on the fabric-primary; row `minted`; 2 `node.roots.update { roots: [old, new] }` to every node, admins first (the secret to admins, the public set to every other node); row `distributed`; 3 `fabric.ca.renew` under the new anchor, which re-mints every issuer; row `ca-rotated`; 4 wait until every cert row chains to the new anchor (at most one member TTL after step 3); 5 `node.roots.update { roots: [new] }` to every node; row `retired`; the old secret is destroyed everywhere |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:64
+    /// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits rather than retiring an anchor something still chains to."
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:92
+    /// "An internal `fabric.ca.renew` is step 3 alone, with no caller and no `node.roots.update`."
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:96
+    /// "A node not reached in a phase is retried every tick; the phase does not advance without it, and nothing expires meanwhile that the overlap does not cover. A successor fabric-primary continues from the roots row and the CA row, and from its own copy of the root secret, which every node-admin holds ([custody](../fabric-certs.md#custody)). A successor that does not hold the CA the CA row names (a renewal whose step 2 had not reached it) never mints under a CA it does not hold: it runs `fabric.ca.renew` again from the root secret, and step 2 reaches every admin under the new CA."
+    #[tokio::test]
+    async fn renew_ca_mints_at_renew_point_or_when_behind_ca_row_and_records_ca_row_and_span() {
+        use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};
+        use crate::span_capture::Capture;
+
+        let capture = Capture::new("renew-ca-unit");
+        let _guard = tracing::dispatcher::set_default(&capture.dispatch);
+
+        let root = rdm_core::certs::mint_key();
+        let ca = rdm_core::certs::CaKey::mint(&root, 30, 1_000);
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(1_000);
+        let issuer = Arc::new(CertIssuer::with_root(root, ca.clone(), None, time.clone()));
+        issuer.set_policy(rdm_core::certs::CertPolicy { ca_ttl_secs: 30, ..Default::default() });
+        let (_, first_expiry, renew_at) = issuer.ca_dates().unwrap();
+
+        let fabric_id = FabricId::mint();
+        let mut me = Node::allocated("mesh1.admin.1".parse().unwrap());
+        let incarnation = IncarnationId::mint();
+        me.incarnation_id = Some(incarnation.clone());
+        me.is_primary = true;
+        me.is_fabric_primary = true;
+        me.status = crate::model::NodeStatus::Ready;
+        let view = Topology {
+            fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
+            nodes: vec![me.clone()],
+        };
+        let nodes_store = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let fabric_store = Arc::new(crate::fabric_storage::MemoryFabricStorage::default());
+        let identity = crate::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
+        crate::fabric_storage::claim_identity(&*fabric_store, &identity).await.unwrap().unwrap();
+        let caches = crate::record_cache::Caches::default();
+        caches.update_fabric(&*fabric_store, &fabric_id, Some(crate::fabric_storage::FabricRecord::new(identity)), |_| {}).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
+        let r = Renewals::new(me.name.clone(), me.node_id.clone(), issuer.clone(), nodes_store.clone(), caches, client, Arc::new(|_| {}));
+        r.set_fabric(fabric_store.clone(), fabric_id.clone());
+
+        // Before `renew_at` and not behind the CA row: nothing is minted.
+        renew_ca(&r, &view, renew_at - 1).await;
+        assert!(r.ca_due.lock().unwrap().is_empty());
+        assert!(capture.named("rdm.node_admin.ca.update.via-renewal").is_empty());
+
+        // At `renew_at`: `renew_ca` mints a new CA, writes the CA row, marks every mesh in `ca_due`, and emits the span.
+        time.adopt(renew_at);
+        renew_ca(&r, &view, renew_at).await;
+        assert!(r.ca_due.lock().unwrap().contains("mesh1"));
+        let ca_row = r.caches.fabric.get(&fabric_id).and_then(|rec| rec.ca).expect("CA row written");
+        assert_eq!(ca_row.previous_expires_at, first_expiry);
+        assert!(ca_row.expires_at > first_expiry);
+        let spans = capture.named("rdm.node_admin.ca.update.via-renewal");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].attributes.get("outcome").map(String::as_str), Some("minted"));
+        assert_eq!(spans[0].attributes.get("reason").map(String::as_str), Some("renew-at"));
+        assert_eq!(spans[0].attributes.get("meshes").map(String::as_str), Some("1"));
+
+        // `every_cert_under_new_ca` is false before the mesh's issuer receipt and the birth's cert row chain to the new CA.
+        assert!(!every_cert_under_new_ca(&r, &view).await);
+        write_ca_row(&r, |row| {
+            row.issuer_receipts.insert("mesh1".into(), 50_000);
+        })
+        .await;
+        let mut node_row = crate::storage::NodeRow::new(me.name.clone(), me.node_id.clone(), me.status);
+        node_row.birth_mut(&incarnation, &me.name).cert = Some(CertDates { issued_at: 1_000, expires_at: 13_000, issuer_expires_at: 40_000, renew_at: 9_000 });
+        r.caches.nodes.update(&*nodes_store, &me.node_id, Some(node_row), |_| {}).await.unwrap();
+        assert!(!every_cert_under_new_ca(&r, &view).await, "birth's cert still chains to an issuer older than the receipt");
+        r.caches
+            .nodes
+            .update(&*nodes_store, &me.node_id, None, |rec| {
+                rec.birth_mut(&incarnation, &me.name).cert.as_mut().unwrap().issuer_expires_at = 50_000;
+            })
+            .await
+            .unwrap();
+        assert!(every_cert_under_new_ca(&r, &view).await, "every live birth's cert chains to the new CA");
+
+        // A successor whose held CA expires before the CA row's `expires_at` (`behind-ca-row`) renews immediately even before `renew_at`.
+        write_ca_row(&r, |row| row.expires_at = 999_000).await;
+        time.adopt(renew_at + 1_000);
+        renew_ca(&r, &view, 0).await;
+        let spans = capture.named("rdm.node_admin.ca.update.via-renewal");
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[1].attributes.get("reason").map(String::as_str), Some("behind-ca-row"));
+        assert_eq!(spans[1].attributes.get("outcome").map(String::as_str), Some("minted"));
+    }
 }

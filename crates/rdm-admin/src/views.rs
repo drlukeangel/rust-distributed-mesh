@@ -446,6 +446,10 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:38
+    /// "| Reply | `fabric.root.updated` once the rotation is accepted (the roots row `minted`); its progress is `fabric.get`'s `roots { phase, expires_at }`. Refused by name while a rotation is in flight (`rotation-in-progress`) and for a root already trusted (`root-already-trusted`) |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:41
+    /// "| Bound | The old anchor's own expiry: a rotation not retired by then is surfaced on `fabric.get` as `roots: stalled` |"
     /// fabric-ca-renew.md ("its progress is `fabric.get`'s `roots { phase, expires_at }`"; "a rotation
     /// not retired by then is surfaced on `fabric.get` as `roots: stalled`"): the Fabric row's roots and
     /// CA rows are answered; a rotation past its bound and not retired is stalled, a retired one never.

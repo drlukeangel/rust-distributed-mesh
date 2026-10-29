@@ -784,6 +784,10 @@ mod tests {
         assert!(bad.starts_with(ENV_CA_SECRET), "{bad}");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:23
+    /// "| Runner | The fabric-primary, which holds the root secret (as every node-admin does, [custody](../fabric-certs.md#custody)) |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:53
+    /// "| Launch | A launched node is written the current set at launch (`RDM_ROOTS`), the way `RDM_MESH_ID` is, so a node born mid-overlap trusts both; a launched node-admin is also written the root secret (`RDM_CA_SECRET`) and the current CA material (`RDM_FABRIC_CA_KEY`; the CA's cert travels inside the issuing cert) |"
     /// CONTRACT (fabric-certs.md §Custody: "Every node-admin holds the root secret ... written into its
     /// launch environment beside its mesh's issuing material"; "a successor seated by election ...
     /// mints and rotates from its own copy"): a root holder writes the root beside a mesh's issuing
@@ -892,12 +896,24 @@ mod tests {
     }
 
     // @feature: node-lifecycle
-    /// CONTRACT (fabric-ca-renew.md "fabric.ca.renew": "1 mint a new CA keypair and sign its cert with
-    /// the root; ... 2 mesh.issuer.renew for every mesh under the new CA"; "Trust set: Unchanged: the
-    /// new CA chains to the same anchor"): a renewed CA is signed by the same root; the issuer held
-    /// before it is no longer under the current CA, and one renewed after it is, chaining to the same
-    /// root. Must NOT happen: a renewal that changes the root, or an issuer minted under the old CA
-    /// after it.
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:5
+    /// "Two levels sit above a mesh's issuers ([the chain](../fabric-certs.md#the-chain)): the **fabric root**, the trust anchor the embedding app passed in, which signs nothing but RDM's CA; and the **fabric CA**, RDM's own intermediate, signed by the root, which signs every mesh's issuing cert."
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:10
+    /// "- `fabric.ca.renew` rotates the CA internally, on policy, with nothing pushed to any node but the ordinary issuer and member renewals: the new CA chains to the same anchor, so every verifier's trust set is unchanged."
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:23
+    /// "| Runner | The fabric-primary, which holds the root secret (as every node-admin does, [custody](../fabric-certs.md#custody)) |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:24
+    /// "| When | Its own tick, once the CA has lived `RDM_CERT_RENEW_AT` of its TTL (`RDM_CA_CERT_TTL_SECS`, default 365 days); also run by `fabric.root.update` step 3, under the new anchor |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:25
+    /// "| Steps | 1 mint a new CA keypair and sign its cert with the root; write the CA row; 2 [mesh.issuer.renew](mesh-issuer-renew.md) for every mesh under the new CA, each `node.issuer.update` carrying the new CA material; members renew under the new issuers at their own points |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:26
+    /// "| Trust set | Unchanged: the new CA chains to the same anchor every node already trusts |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:27
+    /// "| Overlap | The old CA, and every issuer and member it signed, stay valid to their own expiry; an issuer never outlives its CA, a member never its issuer |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:29
+    /// "| Never | A cert cut short, a status set, a frame published, a connection closed, a root changed |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:92
+    /// "An internal `fabric.ca.renew` is step 3 alone, with no caller and no `node.roots.update`."
     #[test]
     fn a_renewed_fabric_ca_chains_to_the_same_root_and_leaves_older_issuers_due() {
         let root = rdm_core::certs::mint_key();
@@ -916,10 +932,20 @@ mod tests {
         assert!(CertIssuer::no_certs(time_at(1_000)).renew_ca().unwrap().is_none(), "an admin with no certs renews nothing");
     }
 
-    /// fabric.root.update at one admin (fabric-ca-renew.md "Numbered end-to-end sequence (root update)"):
-    /// the next root is held and kept beside the data dir and read back on a start; step 3's CA is
-    /// signed by the next root, so an issuer minted under it chains to the new root and not the old;
-    /// step 5 makes the next root the root, kept as `ca-secret`, and destroys `ca-secret-next`.
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:5
+    /// "Two levels sit above a mesh's issuers ([the chain](../fabric-certs.md#the-chain)): the **fabric root**, the trust anchor the embedding app passed in, which signs nothing but RDM's CA; and the **fabric CA**, RDM's own intermediate, signed by the root, which signs every mesh's issuing cert."
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:13
+    /// "- `fabric.root.update` rotates the anchor itself, only on the app's or a person's call with a new root, through an overlap in which every node trusts both anchors (`node.roots.update`), and retires the old one once nothing chains to it."
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:39
+    /// "| Phases | `minted` → `distributed` (both anchors trusted everywhere) → `ca-rotated` → `retired` (one anchor again); the roots row is durable and a successor continues from it |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:40
+    /// "| Steps | 1 write the new root secret beside the old one on the fabric-primary; row `minted`; 2 `node.roots.update { roots: [old, new] }` to every node, admins first (the secret to admins, the public set to every other node); row `distributed`; 3 `fabric.ca.renew` under the new anchor, which re-mints every issuer; row `ca-rotated`; 4 wait until every cert row chains to the new anchor (at most one member TTL after step 3); 5 `node.roots.update { roots: [new] }` to every node; row `retired`; the old secret is destroyed everywhere |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:57
+    /// "1. `fabric.root.update { secret }` arrives at the fabric-primary. It writes the new secret beside the old one, writes the roots row `minted`, and answers `fabric.root.updated`."
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:61
+    /// "3. `fabric.ca.renew` under the new anchor: a new CA signed by the new root, every mesh's issuer re-minted under it ([mesh.issuer.renew](mesh-issuer-renew.md)). The row goes `ca-rotated`. Members renew under the new issuers at their own points ([node.cert.renew](node-cert-renew.md))."
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:67
+    /// "5. `node.roots.update { [new] }` to every node. The row goes `retired` on the last receipt, and the old secret is destroyed on every admin."
     #[test]
     fn a_root_rotation_holds_the_next_root_mints_the_ca_under_it_and_retires_the_old() {
         let (old, new) = (rdm_core::certs::mint_key(), rdm_core::certs::mint_key());
@@ -946,9 +972,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Q275 (fabric-ca-renew.md step 2; node-issuer-update.md): the CA a renewal mints rides
-    /// node.issuer.update to every other admin, which holds it and keeps it beside its data dir; the CA it
-    /// holds already changes nothing; an older one is refused `ca-older` and nothing is installed.
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:25
+    /// "| Steps | 1 mint a new CA keypair and sign its cert with the root; write the CA row; 2 [mesh.issuer.renew](mesh-issuer-renew.md) for every mesh under the new CA, each `node.issuer.update` carrying the new CA material; members renew under the new issuers at their own points |"
+    /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:96
+    /// "A node not reached in a phase is retried every tick; the phase does not advance without it, and nothing expires meanwhile that the overlap does not cover. A successor fabric-primary continues from the roots row and the CA row, and from its own copy of the root secret, which every node-admin holds ([custody](../fabric-certs.md#custody)). A successor that does not hold the CA the CA row names (a renewal whose step 2 had not reached it) never mints under a CA it does not hold: it runs `fabric.ca.renew` again from the root secret, and step 2 reaches every admin under the new CA."
     #[test]
     fn an_admin_installs_and_keeps_a_newer_fabric_ca_and_refuses_an_older_one() {
         let root = rdm_core::certs::mint_key();
