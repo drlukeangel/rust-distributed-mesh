@@ -322,16 +322,24 @@ mod tests {
     };
     use rdm_core::{EndpointId, IncarnationId, NodeId, NodeKind, PathName};
 
+    /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:12 — "a correctly signed,
+    /// unexpired cert of this fabric is admitted whoever presents it, and the step reads no node
+    /// kind, no primary and no sender identity."
+    /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:23 — "Verification | The
+    /// member's signature against its issuer's key; the issuer's signature against the fabric CA's
+    /// key and the CA's against a root of the node's set; the issuer's mesh is the first segment
+    /// of the member's path.name; the three expiries (CA, issuer, member), judged on rafka-time
+    /// (else `local-bootstrap`) with one staleness floor of skew on either side"
+    /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:24 — "Result | `admitted`:
+    /// the connection is served. `refused { reason }` with `no-credential`, `ca-bad-signature`,
+    /// `ca-expired`, `issuer-bad-signature`, `issuer-expired`, `issuer-mesh-mismatch`,
+    /// `bad-signature` or `expired`"
+    /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:27 — "`NoCerts` | A
+    /// node-admin started `NoCerts` admits every connection by name, spanned
+    /// `via-no-certs-configured`; an empty cert presented to a fabric with certs is
+    /// `no-credential`"
     #[test]
     fn cert_admitter_and_no_certs_admitter_verify_chain_expiries_mesh_and_root_set_replacement() {
-        // docs/architecture/lifecycles/node-connections-admit.md:23-27 — "Verification: The
-        // member's signature against its issuer's key; the issuer's signature against the
-        // fabric CA's key and the CA's against a root of the node's set; the issuer's mesh is
-        // the first segment of the member's path.name; the three expiries (CA, issuer, member),
-        // judged on rafka-time (else `local-bootstrap`) with one staleness floor of skew on
-        // either side... `NoCerts`: A node-admin started `NoCerts` admits every connection by
-        // name, spanned `via-no-certs-configured`; an empty cert presented to a fabric with
-        // certs is `no-credential`."
         let caller = Birth {
             name: PathName::new("mesh1", NodeKind::Gateway, 1),
             node_id: NodeId::mint(),
@@ -368,13 +376,14 @@ mod tests {
             Err("no-credential".to_string())
         );
 
-        // 4. Valid member cert under mesh1 issuer and root is admitted and returns its expiry and clock.
+        // 4. Valid member cert under mesh1 issuer and root is admitted and returns its expiry and clock,
+        // whoever presents it (reading no node kind, no primary, and no sender identity).
         let ca = CaKey::mint(&root_key, CA_CERT_TTL_SECS, 1_000);
         let issuer = IssuingKey::mint(
             &ca,
             "mesh1",
             1_000,
-            1_000 + ISSUING_CERT_TTL_SECS * 1_000,
+            1_000 + ISSUING_CERT_TTL_SECS * 1000,
         )
         .expect("mint mesh1 issuer");
         let birth_id = BirthIdentity {
@@ -387,10 +396,21 @@ mod tests {
         let signed = issue(&issuer, &birth_id, 5_000, 65_000).expect("issue member cert");
         let cert_bytes = cert_to_bytes(&signed);
         assert_eq!(presented_expiry(&cert_bytes), 65_000);
-        assert_eq!(
-            admitter.verify(&caller, b"app/1", &cert_bytes),
-            Ok((65_000, "rafka-time"))
-        );
+        for other_kind in [
+            NodeKind::Gateway,
+            NodeKind::NodeAdmin,
+            NodeKind::from_segment("rpc").unwrap(),
+        ] {
+            let presenter = Birth {
+                name: PathName::new("mesh2", other_kind, 9),
+                node_id: NodeId::mint(),
+                incarnation: IncarnationId::mint(),
+            };
+            assert_eq!(
+                admitter.verify(&presenter, b"app/1", &cert_bytes),
+                Ok((65_000, "rafka-time"))
+            );
+        }
 
         // 5. Advancing rafka-time past expiry + staleness_floor refuses with `expired`.
         let skew_ms = rdm_core::cadence::staleness_floor().as_millis() as u64;

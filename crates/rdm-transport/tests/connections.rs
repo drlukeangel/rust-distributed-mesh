@@ -2726,11 +2726,40 @@ async fn refusal_of(tamper: impl FnOnce(&Chain, &TestPeer) -> rdm_core::certs::S
     }
 }
 
-/// CONTRACT (node-connections-admit.md Verification, Result; fabric-certs.md §chain, §Time): an inbound
-/// connection on a registered ALPN whose dialer presents a correctly signed, unexpired member cert of
-/// this fabric is admitted on the acceptor's root set, judged on its rafka-time: the
-/// `via-admitted` span names the cert's expiry and the clock `rafka-time`, and the connection is
-/// served. A cert past its expiry by less than one floor is still admitted (the skew on either side).
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:20 — "Caller | The acceptor,
+/// for every inbound connection whose ALPN the embedding app registered the step for at `bind`"
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:21 — "Target | One inbound
+/// connection, identified by the dialer's endpoint key and the connection id"
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:22 — "Exchange | The dialer
+/// writes its member cert on the connection's first bi-stream and keeps the send half open; the
+/// acceptor reads it within one staleness floor... writes the verdict back on the same stream,
+/// then serves or drops."
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:23 — "Verification | The
+/// member's signature against its issuer's key; the issuer's signature against the fabric CA's key
+/// and the CA's against a root of the node's set; the issuer's mesh is the first segment of the
+/// member's path.name; the three expiries (CA, issuer, member), judged on rafka-time (else
+/// `local-bootstrap`) with one staleness floor of skew on either side"
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:24 — "Result | `admitted`: the
+/// connection is served."
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:25 — "Row | ... an admission
+/// is the ordinary `Connected` fact"
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:28 — "Spans |
+/// `rdm.node.connections.create.via-admitted` (source, destination, connection, alpn,
+/// cert_expires_at, clock)"
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:32 — "1. The dialer's QUIC
+/// connection on a registered ALPN completes; iroh has checked the peer holds the private key of
+/// the endpoint id dialed"
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:34 — "2. The dialer opens the
+/// first bi-stream, writes the member cert it holds... and waits."
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:36 — "3. The acceptor reads it
+/// within the floor and verifies as the contract says."
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:37 — "4. `admitted`: the
+/// verdict is written back; the connection is served."
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:45 — "There is no wire op. The
+/// exchange on the first bi-stream, as the spans record it"
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:81 — "Trace propagation, step
+/// spans and correlation follow the runtime spans. The cell: one admitted dial with a test-kit
+/// cert and one refused by each named reason, with the connection facts beside the spans"
 #[test]
 fn an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-admit-valid-cert").expect("the cell's evidence file can be created");
@@ -2746,12 +2775,70 @@ fn an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert() {
         expiries
     });
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
-    let admitted: Vec<(u64, String)> = spans
+    let product = String::from_utf8_lossy(ALPN_A).into_owned();
+    let admitted: Vec<(String, String, bool, String, u64, String)> = spans
         .iter()
         .filter(|s| s["name"] == "rdm.node.connections.create.via-admitted")
-        .map(|s| (s["attributes"]["cert_expires_at"].as_str().and_then(|v| v.parse().ok()).or_else(|| s["attributes"]["cert_expires_at"].as_u64()).unwrap_or(0), s["attributes"]["clock"].as_str().unwrap_or_default().to_string()))
+        .map(|s| {
+            let conn = s["attributes"]["connection"]
+                .as_u64()
+                .map(|n| n > 0)
+                .or_else(|| s["attributes"]["connection"].as_str().map(|v| !v.is_empty()))
+                .unwrap_or(false);
+            (
+                s["attributes"]["source"].as_str().unwrap_or_default().to_string(),
+                s["attributes"]["destination"].as_str().unwrap_or_default().to_string(),
+                conn,
+                s["attributes"]["alpn"].as_str().unwrap_or_default().to_string(),
+                s["attributes"]["cert_expires_at"].as_str().and_then(|v| v.parse().ok()).or_else(|| s["attributes"]["cert_expires_at"].as_u64()).unwrap_or(0),
+                s["attributes"]["clock"].as_str().unwrap_or_default().to_string(),
+            )
+        })
         .collect();
-    assert_eq!(admitted, expiries.iter().map(|e| (*e, "rafka-time".to_string())).collect::<Vec<_>>(), "each admission names the presented cert's expiry and the clock it was judged on");
+    assert_eq!(
+        admitted,
+        expiries
+            .iter()
+            .map(|e| ("mesh1.rpc.1".to_string(), "mesh1.rpc.2".to_string(), true, product.clone(), *e, "rafka-time".to_string()))
+            .collect::<Vec<_>>(),
+        "each admission names source, destination, connection, alpn, the presented cert's expiry and the clock it was judged on"
+    );
+}
+
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:28 — "Spans | ...
+/// `rdm.node.connections.update.via-presented` (destination, alpn, cert_expires_at) on the dialer"
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:34 — "2. The dialer opens the
+/// first bi-stream, writes the member cert it holds (the one most recently installed: its
+/// JoinNode's or its last node.cert.renew's), and waits."
+#[test]
+#[ignore = "page/code difference: node-connections-admit.md §Operation contract"]
+fn a_presented_dial_is_spanned_on_the_dialer_with_destination_alpn_and_the_presented_certs_expiry() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-admit-presented-fields").expect("the cell's evidence file can be created");
+    let expiry = CHAIN_NOW_MS + 60_000;
+    capture.run(4, async {
+        let chain = Chain::minted("mesh1", 3_600, CHAIN_NOW_MS);
+        let root = chain.root.verifying_key();
+        let admitted = dial_presenting(vec![root], |dialer| rdm_core::certs::cert_to_bytes(&chain.member(dialer, expiry))).await;
+        assert_eq!(admitted, Ok(()));
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let product = String::from_utf8_lossy(ALPN_A).into_owned();
+    let presented: Vec<(String, String, u64)> = spans
+        .iter()
+        .filter(|s| s["name"] == "rdm.node.connections.update.via-presented")
+        .map(|s| {
+            (
+                s["attributes"]["destination"].as_str().unwrap_or_default().to_string(),
+                s["attributes"]["alpn"].as_str().unwrap_or_default().to_string(),
+                s["attributes"]["cert_expires_at"].as_str().and_then(|v| v.parse().ok()).or_else(|| s["attributes"]["cert_expires_at"].as_u64()).unwrap_or(0),
+            )
+        })
+        .collect();
+    assert_eq!(
+        presented,
+        vec![("mesh1.rpc.2".to_string(), product, expiry)],
+        "the dialer's via-presented span names destination, alpn, and the presented cert's expiry"
+    );
 }
 
 /// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 6): a member cert the issuing
@@ -2828,11 +2915,19 @@ async fn an_inbound_connection_is_refused_by_name_on_expired() {
     assert_eq!(reason, "expired");
 }
 
-/// CONTRACT (node-connections-admit.md Spans: "`rdm.node.connections.reject.via-refused` (the same,
-/// plus `reason`)", the same fields as `via-admitted`: cert_expires_at, clock; Verification: "judged
-/// on rafka-time (else `local-bootstrap`)"): a refusal's span names the presented cert's expiry and
-/// the clock the acceptor judged it on, as an admission's does. Must NOT happen: a refusal spanned
-/// with `cert_expires_at` 0 and clock `no-certs` when a cert was presented to a fabric with certs.
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:28 — "Spans |
+/// `rdm.node.connections.create.via-admitted` (source, destination, connection, alpn,
+/// cert_expires_at, clock) or `rdm.node.connections.reject.via-refused` (the same, plus `reason`)
+/// on the acceptor"
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:37 — "`refused { reason }`:
+/// the verdict is written back, the `Refused` fact is written, the connection is closed."
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:39 — "5. The dialer reads the
+/// verdict before it sends anything else: a refusal is a named end of this dial"
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:45 — "There is no wire op. The
+/// exchange on the first bi-stream, as the spans record it"
+/// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:81 — "Trace propagation, step
+/// spans and correlation follow the runtime spans. The cell: one admitted dial with a test-kit
+/// cert and one refused by each named reason, with the connection facts beside the spans"
 #[test]
 fn a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_was_judged_on() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-admit-refused-fields").expect("the cell's evidence file can be created");
@@ -2844,18 +2939,32 @@ fn a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_wa
         assert_eq!(refused, Err(ConnectError::Refused { reason: "expired".into() }), "a cert expired by more than a floor is refused `expired`");
     });
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
-    let refused: Vec<(u64, String, String)> = spans
+    let product = String::from_utf8_lossy(ALPN_A).into_owned();
+    let refused: Vec<(String, String, bool, String, u64, String, String)> = spans
         .iter()
         .filter(|s| s["name"] == "rdm.node.connections.reject.via-refused")
         .map(|s| {
+            let conn = s["attributes"]["connection"]
+                .as_u64()
+                .map(|n| n > 0)
+                .or_else(|| s["attributes"]["connection"].as_str().map(|v| !v.is_empty()))
+                .unwrap_or(false);
             (
+                s["attributes"]["source"].as_str().unwrap_or_default().to_string(),
+                s["attributes"]["destination"].as_str().unwrap_or_default().to_string(),
+                conn,
+                s["attributes"]["alpn"].as_str().unwrap_or_default().to_string(),
                 s["attributes"]["cert_expires_at"].as_str().and_then(|v| v.parse().ok()).or_else(|| s["attributes"]["cert_expires_at"].as_u64()).unwrap_or(0),
                 s["attributes"]["clock"].as_str().unwrap_or_default().to_string(),
                 s["attributes"]["reason"].as_str().unwrap_or_default().to_string(),
             )
         })
         .collect();
-    assert_eq!(refused, vec![(expiry, "rafka-time".to_string(), "expired".to_string())], "the refusal names the presented cert's expiry, the clock it was judged on and the reason");
+    assert_eq!(
+        refused,
+        vec![("mesh1.rpc.1".to_string(), "mesh1.rpc.2".to_string(), true, product, expiry, "rafka-time".to_string(), "expired".to_string())],
+        "the refusal names source, destination, connection, alpn, the presented cert's expiry, the clock it was judged on and the reason"
+    );
 }
 
 /// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 4, §Time): a member cert whose
