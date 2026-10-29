@@ -1,4 +1,4 @@
-//! The source-owned Direct reconnect reconciler and ordered Proxy retirement (i143.e4.s3).
+//! The source-owned Direct reconnect reconciler and ordered Proxy delete (i143.e4.s3).
 //!
 //! A reconnect series exists while this source's latest Direct entry to a destination is `Failed`
 //! for the destination's current process. Its schedule is reconstructed from that one entry —
@@ -8,7 +8,7 @@
 //!
 //! Any Direct `Connected` for a pair whose own Proxy is still `Connected` owes a
 //! `Proxy Disconnected(reason=direct-restored)`. The Proxy stays the effective route until that
-//! write is applied, and a failed write is owed again: cutback follows durable retirement.
+//! write is applied, and a failed write is owed again: cutback follows the durable write.
 
 use crate::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery, NodeConnection};
 use crate::connections::spread;
@@ -19,7 +19,7 @@ use crate::path::PathName;
 pub(crate) const RECONNECT_BACKOFF_BASE_MS: u64 = 4_000;
 /// The backoff a series is held at once doubling reaches it, ms.
 pub(crate) const RECONNECT_BACKOFF_MAX_MS: u64 = 120_000;
-/// The reason a Proxy retired because its Direct came back carries.
+/// The reason a Proxy deleted because its Direct came back carries.
 pub const DIRECT_RESTORED: &str = "direct-restored";
 
 /// The backoff after attempt `attempt_ordinal`, ms: the base doubled per ordinal after the first,
@@ -150,7 +150,7 @@ pub fn first_failure_for(
     }
 }
 
-/// The Proxy retirements this source owes now: each own active Proxy whose `(source, destination, alpn)`
+/// The Proxy deletes this source owes now: each own active Proxy whose `(source, destination, alpn)`
 /// has an active Direct on that same ALPN, as the `Proxy Disconnected(direct-restored)` entry to write at `now_ms`.
 pub fn owed_direct_restored(held: &ConnectionsHeld, now_ms: u64) -> Vec<NodeConnection> {
     held.own_active_proxies()

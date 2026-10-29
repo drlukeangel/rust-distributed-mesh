@@ -164,7 +164,7 @@ fn a_stale_destination_incarnation_is_superseded() {
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
     let r = resolve(&held, &own.name, &dest.name, RPC);
     assert_eq!(r.route, EffectiveRoute::Direct { known: false });
-    assert_eq!(r.retire, Some((p, INVALID_DESTINATION_SUPERSEDED)), "the superseded Proxy is handed back for retirement");
+    assert_eq!(r.delete, Some((p, INVALID_DESTINATION_SUPERSEDED)), "the superseded Proxy is handed back for delete");
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn a_proxy_is_valid_without_the_carriers_edge_in_the_sources_held_graph() {
 }
 
 /// CONTRACT: a Direct fact naming a destination process the topology view no longer holds is not the
-/// current edge: routing dials instead of trusting it, and it retires no Proxy.
+/// current edge: routing dials instead of trusting it, and it deletes no Proxy.
 #[test]
 fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     let (mut held, own, carrier, dest) = estate();
@@ -257,7 +257,7 @@ fn a_valid_proxy_through_a_carrier_kind_the_protocol_forbids_is_skipped_not_disc
     held.apply(proxy(own.clone(), admin, dest.clone(), 20)).unwrap();
     let r = resolve(&held, &own.name, &dest.name, RPC);
     assert_eq!(r.route, EffectiveRoute::Direct { known: false });
-    assert_eq!(r.retire, None);
+    assert_eq!(r.delete, None);
 }
 
 #[test]

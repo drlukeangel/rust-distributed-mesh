@@ -249,7 +249,7 @@ pub enum ForwardReply {
     },
     /// The carrier made no inner call it could prove arrived: its own Direct edge to the final
     /// target is not Active (connections.md §8). `reason` names the carrier's latest Direct fact
-    /// toward the target. The origin retires its Proxy through this carrier with the structural
+    /// toward the target. The origin deletes its Proxy through this carrier with the structural
     /// reason `carrier-edge-lost`.
     ///
     /// Position 12 on the wire.

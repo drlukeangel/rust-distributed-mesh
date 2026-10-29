@@ -527,8 +527,8 @@ impl EffectiveRoute {
 pub struct RouteResolution {
     /// The route.
     pub route: EffectiveRoute,
-    /// The own Proxy found invalid and the reason, for the caller to retire.
-    pub retire: Option<(NodeConnection, &'static str)>,
+    /// The own Proxy found invalid and the reason, for the caller to delete.
+    pub delete: Option<(NodeConnection, &'static str)>,
 }
 
 /// Why `proxy` is not valid now over `held`, or `None` when it is. The destination and carrier
@@ -550,7 +550,7 @@ pub fn proxy_invalid(held: &ConnectionsHeld, proxy: &NodeConnection) -> Option<&
 
 /// The route from `own` to `destination` under `policy` on the default ALPN, over `held`: a valid
 /// own Proxy, else an active Direct, else a direct dial when no Direct fact was ever observed,
-/// else no route. Pure: the caller retires [`RouteResolution::retire`].
+/// else no route. Pure: the caller deletes [`RouteResolution::delete`].
 pub fn resolve(held: &ConnectionsHeld, own: &PathName, destination: &PathName, policy: CarrierPolicy) -> RouteResolution {
     resolve_for(held, own, destination, ALPN, policy)
 }
@@ -574,11 +574,11 @@ pub fn resolve_for_carriers(
     proxy: bool,
     carriers: &[NodeKind],
 ) -> RouteResolution {
-    let mut retire = None;
+    let mut delete = None;
     if proxy && !carriers.is_empty() {
         if let Some(Some(proxy)) = held.own_proxy_for(destination, alpn) {
             // A valid Proxy through a carrier kind this protocol does not allow is skipped, not
-            // retired: another protocol may still travel over it.
+            // deleted: another protocol may still travel over it.
             let kind_allowed = proxy
                 .carrier
                 .as_ref()
@@ -586,10 +586,10 @@ pub fn resolve_for_carriers(
             match proxy_invalid(held, proxy) {
                 None if kind_allowed => {
                     let carrier = proxy.carrier.as_ref().map(|c| c.name.clone()).expect("a valid Proxy names its carrier");
-                    return RouteResolution { route: EffectiveRoute::ViaPeer { carrier, proxy: proxy.clone() }, retire: None };
+                    return RouteResolution { route: EffectiveRoute::ViaPeer { carrier, proxy: proxy.clone() }, delete: None };
                 }
                 None => {}
-                Some(reason) => retire = Some((proxy.clone(), reason)),
+                Some(reason) => delete = Some((proxy.clone(), reason)),
             }
         }
     }
@@ -609,7 +609,7 @@ pub fn resolve_for_carriers(
         Some(None) => EffectiveRoute::NoActiveRoute,
         None => EffectiveRoute::Direct { known: false },
     };
-    RouteResolution { route, retire }
+    RouteResolution { route, delete }
 }
 
 /// The order `own` asks `candidates` to carry its connection to `destination` in (connections.md §6,
@@ -861,7 +861,7 @@ mod tests {
                     carrier: car.name.clone(),
                     proxy: proxy_conn.clone(),
                 },
-                retire: None,
+                delete: None,
             }
         );
 
@@ -870,7 +870,7 @@ mod tests {
             no_proxy_policy,
             RouteResolution {
                 route: EffectiveRoute::Direct { known: true },
-                retire: None,
+                delete: None,
             }
         );
 

@@ -1,4 +1,4 @@
-//! i143.e4.s3: the source-owned reconnect reconciler and ordered Proxy retirement
+//! i143.e4.s3: the source-owned reconnect reconciler and ordered Proxy delete
 //! (`rdm_core::reconnect`).
 
 use rdm_core::connections::{resolve, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute, NodeConnection};
@@ -116,16 +116,16 @@ fn cutback_to_direct_happens_only_after_the_proxy_disconnected_write_is_applied_
     assert!(owed_direct_restored(&h, 25).is_empty(), "no Direct yet: nothing owed");
 
     h.apply(connected(&own, &dest, 30)).unwrap();
-    assert!(matches!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays effective until retired");
+    assert!(matches!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays effective until deleted");
     let owed = owed_direct_restored(&h, 31);
     assert_eq!(owed.len(), 1);
     assert_eq!((owed[0].state, owed[0].reason.as_deref()), (ConnectionState::Disconnected, Some(DIRECT_RESTORED)));
 
-    // The write fails (never applied): the retirement is owed again, and the Proxy still routes.
+    // The write fails (never applied): the delete is owed again, and the Proxy still routes.
     assert_eq!(owed_direct_restored(&h, 40).len(), 1);
     assert!(matches!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::ViaPeer { .. }));
 
-    // The write lands: the Proxy is retired and new invocations go Direct.
+    // The write lands: the Proxy is deleted and new invocations go Direct.
     h.apply(owed_direct_restored(&h, 50).remove(0)).unwrap();
     assert!(owed_direct_restored(&h, 51).is_empty());
     assert_eq!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: true });

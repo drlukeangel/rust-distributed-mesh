@@ -1,8 +1,8 @@
 //! The built protocol catalog and op ledger (ownership amendment §10–§11,
 //! §14; node-rpc.md §9, §12; PRD §1.21).
 //!
-//! The ledger is the op-allocation authority: every op that is or was ever
-//! used is recorded with its owner, and a retired op stays reserved forever.
+//! The ledger is the op-allocation registry: every op that is or was ever
+//! used is recorded with its owner, and a reserved op stays reserved forever.
 //! A process composes RDM core protocols, product protocols and transitional
 //! legacy adapters into one [`CatalogBuilder`] and builds it once, before the
 //! first accepted stream is dispatched. The built catalog is the only
@@ -36,7 +36,7 @@ pub enum OpState {
     /// The op is served.
     Live,
     /// Reserved forever; never served, never reassigned.
-    Retired,
+    Reserved,
 }
 
 /// One op-ledger row.
@@ -48,7 +48,7 @@ pub struct LedgerEntry {
     pub family: String,
     /// The product that owns the op.
     pub owner: OpOwner,
-    /// Whether the op is live or retired.
+    /// Whether the op is live or reserved.
     pub state: OpState,
 }
 
@@ -64,7 +64,7 @@ pub(crate) fn core_ledger() -> Vec<LedgerEntry> {
     vec![
         LedgerEntry { op: 0x01, family: "ping".into(), owner: OpOwner::Core, state: OpState::Live },
         rafka(0x10, "legacy-control"),
-        LedgerEntry { op: 0x11, family: "echo".into(), owner: OpOwner::Core, state: OpState::Retired },
+        LedgerEntry { op: 0x11, family: "echo".into(), owner: OpOwner::Core, state: OpState::Reserved },
         rafka(0x12, "data-frame"),
         rafka(0x13, "snapshot"),
         rafka(0x14, "control"),
@@ -73,7 +73,7 @@ pub(crate) fn core_ledger() -> Vec<LedgerEntry> {
             op: 0x16,
             family: "layout-reprovision".into(),
             owner: OpOwner::Product("rafka".into()),
-            state: OpState::Retired,
+            state: OpState::Reserved,
         },
         rafka(0x17, "forward-write"),
         rafka(0x18, "forward-read"),
@@ -185,8 +185,8 @@ pub enum CatalogError {
         /// The second entry's name.
         second: String,
     },
-    /// The op tag is retired.
-    RetiredTag {
+    /// The op tag is reserved.
+    ReservedTag {
         /// The op tag concerned.
         op: u8,
         /// The entry's name.
@@ -261,7 +261,7 @@ impl fmt::Display for CatalogError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateTag { op, first, second } => write!(f, "op {op:#04x} registered twice ({first}, {second})"),
-            Self::RetiredTag { op, name } => write!(f, "op {op:#04x} ({name}) is retired forever"),
+            Self::ReservedTag { op, name } => write!(f, "op {op:#04x} ({name}) is reserved forever"),
             Self::UnledgeredTag { op, name } => write!(f, "op {op:#04x} ({name}) has no op-ledger row"),
             Self::OwnerMismatch { op, name, ledger, entry } => {
                 write!(f, "op {op:#04x} ({name}) is owned by {ledger:?} in the ledger, registered by {entry:?}")
@@ -337,9 +337,9 @@ impl CatalogBuilder {
                     let (op, name) = named(&e);
                     errors.push(CatalogError::UnledgeredTag { op, name });
                 }
-                Some(row) if row.state == OpState::Retired => {
+                Some(row) if row.state == OpState::Reserved => {
                     let (op, name) = named(&e);
-                    errors.push(CatalogError::RetiredTag { op, name });
+                    errors.push(CatalogError::ReservedTag { op, name });
                 }
                 Some(row) if row.owner != e.owner => errors.push(CatalogError::OwnerMismatch {
                     op: e.op,
@@ -407,7 +407,7 @@ mod tests {
         let c = CatalogBuilder::new().serve(echo()).build().unwrap();
         assert_eq!(c.lookup(0x01).unwrap().name, "ping");
         assert_eq!(c.request_ceiling(0x01), Some(64 * 1024));
-        assert_eq!(c.lookup(0x11), None, "0x11 (echo) is retired");
+        assert_eq!(c.lookup(0x11), None, "0x11 (echo) is reserved");
         for op in [0x10u8, 0x12, 0x17, 0x19, 0x42] {
             assert_eq!(c.lookup(op), None, "ledger-reserved or free, an unregistered op is unserved: {op:#x}");
         }
@@ -425,7 +425,7 @@ mod tests {
             .serve(CatalogEntry::transitional(0x16, "layout-reprovision", "rafka", "never", 1024))
             .build()
             .unwrap_err();
-        assert_eq!(err, vec![CatalogError::RetiredTag { op: 0x16, name: "layout-reprovision".into() }]);
+        assert_eq!(err, vec![CatalogError::ReservedTag { op: 0x16, name: "layout-reprovision".into() }]);
     }
 
     #[test]
@@ -514,7 +514,7 @@ mod tests {
         let l = core_ledger();
         let tags: Vec<u8> = l.iter().map(|r| r.op).collect();
         assert_eq!(tags, vec![0x01, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75]);
-        assert_eq!(l.iter().find(|r| r.op == 0x11).map(|r| r.state), Some(OpState::Retired), "echo is retired forever; ping took op 1");
+        assert_eq!(l.iter().find(|r| r.op == 0x11).map(|r| r.state), Some(OpState::Reserved), "echo is reserved forever; ping took op 1");
         assert!(l.iter().all(|r| r.op != 0), "op 0 is reserved as invalid");
         assert_eq!(l.iter().find(|r| r.op == 0x1B).map(|r| r.owner.clone()), Some(OpOwner::Product("rdm".into())), "status is RDM's control family, not core");
         let core: Vec<u8> = l.iter().filter(|r| r.owner == OpOwner::Core && r.state == OpState::Live).map(|r| r.op).collect();
