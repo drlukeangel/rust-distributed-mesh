@@ -119,7 +119,10 @@ impl Running {
     /// wrote the row and this admin holds the map, or the refusal by name. The caller never names the
     /// fabric-primary: an admin that is not it carries the command up to the one its records name
     /// ([`crate::status_rpc::StatusAuthority::own_config_update`]). Called before this admin holds a
-    /// view, it waits for the view rather than refusing: the update is owed until answered (D12, D23).
+    /// view, or before its view holds its own birth, it waits for that view rather than refusing: the
+    /// update is owed until answered (node-config-update.md "A node's own update", D12, D23). The view
+    /// waited on is the one the update is served from, so it is never refused `SubjectUnknown` for this
+    /// admin's own birth; the wait ends with this birth.
     pub async fn config_update(&self, config: std::collections::BTreeMap<String, String>) -> rdm_core::status::StatusReply {
         let birth = self.birth();
         let status = loop {
@@ -129,6 +132,13 @@ impl Running {
             }
             told.await;
         };
+        let (mut views, ended) = (self.runner.records.subscribe_view(), self.pre_node_ready_cancel.token());
+        while status.topology.read().await.own(&birth.node_id).is_none() {
+            tokio::select! {
+                changed = views.changed() => if changed.is_err() { break },
+                () = ended.cancelled() => return rdm_core::reply::status::not_ready(format!("{}: this birth ended before its view held it; its own config is not put", birth.name)),
+            }
+        }
         status.own_config_update(birth.incarnation, config).await
     }
 
