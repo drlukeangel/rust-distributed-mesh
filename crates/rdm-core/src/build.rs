@@ -1042,3 +1042,85 @@ impl StreamingProtocol for Build {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::binding::Binding;
+    use crate::protocol::NodeProtocol;
+
+    // @feature: node-replace
+    /// CONTRACT: docs/architecture/lifecycles/node-replace.md:5
+    /// "Replace is Rafka's steps, submitted as one Build. RDM executes its primitives and records their receipts"
+    /// CONTRACT: docs/architecture/lifecycles/node-replace.md:30
+    /// "1. node[1]: node.connections.delete `{ scope: All }`, then node.mesh.leave.
+    ///  2. node.name.update of node[1] to `<name>.old` ... Then node[1].stop ... If no rollback is wanted, node[1].delete ...
+    ///  3. node.create of node[2] at `<name>` ... The Build fixes the bin on its Create step"
+    #[test]
+    fn replace_step_primitives_preserve_wire_positions_and_reserved_changes_are_refused() {
+        let name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let old_name = name.renamed();
+        let binding = Binding {
+            launch_id: "rpc_node".into(),
+            executable: "/bin/rdm-rpc-node-v2".into(),
+            sha256: "b".repeat(64),
+            image: None,
+        };
+        let steps = vec![
+            Step::DeleteConnections { node: name.clone() },
+            Step::LeaveMesh { node: name.clone() },
+            Step::Update {
+                node: name.clone(),
+                name: old_name.clone(),
+            },
+            Step::Stop {
+                node: old_name.clone(),
+            },
+            Step::Create {
+                node: name.clone(),
+                executable: Some(binding),
+            },
+            Step::Start {
+                node: old_name.clone(),
+            },
+            Step::Delete {
+                node: old_name.clone(),
+            },
+        ];
+        assert_eq!(steps[0].node(), &name);
+        assert_eq!(steps[1].node(), &name);
+        assert_eq!(steps[2].node(), &name);
+        assert_eq!(steps[3].node(), &old_name);
+        assert_eq!(steps[4].node(), &name);
+        assert_eq!(steps[5].node(), &old_name);
+        assert_eq!(steps[6].node(), &old_name);
+
+        let req = BuildRequest::Create {
+            submit: BuildSubmit::Change(BuildChange::Steps {
+                steps: steps.clone(),
+            }),
+        };
+        let bytes = Build::encode_request(&req).unwrap();
+        let decoded = Build::decode_request(&bytes).unwrap();
+        assert_eq!(decoded, req);
+
+        for reserved in [
+            BuildChange::Reserved0,
+            BuildChange::Reserved1,
+            BuildChange::Reserved2,
+            BuildChange::Reserved4,
+            BuildChange::Reserved6,
+            BuildChange::Reserved14,
+        ] {
+            assert!(reserved.is_reserved());
+            let raw = Build::encode_request(&BuildRequest::Create {
+                submit: BuildSubmit::Change(reserved),
+            })
+            .unwrap();
+            assert_eq!(
+                Build::decode_request(&raw),
+                Err(DecodeFailure::UnknownVariant)
+            );
+        }
+    }
+}

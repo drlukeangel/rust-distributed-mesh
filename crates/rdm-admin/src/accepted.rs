@@ -3222,4 +3222,145 @@ mod tests {
         assert!(!change.plans_replacements(), "it owes no replacement: the repair is a request naming the executables");
         assert_eq!(serde_json::to_value(&change).unwrap()["kind"], "roll", "written back as it was read");
     }
+
+    // @feature: node-replace
+    /// CONTRACT: docs/architecture/lifecycles/node-replace.md:30
+    /// "1. node[1]: node.connections.delete `{ scope: All }`, then node.mesh.leave.
+    ///  2. node.name.update of node[1] to `<name>.old` ... Then node[1].stop ...
+    ///  3. node.create of node[2] at `<name>`, free only because the row above moved the key: a re-birth with a new node.id, incarnation and the specified bin."
+    #[test]
+    fn replace_steps_pin_predecessor_across_rename_leave_successor_create_unpinned_and_resume_from_receipts() {
+        use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
+        let cur = t(&[("mesh1", 2, 2)]);
+        let o = mn();
+        let name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let old_name = name.renamed();
+        let pred = o.node(&name).unwrap();
+        let pred_pin = PinnedBirth {
+            node_id: pred.node_id.clone(),
+            incarnation: pred.incarnation_id.clone().unwrap(),
+        };
+        let succ_exe = exe("v2", NodeKind::RpcNode);
+        let forward_steps = vec![
+            Step::DeleteConnections { node: name.clone() },
+            Step::LeaveMesh { node: name.clone() },
+            Step::Update {
+                node: name.clone(),
+                name: old_name.clone(),
+            },
+            Step::Stop {
+                node: old_name.clone(),
+            },
+            Step::Create {
+                node: name.clone(),
+                executable: Some(succ_exe.clone()),
+            },
+        ];
+        let action = steps_action(forward_steps.clone(), &o).expect("valid replace steps");
+        let AttemptAction::Steps { pinned, .. } = &action else {
+            panic!("expected AttemptAction::Steps");
+        };
+        assert_eq!(pinned, &vec![(name.clone(), pred_pin.clone())]);
+
+        let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
+            topology: cur.clone(),
+            submitted_change: None,
+            submitted_at_ms: 0,
+            state: BuildState::Pending,
+            attempt: 3,
+            executor: None,
+            steps,
+            last_failure: None,
+            reason: AttemptReason::Steps,
+            action: Some(action.clone()),
+            attempt_actions: [(3, action.clone())].into(),
+            attempt_executors: Default::default(),
+            opened: 3,
+            failed_at: None,
+            completed_at: None,
+            reported: Default::default(),
+            claimant: None,
+            lanes: Default::default(),
+        };
+
+        let initial_ops = plan_for_build(&build(vec![]), &o).operations;
+        assert_eq!(
+            initial_ops,
+            vec![
+                BuildOperation::Step {
+                    step: forward_steps[0].clone(),
+                    birth: Some(pred_pin.clone()),
+                    entry: None,
+                },
+                BuildOperation::Step {
+                    step: forward_steps[1].clone(),
+                    birth: Some(pred_pin.clone()),
+                    entry: None,
+                },
+                BuildOperation::Step {
+                    step: forward_steps[2].clone(),
+                    birth: Some(pred_pin.clone()),
+                    entry: None,
+                },
+                BuildOperation::Step {
+                    step: forward_steps[3].clone(),
+                    birth: Some(pred_pin),
+                    entry: None,
+                },
+                BuildOperation::Step {
+                    step: forward_steps[4].clone(),
+                    birth: None,
+                    entry: None,
+                },
+            ]
+        );
+
+        let complete = |op: &str| BuildStepReceipt {
+            mesh: None,
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
+            attempt: 3,
+            operation: op.into(),
+            step: "Complete".into(),
+            outcome: StepOutcome::Complete,
+            output: None,
+            executor: None,
+        };
+        let after_rename = plan_for_build(
+            &build(vec![
+                complete("node.connections.delete:mesh1.rpc.1"),
+                complete("node.mesh.leave:mesh1.rpc.1"),
+                complete("node.update:mesh1.rpc.1"),
+            ]),
+            &o,
+        )
+        .operations;
+        assert_eq!(after_rename, initial_ops[3..].to_vec());
+
+        assert_eq!(steps_action(vec![], &o), Err(BuildReject::EmptySteps));
+        assert_eq!(
+            steps_action(
+                vec![
+                    Step::Stop { node: name.clone() },
+                    Step::Stop { node: name.clone() },
+                ],
+                &o
+            ),
+            Err(BuildReject::StepRepeated {
+                operation: "node.stop:mesh1.rpc.1".into()
+            })
+        );
+        assert_eq!(
+            steps_action(
+                vec![Step::Stop {
+                    node: "mesh1.rpc.9".parse().unwrap(),
+                }],
+                &o
+            ),
+            Err(BuildReject::UnknownNode {
+                node: "mesh1.rpc.9".into(),
+                step: Some(1),
+            })
+        );
+    }
 }
