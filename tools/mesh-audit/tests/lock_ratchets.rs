@@ -217,7 +217,7 @@ fn typed_protocol_evidence_fails_untyped_held_evidence() {
 #[test]
 fn status_wire_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-core/src/status.rs", "const REPLY_VARIANTS: u32 = 58;", "const REPLY_VARIANTS: u32 = 59;");
+    t.edit("crates/rdm-core/src/status.rs", "const REPLY_VARIANTS: u32 = 60;", "const REPLY_VARIANTS: u32 = 61;");
     only(check(t.root()), Ratchet::StatusWireIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rdm-core/tests/status_wire.rs");

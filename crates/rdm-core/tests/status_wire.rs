@@ -30,7 +30,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_thirty_five_variant_wire_schema() {
+fn requests_match_the_frozen_thirty_six_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Stopped, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
@@ -91,6 +91,8 @@ fn requests_match_the_frozen_thirty_five_variant_wire_schema() {
         (Get { entity: rdm_core::filter::Entity::Nodes, node: None, filter: rdm_core::filter::Filter::new().eq("mesh", ["mesh1"]) }, "21020001046d65736801056d65736831"),
         // A node's own config pushed up (Q235), appended last: node_id | config (len 1: "k" "v") | revision 3
         (NodeConfigUpdated { node_id: node(), config: [("k".to_string(), "v".to_string())].into(), revision: 3 }, "220c30313233343536373839616201016b017603"),
+        // node.roots.update, appended last: node_id | incarnation | roots (len 1: "ab") | phase Distributed (1) | secret Some("cd")
+        (UpdateRoots { node_id: node(), incarnation: birth(), roots: vec!["ab".into()], phase: rdm_core::status::RootsPhase::Distributed, secret: Some(rdm_core::status::RootSecretHex("cd".into())) }, "230c3031323334353637383961620c397763707266677776746879010261620101026364"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -101,7 +103,7 @@ fn requests_match_the_frozen_thirty_five_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_fifty_eight_variant_wire_schema() {
+fn replies_match_the_frozen_sixty_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use StatusReply::*;
     let fixtures = [
@@ -213,6 +215,10 @@ fn replies_match_the_frozen_fifty_eight_variant_wire_schema() {
         (Fabrics { fabrics: vec![] }, "3800"),
         // reason "x" (a filter refused naming the pair, Q167), appended last
         (RejectedFilter { reason: "x".into() }, "390178"),
+        // node.roots.updated, appended last: node_id | incarnation | roots (len 1: "ab")
+        (RootsUpdated { node_id: node(), incarnation: birth(), roots: vec!["ab".into()] }, "3a0c3031323334353637383961620c39776370726667777674687901026162"),
+        // root-still-chained, appended last: root "ab"
+        (RejectedRootStillChained { root: "ab".into() }, "3b026162"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
@@ -327,6 +333,11 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
         (MeshState::Pending, "00"), (MeshState::Ready, "01"),
         (MeshState::Leaving, "02"), (MeshState::Dead, "03"),
     ] { golden(state, expected); }
+    // node.roots.update's phase (fabric-ca-renew.md "fabric.root.update").
+    for (phase, expected) in [
+        (rdm_core::status::RootsPhase::Minted, "00"), (rdm_core::status::RootsPhase::Distributed, "01"),
+        (rdm_core::status::RootsPhase::CaRotated, "02"), (rdm_core::status::RootsPhase::Retired, "03"),
+    ] { golden(phase, expected); }
     // DeclareNodeState's operation (i146 Q36): build_id | attempt | operation, and its Option.
     let op = DeclaredOperation { build_id: "b".into(), attempt: 2, operation: "node.stop:m".into() };
     golden(op.clone(), "0162020b6e6f64652e73746f703a6d");
@@ -385,5 +396,5 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
 
 #[test]
 fn every_reply_variant_of_status_classifies_to_one_code() {
-    replies_match_the_frozen_fifty_eight_variant_wire_schema();
+    replies_match_the_frozen_sixty_variant_wire_schema();
 }

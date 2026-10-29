@@ -2348,6 +2348,8 @@ mod tests {
             (StatusReply::Atlas { atlas: crate::views::AtlasView::default() }, ReplyKind::Success),
             (StatusReply::Fabrics { fabrics: vec![] }, ReplyKind::Success),
             (StatusReply::rejected_filter("nodes.get: the pair (zone, [eu-1]) names no property of a node row"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),
+            (StatusReply::RootsUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), roots: vec!["ab".into()] }, ReplyKind::Success),
+            (StatusReply::RejectedRootStillChained { root: "ab".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -2400,6 +2402,7 @@ mod tests {
             StatusRequest::RenewCert { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), cert: vec![1, 2, 3] },
             StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into() },
             StatusRequest::Get { entity: crate::filter::Entity::Nodes, node: None, filter: crate::filter::Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold", "silver"]) },
+            StatusRequest::UpdateRoots { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), roots: vec!["ab".into()], phase: RootsPhase::Distributed, secret: Some(RootSecretHex("cd".into())) },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
