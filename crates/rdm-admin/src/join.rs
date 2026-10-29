@@ -415,6 +415,19 @@ impl JoinDoor {
                 // reconciled to its row, and another node's row there is refused by name.
                 let config = match self.atlas.as_ref().and_then(|a| a.record_for_join(&d.node.name, &d.node.node_id)) {
                     None => None,
+                    // The caller's own record deleted: a caller whose record is deleted is deleted, its
+                    // runtime terminated, never re-admitted (node-investigation.md; Q217). Refused by name
+                    // and decided as every refused caller is (Q207), never issued a cert or admitted.
+                    Some(row) if row.node_id == d.node.node_id && row.status == crate::model::NodeStatus::Deleted => {
+                        span.record("outcome", "mismatch");
+                        let m = Mismatch { field: "status", deployed: format!("the row of node {} at {} is deleted", row.node_id, row.name), reported: format!("node {} incarnation {} joining as {}", d.node.node_id, d.node.incarnation.as_str(), d.node.name) };
+                        tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
+                            .in_scope(|| tracing::warn!("a birth whose record is deleted asked to join: deleted, never re-admitted"));
+                        if let Some(atlas) = &self.atlas {
+                            atlas.refused("join", &d.node.node_id, &d.node.incarnation);
+                        }
+                        return rdm_core::reply::join::join_mismatch(m.field.into(), m.deployed, m.reported);
+                    }
                     Some(row) if row.node_id == d.node.node_id => {
                         if let Some(held) = row.app_types.as_ref().filter(|held| held.incarnation == d.node.incarnation) {
                             if held.types != types {
