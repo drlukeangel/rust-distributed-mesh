@@ -222,8 +222,14 @@ fn renewals_of(spans: &crate::common::Spans, node: &str) -> Vec<BTreeMap<String,
 }
 
 /// The join issue of `node`, as its authority spanned it.
+/// The latest cert a join issued `node`: every join of a birth is issued a fresh one (Q87), so a join
+/// its node made again (an answer lost under load) leaves the row holding the later issue.
 fn join_issue(spans: &crate::common::Spans, node: &str) -> BTreeMap<String, String> {
-    named(spans, "rdm.node_admin.cert.create.via-join").into_iter().find(|f| f.get("node").map(String::as_str) == Some(node) && f.get("outcome").map(String::as_str) == Some("issued")).unwrap_or_else(|| panic!("no join issue spanned for {node}"))
+    named(spans, "rdm.node_admin.cert.create.via-join")
+        .into_iter()
+        .filter(|f| f.get("node").map(String::as_str) == Some(node) && f.get("outcome").map(String::as_str) == Some("issued"))
+        .max_by_key(|f| f.get("issued_at_rafka_ms").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0))
+        .unwrap_or_else(|| panic!("no join issue spanned for {node}"))
 }
 
 /// Poll `f` until it answers, within `bound`; `what` names the fact on a timeout.

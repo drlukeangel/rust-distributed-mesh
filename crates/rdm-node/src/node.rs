@@ -998,8 +998,13 @@ struct NodeSession {
 #[async_trait::async_trait]
 impl crate::node_self::Session for NodeSession {
     async fn leave_channels(&self) {
-        if let Some(p) = self.publisher.lock().unwrap().take() {
+        // The publisher is ended, not only asked to end: a turn of it already running on another worker
+        // would otherwise publish once more after the leave (node-mesh-leave.md: nothing publishes from
+        // the leave on; #216, rejoin_name under load).
+        let publisher = self.publisher.lock().unwrap().take();
+        if let Some(p) = publisher {
             p.abort();
+            let _ = p.await;
         }
         if let Some(h) = self.pre_node_ready_task.lock().unwrap().take() {
             h.abort();
