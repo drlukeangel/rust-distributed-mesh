@@ -4,6 +4,8 @@ RDM is the generic Mesh product: a fabric of meshes of nodes on one iroh network
 the control plane (topology on iroh-gossip, Node RPC, Builds, deployment providers); an application
 such as rafka-v2 pins this repository and puts its own node kinds on it.
 
+- **Getting started.** [Getting started](getting-started.md) walks from a clean checkout to a
+  running two-mesh estate, one application op, and one Build.
 - **Architecture.** The pages under Architecture and Workflows are the contract: code conforms to
   the page. Start at [Fabric, mesh and node lifecycles](architecture/fabric-mesh-node-lifecycles.md),
   the index of every page and workflow.
