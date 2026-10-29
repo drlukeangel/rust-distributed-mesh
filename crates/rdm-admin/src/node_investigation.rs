@@ -350,6 +350,9 @@ mod tests {
         }
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:25
+    /// "1. The caller holds the birth's launch record: the handle the provider returned when it launched
+    ///     this exact incarnation (`deployment_id`, `provider`, `control_domain`, `locator`)."
     /// CONTRACT (node-runtime-inspect.md step 1: "The caller holds the birth's launch record: the
     /// handle the provider returned when it launched this exact incarnation"; node-recovery.md step 3:
     /// "the exact runtime recorded at launch"): every inspect resolves a birth's runtime one way, a

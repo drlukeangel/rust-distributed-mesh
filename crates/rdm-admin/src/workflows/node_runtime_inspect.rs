@@ -53,13 +53,28 @@ mod tests {
     }
 
     // @feature: node-runtime-inspect
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:5
+    /// "One primitive. `node.runtime.inspect` asks the deployment provider what it knows of a node
+    ///  birth's runtime handle and returns a typed inspection answer. It never mutates the runtime
+    ///  or the fabric."
     /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:26
-    /// "Target: The exact runtime handle recorded at launch: `provider_control_domain + pid + start
-    ///  identity` for a process, `provider_control_domain + container id` for a container. A PID or a
-    ///  container name alone is insufficient and is refused by name
-    ///  Domain: The handle is acted on only inside its control domain; a cross-domain handle is routed
-    ///  to a domain-local execution path or refused by name
-    ///  Result: `running` ... `os-stopped` ... `exited { code }` ... `unavailable { reason }`"
+    /// "Target | The exact birth's runtime handle (`RuntimeFact`: `deployment_id`, `provider`, `locator`)"
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:27
+    /// "Control domain | Runs in the control domain that owns the handle ... If the caller is not in
+    ///  that control domain, the answer is `Unavailable`"
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:28
+    /// "Answers | `Running`, `OsStopped`, `Exited { exit_code: i32 }`, `Unavailable { reason }`"
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:29
+    /// "Proof rule | Only `Exited { exit_code }` with a proven exit code from the provider is death
+    ///  proof. `Unavailable` (no locator, wrong host, provider error) is never death proof."
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:31
+    /// "Side effects | None. Never signals, stops, removes, or mutates the runtime."
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:39
+    /// "2. The caller checks whether it is in the control domain for `RuntimeFact`"
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:43
+    /// "3. The caller queries the provider by the exact handle (`deployment_id` + `locator`)"
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:52
+    /// "4. The provider returns the typed answer: `Running` ... `OsStopped` ... `Exited` ... `Unavailable`"
     #[tokio::test]
     async fn inspect_runtime_requires_exact_locator_in_control_domain_and_maps_provider_answers() {
         let dep_id = rdm_core::fixture_crockford60("dep-inspect-1");
@@ -152,42 +167,66 @@ mod tests {
         }
     }
 
-    /// A provider whose inspect never answers.
-    struct Stalled(StubProvider);
+    /// A provider whose inspect never answers and records when its in-flight inspect is dropped.
+    struct Stalled {
+        inner: StubProvider,
+        dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    struct DropGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for DropGuard {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
 
     #[async_trait::async_trait]
     impl DeploymentProvider for Stalled {
         fn kind(&self) -> ProviderKind {
-            self.0.kind()
+            self.inner.kind()
         }
         fn control_domain(&self) -> String {
-            self.0.control_domain()
+            self.inner.control_domain()
         }
         async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
-            self.0.spawn(spec).await
+            self.inner.spawn(spec).await
         }
         async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
-            self.0.terminate(handle, mode).await
+            self.inner.terminate(handle, mode).await
         }
         async fn inspect(&self, _handle: &DeploymentHandle) -> DeploymentStatus {
+            let _guard = DropGuard(self.dropped.clone());
             std::future::pending().await
         }
         async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
-            self.0.signal_stop(handle).await
+            self.inner.signal_stop(handle).await
         }
         async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
-            self.0.find(spec).await
+            self.inner.find(spec).await
         }
     }
 
     // @feature: node-runtime-inspect
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:13
+    /// "`node.investigation`, step 1: the node's primary inspects the birth's runtime first, under a
+    ///  2 s bound. A proven `Exited { exit_code }` is the verdict and skips the tickles; any other
+    ///  answer (`Running`, `OsStopped`, `Unavailable`, or the 2 s bound expiring) proves nothing of
+    ///  reachability and the tickles follow."
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:30
+    /// "Bound | 2 s from the provider call; an inspect that has not answered at 2 s answers
+    ///  `Unavailable { reason: \"deadline: ...\" }` and the provider ends the subprocess it started;
+    ///  node investigation's tickles follow"
     /// CONTRACT (Q273): node.runtime.inspect answers within its bound over every provider: a provider
     /// that does not answer within [`INSPECT_BOUND`] is `unavailable` with the reason deadline, never
     /// a proof of exit. Must NOT happen: an investigation waiting on its provider without end.
     #[tokio::test(start_paused = true)]
     async fn an_inspect_its_provider_does_not_answer_is_unavailable_at_its_bound() {
         use crate::deployment::provider::INSPECT_BOUND;
-        let p = Stalled(StubProvider { domain: "process:boot-a:ns-1".into(), status: DeploymentStatus::Running, terminated: Mutex::default() });
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let p = Stalled {
+            inner: StubProvider { domain: "process:boot-a:ns-1".into(), status: DeploymentStatus::Running, terminated: Mutex::default() },
+            dropped: dropped.clone(),
+        };
         let fact = RuntimeFact {
             deployment_id: rdm_core::fixture_crockford60("dep-inspect-2"),
             provider: RuntimeProvider::Process,
@@ -198,5 +237,48 @@ mod tests {
         let got = inspect_runtime(&p, &fact, None, rdm_core::IncarnationId::mint().as_str()).await;
         assert!(matches!(&got, Inspected::Unavailable(why) if why.starts_with("deadline")), "{got:?}");
         assert_eq!(started.elapsed(), INSPECT_BOUND, "it answers at its bound");
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst), "the timed-out inspect future (and any kill_on_drop subprocess it started) is dropped at the bound");
+
+        let tickles_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct Calls(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        #[async_trait::async_trait]
+        impl crate::offline::TickleCalls for Calls {
+            fn caller(&self) -> String {
+                "mesh1.admin.1".into()
+            }
+            fn deadline(&self) -> std::time::Duration {
+                std::time::Duration::from_secs(1)
+            }
+            async fn direct(&self, _node: &crate::model::Node, _probe: &rdm_core::status::StatusRequest) -> crate::offline::ProbeEnd {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+                crate::offline::ProbeEnd::Other { end: "NotSent", detail: "not sent: Deadline".into() }
+            }
+            async fn via_peer(&self, _carrier: &crate::model::Node, _node: &crate::model::Node, _probe: &rdm_core::status::StatusRequest) -> crate::offline::ProbeEnd {
+                crate::offline::ProbeEnd::Other { end: "NotSent", detail: "not sent: Deadline".into() }
+            }
+            fn carriers(&self, _view: &crate::topology::Topology, _node: &crate::model::Node) -> Vec<crate::model::Node> {
+                Vec::new()
+            }
+            async fn leads(&self, _view: &crate::topology::Topology, _node: &crate::model::Node) -> Result<Vec<crate::model::Node>, String> {
+                Ok(Vec::new())
+            }
+        }
+        let mut node = crate::model::Node::allocated("mesh1.rpc.1".parse().unwrap());
+        node.node_id = crate::model::NodeId::mint();
+        node.incarnation_id = Some(crate::model::IncarnationId::mint());
+        let view = crate::topology::Topology {
+            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![node.clone()],
+        };
+        let finding = crate::node_investigation::investigate(
+            &node,
+            &view,
+            &Calls(tickles_ran.clone()),
+            async { crate::node_investigation::Finding::from(got.clone()) },
+        )
+        .await;
+        assert!(tickles_ran.load(std::sync::atomic::Ordering::SeqCst), "node investigation's tickles follow when the 2 s bound expires");
+        assert!(matches!(finding, crate::node_investigation::Finding::Unproven { reason } if reason.starts_with("deadline")));
     }
 }

@@ -789,6 +789,12 @@ fn status_of(state: &str) -> DeploymentStatus {
 #[cfg(test)]
 mod tests {
 
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:47
+    /// "For `container`: `docker inspect <container_name>` verifying the container's
+    ///  `rdm.deployment_id` label matches `deployment_id`, reading `.State.Status` and
+    ///  `.State.ExitCode`."
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:52
+    /// "4. The provider returns the typed answer: `Running` ... `OsStopped` ... `Exited` ... `Unavailable`"
     /// CONTRACT (deployment-provider.md §2.7): the daemon's states map conservatively onto the four
     /// provider states: `running`, `restarting` and `created` are `Running` (nonterminal, not
     /// suspended, nothing more claimed); `paused` is `OsStopped`, never `Running`; `exited` and `dead`

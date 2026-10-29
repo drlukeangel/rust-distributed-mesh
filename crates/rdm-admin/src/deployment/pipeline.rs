@@ -2973,6 +2973,16 @@ mod tests {
     /// RemoveTopologyMembership, Complete: one terminate of the exact runtime, whose `Exited` is the
     /// proof. Must NOT happen: a `stop-node` or `node.connections.delete` sent to the suspended birth, a
     /// StopNode or AwaitNodeLeft receipt.
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:14
+    /// "`node.delete`, step 2: before sending `node.stop`, the executor inspects the birth's runtime.
+    ///  On `Exited { exit_code }` or `OsStopped`, it skips `node.stop` (a dead or frozen process
+    ///  cannot run a graceful stop) and proceeds to `TerminateRuntime`, which still runs so the
+    ///  provider cleans up any container, child entry, or handle."
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:17
+    /// "Explicit delete (`nodes.delete`, `meshes.delete`, `fabric.delete`): if the target is
+    ///  reachable, `node.delete` skips inspection and runs `node.stop` then `TerminateRuntime`. If
+    ///  the target is unreachable, `node.delete` runs `node.investigation`: `node.runtime.inspect`
+    ///  first (2 s bound), then the tickles if not `Exited`, then `TerminateRuntime`."
     // @feature: node-lifecycle
     #[tokio::test]
     async fn an_explicit_delete_of_an_os_stopped_birth_sends_no_stop_and_terminates_its_exact_runtime() {
@@ -3002,6 +3012,12 @@ mod tests {
         assert_eq!(steps, ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"].map(String::from).to_vec(), "the delete begins at TerminateRuntime");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:14
+    /// "On `Exited { exit_code }` or `OsStopped`, it skips `node.stop` ... and proceeds to
+    ///  `TerminateRuntime`"
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:17
+    /// "Explicit delete (`nodes.delete`, `meshes.delete`, `fabric.delete`) ... proceeds to
+    ///  `TerminateRuntime`"
     /// CONTRACT (deployment-provider.md §2.5: "An explicit `node.delete` of an OS-stopped birth stays
     /// available: it skips the Node RPC stop by name ..., runs `TerminateRuntime` on the exact handle as
     /// `terminate(Immediate)` (no graceful wait; nothing of the runtime is resumed) and continues";
@@ -3036,6 +3052,16 @@ mod tests {
         assert_eq!(steps, ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"].map(String::from).to_vec());
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:14
+    /// "`node.delete`, step 2: before sending `node.stop`, the executor inspects the birth's runtime.
+    ///  On `Exited { exit_code }` or `OsStopped`, it skips `node.stop` (a dead or frozen process
+    ///  cannot run a graceful stop) and proceeds to `TerminateRuntime`, which still runs so the
+    ///  provider cleans up any container, child entry, or handle."
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:18
+    /// "Recovery delete (`node.recovery` step 4): `node.investigation` has already run in step 1
+    ///  (`node.runtime.inspect` first, then the tickles when not `Exited`). If `node.runtime.inspect`
+    ///  proved `Exited { exit_code }` or `OsStopped`, `node.delete` skips `node.stop` and proceeds
+    ///  directly to `TerminateRuntime`."
     /// CONTRACT (node-recovery.md step 3; deployment-provider.md §2.7 "Signal stop and terminate"): a
     /// recovery's delete of a birth whose runtime already exited sends it nothing and still asks its
     /// provider to `terminate` it once, which removes what the runtime left (a container); the receipt
@@ -3061,6 +3087,14 @@ mod tests {
         assert_eq!(provider.terminated.load(std::sync::atomic::Ordering::SeqCst), 1, "the provider is asked once to terminate the exited runtime, which removes what it left");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:26
+    /// "Target | The exact birth's runtime handle (`RuntimeFact`: `deployment_id`, `provider`, `locator`)"
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:32
+    /// "Spans | `rdm.node_admin.node.resolve.via-provider-inspection` (`node`, `node_id`,
+    ///  `incarnation_id`, `inspector`, `handle`, `verdict`, `exit_code`, `reason`)"
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:104
+    /// "`rdm.node_admin.node.resolve.via-provider-inspection` (`node`, `node_id`, `incarnation_id`,
+    ///  `inspector`, `handle`, `verdict`, `exit_code`, `reason`)"
     /// CONTRACT (node-runtime-inspect.md Observability contract: the inspect span carries "node,
     /// node_id, incarnation_id, inspector, handle, verdict, exit_code, exited_verdict, reason"; Target:
     /// "The exact runtime handle recorded at launch"): the inspection's span names the exact handle

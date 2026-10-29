@@ -61,14 +61,40 @@ fn allocated_birth(name: &str) -> Node {
 }
 
 // @feature: node-runtime-inspect
+/// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:5
+/// "One primitive. `node.runtime.inspect` asks the deployment provider what it knows of a node
+///  birth's runtime handle and returns a typed inspection answer. It never mutates the runtime or
+///  the fabric."
+/// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:25
+/// "Caller | The node's primary (`node.investigation`) or the `node.delete` executor"
 /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:28
-/// "Result: `running`: the exact runtime is alive, however silent the node. `os-stopped`: the
-///  operating system holds the exact runtime suspended, so no `node.stop` completed. `exited { code }`:
-///  the provider's terminal status for that exact handle.
-///  Not a result: A RuntimeFact's presence says neither running nor gone; a provider that cannot
-///  answer for the domain answers `unavailable { reason }`, which is investigation's `unproven`
-///  Spans: `rdm.node_admin.node.resolve.via-provider-inspection` with node, node_id, incarnation,
-///  the handle, `verdict` (`running` / `os-stopped` / `exited` / `unavailable`), `exit_code` and the reason"
+/// "Answers | `Running`, `OsStopped`, `Exited { exit_code: i32 }`, `Unavailable { reason }`"
+/// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:29
+/// "Proof rule | Only `Exited { exit_code }` with a proven exit code from the provider is death
+///  proof. `Unavailable` (no locator, wrong host, provider error) is never death proof."
+/// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:32
+/// "Spans | `rdm.node_admin.node.resolve.via-provider-inspection` (`node`, `node_id`,
+///  `incarnation_id`, `inspector`, `handle`, `verdict`, `exit_code`, `reason`)"
+/// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:33
+/// "Failure / receipts | `Unavailable { reason }` is returned as a typed answer, never an unhandled
+///  error; callers treat `Unavailable` as \"not proven exited\"."
+/// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:37
+/// "1. The caller reads the birth's `RuntimeFact` from the node's record (or held digest). If no
+///  `RuntimeFact` is recorded, return `Unavailable { reason: \"no-runtime-fact\" }`."
+/// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:39
+/// "2. The caller checks whether it is in the control domain for `RuntimeFact`"
+/// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:52
+/// "4. The provider returns the typed answer: `Running` ... `OsStopped` ... `Exited` ... `Unavailable`"
+/// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:96
+/// "An inspection that cannot reach the provider or cannot verify `deployment_id` returns
+///  `Unavailable { reason }` and emits `rdm.node_admin.node.resolve.via-provider-inspection` with
+///  `verdict = \"unavailable\"` and `reason`. It never guesses `Exited` from absence alone unless the
+///  provider recorded or proved the exit."
+/// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:104
+/// "`rdm.node_admin.node.resolve.via-provider-inspection` (`node`, `node_id`, `incarnation_id`,
+///  `inspector`, `handle`, `verdict`, `exit_code`, `reason`) — `verdict` is `\"running\"`,
+///  `\"os-stopped\"`, `\"exited\"`, or `\"unavailable\"`; `exit_code` is recorded when
+///  `verdict == \"exited\"`; `reason` when `verdict == \"unavailable\"`."
 #[test]
 fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_across_domains() {
     let capture = Capture::new("node-runtime-inspect-functional");
@@ -194,13 +220,27 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
             handle3.as_ref(),
             "node-runtime-inspect",
         );
+
+        // 4. No RuntimeFact recorded -> Unavailable with no handle.
+        let unrecorded_node = allocated_birth("mesh1.rpc.4");
+        let (out4, handle4) =
+            inspect_birth_with_handle(&provider, &digest_view, Some(&store), &unrecorded_node).await;
+        assert!(matches!(&out4, Inspected::Unavailable(r) if r.contains("no runtime fact")), "{out4:?}");
+        assert!(handle4.is_none());
+        span_inspection(
+            "mesh1.admin.1",
+            &unrecorded_node,
+            &out4,
+            handle4.as_ref(),
+            "node-runtime-inspect",
+        );
     });
 
     drop(rt);
     let _ = std::fs::remove_dir_all(&dir);
 
     let spans = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
-    assert_eq!(spans.len(), 3);
+    assert_eq!(spans.len(), 4);
 
     let verdicts: Vec<(&str, &str, &str)> = spans
         .iter()
@@ -227,13 +267,28 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
             ("mesh1.rpc.1", "running", ""),
             ("mesh1.rpc.2", "exited", "4"),
             ("mesh1.rpc.3", "unavailable", ""),
+            ("mesh1.rpc.4", "unavailable", ""),
         ]
     );
+    for (idx, s) in spans.iter().enumerate() {
+        assert_eq!(s.attributes.get("inspector").map(String::as_str), Some("mesh1.admin.1"), "span {idx} records inspector");
+        assert!(s.attributes.get("node_id").is_some_and(|v| !v.is_empty()), "span {idx} records node_id");
+        assert!(s.attributes.get("incarnation_id").is_some_and(|v| !v.is_empty()), "span {idx} records incarnation_id");
+    }
+    assert!(spans[0].attributes.get("handle").is_some_and(|h| h.contains(&rdm_core::fixture_crockford60("dep-running-1"))), "running span records handle");
+    assert!(spans[1].attributes.get("handle").is_some_and(|h| h.contains(&rdm_core::fixture_crockford60("dep-exited-2"))), "exited span records handle");
     assert!(
         spans[2]
             .attributes
             .get("reason")
             .is_some_and(|r| r.contains("control domain")),
         "unavailable span must record the foreign control domain reason"
+    );
+    assert!(
+        spans[3]
+            .attributes
+            .get("reason")
+            .is_some_and(|r| r.contains("no runtime fact")),
+        "unavailable span must record the missing runtime fact reason"
     );
 }

@@ -731,6 +731,12 @@ mod tests {
         assert_eq!(start_token_group(path, Ok(stat_line(7, "node", 'S', 2)), 1), Some(Group::Gone), "another process at the pid");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:45
+    /// "For `process`: inspect `/proc/<pid>/stat` and `/proc/<pid>/environ` (verifying
+    ///  `RDM_DEPLOYMENT_ID=<deployment_id>` so a recycled PID is never mistaken for the birth) and,
+    ///  if the child belongs to this admin, `waitpid(pid, WNOHANG)`."
+    /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:52
+    /// "4. The provider returns the typed answer: `Running` ... `OsStopped` ... `Exited` ... `Unavailable`"
     /// CONTRACT (deployment-provider.md §2.6, PRD i144 R3): read over a process filesystem, a pid
     /// whose `/proc/<pid>` is gone, or whose start token names another process, is `Gone` (the exact
     /// runtime exited); task files present but unreadable or partial are `Unreadable`, naming the file
