@@ -694,6 +694,12 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_r
         .collect();
     let projection = crate::build_log::projection(&facts, &build).expect("the Build's acceptance");
     let reported = projection.reported.clone();
+    // The decision ends once its terminate report is answered: owed while an attempt holds the mesh
+    // (the recovery that re-created the birth), so it is waited for, never cut by the estate's stop.
+    wait_for("the resumed birth is decided and reported", crate::node_recovery_due() * 2, || async {
+        spans_named(&estate.spans(), "rdm.node_admin.node.update.via-refused-caller").into_iter().find(|sp| attr(sp, "node_id") == node_id && attr(sp, "outcome") == "terminate-reported").map(|_| ())
+    })
+    .await;
 
     estate.stop().await;
     let spans = estate.spans();

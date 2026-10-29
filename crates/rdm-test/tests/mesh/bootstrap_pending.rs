@@ -311,6 +311,12 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     // The successor primary reports its checklist; on that report the fabric-primary clears degraded: the
     // fabric is ready again before the estate stops.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
+    // The hand-off is the launching admin's call to the birth it created, answered on its own clock: the
+    // fabric can be ready before that answer, so the estate stops only once the hand-off is made.
+    rdm_test::estate::wait_for("the successor is handed the mesh's held state", Duration::from_secs(60), || async {
+        named(&estate.spans(), "rdm.node_admin.mesh.update.via-state-handoff").into_iter().chain(named(&estate.spans(), "rdm.node_admin.mesh.update.via-pending-handoff")).find(|sp| sp["attributes"]["mesh"] == lost.as_str() && start(sp) >= fault_ns).map(|_| ())
+    })
+    .await;
     estate.stop().await;
     let spans = estate.spans();
 
