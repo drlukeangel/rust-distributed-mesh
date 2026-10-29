@@ -308,6 +308,34 @@ fn a_join_writes_the_births_cert_row_and_node_get_shows_it() {
 }
 
 // @feature: node-lifecycle
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:5
+/// "A primitive. `node.cert.renew` installs a fresh member cert on a running node before the one it holds expires. It is run by the birth's issuer on its own tick, never by the node: the node holds no key and asks for nothing. It is a single call, not a Build. From the install the node presents the new cert on every connection it opens; nothing is terminated, nothing reconnects, no status changes and no gossip frame is published. A renewal is invisible to every other node."
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:15
+/// "| Caller | The birth's issuer: its mesh-primary for a member, the fabric-primary for a mesh-primary; the fabric-primary renews its own cert in-process with its mesh's issuing key, with no call (`via-renewal`, outcome `installed`) |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:17
+/// "| When | Once the held cert has lived `RDM_CERT_RENEW_AT` (default two thirds) of its TTL, plus a jitter of up to 5 % of the TTL, read from the birth's cert row ([tracking](../fabric-certs.md#tracking)) |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:18
+/// "| Request | `RenewCert { node_id, incarnation, cert }` on [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm); the cert is signed with the mesh's current issuing key, its expiry cut to the issuer's when the issuer expires first (`MemberOutlivesIssuer`) |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:19
+/// "| Reply | `CertRenewed { node_id, incarnation, expires_at }`, the receipt: the node holds and presents the new cert. A node that cannot decode the cert answers a named refusal and keeps the one it holds |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:21
+/// "| Overlap | The old cert stays valid until its own expiry; a dial in flight during the install is admitted on either |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:23
+/// "| Spans | `rdm.node_admin.cert.update.via-renewal` (node, node_id, incarnation_id, issued_at, expires_at, previous_expires_at, outcome: `installed` / `not-sent` / `refused`) on the issuer; `rdm.node.cert.update.via-installed` on the node |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:27
+/// "1. The issuer's tick reads its cert rows; a row whose `renew_at` has passed names a birth to renew."
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:28
+/// "2. It signs a fresh member cert for that exact birth with the mesh's current issuing key, on rafka-time."
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:29
+/// "3. It sends `RenewCert` to the birth's held address. `NotSent` or `Indeterminate` is spanned and retried on the next tick, until the old cert expires; nothing else happens."
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:31
+/// "4. The node checks the cert names its own `(node.id, incarnation)`, installs it, and answers `CertRenewed`. Every connection it opens from now presents the new cert."
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:33
+/// "5. The node's mesh-primary writes the expiry the node answered on the node's record. The old cert expires on its own."
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:38
+/// "node.cert.renew { node_id, incarnation, cert } ← node.cert.renewed { node_id, incarnation, expires_at }"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:70
+/// "Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans). The cell: a member whose TTL is set to seconds in the test kit dials past its first expiry and is admitted, with both spans and the admission fact."
 /// CONTRACT (node-cert-renew.md, When and the Observability cell: "a member whose TTL is set to seconds
 /// in the test kit dials past its first expiry and is admitted, with both spans and the admission
 /// fact"): under a 12 s member TTL the mesh-primary renews a member at its row's point, spanned
@@ -348,6 +376,12 @@ fn a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admi
 }
 
 // @feature: node-lifecycle
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:5
+/// "A primitive. `node.cert.renew` installs a fresh member cert on a running node before the one it holds expires. It is run by the birth's issuer on its own tick, never by the node: the node holds no key and asks for nothing. It is a single call, not a Build. From the install the node presents the new cert on every connection it opens; nothing is terminated, nothing reconnects, no status changes and no gossip frame is published. A renewal is invisible to every other node."
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:21
+/// "| Overlap | The old cert stays valid until its own expiry; a dial in flight during the install is admitted on either |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:22
+/// "| Never | A connection closed, a status set, a frame published, a node marked. A node past its TTL whose renewal has not reached it is refused on its next new dial by name ([node.connections.admit](node-connections-admit.md)) and its existing connections stay |"
 /// CONTRACT, the control (node-cert-renew.md: "nothing is terminated, nothing reconnects, no status
 /// changes and no gossip frame is published. A renewal is invisible to every other node"): a member
 /// holding an open Direct connection is renewed. The connection is the same one after the install
@@ -452,6 +486,16 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
 }
 
 // @feature: node-lifecycle
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:20
+/// "| Row | On `CertRenewed` the node's mesh-primary writes the birth's cert dates (`issued_at`, `expires_at`, `renew_at`) on the node's record and writes the record whole: the written expiry is the receipt. A mesh-primary's own cert, issued by the fabric-primary, it writes on its own record when it installs it. A renewal not answered writes nothing, and the row's `renew_at`, already passed, renews it on the next tick |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:22
+/// "| Never | A connection closed, a status set, a frame published, a node marked. A node past its TTL whose renewal has not reached it is refused on its next new dial by name ([node.connections.admit](node-connections-admit.md)) and its existing connections stay |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:23
+/// "| Spans | `rdm.node_admin.cert.update.via-renewal` (node, node_id, incarnation_id, issued_at, expires_at, previous_expires_at, outcome: `installed` / `not-sent` / `refused`) on the issuer; `rdm.node.cert.update.via-installed` on the node |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:29
+/// "3. It sends `RenewCert` to the birth's held address. `NotSent` or `Indeterminate` is spanned and retried on the next tick, until the old cert expires; nothing else happens."
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:62
+/// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that does not reach the node is retried every tick and marks the node nothing: reachability is [node recovery](node-recovery.md)'s business, not this primitive's. A successor primary folds the cert rows and continues the schedule from them."
 /// CONTRACT (node-cert-renew.md step 3 and Failure: "`NotSent` or `Indeterminate` is spanned and
 /// retried on the next tick, until the old cert expires; nothing else happens ... A renewal that does
 /// not reach the node is retried every tick and marks the node nothing"): while the mesh-primary's
@@ -496,6 +540,10 @@ fn a_renewal_that_is_not_sent_is_retried_each_tick_and_marks_nothing() {
 }
 
 // @feature: node-lifecycle
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:16
+/// "| Target | One node, by exact `(node.id, incarnation)`; a cert naming another birth is refused by name |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:19
+/// "| Reply | `CertRenewed { node_id, incarnation, expires_at }`, the receipt: the node holds and presents the new cert. A node that cannot decode the cert answers a named refusal and keeps the one it holds |"
 /// CONTRACT (node-cert-renew.md Target: "a cert naming another birth is refused by name"; Reply: "A node
 /// that cannot decode the cert answers a named refusal and keeps the one it holds"): `RenewCert` to a
 /// member's exact birth carrying another birth's cert is answered `rejected-cert` naming both births,
@@ -556,6 +604,8 @@ fn attr_num(sp: &serde_json::Value, k: &str) -> u64 {
 }
 
 // @feature: node-lifecycle
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:62
+/// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that does not reach the node is retried every tick and marks the node nothing: reachability is [node recovery](node-recovery.md)'s business, not this primitive's. A successor primary folds the cert rows and continues the schedule from them."
 /// CONTRACT (node-cert-renew.md Failure: "A successor authority folds the cert rows and continues the
 /// schedule from them"; fabric-certs.md §Tracking: "nothing about renewal lives only in memory";
 /// node-stop.md Seat holder: "A target holding a seat has it moved first by node.primary.update ...
@@ -664,6 +714,8 @@ async fn wait_for_renewal(estate: &rdm_test::estate::Estate, moved_at_ns: u64, w
 /// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A launched admin that was started with the material in its environment (`RDM_ISSUING_KEY`, `RDM_ISSUING_CERT`) needs no call until the next renewal."
 /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:52
 /// "Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans)."
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:42
+/// "The same primitive carries a re-minted issuing cert's members: after [mesh.issuer.renew](mesh-issuer-renew.md), members renewed from then on carry the new issuer, and members not yet due keep the old one until their own turn."
 /// CONTRACT (mesh-issuer-renew.md; node-issuer-update.md; node-cert-renew.md "members renewed from then
 /// on carry the new issuer, and members not yet due keep the old one until their own turn";
 /// fabric-certs.md §chain): under a 48 s issuing TTL the fabric-primary re-mints mesh1's issuer at its
@@ -832,6 +884,12 @@ async fn estate_span(estate: &rdm_test::estate::Estate, name: &str, what: &str, 
 }
 
 // @feature: node-lifecycle
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:15
+/// "| Caller | The birth's issuer: its mesh-primary for a member, the fabric-primary for a mesh-primary; the fabric-primary renews its own cert in-process with its mesh's issuing key, with no call (`via-renewal`, outcome `installed`) |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:20
+/// "| Row | On `CertRenewed` the node's mesh-primary writes the birth's cert dates (`issued_at`, `expires_at`, `renew_at`) on the node's record and writes the record whole: the written expiry is the receipt. A mesh-primary's own cert, issued by the fabric-primary, it writes on its own record when it installs it. A renewal not answered writes nothing, and the row's `renew_at`, already passed, renews it on the next tick |"
+/// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:33
+/// "5. The node's mesh-primary writes the expiry the node answered on the node's record. The old cert expires on its own."
 /// CONTRACT (node-cert-renew.md Caller: "its mesh-primary for a member, the fabric-primary for a
 /// mesh-primary"; Row: "A mesh-primary's own cert, issued by the fabric-primary, it writes on its own
 /// record when it installs it"; Q141, Q241: the row holds the cert's own dates, never a clock's): under

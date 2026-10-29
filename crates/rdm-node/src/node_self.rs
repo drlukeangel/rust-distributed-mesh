@@ -1673,11 +1673,20 @@ mod tests {
     use rdm_transport::{BirthCancel, LiveNodeResolver, ServerBuilder, ServedBirth};
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:47
-    /// "4. Reply: the node verifies the cert decodes and names its own `(node_id, incarnation)`,
-    /// installs it on its connections registry, and replies `CertRenewed { node_id, incarnation,
-    /// expires_at }`. A cert that does not decode or names another birth is refused `RejectedCert`
-    /// and the held cert is kept."
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:5
+    /// "A primitive. `node.cert.renew` installs a fresh member cert on a running node before the one it holds expires. It is run by the birth's issuer on its own tick, never by the node: the node holds no key and asks for nothing. It is a single call, not a Build. From the install the node presents the new cert on every connection it opens; nothing is terminated, nothing reconnects, no status changes and no gossip frame is published. A renewal is invisible to every other node."
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:16
+    /// "| Target | One node, by exact `(node.id, incarnation)`; a cert naming another birth is refused by name |"
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:18
+    /// "| Request | `RenewCert { node_id, incarnation, cert }` on [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm); the cert is signed with the mesh's current issuing key, its expiry cut to the issuer's when the issuer expires first (`MemberOutlivesIssuer`) |"
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:19
+    /// "| Reply | `CertRenewed { node_id, incarnation, expires_at }`, the receipt: the node holds and presents the new cert. A node that cannot decode the cert answers a named refusal and keeps the one it holds |"
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:23
+    /// "| Spans | `rdm.node_admin.cert.update.via-renewal` (node, node_id, incarnation_id, issued_at, expires_at, previous_expires_at, outcome: `installed` / `not-sent` / `refused`) on the issuer; `rdm.node.cert.update.via-installed` on the node |"
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:31
+    /// "4. The node checks the cert names its own `(node.id, incarnation)`, installs it, and answers `CertRenewed`. Every connection it opens from now presents the new cert."
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:38
+    /// "node.cert.renew { node_id, incarnation, cert } ← node.cert.renewed { node_id, incarnation, expires_at }"
     #[test]
     fn renew_cert_installs_matching_birth_cert_and_refuses_corrupt_or_mismatched_certs() {
         let dir = std::env::temp_dir().join(format!("node-self-renew-cert-{}", NodeId::mint()));

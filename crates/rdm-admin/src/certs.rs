@@ -718,6 +718,8 @@ mod tests {
         assert!(refused.contains("no cert choice") && refused.contains("NoCerts"), "{refused}");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:18
+    /// "| Request | `RenewCert { node_id, incarnation, cert }` on [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm); the cert is signed with the mesh's current issuing key, its expiry cut to the issuer's when the issuer expires first (`MemberOutlivesIssuer`) |"
     /// CONTRACT (node-cert-renew.md "Request": "its expiry cut to the issuer's when the issuer expires
     /// first (`MemberOutlivesIssuer`)"): a member cert issued near its issuer's expiry is cut to it.
     #[test]
@@ -846,6 +848,10 @@ mod tests {
     // @feature: node-lifecycle
     /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:30
     /// "3. Each admin signs member certs with the new key from its install. [node.cert.renew](node-cert-renew.md) runs on its own schedule; a member whose cert would outlive the old issuer is renewed early, cut to the issuer's expiry (`MemberOutlivesIssuer`), which is what forces this workflow to run first."
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:17
+    /// "| When | Once the held cert has lived `RDM_CERT_RENEW_AT` (default two thirds) of its TTL, plus a jitter of up to 5 % of the TTL, read from the birth's cert row ([tracking](../fabric-certs.md#tracking)) |"
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:18
+    /// "| Request | `RenewCert { node_id, incarnation, cert }` on [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm); the cert is signed with the mesh's current issuing key, its expiry cut to the issuer's when the issuer expires first (`MemberOutlivesIssuer`) |"
     /// CONTRACT (fabric-certs.md §Tracking: "A member cert never outlives its issuer ... whatever the
     /// policy says"; node-cert-renew.md Request: "its expiry cut to the issuer's when the issuer expires
     /// first"; mesh-issuer-renew.md step 3): an admin under a 12 s member TTL issues a member cert that

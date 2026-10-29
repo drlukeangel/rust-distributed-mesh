@@ -767,6 +767,12 @@ mod tests {
     }
 
     // @feature: node-lifecycle
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:20
+    /// "| Row | On `CertRenewed` the node's mesh-primary writes the birth's cert dates (`issued_at`, `expires_at`, `renew_at`) on the node's record and writes the record whole: the written expiry is the receipt. A mesh-primary's own cert, issued by the fabric-primary, it writes on its own record when it installs it. A renewal not answered writes nothing, and the row's `renew_at`, already passed, renews it on the next tick |"
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:28
+    /// "2. It signs a fresh member cert for that exact birth with the mesh's current issuing key, on rafka-time."
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:33
+    /// "5. The node's mesh-primary writes the expiry the node answered on the node's record. The old cert expires on its own."
     /// CONTRACT (node-cert-renew.md Row: "A mesh-primary's own cert, issued by the fabric-primary, it
     /// writes on its own record when it installs it"; Q141: on `CertRenewed` the row holds "that cert's
     /// `issued_at`, `expires_at` and `renew_at`"): the fabric-primary renews mesh2's primary, whose
@@ -825,6 +831,8 @@ mod tests {
     }
 
     // @feature: node-lifecycle
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:62
+    /// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that does not reach the node is retried every tick and marks the node nothing: reachability is [node recovery](node-recovery.md)'s business, not this primitive's. A successor primary folds the cert rows and continues the schedule from them."
     /// CONTRACT (fabric-certs.md §Tracking: "A successor mesh-primary reads its nodes' records and
     /// continues the schedule from them"; Q241: renew_at is derived from the cert's dates and the
     /// fabric's policy alone, so the issuer, the installer and any successor compute one value): the
@@ -845,6 +853,8 @@ mod tests {
     }
 
     // @feature: node-lifecycle
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:29
+    /// "3. It sends `RenewCert` to the birth's held address. `NotSent` or `Indeterminate` is spanned and retried on the next tick, until the old cert expires; nothing else happens."
     /// CONTRACT (node-cert-renew.md step 3: an unanswered renewal is retried on the next tick; Q241:
     /// the dates are the cert's own): one issue reaches mesh2's primary twice, the second delivery
     /// later on its clock. Both installs write the issue's dates; the second moves nothing.
@@ -929,6 +939,16 @@ mod tests {
     }
 
     // @feature: node-lifecycle
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:15
+    /// "| Caller | The birth's issuer: its mesh-primary for a member, the fabric-primary for a mesh-primary; the fabric-primary renews its own cert in-process with its mesh's issuing key, with no call (`via-renewal`, outcome `installed`) |"
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:20
+    /// "| Row | On `CertRenewed` the node's mesh-primary writes the birth's cert dates (`issued_at`, `expires_at`, `renew_at`) on the node's record and writes the record whole: the written expiry is the receipt. A mesh-primary's own cert, issued by the fabric-primary, it writes on its own record when it installs it. A renewal not answered writes nothing, and the row's `renew_at`, already passed, renews it on the next tick |"
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:27
+    /// "1. The issuer's tick reads its cert rows; a row whose `renew_at` has passed names a birth to renew."
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:28
+    /// "2. It signs a fresh member cert for that exact birth with the mesh's current issuing key, on rafka-time."
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:33
+    /// "5. The node's mesh-primary writes the expiry the node answered on the node's record. The old cert expires on its own."
     /// CONTRACT (node-cert-renew.md Row, Q141: "the written expiry is the receipt. A renewal not answered
     /// writes nothing, and the row's `renew_at`, already passed, renews it on the next tick";
     /// storage-by-object.md: "An issuer that answered the node but was lost before it wrote is the same
