@@ -255,12 +255,12 @@ fn transport_header_wire_is_atomic_fails_a_moved_golden_or_a_moved_bound() {
 }
 
 #[test]
-fn one_new_liveness_primitive_fails_a_served_echo_or_an_unretired_echo_row() {
+fn one_new_liveness_primitive_fails_a_served_echo_or_an_unreserved_echo_row() {
     let t = Planted::of_tree();
     t.write("crates/rdm-test/src/planted.rs", "fn serve(b: ServerBuilder) -> ServerBuilder { b.serve::<Echo, _, _>(OpOwner::Core, echo) }\n");
     only(check(t.root()), Ratchet::OneNewLivenessPrimitive);
     let r = Planted::of_tree();
-    r.edit("crates/rdm-core/src/catalog.rs", "family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Retired", "family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Live");
+    r.edit("crates/rdm-core/src/catalog.rs", "family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Reserved", "family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Live");
     only(check(r.root()), Ratchet::OneNewLivenessPrimitive);
 }
 

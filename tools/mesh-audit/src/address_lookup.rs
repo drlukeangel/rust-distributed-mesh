@@ -17,7 +17,7 @@
 //!    extraction input, not i143 topology or reachability);
 //! 3. the only ALPNs of non-test code are `rafka-node-rpc/1` and `iroh-gossip`: any other ALPN
 //!    constant or `Router::accept` registration is refused. `ENTRY_ALPN` is allowed by name,
-//!    for the reason "R-J1 retires it", while no op `0x1D` exists in the Node RPC contract; once
+//!    for the reason "R-J1 deletes it", while no op `0x1D` exists in the Node RPC contract; once
 //!    one does, `ENTRY_ALPN` itself is the violation.
 
 use std::fmt;
@@ -326,7 +326,7 @@ fn wiring_accepts(text: &str) -> std::collections::BTreeSet<(usize, String)> {
 /// Rule 3 over one file. `entry_allowed`: `ENTRY_ALPN` is still live (R-J1 has not landed).
 fn alpn_rule(rel: &str, text: &str, entry_allowed: bool, out: &mut Vec<Violation>) {
     let wiring_sites = wiring_accepts(non_test(text));
-    let entry_why = "R-J1 retires it: op 0x1D exists, so ENTRY_ALPN is deleted";
+    let entry_why = "R-J1 deletes it: op 0x1D exists, so ENTRY_ALPN is deleted";
     for (i, line) in non_test(text).lines().enumerate() {
         let c = code(line);
         let mut flag = |token: &str, why: &str| out.push(Violation::Alpn { file: rel.to_string(), line: i + 1, token: token.to_string(), why: why.to_string() });

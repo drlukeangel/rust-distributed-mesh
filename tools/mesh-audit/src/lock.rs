@@ -5,7 +5,7 @@
 //! ratchet whose subject is missing says so by name rather than passing vacuously.
 //!
 //! Behavioral rules (a stop attempted before termination, a carried call keeping its
-//! context, node.connections.deleted distinct from refusal, silence never retiring) are proven by their
+//! context, node.connections.deleted distinct from refusal, silence never deleting) are proven by their
 //! cells; the ratchet for such a rule holds the cell in the tree by name and the structural
 //! facts the cell relies on, so deleting or renaming the proof is itself a violation.
 
@@ -806,11 +806,11 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, NODE_ROWS, &["pub async fn move_row(storage: &dyn NodesStorage,"], ratchet, &mut out);
         }
         Ratchet::OneNewLivenessPrimitive => {
-            // Echo (0x11) is retired forever and peer-tickle (0x19) is a product's transitional
+            // Echo (0x11) is reserved forever and peer-tickle (0x19) is a product's transitional
             // op: nothing in RDM serves or calls either; ping (0x01) is the one liveness primitive.
             let files = files_in(root, RUNTIME_SOURCES);
             scan_tokens(root, &files, &["serve::<Echo", "Echo::OP", "echo::Echo", "<Echo as", "PeerTickle", "peer_tickle::"], ratchet, &mut out);
-            require(root, CATALOG, &["op: 0x11, family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Retired"], ratchet, &mut out);
+            require(root, CATALOG, &["op: 0x11, family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Reserved"], ratchet, &mut out);
         }
     }
     out
