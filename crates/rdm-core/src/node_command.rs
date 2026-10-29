@@ -55,6 +55,8 @@ pub enum NodeCommandRequest {
     /// birth blocks new application work, lets admitted work finish under its bound, then closes
     /// every open connection (node-connections-delete.md step 3). Its endpoint stays bound and the
     /// call's own stream stays open.
+    ///
+    /// Position 0 on the wire.
     DeleteConnections {
         /// The birth whose connections are cut.
         node_id: NodeId,
@@ -64,6 +66,8 @@ pub enum NodeCommandRequest {
         scope: ConnectionScope,
     },
     /// Stop this exact birth, reporting closure and completion on this stream (Q47).
+    ///
+    /// Position 1 on the wire.
     StopNode {
         /// The commanded node.
         node_id: NodeId,
@@ -77,6 +81,8 @@ pub enum NodeCommandRequest {
         operation: String,
     },
     /// Start this stopped exact birth, reporting join and readiness on this stream (Q47).
+    ///
+    /// Position 2 on the wire.
     StartNode {
         /// The commanded node.
         node_id: NodeId,
@@ -93,6 +99,8 @@ pub enum NodeCommandRequest {
     /// "Changing it", step 4: "Each mesh-primary moves its nodes to the new provider"), carried by its
     /// mesh-primary: answered [`NodeCommandReply::StorageStepped`] once the birth writes `provider`, or
     /// [`NodeCommandReply::RejectedStaleChange`] for a command of a change older than the one it acted on.
+    ///
+    /// Position 3 on the wire.
     StorageStep {
         /// The commanded node.
         node_id: NodeId,
@@ -109,6 +117,8 @@ pub enum NodeCommandRequest {
     /// its mesh (and the backbone, a node-admin) and cuts its Node RPC pool, reporting its
     /// acknowledgement (`CommandAccepted`, leaving) and its completion (`MeshLeft`) on this stream.
     /// Appended: no variant before it moves.
+    ///
+    /// Position 4 on the wire.
     LeaveMesh {
         /// The commanded node.
         node_id: NodeId,
@@ -148,6 +158,8 @@ impl NodeCommandRequest {
 pub enum NodeCommandReply {
     /// The node validated the command and runs it: the stream's first frame. It carries no
     /// lifecycle state.
+    ///
+    /// Position 0 on the wire.
     CommandAccepted {
         /// The birth that accepted it.
         node_id: NodeId,
@@ -156,6 +168,8 @@ pub enum NodeCommandReply {
     },
     /// `All` only: the node's block on new application work is in force; it is connections-deleting
     /// until its completion. The state the mesh-primary records and publishes for the birth.
+    ///
+    /// Position 1 on the wire.
     ConnectionsDeleting {
         /// The birth that entered connections-deleting.
         node_id: NodeId,
@@ -166,6 +180,8 @@ pub enum NodeCommandReply {
     /// its entry id: `closed` were open and are cut, their drops written under the name the birth
     /// holds; `not_open` were named and are unknown or already closed; `held` are the connections
     /// the birth still holds after the cut (none after an `Established` `All`).
+    ///
+    /// Position 2 on the wire.
     ConnectionsDeleted {
         /// The open entries cut.
         closed: Vec<ConnectionId>,
@@ -178,58 +194,84 @@ pub enum NodeCommandReply {
     },
     /// The scope names nothing the birth can cut (an empty list, or more ids than one request
     /// carries); nothing is cut.
+    ///
+    /// Position 3 on the wire.
     RejectedConnectionScope {
         /// Why, by name.
         reason: String,
     },
     /// The command names another birth than the one it reached: the incarnation this one holds.
+    ///
+    /// Position 4 on the wire.
     RejectedStaleIncarnation {
         /// The incarnation the receiver holds.
         held: IncarnationId,
     },
     /// The receiver cannot take the command yet (no connections writer, its server not ready).
+    ///
+    /// Position 5 on the wire.
     NotReady {
         /// Why, by name.
         reason: String,
     },
     /// The receiver could not resolve the peer the call came over.
+    ///
+    /// Position 6 on the wire.
     PeerUnresolved {
         /// Why, by name.
         reason: String,
     },
     /// The receiver is at its admission bound for the op.
+    ///
+    /// Position 7 on the wire.
     Busy {
         /// Why, by name.
         reason: String,
     },
     /// The receiver refuses new non-status calls while connections-deleting. Never sent for this op,
     /// which a connections-deleting node serves (a second `All` reaches it, step 5).
+    ///
+    /// Position 8 on the wire.
     RejectedConnectionsDeleting {
         /// Why, by name.
         reason: String,
     },
     /// The request did not decode or broke the protocol's bounds.
+    ///
+    /// Position 9 on the wire.
     Malformed {
         /// What was malformed.
         kind: MalformedKind,
     },
     /// The caller is not authorized for the op.
+    ///
+    /// Position 10 on the wire.
     Unauthorized {
         /// Why, by name.
         reason: String,
     },
     /// The stop's whole All closure; progress, never the stop's terminal.
+    ///
+    /// Position 11 on the wire.
     StopConnectionsDeleted {
         /// The closure's Established or Deadline evidence.
         receipt: ConnectionsReceipt,
     },
     /// The stop's transport cut is complete; the live process is stopped.
+    ///
+    /// Position 12 on the wire.
     NodeStopped,
     /// The accepted join and channel join completed; start gates remain.
+    ///
+    /// Position 13 on the wire.
     NodeJoined,
     /// Every start gate completed; the receiver records Ready.
+    ///
+    /// Position 14 on the wire.
     NodeStarted,
     /// An accepted command failed at this named step.
+    ///
+    /// Position 15 on the wire.
     Failed {
         /// The step that failed.
         step: String,
@@ -239,17 +281,23 @@ pub enum NodeCommandReply {
         code: crate::outcome::Code,
     },
     /// The lifecycle command is invalid for this living birth's held state.
+    ///
+    /// Position 16 on the wire.
     RejectedInvalidNodeTransition {
         /// The state it holds, named by the refusal.
         current: crate::status::NodeState,
     },
     /// The birth writes `provider`: it moved onto it, or wrote it already. The command's terminal.
+    ///
+    /// Position 17 on the wire.
     StorageStepped {
         /// The provider the birth writes.
         provider: String,
     },
     /// The command names a storage change older than the one the birth acted on: refused by name,
     /// nothing done (storage.md §2 "Changing it").
+    ///
+    /// Position 18 on the wire.
     RejectedStaleChange {
         /// The change the birth acted on last.
         held: crate::ChangeId,
@@ -257,6 +305,8 @@ pub enum NodeCommandReply {
     /// Inside a stop, node.mesh.leave's acknowledgement (Q205): the birth is leaving its mesh; the
     /// state the mesh-primary writes on its row. Appended, as are the three below: no variant before
     /// them moves.
+    ///
+    /// Position 19 on the wire.
     Leaving {
         /// The birth that is leaving.
         node_id: NodeId,
@@ -265,12 +315,16 @@ pub enum NodeCommandReply {
     },
     /// Inside a stop, node.mesh.leave's completion, `node.mesh.left`: progress, never the stop's
     /// terminal (the twin of [`Self::MeshLeft`], as `StopConnectionsDeleted` is of `ConnectionsDeleted`).
+    ///
+    /// Position 20 on the wire.
     StopMeshLeft {
         /// Which meshes the birth left: its own, and the backbone for a node-admin.
         left: Vec<WhichMesh>,
     },
     /// Standalone `node.mesh.left`: the birth left its mesh (and the backbone, a node-admin), its
     /// endpoint still bound. The `LeaveMesh` command's terminal.
+    ///
+    /// Position 21 on the wire.
     MeshLeft {
         /// The birth that left.
         node_id: NodeId,
@@ -281,6 +335,8 @@ pub enum NodeCommandReply {
     },
     /// `LeaveMesh` refused before acceptance: the birth still holds these connections, and leaves
     /// nothing (node-mesh-leave.md step 2).
+    ///
+    /// Position 22 on the wire.
     BusyHoldingConnections {
         /// The connections it still holds.
         connections: Vec<ConnectionId>,

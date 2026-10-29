@@ -26,8 +26,12 @@ pub struct ResolveProbe;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProbeTarget {
     /// Exactly this node id.
+    ///
+    /// Position 0 on the wire.
     Exact(String),
     /// Whoever holds this `path.name`.
+    ///
+    /// Position 1 on the wire.
     Path(String),
 }
 
@@ -35,6 +39,8 @@ pub enum ProbeTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolveRequest {
     /// Resolve `target` on the executing node.
+    ///
+    /// Position 0 on the wire.
     Resolve {
         /// The target to resolve.
         target: ProbeTarget,
@@ -56,6 +62,8 @@ pub struct AnsweredBy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolveReply {
     /// The target resolved.
+    ///
+    /// Position 0 on the wire.
     Found {
         /// Who answered.
         by: AnsweredBy,
@@ -67,21 +75,29 @@ pub enum ResolveReply {
         incarnation_id: String,
     },
     /// The node deleted and does not return.
+    ///
+    /// Position 1 on the wire.
     Gone {
         /// Who answered.
         by: AnsweredBy,
     },
     /// No node by that target was ever known.
+    ///
+    /// Position 2 on the wire.
     Unknown {
         /// Who answered.
         by: AnsweredBy,
     },
     /// The node is known and cannot be reached now.
+    ///
+    /// Position 3 on the wire.
     Unavailable {
         /// Who answered.
         by: AnsweredBy,
     },
     /// The target does not parse.
+    ///
+    /// Position 4 on the wire.
     BadTarget {
         /// Who answered.
         by: AnsweredBy,
@@ -89,31 +105,43 @@ pub enum ResolveReply {
         reason: String,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 5 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The node is not ready to serve.
+    ///
+    /// Position 6 on the wire.
     NotReady {
         /// Why the node is not ready.
         reason: String,
     },
     /// The node is at its admission bound.
+    ///
+    /// Position 7 on the wire.
     Busy {
         /// Which bound it is at.
         reason: String,
     },
     /// The node is connections-deleting and takes no new work.
+    ///
+    /// Position 8 on the wire.
     ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 9 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 10 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,

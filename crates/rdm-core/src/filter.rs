@@ -21,12 +21,20 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Entity {
     /// `fabrics.get`: the fabric the answering admin holds.
+    ///
+    /// Position 0 on the wire.
     Fabrics,
     /// `meshes.get`: the meshes the answering admin holds.
+    ///
+    /// Position 1 on the wire.
     Meshes,
     /// `nodes.get`: the node rows the answering admin holds.
+    ///
+    /// Position 2 on the wire.
     Nodes,
     /// `connections.get { node }`: the exact birth's own connections.
+    ///
+    /// Position 3 on the wire.
     Connections,
 }
 

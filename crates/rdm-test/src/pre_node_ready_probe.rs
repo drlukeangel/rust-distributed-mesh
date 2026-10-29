@@ -33,6 +33,8 @@ pub struct Row {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PullRequest {
     /// Every row this authority holds.
+    ///
+    /// Position 0 on the wire.
     Pull,
 }
 
@@ -40,36 +42,50 @@ pub enum PullRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PullReply {
     /// The rows, complete.
+    ///
+    /// Position 0 on the wire.
     Rows {
         /// The rows in version order.
         rows: Vec<Row>,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 1 on the wire.
     PeerUnresolved {
         /// Why.
         reason: String,
     },
     /// The authority's own hook has not passed.
+    ///
+    /// Position 2 on the wire.
     NotReady {
         /// Why.
         reason: String,
     },
     /// At the admission bound.
+    ///
+    /// Position 3 on the wire.
     Busy {
         /// Which bound.
         reason: String,
     },
     /// Connections-deleting.
+    ///
+    /// Position 4 on the wire.
     ConnectionsDeleting {
         /// Why.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 5 on the wire.
     Malformed {
         /// How.
         kind: MalformedKind,
     },
     /// Not allowed.
+    ///
+    /// Position 6 on the wire.
     Unauthorized {
         /// Why.
         reason: String,

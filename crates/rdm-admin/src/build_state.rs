@@ -281,12 +281,20 @@ impl BuildFact {
 #[serde(rename_all = "snake_case")]
 pub enum BuildState {
     /// No executor is running an attempt: the Build is accepted, or its next attempt is open.
+    ///
+    /// Serialized as `pending`.
     Pending,
     /// An executor holds and runs an attempt.
+    ///
+    /// Serialized as `running`.
     Running,
     /// Every step is complete.
+    ///
+    /// Serialized as `complete`.
     Complete,
     /// The last attempt failed.
+    ///
+    /// Serialized as `failed`.
     Failed,
 }
 

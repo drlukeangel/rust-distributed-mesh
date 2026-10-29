@@ -120,8 +120,12 @@ pub struct BuildStartedCtx {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildEndedState {
     /// The Build is `Complete`.
+    ///
+    /// `as_str()` is `complete`.
     Complete,
     /// The Build is `Failed`, naming the step that failed, its reason and its code.
+    ///
+    /// `as_str()` is `failed`.
     Failed {
         /// The step that failed.
         step: String,

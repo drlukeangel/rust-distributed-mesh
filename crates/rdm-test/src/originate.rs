@@ -32,11 +32,15 @@ pub struct Originate;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofOp {
     /// Read `key`.
+    ///
+    /// Position 0 on the wire.
     Get {
         /// The key to read.
         key: Vec<u8>,
     },
     /// Write `value` under `key`.
+    ///
+    /// Position 1 on the wire.
     Put {
         /// The key to write.
         key: Vec<u8>,
@@ -49,6 +53,8 @@ pub enum ProofOp {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OriginateRequest {
     /// Call `destination` (a path) with `op`, over this node's held projection.
+    ///
+    /// Position 0 on the wire.
     Call {
         /// The `path.name` to call.
         destination: String,
@@ -57,6 +63,8 @@ pub enum OriginateRequest {
     },
     /// Refuse the next `refuse_index` index writes and `refuse_history` history appends, after
     /// letting `pass_history` history appends through.
+    ///
+    /// Position 1 on the wire.
     ArmFault {
         /// The number of index writes to refuse.
         refuse_index: u32,
@@ -66,14 +74,20 @@ pub enum OriginateRequest {
         pass_history: u32,
     },
     /// Release the armed storage fault.
+    ///
+    /// Position 2 on the wire.
     ReleaseFault,
     /// Answer a snapshot of what the node holds and owes.
+    ///
+    /// Position 3 on the wire.
     Snapshot,
     /// Seed this node's own durable facts toward `destination` as a proven carried path leaves
     /// them (connections.md section 7): `failed_attempts` Direct Failed observations through the
     /// writer's own observer path, then `Proxy Connected` through `carrier`, both naming the
     /// births this node's topology view holds now. Testkit only: the product writes a Proxy after
     /// cold discovery, which nothing in this repository runs.
+    ///
+    /// Position 4 on the wire.
     RecordProxy {
         /// The `path.name` the facts concern.
         destination: String,
@@ -86,6 +100,8 @@ pub enum OriginateRequest {
     /// background traffic reaches a peer: the pooled connection it opens is reported to the
     /// destination's writer as Direct Connected from the destination's side (accepted) and to
     /// this node's writer as its own dial.
+    ///
+    /// Position 5 on the wire.
     Dial {
         /// The `path.name` to ping.
         destination: String,
@@ -93,6 +109,8 @@ pub enum OriginateRequest {
     /// Open a data-plane stream (connections.md §5: `Connections::open`, `open_bi`) to the current
     /// birth of `destination` on this node's one registered ALPN, write `payload`, finish, and read
     /// what the far role answers. The reply names the connection's kind (Direct or Proxy) and peer.
+    ///
+    /// Position 6 on the wire.
     Stream {
         /// The `path.name` to stream to.
         destination: String,
@@ -102,6 +120,8 @@ pub enum OriginateRequest {
     /// Mark this process's mesh transport stopped, exactly as iroh-gossip refusing a subscription
     /// does (`topology::mark_transport_stopped`): the node exits through the one transport-stopped
     /// exit, recording its reason in its data dir. The reply is sent before the mark.
+    ///
+    /// Position 7 on the wire.
     StopTransport {
         /// The reason the transport stopped.
         reason: String,
@@ -109,6 +129,8 @@ pub enum OriginateRequest {
     /// Block (`blocked: true`) or release this node's Direct dials toward `destination` on its one
     /// data-plane ALPN: a blocked dial answers `NotSent` and records Direct Failed, as an unreachable
     /// direct dial does (`connection_faults::block_direct`, connections.md §13 A, F, J).
+    ///
+    /// Position 8 on the wire.
     BlockDirect {
         /// The `path.name` whose Direct dials are blocked or released.
         destination: String,
@@ -118,6 +140,8 @@ pub enum OriginateRequest {
     /// Put this node's own config, the whole map, through its own `node.config.update`
     /// (`RunningNode::config_update`; node-config-update.md, a node's own update): answered with its
     /// mesh-primary's reply. Appended last.
+    ///
+    /// Position 9 on the wire.
     UpdateOwnConfig {
         /// The whole map.
         config: std::collections::BTreeMap<String, String>,
@@ -139,6 +163,8 @@ pub struct AnsweredBy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OriginateReply {
     /// The call was made.
+    ///
+    /// Position 0 on the wire.
     Called {
         /// Who made the call.
         by: AnsweredBy,
@@ -158,6 +184,8 @@ pub enum OriginateReply {
         pooled: Vec<String>,
     },
     /// The storage fault was armed.
+    ///
+    /// Position 1 on the wire.
     FaultArmed {
         /// Who armed it.
         by: AnsweredBy,
@@ -167,6 +195,8 @@ pub enum OriginateReply {
         refuse_history: u32,
     },
     /// The storage fault was released.
+    ///
+    /// Position 2 on the wire.
     FaultReleased {
         /// Who released it.
         by: AnsweredBy,
@@ -174,6 +204,8 @@ pub enum OriginateReply {
         refused: u32,
     },
     /// What the node holds and owes.
+    ///
+    /// Position 3 on the wire.
     Snapshot {
         /// Who answered.
         by: AnsweredBy,
@@ -192,6 +224,8 @@ pub enum OriginateReply {
         fault_refused: u32,
     },
     /// The destination does not parse or does not resolve on this node.
+    ///
+    /// Position 4 on the wire.
     BadDestination {
         /// Who answered.
         by: AnsweredBy,
@@ -199,36 +233,50 @@ pub enum OriginateReply {
         reason: String,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 5 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The node is not ready to serve.
+    ///
+    /// Position 6 on the wire.
     NotReady {
         /// Why the node is not ready.
         reason: String,
     },
     /// The node is at its admission bound.
+    ///
+    /// Position 7 on the wire.
     Busy {
         /// Which bound it is at.
         reason: String,
     },
     /// The node is connections-deleting and takes no new work.
+    ///
+    /// Position 8 on the wire.
     ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 9 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 10 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,
     },
     /// The facts a `RecordProxy` wrote, with the births they name.
+    ///
+    /// Position 11 on the wire.
     ProxyRecorded {
         /// Who recorded the facts.
         by: AnsweredBy,
@@ -244,6 +292,8 @@ pub enum OriginateReply {
         failed_attempts: u32,
     },
     /// The answer of a `Dial`: the typed outcome name of the one Ping.
+    ///
+    /// Position 12 on the wire.
     Dialed {
         /// Who dialled.
         by: AnsweredBy,
@@ -253,6 +303,8 @@ pub enum OriginateReply {
         outcome: String,
     },
     /// The stream was opened, written and answered.
+    ///
+    /// Position 13 on the wire.
     Streamed {
         /// Who opened it.
         by: AnsweredBy,
@@ -266,6 +318,8 @@ pub enum OriginateReply {
         answered: Vec<u8>,
     },
     /// The stream could not be opened, written or read.
+    ///
+    /// Position 14 on the wire.
     StreamFailed {
         /// Who tried.
         by: AnsweredBy,
@@ -273,6 +327,8 @@ pub enum OriginateReply {
         reason: String,
     },
     /// The transport stop is marked; the process is exiting.
+    ///
+    /// Position 15 on the wire.
     TransportStopMarked {
         /// Who marked the stop.
         by: AnsweredBy,
@@ -280,6 +336,8 @@ pub enum OriginateReply {
         reason: String,
     },
     /// The Direct dial block toward `destination` is set as asked.
+    ///
+    /// Position 16 on the wire.
     DirectBlocked {
         /// Who set it.
         by: AnsweredBy,
@@ -290,6 +348,8 @@ pub enum OriginateReply {
     },
     /// The node's own config update answered by its mesh-primary: the reply by name, and the row as
     /// written it carries (its config and revision) where it carries one. Appended last.
+    ///
+    /// Position 17 on the wire.
     OwnConfigUpdated {
         /// The node that put it.
         by: AnsweredBy,

@@ -45,14 +45,22 @@ pub struct Status;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum NodeState {
     /// Born and not yet ready.
+    ///
+    /// Position 0 on the wire; serialized as `Pending`.
     Pending,
     /// Ready: it takes traffic.
+    ///
+    /// Position 1 on the wire; serialized as `Ready`.
     Ready,
     /// Connections-deleting: it takes no new work.
+    ///
+    /// Position 2 on the wire; serialized as `ConnectionsDeleting`.
     ConnectionsDeleting,
     /// Stopped: declared at node.stop's end, after its connections are deleted and its transport cut
     /// (node-stop.md step 4); "in the system with its identity kept, receiving no traffic, silent on
     /// gossip and not advancing" (states.md, Stopped nodes).
+    ///
+    /// Position 3 on the wire; serialized as `Stopped`.
     Stopped,
 }
 
@@ -60,12 +68,20 @@ pub enum NodeState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MeshState {
     /// Created and not yet ready.
+    ///
+    /// Position 0 on the wire; serialized as `Pending`.
     Pending,
     /// Ready: it takes traffic.
+    ///
+    /// Position 1 on the wire; serialized as `Ready`.
     Ready,
     /// Leaving: it is closing.
+    ///
+    /// Position 2 on the wire; serialized as `Leaving`.
     Leaving,
     /// Dead: every member is gone.
+    ///
+    /// Position 3 on the wire; serialized as `Dead`.
     Dead,
 }
 
@@ -73,8 +89,12 @@ pub enum MeshState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FabricEvent {
     /// The fabric is ready.
+    ///
+    /// Position 0 on the wire.
     Ready,
     /// A fabric shutdown was initiated by the named admin.
+    ///
+    /// Position 1 on the wire.
     ShutdownInitiated {
         /// The admin that initiated the shutdown.
         initiated_by: String,
@@ -107,6 +127,8 @@ pub struct DeclaredOperation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StatusRequest {
     /// Upward: the sender's own birth declares the lifecycle state it committed.
+    ///
+    /// Position 0 on the wire.
     DeclareNodeState {
         /// The declaring birth's logical node.
         node_id: NodeId,
@@ -119,6 +141,8 @@ pub enum StatusRequest {
         operation: Option<DeclaredOperation>,
     },
     /// Upward: the mesh's current primary declares the Mesh's state to the fabric-primary.
+    ///
+    /// Position 1 on the wire.
     DeclareMeshState {
         /// The mesh declared.
         mesh_id: MeshId,
@@ -130,6 +154,8 @@ pub enum StatusRequest {
         changed_at_rafka_ms: u64,
     },
     /// Downward: an authority tells the exact birth to enter `state`.
+    ///
+    /// Position 2 on the wire.
     ApplyNodeState {
         /// The birth told to change state.
         node_id: NodeId,
@@ -140,6 +166,8 @@ pub enum StatusRequest {
     },
     /// Downward: an authority asks the exact birth to reassert its presence and answer its
     /// current state; no transition.
+    ///
+    /// Position 3 on the wire.
     ProbeNodeState {
         /// The birth probed.
         node_id: NodeId,
@@ -147,6 +175,8 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
     },
     /// Downward: the fabric-primary applies a Mesh state at that mesh's bootstrap admin.
+    ///
+    /// Position 4 on the wire.
     ApplyMeshState {
         /// The mesh applied to.
         mesh_id: MeshId,
@@ -160,6 +190,8 @@ pub enum StatusRequest {
         changed_at_rafka_ms: u64,
     },
     /// Downward: the fabric-primary applies a Fabric event at a mesh primary.
+    ///
+    /// Position 5 on the wire.
     ApplyFabricEvent {
         /// The fabric the event belongs to.
         fabric_id: FabricId,
@@ -168,6 +200,8 @@ pub enum StatusRequest {
     },
     /// Reserved position (R-CR4): never sent. A node's connections are deleted by
     /// [`Self::DeleteConnections`]; a receiver refuses this by name.
+    ///
+    /// Position 6 on the wire.
     Reserved6 {
         /// The birth commanded.
         node_id: NodeId,
@@ -181,6 +215,8 @@ pub enum StatusRequest {
         operation: String,
     },
     /// Reserved position (R-CR4): never sent; a receiver refuses this by name.
+    ///
+    /// Position 7 on the wire.
     Reserved7 {
         /// The birth reported.
         node_id: NodeId,
@@ -194,6 +230,8 @@ pub enum StatusRequest {
         operation: String,
     },
     /// Reserved at position 8: refused by name, never executed. Stop and start use NodeCommand 0x22.
+    ///
+    /// Position 8 on the wire.
     StopNode {
         /// The birth commanded.
         node_id: NodeId,
@@ -208,6 +246,8 @@ pub enum StatusRequest {
     },
     /// Reserved: a stopped birth reports `stopped` on the reply of its `StopNode` call, so this call is
     /// never sent and a receiver refuses it by name.
+    ///
+    /// Position 9 on the wire.
     NodeLeft {
         /// The birth that is leaving.
         node_id: NodeId,
@@ -223,6 +263,8 @@ pub enum StatusRequest {
     /// Downward: the fabric-primary tells the deleting mesh's primary to run its mesh.delete
     /// (`delete-mesh`; mesh-delete.md). `Applied` / `AlreadyApplied` admit the command; mesh.deleted is
     /// reported only by the `MeshDeleted` call that follows.
+    ///
+    /// Position 10 on the wire.
     DeleteMesh {
         /// The mesh that leaves.
         mesh_id: MeshId,
@@ -237,6 +279,8 @@ pub enum StatusRequest {
     /// member exited and its own exact runtime (`mesh-deleted`). The manifest is a reference to
     /// immutable receipts in the accepted Build's records; the fabric-primary reads and validates
     /// them before it accepts. The primary keeps running: the outside owner stops it next.
+    ///
+    /// Position 11 on the wire.
     MeshDeleted {
         /// The mesh that leaves.
         mesh_id: MeshId,
@@ -258,6 +302,8 @@ pub enum StatusRequest {
         receipt_manifest: String,
     },
     /// Reserved position (Q171): never sent; a receiver refuses this by name.
+    ///
+    /// Position 12 on the wire.
     Reserved12 {
         /// The fabric the command belongs to.
         fabric_id: FabricId,
@@ -273,6 +319,8 @@ pub enum StatusRequest {
         operation: String,
     },
     /// Reserved position (Q171): never sent; a receiver refuses this by name.
+    ///
+    /// Position 13 on the wire.
     Reserved13 {
         /// The fabric the command belongs to.
         fabric_id: FabricId,
@@ -288,6 +336,8 @@ pub enum StatusRequest {
         operation: String,
     },
     /// Reserved position (Q174): never sent; a receiver refuses this by name.
+    ///
+    /// Position 14 on the wire.
     Reserved14 {
         /// The fabric the command belonged to.
         fabric_id: FabricId,
@@ -303,6 +353,8 @@ pub enum StatusRequest {
         operation: String,
     },
     /// Reserved position (Q174): never sent; a receiver refuses this by name.
+    ///
+    /// Position 15 on the wire.
     Reserved15 {
         /// The fabric the command belonged to.
         fabric_id: FabricId,
@@ -318,6 +370,8 @@ pub enum StatusRequest {
         operation: String,
     },
     /// Reserved at position 16: refused by name, never executed. Stop and start use NodeCommand 0x22.
+    ///
+    /// Position 16 on the wire.
     StartNode {
         /// The birth commanded.
         node_id: NodeId,
@@ -336,6 +390,8 @@ pub enum StatusRequest {
     /// the command to the node's mesh-primary, the writer of that mesh's rows, which writes the node's
     /// record and tells the node. [`StatusReply::ConfigUpdated`] (`node.config.updated`) once the node
     /// applied it. A single call, never a Build.
+    ///
+    /// Position 17 on the wire.
     UpdateNodeConfig {
         /// The birth whose config is put.
         node_id: NodeId,
@@ -347,6 +403,8 @@ pub enum StatusRequest {
     /// Downward: the birth's mesh-primary tells the exact birth its config, the row's as written, and
     /// the row's revision; the birth installs it over an older revision (P1) and holds it on its own
     /// entry. Answered `Applied`.
+    ///
+    /// Position 18 on the wire.
     ApplyNodeConfig {
         /// The birth told.
         node_id: NodeId,
@@ -363,6 +421,8 @@ pub enum StatusRequest {
     /// then answers [`StatusReply::Applied`]; [`StatusReply::AlreadyApplied`] for the name it already
     /// holds; [`StatusReply::BusyHoldingConnections`] naming each connection it still holds, with
     /// nothing held. A stopped birth is sent nothing: its join answer hands it the name.
+    ///
+    /// Position 19 on the wire.
     ApplyNodeName {
         /// The birth told.
         node_id: NodeId,
@@ -384,6 +444,8 @@ pub enum StatusRequest {
     /// birth `ApplyNodeName` (a stopped one nothing) and answers [`StatusReply::NameUpdated`]
     /// (`node.name.updated`): for a stopped node after both writes of the move, for a live one after
     /// the birth answered `Applied` or `AlreadyApplied`. A single call, never a Build.
+    ///
+    /// Position 20 on the wire.
     UpdateName {
         /// The birth renamed.
         node_id: NodeId,
@@ -399,6 +461,8 @@ pub enum StatusRequest {
     /// [`StatusReply::ConnectionsDeleted`] (`node.connections.deleted`). Its endpoint stays bound and
     /// the call's own stream stays open. An empty `Connections` list is refused by name
     /// ([`StatusReply::RejectedConnectionScope`]).
+    ///
+    /// Position 21 on the wire.
     DeleteConnections {
         /// The birth whose connections are cut.
         node_id: NodeId,
@@ -412,6 +476,8 @@ pub enum StatusRequest {
     /// request: a caller asks a node-admin for the nodes its view holds that `select` selects,
     /// answered [`StatusReply::Nodes`]; an id the view does not hold selects nothing, and the caller's
     /// `node.get` ends `NOT_FOUND`. A read: nothing changes and nothing is published.
+    ///
+    /// Position 22 on the wire.
     GetNodes {
         /// Which nodes.
         select: NodeSelect,
@@ -419,17 +485,23 @@ pub enum StatusRequest {
     /// `mesh.get { name }` (`Some`): a caller asks a node-admin for one mesh its view holds, by the
     /// mesh's minted id or its name; `fabric.meshes.get` (`None`): every mesh (Q165). Answered
     /// [`StatusReply::Meshes`]; a mesh the view does not hold is [`StatusReply::UnknownMesh`]. A read.
+    ///
+    /// Position 23 on the wire.
     GetMeshes {
         /// The mesh's minted id or name; `None` for every mesh of the fabric.
         mesh: Option<String>,
     },
     /// `fabric.get`: a caller asks a node-admin for the fabric as its view holds it, answered
     /// [`StatusReply::Fabric`]. A read.
+    ///
+    /// Position 24 on the wire.
     GetFabric,
     /// `node.connections.get` (fabric-mesh-node-lifecycles.md: "Reading or cutting a node's held
     /// connections"): a caller asks the exact birth for the connections it holds as its own, its
     /// latest Direct per destination and its active Proxies, each named by the minted id
     /// `DeleteConnections` names it by, answered [`StatusReply::Connections`]. A read.
+    ///
+    /// Position 25 on the wire.
     GetConnections {
         /// The birth asked.
         node_id: NodeId,
@@ -445,6 +517,8 @@ pub enum StatusRequest {
     /// [`MAX_NODE_TAGS`] are [`StatusReply::RejectedTags`] with nothing written. No precondition but
     /// the fabric having first reached ready; the node is told nothing. A single call,
     /// never a Build.
+    ///
+    /// Position 26 on the wire.
     CreateTags {
         /// The birth whose tags grow.
         node_id: NodeId,
@@ -457,6 +531,8 @@ pub enum StatusRequest {
     /// removing every label (`All`) or the named ones; each removed label's index key is tombstoned.
     /// Answered [`StatusReply::TagsDeleted`] (`node.tags.deleted`) naming any named label the node
     /// did not carry.
+    ///
+    /// Position 27 on the wire.
     DeleteTags {
         /// The birth whose tags shrink.
         node_id: NodeId,
@@ -470,6 +546,8 @@ pub enum StatusRequest {
     /// installing the handed name, cert, config and rafka-time, opening the mesh channel
     /// (`WhichMesh::Own`, and `WhichMesh::Backbone` for a node-admin) and publishing its
     /// first `Digest` heartbeat, answered [`StatusReply::MeshJoined`].
+    ///
+    /// Position 28 on the wire.
     JoinMesh {
         /// The birth commanded.
         node_id: NodeId,
@@ -485,6 +563,8 @@ pub enum StatusRequest {
     /// Reserved position (Q205): node.mesh.leave is a node command on NodeCommand 0x22
     /// ([`crate::node_command::NodeCommandRequest::LeaveMesh`]). A receiver refuses this by name and
     /// executes nothing; the position and its fields stay so no later variant moves.
+    ///
+    /// Position 29 on the wire.
     LeaveMesh {
         /// The birth commanded.
         node_id: NodeId,
@@ -500,6 +580,8 @@ pub enum StatusRequest {
     /// Downward (`node.cert.renew`; node-cert-renew.md): the birth's issuing authority installs a
     /// fresh member cert on the exact running birth, answered [`StatusReply::CertRenewed`], or
     /// [`StatusReply::RejectedCert`] for a cert that does not decode or names another birth.
+    ///
+    /// Position 30 on the wire.
     RenewCert {
         /// The birth renewed.
         node_id: NodeId,
@@ -512,6 +594,8 @@ pub enum StatusRequest {
     /// issuing material on one node-admin of that mesh, answered [`StatusReply::IssuerUpdated`], or
     /// [`StatusReply::RejectedCert`] for material of another mesh or birth, or one the root does not
     /// verify.
+    ///
+    /// Position 31 on the wire.
     UpdateIssuer {
         /// The node-admin.
         node_id: NodeId,
@@ -525,6 +609,8 @@ pub enum StatusRequest {
     /// `fabrics.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): a caller asks the
     /// fabric-primary for its atlas, answered [`StatusReply::Atlas`]. A read. Appended last: no
     /// variant before it moves.
+    ///
+    /// Position 32 on the wire.
     GetAtlas,
     /// The reads (Q167, R-RD1 to R-RD3): one read per entity, plural, `fabrics.get`, `meshes.get`,
     /// `nodes.get` and `connections.get { node }`, each a list of the rows the receiver holds that
@@ -536,6 +622,8 @@ pub enum StatusRequest {
     /// nothing changes. Appended last: no variant before it moves; `GetNodes`, `GetMeshes`,
     /// `GetFabric` and `GetConnections` keep their positions and are read as this request
     /// ([`StatusRequest::as_read`]).
+    ///
+    /// Position 33 on the wire.
     Get {
         /// The entity read.
         entity: crate::filter::Entity,
@@ -550,6 +638,8 @@ pub enum StatusRequest {
     /// `Applied` when the atlas took it, `AlreadyApplied` when the atlas holds that revision or a newer
     /// one; at an admin that is not the fabric-primary, `RejectedNotPrimary` naming it. Appended last:
     /// no variant before it moves.
+    ///
+    /// Position 34 on the wire.
     NodeConfigUpdated {
         /// The node whose row was written.
         node_id: NodeId,
@@ -620,8 +710,12 @@ impl std::fmt::Debug for IssuingKeyHex {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WhichMesh {
     /// The node's own mesh channel (`<fabric_id>/<mesh_id>`).
+    ///
+    /// Position 0 on the wire.
     Own,
     /// The fabric's admin-backbone channel (`<fabric_id>/admin-backbone`), carried by a node-admin.
+    ///
+    /// Position 1 on the wire.
     Backbone,
 }
 
@@ -639,19 +733,29 @@ impl WhichMesh {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeSelect {
     /// The node with this minted id (`node.get { id }`).
+    ///
+    /// Position 0 on the wire.
     Id(NodeId),
     /// Every node of the mesh with this name (`mesh.nodes.get`, no filter).
+    ///
+    /// Position 1 on the wire.
     Mesh(String),
     /// Every node of the fabric carrying the tag labels the filter names (R-TG1;
     /// `fabric.nodes.get { tags }`), read through the node store's tags index: one point read per
     /// label.
+    ///
+    /// Position 2 on the wire.
     Tags(TagFilter),
     /// Every node of every mesh (`fabric.nodes.get`, no filter): the mesh selector's answer over
     /// every mesh, read from the rows. Appended last: positional.
+    ///
+    /// Position 3 on the wire.
     Fabric,
     /// Every node of the mesh with this name carrying the tag labels the filter names
     /// (`mesh.nodes.get { tags }`), read through the tags index as `Tags` is. Appended last:
     /// positional.
+    ///
+    /// Position 4 on the wire.
     MeshTags(String, TagFilter),
 }
 
@@ -682,8 +786,12 @@ impl NodeSelect {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TagFilter {
     /// The node carries every one of these labels.
+    ///
+    /// Position 0 on the wire.
     All(BTreeSet<String>),
     /// The node carries at least one of these labels.
+    ///
+    /// Position 1 on the wire.
     Any(BTreeSet<String>),
 }
 
@@ -803,10 +911,14 @@ pub enum ConnectionScope {
     /// Every connection, exactly the stop's cut: the gossip neighbours and the pooled peer
     /// connections, never the endpoint or the call's own stream. A tag of its own, never a value in
     /// the list.
+    ///
+    /// Position 0 on the wire.
     All,
     /// The exact connections named by the minted id of their open entry, as `node.connections.get`
     /// returns them: only those pooled peer connections are cut. At least one, at most
     /// [`MAX_CONNECTION_IDS`].
+    ///
+    /// Position 1 on the wire.
     Connections(Vec<ConnectionId>),
 }
 
@@ -836,8 +948,12 @@ impl ConnectionScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TagScope {
     /// Every label the node carries. A tag of its own, never a value in the list.
+    ///
+    /// Position 0 on the wire.
     All,
     /// The named labels: at least one, at most [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]).
+    ///
+    /// Position 1 on the wire.
     Labels(BTreeSet<String>),
 }
 
@@ -931,16 +1047,22 @@ impl StatusRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotPrimary {
     /// The receiver does not hold the seat the declaration needs.
+    ///
+    /// Position 0 on the wire.
     ReceiverNotPrimary {
         /// The seat the receiver would have to hold.
         needed: String,
     },
     /// The sender is not the subject (or the subject's current primary).
+    ///
+    /// Position 1 on the wire.
     SenderNotSubject {
         /// The sender, as the receiver resolved it.
         sender: String,
     },
     /// The receiver does not hold the subject at all.
+    ///
+    /// Position 2 on the wire.
     SubjectUnknown,
 }
 
@@ -962,6 +1084,8 @@ impl NotPrimary {
 #[serde(deny_unknown_fields)]
 pub enum ConnectionsReceipt {
     /// The eligible in-flight work reached zero and every open connection was closed.
+    ///
+    /// Position 0 on the wire.
     Established {
         /// The in-flight count when the closure was admitted.
         in_flight: u64,
@@ -969,6 +1093,8 @@ pub enum ConnectionsReceipt {
         closed: Vec<ConnectionId>,
     },
     /// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` passed with work still in flight.
+    ///
+    /// Position 1 on the wire.
     Deadline {
         /// The last in-flight count observed before the bound.
         last_in_flight: u64,
@@ -1013,15 +1139,23 @@ impl std::fmt::Display for MeshDeleteIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StatusReply {
     /// Applied now by the authority, and durable where the ruling asks it to be.
+    ///
+    /// Position 0 on the wire.
     Applied,
     /// The same natural key was already at that state: one logical event.
+    ///
+    /// Position 1 on the wire.
     AlreadyApplied,
     /// Reserved position (R-CR4): never sent.
+    ///
+    /// Position 2 on the wire.
     Reserved2 {
         /// The work still in flight.
         in_flight: u64,
     },
     /// The exact birth's own answer to a probe: it reasserted its presence, and this is its state.
+    ///
+    /// Position 3 on the wire.
     Current {
         /// The answering birth's logical node.
         node_id: NodeId,
@@ -1031,61 +1165,85 @@ pub enum StatusReply {
         state: NodeState,
     },
     /// The receiver holds a newer incarnation of that NodeId, or holds it as deleted.
+    ///
+    /// Position 4 on the wire.
     RejectedStaleIncarnation {
         /// The incarnation held.
         held: IncarnationId,
     },
     /// The receiver holds another mesh id under that mesh name.
+    ///
+    /// Position 5 on the wire.
     RejectedStaleMesh {
         /// The mesh id held.
         held: MeshId,
     },
     /// The receiver holds another fabric id.
+    ///
+    /// Position 6 on the wire.
     RejectedStaleFabric {
         /// The fabric id held.
         held: FabricId,
     },
     /// The receiver or sender is not the authority for the call.
+    ///
+    /// Position 7 on the wire.
     RejectedNotPrimary {
         /// Which authority condition failed.
         why: NotPrimary,
     },
     /// A node move backward along the legal order.
+    ///
+    /// Position 8 on the wire.
     RejectedInvalidNodeTransition {
         /// The state the node holds.
         current: NodeState,
     },
     /// A mesh move backward along the legal order.
+    ///
+    /// Position 9 on the wire.
     RejectedInvalidMeshTransition {
         /// The state the mesh holds.
         current: MeshState,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 10 on the wire.
     PeerUnresolved {
         /// Why the call is refused.
         reason: String,
     },
     /// The node is not ready to serve.
+    ///
+    /// Position 11 on the wire.
     NotReady {
         /// Why the node is not ready.
         reason: String,
     },
     /// The node is at its admission bound.
+    ///
+    /// Position 12 on the wire.
     Busy {
         /// Which bound the node is at.
         reason: String,
     },
     /// The node is connections-deleting and takes no new work.
+    ///
+    /// Position 13 on the wire.
     ConnectionsDeleting {
         /// Why the node refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 14 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 15 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,
@@ -1094,6 +1252,8 @@ pub enum StatusReply {
     /// that differs from the command the receiver holds for that birth is named, with the value the
     /// receiver holds and the value the completion reported. A `node-left` is never a call and
     /// completes no command, whatever is open for the birth: it is refused with `command`.
+    ///
+    /// Position 16 on the wire.
     RejectedUnmatchedCompletion {
         /// The field that differs: `build_id`, `attempt`, `operation`, or `command` when the
         /// receiver holds no open command the call completes (none for the birth at all, or the call
@@ -1107,13 +1267,19 @@ pub enum StatusReply {
     /// The reply of a `StopNode` call, sent when the stop is done (`node.stopped`): the birth's
     /// `node.connections.delete { All }` completed, it cut its transport and is stopped, its process
     /// alive. The receipt is what that `All` established.
+    ///
+    /// Position 17 on the wire.
     Stopped {
         /// What the stop's `node.connections.delete { All }` established.
         receipt: ConnectionsReceipt,
     },
     /// The reply of a `StartNode` call: the stopped birth rejoined as itself.
+    ///
+    /// Position 18 on the wire.
     Started,
     /// The reply of a `StartNode` call whose start stopped at `step`: nothing after that step ran.
+    ///
+    /// Position 19 on the wire.
     StartFailed {
         /// The step that failed: `node.join`, `node.topology` or `node.pre-node-ready`.
         step: String,
@@ -1122,6 +1288,8 @@ pub enum StatusReply {
     },
     /// The exact birth's own answer to a probe while it is stopped: `Leaving`, its process alive and
     /// its endpoint bound, waiting for `StartNode` or a delete.
+    ///
+    /// Position 20 on the wire.
     CurrentStopped {
         /// The answering birth's logical node.
         node_id: NodeId,
@@ -1132,6 +1300,8 @@ pub enum StatusReply {
     /// birth holds the config (`node.config.updated`). It carries the row as written, its config and
     /// revision: a node's own update installs it over an older revision, and the fabric-primary writes
     /// it into its atlas over an older revision (P1, P2).
+    ///
+    /// Position 21 on the wire.
     ConfigUpdated {
         /// The birth whose config was put.
         node_id: NodeId,
@@ -1143,6 +1313,8 @@ pub enum StatusReply {
         revision: u64,
     },
     /// Reserved position (Q203): never sent.
+    ///
+    /// Position 22 on the wire.
     Reserved22 {
         /// Never read.
         keys: u32,
@@ -1155,6 +1327,8 @@ pub enum StatusReply {
     },
     /// The config put was not made: the nodes store refused the node's row, so nothing was told to
     /// the birth and the node's record is what it was.
+    ///
+    /// Position 23 on the wire.
     ConfigRowRefused {
         /// The node's `path.name`, the row the store refused.
         node: String,
@@ -1168,6 +1342,8 @@ pub enum StatusReply {
     },
     /// The mesh-primary wrote the node's row, and the exact birth did not apply the config: the
     /// record holds the new config, the birth does not.
+    ///
+    /// Position 24 on the wire.
     ConfigNotApplied {
         /// The node's `path.name`.
         node: String,
@@ -1180,6 +1356,8 @@ pub enum StatusReply {
     /// probe served that birth and found an active readiness blocker. `reason` is the hook's own
     /// text and `retry_on` the event it runs again on. It is never a `NotReady`: a `NotReady` is the
     /// door or the handler not serving yet, and says nothing of the hook.
+    ///
+    /// Position 25 on the wire.
     Blocked {
         /// The answering birth's logical node.
         node_id: NodeId,
@@ -1193,6 +1371,8 @@ pub enum StatusReply {
     /// The reply of an `UpdateName` (`node.name.updated`): the mesh-primary moved the node's row to
     /// the new name, and the exact birth holds the name (it answered `Applied` or `AlreadyApplied`),
     /// or is stopped and reads it in its next join answer.
+    ///
+    /// Position 26 on the wire.
     NameUpdated {
         /// The birth renamed.
         node_id: NodeId,
@@ -1202,6 +1382,8 @@ pub enum StatusReply {
     /// The `UpdateName` was not made: the node admits connections (R-CR1). Its status is not
     /// stopped, and its mesh-primary holds no `node.connections.deleted` of an `All` made while it was
     /// not ready that left it holding nothing. Nothing was written.
+    ///
+    /// Position 27 on the wire.
     RejectedAdmittingConnections {
         /// The node's status as its mesh-primary holds it (at the cut, when it holds one).
         status: NodeStatus,
@@ -1211,6 +1393,8 @@ pub enum StatusReply {
     },
     /// The `UpdateName` was not made: another node holds the name (the row writer read its row).
     /// Nothing was written.
+    ///
+    /// Position 28 on the wire.
     NameHeld {
         /// The name claimed.
         name: String,
@@ -1219,6 +1403,8 @@ pub enum StatusReply {
     },
     /// The `UpdateName` was not made: the nodes store refused the claim or the put at the new key, so
     /// nothing was written and the old name stands.
+    ///
+    /// Position 29 on the wire.
     NodeRowRefused {
         /// The node's `path.name`, the row the store refused.
         node: String,
@@ -1229,6 +1415,8 @@ pub enum StatusReply {
     /// node-properties-own-commands.md §2.3, §2.4): the old key's release is pending
     /// (`answered: release-pending`), or the live birth did not apply the name (its answer). The row
     /// holds the new name; a resubmit finishes what is pending and completes on the node's answer.
+    ///
+    /// Position 30 on the wire.
     NameNotApplied {
         /// The node's `path.name` the row now holds.
         node: String,
@@ -1242,6 +1430,8 @@ pub enum StatusReply {
     /// its entry id: `closed` were open and are cut, their drops written under the name the birth
     /// holds; `not_open` were named and are unknown or already closed; `held` are the connections
     /// the birth still holds after the cut (none after `All`).
+    ///
+    /// Position 31 on the wire.
     ConnectionsDeleted {
         /// The open entries cut.
         closed: Vec<ConnectionId>,
@@ -1254,38 +1444,52 @@ pub enum StatusReply {
     },
     /// The `DeleteConnections` scope names nothing the birth can cut (an empty list, or more ids
     /// than one request carries); nothing is cut.
+    ///
+    /// Position 32 on the wire.
     RejectedConnectionScope {
         /// Why, by name.
         reason: String,
     },
     /// The answer to a `GetNodes`: the nodes the answering admin's view holds that the request
     /// selected, sorted by `path.name`.
+    ///
+    /// Position 33 on the wire.
     Nodes {
         /// The nodes.
         nodes: Vec<NodeView>,
     },
     /// The answer to a `GetMeshes`: the mesh named, or every mesh the answering admin's view holds.
+    ///
+    /// Position 34 on the wire.
     Meshes {
         /// The meshes.
         meshes: Vec<MeshView>,
     },
     /// The answer to a `GetFabric`: the fabric as the answering admin's view holds it.
+    ///
+    /// Position 35 on the wire.
     Fabric {
         /// The fabric.
         fabric: FabricView,
     },
     /// The answer to a `GetConnections`: the connections the exact birth holds as its own.
+    ///
+    /// Position 36 on the wire.
     Connections {
         /// The connections.
         connections: ConnectionsView,
     },
     /// The `GetMeshes` named a mesh the answering admin's view does not hold, by id or by name.
+    ///
+    /// Position 37 on the wire.
     UnknownMesh {
         /// The mesh as the request named it.
         mesh: String,
     },
     /// A read's answer encodes past the Status reply bound: nothing of it is sent, and the reply
     /// names the read, the answer's size and the bound.
+    ///
+    /// Position 38 on the wire.
     ReadOverBound {
         /// The read (`node.get`, `mesh.get`, `fabric.get`, `node.connections.get`).
         read: String,
@@ -1297,6 +1501,8 @@ pub enum StatusReply {
     /// A `DeleteMesh` or `MeshDeleted` names an earlier attempt of the workflow the receiver holds for the
     /// mesh: same Build and operation, a lower attempt (node-rpc-envelope.md, "Mesh delete command
     /// pair": "A stale/conflicting workflow identity ... is refused by name"). Nothing is admitted or accepted.
+    ///
+    /// Position 39 on the wire.
     RejectedStaleWorkflow {
         /// The workflow the receiver holds for the mesh.
         held: MeshDeleteIdentity,
@@ -1306,6 +1512,8 @@ pub enum StatusReply {
     /// A `DeleteMesh` or `MeshDeleted` names a workflow of the mesh the receiver does not hold and that is
     /// no earlier attempt of the one it holds: another Build or operation, or (for `MeshDeleted`) an
     /// attempt the receiver never opened. Nothing is admitted or accepted.
+    ///
+    /// Position 40 on the wire.
     RejectedConflictingWorkflow {
         /// The workflow the receiver holds for the mesh.
         held: MeshDeleteIdentity,
@@ -1316,6 +1524,8 @@ pub enum StatusReply {
     /// for the workflow, so the member workflows are incomplete and the open leave ends
     /// (node-rpc-envelope.md, "Mesh delete command pair": "A ... incomplete manifest is refused by
     /// name with a typed Status refusal naming the mismatch").
+    ///
+    /// Position 41 on the wire.
     RejectedIncompleteManifest {
         /// How many roster births, the final primary aside, hold no exact Exited receipt.
         missing: u32,
@@ -1330,6 +1540,8 @@ pub enum StatusReply {
     /// needs, its provider refused the runtime, or a peer's Build log could not be read. It is a runtime fact of the receiver, never a readiness answer
     /// (`NotReady` is the door's, node-rpc-envelope.md "Node RPC readiness gate"), and nothing the call
     /// would have done was done.
+    ///
+    /// Position 42 on the wire.
     RejectedSourceFailed {
         /// What failed, named with its owner and row: `fabric.storage of mesh2.admin.1, handover row
         /// <operation>`, `the view of mesh2.admin.1`, `the Build log of mesh1.admin.1 (the final
@@ -1345,11 +1557,15 @@ pub enum StatusReply {
     /// A tags command's labels, or a `GetNodes` tag filter, name something that is not a node's tag
     /// set (R-TG1): an empty filter, more than [`MAX_NODE_TAGS`] labels, or a label that is not a
     /// label ([`tag_refusal`]). Nothing is written or read.
+    ///
+    /// Position 43 on the wire.
     RejectedTags {
         /// Why, by name, naming the label; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
     /// Reserved position (Q171): never sent.
+    ///
+    /// Position 44 on the wire.
     Reserved44 {
         /// Never read.
         workflow: String,
@@ -1358,6 +1574,8 @@ pub enum StatusReply {
     },
     /// The reply of a `CreateTags` (`node.tags.created`): the mesh-primary wrote the node's row
     /// carrying the labels and their tags index entries.
+    ///
+    /// Position 45 on the wire.
     TagsCreated {
         /// The birth whose tags grew.
         node_id: NodeId,
@@ -1369,6 +1587,8 @@ pub enum StatusReply {
     },
     /// The reply of a `DeleteTags` (`node.tags.deleted`): the mesh-primary wrote the node's row
     /// without the labels and tombstoned their tags index entries.
+    ///
+    /// Position 46 on the wire.
     TagsDeleted {
         /// The birth whose tags shrank.
         node_id: NodeId,
@@ -1380,6 +1600,8 @@ pub enum StatusReply {
     /// The `UpdateName` was not made: `name` is outside the name grammar ([`name_refusal`]), or the
     /// `path.name` its join with the held record's path makes is not one this build can key. Nothing
     /// was written.
+    ///
+    /// Position 47 on the wire.
     RejectedName {
         /// Why, by name, naming the name; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
@@ -1388,6 +1610,8 @@ pub enum StatusReply {
     /// proposal node-properties-own-commands.md §2.2 step 6, "`Busy { connections }` naming each
     /// connection it still holds"): it keeps its name and holds nothing. Not [`StatusReply::Busy`],
     /// the protocol's admission bound.
+    ///
+    /// Position 48 on the wire.
     BusyHoldingConnections {
         /// Each connection it holds, by the minted id of its open entry; at most
         /// [`MAX_REPORTED_CONNECTIONS`].
@@ -1396,6 +1620,8 @@ pub enum StatusReply {
     /// `node.mesh.joined`: the exact birth joined its mesh channel(s) and published its first
     /// `Digest` heartbeat (`[Own]` for an rpc-node or storage-node, `[Own, Backbone]` for a
     /// node-admin).
+    ///
+    /// Position 49 on the wire.
     MeshJoined {
         /// The birth that joined.
         node_id: NodeId,
@@ -1408,6 +1634,8 @@ pub enum StatusReply {
     /// (`[Own]` for an rpc-node or storage-node, `[Own, Backbone]` for a node-admin). Never sent on
     /// this op since node.mesh.leave moved to NodeCommand 0x22 (Q205): the mesh-primary's in-process
     /// carry of the leave answers it ([`crate::node_command::NodeCommandReply::MeshLeft`] on the wire).
+    ///
+    /// Position 50 on the wire.
     MeshLeft {
         /// The birth that left.
         node_id: NodeId,
@@ -1418,11 +1646,15 @@ pub enum StatusReply {
     },
     /// The receiving endpoint has no handler for the request (R24, Luke Q11): decided by dispatch
     /// alone, never by node kind, seat or sender; nothing is done.
+    ///
+    /// Position 51 on the wire.
     RequestNotHandled {
         /// The request's op name.
         request: String,
     },
     /// `node.cert.renewed`: the exact birth holds and presents the new member cert.
+    ///
+    /// Position 52 on the wire.
     CertRenewed {
         /// The birth renewed.
         node_id: NodeId,
@@ -1433,6 +1665,8 @@ pub enum StatusReply {
     },
     /// `node.issuer.updated`: the node-admin holds its mesh's new issuing material and signs member
     /// certs with it from now.
+    ///
+    /// Position 53 on the wire.
     IssuerUpdated {
         /// The node-admin.
         node_id: NodeId,
@@ -1444,18 +1678,24 @@ pub enum StatusReply {
     /// A cert or issuing material refused by name (node-cert-renew.md, node-issuer-update.md): it does
     /// not decode, names another birth or mesh, or the root does not verify it. The receiver keeps
     /// what it holds.
+    ///
+    /// Position 54 on the wire.
     RejectedCert {
         /// Why, by name; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
     /// The answer to a `GetAtlas`: the fabric-primary's atlas. Appended last: no variant
     /// before it moves.
+    ///
+    /// Position 55 on the wire.
     Atlas {
         /// The atlas.
         atlas: crate::views::AtlasView,
     },
     /// The answer to a `fabrics.get` ([`StatusRequest::Get`] of `Fabrics`): the fabric the answering
     /// admin holds when it matches every pair, else nothing. Appended last: no variant before it moves.
+    ///
+    /// Position 56 on the wire.
     Fabrics {
         /// The fabrics.
         fabrics: Vec<FabricView>,
@@ -1463,6 +1703,8 @@ pub enum StatusReply {
     /// A read's filter the entity's schema refuses (Q167 R-RD2): an unknown property, a value the
     /// field cannot take or an empty values list, the pair named; or a `connections.get` without its
     /// node, or a node on another read. Nothing is read. Appended last: no variant before it moves.
+    ///
+    /// Position 57 on the wire.
     RejectedFilter {
         /// Why, by name, naming the pair; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
@@ -1474,15 +1716,23 @@ pub enum StatusReply {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RetryOn {
     /// The authority's birth changed or deleted.
+    ///
+    /// Position 0 on the wire.
     PrimaryChanged,
     /// The named node became reachable (heard after silence, or first heard).
+    ///
+    /// Position 1 on the wire.
     TargetReachable {
         /// The node waited for.
         node_id: NodeId,
     },
     /// The authority published Ready.
+    ///
+    /// Position 2 on the wire.
     PrimaryReady,
     /// The authority addressed this node (it sent a down op).
+    ///
+    /// Position 3 on the wire.
     PrimaryAddressed,
 }
 

@@ -95,10 +95,16 @@ impl<O> Decision<O> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum State<O> {
     /// The store holds no operation of that id.
+    ///
+    /// `name()` is `unknown`.
     Unknown,
     /// Recorded, its work not completed.
+    ///
+    /// `name()` is `in-flight`.
     InFlight,
     /// Completed, with its recorded output.
+    ///
+    /// `name()` is `completed`.
     Completed(O),
 }
 

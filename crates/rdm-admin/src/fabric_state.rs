@@ -7,9 +7,13 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum FabricState {
     /// Created; a mesh the accepted Build names is not yet ready.
+    ///
+    /// `as_str()` is `pending`.
     #[default]
     Pending,
     /// Every mesh the accepted Build names is ready.
+    ///
+    /// `as_str()` is `ready`.
     Ready,
 }
 

@@ -30,38 +30,72 @@ use crate::protocol::{DecodeFailure, NodeProtocol};
 #[repr(u8)]
 pub enum Code {
     /// Standard code 0: `OK`.
+    ///
+    /// Position 0 on the wire.
     Ok = 0,
     /// Standard code 1: `CANCELLED`.
+    ///
+    /// Position 1 on the wire.
     Cancelled = 1,
     /// Standard code 2: `UNKNOWN`.
+    ///
+    /// Position 2 on the wire.
     Unknown = 2,
     /// Standard code 3: `INVALID_ARGUMENT`.
+    ///
+    /// Position 3 on the wire.
     InvalidArgument = 3,
     /// Standard code 4: `DEADLINE_EXCEEDED`.
+    ///
+    /// Position 4 on the wire.
     DeadlineExceeded = 4,
     /// Standard code 5: `NOT_FOUND`.
+    ///
+    /// Position 5 on the wire.
     NotFound = 5,
     /// Standard code 6: `ALREADY_EXISTS`.
+    ///
+    /// Position 6 on the wire.
     AlreadyExists = 6,
     /// Standard code 7: `PERMISSION_DENIED`.
+    ///
+    /// Position 7 on the wire.
     PermissionDenied = 7,
     /// Standard code 8: `RESOURCE_EXHAUSTED`.
+    ///
+    /// Position 8 on the wire.
     ResourceExhausted = 8,
     /// Standard code 9: `FAILED_PRECONDITION`.
+    ///
+    /// Position 9 on the wire.
     FailedPrecondition = 9,
     /// Standard code 10: `ABORTED`.
+    ///
+    /// Position 10 on the wire.
     Aborted = 10,
     /// Standard code 11: `OUT_OF_RANGE`.
+    ///
+    /// Position 11 on the wire.
     OutOfRange = 11,
     /// Standard code 12: `UNIMPLEMENTED`.
+    ///
+    /// Position 12 on the wire.
     Unimplemented = 12,
     /// Standard code 13: `INTERNAL`.
+    ///
+    /// Position 13 on the wire.
     Internal = 13,
     /// Standard code 14: `UNAVAILABLE`.
+    ///
+    /// Position 14 on the wire.
     Unavailable = 14,
     /// Standard code 15: `DATA_LOSS`.
+    ///
+    /// Position 15 on the wire.
     DataLoss = 15,
     /// Standard code 16: `UNAUTHENTICATED`.
+    ///
+    /// Position 16 on the wire.
     Unauthenticated = 16,
 }
 
@@ -175,12 +209,20 @@ pub fn connection_outcomes<'a>(closed: &'a [crate::ConnectionId], not_open: &'a 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MalformedKind {
     /// Declared length over the protocol ceiling; body never read.
+    ///
+    /// Position 0 on the wire.
     TooLarge,
     /// A known op carrying an operation variant this build does not know.
+    ///
+    /// Position 1 on the wire.
     UnknownVariant,
     /// Undecodable bytes.
+    ///
+    /// Position 2 on the wire.
     Corrupt,
     /// App types exceed 256 entries or 8 KiB encoded.
+    ///
+    /// Position 3 on the wire.
     TypesOverCap,
 }
 
@@ -241,10 +283,16 @@ impl NotSentReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResolveFailure {
     /// No node by that target was ever known.
+    ///
+    /// Position 0 on the wire.
     Unknown,
     /// The node deleted and does not return.
+    ///
+    /// Position 1 on the wire.
     Gone,
     /// The node is known and cannot be reached now.
+    ///
+    /// Position 2 on the wire.
     Unavailable,
 }
 

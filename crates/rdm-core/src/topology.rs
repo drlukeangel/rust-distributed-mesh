@@ -29,8 +29,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PrimaryKind {
     /// A mesh's mesh-primary.
+    ///
+    /// Position 0 on the wire.
     MeshPrimary,
     /// The fabric-primary.
+    ///
+    /// Position 1 on the wire.
     FabricPrimary,
 }
 
@@ -78,6 +82,8 @@ pub struct SourceVersion {
 pub enum TopologyRequest {
     /// `mesh = None` asks for every mesh the target holds. A held `since` for a mesh answers
     /// `Unchanged` for it.
+    ///
+    /// Position 0 on the wire.
     GetTopology {
         /// The mesh to read; `None` for every mesh the target holds.
         mesh: Option<String>,
@@ -99,6 +105,8 @@ impl TopologyRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TopologyReply {
     /// One chunk of one mesh's snapshot.
+    ///
+    /// Position 0 on the wire.
     Snapshot {
         /// The source mesh's name.
         mesh: String,
@@ -121,6 +129,8 @@ pub enum TopologyReply {
         deleted: Vec<LifecycleOp>,
     },
     /// The caller's `since` is the target's held source version for `mesh`.
+    ///
+    /// Position 1 on the wire.
     Unchanged {
         /// The source mesh's name.
         mesh: String,
@@ -130,51 +140,71 @@ pub enum TopologyReply {
         topology_version: u64,
     },
     /// The stream is complete; `meshes` counts the meshes answered, `Unchanged` included.
+    ///
+    /// Position 2 on the wire.
     End {
         /// The number of meshes answered.
         meshes: u32,
     },
     /// The target holds no topology yet.
+    ///
+    /// Position 3 on the wire.
     NotReady {
         /// Why the target holds no topology.
         reason: String,
     },
     /// The requested mesh is not one the target holds.
+    ///
+    /// Position 4 on the wire.
     UnknownMesh {
         /// The mesh requested.
         mesh: String,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 5 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The node is at its admission bound.
+    ///
+    /// Position 6 on the wire.
     Busy {
         /// Which bound the node is at.
         reason: String,
     },
     /// The node is connections-deleting and takes no new work.
+    ///
+    /// Position 7 on the wire.
     ConnectionsDeleting {
         /// Why the node refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 8 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 9 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,
     },
     /// The stream begins: sent before the first snapshot of an accepted read.
+    ///
+    /// Position 10 on the wire.
     Started,
     /// A mesh the target holds no gossiped snapshot of, from the map it stores: no version, so it is
     /// never installed as the mesh's topology. It names births to reach, nothing more. One mesh may
     /// arrive in several frames; `End.meshes` counts the mesh once. `mesh_id` is the id the target
     /// stored for the mesh, when it stored one: the mesh keeps its id through a recovery.
+    ///
+    /// Position 11 on the wire.
     Stored {
         /// The mesh's name.
         mesh: String,
@@ -188,6 +218,8 @@ pub enum TopologyReply {
     /// input, before it computes any (elections §3). One frame per record, sent before `End`; it is
     /// not a mesh and `End.meshes` does not count it. `gone` says the target holds the primary's
     /// exact birth as gone (a later birth replaced it, or its departure was heard).
+    ///
+    /// Position 12 on the wire.
     Primaries {
         /// Which primary the record is.
         kind: PrimaryKind,
@@ -201,6 +233,8 @@ pub enum TopologyReply {
     /// adopts from whoever answers; a mesh-primary only from the fabric-primary). The target answers
     /// the rafka-time it adopted and never its own clock; a target that holds none answers `NotReady`
     /// and starts no stream.
+    ///
+    /// Position 13 on the wire.
     RafkaTime {
         /// The target's rafka-time now, in milliseconds.
         ms: u64,
@@ -213,6 +247,8 @@ pub enum TopologyReply {
     /// store: one frame, answered only by the reader's own mesh-primary to a node of its mesh, after
     /// `RafkaTime` and before `End`; it is not a mesh and `End.meshes` does not count it. The reader
     /// holds it on its own entry in its topology.
+    ///
+    /// Position 14 on the wire.
     OwnRow {
         /// The reader's row.
         node: crate::views::NodeView,

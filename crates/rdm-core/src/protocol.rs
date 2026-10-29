@@ -4,6 +4,26 @@
 //! op and its codec. Requests and replies are top-level enums whose variants
 //! are append-only; a discriminant past the declared variant count is
 //! `UnknownVariant`, anything else undecodable is `Corrupt`.
+//!
+//! # The ops
+//!
+//! Every Node RPC op RDM declares, by op code. Each request and reply body is an enum whose variants
+//! are in declaration order, which is their postcard position: each variant's documentation names its
+//! position, and the fields of a variant or a carried struct travel in declaration order. The
+//! testkit's own ops (`0x40`, `0x70`–`0x75`) are listed on `rdm_test`'s front page.
+//!
+//! | op | name | protocol | request | reply |
+//! |---|---|---|---|---|
+//! | `0x01` | `ping` | [`Ping`](crate::ping::Ping) | [`PingRequest`](crate::ping::PingRequest) | [`PingReply`](crate::ping::PingReply) |
+//! | `0x1A` | `forward` | [`Forward`](crate::forward::Forward) | [`ForwardRequest`](crate::forward::ForwardRequest) | [`ForwardReply`](crate::forward::ForwardReply) |
+//! | `0x1B` | `status` | [`Status`](crate::status::Status) | [`StatusRequest`](crate::status::StatusRequest) | [`StatusReply`](crate::status::StatusReply) |
+//! | `0x1C` | `build-claim` | [`BuildClaim`](crate::build_claim::BuildClaim) | [`BuildClaimRequest`](crate::build_claim::BuildClaimRequest) | [`BuildClaimReply`](crate::build_claim::BuildClaimReply) |
+//! | `0x1D` | `join` | [`Join`](crate::join::Join) | [`JoinRequest`](crate::join::JoinRequest) | [`JoinReply`](crate::join::JoinReply) |
+//! | `0x1E` | `topology` | [`Topology`](crate::topology::Topology) | [`TopologyRequest`](crate::topology::TopologyRequest) | [`TopologyReply`](crate::topology::TopologyReply) |
+//! | `0x1F` | `build-facts` | [`BuildFacts`](crate::build_facts::BuildFacts) | [`BuildFactsRequest`](crate::build_facts::BuildFactsRequest) | [`BuildFactsReply`](crate::build_facts::BuildFactsReply) |
+//! | `0x20` | `build` | [`Build`](crate::build::Build) | [`BuildRequest`](crate::build::BuildRequest) | [`BuildReply`](crate::build::BuildReply) |
+//! | `0x21` | `node-primary-update` | [`NodePrimaryUpdate`](crate::handover::NodePrimaryUpdate) | [`NodePrimaryUpdateRequest`](crate::handover::NodePrimaryUpdateRequest) | [`NodePrimaryUpdateReply`](crate::handover::NodePrimaryUpdateReply) |
+//! | `0x22` | `node-command` | [`NodeCommand`](crate::node_command::NodeCommand) | [`NodeCommandRequest`](crate::node_command::NodeCommandRequest) | [`NodeCommandReply`](crate::node_command::NodeCommandReply) |
 
 use crate::framing::{decode_varint, Varint};
 use crate::outcome::{MalformedKind, ReplyKind};

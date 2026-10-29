@@ -50,6 +50,8 @@ enum CutWire {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FaultRequest {
     /// Arm `spec` under `id`.
+    ///
+    /// Position 0 on the wire.
     Arm {
         /// The cut's id.
         id: String,
@@ -58,11 +60,15 @@ pub enum FaultRequest {
         spec: CutSpec,
     },
     /// Release cut `id`.
+    ///
+    /// Position 1 on the wire.
     Release {
         /// The cut's id.
         id: String,
     },
     /// Every cut the admin holds and what each held.
+    ///
+    /// Position 2 on the wire.
     State,
 }
 
@@ -85,6 +91,8 @@ impl FaultRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Hit {
     /// A Build step receipt about to become durable.
+    ///
+    /// Position 0 on the wire.
     Receipt {
         /// The step name.
         step: String,
@@ -96,6 +104,8 @@ pub enum Hit {
         attempt: u32,
     },
     /// A lifecycle event about to be published.
+    ///
+    /// Position 1 on the wire.
     Event {
         /// The event name.
         event: String,
@@ -111,11 +121,15 @@ pub enum Hit {
         incarnation_id: String,
     },
     /// An accepted Build about to become durable.
+    ///
+    /// Position 2 on the wire.
     Accepted {
         /// The Build.
         build_id: String,
     },
     /// An attempt's claim, durable and broadcast, about to be returned to the drive.
+    ///
+    /// Position 3 on the wire.
     Claimed {
         /// The Build.
         build_id: String,
@@ -125,8 +139,12 @@ pub enum Hit {
         executor: String,
     },
     /// The provider reported a control domain no held birth is in.
+    ///
+    /// Position 4 on the wire.
     ProviderDomain,
     /// A leave announcement about to be published.
+    ///
+    /// Position 5 on the wire.
     LeaveAnnouncement {
         /// The announcing node.
         node: String,
@@ -136,6 +154,8 @@ pub enum Hit {
         channel: String,
     },
     /// A joining admin's topology read, about to be made.
+    ///
+    /// Position 6 on the wire.
     TopologyRead {
         /// The joining admin.
         node: String,
@@ -143,6 +163,8 @@ pub enum Hit {
         reads_from: String,
     },
     /// A final mesh topology or leadership announcement about to be sent on a channel.
+    ///
+    /// Position 7 on the wire.
     Announcement {
         /// The announcing node.
         node: String,
@@ -152,6 +174,8 @@ pub enum Hit {
         channel: String,
     },
     /// A provider `terminate` refused while the cut is armed.
+    ///
+    /// Position 8 on the wire.
     ProviderTerminate {
         /// The runtime's pid, when the handle names one.
         pid: Option<u32>,
@@ -159,6 +183,8 @@ pub enum Hit {
         deployment_id: String,
     },
     /// A node's declaration at the status door, about to be decided.
+    ///
+    /// Position 9 on the wire.
     Declaration {
         /// The declaring node.
         node: String,
@@ -166,16 +192,22 @@ pub enum Hit {
         state: String,
     },
     /// A provider `inspect` answered `Unknown` while the cut is armed.
+    ///
+    /// Position 10 on the wire.
     ProviderInspect {
         /// The runtime's pid, when the handle names one.
         pid: Option<u32>,
     },
     /// A reconcile pass the drift seam held.
+    ///
+    /// Position 11 on the wire.
     DriftPass {
         /// The admin whose pass it is.
         node: String,
     },
     /// A storage change's move the mesh-primary held on its way to its node.
+    ///
+    /// Position 12 on the wire.
     StorageStep {
         /// The commanded node.
         node: String,
@@ -183,6 +215,8 @@ pub enum Hit {
         change_id: String,
     },
     /// A storage change's switch the fabric-primary held.
+    ///
+    /// Position 13 on the wire.
     StorageSwitch {
         /// The change.
         change_id: String,
@@ -247,6 +281,8 @@ pub struct FaultState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FaultReply {
     /// The cut is armed.
+    ///
+    /// Position 0 on the wire.
     Armed {
         /// The admin.
         node: String,
@@ -257,6 +293,8 @@ pub enum FaultReply {
         spec: CutSpec,
     },
     /// The cut is released.
+    ///
+    /// Position 1 on the wire.
     Released {
         /// The admin.
         node: String,
@@ -268,38 +306,54 @@ pub enum FaultReply {
         held_ms: Option<u64>,
     },
     /// Every cut and the counters.
+    ///
+    /// Position 2 on the wire.
     State(FaultState),
     /// The door refused the call by name: the id is armed already, or no cut is armed under it.
+    ///
+    /// Position 3 on the wire.
     Refused {
         /// Why.
         reason: String,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 4 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The admin's Node RPC door is not ready.
+    ///
+    /// Position 5 on the wire.
     NotReady {
         /// Why the node is not ready.
         reason: String,
     },
     /// The node is at its admission bound.
+    ///
+    /// Position 6 on the wire.
     Busy {
         /// Which bound it is at.
         reason: String,
     },
     /// The node is deleting its connections (`node.connections.delete`) and takes no new call.
+    ///
+    /// Position 7 on the wire.
     ConnectionsDeleting {
         /// Why it refuses the call.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 8 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The transport refused the caller this call.
+    ///
+    /// Position 9 on the wire.
     CallerRefused {
         /// Why the call is refused.
         reason: String,

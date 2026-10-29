@@ -3,11 +3,11 @@ autotests = false
 name = "rdm-docgen"
 version = "0.1.0"
 edition = "2021"
-description = "Reads RDM source with syn and writes the generated reference pages (wire, frames, statuses, spans, config) and the mdBook SUMMARY into a rafka-v2 checkout"
+description = "Reads RDM source with syn and writes the generated reference pages (spans, config) into docs/reference/rdm, and checks that the wire bodies, the gossip Frame and the statuses state their positions and serialized names in their doc comments"
 publish = false
 
 [lib]
-name = "rafka_docgen"
+name = "rdm_docgen"
 path = "src/lib.rs"
 
 [[bin]]

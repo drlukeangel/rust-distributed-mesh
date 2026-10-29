@@ -11,14 +11,24 @@ use std::str::FromStr;
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     /// A node-admin.
+    ///
+    /// Position 0 on the wire.
     NodeAdmin,
     /// A plain product node that serves core protocols only.
+    ///
+    /// Position 1 on the wire.
     RpcNode,
     /// A broker.
+    ///
+    /// Position 2 on the wire.
     Broker,
     /// A gateway.
+    ///
+    /// Position 3 on the wire.
     Gateway,
     /// A compute node.
+    ///
+    /// Position 4 on the wire.
     Compute,
 }
 

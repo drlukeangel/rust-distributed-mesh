@@ -32,6 +32,21 @@
 //! }
 //! ```
 //!
+//! # Testkit ops
+//!
+//! The testkit's own Node RPC ops, by op code (RDM's own are on `rdm_core::protocol`). Each body
+//! variant's documentation names its postcard position.
+//!
+//! | op | name | protocol | request | reply |
+//! |---|---|---|---|---|
+//! | `0x40` | `broker-data` | [`BrokerData`](crate::families::BrokerData) | [`BrokerDataRequest`](crate::families::BrokerDataRequest) | [`BrokerDataReply`](crate::families::BrokerDataReply) |
+//! | `0x70` | `proof-store` | [`ProofStore`](crate::proof_store::ProofStore) | [`ProofRequest`](crate::proof_store::ProofRequest) | [`ProofReply`](crate::proof_store::ProofReply) |
+//! | `0x71` | `resolve-probe` | [`ResolveProbe`](crate::resolve_probe::ResolveProbe) | [`ResolveRequest`](crate::resolve_probe::ResolveRequest) | [`ResolveReply`](crate::resolve_probe::ResolveReply) |
+//! | `0x72` | `declare-probe` | [`DeclareProbe`](crate::declare_probe::DeclareProbe) | [`DeclareRequest`](crate::declare_probe::DeclareRequest) | [`DeclareReply`](crate::declare_probe::DeclareReply) |
+//! | `0x73` | `originate` | [`Originate`](crate::originate::Originate) | [`OriginateRequest`](crate::originate::OriginateRequest) | [`OriginateReply`](crate::originate::OriginateReply) |
+//! | `0x74` | `pre-node-ready-pull` | [`PreNodeReadyPull`](crate::pre_node_ready_probe::PreNodeReadyPull) | [`PullRequest`](crate::pre_node_ready_probe::PullRequest) | [`PullReply`](crate::pre_node_ready_probe::PullReply) |
+//! | `0x75` | `fault-door` | [`FaultDoor`](crate::fault_door::FaultDoor) | [`FaultRequest`](crate::fault_door::FaultRequest) | [`FaultReply`](crate::fault_door::FaultReply) |
+//!
 //! # Guide
 //!
 //! [Test harnesses](../../guide/eng/testing-harnesses.html),

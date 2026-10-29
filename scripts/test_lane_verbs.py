@@ -179,6 +179,29 @@ class Verbs(unittest.TestCase):
         self.assertEqual((self.e.lane / 'docs/reference/rdm/spans.md').read_text(), generated({'a.txt': 'a1', 'b.txt': 'b1'}))
         self.assertEqual(self.e.git(self.e.lane, 'status', '--porcelain', '--untracked-files=no'), '')
 
+    def test_post_land_gate_removes_a_generated_page_docgen_no_longer_writes_when_a_rebase_conflicts_in_it(self):
+        # main once held wire.md; the branch changed it; main then removed it (Q262): the rebase conflicts
+        # in it (changed here, deleted there) and in spans.md, and the regeneration leaves only what docgen writes.
+        self.e.git(self.e.pusher, 'pull', '-q', '--rebase', 'origin', 'main')
+        self.e.commit(self.e.pusher, 'main: wire.md', {'docs/reference/rdm/wire.md': 'w0\n'})
+        self.e.git(self.e.pusher, 'push', '-q', 'origin', 'HEAD:main')
+        self.e.git(self.e.lane, 'fetch', '-q', 'origin')
+        self.e.git(self.e.lane, 'rebase', '-q', 'origin/main')
+        self.e.change(self.e.lane, 'branch: a', **{'a.txt': 'a1'})
+        self.e.commit(self.e.lane, 'branch: wire.md', {'docs/reference/rdm/wire.md': 'w1\n'})
+        self.e.git(self.e.pusher, 'rm', '-q', 'docs/reference/rdm/wire.md')
+        self.e.git(self.e.pusher, 'commit', '-q', '-m', 'main: wire.md removed')
+        self.e.git(self.e.pusher, 'push', '-q', 'origin', 'HEAD:main')
+        self.e.move_main('main: b', **{'b.txt': 'b1'})
+        rc, out = self.e.run('post-land-gate.sh', LANE)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f'GREEN lane {LANE}', out)
+        self.assertIn('regenerated docs/reference/rdm', out)
+        self.assertFalse((self.e.lane / 'docs/reference/rdm/wire.md').exists(), 'the page docgen no longer writes is gone')
+        self.assertEqual(self.e.git(self.e.lane, 'ls-files', 'docs/reference/rdm'), 'docs/reference/rdm/spans.md')
+        self.assertEqual((self.e.lane / 'docs/reference/rdm/spans.md').read_text(), generated({'a.txt': 'a1', 'b.txt': 'b1'}))
+        self.assertEqual(self.e.git(self.e.lane, 'status', '--porcelain', '--untracked-files=no'), '')
+
     def test_post_land_gate_refuses_by_name_a_conflict_outside_the_generated_pages(self):
         self.e.change(self.e.lane, 'branch: a', **{'a.txt': 'a1'})
         tip = self.e.git(self.e.lane, 'rev-parse', 'HEAD')

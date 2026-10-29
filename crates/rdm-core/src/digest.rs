@@ -31,13 +31,21 @@ pub struct MeshNode {
 #[serde(rename_all = "kebab-case")]
 pub enum MemberStatus {
     /// The node has not yet declared itself ready.
+    ///
+    /// Position 0 on the wire; serialized as `pending`.
     Pending,
     /// The node takes traffic.
+    ///
+    /// Position 1 on the wire; serialized as `ready`.
     Ready,
     /// The node takes no new work: its connections are being deleted.
+    ///
+    /// Position 2 on the wire; serialized as `connections-deleting`.
     #[serde(rename = "connections-deleting")]
     ConnectionsDeleting,
     /// The node has announced its departure.
+    ///
+    /// Position 3 on the wire; serialized as `leaving`.
     Leaving,
 }
 
@@ -48,13 +56,21 @@ pub enum MemberStatus {
 #[serde(rename_all = "kebab-case")]
 pub enum NodeState {
     /// Until the birth has published once and is self-ready.
+    ///
+    /// Position 0 on the wire; serialized as `joining`.
     #[default]
     Joining,
     /// The default once it is self-ready.
+    ///
+    /// Position 1 on the wire; serialized as `alive`.
     Alive,
     /// Over its CPU or RAM budget.
+    ///
+    /// Position 2 on the wire; serialized as `overloaded`.
     Overloaded,
     /// It reaches a broker only through a peer or node-admin.
+    ///
+    /// Position 3 on the wire; serialized as `degraded`.
     Degraded,
 }
 

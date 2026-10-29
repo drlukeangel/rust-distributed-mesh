@@ -45,14 +45,24 @@ pub enum LifecycleScope {
 #[serde(rename_all = "kebab-case")]
 pub enum LifecycleState {
     /// Created and not yet ready.
+    ///
+    /// Serialized as `pending`.
     Pending,
     /// Ready: it takes traffic.
+    ///
+    /// Serialized as `ready`.
     Ready,
     /// Leaving: it has announced its departure.
+    ///
+    /// Serialized as `leaving`.
     Leaving,
     /// Dead: it is gone.
+    ///
+    /// Serialized as `dead`.
     Dead,
     /// Deleted: it has been taken out of service (node.delete).
+    ///
+    /// Serialized as `deleted`.
     Deleted,
 }
 

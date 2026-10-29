@@ -39,11 +39,15 @@ pub const MAX_VALUE_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofRequest {
     /// Read `key`.
+    ///
+    /// Position 0 on the wire.
     Get {
         /// The key to read.
         key: Vec<u8>,
     },
     /// Write `value` under `key`.
+    ///
+    /// Position 1 on the wire.
     Put {
         /// The key to write.
         key: Vec<u8>,
@@ -51,12 +55,16 @@ pub enum ProofRequest {
         value: Vec<u8>,
     },
     /// Delete `key`.
+    ///
+    /// Position 2 on the wire.
     Delete {
         /// The key to delete.
         key: Vec<u8>,
     },
     /// Swap when the held value equals `expected` (`None`: the key is absent);
     /// `new: None` deletes the key.
+    ///
+    /// Position 3 on the wire.
     CompareAndSwap {
         /// The key to swap.
         key: Vec<u8>,
@@ -89,12 +97,20 @@ impl ProofRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofOp {
     /// Read.
+    ///
+    /// Position 0 on the wire.
     Get,
     /// Write.
+    ///
+    /// Position 1 on the wire.
     Put,
     /// Delete.
+    ///
+    /// Position 2 on the wire.
     Delete,
     /// Compare and swap.
+    ///
+    /// Position 3 on the wire.
     CompareAndSwap,
 }
 
@@ -129,6 +145,8 @@ pub struct Provenance {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofReply {
     /// The value of the key.
+    ///
+    /// Position 0 on the wire.
     Value {
         /// Where the call executed.
         at: Provenance,
@@ -136,26 +154,36 @@ pub enum ProofReply {
         value: Vec<u8>,
     },
     /// The key is absent.
+    ///
+    /// Position 1 on the wire.
     Absent {
         /// Where the call executed.
         at: Provenance,
     },
     /// The value was stored.
+    ///
+    /// Position 2 on the wire.
     Stored {
         /// Where the call executed.
         at: Provenance,
     },
     /// The key was deleted.
+    ///
+    /// Position 3 on the wire.
     Deleted {
         /// Where the call executed.
         at: Provenance,
     },
     /// The swap was made.
+    ///
+    /// Position 4 on the wire.
     Swapped {
         /// Where the call executed.
         at: Provenance,
     },
     /// The held value differs from the expected one.
+    ///
+    /// Position 5 on the wire.
     Mismatch {
         /// Where the call executed.
         at: Provenance,
@@ -163,6 +191,8 @@ pub enum ProofReply {
         current: Option<Vec<u8>>,
     },
     /// A key or value over its limit; nothing was read or written.
+    ///
+    /// Position 6 on the wire.
     TooLarge {
         /// Where the call executed.
         at: Provenance,
@@ -174,6 +204,8 @@ pub enum ProofReply {
         got: u32,
     },
     /// The store file could not be read or written; nothing changed.
+    ///
+    /// Position 7 on the wire.
     StoreFailed {
         /// Where the call executed.
         at: Provenance,
@@ -181,31 +213,43 @@ pub enum ProofReply {
         reason: String,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 8 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The node is not ready to serve.
+    ///
+    /// Position 9 on the wire.
     NotReady {
         /// Why the node is not ready.
         reason: String,
     },
     /// The node is at its admission bound.
+    ///
+    /// Position 10 on the wire.
     Busy {
         /// Which bound it is at.
         reason: String,
     },
     /// The node is connections-deleting and takes no new work.
+    ///
+    /// Position 11 on the wire.
     ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 12 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 13 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,

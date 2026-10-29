@@ -18,12 +18,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Seat {
     /// The node-admin primary of one mesh (named by [`Primary::mesh`]).
+    ///
+    /// Position 0 on the wire.
     MeshPrimary,
     /// The fabric primary: a mesh primary that also holds the fabric's control.
+    ///
+    /// Position 1 on the wire.
     FabricPrimary,
     /// The primary of the holder's mesh's cohort of this node type, every type but `node_admin`
     /// (whose seat is [`Seat::MeshPrimary`]): its mesh's primary writes and announces its record
     /// (R-MT1 Q3: the mesh-primary is the mesh's one row writer and sole author of member status).
+    ///
+    /// Position 2 on the wire.
     Cohort(NodeKind),
 }
 

@@ -32,6 +32,8 @@ pub const FORWARD_REPLY_RESERVE: Duration = Duration::from_millis(100);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForwardRequest {
     /// Make `inner_op` on `target` and hand its reply back.
+    ///
+    /// Position 0 on the wire.
     Forward {
         /// The exact final target's logical NodeId.
         target: NodeId,
@@ -67,18 +69,32 @@ pub struct OwedDelivery {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndeterminateCause {
     /// The receiving birth is proven exited or removed.
+    ///
+    /// Position 0 on the wire.
     ReceiverGone,
     /// The owner's reply bound lapsed after commit.
+    ///
+    /// Position 1 on the wire.
     ReplyDeadline,
     /// The reply was lost after commit.
+    ///
+    /// Position 2 on the wire.
     ReplyLost,
     /// A reset after commit; its numeric code is evidence.
+    ///
+    /// Position 3 on the wire.
     Reset(u64),
     /// The caller cannot decode this reply variant.
+    ///
+    /// Position 4 on the wire.
     UnsupportedReplyVariant,
     /// The reply bytes are corrupt.
+    ///
+    /// Position 5 on the wire.
     CorruptReply,
     /// The response violated its framing or ordering contract.
+    ///
+    /// Position 6 on the wire.
     ProtocolViolation,
 }
 
@@ -86,20 +102,36 @@ pub enum IndeterminateCause {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotSentCause {
     /// The resolver's typed result.
+    ///
+    /// Position 0 on the wire.
     Resolve(crate::outcome::ResolveFailure),
     /// Dial or stream open failed before commit.
+    ///
+    /// Position 1 on the wire.
     Connection,
     /// The permit was not available before the owner's deadline.
+    ///
+    /// Position 2 on the wire.
     StreamBudget,
     /// The owner's bound lapsed before commit.
+    ///
+    /// Position 3 on the wire.
     Deadline,
     /// The unfinished request was cut.
+    ///
+    /// Position 4 on the wire.
     FrameNotSent,
     /// A carrier's own refusal proved no dispatch.
+    ///
+    /// Position 5 on the wire.
     Carried,
     /// The carrier's own edge was lost.
+    ///
+    /// Position 6 on the wire.
     CarrierEdgeLost,
     /// The remaining budget did not exceed the reserve.
+    ///
+    /// Position 7 on the wire.
     CarrierNoBudget {
         /// The origin's remaining milliseconds.
         remaining_ms: u64,
@@ -107,13 +139,19 @@ pub enum NotSentCause {
         reserve_ms: u64,
     },
     /// The requested op cannot be forwarded.
+    ///
+    /// Position 8 on the wire.
     NotForwardable {
         /// The inner op.
         op: u8,
     },
     /// No active route was selected.
+    ///
+    /// Position 9 on the wire.
     NoActiveRoute,
     /// The source admits no new connection.
+    ///
+    /// Position 10 on the wire.
     AdmissionBlocked,
 }
 
@@ -121,11 +159,15 @@ pub enum NotSentCause {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForwardReply {
     /// The inner call reached the target, which answered: its reply payload, verbatim.
+    ///
+    /// Position 0 on the wire.
     Forwarded {
         /// The inner reply payload.
         inner: Vec<u8>,
     },
     /// The carrier proved the inner call never committed at the target.
+    ///
+    /// Position 1 on the wire.
     InnerNotSent {
         /// Why the inner call never committed.
         reason: String,
@@ -133,17 +175,23 @@ pub enum ForwardReply {
         cause: NotSentCause,
     },
     /// The target does not serve the inner op.
+    ///
+    /// Position 2 on the wire.
     InnerUnserved {
         /// The op the target does not serve.
         op: u8,
     },
     /// The carrier's resolver stopped naming the birth the inner call was dialled to, before the
     /// inner request went: never dispatched (no receiver refuses a call for the node id it names).
+    ///
+    /// Position 3 on the wire.
     InnerRejectedStale {
         /// The node the inner call addressed.
         target_node_id: NodeId,
     },
     /// The inner call committed at the target and its outcome is unknown.
+    ///
+    /// Position 4 on the wire.
     InnerIndeterminate {
         /// Why the outcome is unknown.
         reason: String,
@@ -151,36 +199,50 @@ pub enum ForwardReply {
         cause: IndeterminateCause,
     },
     /// The inner protocol is not forwardable through this carrier.
+    ///
+    /// Position 5 on the wire.
     NotForwardable {
         /// The inner op that is not forwardable.
         op: u8,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 6 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The carrier is not ready to serve.
+    ///
+    /// Position 7 on the wire.
     NotReady {
         /// Why the carrier is not ready.
         reason: String,
     },
     /// The carrier is at its admission bound.
+    ///
+    /// Position 8 on the wire.
     Busy {
         /// Which bound the carrier is at.
         reason: String,
     },
     /// The carrier is connections-deleting and takes no new work.
+    ///
+    /// Position 9 on the wire.
     ConnectionsDeleting {
         /// Why the carrier refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 10 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 11 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,
@@ -189,12 +251,16 @@ pub enum ForwardReply {
     /// target is not Active (connections.md §8). `reason` names the carrier's latest Direct fact
     /// toward the target. The origin retires its Proxy through this carrier with the structural
     /// reason `carrier-edge-lost`.
+    ///
+    /// Position 12 on the wire.
     CarrierEdgeLost {
         /// The carrier's latest Direct fact toward the target.
         reason: String,
     },
     /// The origin's remaining budget does not exceed [`FORWARD_REPLY_RESERVE`], so the carrier
     /// made no inner call. Both are whole milliseconds.
+    ///
+    /// Position 13 on the wire.
     NoInnerBudget {
         /// The origin's remaining budget.
         remaining_ms: u64,

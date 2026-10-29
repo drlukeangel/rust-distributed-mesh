@@ -18,6 +18,8 @@ pub struct BrokerData;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BrokerDataRequest {
     /// Append `value` under `key`; the broker answers the offset it took.
+    ///
+    /// Position 0 on the wire.
     Append {
         /// The key to append under.
         key: String,
@@ -25,6 +27,8 @@ pub enum BrokerDataRequest {
         value: Vec<u8>,
     },
     /// Read what `key` holds.
+    ///
+    /// Position 1 on the wire.
     Read {
         /// The key to read.
         key: String,
@@ -35,6 +39,8 @@ pub enum BrokerDataRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BrokerDataReply {
     /// The append succeeded.
+    ///
+    /// Position 0 on the wire.
     Appended {
         /// The key appended under.
         key: String,
@@ -44,6 +50,8 @@ pub enum BrokerDataReply {
         served_by: String,
     },
     /// The read's answer.
+    ///
+    /// Position 1 on the wire.
     Value {
         /// The key read.
         key: String,
@@ -54,31 +62,43 @@ pub enum BrokerDataReply {
     },
     // The typed Node RPC refusals (node-rpc.md §34), one variant each.
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 2 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The node is not ready to serve.
+    ///
+    /// Position 3 on the wire.
     NotReady {
         /// Why the node is not ready.
         reason: String,
     },
     /// The node is at its admission bound.
+    ///
+    /// Position 4 on the wire.
     Busy {
         /// Which bound the node is at.
         reason: String,
     },
     /// The node is connections-deleting and takes no new work.
+    ///
+    /// Position 5 on the wire.
     ConnectionsDeleting {
         /// Why the node refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 6 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 7 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,

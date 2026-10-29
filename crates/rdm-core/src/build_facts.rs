@@ -40,12 +40,16 @@ pub struct BuildFacts;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildFactsRequest {
     /// Every fact the target holds for `build_id`.
+    ///
+    /// Position 0 on the wire.
     FetchBuildFacts {
         /// The Build whose facts are fetched.
         build_id: String,
     },
     /// Every fact the target holds for its current accepted Build, whose id the stream's `End`
     /// carries.
+    ///
+    /// Position 1 on the wire.
     FetchCurrentBuild,
 }
 
@@ -63,6 +67,8 @@ impl BuildFactsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildFactsReply {
     /// One chunk of the snapshot: `facts` is one postcard frame of the Build topic's message.
+    ///
+    /// Position 0 on the wire.
     Facts {
         /// The Build the chunk belongs to.
         build_id: String,
@@ -75,6 +81,8 @@ pub enum BuildFactsReply {
     },
     /// The stream is over. `facts` counts the facts sent in `chunks` chunks. `complete` is the
     /// responder's statement that these are all of its holdings of the Build and that they are whole.
+    ///
+    /// Position 1 on the wire.
     End {
         /// The Build read.
         build_id: String,
@@ -87,44 +95,62 @@ pub enum BuildFactsReply {
     },
     /// The target cannot answer yet; `reason` names what it waits for.
     /// The target is not ready to serve.
+    ///
+    /// Position 2 on the wire.
     NotReady {
         /// What the target waits for.
         reason: String,
     },
     /// The target holds no fact of `build_id`.
+    ///
+    /// Position 3 on the wire.
     UnknownBuild {
         /// The Build requested.
         build_id: String,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 4 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The target is at its admission bound.
+    ///
+    /// Position 5 on the wire.
     Busy {
         /// Which bound it is at.
         reason: String,
     },
     /// The target is connections-deleting and takes no new work.
+    ///
+    /// Position 6 on the wire.
     ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 7 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 8 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,
     },
     /// The stream begins: sent before the first chunk of an accepted read.
+    ///
+    /// Position 9 on the wire.
     Started,
     /// `FetchCurrentBuild` found no current Build: no Build in the target's builds store is in
     /// progress or completed.
+    ///
+    /// Position 10 on the wire.
     NoCurrentBuild {
         /// Why the target holds none.
         reason: String,

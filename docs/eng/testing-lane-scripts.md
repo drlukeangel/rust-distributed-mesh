@@ -59,8 +59,9 @@ the cells it ran with their results, and the Jaeger links of the traces that sho
 1. refuses a busy lane (exit 3) or a dirty one (exit 6);
 2. rebases on `origin/main` unless the branch already contains it. A conflict only in the
    generated reference pages (`docs/reference/rdm/*.md`) is resolved by regenerating them with the
-   lane's `target/debug/rdm-docgen` over the commit being applied, and the rebase continues; a
-   conflict in any other file aborts the rebase and is refused, naming the files (exit 4);
+   lane's `target/debug/rdm-docgen` over the commit being applied, leaving only the pages it writes
+   (spans.md, config.md), and the rebase continues; a conflict in any other file aborts the rebase
+   and is refused, naming the files (exit 4);
 3. cleans a moved lane's workspace crates (`lane_target_at_path`, exit 7 on failure);
 4. runs the lane's own `scripts/rdm-gate-at.sh <lane dir> fast`;
 5. prints `GREEN lane <n> <sha> tree <hash>` when the gate recorded the commit's content in
@@ -189,7 +190,7 @@ scratch `$HOME`, with a stub gate, `gh` and `rdm-docgen`). Detail and examples:
 | `scripts/netless.sh <command…>` | runs a command in a fresh network namespace with loopback only (needs root or `sudo`) |
 | `scripts/demo-estate.sh up\|stream\|down [<root>]` | the R-shape consumer's live estate by hand, with the demo admin UI ([testing-mesh-lifecycle.md](testing-mesh-lifecycle.md) §5) |
 | `scripts/i143-rshape-build-consumer.sh` | builds the independent consumer workspace (`demo/`) at one exact RDM commit; the release gate runs it first |
-| `scripts/docs-site.sh <rafka-v2 checkout>` | regenerates the RDM reference pages with `rdm-docgen` into a rafka-v2 checkout, checks them against what it holds, builds the mdBook site and lists dead links |
+| `scripts/docs-site.sh [--check]` | builds the docs site from this repository into `target/docs-site`: regenerates `docs/reference/rdm` (spans.md, config.md) with `rdm-docgen`, builds the API docs with `cargo doc` (`-D warnings`) and the guide with mdBook, lists dead links; `--check` fails on a dirty generated page or any dead link |
 | `scripts/prebuilt-test.py` | runs a `cargo test` selection from the gate's existing artifacts, without cargo |
 | `scripts/rustc-wrapper.sh` | the rustc wrapper: vendor crates through sccache, workspace crates through plain rustc, every link through mold; without sccache or mold, plain rustc and the default linker, named once per cargo run |
 | `scripts/cc-wrapper.sh` (and its link `scripts/c++-wrapper.sh`) | `CC` and `CXX`: `sccache cc` / `sccache c++` when sccache is in `PATH`, plain `cc` / `c++` otherwise |

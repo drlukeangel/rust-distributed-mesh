@@ -50,19 +50,31 @@ pub enum BuildChange {
     /// Reserved position: the removed count form `ReconcileFabric` (proposal
     /// executable-bindings-at-create.md §3.10(a)). Never sent; a request at this position decodes as
     /// `UnknownVariant` ([`Build::decode_request`]). Kept so every later change keeps its position.
+    ///
+    /// Position 0 on the wire.
     Reserved0,
     /// Reserved position: the removed count form `ReconcileMesh` (§3.10(a)), as [`Self::Reserved0`].
+    ///
+    /// Position 1 on the wire.
     Reserved1,
     /// Reserved position: the removed count form `AddNode` (§3.10(a)), as [`Self::Reserved0`].
+    ///
+    /// Position 2 on the wire.
     Reserved2,
     /// Remove one node.
+    ///
+    /// Position 3 on the wire.
     RemoveNode {
         /// The node to remove.
         node: PathName,
     },
     /// Reserved position: the removed count form `CreateMesh` (§3.10(a)), as [`Self::Reserved0`].
+    ///
+    /// Position 4 on the wire.
     Reserved4,
     /// Remove a mesh.
+    ///
+    /// Position 5 on the wire.
     RemoveMesh {
         /// The mesh to remove.
         mesh: String,
@@ -70,18 +82,26 @@ pub enum BuildChange {
     /// Reserved position: the removed `node.restart` (Q183; callers run node.stop then node.start).
     /// Never sent; a request at this position decodes as `UnknownVariant` ([`Build::decode_request`]).
     /// Kept so every later change keeps its position.
+    ///
+    /// Position 6 on the wire.
     Reserved6,
     /// `node.connections.delete { All }` of the live birth at `node`; it keeps running.
+    ///
+    /// Position 7 on the wire.
     DeleteConnections {
         /// The node.
         node: PathName,
     },
     /// Stop the live birth at `node` with no implicit connections delete and no departure.
+    ///
+    /// Position 8 on the wire.
     Stop {
         /// The node.
         node: PathName,
     },
     /// Start the stopped birth at `node`: the same process rejoins as itself.
+    ///
+    /// Position 9 on the wire.
     Start {
         /// The node.
         node: PathName,
@@ -90,6 +110,8 @@ pub enum BuildChange {
     /// exited (node-recovery.md): node.delete of that instance, then node.create at the same
     /// path.name over the inherited data dir, with a new node.id. Keyed on the exited birth: a
     /// repeat answers `AlreadyApplied` or `BuildInProgress`, never a second recovery.
+    ///
+    /// Position 10 on the wire.
     Recover {
         /// The node's `path.name`.
         node: PathName,
@@ -103,6 +125,8 @@ pub enum BuildChange {
     /// The caller owns the steps; RDM executes each step as its op's own workflow and records the
     /// step's receipts. A resume never runs a completed step again. The topology is unchanged:
     /// the steps are the next attempt of the accepted Build.
+    ///
+    /// Position 11 on the wire.
     Steps {
         /// The steps, in the order they run.
         steps: Vec<Step>,
@@ -111,11 +135,15 @@ pub enum BuildChange {
     /// mesh leaf-inward (the fabric-primary's own mesh last, where the fabric seat stays put),
     /// delete each other mesh's final mesh-primary, release the fabric name and report
     /// `fabric.deleted` while the fabric-primary remains alive for its separate `node.delete`.
+    ///
+    /// Position 12 on the wire.
     DeleteFabric,
     /// A deleted birth heard again (node-investigation.md: "A node that comes back after it was
     /// re-created is refused ... The node that refused it reports it to the fabric-primary, which
     /// terminates its runtime"): the report, keyed on the exact birth; the fabric-primary runs the
     /// existing `TerminateRuntime` on its runtime (Q110, Q128).
+    ///
+    /// Position 13 on the wire.
     Terminate {
         /// The `path.name` the birth held.
         node: PathName,
@@ -128,6 +156,8 @@ pub enum BuildChange {
     /// executable-bindings-at-create.md §1, Q157). Never sent; a request at this position decodes as
     /// `UnknownVariant` ([`Build::decode_request`]). A node's executable is replaced by a
     /// [`Self::Reconcile`] naming it for its path. Kept so every later change keeps its position.
+    ///
+    /// Position 14 on the wire.
     Reserved14,
     /// The complete topology (proposal executable-bindings-at-create.md rule 1): every node of the
     /// fabric, each by its create spec ([`crate::meta::NodeSpec`]: its `path.name` and its properties,
@@ -138,6 +168,8 @@ pub enum BuildChange {
     /// name when `based_on` is no longer the current Build (nothing accepted; the caller re-reads),
     /// when it lists no node (that is fabric.delete), and when a path it creates names no
     /// executable. Appended last: the Build wire is positional.
+    ///
+    /// Position 15 on the wire.
     Reconcile {
         /// The build_id of the current Build the caller read.
         based_on: crate::BuildId,
@@ -169,6 +201,8 @@ pub enum Step {
     /// node.create at `node`: a new node.id, incarnation and data dir at that exact `path.name`
     /// (for a replace's successor, the `<name>` its predecessor released), claimed before anything is
     /// launched.
+    ///
+    /// Position 0 on the wire.
     Create {
         /// The `path.name` the node is created at.
         node: PathName,
@@ -182,6 +216,8 @@ pub enum Step {
         executable: Option<crate::binding::Binding>,
     },
     /// node.stop of the live node at `node`: it is stopped, its process and data kept.
+    ///
+    /// Position 1 on the wire.
     Stop {
         /// The node.
         node: PathName,
@@ -189,6 +225,8 @@ pub enum Step {
     /// node.update of the node at `node`: its `path.name` becomes `name` (lifecycles/node-name-update.md, under the
     /// rename precondition: the node is live, its `node.connections.deleted` of an `All` and then its
     /// `node.mesh.left` held, and it holds no connection; a stopped node is never renamed).
+    ///
+    /// Position 2 on the wire.
     Update {
         /// The node.
         node: PathName,
@@ -196,11 +234,15 @@ pub enum Step {
         name: PathName,
     },
     /// node.start of the stopped node at `node`: the same process rejoins under the name its row holds.
+    ///
+    /// Position 3 on the wire.
     Start {
         /// The node.
         node: PathName,
     },
     /// node.delete of the node at `node`: its identity and name are released, its storage kept.
+    ///
+    /// Position 4 on the wire.
     Delete {
         /// The node.
         node: PathName,
@@ -208,6 +250,8 @@ pub enum Step {
     /// node.connections.delete `{ scope: All }` of the live node at `node`
     /// (lifecycles/node-connections-delete.md): every connection it holds is closed; it keeps running
     /// on its mesh.
+    ///
+    /// Position 5 on the wire.
     DeleteConnections {
         /// The node.
         node: PathName,
@@ -215,6 +259,8 @@ pub enum Step {
     /// node.mesh.leave of the live node at `node`, once its connections are deleted
     /// (lifecycles/node-mesh-leave.md): it leaves its mesh (and the backbone, a node-admin) and its Node
     /// RPC pool, its endpoint kept bound.
+    ///
+    /// Position 6 on the wire.
     LeaveMesh {
         /// The node.
         node: PathName,
@@ -269,8 +315,12 @@ impl StorageCommit {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildSubmit {
     /// A new change to accept and drive.
+    ///
+    /// Position 0 on the wire.
     Change(BuildChange),
     /// A re-submit of a Build the caller already holds the id of: never a second Build.
+    ///
+    /// Position 1 on the wire.
     Resubmit {
         /// The Build.
         build_id: String,
@@ -284,12 +334,16 @@ pub enum BuildSubmit {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildRequest {
     /// `build.create`: accept `submit` and stream the Build until it ends.
+    ///
+    /// Position 0 on the wire.
     Create {
         /// What is submitted.
         submit: BuildSubmit,
     },
     /// `build.attempt.run`: run attempt `attempt` of `build_id`, claimed for `executor`, on the
     /// recipient. Start-or-reattach: a repeat of the same `(build_id, attempt)` attaches to the run.
+    ///
+    /// Position 1 on the wire.
     AttemptRun {
         /// The Build.
         build_id: String,
@@ -319,11 +373,15 @@ pub enum BuildRequest {
         mesh: Option<String>,
     },
     /// `build.get`: the Build and its receipts, for reattachment after a cut.
+    ///
+    /// Position 2 on the wire.
     Get {
         /// The Build.
         build_id: String,
     },
     /// `build.delete`: a finished Build leaves history.
+    ///
+    /// Position 3 on the wire.
     Delete {
         /// The Build.
         build_id: String,
@@ -333,6 +391,8 @@ pub enum BuildRequest {
     /// topology in `Topology` chunks, its receipts in `Steps` chunks, then its `Build` header; then
     /// `End`. The current Build is selected once per read and its header marked. Appended last: the
     /// Build wire is positional.
+    ///
+    /// Position 4 on the wire.
     GetBuilds {
         /// The pairs the Build header must match.
         filter: crate::filter::Filter,
@@ -356,16 +416,28 @@ impl BuildRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Disposition {
     /// A new Build was accepted, or the next attempt of the accepted Build was opened.
+    ///
+    /// Position 0 on the wire.
     Created,
     /// The Build is running with a live holder: this stream is that holder's.
+    ///
+    /// Position 1 on the wire.
     Attached,
     /// The Build had failed or its holder was proven lost: the next attempt runs.
+    ///
+    /// Position 2 on the wire.
     NextAttempt,
     /// The Build is complete: nothing runs, the terminal frame follows.
+    ///
+    /// Position 3 on the wire.
     AlreadyApplied,
     /// `AttemptRun`: the recipient started the claimed attempt.
+    ///
+    /// Position 4 on the wire.
     Started,
     /// `AttemptRun`: the recipient holds the attempt's run; this stream attached to it.
+    ///
+    /// Position 5 on the wire.
     Reattached,
 }
 
@@ -373,8 +445,12 @@ pub enum Disposition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepResult {
     /// The step completed.
+    ///
+    /// Position 0 on the wire.
     Complete,
     /// The step failed.
+    ///
+    /// Position 1 on the wire.
     Failed {
         /// Why it failed.
         reason: String,
@@ -400,12 +476,20 @@ pub struct StepReceipt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildPhase {
     /// No executor runs an attempt.
+    ///
+    /// Position 0 on the wire.
     Pending,
     /// An executor holds and runs an attempt.
+    ///
+    /// Position 1 on the wire.
     Running,
     /// Every step is complete.
+    ///
+    /// Position 2 on the wire.
     Complete,
     /// The last attempt failed.
+    ///
+    /// Position 3 on the wire.
     Failed,
 }
 
@@ -445,6 +529,8 @@ pub struct BuildHeader {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildReply {
     /// The stream begins: the Build and the attempt it follows.
+    ///
+    /// Position 0 on the wire.
     Started {
         /// The Build.
         build_id: String,
@@ -456,6 +542,8 @@ pub enum BuildReply {
     /// A step completed. On the inner attempt stream it reports the step's result upstream to the
     /// fabric-primary, which writes its receipt; on the outer stream the fabric-primary sends it only
     /// after it recorded the receipt (node-rpc-envelope.md, Frames, durable receipts and reattachment).
+    ///
+    /// Position 1 on the wire.
     Step {
         /// The Build.
         build_id: String,
@@ -471,6 +559,8 @@ pub enum BuildReply {
     },
     /// The step in flight is blocked. Non-terminal, in memory only, sent on a new blocker or a
     /// changed reason and never on a timer; never a step outcome.
+    ///
+    /// Position 2 on the wire.
     Blocked {
         /// The Build.
         build_id: String,
@@ -484,6 +574,8 @@ pub enum BuildReply {
         reason: String,
     },
     /// A chunk of the receipts `Get` reads.
+    ///
+    /// Position 3 on the wire.
     Steps {
         /// The Build.
         build_id: String,
@@ -495,6 +587,8 @@ pub enum BuildReply {
         steps: Vec<StepReceipt>,
     },
     /// Terminal: the Build converged. Completed steps were read and replayed, never run again.
+    ///
+    /// Position 4 on the wire.
     Complete {
         /// The Build.
         build_id: String,
@@ -502,6 +596,8 @@ pub enum BuildReply {
         attempt: u32,
     },
     /// Terminal: a step failed. Nothing follows it on the stream.
+    ///
+    /// Position 5 on the wire.
     Failed {
         /// The Build.
         build_id: String,
@@ -518,6 +614,8 @@ pub enum BuildReply {
     },
     /// Terminal of `AttemptRun`: the run ended at an operation another executor runs. The
     /// fabric-primary claims the next attempt for `to`.
+    ///
+    /// Position 6 on the wire.
     HandedOff {
         /// The Build.
         build_id: String,
@@ -527,6 +625,8 @@ pub enum BuildReply {
         to: String,
     },
     /// Terminal of `Get`: the Build's header; the receipts came in `Steps` chunks.
+    ///
+    /// Position 7 on the wire.
     Got {
         /// The Build.
         build_id: String,
@@ -546,16 +646,22 @@ pub enum BuildReply {
         chunks: u32,
     },
     /// Terminal of `Delete`.
+    ///
+    /// Position 8 on the wire.
     Deleted {
         /// The Build removed from history.
         build_id: String,
     },
     /// Refusal: the receiver is not the fabric-primary; it names the one it sees.
+    ///
+    /// Position 9 on the wire.
     NotFabricPrimary {
         /// The fabric-primary the receiver sees, when it sees one.
         fabric_primary: Option<String>,
     },
     /// Refusal: the recipient is not the executor the claim names.
+    ///
+    /// Position 10 on the wire.
     NotExecutor {
         /// The executor the claim names.
         named: String,
@@ -563,6 +669,8 @@ pub enum BuildReply {
         recipient: String,
     },
     /// Refusal: the claim is not the current folded attempt of the Build.
+    ///
+    /// Position 11 on the wire.
     StaleClaim {
         /// The attempt the recipient's fold holds as current.
         held_attempt: u32,
@@ -572,11 +680,15 @@ pub enum BuildReply {
         carried_attempt: u32,
     },
     /// Refusal: the receiver holds no fact of the Build.
+    ///
+    /// Position 12 on the wire.
     UnknownBuild {
         /// The Build.
         build_id: String,
     },
     /// Refusal: the change is refused by the topology rules, naming the rule and why.
+    ///
+    /// Position 13 on the wire.
     Rejected {
         /// The rule's name (`unknown-node`, `unheard-mesh`, ...).
         reason: String,
@@ -585,6 +697,8 @@ pub enum BuildReply {
     },
     /// Refusal: another attempt holds what the request needs (R-BI7: one attempt in flight per
     /// mesh; a second topology change while a topology Build is in progress is refused fabric-wide).
+    ///
+    /// Position 14 on the wire.
     BuildInProgress {
         /// The Build in flight.
         current_build_id: String,
@@ -595,12 +709,16 @@ pub enum BuildReply {
         held_by: Option<String>,
     },
     /// Refusal: the attempt number was opened first by another action.
+    ///
+    /// Position 15 on the wire.
     AttemptTaken {
         /// What holds the number.
         detail: String,
     },
     /// Refusal: the fabric-primary record the receiver holds names another live birth, so the
     /// receiver dispatches nothing (node-rpc-envelope.md's second `NotFabricPrimary { node, by }`).
+    ///
+    /// Position 16 on the wire.
     SeatYielded {
         /// The admin whose Build log yielded the seat.
         node: String,
@@ -608,6 +726,8 @@ pub enum BuildReply {
         by: String,
     },
     /// Refusal: the Build cannot leave history.
+    ///
+    /// Position 17 on the wire.
     CannotDelete {
         /// The Build.
         build_id: String,
@@ -615,31 +735,43 @@ pub enum BuildReply {
         reason: String,
     },
     /// Refusal: the peer the call needed could not be resolved.
+    ///
+    /// Position 18 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// Refusal: the receiver cannot answer yet; `reason` names what it waits for.
+    ///
+    /// Position 19 on the wire.
     NotReady {
         /// What the receiver waits for.
         reason: String,
     },
     /// Refusal: the receiver is at its admission bound.
+    ///
+    /// Position 20 on the wire.
     Busy {
         /// Which bound it is at.
         reason: String,
     },
     /// Refusal: the receiver is connections-deleting and takes no new work.
+    ///
+    /// Position 21 on the wire.
     ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
     /// Refusal: the request frame was malformed.
+    ///
+    /// Position 22 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// Refusal: the caller is not allowed this call.
+    ///
+    /// Position 23 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,
@@ -647,6 +779,8 @@ pub enum BuildReply {
     /// Terminal of `Create`: the fabric-primary seat moved off the receiver while the Build ran (a
     /// node.fabric-primary.update, op `0x21`). The Build goes on at the new seat; the caller re-submits the
     /// same `build_id` there. Never `Indeterminate` on a planned move.
+    ///
+    /// Position 24 on the wire.
     FabricPrimaryMoved {
         /// The Build.
         build_id: String,
@@ -656,6 +790,8 @@ pub enum BuildReply {
     /// Refusal: the receiver may not claim on the mesh the request acts in (R-BI7): a topology
     /// Build's attempt is the fabric-primary's, a drift attempt its mesh's mesh-primary's. Both are
     /// named as the receiver sees them.
+    ///
+    /// Position 25 on the wire.
     NotClaimant {
         /// The mesh the request acts in.
         mesh: Option<String>,
@@ -666,6 +802,8 @@ pub enum BuildReply {
     },
     /// A chunk of one Build's topology `GetBuilds` reads: its nodes' create specs, in `path.name`
     /// order. A topology no reply frame holds takes several chunks.
+    ///
+    /// Position 26 on the wire.
     Topology {
         /// The Build.
         build_id: String,
@@ -678,6 +816,8 @@ pub enum BuildReply {
     },
     /// The header that closes one Build of a `GetBuilds` stream, after its `Topology` and `Steps`
     /// chunks: `Got`'s fields with the `current` mark. A data frame: `End` ends the read.
+    ///
+    /// Position 27 on the wire.
     Build {
         /// The Build.
         build_id: String,
@@ -700,11 +840,15 @@ pub enum BuildReply {
     },
     /// Terminal of `GetBuilds`: the read is complete. A stream that ends before it is an incomplete
     /// read, never a list.
+    ///
+    /// Position 28 on the wire.
     End {
         /// The number of Builds streamed.
         builds: u32,
     },
     /// Refusal: a `GetBuilds` pair the Build header's schema refuses (Q167 R-RD2), naming the pair.
+    ///
+    /// Position 29 on the wire.
     RejectedFilter {
         /// Why, naming the pair.
         reason: String,

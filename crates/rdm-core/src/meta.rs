@@ -48,9 +48,13 @@ pub struct NodeSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageMeta {
     /// Fresh storage for a new node.
+    ///
+    /// Position 0 on the wire.
     Ephemeral,
     /// Storage survives stop and start, and a new node created over an inherited data dir
     /// keeps it; `disposition` is what becomes of it once the node is gone.
+    ///
+    /// Position 1 on the wire.
     Persistent {
         /// The declared disposition of the storage once the node is gone.
         disposition: PersistentDisposition,
@@ -156,8 +160,12 @@ impl TryFrom<StorageMetaRow> for StorageMeta {
 #[serde(rename_all = "kebab-case")]
 pub enum PersistentDisposition {
     /// The storage is kept.
+    ///
+    /// Position 0 on the wire.
     Preserve,
     /// The storage may be removed by separate application work; node.delete does not release it.
+    ///
+    /// Position 1 on the wire.
     Release,
 }
 

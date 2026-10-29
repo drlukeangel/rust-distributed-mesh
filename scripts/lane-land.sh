@@ -11,7 +11,8 @@
 # and main's movement since the proof touches none of the branch's files (the generated pages
 # docs/reference/rdm/*.md are not the branch's files: a patch-id and an overlap leave them out). Then it
 # rebases (a conflict only in the generated pages is regenerated with the lane's rdm-docgen; any other
-# conflict is refused), regenerates the pages with the lane's rdm-docgen and commits what it writes onto
+# conflict is refused), regenerates the pages with the lane's rdm-docgen, leaving exactly the pages it
+# writes (spans.md, config.md: regenerate_pages in lane-lib.sh, Q262), and commits what changed onto
 # the tip (a failing rdm-docgen refuses and leaves the lane as it was), records the
 # rebased tree in green-trees (`stands-on <proven tree>`) and green-ranges, and lands without a second
 # gate. Otherwise: "prove it again".
@@ -45,20 +46,19 @@ if ! git -C "$d" merge-base --is-ancestor origin/main HEAD; then
   if ! git -C "$d" rebase -q origin/main; then
     while :; do
       u=$(git -C "$d" diff --name-only --diff-filter=U); other=$(printf '%s\n' "$u" | grep -vE "$GEN" | grep . | tr '\n' ' ')
-      if [ -z "$u" ] || [ -n "$other" ] || ! [ -x "$docgen" ] || ! "$docgen" --root "$d" --out "$d/docs/reference/rdm" >/dev/null; then
+      if [ -z "$u" ] || [ -n "$other" ] || ! regenerate_pages "$d"; then
         git -C "$d" rebase --abort; echo "REFUSED: rebase of lane $L on origin/main conflicts${other:+ in ${other% }}; $again"; exit 8
       fi
-      git -C "$d" add docs/reference/rdm
       GIT_EDITOR=true git -C "$d" rebase --continue >/dev/null 2>&1 && break
     done
   fi
   now=$(git -C "$d" diff origin/main HEAD -- . ':(exclude)docs/reference/rdm/*.md' | git -C "$d" patch-id --stable | cut -d' ' -f1); now=${now:-empty}
   [ "$now" = "$PATCH" ] || { git -C "$d" reset -q --keep "$orig"; echo "REFUSED: lane $L's patch on origin/main is not the proven one ($now, proven $PATCH); $again"; exit 8; }
-  if ! [ -x "$docgen" ] || ! "$docgen" --root "$d" --out "$d/docs/reference/rdm" >/dev/null; then
+  if ! regenerate_pages "$d"; then
     git -C "$d" reset -q --keep "$orig"; echo "REFUSED: $docgen did not regenerate docs/reference/rdm; $again"; exit 8
   fi
-  if [ -n "$(git -C "$d" status --porcelain --untracked-files=no -- docs/reference/rdm)" ]; then
-    git -C "$d" add docs/reference/rdm && git -C "$d" commit -q -m "docs(reference): regenerate docs/reference/rdm with rdm-docgen on the rebased tip (lane-land, rdm#103)" \
+  if ! git -C "$d" diff --cached --quiet -- docs/reference/rdm; then
+    git -C "$d" commit -q -m "docs(reference): regenerate docs/reference/rdm with rdm-docgen on the rebased tip (lane-land, rdm#103)" \
       || { git -C "$d" reset -q --keep "$orig"; echo "REFUSED: the regenerated pages could not be committed; $again"; exit 8; }
     echo "regenerated docs/reference/rdm with rdm-docgen and committed it onto the tip"
   fi

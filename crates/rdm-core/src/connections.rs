@@ -77,12 +77,20 @@ pub const ALPN: &[u8] = b"rafka-node-rpc/1";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConnectionState {
     /// The connection stands.
+    ///
+    /// Position 0 on the wire; serialized as `Connected`.
     Connected,
     /// The connection ended.
+    ///
+    /// Position 1 on the wire; serialized as `Disconnected`.
     Disconnected,
     /// This source failed to establish the Direct connection. Never proof the destination is dead.
+    ///
+    /// Position 2 on the wire; serialized as `Failed`.
     Failed,
     /// An acceptor dropped an inbound connection at admission (connections.md §1.2). Never proof about the dialer.
+    ///
+    /// Position 3 on the wire; serialized as `Refused`.
     Refused,
 }
 
@@ -90,8 +98,12 @@ pub enum ConnectionState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ConnectionKind {
     /// A pooled connection between source and destination.
+    ///
+    /// Position 0 on the wire.
     Direct,
     /// A proven two-hop path `source -> carrier -> destination`.
+    ///
+    /// Position 1 on the wire.
     Proxy,
 }
 

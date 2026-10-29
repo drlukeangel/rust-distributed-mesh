@@ -13,6 +13,8 @@ pub struct Ping;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PingRequest {
     /// Echo the payload.
+    ///
+    /// Position 0 on the wire.
     Ping {
         /// The bytes to echo.
         payload: Vec<u8>,
@@ -23,36 +25,50 @@ pub enum PingRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PingReply {
     /// The payload echoed.
+    ///
+    /// Position 0 on the wire.
     Pong {
         /// The bytes echoed.
         payload: Vec<u8>,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 1 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The node is not ready to serve.
+    ///
+    /// Position 2 on the wire.
     NotReady {
         /// Why the node is not ready.
         reason: String,
     },
     /// The node is at its admission bound.
+    ///
+    /// Position 3 on the wire.
     Busy {
         /// Which bound it is at.
         reason: String,
     },
     /// The node is connections-deleting and takes no new work.
+    ///
+    /// Position 4 on the wire.
     ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 5 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 6 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,

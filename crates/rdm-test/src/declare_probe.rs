@@ -28,8 +28,12 @@ pub struct DeclareProbe;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeclareTarget {
     /// Exactly this node id.
+    ///
+    /// Position 0 on the wire.
     Exact(String),
     /// Whoever holds this `path.name`.
+    ///
+    /// Position 1 on the wire.
     Path(String),
 }
 
@@ -37,6 +41,8 @@ pub enum DeclareTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeclareRequest {
     /// Declare `state` for this node's own birth to `to`; the overrides are testkit-only.
+    ///
+    /// Position 0 on the wire.
     Declare {
         /// The authority to declare to.
         to: DeclareTarget,
@@ -53,6 +59,8 @@ pub enum DeclareRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeclareReply {
     /// The authority answered: the Node RPC outcome name and, for a Reply, the typed status reply.
+    ///
+    /// Position 0 on the wire.
     Answered {
         /// The Node RPC outcome name.
         outcome: String,
@@ -62,36 +70,50 @@ pub enum DeclareReply {
         reason: Option<String>,
     },
     /// The target is refused.
+    ///
+    /// Position 1 on the wire.
     BadTarget {
         /// Why the target is refused.
         reason: String,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 2 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The node is not ready to serve.
+    ///
+    /// Position 3 on the wire.
     NotReady {
         /// Why the node is not ready.
         reason: String,
     },
     /// The node is at its admission bound.
+    ///
+    /// Position 4 on the wire.
     Busy {
         /// Which bound it is at.
         reason: String,
     },
     /// The node is connections-deleting and takes no new work.
+    ///
+    /// Position 5 on the wire.
     ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 6 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 7 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,

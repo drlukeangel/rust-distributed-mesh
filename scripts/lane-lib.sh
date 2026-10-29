@@ -22,6 +22,19 @@ lane_busy() {
     case "$mine" in *" $p "*) continue;; esac
     case "$(readlink "$c" 2>/dev/null)" in "$d"|"$d"/*) n=$((n+1));; esac
   done; echo $n; }
+# The pages rdm-docgen writes into docs/reference/rdm (Q262: spans.md and config.md; the wire bodies,
+# the gossip Frame and the statuses are on the types' rustdoc). regenerate_pages <lane dir> runs the
+# lane's target/debug/rdm-docgen over its tree, removes every other page there (a page an older docgen
+# still writes, or one a rebase conflict left), and stages the result; it fails when docgen does.
+GENERATED_PAGES="spans.md config.md"
+regenerate_pages() {
+  local d=$1 f
+  [ -x "$d/target/debug/rdm-docgen" ] && "$d/target/debug/rdm-docgen" --root "$d" --out "$d/docs/reference/rdm" >/dev/null || return 1
+  for f in "$d"/docs/reference/rdm/*.md; do
+    case " $GENERATED_PAGES " in *" ${f##*/} "*) ;; *) rm -f "$f" ;; esac
+  done
+  git -C "$d" add -A -- docs/reference/rdm
+}
 lane_dirty() { git -C "$(lane_dir "$1")" status --porcelain --untracked-files=no | wc -l; }
 # A lane whose folder moved keeps test binaries built with the old CARGO_MANIFEST_DIR compiled in
 # (env!), and cargo does not rebuild them: every test reading its own source tree then fails NotFound

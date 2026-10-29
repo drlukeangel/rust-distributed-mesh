@@ -287,9 +287,21 @@ pub fn runqueue_wait_since_ms(since: Option<Duration>) -> u64 {
 
 /// What travels on a mesh channel or the backbone: one postcard frame ([`crate::wire`]). A digest
 /// travels as its wire shape (`#[serde(with)]`), never as the JSON-shaped `MeshDigest`.
+///
+/// The complete gossip message is postcard `(Vec<(String, String)>, Vec<u8>)`: standard CloudEvents
+/// metadata followed by opaque data selected by its literal type. The metadata names are
+/// `specversion`, `id`, `source`, `type`, `subject`, optional `sequence`, `time`, and
+/// `datacontenttype`; `source` names the original author birth. A variant describes domain data, its
+/// fields in declaration order (their postcard position), without an outer kind discriminant on the
+/// wire: a variant's schema index is internal, never a wire kind. The in-process carrier
+/// [`Frame::Authored`] is never serialized. MeshTopology publication identity in data is
+/// `(fabric_id, node_id, incarnation, counter)`; the frame retains the counter alongside its authored
+/// context. A field with a serde `with` module travels in that module's wire shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Frame {
     /// A member's own digest (its mesh channel only).
+    ///
+    /// Schema index 0, never a wire kind.
     Digest {
         /// The member's digest, in its wire shape.
         #[serde(with = "crate::wire::digest")]
@@ -306,6 +318,8 @@ pub enum Frame {
     /// the open lifecycle overlays (`in_flight`) and retained deletions (`deleted`)
     /// split across them; a receiver installs the snapshot only once it holds every chunk.
     /// `published_at_rafka_ms` makes each publication distinct.
+    ///
+    /// Schema index 1, never a wire kind.
     MeshTopology {
         /// The source mesh's name.
         mesh: String,
@@ -340,6 +354,8 @@ pub enum Frame {
     /// is the version that primary last published into its Mesh; a receiver applies the delta only
     /// when it holds exactly that version of `source_publisher`'s Mesh. Loads are omitted.
     /// `in_flight` and `deleted` are the overlays and deletions added since `base_version`.
+    ///
+    /// Schema index 2, never a wire kind.
     MeshTopologyDelta {
         /// The source mesh's name.
         mesh: String,
@@ -366,6 +382,8 @@ pub enum Frame {
     /// the node is still found, and application routing stops selecting it.
     /// Published on the executor's own mesh channel only; the backbone carries it as an open
     /// overlay of its mesh's topology (`MeshTopology.in_flight`).
+    ///
+    /// Schema index 3, never a wire kind.
     NodeDeleting {
         /// The removal being executed.
         op: LifecycleOp,
@@ -379,6 +397,8 @@ pub enum Frame {
     },
     /// The provider proved `op`'s exact birth terminal: it has left. Same
     /// channel as `NodeDeleting`; retained afterwards in `MeshTopology.deleted`.
+    ///
+    /// Schema index 4, never a wire kind.
     NodeDeleted {
         /// The removal that completed.
         op: LifecycleOp,
@@ -389,6 +409,8 @@ pub enum Frame {
     /// channel; node.restart is removed and callers run node.stop then node.start. Its type,
     /// `rdm.node.restarting`, is refused before its data is decoded; an in-process copy is refused by
     /// name too.
+    ///
+    /// Schema index 5, never a wire kind.
     NodeRestarting {
         /// Never read.
         op: LifecycleOp,
@@ -403,6 +425,8 @@ pub enum Frame {
     /// backbone; a peer mesh's primary forwards it onto its own channel (`forwarded_by`) and never
     /// restates it as its own. `changed_at_rafka_ms` is the instant of the CHANGE: all five sends
     /// of one change carry the same value (gossip.md §3.1, §3.2).
+    ///
+    /// Schema index 6, never a wire kind.
     MeshStatus {
         /// The mesh the status belongs to.
         mesh: String,
@@ -417,6 +441,8 @@ pub enum Frame {
     },
     /// The fabric's status, authored by the fabric primary alone; same channels, forwarding and
     /// `changed_at_rafka_ms` as [`Frame::MeshStatus`].
+    ///
+    /// Schema index 7, never a wire kind.
     FabricStatus {
         /// The fabric the status belongs to.
         fabric: FabricId,
@@ -431,6 +457,8 @@ pub enum Frame {
     },
     /// Reserved page position 10 (Luke Q23): its type is refused before decoding data. Gossip never
     /// commands an investigation; the seat watch measures the holder's silence itself.
+    ///
+    /// Schema index 8, never a wire kind.
     Concern {
         /// The seat whose holder looks silent.
         seat: Seat,
@@ -442,6 +470,8 @@ pub enum Frame {
         observer: String,
     },
     /// Reserved position (R-CR4; gossip.md, node-connections-deleting): never sent on any channel.
+    ///
+    /// Schema index 9, never a wire kind.
     NodeConnectionsDeleting {
         /// The accepted command.
         op: LifecycleOp,
@@ -449,6 +479,8 @@ pub enum Frame {
         forwarded_by: Option<String>,
     },
     /// Reserved position (R-CR4; gossip.md, node-leaving): never sent on any channel.
+    ///
+    /// Schema index 10, never a wire kind.
     NodeLeaving {
         /// The accepted stop command.
         op: LifecycleOp,
@@ -456,6 +488,8 @@ pub enum Frame {
         forwarded_by: Option<String>,
     },
     /// Reserved position (R-CR4; gossip.md, node-left): never sent on any channel.
+    ///
+    /// Schema index 11, never a wire kind.
     NodeLeft {
         /// The stop operation and the exact birth that left.
         op: LifecycleOp,
@@ -463,6 +497,8 @@ pub enum Frame {
         forwarded_by: Option<String>,
     },
     /// Reserved position (R-CR4; gossip.md, node-connections-deleted): never sent on any channel.
+    ///
+    /// Schema index 12, never a wire kind.
     NodeConnectionsDeleted {
         /// The operation and the exact birth whose connections were deleted.
         op: LifecycleOp,
@@ -472,6 +508,8 @@ pub enum Frame {
     /// Reserved position (R-G3; gossip.md, reserved lifecycle frame positions): never sent on any
     /// channel: a primary change rides the successor's `Digest` and the mesh-primary's `MeshTopology`
     /// projection, and a birth's contact addresses ride its `Digest` and that projection.
+    ///
+    /// Schema index 13, never a wire kind.
     NewFabricPrimary {
         /// The committed holder: mesh, node, incarnation and the seat's revision.
         holder: Primary,
@@ -483,6 +521,8 @@ pub enum Frame {
         admin_api_base: Option<String>,
     },
     /// Reserved position (Q171): never sent; a receiver refuses it by name.
+    ///
+    /// Schema index 14, never a wire kind.
     Reserved15 {
         /// Never read.
         hook: StateHook,
@@ -490,6 +530,8 @@ pub enum Frame {
         forwarded_by: Option<String>,
     },
     /// Reserved position (Q171): never sent; a receiver refuses it by name.
+    ///
+    /// Schema index 15, never a wire kind.
     Reserved16 {
         /// Never read.
         hook: StateHook,
@@ -497,6 +539,8 @@ pub enum Frame {
         forwarded_by: Option<String>,
     },
     /// Reserved position (Q174): never sent; a receiver refuses it by name.
+    ///
+    /// Schema index 16, never a wire kind.
     Reserved17 {
         /// Never read.
         hook: StateHook,
@@ -504,6 +548,8 @@ pub enum Frame {
         forwarded_by: Option<String>,
     },
     /// Reserved position (Q174): never sent; a receiver refuses it by name.
+    ///
+    /// Schema index 17, never a wire kind.
     Reserved18 {
         /// Never read.
         hook: StateHook,
@@ -514,6 +560,8 @@ pub enum Frame {
     /// stop call's own reply: the birth is stopped (its process alive, its endpoint bound) and
     /// gossips nothing. Every node drops it from its view until the birth itself rejoins. Same
     /// channel as `NodeDeleting`; carried in `MeshTopology.in_flight` while open.
+    ///
+    /// Schema index 18, never a wire kind.
     NodeStopped {
         /// The stop being executed.
         op: LifecycleOp,

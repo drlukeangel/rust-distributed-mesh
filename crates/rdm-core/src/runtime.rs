@@ -38,8 +38,12 @@ pub const MAX_FACT_BYTES: usize = 384;
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeProvider {
     /// A host process.
+    ///
+    /// Position 0 on the wire.
     Process,
     /// A container.
+    ///
+    /// Position 1 on the wire.
     Container,
 }
 

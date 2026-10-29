@@ -33,6 +33,8 @@ pub enum NodePrimaryUpdateRequest {
     /// node.primary.update, the primary to its successor's exact birth: the election's result the
     /// successor installs, one entry or two, each `(node_type, primary, successor, revision)`, the
     /// revision the next one.
+    ///
+    /// Position 0 on the wire.
     PrimaryUpdate {
         /// Every primary that moves: its node type (`fabric` for the fabric-primary), the primary's
         /// exact birth, the successor's exact birth and the revision the successor takes.
@@ -46,6 +48,8 @@ pub enum NodePrimaryUpdateRequest {
     },
     /// node.primary.update commanded from above, on the primary of `node_type` in the receiver's mesh,
     /// or on the mesh-primary for another type's primary of its mesh: the primary runs the sequence.
+    ///
+    /// Position 1 on the wire.
     UpdatePrimary {
         /// The node type whose primary moves.
         node_type: String,
@@ -76,27 +80,37 @@ impl NodePrimaryUpdateRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodePrimaryUpdateReply {
     /// node.primary.updated: the successor installed the election's result, every entry at its revision.
+    ///
+    /// Position 0 on the wire.
     PrimaryUpdated {
         /// The entries installed, as [`NodePrimaryUpdateRequest::PrimaryUpdate`] carries them.
         revisions: Vec<(String, Birth, Birth, u64)>,
     },
     /// The operation was answered for another payload.
+    ///
+    /// Position 1 on the wire.
     RejectedConflictingPayload {
         /// The operation in conflict.
         operation: String,
     },
     /// Reserved position (Q171): never sent.
+    ///
+    /// Position 2 on the wire.
     Reserved2 {
         /// Never read.
         reason: String,
     },
     /// The receiver is not the primary the call needs: a command on a node that is not the primary of
     /// the node type it names, a take-over proposal naming another winner.
+    ///
+    /// Position 3 on the wire.
     RejectedNotPrimary {
         /// What the receiver holds instead.
         reason: String,
     },
     /// A take-over at a revision the recorded primary no longer holds.
+    ///
+    /// Position 4 on the wire.
     RejectedStaleRevision {
         /// The node type whose revision moved (`fabric`).
         node_type: String,
@@ -106,37 +120,51 @@ pub enum NodePrimaryUpdateReply {
         current: u64,
     },
     /// The receiver cannot decide yet.
+    ///
+    /// Position 5 on the wire.
     NotReady {
         /// What it waits for.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 6 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 7 on the wire.
     PeerUnresolved {
         /// Why.
         reason: String,
     },
     /// The receiver is at its admission bound.
+    ///
+    /// Position 8 on the wire.
     Busy {
         /// Which bound.
         reason: String,
     },
     /// The receiver is connections-deleting and takes no new work.
+    ///
+    /// Position 9 on the wire.
     ConnectionsDeleting {
         /// Why.
         reason: String,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 10 on the wire.
     Unauthorized {
         /// Why.
         reason: String,
     },
     /// The commanded update ended failed (R-BI4): the Build carrier's own terminal, recording the step
     /// and why (no successor; the successor unheard after the update, with the investigation's verdict).
+    ///
+    /// Position 11 on the wire.
     Failed {
         /// The step that failed (`primary-update`). Within [`MAX_FAILED_STEP_BYTES`].
         step: String,
@@ -146,6 +174,8 @@ pub enum NodePrimaryUpdateReply {
         code: crate::outcome::Code,
     },
     /// The take-over is applied already, to the successor it names.
+    ///
+    /// Position 12 on the wire.
     AlreadyApplied {
         /// The fabric-primary's entry, at its revision.
         revisions: Vec<(String, Birth, Birth, u64)>,

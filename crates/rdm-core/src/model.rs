@@ -15,50 +15,80 @@ pub use crate::{DeploymentId, EndpointId, FabricId, IncarnationId, MeshId, NodeI
 #[serde(rename_all = "kebab-case")]
 pub enum NodeStatus {
     /// Created and not yet ready.
+    ///
+    /// Serialized as `pending`.
     Pending,
     /// Ready: it takes traffic.
+    ///
+    /// Serialized as `ready`.
     Ready,
     /// Connections-deleting: it takes no new work.
+    ///
+    /// Serialized as `connections-deleting`.
     ConnectionsDeleting,
     /// Leaving: it has announced its departure.
+    ///
+    /// Serialized as `leaving`.
     Leaving,
     /// Unheard past the staleness floor (`RDM_STALENESS_MS`, 30 s): this node's own pruner marks
     /// the silent peer in place and keeps it; its next digest flips it back (node-identity-and-state.md
     /// §7.3, i77 PRD row 18). Never death, and never a reason to restart or delete it.
+    ///
+    /// Serialized as `pending-reconnect`.
     PendingReconnect,
     /// Reserved position: the removed restart's status (Q183; node.restart and its NodeRestarting
     /// notice are removed). Never set; kept so every later status keeps its position.
+    ///
+    /// Serialized as `reserved5`.
     Reserved5,
     /// True offline: half a floor after the mark the mesh primary's one tickle ladder reached nobody,
     /// and its inspection and the recovery on its verdict follow at once (node-recovery.md steps 2-3).
     /// Observer inferred only; never sent, never itself the reason to act: the verdict is.
+    ///
+    /// Serialized as `dead`.
     Dead,
     /// Deleted: the node's identity and name are released. Only the node's row carries it, written
     /// by the node's mesh-primary (the fabric-primary for a mesh with no primary) from node.delete's
     /// step receipt; the record and its config stay for the next node created at the same `path.name`.
+    ///
+    /// Serialized as `deleted`.
     Deleted,
     /// Withdrawn: the create that claimed the name was withdrawn before its node ran (R-SR2). Only the
     /// node's record carries it, appended where the record was once removed, and a name claim wins
     /// over it as over a `Deleted` one. Appended last: no variant before it moves.
+    ///
+    /// Serialized as `withdrawn`.
     Withdrawn,
     /// Starting: the node's row from a stopped node's `CommandAccepted` on its start's `StartNode`
     /// stream (a create's from its launch, where no process can acknowledge) until its join is
     /// accepted (states.md "Who sets each state", Q233). A row status the node's mesh-primary writes;
     /// appended after `Withdrawn`, as are the four below: no variant before them moves.
+    ///
+    /// Serialized as `starting`.
     Starting,
     /// Connections-deleted: the node's row once its node.connections.delete { All } completed
     /// `Established`.
+    ///
+    /// Serialized as `connections-deleted`.
     ConnectionsDeleted,
     /// Stopping: the node's row once its stop's `CommandAccepted` admission frame arrived.
+    ///
+    /// Serialized as `stopping`.
     Stopping,
     /// Stopped: the node's row once the matching stopped frame arrived: a live, stopped process.
+    ///
+    /// Serialized as `stopped`.
     Stopped,
     /// Deleting: the node's row once node.delete's claim was adopted (published as NodeDeleting); the
     /// frames of the stop the delete composes move the row on from it (Q233).
+    ///
+    /// Serialized as `deleting`.
     Deleting,
     /// Left: the node's row once its node.mesh.leave's completion arrived (`MeshLeft`, or `StopMeshLeft`
     /// on its stop's stream; Q205), the node off its mesh with its endpoint bound. Appended after
     /// `Deleting`: no variant before it moves.
+    ///
+    /// Serialized as `left`.
     Left,
 }
 
@@ -74,14 +104,24 @@ impl NodeStatus {
 #[serde(rename_all = "kebab-case")]
 pub enum ScopeStatus {
     /// Created and not yet ready.
+    ///
+    /// Serialized as `pending`; `name()` is `pending`.
     Pending,
     /// Ready: it takes traffic.
+    ///
+    /// Serialized as `ready`; `name()` is `ready`.
     Ready,
     /// Leaving: a mesh whose shutdown was accepted; it is not selected for new work.
+    ///
+    /// Serialized as `leaving`; `name()` is `leaving`.
     Leaving,
     /// Dead: a mesh every one of whose births was proven exited; final, its id never reissued.
+    ///
+    /// Serialized as `dead`; `name()` is `dead`.
     Dead,
     /// The fabric primary has decided a peer mesh is re-born (`investigate`).
+    ///
+    /// Serialized as `degraded`; `name()` is `degraded`.
     Degraded,
 }
 

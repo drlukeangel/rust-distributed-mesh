@@ -57,12 +57,20 @@ pub struct FabricDesired {
 #[serde(rename_all = "snake_case")]
 pub enum BuildState {
     /// Accepted and not yet executed.
+    ///
+    /// Serialized as `pending`.
     Pending,
     /// An attempt is executing.
+    ///
+    /// Serialized as `running`.
     Running,
     /// Every step is complete.
+    ///
+    /// Serialized as `complete`.
     Complete,
     /// The current attempt failed.
+    ///
+    /// Serialized as `failed`.
     Failed,
 }
 

@@ -16,7 +16,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 enum WireLocator {
+    /// Position 0 on the wire.
     Process { pid: u32, start: u64 },
+    /// Position 1 on the wire.
     Container { id: String },
 }
 

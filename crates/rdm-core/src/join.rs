@@ -38,6 +38,8 @@ pub struct Join;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JoinRequest {
     /// The node reports its full digest, with the address it really bound.
+    ///
+    /// Position 0 on the wire.
     JoinNode {
         /// The node's full digest.
         digest: WireDigest,
@@ -63,11 +65,15 @@ impl JoinRequest {
 pub enum JoinReply {
     /// The join is taken. `answer` is what the admin holds now.
     /// `answer` is one postcard frame of the admin's `WireEntryAnswer`.
+    ///
+    /// Position 0 on the wire.
     Joined {
         /// One postcard frame of the admin's entry answer.
         answer: Vec<u8>,
     },
     /// The reported digest disagrees with what the admin deployed.
+    ///
+    /// Position 1 on the wire.
     JoinMismatch {
         /// The field that differs.
         field: String,
@@ -77,36 +83,50 @@ pub enum JoinReply {
         reported: String,
     },
     /// The receiver did not deploy this birth; `primary` is the mesh primary it sees, if any.
+    ///
+    /// Position 2 on the wire.
     NotPrimary {
         /// The mesh primary the receiver sees, when it sees one.
         primary: Option<String>,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 3 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The receiver is not ready to serve.
+    ///
+    /// Position 4 on the wire.
     NotReady {
         /// Why the receiver is not ready.
         reason: String,
     },
     /// The receiver is at its admission bound.
+    ///
+    /// Position 5 on the wire.
     Busy {
         /// Which bound it is at.
         reason: String,
     },
     /// The receiver is connections-deleting and takes no new work.
+    ///
+    /// Position 6 on the wire.
     ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 7 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 8 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,
@@ -114,6 +134,8 @@ pub enum JoinReply {
     /// The receiver deployed exactly this birth and ended its deployment (the create stopped
     /// waiting for the birth's report) before the join arrived. The receiver is the authority;
     /// the birth's runtime is deleted by the executor that deployed it, not by this reply.
+    ///
+    /// Position 9 on the wire.
     DeploymentAbandoned {
         /// The Build whose create deployed the birth.
         build_id: String,
@@ -127,6 +149,8 @@ pub enum JoinReply {
     /// The receiver's cert signer refused to issue a member cert for exactly this birth, so the
     /// birth is not admitted: nothing is installed for its key and its deployment's report is not
     /// completed. The refusal is final for this attempt; it is never retried as `NotReady`.
+    ///
+    /// Position 10 on the wire.
     CertRefused {
         /// The signer's stable refusal name.
         name: String,

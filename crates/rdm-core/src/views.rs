@@ -13,39 +13,67 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum NodeStatus {
     /// Born and not yet ready.
+    ///
+    /// Position 0 on the wire; serialized as `pending`.
     Pending,
     /// Ready: it takes traffic.
+    ///
+    /// Position 1 on the wire; serialized as `ready`.
     Ready,
     /// Connections-deleting: it takes no new work while it finishes what it holds.
+    ///
+    /// Position 2 on the wire; serialized as `connections-deleting`.
     #[serde(rename = "connections-deleting")]
     ConnectionsDeleting,
     /// Leaving: it has announced its departure and is closing.
+    ///
+    /// Position 3 on the wire; serialized as `leaving`.
     Leaving,
     /// Unheard past the staleness floor: held, never death, and never a reason to restart or
     /// delete it; its next digest flips it back.
+    ///
+    /// Position 4 on the wire; serialized as `pending-reconnect`.
     PendingReconnect,
     /// Reserved position: the removed restart's status (Q183; node.restart and its NodeRestarting
     /// notice are removed). Never set; kept so every later status keeps its position.
+    ///
+    /// Position 5 on the wire; serialized as `reserved5`.
     Reserved5,
     /// True offline: the mesh primary's connect found no path on two ladders a staleness floor
     /// apart. Inferred by an observer, never announced by the node.
+    ///
+    /// Position 6 on the wire; serialized as `dead`.
     Dead,
     /// Deleted: identity and name released; only the node's row carries it.
+    ///
+    /// Position 7 on the wire; serialized as `deleted`.
     Deleted,
     /// Starting: from a stopped node's acknowledgement of its start (a create's from its launch) until
     /// its join is accepted (states.md "Who sets each state", Q233). Appended after `Deleted`, as are
     /// the four below: no variant before them moves.
+    ///
+    /// Position 8 on the wire; serialized as `starting`.
     Starting,
     /// Connections-deleted: its node.connections.delete { All } completed `Established`.
+    ///
+    /// Position 9 on the wire; serialized as `connections-deleted`.
     ConnectionsDeleted,
     /// Stopping: its stop's admission arrived.
+    ///
+    /// Position 10 on the wire; serialized as `stopping`.
     Stopping,
     /// Stopped: a live, stopped process.
+    ///
+    /// Position 11 on the wire; serialized as `stopped`.
     Stopped,
     /// Deleting: node.delete's claim was adopted.
+    ///
+    /// Position 12 on the wire; serialized as `deleting`.
     Deleting,
     /// Left: its node.mesh.leave completed (Q205); off its mesh, its endpoint bound. Appended after
     /// `Deleting`: no variant before it moves.
+    ///
+    /// Position 13 on the wire; serialized as `left`.
     Left,
 }
 
@@ -54,14 +82,24 @@ pub enum NodeStatus {
 #[serde(rename_all = "kebab-case")]
 pub enum ScopeStatus {
     /// Created and not yet ready.
+    ///
+    /// Position 0 on the wire; serialized as `pending`; `name()` is `pending`.
     Pending,
     /// Ready: it takes traffic.
+    ///
+    /// Position 1 on the wire; serialized as `ready`; `name()` is `ready`.
     Ready,
     /// Leaving: a mesh whose shutdown was accepted; it is not selected for new work.
+    ///
+    /// Position 2 on the wire; serialized as `leaving`; `name()` is `leaving`.
     Leaving,
     /// Dead: a mesh every one of whose births was proven exited; final.
+    ///
+    /// Position 3 on the wire; serialized as `dead`; `name()` is `dead`.
     Dead,
     /// Degraded: the fabric primary has decided a peer mesh is re-born.
+    ///
+    /// Position 4 on the wire; serialized as `degraded`; `name()` is `degraded`.
     Degraded,
 }
 
@@ -70,8 +108,12 @@ pub enum ScopeStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     /// Each node is an OS process.
+    ///
+    /// Position 0 on the wire.
     Process,
     /// Each node is a container.
+    ///
+    /// Position 1 on the wire.
     Container,
 }
 
@@ -206,6 +248,8 @@ pub struct NodeCertView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Renewals {
     /// At least one birth's renewal is past its point by more than a floor with no receipt.
+    ///
+    /// Position 0 on the wire.
     Stalled {
         /// The births whose renewals stall.
         nodes: Vec<PathName>,

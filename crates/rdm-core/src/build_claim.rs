@@ -37,6 +37,8 @@ pub struct BuildClaim;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildClaimRequest {
     /// The executor asks to take attempt `attempt` of Build `build_id`.
+    ///
+    /// Position 0 on the wire.
     ClaimAttempt {
         /// The Build.
         build_id: String,
@@ -65,23 +67,31 @@ impl BuildClaimRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildClaimReply {
     /// The attempt is the executor's. `context` is the attempt's observability context.
+    ///
+    /// Position 0 on the wire.
     Won {
         /// The attempt's observability context.
         context: CallContext,
     },
     /// The attempt is held by `holder` (a node-admin's path.name).
+    ///
+    /// Position 1 on the wire.
     Lost {
         /// The node-admin holding the attempt.
         holder: String,
     },
     /// The attempt is not the Build's next, or the Build is complete; `next` is the attempt that
     /// is open, when one is.
+    ///
+    /// Position 2 on the wire.
     NotOpen {
         /// The open attempt, when there is one.
         next: Option<u32>,
     },
     /// The receiver may not claim on `mesh`: a topology attempt is claimed by the fabric-primary,
     /// a drift attempt by its mesh's mesh-primary. Both are named as the receiver sees them.
+    ///
+    /// Position 3 on the wire.
     NotClaimant {
         /// The mesh the attempt acts in, when the receiver's view names one.
         mesh: Option<String>,
@@ -91,37 +101,51 @@ pub enum BuildClaimReply {
         mesh_primary: Option<String>,
     },
     /// The peer the call needed could not be resolved.
+    ///
+    /// Position 4 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// The receiver is not ready to serve.
+    ///
+    /// Position 5 on the wire.
     NotReady {
         /// Why the receiver is not ready.
         reason: String,
     },
     /// The receiver is at its admission bound.
+    ///
+    /// Position 6 on the wire.
     Busy {
         /// Which bound it is at.
         reason: String,
     },
     /// The receiver is connections-deleting and takes no new work.
+    ///
+    /// Position 7 on the wire.
     ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
     /// The request frame was malformed.
+    ///
+    /// Position 8 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// The caller is not allowed this call.
+    ///
+    /// Position 9 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,
     },
     /// Another attempt holds the mesh the attempt acts in (one attempt in flight per mesh, R-BI7):
     /// nothing is claimed.
+    ///
+    /// Position 10 on the wire.
     BuildInProgress {
         /// The Build of the attempt holding the mesh.
         current_build_id: String,
