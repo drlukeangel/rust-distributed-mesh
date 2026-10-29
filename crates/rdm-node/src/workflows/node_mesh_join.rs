@@ -1,5 +1,5 @@
 //! `node.mesh.join` (node-mesh-join.md), the one primitive that puts a node on its mesh: `JoinNode`
-//! to its accepting authority, the handed name and rafka-time taken from the answer, then the kind's
+//! to its primary, the handed name and rafka-time taken from the answer, then the kind's
 //! channels entered holding them (its mesh, and the backbone for a node-admin), nothing published
 //! before. It is run by [node.start](super::node_start) step 2, by the mesh-primary's standalone
 //! `JoinMesh`, and by a node-admin entering a mesh; each of them calls this, never a copy of it.
@@ -31,7 +31,7 @@ pub trait MeshJoin: Send {
     /// binds none.
     fn join_listeners(&self) -> Vec<(String, std::net::SocketAddr)> { Vec::new() }
 
-    /// Enter the kind's channels holding the name the join handed (`None` with no authority), before
+    /// Enter the kind's channels holding the name the join handed (`None` with no primary), before
     /// anything is published, emitting `rdm.node.mesh.update.via-joined` per channel. `step` is the
     /// channel step's span: the kind drops it when its channel part ends.
     async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<TopologyView, Self::Error>;
@@ -53,8 +53,8 @@ pub struct JoinCall<'a> {
     pub rafka_time: &'a rdm_transport::clock::RafkaTime,
     /// Whom the report goes to.
     pub to: &'a JoinTo,
-    /// The authority as the report's span names it.
-    pub authority: &'a str,
+    /// The primary the report goes to, as the report's span names it (node-mesh-join.md, Observability).
+    pub primary: &'a str,
     /// The operation the join runs for.
     pub operation: &'a str,
     /// The span the report's span is a child of (`None`: the current one).
@@ -69,7 +69,7 @@ pub struct JoinCall<'a> {
 
 /// A completed join: the answer, who gave it, the name the birth holds from it, and its topology view.
 pub struct MeshJoined {
-    /// The authority's answer.
+    /// The primary's answer.
     pub answer: JoinAnswer,
     /// Who gave it, and where the steps after the join reach it.
     pub through: JoinThrough,
@@ -81,12 +81,12 @@ pub struct MeshJoined {
 
 /// `node.mesh.join` (node-mesh-join.md): `joining` from the report until the channels hold.
 pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'_>) -> Result<MeshJoined, J::Error> {
-    let JoinCall { mut name, node_id, mesh, mesh_id, client, rafka_time, to, authority, operation, report_parent, reported, channel_parent } = call;
+    let JoinCall { mut name, node_id, mesh, mesh_id, client, rafka_time, to, primary, operation, report_parent, reported, channel_parent } = call;
     let mut digest = node.join_digest();
     digest.status = MemberStatus::Pending;
     let joining = match &report_parent {
-        Some(parent) => tracing::info_span!(parent: parent, "rdm.node.mesh.update.via-joining", node = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, authority = %authority, operation = %operation),
-        None => tracing::info_span!("rdm.node.mesh.update.via-joining", node = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, authority = %authority, operation = %operation),
+        Some(parent) => tracing::info_span!(parent: parent, "rdm.node.mesh.update.via-joining", node = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation),
+        None => tracing::info_span!("rdm.node.mesh.update.via-joining", node = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation),
     };
     let (answer, through) = join(&name, client, to, &digest, &node.join_types(), &node.join_listeners()).instrument(joining).await?;
     drop(report_parent);
@@ -398,7 +398,7 @@ mod tests {
                     client: &client,
                     rafka_time: &rafka_time,
                     to: &to,
-                    authority: "mesh1.admin.1",
+                    primary: "mesh1.admin.1",
                     operation: "node.create:mesh1.rpc.1",
                     report_parent: None,
                     reported: tracing::Span::none(),
@@ -463,7 +463,7 @@ mod tests {
                     client: &client,
                     rafka_time: &rafka_time,
                     to: &to,
-                    authority: "mesh1.admin.1",
+                    primary: "mesh1.admin.1",
                     operation: "node.create:mesh1.rpc.1",
                     report_parent: None,
                     reported: reported_span,
@@ -533,7 +533,6 @@ mod tests {
     /// `node_mesh_join` emits `rdm.node.mesh.update.via-joining` carrying `mesh`, `mesh_id`,
     /// `primary`, and `operation`.
     #[test]
-    #[ignore = "page/code difference: node-mesh-join.md §Observability contract"]
     fn report_sent_via_joining_span_carries_primary_field() {
         let dir = std::env::temp_dir().join(format!("rdm-node-mesh-join-obs-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -672,7 +671,7 @@ mod tests {
                     client: &client,
                     rafka_time: &rafka_time,
                     to: &to,
-                    authority: "mesh1.admin.1",
+                    primary: "mesh1.admin.1",
                     operation: "node.create:mesh1.rpc.1",
                     report_parent: None,
                     reported: tracing::Span::none(),
