@@ -4250,3 +4250,147 @@ async fn build_drive_fires_on_build_started_on_opening_and_reopening_skips_takeo
         other => panic!("expected Ended at index 3, got {other:?}"),
     }
 }
+
+struct CutOnceThenFailOnAttempt {
+    inner: Arc<Creates>,
+    cut_once: AtomicBool,
+    fail_attempt: u32,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for CutOnceThenFailOnAttempt {
+    async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
+        if attempt == self.fail_attempt {
+            return Err(rdm_admin::executor::RunEnd::failed("injected executor step failure".to_string()));
+        }
+        self.inner.run(build, lane, attempt, op).await?;
+        if self.cut_once.swap(false, Ordering::SeqCst) {
+            return Err(rdm_admin::executor::RunEnd::Incomplete("injected mid-run cut after first operation".to_string()));
+        }
+        Ok(())
+    }
+}
+
+// @feature: build-op
+/// CONTRACT: docs/architecture/build.md:179, 240-245
+/// "Every execution attempt re-reads the accepted topology and current realized/observed state and
+/// computes remaining work. Completed step receipts prevent repeating already-satisfied work; a
+/// Build never resumes from a mutable instruction pointer. A step receipt is `(build_id, attempt,
+/// operation, step)` with its output ... Each workflow's `AttemptOpened` starts a run; a resume
+/// after the executor is lost (R-BI4) continues that run; a receipt is reused only within its run."
+#[tokio::test]
+async fn build_drive_step_faults_recover_or_fail_as_the_page_specifies() {
+    let change = TopologyChange::ReconcileMesh {
+        desired: MeshDesired::of(
+            "mesh1".to_string(),
+            [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)],
+        ),
+    };
+    let r = rig_for(view(), change, |ran, _| {
+        Arc::new(CutOnceThenFailOnAttempt {
+            inner: ran,
+            cut_once: AtomicBool::new(true),
+            fail_attempt: 4,
+        })
+    })
+    .await;
+
+    let (capture, _guard) = crate::receipt_refusal::Capture::new("build-drive-step-faults");
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+
+    // Fault 1: Executor `mesh1.admin.2` is unreachable without departure proof.
+    // Attempt 1 is claimed for `mesh1.admin.2`, the drive stalls naming the unproven departure,
+    // no other admin is claimed, nothing runs, and no `Blocked` frame is emitted to the caller.
+    r.dispatch.lose("mesh1.admin.2");
+    match r.env.run(&drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("departure is not proven"), "{why}"),
+        other => panic!("unproven executor silence must stall the drive: {other:?}"),
+    }
+    let p1 = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p1.attempt, p1.executor.as_deref()), (1, Some("mesh1.admin.2")));
+    assert!(r.ran.0.lock().unwrap().is_empty());
+    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new());
+
+    // Fault 2: Executor `mesh1.admin.2` is proven exited (`r.proofs.exited`), `mesh1.admin.1` takes
+    // the mesh-primary seat, and attempt 2 is cut mid-run after completing the first operation
+    // (`node.create:mesh1.admin.2`). On the next pass, the completed receipt is reused (not run
+    // twice) and the remaining operation (`node.create:mesh1.rpc.2`) completes (`DriveEnd::Terminal`).
+    r.proofs.exited.lock().unwrap().insert("mesh1.admin.2".into());
+    {
+        let mut v = r.env.topology.write().await;
+        for n in v.nodes.iter_mut() {
+            match n.name.to_string().as_str() {
+                "mesh1.admin.2" => {
+                    n.status = NodeStatus::PendingReconnect;
+                    n.is_primary = false;
+                }
+                "mesh1.admin.1" => n.is_primary = true,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    assert_eq!(
+        *r.ran.0.lock().unwrap(),
+        vec![
+            "node.create:mesh1.admin.2".to_string(),
+            "node.create:mesh1.rpc.2".to_string(),
+        ],
+        "completed operation is not re-run after mid-run cut and hand-back"
+    );
+
+    // Fault 3: Reopen the Build at attempt 4 (`fail_attempt: 4`) and inject an executor step failure.
+    // The drive records the terminal failure and emits `on_build_ended` with `BuildEndedState::Failed`.
+    let path: PathName = "mesh1.rpc.1".parse().unwrap();
+    let (node_id, from_incarnation) = r
+        .env
+        .topology
+        .read()
+        .await
+        .node(&path)
+        .and_then(|n| n.incarnation_id.clone().map(|i| (n.node_id.clone(), i)))
+        .unwrap();
+    r.builds
+        .open_attempt(&rdm_admin::build_state::AttemptOpened {
+            mesh: None,
+            build_id: r.build.clone(),
+            attempt: 4,
+            reason: rdm_admin::build_state::AttemptReason::Stop,
+            action: Some(rdm_admin::accepted::AttemptAction::Stop {
+                path,
+                node_id,
+                from_incarnation,
+            }),
+            opened_by: "mesh1.admin.1".into(),
+            opened_at_ms: 3_000,
+            context: None,
+        })
+        .await
+        .unwrap();
+    let drive_fail = Drive::detached(r.build.clone());
+    assert_eq!(r.env.run(&drive_fail).await, DriveEnd::Terminal);
+
+    let told = r.told.settled(4).await;
+    let keys: Vec<(String, u32, &str)> = told.iter().map(crate::Notice::key).collect();
+    assert_eq!(
+        keys,
+        vec![
+            (r.build.to_string(), 1, "started"),
+            (r.build.to_string(), 3, "complete"),
+            (r.build.to_string(), 4, "started"),
+            (r.build.to_string(), 4, "failed"),
+        ],
+        "takeover attempts 2 and 3 send no duplicate started notice; attempt 3 completes and reopened attempt 4 fails: {told:?}"
+    );
+
+    // Fault 4: Fabric-primary seat is yielded/targeted (`target_to(Some("mesh1.admin.2"))`).
+    // The drive refuses to claim or dispatch (`DriveEnd::SeatLost`) and ends the caller's stream
+    // with `Read::SeatLost` naming the successor.
+    r.switch.target_to(Some("mesh1.admin.2"));
+    let drive_lost = Drive::detached(r.build.clone());
+    let mut lost_reader = drive_lost.reader(1);
+    assert!(matches!(r.env.run(&drive_lost).await, DriveEnd::SeatLost(why) if why.contains("is no longer the fabric-primary")));
+    assert!(matches!(next_within(&mut lost_reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh1.admin.2")));
+    assert!(!capture.spans("rdm.node_admin.build.update.via-drive").is_empty());
+}
