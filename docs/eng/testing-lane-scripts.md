@@ -12,7 +12,7 @@ Every script lives in this repo's one `scripts/` folder, with the helpers it cal
 - the landing runs **origin/main's** `scripts/rebase-gate-land.sh` (`lane-land.sh` reads it with
   `git show origin/main:scripts/rebase-gate-land.sh`), so a branch cannot change the rules it lands
   under;
-- the two files in `/home/admin/lane-queue/i143-lead/` named `rdm-gate-at.sh` and
+- the two files in `$HOME/lane-queue/i143-lead/` named `rdm-gate-at.sh` and
   `rebase-gate-land.sh` are four-line shims that do exactly that; a change goes in `scripts/`,
   never in a shim.
 

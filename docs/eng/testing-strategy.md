@@ -50,8 +50,8 @@ flock -o /tmp/rdm-gate-turn.lock scripts/cells.sh rdm-admin lib -- status_declar
 python3 scripts/name-check.py origin/main HEAD
 
 # the whole suite (the lead; never the agent in a lane)
-scripts/rdm-gate-at.sh /home/admin/rdm-lanes/<n> fast
-scripts/rdm-gate-at.sh /home/admin/rdm-lanes/<n> release
+scripts/rdm-gate-at.sh . fast
+scripts/rdm-gate-at.sh . release
 
 # one registered acceptance job, and every job at HEAD
 scripts/i143-acceptance-gate.sh <job-id>

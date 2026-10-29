@@ -145,7 +145,7 @@ rdm   . node_rpc  . request. serve  . via-direct
 ```
 
 Five dot-separated segments (telemetry.md §1, `<owner>.<domain>.<entity>.<action>.via-<reason>`;
-`/home/admin/rafka-v2/docs/eng/observability-conventions.md` §"Full span-name shape"):
+`observability-conventions.md` in `rafka-v2`, §"Full span-name shape"):
 
 | segment | rule | source |
 |---|---|---|

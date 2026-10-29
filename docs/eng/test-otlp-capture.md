@@ -106,7 +106,7 @@ reads that line, so a cell can account for every span a process handed to its ex
 |---|---|---|
 | collector, OTLP/HTTP | `http://192.168.68.99:5318` (the gate's and the test runner's export target) | `scripts/rdm-gate-at.sh` line 42; `tools/test-runner/src/lib.rs` (`OTLP`) |
 | Jaeger UI | `http://192.168.68.99:16687`, a trace at `/trace/<trace_id>` | `tools/test-runner/src/lib.rs` (`JAEGER_UI`); `scripts/demo-estate.sh` |
-| ClickHouse | `http://192.168.68.99:18123`, table `otel.otel_traces`: span counts by name or attribute across a whole run | `/home/admin/rafka-v2/docs/eng/observability-conventions.md` §"Telemetry endpoints" |
+| ClickHouse | `http://192.168.68.99:18123`, table `otel.otel_traces`: span counts by name or attribute across a whole run | `observability-conventions.md` in `rafka-v2`, §"Telemetry endpoints" |
 
 - The local defaults (`http://localhost:4318`, `http://localhost:16686`, CLAUDE.md's env table)
   are another store: a gate's or a test runner's spans are on the `.99` endpoints.
