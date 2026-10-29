@@ -102,6 +102,9 @@ measures), at the defaults (`RDM_GOSSIP_INTERVAL_MS` 2000, `RDM_STALENESS_MS` 30
 runs beside it (the gate's leaked-process step kills a run's nodes). A row is compared only with a row
 taken under the same conditions; the row carries the SHA, the profile and the box. A changed cadence,
 build, telemetry setting or host is a new baseline, never a comparison.
+M8's thresholds are CLAUDE.md's alert thresholds, set against a release-build baseline (about 0.02 cores,
+0.06 GB); the gate's build is read first at L1, and an idle node-admin above the threshold there is a finding
+read as a flame before any target moves.
 
 ### Chaos at scale
 
