@@ -1,9 +1,9 @@
-//! The fabric topology projection and its invariants (PRD §1.14, §1.16).
+//! The fabric topology projection and its invariants (`docs/architecture/gossip.md`,
+//! `docs/architecture/query.md`, `docs/architecture/fabric-node-lifecycle-elections.md`).
 //!
-//! A converged topology has exactly one `is_primary` per declared cohort
-//! (one `(mesh, kind)` pair) and exactly one `is_fabric_primary` across the
-//! fabric, held by a node-admin that is also its own mesh's admin primary.
-//! Mesh and Fabric views publish the seat holder's control API base; callers
+//! A converged topology has exactly one `is_primary` per declared `(mesh, kind)` group
+//! and exactly one `is_fabric_primary` across the fabric, held by a `node-admin` that is also its
+//! own mesh's `mesh-primary`. Mesh and Fabric views publish the primary's control API base; callers
 //! switch control only from these views.
 
 use crate::model::{Fabric, Mesh, Node, NodeId, NodeKind, NodeStatus, PathName};
@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// The observed topology of one fabric: its record, its meshes and its nodes.
+/// The observed topology of one fabric (`docs/architecture/gossip.md` §1,
+/// `docs/architecture/query.md`): its record, its meshes and its nodes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Topology {
     /// The fabric record.
@@ -22,7 +23,7 @@ pub struct Topology {
     pub nodes: Vec<Node>,
 }
 
-/// A topology that is not (yet) converged, named.
+/// A topology that is not (yet) converged, named (`docs/architecture/fabric-node-lifecycle-elections.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopologyViolation {
     /// A node path appears twice.
@@ -38,20 +39,20 @@ pub enum TopologyViolation {
     },
     /// A node's kind or mesh field disagrees with its `path.name`.
     KindMismatch(PathName),
-    /// A cohort has no primary.
+    /// A `(mesh, kind)` group has no primary.
     NoCohortPrimary {
         /// The mesh concerned.
         mesh: String,
-        /// The kind of the cohort.
+        /// The kind of the group.
         kind: NodeKind,
     },
-    /// A cohort has more than one primary.
+    /// A `(mesh, kind)` group has more than one primary.
     SplitCohortPrimary {
         /// The mesh concerned.
         mesh: String,
-        /// The kind of the cohort.
+        /// The kind of the group.
         kind: NodeKind,
-        /// The nodes that hold the primary seat.
+        /// The nodes that hold the primary role.
         primaries: Vec<PathName>,
     },
     /// A primary is not live.
@@ -85,7 +86,7 @@ impl fmt::Display for TopologyViolation {
     }
 }
 
-/// A mesh as clients see it (`MeshView`).
+/// A mesh as clients see it (`MeshView`, `docs/architecture/query.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshView {
     /// The mesh's minted id, when it has one.
@@ -94,7 +95,7 @@ pub struct MeshView {
     pub name: String,
     /// The mesh's lifecycle state.
     pub status: crate::model::ScopeStatus,
-    /// The mesh's primary node-admin, when one is seated.
+    /// The mesh's primary node-admin, when one is elected.
     pub primary_admin: Option<PathName>,
     /// The control API base of the mesh's primary.
     pub admin_api_base: Option<String>,
@@ -102,7 +103,7 @@ pub struct MeshView {
     pub nodes: Vec<PathName>,
 }
 
-/// The fabric as clients see it (`FabricView`).
+/// The fabric as clients see it (`FabricView`, `docs/architecture/query.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FabricView {
     /// The fabric's minted id.
@@ -113,7 +114,7 @@ pub struct FabricView {
     pub status: crate::model::ScopeStatus,
     /// The provider that runs the fabric's nodes.
     pub provider: crate::model::ProviderKind,
-    /// The fabric's primary node-admin, when one is seated.
+    /// The fabric's primary node-admin, when one is elected.
     pub fabric_primary: Option<PathName>,
     /// The control API base of the fabric primary.
     pub admin_api_base: Option<String>,
@@ -122,9 +123,10 @@ pub struct FabricView {
 }
 
 impl Topology {
-    /// The members: the births that hold their paths. Every decision (planning, drift, election,
-    /// seats, executors) reads the view through this. A replaced predecessor (`<path>.old`) is not a
-    /// member: its path is its successor's. This is the one place that rule lives.
+    /// The nodes that hold their paths (`docs/architecture/node-identity-and-state.md` §2.7). Every
+    /// decision (planning, drift, election, primaries, executors) reads the view through this. A
+    /// replaced predecessor (`<path>.old`) does not hold its path: its path is its successor's. This
+    /// is the one place that rule lives.
     pub fn members(&self) -> impl Iterator<Item = &Node> {
         self.nodes.iter().filter(|n| !n.name.old)
     }

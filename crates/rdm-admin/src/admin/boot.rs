@@ -2,7 +2,8 @@
 
 use super::*;
 
-/// A running node-admin: what `run` needs to keep alive and shut down.
+/// A running node-admin (`docs/architecture/node-admin-lifecycle.md` §2): what `run` needs to keep
+/// alive and shut down.
 pub struct Running {
     /// Rafka-time: the app's way to read it. The one reader every gossip stamp, lifecycle event and
     /// fleet judgement of this admin reads, already adopted when the admin has started. Cloneable;
@@ -59,7 +60,7 @@ pub struct Running {
     /// its inherited data dir, an adoption launch), issued by its own issuer. `None` for a recovery
     /// start on neither.
     pub member_cert: Option<Vec<u8>>,
-    /// This admin's status authority, once it holds a view.
+    /// This admin's status handler, once it holds a view.
     pub(crate) authority: crate::status_rpc::AuthoritySlot,
     /// Told once [`Self::authority`] is set: what [`Self::config_update`] awaits before this admin holds a view.
     pub(crate) authority_set: Arc<tokio::sync::Notify>,
@@ -95,19 +96,19 @@ impl Running {
     }
 
     /// Whether this admin publishes its mesh's topology on the backbone: the role its hierarchy
-    /// last decided (its mesh's primary, its view authorizing).
+    /// last decided (its mesh's primary, its view deciding).
     pub fn publishes_its_mesh(&self) -> bool {
         self.backbone.is_mesh_primary()
     }
 
     /// This admin as the subject of `node.connections.delete`, `stop-node` and `start-node`: what such a command
-    /// naming it reaches once its Status authority has decided it (`status_rpc`'s `serve_command`).
+    /// naming it reaches once its Status handler has decided it (`status_rpc`'s `serve_command`).
     pub fn node_self(&self) -> Arc<crate::node_self::NodeSelf> {
         self.node_self.clone()
     }
 
-    /// This admin's status authority, once it holds a view: what decides the declarations of its
-    /// mesh's births while it holds the mesh's seat.
+    /// This admin's status handler, once it holds a view: what decides the declarations of its
+    /// mesh's births while it is its mesh's primary.
     pub fn status_authority(&self) -> Option<Arc<crate::status_rpc::StatusAuthority>> {
         self.authority.get().cloned()
     }
@@ -231,7 +232,7 @@ pub(crate) fn provider_image(p: ProviderKind) -> rdm_core::binding::ProviderImag
 }
 
 /// The Node RPC server a node-admin serves, before it is built: core (Ping, Forward), then the families the
-/// admin owns as an authority (status, build claim, join).
+/// admin owns as a primary (status, build claim, join).
 pub fn rpc_server(
     connections: Arc<crate::connections_writer::ConnectionsWriter>,
     client: Arc<rdm_transport::NodeRpcClient>,
@@ -278,8 +279,8 @@ pub(crate) fn overlays_from_facts(facts: &[crate::build_state::BuildFact], diges
     }
 }
 
-/// Bring a node-admin up: identity, policy, the topology view, Build state, the
-/// control API, the projection and the executor.
+/// Bring a node-admin up (`docs/architecture/node-admin-lifecycle.md` §2): identity, policy, the
+/// topology view, Build state, the control API, the projection and the executor.
 #[cfg(feature = "file-backend")]
 pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // `start` carries no hook and no wrapper, so it is an embedding with no application work.
@@ -307,16 +308,17 @@ fn route_app_alpns(
 }
 
 /// [`start`], with the decorators and hooks of `wiring` applied to the parts the admin is built
-/// from, on RDM standalone's storage backend ([`crate::storage_backend::file_backend`]).
+/// from (`docs/architecture/node-admin-lifecycle.md` §2), on RDM standalone's storage backend
+/// ([`crate::storage_backend::file_backend`]).
 #[cfg(feature = "file-backend")]
 pub async fn start_with(cfg: AdminConfig, wiring: crate::wiring::Wiring) -> Result<Running, String> {
     let providers = crate::storage_backend::TopologyStorageProviders::file(cfg.store_dir.clone());
     start_on(cfg, wiring, providers).await
 }
 
-/// [`start_with`] on the topology storage `providers` its executable registers (storage.md §2): every
-/// durable read and write of the admin goes through the six boundaries the one its
-/// `topology_storage_provider` names opens.
+/// [`start_with`] on the topology storage `providers` its executable registers
+/// (`docs/architecture/storage.md` §2): every durable read and write of the admin goes through the
+/// boundaries the one its `topology_storage_provider` names opens.
 pub async fn start_on(mut cfg: AdminConfig, wiring: crate::wiring::Wiring, providers: crate::storage_backend::TopologyStorageProviders) -> Result<Running, String> {
     // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
     // step is a child that lives exactly as long as the step, and `via-ready` closes it.

@@ -96,8 +96,9 @@ impl From<crate::deployment::provider::Inspected> for Finding {
 }
 
 /// Investigate `node`'s exact birth from `view` over `calls`, the caller's own Node RPC client, call
-/// deadline, carriers and leads read (Q107 item 1): the leads, the direct tickle and the same kick
-/// through peers, the leads first ([`crate::offline::tickle`]); then, only when nobody reached the
+/// deadline, carriers and leads read (`docs/architecture/lifecycles/node-investigation.md`): the
+/// leads, the direct tickle and the same kick through peers, the leads first
+/// ([`crate::offline::tickle`]); then, only when nobody reached the
 /// birth, `inspect`, the caller's node.runtime.inspect of the birth's exact runtime, awaited at that
 /// point and never before. An answer from the exact birth is `reached` and the provider is not asked;
 /// a node the view holds no birth of runs no ladder and is unproven by name, the provider not asked

@@ -12,7 +12,7 @@
 //! the mesh issuers from the dates it minted and each admin's `IssuerUpdated` confirmed, kept in its
 //! cache, and a successor fabric-primary reads the records when it acquires ownership.
 //!
-//! - The issuer's tick ([`renew_members`]): a member is renewed by its mesh's primary, a mesh-primary
+//! - The issuer's tick ([`renew_members`]): a node is renewed by its mesh's primary, a mesh-primary
 //!   by the fabric-primary, the fabric-primary by itself in process. A birth whose cert has passed its
 //!   renew point is issued a fresh cert and sent `RenewCert`, each tick until its cert expires.
 //! - The fabric-primary's tick ([`renew_issuers`]): a mesh whose newest signing cert has passed its
@@ -33,8 +33,9 @@ use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-/// Whether the birth whose cert dates are `dates` stalls at `now_ms` (fabric-certs.md §Tracking: "past
-/// `renew_at` by more than a floor with no `node.cert.renewed`").
+/// Whether the birth whose cert dates are `dates` stalls at `now_ms`
+/// (`docs/architecture/fabric-certs.md` §Tracking: "past `renew_at` by more than a floor with no
+/// `node.cert.renewed`").
 pub fn stalled(dates: &CertDates, now_ms: u64, floor_ms: u64) -> bool {
     now_ms > dates.renew_at.saturating_add(floor_ms)
 }
@@ -44,16 +45,17 @@ pub fn fold_of(records: &[crate::storage::NodeRow]) -> HashMap<(NodeId, Incarnat
     records.iter().flat_map(|r| r.births.iter().filter_map(|b| Some(((r.node_id.clone(), b.incarnation_id.clone()), b.cert.clone()?)))).collect()
 }
 
-/// The dates a member cert issue writes once its birth holds the cert.
+/// The dates a member cert issue writes once its birth holds the cert
+/// (`docs/architecture/fabric-certs.md` §Tracking, `docs/architecture/lifecycles/node-cert-renew.md`).
 pub fn dates_of(issue: &MemberIssue) -> CertDates {
     CertDates { issued_at: issue.issued_at, expires_at: issue.expires_at, issuer_expires_at: issue.issuer_expires_at, renew_at: issue.renew_at }
 }
 
 /// The member cert dates a mesh-primary writes on its own record when it installs the cert `req`
-/// (`RenewCert`) carried to it, under `receiver`'s policy (node-cert-renew.md Row: "A mesh-primary's
-/// own cert, issued by the fabric-primary, it writes on its own record when it installs it"; Q141,
-/// Q241): the cert's own dates, never the receiver's clock; nothing for another request or a cert
-/// that does not decode.
+/// (`RenewCert`) carried to it, under `receiver`'s policy
+/// (`docs/architecture/lifecycles/node-cert-renew.md` Row: "A mesh-primary's own cert, issued by the
+/// fabric-primary, it writes on its own record when it installs it"; Q141, Q241): the cert's own
+/// dates, never the receiver's clock; nothing for another request or a cert that does not decode.
 pub fn installed_dates(req: &StatusRequest, receiver: &CertIssuer) -> Option<CertDates> {
     let StatusRequest::RenewCert { cert, .. } = req else { return None };
     let signed = rdm_core::certs::cert_from_bytes(cert).ok()?;
@@ -61,13 +63,15 @@ pub fn installed_dates(req: &StatusRequest, receiver: &CertIssuer) -> Option<Cer
 }
 
 /// The signing cert dates an admin's record holds once it installs the issuing cert `signed` that a
-/// `node.issuer.update` carried to it, under `receiver`'s policy (node-issuer-update.md step 4; Q141,
-/// Q241): the cert's own dates, never the receiver's clock.
+/// `node.issuer.update` carried to it, under `receiver`'s policy
+/// (`docs/architecture/lifecycles/node-issuer-update.md` step 4; Q141, Q241): the cert's own dates,
+/// never the receiver's clock.
 pub fn installed_signing_dates(signed: &rdm_core::certs::SignedIssuingCert, receiver: &CertIssuer) -> SigningCertDates {
     crate::certs::signing_cert_dates(signed, receiver.policy().renew_at_permille)
 }
 
-/// The signing cert dates of the issuing key `mint` minted.
+/// The signing cert dates of the issuing key `mint` minted
+/// (`docs/architecture/lifecycles/mesh-issuer-renew.md`).
 pub fn signing_dates(mint: &IssuerMint) -> SigningCertDates {
     SigningCertDates { issued_at: mint.issued_at, expires_at: mint.expires_at, renew_at: mint.renew_at }
 }

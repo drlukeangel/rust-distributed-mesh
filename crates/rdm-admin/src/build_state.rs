@@ -276,7 +276,7 @@ impl BuildFact {
     }
 }
 
-/// Where a Build is in its life.
+/// Where a Build is in its life (`docs/architecture/build.md` §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuildState {
@@ -298,7 +298,7 @@ pub enum BuildState {
     Failed,
 }
 
-/// The folded Build view (`GET /api/builds?id=`).
+/// The folded Build view (`docs/architecture/build.md` §5.2–§5.3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildProjection {
     /// The Build.
@@ -354,12 +354,12 @@ pub struct BuildProjection {
     /// and its successor re-checks the world for what it left.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub reported: std::collections::BTreeSet<u32>,
-    /// The admin that decided the current fabric-lane attempt's claim, as its claim recorded it.
+    /// The admin that decided the current fabric-section attempt's claim, as its claim recorded it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claimant: Option<String>,
-    /// Each mesh's drift lane, by mesh (R-BI7 caveat 2): the attempts its mesh-primary opened,
-    /// claimed and ended on this Build, numbered per mesh from 1. The fields above are the fabric
-    /// lane's alone, and nothing of a drift lane moves them.
+    /// Each mesh's per-mesh drift section, by mesh (`docs/architecture/build.md` §5.3): the attempts
+    /// its mesh-primary opened, claimed and ended on this Build, numbered per mesh from 1. The fields
+    /// above are the fabric section's alone, and nothing of a per-mesh drift section moves them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lanes: BTreeMap<String, Lane>,
 }
@@ -769,12 +769,12 @@ pub fn receipt_key(r: &BuildStepReceipt) -> String {
     format!("{} {}", r.operation, r.step)
 }
 
-/// Fold an ordered fact log into Build views. Deterministic and idempotent:
-/// the same log gives the same views, and a duplicated fact changes nothing.
-/// The winning claim of an attempt is the first one appended.
-/// A fabric-lane receipt of an attempt a recorded transition supersedes ([`PrimariesTaken`], Q160) is
-/// ignored unless the transition held it, and that attempt's verdict decides nothing: the superseded
-/// writer wrote them after the transfer.
+/// Fold an ordered fact log into Build views (`docs/architecture/build.md` §5.2–§5.3). Deterministic
+/// and idempotent: the same log gives the same views, and a duplicated fact changes nothing. The
+/// winning claim of an attempt is the first one appended. A fabric-section receipt of an attempt a
+/// recorded transition supersedes ([`PrimariesTaken`], Q160) is ignored unless the transition held
+/// it, and that attempt's verdict decides nothing: the superseded writer wrote them after the
+/// transfer.
 pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
     let superseded: BTreeMap<(BuildId, u32), std::collections::BTreeSet<String>> = facts
         .iter()

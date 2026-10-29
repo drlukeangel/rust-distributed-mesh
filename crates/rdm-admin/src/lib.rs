@@ -3,9 +3,9 @@
 //! Owns the generic Fabric → Mesh → Node model and its topology invariants,
 //! Build (intents, planner, state adapters, the fabric projection, the
 //! executor), the control routes, deployment providers and pipelines, and
-//! lifecycle transitions. It is the only lifecycle authority: the Admin UI
-//! and every other front end are clients of its control API
-//! (`rafka-node-admin-client`). Nothing here knows a Rafka role.
+//! lifecycle transitions. It is the control plane (`docs/architecture/node-admin-lifecycle.md` §1):
+//! the Admin UI and every other front end are clients of its control API
+//! (`rdm-client`). Nothing here knows a Rafka role.
 //!
 //! # Where it sits
 //!
@@ -47,6 +47,7 @@ pub mod entry;
 pub mod join;
 pub mod heard_again;
 pub mod admin;
+/// Node readiness hooks (`docs/architecture/fabric-node-hooks.md`).
 pub use rdm_node::node_hooks;
 pub mod accepted;
 pub mod build;
@@ -80,15 +81,19 @@ pub mod investigate;
 pub mod lifecycle;
 pub mod mesh_claims;
 pub mod mesh_delete;
+/// Fabric, Mesh, and Node domain model types (`docs/architecture/node-identity-and-state.md` §2).
 pub use rdm_core::model;
 pub mod node_commands;
 pub mod node_investigation;
 pub mod node_config;
 pub mod node_properties;
 pub mod node_name_update;
+/// Node `path.name` updates (`docs/architecture/lifecycles/node-name-update.md`).
 pub use rdm_node::node_name;
 pub mod node_rows;
+/// Process-wide Node RPC client and live resolver (`docs/architecture/node-rpc.md`).
 pub use rdm_node::node_rpc;
+/// Self-handled status commands on a running node (`docs/architecture/lifecycles/node-stop.md`, `node-start.md`).
 pub use rdm_node::node_self;
 pub mod stop_gate;
 pub mod offline;
@@ -97,7 +102,9 @@ pub mod readiness;
 pub(crate) mod reenter;
 pub mod checklist;
 pub mod seat_watch;
+/// Blocking pool offload helpers (`rdm_node::blocking`).
 pub use rdm_node::blocking;
+/// Atomic durable file writes (`rdm_node::durable_file`).
 pub use rdm_node::durable_file;
 pub mod record_cache;
 #[cfg(feature = "file-backend")]
@@ -107,21 +114,29 @@ pub(crate) mod status_declare;
 pub mod status_rpc;
 #[cfg(test)]
 pub(crate) mod span_capture;
+/// Outbound data-plane connection reconnect helper (`docs/architecture/connections.md` §2.3).
 pub use rdm_node::connection_reconnect;
+/// Local `connections.storage` writer (`docs/architecture/connections.md` §3.1).
 pub use rdm_node::connections_writer;
 pub mod storage;
 pub mod storage_backend;
 pub mod storage_change;
 #[cfg(test)]
 pub(crate) mod test_support;
+/// Storage boundary error types (`docs/architecture/storage.md`).
 pub use rdm_node::storage_error;
+/// Live topology storage provider move step (`docs/architecture/storage.md` §2).
 pub use rdm_node::storage_move;
+/// Atomic storage provider handle (`docs/architecture/storage.md` §2).
 pub use rdm_node::storage_handle;
 #[cfg(feature = "file-backend")]
+/// Shared store root JSONL log (`docs/architecture/storage.md` §2).
 pub use rdm_node::store_log;
 #[cfg(feature = "file-backend")]
+/// Shared store root directory (`docs/architecture/storage.md` §2).
 pub use rdm_node::store_root;
 pub mod topology;
+/// Hydration and reconnect topology read (`docs/architecture/lifecycles/node-topology-get.md`).
 pub use rdm_node::topology_read;
 pub mod primitives;
 pub mod views;

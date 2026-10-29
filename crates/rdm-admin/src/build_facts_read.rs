@@ -208,9 +208,10 @@ impl FetchFailure {
     }
 }
 
-/// `FetchBuildFacts` to `target` for `build_id`. Returns the facts only for a stream whose `End`
-/// arrived with every chunk `0..chunks` present once and a fact count that agrees; anything less is
-/// a failure that names what was missing, and the caller absorbs nothing from it.
+/// `FetchBuildFacts` (`0x1F`, `docs/architecture/node-rpc-envelope.md` "Build-facts, op `0x1F`,
+/// rdm") to `target` for `build_id`. Returns the facts only for a stream whose `End` arrived with
+/// every chunk `0..chunks` present once and a fact count that agrees; anything less is a failure that
+/// names what was missing, and the caller absorbs nothing from it.
 pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, build_id: &BuildId) -> Result<Fetched, FetchFailure> {
     read_facts(client, target, &BuildFactsRequest::FetchBuildFacts { build_id: build_id.to_string() }, Some(build_id)).await
 }

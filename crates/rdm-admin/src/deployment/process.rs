@@ -67,7 +67,7 @@ impl Failpoints {
     }
 }
 
-/// Realises runtimes as host processes.
+/// Realises runtimes as host processes (`docs/architecture/deployment-provider.md` §2).
 pub struct ProcessDeploymentProvider {
     /// Children this provider started. A watcher thread per child waits on
     /// it, so an exit is reaped at once (no zombie) and its code recorded.

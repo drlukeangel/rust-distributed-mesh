@@ -1,10 +1,10 @@
-//! The offline tickle (node-identity-and-state.md §7.3, i77 PRD row 18), ported from rafka-v2's
-//! `node-admin/src/lib.rs::OfflineTickle`.
+//! The offline tickle (`docs/architecture/node-identity-and-state.md` §7.3,
+//! `docs/architecture/lifecycles/node-tickle.md`).
 //!
 //! A silent node is never restarted or deleted for being silent. Every node's own pruner marks it
 //! `PendingReconnect` at the staleness floor. Every node-admin keeps the silence bookkeeping
-//! (`first_seen`), so a node-admin that takes the seat mid-window tickles on the window already
-//! running; only the node-admin holding its mesh's primary seat tickles. Half a floor after the
+//! (`first_seen`), so a node-admin that takes the primary role mid-window tickles on the window already
+//! running; only the node-admin holding its mesh's `mesh-primary` role tickles. Half a floor after the
 //! mark (floor + half a floor in all) it runs the one reach ladder, `node.tickle` ([`tickle`],
 //! node-tickle.md: direct, then through up to two live peers at once), which this module holds for
 //! every caller of it. Each ladder runs beside the loop, one per exact birth, and the first tick
@@ -132,16 +132,18 @@ pub(crate) fn unanswered_marks(commands: &crate::node_commands::CommandView, vie
         .collect()
 }
 
-/// How many live peers the via-peer step asks.
+/// How many live peers the via-peer step asks (`docs/architecture/lifecycles/node-tickle.md` step 3).
 pub const VIA_PEER_TICKLE_FANOUT: usize = 2;
 
 /// The longest one tickle takes when each probe waits `per_call`: the direct probe, then one via-peer
-/// rung with every carrier probed at once (node-tickle.md steps 2-3). The fan-out adds no wait.
+/// rung with every carrier probed at once (`docs/architecture/lifecycles/node-tickle.md` steps 2-3).
+/// The fan-out adds no wait.
 pub fn tickle_ladder(per_call: std::time::Duration) -> std::time::Duration {
     per_call * 2
 }
 
-/// [`tickle_ladder`] at the default call budget, the one every call of the tickle spends.
+/// [`tickle_ladder`] at the default call budget (`docs/architecture/lifecycles/node-tickle.md`), the
+/// one every call of the tickle spends.
 pub fn tickle_ladder_at_default_budget() -> std::time::Duration {
     match rdm_transport::CallOptions::default().budget {
         rdm_transport::Budget::Overall(d) => tickle_ladder(d),
@@ -185,9 +187,10 @@ impl Cadence {
 
 // ---- node.tickle (node-tickle.md): the one reach ladder ----
 
-/// The birth's own answer on the probe (node-tickle.md "Probe"): `Current`, `CurrentStopped` while it
-/// is stopped, or `Blocked` while its hook is Blocked, naming the exact birth probed. A carrier's
-/// `InnerNotSent` (no reply reaches the ladder), a `NotReady` and any refusal are not answers.
+/// The birth's own answer on the probe (`docs/architecture/lifecycles/node-tickle.md` "Probe"):
+/// `Current`, `CurrentStopped` while it is stopped, or `Blocked` while its hook is Blocked, naming
+/// the exact birth probed. A carrier's `InnerNotSent` (no reply reaches the ladder), a `NotReady`
+/// and any refusal are not answers.
 pub fn birth_answered(reply: Option<&rdm_core::status::StatusReply>, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> bool {
     use rdm_core::status::StatusReply;
     match reply {
@@ -196,7 +199,8 @@ pub fn birth_answered(reply: Option<&rdm_core::status::StatusReply>, node_id: &c
     }
 }
 
-/// How one probe of the ladder ended: what the caller reads in the Node RPC outcome.
+/// How one probe of the ladder ended (`docs/architecture/lifecycles/node-tickle.md`): what the
+/// caller reads in the Node RPC outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeEnd {
     /// A status reply came back (the node's own, or the carrier's `Forwarded { inner }`);
@@ -289,7 +293,7 @@ impl Unreached {
     }
 }
 
-/// What the ladder found (node-tickle.md "Result").
+/// What the ladder found (`docs/architecture/lifecycles/node-tickle.md` "Result").
 #[derive(Debug)]
 pub enum Tickle {
     /// The birth is alive and said what it is: its answer, and the carrier that carried it (`None`:
@@ -304,15 +308,16 @@ pub enum Tickle {
     Unreached(Unreached),
 }
 
-/// The eligible live peers of `node`'s mesh (node-tickle.md step 3), in path order: every member of
-/// its mesh the view holds ready, other than the node and `me` (the caller is never its
-/// own carrier).
+/// The eligible live peers of `node`'s mesh (`docs/architecture/lifecycles/node-tickle.md` step 3),
+/// in path order: every node of its mesh the view holds ready, other than the node and `me` (the
+/// caller is never its own carrier).
 pub fn eligible_carriers<'a>(view: &'a crate::topology::Topology, node: &'a crate::model::Node, me: Option<&'a crate::model::NodeId>) -> impl Iterator<Item = &'a crate::model::Node> + 'a {
     view.members().filter(move |c| c.mesh == node.mesh && c.node_id != node.node_id && Some(&c.node_id) != me && c.status == crate::model::NodeStatus::Ready)
 }
 
-/// What the caller probes with: its Node RPC client under its own call deadline, the carriers it holds
-/// eligible, and its name. One ladder ([`tickle`]) runs over it for every caller.
+/// What the caller probes with (`docs/architecture/lifecycles/node-tickle.md`): its Node RPC client
+/// under its own call deadline, the carriers it holds eligible, and its name. One ladder ([`tickle`])
+/// runs over it for every caller.
 #[async_trait::async_trait]
 pub trait TickleCalls: Send + Sync {
     /// The caller's path.name, named on every span of the ladder.
@@ -339,8 +344,9 @@ pub trait TickleCalls: Send + Sync {
     }
 }
 
-/// The caller's Node RPC client at the default call budget: the mesh-primary's recovery tick and the
-/// seat watch probe with it. Its own node id is never a carrier.
+/// The caller's Node RPC client at the default call budget (`docs/architecture/lifecycles/node-tickle.md`):
+/// the `mesh-primary`'s recovery tick and the primary watch probe with it. Its own node id is never
+/// a carrier.
 pub struct TickleClient {
     /// The caller's Node RPC client.
     pub client: std::sync::Arc<rdm_transport::NodeRpcClient>,
@@ -399,17 +405,18 @@ impl TickleCalls for TickleClient {
     }
 }
 
-/// `node.tickle` (node-tickle.md): ask `node`'s exact birth, by node id and incarnation, whether anyone
-/// can reach it. The leads first (rulings INDEX Q107 item 1, step a: one read of the by-destination
-/// connections index, `calls.leads`); direct (step 2); on no answer the same probe through up to two
-/// peers at once, the leads first, then the caller's eligible live peers of the node's mesh (step 3;
-/// Q107 item 1 step c), each a `Forward` whose inner op is the probe. The first answer from the birth, under the probed incarnation, ends the ladder and cancels
+/// `node.tickle` (`docs/architecture/lifecycles/node-tickle.md`): ask `node`'s exact birth, by node
+/// id and incarnation, whether anyone can reach it. The leads first (rulings INDEX Q107 item 1, step
+/// a: one read of the by-destination connections index, `calls.leads`); direct (step 2); on no answer
+/// the same probe through up to two peers at once, the leads first, then the caller's eligible live
+/// peers of the node's mesh (step 3; Q107 item 1 step c), each a `Forward` whose inner op is the
+/// probe. The first answer from the birth, under the probed incarnation, ends the ladder and cancels
 /// the probes still running; one failed peer probe does not cancel the other (step 4). It answers
 /// `reached` with what the node said, or `unreached`: never dead, a failure, a deadline included,
 /// proves nothing. A node the view holds no incarnation for names no exact birth to probe: refused
-/// by name, no ladder runs. Run by the mesh-primary in node recovery, the fabric-primary in mesh
-/// investigation, the seat watch and the successor ladder of node.primary.update, over `calls`, the
-/// caller's own client, deadline and eligible carriers.
+/// by name, no ladder runs. Run by the `mesh-primary` in node recovery, the `fabric-primary` in mesh
+/// investigation, the primary watch and the successor ladder of node.primary.update, over `calls`,
+/// the caller's own client, deadline and eligible carriers.
 pub async fn tickle<C: TickleCalls + ?Sized>(node: &crate::model::Node, view: &crate::topology::Topology, calls: &C) -> Result<Tickle, String> {
     use futures_util::StreamExt as _;
     use tracing::Instrument as _;

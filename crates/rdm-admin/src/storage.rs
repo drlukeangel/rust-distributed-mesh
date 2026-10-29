@@ -443,10 +443,11 @@ pub fn clear_address_and_primaries(birth: &mut BirthFacts) {
 // ---------------------------------------------------------------- nodes.storage
 
 
-/// The admin's own row: its own seed, kept in its data dir and read before any store opens
-/// (`crate::storage_backend::StorageBackend::own_row`), so a restarting node-admin is the same logical
-/// node in the same Fabric and Mesh. The facts of its births, its address and primaries included, are
-/// on its node's record ([`NodeRow`]), written by its mesh-primary.
+/// The admin's own row (`docs/architecture/node-identity-and-state.md` §2.5–§2.8,
+/// `docs/architecture/storage.md` §2): its own seed, kept in its data dir and read before any store
+/// opens (`crate::storage_backend::StorageBackend::own_row`), so a restarting node-admin is the same
+/// logical node in the same Fabric and Mesh. The facts of its births, its address and primaries
+/// included, are on its node's record ([`NodeRow`]), written by its mesh-primary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRecord {
     /// The node's minted id.

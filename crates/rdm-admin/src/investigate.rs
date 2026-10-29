@@ -1,5 +1,5 @@
-//! The peer-mesh investigation (rafka-v2 lifecycles/mesh-investigation.md; node-identity-and-state.md
-//! §7.3; ruling R-CK1).
+//! The peer-mesh investigation (`docs/architecture/lifecycles/mesh-investigation.md`;
+//! `docs/architecture/node-identity-and-state.md` §7.3; ruling R-CK1).
 //!
 //! One investigation per peer mesh, owned by the fabric primary. t is the elapsed monotonic time
 //! since the fabric primary's last valid direct backbone receipt from the mesh; only that receipt
@@ -10,7 +10,7 @@
 //! ```text
 //! unheard t   20 s   probe 1    the exact mesh-primary first, then the other node-admins,
 //!                               each the one tickle ladder (node-tickle.md): direct, then
-//!                               Forward{ProbeNodeState} through up to two members at once
+//!                               Forward{ProbeNodeState} through up to two nodes at once
 //!             30 s   mark       the mesh is silent (nothing is sent)
 //!             40 s   probe 2    the same, another carrier preferred
 //!             60 s   decision   opens once the probes finished; recovery only if the latest
@@ -18,7 +18,7 @@
 //! ```
 //!
 //! An answer from a node-admin stops it (`admin-alive`); a backbone receipt cancels it
-//! (`heard-again`); no member answering holds. The state machine here is pure over the elapsed
+//! (`heard-again`); no node answering holds. The state machine here is pure over the elapsed
 //! time and the probe results; [`run`] drives it from the fabric primary's view.
 
 use crate::admin::Records;
@@ -32,8 +32,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The ruled rungs: how long the mesh has gone unheard, elapsed monotonic time since the fabric
-/// primary's last valid direct backbone receipt from it.
+/// The ruled rungs (`docs/architecture/lifecycles/mesh-investigation.md`): how long the mesh has
+/// gone unheard, elapsed monotonic time since the fabric primary's last valid direct backbone
+/// receipt from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rungs {
     /// Unheard this long, the mesh is tracked (a publication missed beyond its jitter).
@@ -65,14 +66,14 @@ impl Rungs {
     }
 }
 
-/// What a probe found.
+/// What a probe found (`docs/architecture/lifecycles/mesh-investigation.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProbeOutcome {
     /// The mesh's node-admin answered the carried probe (it re-asserted its presence).
     AdminAlive,
-    /// A member answered the Ping but reports it cannot reach its own node-admin.
+    /// A node answered the Ping but reports it cannot reach its own node-admin.
     CarrierEdgeLost,
-    /// No member answered, or the carried call ended any other way.
+    /// No node answered, or the carried call ended any other way.
     #[default]
     Unreachable,
 }
@@ -88,7 +89,7 @@ impl ProbeOutcome {
     }
 }
 
-/// What the ladder asks of its driver.
+/// What the ladder asks of its driver (`docs/architecture/lifecycles/mesh-investigation.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
     /// The mesh went unheard: tracking begins.
@@ -158,7 +159,7 @@ impl State {
     }
 }
 
-/// A peer mesh as the ladder holds it.
+/// A peer mesh as the ladder holds it (`docs/architecture/lifecycles/mesh-investigation.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerMesh {
     /// `Some(ms unheard)` while the ladder tracks the mesh as unheard: loss of its control-plane
@@ -166,14 +167,15 @@ pub struct PeerMesh {
     pub unheard_ms: Option<u64>,
     /// The ladder has decided the recovery of the mesh's node-admins.
     pub recovery_decided: bool,
-    /// The ladder's 60 s decision found the latest probe `unreachable`: no member answered and no
+    /// The ladder's 60 s decision found the latest probe `unreachable`: no node answered and no
     /// carrier reported its edge to a node-admin lost. The mesh is held; its node-admin is created
     /// only on the provider's exact exited verdict of every node of the mesh
     /// (mesh-investigation.md step 5, "Fully crashed"), which the fabric-primary reads, never the ladder.
     pub unreachable_decided: bool,
 }
 
-/// One investigation per peer mesh the fabric primary has heard on the backbone.
+/// One investigation per peer mesh the fabric primary has heard on the backbone
+/// (`docs/architecture/lifecycles/mesh-investigation.md`).
 #[derive(Debug)]
 pub struct Ladder {
     rungs: Rungs,

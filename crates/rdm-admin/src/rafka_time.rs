@@ -5,13 +5,15 @@ use rdm_transport::clock::{Adopted, RafkaTime};
 use std::sync::Arc;
 use tracing::Instrument as _;
 
+/// Rafka-time puller, server, refusal, and adoption helpers (`docs/architecture/fabric-node-hooks.md` "rafka-time").
 pub use rdm_node::rafka_time::*;
 
-/// Why the Day-0 root adopts its own clock: no authority exists above it.
+/// Why the Day-0 root adopts its own clock (`docs/architecture/fabric-node-hooks.md` "rafka-time"):
+/// no server exists above it.
 pub const OWN_CLOCK_DAY0_ROOT: &str = "day0-root";
-/// The fabric's root adopts its own OS clock as rafka-time, once: the Day-0 root at boot, and the
-/// node-admin a fabric recovery launches when every node the store names is confirmed gone by the
-/// provider. No node serves rafka-time to either.
+/// The fabric's root adopts its own OS clock as rafka-time, once (`docs/architecture/fabric-node-hooks.md`
+/// "rafka-time"): the Day-0 root at boot, and the node-admin a fabric recovery launches when every
+/// node the store names is confirmed gone by the provider. No node serves rafka-time to either.
 pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str, reason: &'static str) -> Adopted {
     let now = rdm_transport::clock::Clock::now_rafka_ms(&rdm_transport::clock::OsClock);
     let adopted = time.adopt(now);
@@ -27,21 +29,22 @@ pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str, rea
     adopted
 }
 
-/// How many reads one seat move owes before the pull ends unanswered, and the pause between them
-/// (grows by this much per attempt). Read-only spacing: nothing else retries.
+/// How many reads one `fabric-primary` move owes before the pull ends unanswered, and the pause
+/// between them (grows by this much per attempt). Read-only spacing: nothing else retries.
 const SEAT_MOVE_ATTEMPTS: u32 = 12;
 const SEAT_MOVE_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// A mesh primary pulls rafka-time once from the new fabric-primary each time the fabric seat moves
-/// to another holder (a record of a later revision naming another node). The fabric-primary itself
-/// keeps the rafka-time it holds: a handover changes the server, not the clock, so the fabric stays
-/// on one lineage. A replica holds no mesh seat and adopted its time at its join.
+/// A `mesh-primary` pulls rafka-time once from the new `fabric-primary` each time the `fabric-primary`
+/// moves to another node (a record of a later revision naming another node;
+/// `docs/architecture/fabric-node-hooks.md` "rafka-time"). The `fabric-primary` itself keeps the
+/// rafka-time it holds: a handover changes the server, not the clock, so the fabric stays on one
+/// lineage. A replica is not a `mesh-primary` and adopted its time at its join.
 ///
-/// The pull is `GetTopology` of the holder, adopted through [`adopt_pulled`] under the rule of a
-/// mesh primary. Each read targets the holder this admin's seat records name at that moment: a
-/// holder superseded while the pull runs (a hand-over whose new holder was itself replaced) answers
-/// `served-by-a-replica` and is refused by name, and the next read goes to the holder that
-/// superseded it. A holder that never answers ends the pull with the time held.
+/// The pull is `GetTopology` of the `fabric-primary`, adopted through [`adopt_pulled`] under the rule
+/// of a `mesh-primary`. Each read targets the `fabric-primary` this admin's primary records name at
+/// that moment: a primary superseded while the pull runs (a hand-over whose new primary was itself
+/// replaced) answers `served-by-a-replica` and is refused by name, and the next read goes to the
+/// primary that superseded it. A primary that never answers ends the pull with the time held.
 pub async fn run_seat_move_pull(
     time: RafkaTime,
     me: crate::model::PathName,

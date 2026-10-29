@@ -44,16 +44,16 @@ pub trait AnnouncementSeam: Send + Sync {
 
 /// Where a joining node-admin's start waits before it makes its topology read (op `0x1E`, node-start.md
 /// step 4): the start asks it once, after the join and the hook and before the read, and goes on when it
-/// returns. The read, its frames and the authority it goes to are untouched. The product passes none, so
+/// returns. The read, its frames and the accepting primary it goes to are untouched. The product passes none, so
 /// the read is made at once.
 #[async_trait::async_trait]
 pub trait ReadSeam: Send + Sync {
-    /// Returns when the start of `node` may make its topology read of `authority`.
-    async fn before_topology_read(&self, node: &str, authority: &str);
+    /// Returns when the start of `node` may make its topology read of `primary`.
+    async fn before_topology_read(&self, node: &str, primary: &str);
 }
 
 /// Asked by the status door before it decides a node's declaration (`DeclareNodeState`): a testkit
-/// cut holds one there unanswered, so it stays owed across a seat move (i146 Q39). The product passes
+/// cut holds one there unanswered, so it stays owed across a primary change (i146 Q39). The product passes
 /// none, so a declaration is decided at once.
 #[async_trait::async_trait]
 pub trait DeclarationSeam: Send + Sync {
@@ -80,13 +80,14 @@ pub struct DriftHold {
     pub released: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
-/// Adds an app's own Node RPC ops to the server a node-admin builds, before it is built: the app clones
-/// the gate of its [`NodeHooks`](crate::node_hooks::NodeHooks) into each
-/// (`ServerBuilder::serve_gated`) so none answers before its hook returned `Ok`.
+/// Adds an app's own Node RPC ops to the server a node-admin builds, before it is built
+/// (`docs/architecture/node-rpc.md`): the app clones the gate of its
+/// [`NodeHooks`](crate::node_hooks::NodeHooks) into each (`ServerBuilder::serve_gated`) so none
+/// answers before its hook returned `Ok`.
 pub type ServeApp = Box<dyn FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder + Send>;
 
 /// What `on_fabric_ready` is told: the fabric, the accepted Build and attempt whose change made it
-/// ready, and that attempt's observability context (fabric-node-hooks.md, Q175).
+/// ready, and that attempt's observability context (`docs/architecture/fabric-node-hooks.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FabricReadyCtx {
     /// The fabric.
@@ -101,7 +102,7 @@ pub struct FabricReadyCtx {
 
 /// What `on_build_started` is told: the fabric, the Build, the attempt whose claim opened it (its first,
 /// or the attempt that reopens it after it ended), that attempt's reason and its observability context
-/// (fabric-node-hooks.md, Q256).
+/// (`docs/architecture/fabric-node-hooks.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildStartedCtx {
     /// The fabric.
@@ -116,7 +117,8 @@ pub struct BuildStartedCtx {
     pub context: CallContext,
 }
 
-/// The terminal state a Build's ending recorded, as its caller reads it on the Build stream (R-BI4).
+/// The terminal state a Build's ending recorded, as its caller reads it on the Build stream
+/// (`docs/architecture/fabric-node-hooks.md`, `docs/architecture/build.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildEndedState {
     /// The Build is `Complete`.
@@ -147,7 +149,8 @@ impl BuildEndedState {
 }
 
 /// What `on_build_ended` is told: the fabric, the Build, the attempt that ended it, that attempt's
-/// reason, the terminal state and that attempt's observability context (fabric-node-hooks.md, Q256).
+/// reason, the terminal state and that attempt's observability context
+/// (`docs/architecture/fabric-node-hooks.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildEndedCtx {
     /// The fabric.
@@ -164,8 +167,8 @@ pub struct BuildEndedCtx {
     pub context: CallContext,
 }
 
-/// What `on_mesh_ready` is told: the fabric and the mesh that is ready (fabric-node-hooks.md,
-/// Q175).
+/// What `on_mesh_ready` is told: the fabric and the mesh that is ready
+/// (`docs/architecture/fabric-node-hooks.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshReadyCtx {
     /// The fabric.
@@ -191,23 +194,26 @@ pub trait CommandFrameSeam: Send + Sync {
     async fn before_storage_switch(&self, _change_id: &rdm_core::ChangeId) {}
 }
 
-/// `on_fabric_ready`: the notice the fabric-primary calls once the fabric is ready. Fire
-/// and forget: it gates nothing.
+/// `on_fabric_ready`: the notice the fabric-primary calls once the fabric is ready
+/// (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
 pub type FabricReadyNotice = Arc<dyn Fn(FabricReadyCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// `on_mesh_ready`: the notice a mesh-primary calls once its mesh's ready is on its Mesh
-/// record. Fire and forget: it gates nothing.
+/// record (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
 pub type MeshReadyNotice = Arc<dyn Fn(MeshReadyCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// `on_build_started`: the notice the fabric-primary calls once the claim of a Build's first attempt,
-/// or of the attempt that reopens an ended Build, is recorded. Fire and forget: it gates nothing.
+/// or of the attempt that reopens an ended Build, is recorded
+/// (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
 pub type BuildStartedNotice = Arc<dyn Fn(BuildStartedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// `on_build_ended`: the notice the fabric-primary calls once a Build's `Complete` or `Failed` is
-/// recorded. Fire and forget: it gates nothing.
+/// recorded (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
 pub type BuildEndedNotice = Arc<dyn Fn(BuildEndedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-/// The application's notices a node-admin calls ([fabric and node hooks](../../../guide/architecture/fabric-node-hooks.html)).
+/// The application's notices a node-admin calls
+/// ([fabric and node hooks](../../../guide/architecture/fabric-node-hooks.html),
+/// `docs/architecture/fabric-node-hooks.md`).
 #[derive(Default, Clone)]
 pub struct FabricHooks {
     /// `on_mesh_ready`: optional, because it gates nothing.
@@ -227,7 +233,8 @@ impl FabricHooks {
     }
 }
 
-/// The seams a node-admin executable passes to the admin.
+/// The seams and application declarations a node-admin executable passes to the admin
+/// (`docs/architecture/node-admin-lifecycle.md` §2, `docs/architecture/fabric-node-hooks.md`).
 #[derive(Default)]
 pub struct Wiring {
     /// The embedded app's own kinds, declared once for this admin birth.
@@ -252,7 +259,7 @@ pub struct Wiring {
     pub command_frame_seam: Option<Arc<dyn CommandFrameSeam>>,
     /// Asked by the reconcile loop before each drift pass.
     pub drift_seam: Option<Arc<dyn DriftSeam>>,
-    /// Wraps `fabric.storage` before the Fabric identity holder and the shutdown control take it.
+    /// Wraps `fabric.storage` before the Fabric identity record and the shutdown control take it.
     pub fabric_storage: Option<Wrap<dyn FabricStorage>>,
     /// Wraps the Build state the control routes, the executor, the deployment pipelines and the
     /// drift check all use.

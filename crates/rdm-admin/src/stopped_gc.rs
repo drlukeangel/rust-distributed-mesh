@@ -16,15 +16,16 @@ use rdm_core::LifecycleOp;
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// The variable that sets the ttl.
+/// The variable that sets the stopped-node ttl (`docs/architecture/node-identity-and-state.md` §6.9).
 pub const ENV: &str = "RDM_STOPPED_NODE_TTL";
 
-/// RDM's shipped ttl: what an unset variable means.
+/// RDM's shipped stopped-node ttl (`docs/architecture/node-identity-and-state.md` §6.9): what an
+/// unset variable means.
 pub const SHIPPED_TTL: Duration = Duration::from_secs(30 * 60);
 
-/// The ttl `raw` sets: unset is RDM's shipped 30 minutes, blank is forever (`None`, no sweep).
-/// A value is a whole number with its unit, `ms`, `s`, `m` or `h`; zero and anything else are
-/// refused by name.
+/// The ttl `raw` sets (`docs/architecture/node-identity-and-state.md` §6.9): unset is RDM's shipped
+/// 30 minutes, blank is forever (`None`, no sweep). A value is a whole number with its unit, `ms`,
+/// `s`, `m` or `h`; zero and anything else are refused by name.
 pub fn ttl_from_env(raw: Option<&str>) -> Result<Option<Duration>, String> {
     let Some(raw) = raw else { return Ok(Some(SHIPPED_TTL)) };
     let v = raw.trim();

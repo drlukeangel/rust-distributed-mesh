@@ -1,19 +1,20 @@
-//! The node-admin runtime (`rdm-node-admin`).
+//! The node-admin runtime (`rdm-node-admin`; `docs/architecture/node-admin-lifecycle.md`).
 //!
-//! A node-admin is a fabric member that serves the control API. The first
+//! A node-admin is a fabric node that serves the control API. The first
 //! one bootstraps the fabric (its `MESH_SPAWN_TYPE` becomes fabric policy);
 //! every other one is launched by an admin's deployment pipeline and takes
 //! the policy, with its first view, from the entry pull it makes to that
 //! admin over QUIC (`rdm_transport::entry`). No node calls an admin's
 //! HTTP API: that is for tests and people.
 //!
-//! Every admin holds the same two projections over iroh-gossip: fabric
-//! the topology view (each member's digest) and the fabric's Build facts. From
+//! Every admin holds the same two projections over iroh-gossip: the
+//! topology view (each node's digest) and the fabric's Build facts. From
 //! the topology view it derives the observed topology it publishes on its views,
-//! with every seat resolved by `election` (the lowest ready NodeId of each
-//! cohort; the lowest-NodeId mesh primary holds the fabric). Admins execute Builds (`executor`): the fabric primary
-//! and each mesh's admin primary claim the attempts whose next operation is
-//! theirs and run what is left through the deployment pipeline (create, restart,
+//! with every primary role resolved by `election` (the lowest ready `NodeId` of each
+//! `(mesh, kind)` group; the lowest-`NodeId` `mesh-primary` is the `fabric-primary`,
+//! `docs/architecture/fabric-node-lifecycle-elections.md`). Admins execute Builds (`executor`): the
+//! `fabric-primary` and each mesh's `mesh-primary` claim the attempts whose next operation is
+//! theirs and run what is left through the deployment pipeline (create,
 //! delete) and the lifecycle pipeline (a node's `Pending -> Ready`).
 
 use crate::build::BuildOperation;

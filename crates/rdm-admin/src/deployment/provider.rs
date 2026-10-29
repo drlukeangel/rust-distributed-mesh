@@ -1,10 +1,10 @@
-//! Deployment provider policy (PRD §1.7–8, §8).
+//! Deployment provider policy (`docs/architecture/deployment-provider.md` §1–§2).
 //!
 //! `MESH_SPAWN_TYPE=process|container` is read once, at the first node-admin
 //! bootstrap, and normalised into the fabric's typed policy. Later admins
 //! inherit it. An unknown value is a hard bootstrap refusal, never a silent
 //! fallback; a joining admin whose local value disagrees with the fabric
-//! refuses deployment authority by name; a Build never names a provider.
+//! refuses to start by name; a Build never names a provider.
 
 use crate::model::ProviderKind;
 use std::fmt;
@@ -151,8 +151,9 @@ impl Found {
     }
 }
 
-/// A realised runtime, exactly: a pid only together with its start token, a
-/// container by its immutable id, each within its provider control domain.
+/// A realised runtime, exactly (`docs/architecture/deployment-provider.md` §2.3): a pid only
+/// together with its start token, a container by its immutable id, each within its provider control
+/// domain.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeploymentHandle {
@@ -243,7 +244,8 @@ impl fmt::Display for AdoptRefusal {
     }
 }
 
-/// `fact` as a handle `provider` may act on, or the named reason it may not.
+/// `fact` as a handle `provider` may act on, or the named reason it may not
+/// (`docs/architecture/deployment-provider.md` §2.3).
 pub fn adopt(provider: &dyn DeploymentProvider, fact: &RuntimeFact) -> Result<DeploymentHandle, AdoptRefusal> {
     fact.validate().map_err(|e| AdoptRefusal::Invalid { reason: e.to_string() })?;
     let kind = match fact.provider {
@@ -265,7 +267,7 @@ pub fn adopt(provider: &dyn DeploymentProvider, fact: &RuntimeFact) -> Result<De
     Ok(DeploymentHandle { deployment_id, provider: kind, pid, start, container, domain: Some(here) })
 }
 
-/// How a runtime is stopped.
+/// How a runtime is stopped (`docs/architecture/deployment-provider.md` §2.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminationMode {
     /// SIGTERM (or the provider's stop), then a forced kill after `grace`.
@@ -307,8 +309,8 @@ pub async fn with_exit_code(status: DeploymentStatus, fact: &RuntimeFact, data_d
     }
 }
 
-/// What node.runtime.inspect found of the exact runtime (node-runtime-inspect.md "Result"): its
-/// three answers and `unavailable { reason }`, which is neither.
+/// What node.runtime.inspect found of the exact runtime (`docs/architecture/lifecycles/node-runtime-inspect.md`
+/// "Result"): its three answers and `unavailable { reason }`, which is neither.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inspected {
     /// `exited { code }`: the exit code, when the provider's terminal status or the runtime's own exit
@@ -324,12 +326,13 @@ pub enum Inspected {
 }
 
 /// node.runtime.inspect of the exact runtime `fact` names, the birth `incarnation`'s, by `provider`
-/// (node-runtime-inspect.md steps 2 and 5): the fact adopted in this provider's control domain
-/// ([`adopt`]) and inspected, the code the runtime's own exit record proves read from `data_dir`
-/// ([`with_exit_code`]), and only the runtime's own terminal status an exit. The one inspect every
-/// caller runs: the seat watch's ladder, the mesh primary's recovery tick, the fabric authority's
-/// drift pass, the create's read of the path's previous birth. A fact the provider refuses to adopt,
-/// an unreadable exit record and the provider's `Unknown` are each `Unavailable`, named why.
+/// (`docs/architecture/lifecycles/node-runtime-inspect.md` steps 2 and 5): the fact adopted in this
+/// provider's control domain ([`adopt`]) and inspected, the code the runtime's own exit record proves
+/// read from `data_dir` ([`with_exit_code`]), and only the runtime's own terminal status an exit. The
+/// one inspect every caller runs: the primary watch's ladder, the `mesh-primary`'s recovery tick, the
+/// `fabric-primary`'s drift pass, the create's read of the path's previous birth. A fact the provider
+/// refuses to adopt, an unreadable exit record and the provider's `Unknown` are each `Unavailable`,
+/// named why.
 pub async fn inspect_runtime(provider: &dyn DeploymentProvider, fact: &RuntimeFact, data_dir: Option<&str>, incarnation: &str) -> Inspected {
     use DeploymentStatus as S;
     let handle = match adopt(provider, fact) {
@@ -403,8 +406,8 @@ impl std::fmt::Display for DeployError {
     }
 }
 
-/// Realises and deletes runtimes: starts a launch, stops a runtime and reports what it knows of
-/// one.
+/// Realises and deletes runtimes (`docs/architecture/deployment-provider.md` §2): starts a launch,
+/// stops a runtime and reports what it knows of one.
 #[async_trait::async_trait]
 pub trait DeploymentProvider: Send + Sync {
     /// The provider's kind.

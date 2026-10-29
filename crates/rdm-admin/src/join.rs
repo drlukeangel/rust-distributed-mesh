@@ -12,7 +12,7 @@
 //! the same deployment's next registration (the Build's next attempt) is handed it. A disagreement is
 //! refused by name with both values. A join for a birth whose create ended without hearing it is
 //! refused as `DeploymentAbandoned`, naming the Build, the attempt and the exact birth: this admin
-//! is the birth's authority and never answers `NotPrimary` about itself.
+//! is the birth's accepting primary and never answers `NotPrimary` about itself.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use crate::storage::{NodesStorage, RuntimeRow};
@@ -29,7 +29,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::watch;
 
-/// What the deploying admin holds of one birth before it reports.
+/// What the deploying admin holds of one birth before it reports
+/// (`docs/architecture/lifecycles/node-create.md` step 2, `docs/architecture/lifecycles/node-mesh-join.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deployed {
     /// The deployed node's `path.name`.
@@ -46,11 +47,11 @@ pub struct Deployed {
     pub runtime: RuntimeFact,
     /// The birth's data directory.
     pub data_dir: String,
-    /// The name this authority last accepted for this exact birth (its held stopped digest), when it
+    /// The name this accepting primary last accepted for this exact birth (its held stopped digest), when it
     /// holds the birth: the join of a stopped node renamed while stopped presents it. `None` at a
     /// first start, whose name is the create spec's.
     pub last_accepted_name: Option<PathName>,
-    /// The authority holds this birth: the deployment is a later start of a node it admitted
+    /// The accepting primary holds this birth: the deployment is a later start of a node it admitted
     /// before (a stopped or restarted birth), whose join is reconciled to its row and handed its
     /// row's config; `false` at a first start, admitted under its create spec's name whatever row
     /// stands at that path.name (R-JN1 item 6), and handed its row's config when that row is its own

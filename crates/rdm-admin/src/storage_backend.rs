@@ -19,14 +19,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::Instrument;
 
-/// Where a node-admin's storage opens, decided by its boot before any boundary opens.
+/// Where a node-admin's storage opens, decided by its boot before any boundary opens
+/// (`docs/architecture/storage.md` §2).
 #[derive(Debug, Clone)]
 pub struct StorageScope {
     /// The admin's own data dir: its local identity, on every backend.
     pub data_dir: PathBuf,
     /// The Fabric the admin belongs to.
     pub fabric_id: FabricId,
-    /// The mesh the admin belongs to: its Build lane and its members' rows.
+    /// The mesh the admin belongs to: its Build section and its nodes' rows
+    /// (`docs/architecture/storage.md` §2, `docs/architecture/build.md` §5.3).
     pub own_mesh: String,
     /// The incarnation this process writes as.
     pub writer: IncarnationId,
@@ -46,8 +48,8 @@ impl StorageScope {
 /// A node's own connections rows, opened once its `path.name` is decided.
 pub type OpenConnections = Arc<dyn Fn(PathName) -> BoxFuture<'static, Result<Arc<dyn ConnectionsStorage>, StorageError>> + Send + Sync>;
 
-/// The storage a node-admin runs on, opened by its backend: the five boundaries and how it finishes
-/// the writes it has issued.
+/// The storage a node-admin runs on, opened by its backend (`docs/architecture/storage.md` §2): the
+/// five boundaries and how it finishes the writes it has issued.
 pub struct StorageBoundaries {
     /// `fabric.storage`: the Fabric record, its name's claim and its events.
     pub fabric: Arc<dyn FabricStorage>,
@@ -73,7 +75,7 @@ pub struct StorageBoundaries {
     pub writes_to: String,
 }
 
-/// The backend a node-admin's boundaries are opened from.
+/// The backend a node-admin's boundaries are opened from (`docs/architecture/storage.md` §2).
 #[async_trait]
 pub trait StorageBackend: Send + Sync {
     /// Refuses, by name, a deployment provider whose runtimes this backend cannot serve the
@@ -197,17 +199,19 @@ impl StorageBackend for FileBackend {
 }
 
 #[cfg(feature = "file-backend")]
-/// RDM standalone's storage backend on the shared store dir `store_dir`: the one a node-admin's
-/// `start`, `start_with` and `entry::run` construct.
+/// RDM standalone's storage backend on the shared store dir `store_dir`
+/// (`docs/architecture/storage.md` §2): the one a node-admin's `start`, `start_with` and `entry::run`
+/// construct.
 pub fn file_backend(store_dir: impl Into<PathBuf>) -> Arc<dyn StorageBackend> {
     Arc::new(FileBackend::at(store_dir))
 }
 
-/// The topology storage providers a node-admin executable registers in its wiring, by name (storage.md
-/// §2): each a backend of the five record stores, its name bound to its place at registration. The
-/// admin opens the one its `topology_storage_provider` names (`RDM_TOPOLOGY_STORAGE_PROVIDER` on Day 0,
-/// its launch's when launched, its own row's on a start with no launcher); as the fabric-primary it
-/// refuses at acceptance a Build naming one this registry does not hold or that does not open.
+/// The topology storage providers a node-admin executable registers in its wiring, by name
+/// (`docs/architecture/storage.md` §2): each a backend of the five record stores, its name bound to
+/// its place at registration. The admin opens the one its `topology_storage_provider` names
+/// (`RDM_TOPOLOGY_STORAGE_PROVIDER` on Day 0, its launch's when launched, its own row's on a start
+/// with no launcher); as the fabric-primary it refuses at acceptance a Build naming one this registry
+/// does not hold or that does not open.
 #[derive(Clone, Default)]
 pub struct TopologyStorageProviders {
     registered: Vec<(String, Arc<dyn StorageBackend>)>,

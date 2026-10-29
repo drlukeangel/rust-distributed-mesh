@@ -21,6 +21,7 @@
 //! [`MEMBER_CERT_TTL_SECS`](rdm_core::certs::MEMBER_CERT_TTL_SECS), cut to its issuer's expiry when
 //! the issuer expires first.
 
+/// Birth identity and certificate issuance error types (`docs/architecture/fabric-certs.md`).
 pub use rdm_core::certs::{BirthIdentity, CertError, IssueFailure};
 use rdm_core::certs::{CaKey, IssuingKey, SigningKey, VerifyingKey};
 use rdm_core::launch::{IssuingMaterial, ENV_FABRIC_CA_KEY, ENV_ISSUING_CERT, ENV_ISSUING_KEY};
@@ -40,8 +41,9 @@ pub const CA_SECRET_FILE: &str = "ca-secret";
 /// root-signed cert, as hex, one per line.
 pub const FABRIC_CA_FILE: &str = "fabric-ca";
 
-/// What a node-admin is started with for certs. There is no default: [`CertChoice::Unchosen`] is
-/// refused at start by name.
+/// What a node-admin is started with for certs (`docs/architecture/fabric-certs.md`
+/// "How RDM is instantiated"). There is no default: [`CertChoice::Unchosen`] is refused at start by
+/// name.
 #[derive(Default)]
 pub enum CertChoice {
     /// Nothing was chosen.

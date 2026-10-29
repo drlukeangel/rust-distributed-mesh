@@ -3,6 +3,7 @@
 //! Queries the deployment provider for the exact runtime handle to verify whether the
 //! process/container is running or proven exited.
 
+/// Exact runtime inspection and deployment provider types (`docs/architecture/lifecycles/node-runtime-inspect.md`).
 pub use crate::deployment::provider::{inspect_runtime, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, Inspected};
 
 #[cfg(test)]

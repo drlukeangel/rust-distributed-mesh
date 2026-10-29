@@ -1,21 +1,22 @@
-//! The node-admin process entry: what every executable that IS a node-admin runs. The shipped
-//! `rdm-node-admin` and a consumer's own node-admin executable are this call under their own
-//! service name.
+//! The node-admin process entry (`docs/architecture/node-admin-lifecycle.md` §2): what every
+//! executable that IS a node-admin runs. The shipped `rdm-node-admin` and a consumer's own
+//! node-admin executable are this call under their own service name.
 
 use crate::admin::{start_on, AdminConfig};
 use crate::wiring::Wiring;
 use tracing::Instrument;
 
 #[cfg(feature = "file-backend")]
-/// Run a node-admin to completion: configured from the environment, serving its control API,
-/// leaving on a fabric shutdown or a signal. `service` is the telemetry service name and the
-/// prefix of its console lines.
+/// Run a node-admin to completion (`docs/architecture/node-admin-lifecycle.md` §2): configured from
+/// the environment, serving its control API, leaving on a fabric shutdown or a signal. `service` is
+/// the telemetry service name and the prefix of its console lines.
 pub async fn run(service: &str) {
     run_with(service, |cfg| Wiring { fabric_hooks: crate::wiring::FabricHooks::no_app_work(), certs: material_or_exit(service, cfg), ..Wiring::default() }).await
 }
 
-/// The cert material RDM's own node-admin executable holds ([`crate::certs::CertChoice::from_config`]);
-/// one that holds none, or holds material that does not decode, refuses to start by name.
+/// The cert material RDM's own node-admin executable holds ([`crate::certs::CertChoice::from_config`],
+/// `docs/architecture/fabric-certs.md`); one that holds none, or holds material that does not decode,
+/// refuses to start by name.
 pub fn material_or_exit(service: &str, cfg: &AdminConfig) -> crate::certs::CertChoice {
     crate::certs::CertChoice::from_config(cfg).unwrap_or_else(|why| {
         tracing::info_span!("rdm.node_admin.cert.reject.via-no-material", node = %cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| cfg.mesh.clone()), reason = %why)
@@ -27,16 +28,16 @@ pub fn material_or_exit(service: &str, cfg: &AdminConfig) -> crate::certs::CertC
 }
 
 #[cfg(feature = "file-backend")]
-/// [`run`], for an executable that decorates the parts its node-admin is built from: `wiring` is
-/// called once with the configuration the environment produced, inside the runtime, before the
-/// admin starts.
+/// [`run`], for an executable that decorates the parts its node-admin is built from
+/// (`docs/architecture/node-admin-lifecycle.md` §2): `wiring` is called once with the configuration
+/// the environment produced, inside the runtime, before the admin starts.
 pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
     run_on(service, |cfg| crate::storage_backend::TopologyStorageProviders::file(cfg.store_dir.clone()), wiring).await
 }
 
 /// [`run_with`] on the topology storage providers `providers` registers from the configuration
-/// (storage.md §2): every durable read and write of the node-admin goes through the six boundaries the
-/// one its `topology_storage_provider` names opens.
+/// (`docs/architecture/storage.md` §2): every durable read and write of the node-admin goes through
+/// the boundaries the one its `topology_storage_provider` names opens.
 pub async fn run_on(service: &str, providers: impl FnOnce(&AdminConfig) -> crate::storage_backend::TopologyStorageProviders, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
     // Heard from the first line: a stop that arrives while the admin boots ends the boot by name.
     listen_for_stop();
@@ -134,4 +135,5 @@ pub async fn run_on(service: &str, providers: impl FnOnce(&AdminConfig) -> crate
     running.leave().instrument(span).await;
 }
 
+/// Signal listener and stop notification (`docs/architecture/lifecycles/node-stop.md`).
 pub use rdm_node::node::{listen_for_stop, stop_requested};

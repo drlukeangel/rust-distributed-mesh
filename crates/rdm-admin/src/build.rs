@@ -10,8 +10,8 @@ use crate::topology::Topology;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// The Build identity: a Crockford id like every other id (R-BI5). It belongs to fabric control
-/// state, not to the executor that happens to run it.
+/// The Build identity (`docs/architecture/build.md` §1): a Crockford id like every other id
+/// (R-BI5). It belongs to fabric control state, not to the executor that happens to run it.
 pub use rdm_core::BuildId;
 
 /// What a path's entry in the accepted Build names that a Build message does not carry (proposal
