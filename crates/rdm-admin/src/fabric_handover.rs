@@ -710,3 +710,139 @@ pub fn serve(b: ServerBuilder, slot: HandoverSlot) -> ServerBuilder {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::deployment::process::ProcessDeploymentProvider;
+    use crate::model::{Fabric, FabricId, MeshId, Node, NodeKind, ProviderKind, ScopeStatus};
+    use rdm_core::Primary;
+    use rdm_transport::StaticResolver;
+    use std::net::SocketAddr;
+
+    /// CONTRACT: docs/architecture/lifecycles/fabric-recovery.md:87
+    /// "The executor takes the fabric-primary role and the lost mesh's mesh-primary role by one winning claim and one recorded transition at the next revision, keeping its own mesh's"
+    #[tokio::test]
+    async fn take_under_delete_installs_fabric_and_lost_mesh_primary_roles_all_or_none() {
+        let ep = rdm_transport::endpoint::bind(
+            iroh::SecretKey::from_bytes(&[23u8; 32]),
+            "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+        )
+        .await
+        .unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(5_000_000);
+        let fabric_id = FabricId::mint();
+        let mesh_id = MeshId::mint();
+        let me: PathName = "mesh2.admin.1".parse().unwrap();
+        let node_id = NodeId::mint();
+        let incarnation = IncarnationId::mint();
+
+        let topology_view = TopologyView::join(
+            &gossip,
+            &ep,
+            &fabric_id,
+            "mesh2",
+            &mesh_id,
+            "mesh2.admin.1",
+            Arc::new(time),
+            vec![],
+            &[],
+        )
+        .await
+        .unwrap();
+        let backbone = Backbone::join(
+            &gossip,
+            &ep,
+            &topology_view,
+            "mesh2",
+            rdm_core::PublisherId {
+                node: "mesh2.admin.1".to_string(),
+                incarnation: incarnation.clone(),
+                node_id: node_id.clone(),
+            },
+            vec![],
+        )
+        .await
+        .unwrap();
+        let resolver = Arc::new(StaticResolver::new());
+        let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver));
+        let provider = Arc::new(ProcessDeploymentProvider::new());
+        let looker = crate::seat_watch::Looker {
+            me: me.clone(),
+            me_id: node_id.clone(),
+            topology_view: topology_view.clone(),
+            client: client.clone(),
+            provider,
+            nodes: None,
+            heard_again: Default::default(),
+            connections: None,
+            commands: None,
+        };
+        let door = HandoverDoor {
+            fabric: "fab".into(),
+            me: me.clone(),
+            node_id: node_id.clone(),
+            incarnation: incarnation.clone(),
+            topology: Arc::new(RwLock::new(Topology {
+                fabric: Fabric {
+                    id: FabricId::mint(),
+                    name: "fab".into(),
+                    status: ScopeStatus::Ready,
+                    provider: ProviderKind::Process,
+                },
+                meshes: Vec::new(),
+                nodes: Vec::new(),
+            })),
+            digest_view: topology_view.digest_view.clone(),
+            topology_view: topology_view.clone(),
+            backbone,
+            client,
+            records: Arc::new(crate::admin::Records::default()),
+            locks: Default::default(),
+            memo: Default::default(),
+            decisions: Arc::default(),
+            project_view: Arc::new(|| Box::pin(async {})),
+            finish_writes: Arc::new(|| Box::pin(async {})),
+            looker,
+        };
+
+        let lost_fp = Primary {
+            mesh: "mesh1".into(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            revision: 3,
+        };
+
+        // 1. A target node with no incarnation is refused `NotReady`.
+        let mut to_node = Node::allocated(me.clone());
+        to_node.node_id = node_id.clone();
+        assert!(matches!(
+            door.take_under_delete(&lost_fp, 2, &to_node).await,
+            Err(Reply::NotReady { .. })
+        ));
+
+        // 2. With a valid incarnation, `take_under_delete` installs both `FabricPrimary` (at `target.revision + 1`)
+        //    and `mesh1`'s `NodeAdmin` primary (at `mesh_revision`) onto `to_node`.
+        to_node.incarnation_id = Some(incarnation.clone());
+        let entries = door.take_under_delete(&lost_fp, 2, &to_node).await.expect("take_under_delete succeeds");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, FABRIC);
+        assert_eq!(entries[0].3, 4);
+        assert_eq!(entries[1].0, NodeKind::NodeAdmin.node_type());
+        assert_eq!(entries[1].3, 2);
+
+        let held_fp = topology_view.primaries().fabric().expect("fabric primary installed");
+        assert_eq!(held_fp.node_id, node_id);
+        assert_eq!(held_fp.revision, 4);
+
+        // 3. If a newer revision is already held, `take_under_delete` refuses `NotReady` all-or-none.
+        assert!(matches!(
+            door.take_under_delete(&lost_fp, 1, &to_node).await,
+            Err(Reply::NotReady { .. })
+        ));
+        ep.close().await;
+    }
+}
+
