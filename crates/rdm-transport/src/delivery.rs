@@ -105,6 +105,7 @@ pub struct DeliverySeams {
     hold_next_request_ack: AtomicBool,
     request_ack_released: tokio::sync::Notify,
     request_ack_written: tokio::sync::Notify,
+    request_ack_holding: tokio::sync::Notify,
 }
 
 impl DeliverySeams {
@@ -130,6 +131,12 @@ impl DeliverySeams {
     /// cell does in between (a connection cut).
     pub fn hold_next_request_ack(&self) {
         self.hold_next_request_ack.store(true, Ordering::SeqCst);
+    }
+
+    /// Resolves once the held request `Ack` is held: its write waits for
+    /// [`release_request_ack`](Self::release_request_ack).
+    pub async fn request_ack_held(&self) {
+        self.request_ack_holding.notified().await;
     }
 
     /// Let the held request `Ack` be written; resolves once its write has ended, written or failed.
@@ -687,6 +694,7 @@ impl Delivery {
         if held {
             tracing::info_span!("rdm.node_rpc.delivery.update.via-ack-held-by-seam", delivery_id = %h.delivery_id(), of = kind.name())
                 .in_scope(|| tracing::info!("the test seam holds this ack until the cell releases it"));
+            self.inner.seams.request_ack_holding.notify_one();
             self.inner.seams.request_ack_released.notified().await;
         }
         let written = out.send(&encode_ack_frame(&h.ack())).await;

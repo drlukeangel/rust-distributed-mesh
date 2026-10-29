@@ -766,8 +766,8 @@ fn a_response_is_delivered_on_a_new_stream_after_a_reconnect() {
 }
 
 /// Cell 11b (rdm#180). CONTRACT: a read-only request is accepted at its dispatch and its `Ack` is
-/// written by a task of its own; when that write loses to a cut of the request's connection, the
-/// reply direction is gone before a withheld reply is released. The release is recorded as a failed
+/// written before its handler runs (rdm#216); when that write loses to a cut of the request's
+/// connection, the reply direction is gone before a withheld reply is released. The release is recorded as a failed
 /// late reply naming the failed write, and spanned (`rdm.node_rpc.delivery.update.via-withheld-reply-released`,
 /// in the caller's trace); the reply stays owed and reaches the caller on a new stream, the handler
 /// dispatched once. Must NOT happen: a release that records nothing (the late reply never resolves),
@@ -796,9 +796,12 @@ fn a_withheld_reply_whose_direction_a_lost_ack_write_ended_is_a_failed_late_repl
                     },
                     tracing::Span::current(),
                 ));
-                tokio::time::timeout(Duration::from_secs(2), withhold.reached()).await.expect("the handler reaches its reply within 2 s");
+                // The ack is written before the handler runs: held, the connection is cut under it, and
+                // released its write fails on the cut; then the handler reaches its withheld reply.
+                tokio::time::timeout(Duration::from_secs(2), s.delivery.seams().request_ack_held()).await.expect("the read-only request's ack is held within 2 s");
                 assert!(s.server.close_connections_except(&[], "the cell cuts the connection") >= 1);
                 tokio::time::timeout(Duration::from_secs(2), s.delivery.seams().release_request_ack()).await.expect("the held ack's write ends within 2 s");
+                tokio::time::timeout(Duration::from_secs(2), withhold.reached()).await.expect("the handler reaches its reply within 2 s");
                 withhold.release();
                 let late = tokio::time::timeout(Duration::from_secs(2), withhold.late_reply()).await.expect("the released reply is recorded within 2 s, never skipped");
                 let written = late.written.clone().expect_err("the late reply is not written whole on the cut stream");
