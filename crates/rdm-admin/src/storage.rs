@@ -1673,4 +1673,79 @@ mod tests {
         check(&FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d.join("root")), &crate::store_log::LogWriter::mint()).await.unwrap(), "file").await;
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    /// CONTRACT: docs/architecture/storage.md:86
+    /// "| a restart with no launcher (the adoption launch) | the node itself | its own row in its data dir |"
+    /// CONTRACT: docs/architecture/node-identity-and-state.md:149
+    /// "node.delete releases the node's identity and name; its row stays. The node's mesh-primary writes
+    /// the row with status deleted, keeping the record and its config; the deleted row releases..."
+    #[tokio::test]
+    async fn clear_address_and_primaries_fold_declared_write_index_moves_and_own_in_behave_as_specified() {
+        // 1. `clear_address_and_primaries` strips endpoint_id, transport_addr, listeners, and primary revisions.
+        let inc = IncarnationId::mint();
+        let name: PathName = "mesh1.admin.1".parse().unwrap();
+        let mut birth = BirthFacts::new(inc.clone(), name.clone());
+        birth.endpoint_id = Some(EndpointId("ep-1".into()));
+        birth.transport_addr = Some("127.0.0.1:9000".parse().unwrap());
+        birth.listeners.push(("control".into(), "127.0.0.1:9001".parse().unwrap()));
+        birth.is_primary = Some(3);
+        birth.is_fabric_primary = Some(4);
+        birth.declared.insert(NodeState::Ready);
+        birth.declared.insert(NodeState::Stopped);
+
+        clear_address_and_primaries(&mut birth);
+        assert_eq!(birth.endpoint_id, None);
+        assert_eq!(birth.transport_addr, None);
+        assert!(birth.listeners.is_empty());
+        assert_eq!(birth.is_primary, None);
+        assert_eq!(birth.is_fabric_primary, None);
+
+        // 2. `fold_declared` extracts the greatest declared state and path name per (node_id, incarnation_id).
+        let node_id = NodeId::mint();
+        let mut row = NodeRow::new(name.clone(), node_id.clone(), crate::model::NodeStatus::Stopped);
+        row.births.push(birth);
+        let declared = fold_declared([&row]);
+        assert_eq!(declared.get(&(node_id.clone(), inc.clone())), Some(&(NodeState::Stopped, name.clone())));
+
+        // 3. `write_index_moves` applies path and tag moves to `NodesStorage`.
+        let store = MemoryNodesStorage::default();
+        store.put_node(&row).await.unwrap();
+        let mut row_tagged = row.clone();
+        row_tagged.tags.insert("tier-edge".into());
+        row_tagged.tags.insert("zone-a".into());
+        let moves1 = IndexMoves::of(&row_tagged, None);
+        write_index_moves(&store, "mesh1", &node_id, &moves1).await.unwrap();
+        assert_eq!(store.node_at(&name).await.unwrap().map(|r| r.node_id), Some(node_id.clone()));
+        assert!(store.tagged("tier-edge").await.unwrap().contains(&node_id));
+        assert!(store.tagged("zone-a").await.unwrap().contains(&node_id));
+
+        let mut row_retagged = row_tagged.clone();
+        row_retagged.tags.remove("zone-a");
+        let moves2 = IndexMoves::of(&row_retagged, Some(&row_tagged));
+        write_index_moves(&store, "mesh1", &node_id, &moves2).await.unwrap();
+        assert!(store.tagged("tier-edge").await.unwrap().contains(&node_id));
+        assert!(!store.tagged("zone-a").await.unwrap().contains(&node_id));
+
+        // 4. `FileNodesStorage::own_in` and `put_own_in` round-trip the admin's own row in its data dir.
+        let d = crate::test_support::tempdir("storage-own-in");
+        let writer = IncarnationId::mint();
+        assert_eq!(FileNodesStorage::own_in(&d, &writer).await.unwrap(), None);
+        let secret = iroh::SecretKey::from_bytes(&[11u8; 32]);
+        let own_record = NodeRecord {
+            node_id: node_id.clone(),
+            fabric_id: FabricId::mint(),
+            name: name.clone(),
+            mesh_id: MeshId::mint(),
+            incarnation_id: inc,
+            endpoint_id: EndpointId(secret.public().to_string()),
+            transport_addr: "127.0.0.1:9100".parse().unwrap(),
+            listeners: vec![("control".into(), "127.0.0.1:9101".parse().unwrap())],
+            is_primary: Some(1),
+            is_fabric_primary: Some(1),
+            topology_storage_provider: Some("file".into()),
+        };
+        FileNodesStorage::put_own_in(&d, &writer, &own_record).await.unwrap();
+        assert_eq!(FileNodesStorage::own_in(&d, &writer).await.unwrap(), Some(own_record));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
