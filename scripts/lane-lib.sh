@@ -62,4 +62,6 @@ lane_warm() {
     || { echo "REFUSED: lane $1 does not build at $(git -C "$d" rev-parse --short HEAD)"; return 1; }
   echo "lane $1: warm at $(git -C "$d" rev-parse --short HEAD) in $(( $(date +%s)-s ))s"
 }
-lane_repo() { cat "$(state_dir "$1")/repo" 2>/dev/null || echo drlukeangel/rafka-v2; }
+# The repo a lane's issues are in: this repo's, the RDM issues and the i143 milestone (CLAUDE.md), unless
+# the lane's state names another.
+lane_repo() { cat "$(state_dir "$1")/repo" 2>/dev/null || echo drlukeangel/rust-distributed-mesh; }

@@ -339,10 +339,12 @@ class Verbs(unittest.TestCase):
         self.land_proven()
         self.assertIn('issue close 1 --repo drlukeangel/rust-distributed-mesh', self.gh_log())
 
-    def test_land_in_a_lane_with_no_repo_file_closes_in_rafka_v2(self):
+    def test_land_in_a_lane_with_no_repo_file_closes_in_rdms_repo(self):
+        # A lane claimed by lane-prep alone (no dispatch) records no repo: its issue is RDM's.
         self.assertFalse((self.e.state / 'repo').exists())
         self.land_proven()
-        self.assertIn('issue close 1 --repo drlukeangel/rafka-v2', self.gh_log())
+        self.assertIn('issue close 1 --repo drlukeangel/rust-distributed-mesh', self.gh_log())
+        self.assertNotIn('rafka-v2', self.gh_log())
 
 
 class ModuleCoverage(unittest.TestCase):
