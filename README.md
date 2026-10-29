@@ -18,7 +18,7 @@ over one [iroh](https://iroh.computer) QUIC network:
   node runs as an ordered sequence of [Build](docs/architecture/build.md) steps with durable step
   receipts.
 - **[Gossip](docs/architecture/gossip.md) and [Node RPC](docs/architecture/node-rpc-envelope.md)**
-  connect the fleet: members publish signed [topology](docs/architecture/gossip.md) digests and
+  connect the fleet: nodes publish [topology](docs/architecture/gossip.md) digests and
   discover peers over `iroh-gossip`, and call one another over authenticated, framed
   [Node RPC](docs/architecture/node-rpc.md) streams admitted by
   [fabric certificates](docs/architecture/fabric-certs.md).

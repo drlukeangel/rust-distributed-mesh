@@ -14,7 +14,7 @@ of [nodes](docs/architecture/node-identity-and-state.md). Before making changes,
    exact old and new text, and a change to a page's contract lands in the same commit as the code
    that implements it.
 2. **Rulings (`docs/plans/rulings/`):**
-   Numbered architectural rulings (`Q1` through `Q276+`) record the context, trace evidence, and
+   Numbered architectural rulings (`Q1`, `Q2`, …) record the context, trace evidence, and
    chosen design arm whenever a design question is settled.
 3. **Proposals and work records (`docs/plans/`):**
    Design proposals live in `docs/plans/proposal/` and active initiative records live in
@@ -25,7 +25,7 @@ of [nodes](docs/architecture/node-identity-and-state.md). Before making changes,
 The repository pins its toolchain in `rust-toolchain.toml` and configures `sccache` and `mold` in
 `.cargo/config.toml`:
 
-- **Rust `1.94.0`** (`rustup toolchain install 1.94.0`)
+- **Rust `stable`** (the channel `rust-toolchain.toml` names; `rustup` installs it on first use)
 - **`sccache`** and **`mold`** (`sudo apt-get install -y sccache mold clang`)
 - **Docker** (required when testing the `container` [deployment provider](docs/architecture/deployment-provider.md))
 - **`mdbook`**, **`mdbook-mermaid`**, and **`mdbook-linkcheck2`** (optional, for `scripts/docs-site.sh`:
@@ -48,10 +48,14 @@ cargo build --locked --manifest-path demo/Cargo.toml --workspace --bins
 ```
 
 Or run the consumer build verification script, which stages `demo/` in an isolated directory,
-rewrites the RDM dependency rev to `HEAD`, builds every binary, and records a build receipt:
+rewrites the RDM dependency rev to the candidate commit, builds every binary, and records a build
+receipt:
 
 ```bash
-scripts/i143-rshape-build-consumer.sh
+scripts/i143-rshape-build-consumer.sh --candidate-sha "$(git rev-parse HEAD)" \
+    --workspace target/i143-rshape/consumer-workspace \
+    --bin-dir target/i143-rshape/consumer-bin \
+    --output target/i143-rshape/consumer-build
 ```
 
 ## Running tests
@@ -81,7 +85,7 @@ See [Testing strategy](docs/eng/testing-strategy.md) for how tests are organized
   # Fast gate (unit, functional, e2e, and audit ratchets at fast timers):
   scripts/rdm-gate-at.sh . fast
 
-  # Release gate (includes release-cadence cells):
+  # Release gate (adds the release-only jobs, each stem at its own cadence):
   scripts/rdm-gate-at.sh . release
   ```
 
@@ -89,7 +93,7 @@ See [Testing strategy](docs/eng/testing-strategy.md) for how tests are organized
 
 RDM enforces a strict domain vocabulary across identifiers, file names, comments, and documentation
 (see [Glossary](docs/glossary.md) and [Naming conventions](docs/eng/testing-naming-conventions.md)).
-Retired terms and issue-numbered test filenames are rejected before merge.
+Banned words and issue-numbered test filenames are rejected before merge.
 
 Before committing, run the name check against `origin/main`:
 

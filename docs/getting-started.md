@@ -10,7 +10,7 @@ documented in [Your own ops on Node RPC](eng/consumer-guide-ops.md)) on
 
 Install the tools required by `.cargo/config.toml` and `rust-toolchain.toml`:
 
-- **Rust `1.94.0`** (`rustup toolchain install 1.94.0`)
+- **Rust `stable`** (the channel `rust-toolchain.toml` names; `rustup` installs it on first use)
 - **`sccache`** and **`mold`** (`sudo apt-get install -y sccache mold clang`)
 - **Node.js and `npm`** (to build the web asset bundle served by `rdm-admin-ui`)
 - **Python 3** (used by `scripts/demo-estate.sh` to format JSON replies)
@@ -63,8 +63,7 @@ ESTATE UP at target/demo-estate-20261029T103315; UI http://127.0.0.1:46809
 
 What `scripts/demo-estate.sh up` did:
 
-1. Started a Day-0 [`node-admin`](architecture/node-admin-lifecycle.md) process with
-   `RDM_BOOT_PROFILE=day0`, which created the [fabric](architecture/lifecycles/fabric-create.md),
+1. Started a Day-0 [`node-admin`](architecture/node-admin-lifecycle.md) process, which created the [fabric](architecture/lifecycles/fabric-create.md),
    the first [mesh](architecture/lifecycles/mesh-create.md) (`mesh-wcy2e6-1`), and its own
    [birth](architecture/node-identity-and-state.md) (`mesh-wcy2e6-1.admin.1`) as
    [fabric-primary](architecture/fabric-primary.md).
@@ -94,8 +93,8 @@ mesh-wcy2e6-1.gateway.1 -> mesh-wcy2e6-1.broker.2: {'outcome': 'Reply', 'streame
 ## 3. Run one application op and inspect one Build
 
 `demo/src/consumer_example.rs` is the compiled reference for
-[Your own ops on Node RPC](eng/consumer-guide-ops.md). It defines two product protocols in the
-`0x50..=0x7F` product op range:
+[Your own ops on Node RPC](eng/consumer-guide-ops.md). It defines two product protocols, each at a code no
+[op ledger](architecture/node-rpc-envelope.md#the-op-ledger) row holds:
 
 - `ExampleWork` (`0x50`, `"example-work"`): a unary op where a `compute` node submits an operation
   by id (`WorkRequest::Submit`) or queries its state (`WorkRequest::Get`), and a `broker` node
