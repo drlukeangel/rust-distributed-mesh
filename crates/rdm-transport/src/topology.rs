@@ -996,7 +996,10 @@ impl StatusView {
     }
 
     /// Every status held, as the frames its holder `me` replays: the original publisher and the
-    /// original instant are kept; only a status `me` did not author names `me` as `forwarded_by`.
+    /// original instant are kept; only a status `me` did not author names `me` as `forwarded_by`. A
+    /// mesh status held without its author's context (a hand-off's state or a self-applied one, before
+    /// its publisher sent it; Q272) is not replayed: no author sent it, and its publisher's authored
+    /// frame replaces it when sent.
     pub fn held_frames(&self, fabric: &FabricId, me: &str) -> Vec<Frame> {
         let by = |publisher: &str| (publisher != me).then(|| me.to_string());
         let mut out: Vec<Frame> = self
@@ -1004,6 +1007,7 @@ impl StatusView {
             .lock()
             .unwrap()
             .iter()
+            .filter(|(_, h)| h.context.is_some())
             .map(|(mesh, h)| Frame::MeshStatus { mesh: mesh.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), changed_at_rafka_ms: h.changed_at_rafka_ms }.with_context(h.context.clone()))
             .collect();
         out.sort_by_key(|f| if let Frame::MeshStatus { mesh, .. } = f.data() { mesh.clone() } else { String::new() });
@@ -5992,6 +5996,7 @@ mod tests {
         let view = super::StatusView::default();
         let plain = super::Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 40 };
         assert!(view.take(&plain, &fabric));
+        assert!(view.held_frames(&fabric, "mesh1.admin.1").is_empty(), "a status held without its author's context is not served");
         let mut publisher = super::StatusPublisher::new("mesh1.admin.1", super::StatusScope::Mesh("mesh1".into()));
         publisher.set_role(true);
         publisher.author = Some((test_author(), 1));
@@ -7459,7 +7464,8 @@ mod tests {
         primary.primary.store(true, Ordering::Relaxed);
         // mesh1's primary published mesh1 ready before the leave; the joiner learns it
         // from the replay.
-        primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }, &fabric, "backbone");
+        // As a peer receives it: authored by its publisher.
+        primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&test_author(), 1, 5), &fabric, "backbone");
         for (version, digests) in [(1, vec![admin.clone(), connections_deleting.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&connections_deleting, MemberStatus::ConnectionsDeleting), said(&leaving, MemberStatus::Leaving)])] {
             let taken = primary.take_snapshot(&mesh_topology(version, digests), &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
             let (mesh, from, v, full) = taken.source.expect("a complete source snapshot");
