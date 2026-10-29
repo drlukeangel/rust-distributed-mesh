@@ -376,7 +376,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.update.via-storage-switch` | `crates/rdm-admin/src/storage_change.rs` | 230 |
 | `rdm.node_admin.build.update.via-terminate-returned` | `crates/rdm-admin/src/admin/recovery.rs` | 805 |
 | `rdm.node_admin.build.update.via-terminate-returned` | `crates/rdm-admin/src/build_op.rs` | 149 |
-| `rdm.node_admin.ca.update.via-renewal` | `crates/rdm-admin/src/cert_renewal.rs` | 474 |
+| `rdm.node_admin.ca.update.via-renewal` | `crates/rdm-admin/src/cert_renewal.rs` | 482 |
 | `rdm.node_admin.cert.create.via-ca-create` | `crates/rdm-admin/src/certs.rs` | 151 |
 | `rdm.node_admin.cert.create.via-day-zero-root` | `crates/rdm-admin/src/certs.rs` | 105 |
 | `rdm.node_admin.cert.create.via-join` | `crates/rdm-admin/src/certs.rs` | 363 |
@@ -451,11 +451,11 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.fabric.update.via-state-adopted` | `crates/rdm-admin/src/fabric_status.rs` | 203 |
 | `rdm.node_admin.fabric.update.via-state-entered` | `crates/rdm-admin/src/fabric_status.rs` | 338 |
 | `rdm.node_admin.fabric.update.via-state-reset` | `crates/rdm-admin/src/fabric_status.rs` | 267 |
-| `rdm.node_admin.issuer.create.via-renewal` | `crates/rdm-admin/src/cert_renewal.rs` | 639 |
+| `rdm.node_admin.issuer.create.via-renewal` | `crates/rdm-admin/src/cert_renewal.rs` | 647 |
 | `rdm.node_admin.issuer.update.via-carried` | `crates/rdm-admin/src/status_rpc.rs` | 2634 |
-| `rdm.node_admin.issuer.update.via-installed` | `crates/rdm-admin/src/cert_renewal.rs` | 690 |
+| `rdm.node_admin.issuer.update.via-installed` | `crates/rdm-admin/src/cert_renewal.rs` | 699 |
 | `rdm.node_admin.issuer.update.via-installed` | `crates/rdm-admin/src/status_rpc.rs` | 1497 |
-| `rdm.node_admin.issuer.update.via-renewal` | `crates/rdm-admin/src/cert_renewal.rs` | 677 |
+| `rdm.node_admin.issuer.update.via-renewal` | `crates/rdm-admin/src/cert_renewal.rs` | 685 |
 | `rdm.node_admin.lifecycle.update.via-transition` | `crates/rdm-admin/src/lifecycle.rs` | 418 |
 | `rdm.node_admin.lifecycle_hook.update.via-transition` | `crates/rdm-admin/src/lifecycle.rs` | 373 |
 | `rdm.node_admin.mesh.create.via-mesh-row` | `crates/rdm-admin/src/admin/rows_writer.rs` | 249 |
@@ -692,7 +692,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.primary.update.via-update-primary` | `crates/rdm-admin/src/fabric_handover.rs` | 279 |
 | `rdm.node_admin.primary.update.via-update-primary` | `crates/rdm-node/src/member_handover.rs` | 208 |
 | `rdm.node_admin.root.update.via-call` | `crates/rdm-core/src/names.rs` | 146 |
-| `rdm.node_admin.root.update.via-caller` | `crates/rdm-admin/src/cert_renewal.rs` | 511 |
+| `rdm.node_admin.root.update.via-caller` | `crates/rdm-admin/src/cert_renewal.rs` | 519 |
 | `rdm.node_admin.root.update.via-caller` | `crates/rdm-admin/src/status_rpc.rs` | 1442 |
 | `rdm.node_admin.runtime.reject.via-foreign-control-domain` | `crates/rdm-admin/src/admin/runner.rs` | 495 |
 | `rdm.node_admin.runtime.reject.via-invalid-fact` | `crates/rdm-admin/src/admin/runner.rs` | 496 |
