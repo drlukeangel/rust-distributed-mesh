@@ -34,8 +34,8 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_CA_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 422 | const `ENV_CA_CERT_TTL_SECS` | literal |
 | `RDM_CA_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 474 | fn `CertPolicy::from_env` | `ENV_CA_CERT_TTL_SECS`, argument to `secs` |
 | `RDM_CA_SECRET` | `crates/rdm-admin/src/certs.rs` | 35 | const `ENV_CA_SECRET` | `ENV_CA_SECRET` |
-| `RDM_CA_SECRET` | `crates/rdm-admin/src/certs.rs` | 84 | fn `CertChoice::from_material` | `ENV_CA_SECRET`, argument to `get` |
-| `RDM_CA_SECRET` | `crates/rdm-admin/src/certs.rs` | 85 | fn `CertChoice::from_material` | `ENV_CA_SECRET`, argument to `present` |
+| `RDM_CA_SECRET` | `crates/rdm-admin/src/certs.rs` | 87 | fn `CertChoice::from_material` | `ENV_CA_SECRET`, argument to `get` |
+| `RDM_CA_SECRET` | `crates/rdm-admin/src/certs.rs` | 88 | fn `CertChoice::from_material` | `ENV_CA_SECRET`, argument to `present` |
 | `RDM_CA_SECRET` | `crates/rdm-admin/src/deployment/pipeline.rs` | 901 | fn `LaunchTemplate::scrub` | `ENV_CA_SECRET`, argument to `.extend` |
 | `RDM_CA_SECRET` | `crates/rdm-core/src/launch.rs` | 60 | const `ENV_CA_SECRET` | literal |
 | `RDM_CA_SECRET` | `crates/rdm-core/src/launch.rs` | 82 | const `RDM_SECRETS` | `ENV_CA_SECRET` |
@@ -105,7 +105,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_FABRIC` | `crates/rdm-core/src/launch.rs` | 429 | fn `Launch::from_env` | `ENV_FABRIC`, argument to `req` |
 | `RDM_FABRIC` | `crates/rdm-test/src/estate.rs` | 751 | fn `Estate::born` | in `vec!` |
 | `RDM_FABRIC` | `crates/rdm-transport/src/transport_diag.rs` | 92 | fn `header` | argument to `env` |
-| `RDM_FABRIC_CA_KEY` | `crates/rdm-admin/src/certs.rs` | 84 | fn `CertChoice::from_material` | `ENV_FABRIC_CA_KEY`, argument to `get` |
+| `RDM_FABRIC_CA_KEY` | `crates/rdm-admin/src/certs.rs` | 87 | fn `CertChoice::from_material` | `ENV_FABRIC_CA_KEY`, argument to `get` |
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-admin/src/deployment/pipeline.rs` | 901 | fn `LaunchTemplate::scrub` | `ENV_FABRIC_CA_KEY`, argument to `.extend` |
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-core/src/launch.rs` | 70 | const `ENV_FABRIC_CA_KEY` | literal |
 | `RDM_FABRIC_CA_KEY` | `crates/rdm-core/src/launch.rs` | 82 | const `RDM_SECRETS` | `ENV_FABRIC_CA_KEY` |
@@ -140,7 +140,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_INCARNATION_ID` | `crates/rdm-transport/src/transport_diag.rs` | 95 | fn `header` | argument to `env` |
 | `RDM_INHERITED_DATA_DIR` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1788 | fn `DeploymentPipeline<'_>::create_to_ready_claimed_body` | argument to `.insert` |
 | `RDM_INHERITED_DATA_DIR` | `crates/rdm-node/src/workflows/node_start.rs` | 331 | fn `node_start` | argument to `std::env::var` |
-| `RDM_ISSUING_CERT` | `crates/rdm-admin/src/certs.rs` | 84 | fn `CertChoice::from_material` | `ENV_ISSUING_CERT`, argument to `get` |
+| `RDM_ISSUING_CERT` | `crates/rdm-admin/src/certs.rs` | 87 | fn `CertChoice::from_material` | `ENV_ISSUING_CERT`, argument to `get` |
 | `RDM_ISSUING_CERT` | `crates/rdm-core/src/launch.rs` | 56 | const `ENV_ISSUING_CERT` | literal |
 | `RDM_ISSUING_CERT` | `crates/rdm-core/src/launch.rs` | 314 | fn `decode_issuing` | `ENV_ISSUING_CERT`, argument to `decode_hex` |
 | `RDM_ISSUING_CERT` | `crates/rdm-core/src/launch.rs` | 410 | fn `Launch::to_env` | `ENV_ISSUING_CERT`, argument to `.insert` |
@@ -148,7 +148,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_ISSUING_CERT` | `crates/rdm-test/src/test_certs.rs` | 48 | fn `custody_of` | in `vec!` |
 | `RDM_ISSUING_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 420 | const `ENV_ISSUING_CERT_TTL_SECS` | literal |
 | `RDM_ISSUING_CERT_TTL_SECS` | `crates/rdm-core/src/certs.rs` | 473 | fn `CertPolicy::from_env` | `ENV_ISSUING_CERT_TTL_SECS`, argument to `secs` |
-| `RDM_ISSUING_KEY` | `crates/rdm-admin/src/certs.rs` | 84 | fn `CertChoice::from_material` | `ENV_ISSUING_KEY`, argument to `get` |
+| `RDM_ISSUING_KEY` | `crates/rdm-admin/src/certs.rs` | 87 | fn `CertChoice::from_material` | `ENV_ISSUING_KEY`, argument to `get` |
 | `RDM_ISSUING_KEY` | `crates/rdm-admin/src/deployment/pipeline.rs` | 901 | fn `LaunchTemplate::scrub` | `ENV_ISSUING_KEY`, argument to `.extend` |
 | `RDM_ISSUING_KEY` | `crates/rdm-core/src/launch.rs` | 54 | const `ENV_ISSUING_KEY` | literal |
 | `RDM_ISSUING_KEY` | `crates/rdm-core/src/launch.rs` | 82 | const `RDM_SECRETS` | `ENV_ISSUING_KEY` |
