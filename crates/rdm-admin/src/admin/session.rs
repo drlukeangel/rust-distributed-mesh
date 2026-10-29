@@ -490,8 +490,8 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         // is owed afresh to its mesh's primary, before its declarer runs again.
         s.declarer.begin_own_cycle(&me, &s.incarnation.as_str(), &self.operation);
         if self.progress.is_some() {
-            if let Some(authority) = s.topology_view.projected_member_at(&self.commander.borrow().to_string()) {
-                s.declarer.own_on_stream(&me, &s.node_id, &s.incarnation, &self.operation, &authority);
+            if let Some(receiver) = s.topology_view.projected_member_at(&self.commander.borrow().to_string()) {
+                s.declarer.own_on_stream(&me, &s.node_id, &s.incarnation, &self.operation, &receiver);
             }
         }
         // Back on its channels, this admin reports NodeJoined, as an rpc node does: the start finishes on

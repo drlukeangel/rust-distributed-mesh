@@ -131,7 +131,7 @@ pub(crate) enum Key {
 
 /// Who receives a declaration: resolved from the view at each attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Authority {
+pub enum Receiver {
     FabricPrimary,
     /// The current primary of this mesh.
     MeshPrimaryOf(String),
@@ -140,7 +140,7 @@ pub enum Authority {
 #[derive(Debug, Clone)]
 pub struct Pending {
     pub key: Key,
-    pub to: Authority,
+    pub to: Receiver,
     pub request: StatusRequest,
     pub attempts: u32,
     pub last: Option<String>,
@@ -163,7 +163,7 @@ pub(crate) struct Declarer {
     done: Mutex<BTreeMap<Key, (String, NodeId, Option<IncarnationId>)>>,
     /// Every declaration ever owed, by key, with its position in the order owed: what is re-owed when the
     /// authority moves.
-    requests: Mutex<BTreeMap<Key, (Authority, StatusRequest, Option<String>, u64)>>,
+    requests: Mutex<BTreeMap<Key, (Receiver, StatusRequest, Option<String>, u64)>>,
     /// The position the next declaration owed takes.
     next_at: std::sync::atomic::AtomicU64,
     /// The operation that produced each own state of this birth's current cycle (node-status.md
@@ -200,12 +200,12 @@ impl Declarer {
     }
 
     /// Owe `request` to `to` under `key`; a key already owed or answered is left as it is.
-    pub(crate) fn owe(&self, key: Key, to: Authority, request: StatusRequest) {
+    pub(crate) fn owe(&self, key: Key, to: Receiver, request: StatusRequest) {
         self.owe_in(key, to, request, None)
     }
 
     /// [`Declarer::owe`], sent under `trace`: the declaration continues that `traceparent`.
-    pub(crate) fn owe_in(&self, key: Key, to: Authority, request: StatusRequest, trace: Option<String>) {
+    pub(crate) fn owe_in(&self, key: Key, to: Receiver, request: StatusRequest, trace: Option<String>) {
         let at = self.requests.lock().unwrap().entry(key.clone()).or_insert_with(|| (to.clone(), request.clone(), trace.clone(), self.owed_next())).3;
         if self.done.lock().unwrap().contains_key(&key) {
             return;
@@ -239,13 +239,13 @@ impl Declarer {
             .in_scope(|| tracing::info!("a start begins this birth's next cycle: its own state is owed afresh at node.started"));
     }
 
-    /// The open start stream reports Ready to this authority; a later seat move still owes it.
-    pub(crate) fn own_on_stream(&self, me: &PathName, node_id: &NodeId, incarnation: &IncarnationId, operation: &DeclaredOperation, authority: &rdm_core::MeshDigest) {
+    /// The open start stream reports Ready to this receiver; a later seat move still owes it.
+    pub(crate) fn own_on_stream(&self, me: &PathName, node_id: &NodeId, incarnation: &IncarnationId, operation: &DeclaredOperation, receiver: &rdm_core::MeshDigest) {
         let key = Key::OwnState(incarnation.to_string(), NodeState::Ready);
         let request = StatusRequest::DeclareNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Ready, operation: Some(operation.clone()) };
         let at = self.owed_next();
-        self.requests.lock().unwrap().insert(key.clone(), (Authority::MeshPrimaryOf(me.mesh.clone()), request, None, at));
-        self.done.lock().unwrap().insert(key.clone(), ("command-stream".into(), authority.node.node_id.clone(), Some(authority.node.incarnation.clone())));
+        self.requests.lock().unwrap().insert(key.clone(), (Receiver::MeshPrimaryOf(me.mesh.clone()), request, None, at));
+        self.done.lock().unwrap().insert(key.clone(), ("command-stream".into(), receiver.node.node_id.clone(), Some(receiver.node.incarnation.clone())));
         self.pending.lock().unwrap().remove(&key);
     }
 
@@ -262,7 +262,7 @@ impl Declarer {
         }
         self.owe(
             Key::OwnState(incarnation.to_string(), state),
-            Authority::MeshPrimaryOf(me.mesh.clone()),
+            Receiver::MeshPrimaryOf(me.mesh.clone()),
             StatusRequest::DeclareNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state, operation },
         );
     }
@@ -341,8 +341,8 @@ impl Declarer {
         for (own, _, key) in order {
             let Some(p) = pending.get_mut(&key) else { continue };
             let target = match &p.to {
-                Authority::FabricPrimary => view.fabric_primary(),
-                Authority::MeshPrimaryOf(mesh) => view.node_type_primary(mesh, NodeKind::NodeAdmin).or_else(|| self.recovery_executor(me_id, view, mesh)),
+                Receiver::FabricPrimary => view.fabric_primary(),
+                Receiver::MeshPrimaryOf(mesh) => view.node_type_primary(mesh, NodeKind::NodeAdmin).or_else(|| self.recovery_executor(me_id, view, mesh)),
             };
             if own && own_held {
                 // Held behind an earlier one: a down op from its mesh-primary still sends it again, once it
@@ -572,7 +572,7 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
         for state in reports {
             d.owe(
                 Key::OwnState(me_incarnation.to_string(), *state),
-                Authority::MeshPrimaryOf(me.mesh.clone()),
+                Receiver::MeshPrimaryOf(me.mesh.clone()),
                 StatusRequest::DeclareNodeState { node_id: my.node_id.clone(), incarnation: me_incarnation.clone(), state: *state, operation: d.own_operation(*state) },
             );
         }
@@ -590,7 +590,7 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
             // view change that runs this again (mesh-investigation.md step 7).
             let at = own_mesh_changed_at(MeshState::Ready);
             if mesh.status == crate::model::ScopeStatus::Ready && at > 0 {
-                d.owe(Key::Mesh(id.clone(), MeshState::Ready), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: match crate::model::MeshId::parse(id) { Ok(m) => m, Err(_) => return }, state: MeshState::Ready, changed_at_rafka_ms: at });
+                d.owe(Key::Mesh(id.clone(), MeshState::Ready), Receiver::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: match crate::model::MeshId::parse(id) { Ok(m) => m, Err(_) => return }, state: MeshState::Ready, changed_at_rafka_ms: at });
             }
         }
     }
@@ -601,7 +601,7 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
     if i_am_mesh_primary && own_mesh_held == Some(MeshState::Leaving) {
         if let Some(Ok(mesh_id)) = mesh_ids.get(&me.mesh).map(|id| crate::model::MeshId::parse(id).map(|m| (id.clone(), m))) {
             let (key, mesh_id) = mesh_id;
-            d.owe(Key::Mesh(key, MeshState::Leaving), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id, state: MeshState::Leaving, changed_at_rafka_ms: own_mesh_changed_at(MeshState::Leaving) });
+            d.owe(Key::Mesh(key, MeshState::Leaving), Receiver::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id, state: MeshState::Leaving, changed_at_rafka_ms: own_mesh_changed_at(MeshState::Leaving) });
         }
     }
 }
@@ -646,8 +646,8 @@ mod tests {
     }
 
     fn owe_all(d: &Declarer) {
-        d.owe(Key::OwnState(INC.into(), NodeState::Ready), Authority::MeshPrimaryOf("mesh1".into()), StatusRequest::DeclareNodeState { node_id: crate::model::NodeId::mint(), incarnation: IncarnationId::parse(INC).unwrap(), state: NodeState::Ready, operation: None });
-        d.owe(Key::Mesh("m1".into(), MeshState::Ready), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: crate::model::MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 });
+        d.owe(Key::OwnState(INC.into(), NodeState::Ready), Receiver::MeshPrimaryOf("mesh1".into()), StatusRequest::DeclareNodeState { node_id: crate::model::NodeId::mint(), incarnation: IncarnationId::parse(INC).unwrap(), state: NodeState::Ready, operation: None });
+        d.owe(Key::Mesh("m1".into(), MeshState::Ready), Receiver::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: crate::model::MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 });
     }
 
     #[test]
