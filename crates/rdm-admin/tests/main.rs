@@ -239,6 +239,7 @@ mod node_replace;
 mod node_investigation;
 mod node_tickle;
 mod node_runtime_inspect;
+mod node_connections_delete;
 
 #[allow(dead_code)]
 #[path = "../../../tools/test-support/gossip_wire.rs"]
