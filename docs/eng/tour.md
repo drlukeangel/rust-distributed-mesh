@@ -242,21 +242,14 @@ Once `mesh-quj7g8-1.broker.3` (`nrh2bq4bs63t`) has not refreshed its `heartbeat_
 {"service":"rshape-node-admin","name":"rdm.mesh.topology.update.via-member-stale","attributes":{"node":"mesh-quj7g8-1.admin.1","silent_ms":"30053","staleness_ms":"30000"}}
 ```
 
-### Step 2: `node.investigation` (`node.tickle` direct, `node.tickle` via peers, and `node.runtime.inspect`)
+### Step 2: `node.investigation` (`node.runtime.inspect` first)
 
 The mesh-primary (`mesh-quj7g8-1.admin.1`) runs `node.investigation` on the silent birth `nrh2bq4bs63t` in the order stated by [`node.investigation` — Steps](../architecture/lifecycles/node-investigation.md#steps):
 
-1. It reads its own by-destination connections index for open connections to `nrh2bq4bs63t` (`leads=""`).
-2. It runs [`node.tickle`](../architecture/lifecycles/node-tickle.md) directly (`rdm.node.tickle.resolve.via-direct`), which fails on the 10 s dial deadline (`failure="NotSent: not sent: Deadline"`).
-3. It runs [`node.tickle`](../architecture/lifecycles/node-tickle.md) through two `Ready` peers in `mesh-quj7g8-1` (`mesh-quj7g8-1.admin.2` and `mesh-quj7g8-1.broker.1`, `rdm.node.tickle.resolve.via-peer`), both of which report `carrier-edge-lost`, and records `rdm.node.tickle.returns-unknown.via-unreached` (`next="inspect"`) and `rdm.node_admin.node.update.via-true-offline`.
-4. Having no live RPC path to `nrh2bq4bs63t`, it calls [`node.runtime.inspect`](../architecture/lifecycles/node-runtime-inspect.md) on the `process` deployment provider (`rdm.node_admin.node.resolve.via-provider-inspection`), which returns `verdict="exited"`:
+1. It reads its own by-destination connections index for open connections to `nrh2bq4bs63t`.
+2. It calls [`node.runtime.inspect`](../architecture/lifecycles/node-runtime-inspect.md) on the `process` deployment provider (`rdm.node_admin.node.resolve.via-provider-inspection`), which returns `verdict="exited"`. `exited` (or `os-stopped`) is the verdict, so no [`node.tickle`](../architecture/lifecycles/node-tickle.md) is sent. On `running` or `unavailable` the tickle would follow, direct and then through up to two `Ready` peers of the birth's mesh.
 
 ```json
-{"service":"rshape-node-admin","name":"rdm.node.tickle.resolve.via-direct","attributes":{"caller":"mesh-quj7g8-1.admin.1","deadline_ms":"10000","failure":"NotSent: not sent: Deadline","incarnation":"0t7njf6wzf0q","leads":"","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t"}}
-{"service":"rshape-node-admin","name":"rdm.node.tickle.resolve.via-peer","attributes":{"caller":"mesh-quj7g8-1.admin.1","carrier":"mesh-quj7g8-1.admin.2","failure":"carrier-edge-lost: mesh-quj7g8-1.admin.2 -> mesh-quj7g8-1.broker.3 Direct failed (dial deadline)","lead":"false","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t"}}
-{"service":"rshape-node-admin","name":"rdm.node.tickle.resolve.via-peer","attributes":{"caller":"mesh-quj7g8-1.admin.1","carrier":"mesh-quj7g8-1.broker.1","failure":"carrier-edge-lost: mesh-quj7g8-1.broker.1 -> mesh-quj7g8-1.broker.3 Direct failed (dial deadline)","lead":"false","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t"}}
-{"service":"rshape-node-admin","name":"rdm.node.tickle.returns-unknown.via-unreached","attributes":{"caller":"mesh-quj7g8-1.admin.1","carriers":"mesh-quj7g8-1.admin.2,mesh-quj7g8-1.broker.1","direct":"NotSent: not sent: Deadline","incarnation":"0t7njf6wzf0q","leads":"","next":"inspect","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t"}}
-{"service":"rshape-node-admin","name":"rdm.node_admin.node.update.via-true-offline","attributes":{"asked":"mesh-quj7g8-1.admin.2,mesh-quj7g8-1.broker.1","error":"NotSent: not sent: Deadline","node_id":"nrh2bq4bs63t","observer":"mesh-quj7g8-1.admin.1","path":"mesh-quj7g8-1.broker.3"}}
 {"service":"rshape-node-admin","name":"rdm.node_admin.node.resolve.via-provider-inspection","attributes":{"incarnation_id":"0t7njf6wzf0q","inspector":"mesh-quj7g8-1.admin.1","node":"mesh-quj7g8-1.broker.3","node_id":"nrh2bq4bs63t","verdict":"exited"}}
 ```
 
@@ -278,17 +271,10 @@ With `verdict="exited"`, `mesh-quj7g8-1.admin.1` opens a recovery attempt on the
 ```mermaid
 sequenceDiagram
     participant A1 as mesh-quj7g8-1.admin.1
-    participant A2 as mesh-quj7g8-1.admin.2
-    participant B1 as mesh-quj7g8-1.broker.1
     participant B3_old as mesh-quj7g8-1.broker.3 (nrh2bq4bs63t)
     participant B3_new as mesh-quj7g8-1.broker.3 (e7gafyzpt3dd)
 
     A1->>A1: rdm.mesh.topology.update.via-member-stale (silent_ms="30053", staleness_ms="30000")
-    A1->>B3_old: rdm.node.tickle.resolve.via-direct (failure="NotSent: not sent: Deadline")
-    A1->>A2: rdm.node.tickle.resolve.via-peer (carrier="mesh-quj7g8-1.admin.2", failure="carrier-edge-lost")
-    A1->>B1: rdm.node.tickle.resolve.via-peer (carrier="mesh-quj7g8-1.broker.1", failure="carrier-edge-lost")
-    A1->>A1: rdm.node.tickle.returns-unknown.via-unreached (next="inspect")
-    A1->>A1: rdm.node_admin.node.update.via-true-offline (node_id="nrh2bq4bs63t")
     A1->>A1: rdm.node_admin.node.resolve.via-provider-inspection (verdict="exited")
     A1->>A1: rdm.node_admin.build.update.via-node-recovery (verdict="exited", disposition="created")
     A1->>A1: rdm.node_admin.build.update.via-recovery (outcome="admitted", route="node-recovery")
