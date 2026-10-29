@@ -4117,3 +4117,136 @@ fn a_provider_exit_runs_one_reconcile_pass() {
     assert_eq!(passes, vec![Woken::First, Woken::ProviderExit], "one exit, one pass: {passes:?}");
     assert_eq!(drive_passes(&spans, &trace_id), 2);
 }
+
+struct FailOnAttempt {
+    inner: Arc<Creates>,
+    fail_attempt: u32,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for FailOnAttempt {
+    async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
+        if attempt == self.fail_attempt {
+            return Err(rdm_admin::executor::RunEnd::failed("reopened stop attempt failed on node.stop".to_string()));
+        }
+        self.inner.run(build, lane, attempt, op).await
+    }
+}
+
+// @feature: on-build-started-ended
+/// CONTRACT: docs/architecture/fabric-node-hooks.md:139
+/// "Each time a Build's first attempt is claimed, or an attempt that reopens a Build that has
+/// ended is claimed, the fabric-primary sends the application one `on_build_started` notice ...
+/// An attempt that continues a Build in progress (a takeover, or the next attempt after a
+/// hand-back) sends none. Each `on_build_started` is followed by one `on_build_ended` for the
+/// same opening."
+/// docs/architecture/fabric-node-hooks.md:143
+/// "Each time a Build's terminal state is recorded, the fabric-primary sends the application one
+/// `on_build_ended` notice ... its state, `Complete` or `Failed { step, reason, code }`"
+#[tokio::test]
+async fn build_drive_fires_on_build_started_on_opening_and_reopening_skips_takeover_and_fires_on_build_ended_on_terminals() {
+    let change = TopologyChange::ReconcileMesh {
+        desired: MeshDesired::of(
+            "mesh1".to_string(),
+            [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)],
+        ),
+    };
+    let r = rig_for(view(), change, |ran, _| {
+        Arc::new(FailOnAttempt {
+            inner: ran,
+            fail_attempt: 3,
+        })
+    })
+    .await;
+
+    // 1. Attempt 1 is claimed for `mesh1.admin.2` (which opens the Build -> `on_build_started` for
+    //    attempt 1 with `AttemptReason::Requested`), then `mesh1.admin.2` is unreachable and proven
+    //    exited so attempt 2 takes over on `mesh1.admin.1` without sending a second `on_build_started`,
+    //    and completes -> `on_build_ended` for attempt 2 with `BuildEndedState::Complete`.
+    r.dispatch.lose("mesh1.admin.2");
+    let drive1 = Drive::detached(r.build.clone());
+    assert!(matches!(r.env.run(&drive1).await, DriveEnd::Stalled(_)));
+    r.proofs.exited.lock().unwrap().insert("mesh1.admin.2".into());
+    {
+        let mut v = r.env.topology.write().await;
+        for n in v.nodes.iter_mut() {
+            match n.name.to_string().as_str() {
+                "mesh1.admin.2" => {
+                    n.status = NodeStatus::PendingReconnect;
+                    n.is_primary = false;
+                }
+                "mesh1.admin.1" => n.is_primary = true,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(r.env.run(&drive1).await, DriveEnd::Terminal);
+
+    // 2. Reopen the completed Build at attempt 3 with `AttemptReason::Stop` and `AttemptAction::Stop`
+    //    and run to failure.
+    let path: PathName = "mesh1.rpc.1".parse().unwrap();
+    let (node_id, from_incarnation) = r
+        .env
+        .topology
+        .read()
+        .await
+        .node(&path)
+        .and_then(|n| n.incarnation_id.clone().map(|i| (n.node_id.clone(), i)))
+        .expect("mesh1.rpc.1 has a birth");
+    let action = rdm_admin::accepted::AttemptAction::Stop {
+        path,
+        node_id,
+        from_incarnation,
+    };
+    r.builds
+        .open_attempt(&rdm_admin::build_state::AttemptOpened {
+            mesh: None,
+            build_id: r.build.clone(),
+            attempt: 3,
+            reason: rdm_admin::build_state::AttemptReason::Stop,
+            action: Some(action),
+            opened_by: "mesh1.admin.1".into(),
+            opened_at_ms: 2_000,
+            context: None,
+        })
+        .await
+        .unwrap();
+    let drive2 = Drive::detached(r.build.clone());
+    assert_eq!(r.env.run(&drive2).await, DriveEnd::Terminal);
+
+    let told = r.told.settled(4).await;
+    let keys: Vec<(String, u32, &str)> = told.iter().map(crate::Notice::key).collect();
+    assert_eq!(
+        keys,
+        vec![
+            (r.build.to_string(), 1, "started"),
+            (r.build.to_string(), 2, "complete"),
+            (r.build.to_string(), 3, "started"),
+            (r.build.to_string(), 3, "failed"),
+        ],
+        "attempt 1 opens, takeover attempt 2 sends no started and ends Complete, attempt 3 reopens and ends Failed: {told:?}"
+    );
+    match &told[0] {
+        crate::Notice::Started(c) => {
+            assert_eq!(c.reason, rdm_admin::build_state::AttemptReason::Requested);
+        }
+        other => panic!("expected Started at index 0, got {other:?}"),
+    }
+    match &told[2] {
+        crate::Notice::Started(c) => {
+            assert_eq!(c.reason, rdm_admin::build_state::AttemptReason::Stop);
+        }
+        other => panic!("expected Started at index 2, got {other:?}"),
+    }
+    match &told[3] {
+        crate::Notice::Ended(c) => {
+            assert_eq!(c.reason, rdm_admin::build_state::AttemptReason::Stop);
+            assert!(
+                matches!(&c.state, rdm_admin::wiring::BuildEndedState::Failed { reason, .. } if reason.contains("reopened stop attempt failed")),
+                "expected Failed state on attempt 3, got {:?}",
+                c.state
+            );
+        }
+        other => panic!("expected Ended at index 3, got {other:?}"),
+    }
+}

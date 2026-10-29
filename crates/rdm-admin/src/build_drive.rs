@@ -2613,4 +2613,194 @@ mod tests {
         assert_eq!(steps, vec!["node.delete:mesh2.broker.3".to_string(), "node.stop:mesh2.broker.3".to_string(), format!("node.primary.update:{id}:71:node.stop:mesh2.broker.3")], "the receipts of every operation at the run's path, its seat move's included, and none of another path's or another Build's");
         assert_eq!(carried.iter().filter(|f| matches!(f, BuildFact::Attempt(_))).count(), 70, "every attempt fact is carried");
     }
+
+    // @feature: on-build-started-ended
+    #[test]
+    fn build_notices_deliver_started_and_ended_contexts_with_attempt_trace_and_emit_no_hook_when_unregistered() {
+        // docs/architecture/fabric-node-hooks.md:139 — "Each time a Build's first attempt is
+        // claimed, or an attempt that reopens a Build that has ended is claimed, the
+        // fabric-primary sends the application one `on_build_started` notice ... with
+        // `BuildStartedCtx { fabric_id, build_id, attempt, reason, context }`"
+        // docs/architecture/fabric-node-hooks.md:143 — "Each time a Build's terminal state is
+        // recorded, the fabric-primary sends the application one `on_build_ended` notice ... with
+        // `BuildEndedCtx { fabric_id, build_id, attempt, reason, state, context }`"
+        let capture = crate::span_capture::Capture::new("build-notices-unit");
+        let dispatch = capture.dispatch.clone();
+        let d = dispatch.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+            .build()
+            .unwrap();
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+
+        let fabric_id = rdm_core::FabricId::mint();
+        let build_id = BuildId::parse("amrrv6tggykq").unwrap();
+        let build_id_for_assert = build_id.clone();
+        let fabric_id_for_assert = fabric_id.clone();
+
+        let (started_ctx, ended_complete, ended_failed) = rt.block_on(async move {
+            let me: PathName = "mesh1.admin.1".parse().unwrap();
+            let contexts = Arc::new(crate::build_claim::AttemptContexts::in_memory());
+            let call_ctx = CallContext {
+                caller_system: Some("test-caller".into()),
+                traceparent: Some(
+                    "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into(),
+                ),
+                tracestate: None,
+                baggage: Some("k=v".into()),
+            };
+            contexts.put(&build_id, 1, &call_ctx).await.unwrap();
+            contexts.put(&build_id, 2, &call_ctx).await.unwrap();
+
+            // 1. Unregistered `BuildNotices::default()` emits `outcome = "no-hook"` spans.
+            let unbound = BuildNotices::default();
+            unbound.started(
+                &me,
+                &contexts,
+                &build_id,
+                1,
+                crate::build_state::AttemptReason::Requested,
+                &call_ctx,
+            );
+            unbound.ended(
+                &me,
+                &contexts,
+                &build_id,
+                1,
+                crate::build_state::AttemptReason::Requested,
+                crate::wiring::BuildEndedState::Complete,
+                &tracing::Span::none(),
+            );
+
+            // 2. Registered `BuildNotices::of(fabric_id, &hooks)` delivers `BuildStartedCtx` and
+            //    `BuildEndedCtx` (`Complete` and `Failed`) with `outcome = "sent"`.
+            let (started_tx, mut started_rx) =
+                tokio::sync::mpsc::unbounded_channel::<crate::wiring::BuildStartedCtx>();
+            let (ended_tx, mut ended_rx) =
+                tokio::sync::mpsc::unbounded_channel::<crate::wiring::BuildEndedCtx>();
+            let hooks = crate::wiring::FabricHooks {
+                on_build_started: Some(Arc::new(move |ctx| {
+                    let _ = started_tx.send(ctx);
+                    Box::pin(async {})
+                })),
+                on_build_ended: Some(Arc::new(move |ctx| {
+                    let _ = ended_tx.send(ctx);
+                    Box::pin(async {})
+                })),
+                ..crate::wiring::FabricHooks::no_app_work()
+            };
+            let bound = BuildNotices::of(fabric_id, &hooks);
+            bound.started(
+                &me,
+                &contexts,
+                &build_id,
+                1,
+                crate::build_state::AttemptReason::Requested,
+                &call_ctx,
+            );
+            let parent = tracing::info_span!("rdm.node_admin.build.update.via-dispatch");
+            bound.ended(
+                &me,
+                &contexts,
+                &build_id,
+                1,
+                crate::build_state::AttemptReason::Requested,
+                crate::wiring::BuildEndedState::Complete,
+                &parent,
+            );
+            bound.ended(
+                &me,
+                &contexts,
+                &build_id,
+                2,
+                crate::build_state::AttemptReason::ProvenDrift,
+                crate::wiring::BuildEndedState::Failed {
+                    step: "node.create".into(),
+                    reason: "spawn refused".into(),
+                    code: rdm_core::outcome::Code::FailedPrecondition,
+                },
+                &parent,
+            );
+
+            let started_ctx = started_rx.recv().await.expect("started notice delivered");
+            let mut ended = vec![
+                ended_rx.recv().await.expect("first ended notice delivered"),
+                ended_rx.recv().await.expect("second ended notice delivered"),
+            ];
+            ended.sort_by_key(|c| c.attempt);
+            let ended_failed = ended.pop().unwrap();
+            let ended_complete = ended.pop().unwrap();
+            (started_ctx, ended_complete, ended_failed)
+        });
+        drop(rt);
+
+        assert_eq!(started_ctx.fabric_id, fabric_id_for_assert);
+        assert_eq!(started_ctx.build_id, build_id_for_assert.to_string());
+        assert_eq!(started_ctx.attempt, 1);
+        assert_eq!(
+            started_ctx.reason,
+            crate::build_state::AttemptReason::Requested
+        );
+        assert_eq!(started_ctx.context.baggage.as_deref(), Some("k=v"));
+
+        assert_eq!(ended_complete.fabric_id, fabric_id_for_assert);
+        assert_eq!(ended_complete.build_id, build_id_for_assert.to_string());
+        assert_eq!(ended_complete.attempt, 1);
+        assert_eq!(
+            ended_complete.state,
+            crate::wiring::BuildEndedState::Complete
+        );
+        assert_eq!(ended_complete.context.baggage.as_deref(), Some("k=v"));
+
+        assert_eq!(ended_failed.attempt, 2);
+        assert_eq!(ended_failed.reason, crate::build_state::AttemptReason::ProvenDrift);
+        assert_eq!(
+            ended_failed.state,
+            crate::wiring::BuildEndedState::Failed {
+                step: "node.create".into(),
+                reason: "spawn refused".into(),
+                code: rdm_core::outcome::Code::FailedPrecondition,
+            }
+        );
+
+        let started_spans = capture.named("rdm.node_admin.build.update.via-on-build-started");
+        assert!(
+            started_spans
+                .iter()
+                .any(|s| s.attributes.get("outcome").map(String::as_str) == Some("no-hook")),
+            "expected via-on-build-started with outcome=no-hook"
+        );
+        assert!(
+            started_spans.iter().any(|s| {
+                s.attributes.get("outcome").map(String::as_str) == Some("sent")
+                    && s.attributes.get("reason").map(String::as_str) == Some("requested")
+            }),
+            "expected via-on-build-started with outcome=sent and reason=requested"
+        );
+
+        let ended_spans = capture.named("rdm.node_admin.build.update.via-on-build-ended");
+        assert!(
+            ended_spans
+                .iter()
+                .any(|s| s.attributes.get("outcome").map(String::as_str) == Some("no-hook")),
+            "expected via-on-build-ended with outcome=no-hook"
+        );
+        assert!(
+            ended_spans.iter().any(|s| {
+                s.attributes.get("outcome").map(String::as_str) == Some("sent")
+                    && s.attributes.get("state").map(String::as_str) == Some("complete")
+            }),
+            "expected via-on-build-ended with outcome=sent and state=complete"
+        );
+        assert!(
+            ended_spans.iter().any(|s| {
+                s.attributes.get("outcome").map(String::as_str) == Some("sent")
+                    && s.attributes.get("state").map(String::as_str) == Some("failed")
+                    && s.attributes.get("reason").map(String::as_str) == Some("proven-drift")
+            }),
+            "expected via-on-build-ended with outcome=sent, state=failed, and reason=proven-drift"
+        );
+    }
 }
