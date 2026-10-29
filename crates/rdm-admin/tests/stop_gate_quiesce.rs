@@ -211,7 +211,11 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
     let build_traces: std::collections::BTreeSet<&str> =
         spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-drive" || s["name"] == "rdm.node_admin.build.update.via-reconcile").filter_map(|s| s["trace_id"].as_str()).collect();
     let held_at_the_gate = |s: &Value| s["name"] == "rdm.node_admin.build.update.via-drive" && s["attributes"].get("outcome").is_none();
-    let after_cut: Vec<&Value> = spans.iter().filter(|s| s["trace_id"].as_str().is_some_and(|t| build_traces.contains(t)) && s["end_ns"].as_u64().unwrap() > cut_began && !held_at_the_gate(s)).collect();
+    // A Build notice to the application is fire and forget, on a task of its own, and gates nothing
+    // (fabric-node-hooks.md): sent as the drive's attempt began or ended before the cut, its own span may
+    // end after it. It is no work of the drive.
+    let notice = |s: &Value| matches!(s["name"].as_str(), Some("rdm.node_admin.build.update.via-on-build-started" | "rdm.node_admin.build.update.via-on-build-ended"));
+    let after_cut: Vec<&Value> = spans.iter().filter(|s| s["trace_id"].as_str().is_some_and(|t| build_traces.contains(t)) && s["end_ns"].as_u64().unwrap() > cut_began && !held_at_the_gate(s) && !notice(s)).collect();
     assert!(after_cut.is_empty(), "the stopped admin's Build drive ran on past its cut (stop trace {stop_trace}): {after_cut:?}");
     println!(
         "stop trace {stop_trace}; quiesce waited for [{waited_for}] {} us, ended {} us before the cut began; spans in {}",

@@ -287,7 +287,7 @@ impl Run {
     async fn after_create(&self, door: &Door, build_id: &str, node: &str, order: &[String]) -> Value {
         let b = self.build_complete(door, build_id).await;
         assert_eq!(b["state"], "complete", "{b}");
-        assert_eq!(b["attempt"], RUN_THEN_CHANGE, "no other attempt was opened than the run and the Complete after the fabric's change: {b}");
+        assert!((1..=RUN_THEN_CHANGE).contains(&b["attempt"].as_u64().unwrap_or(0)), "no other attempt was opened than the run and, unless the fabric was ready from the Build's change before the run was planned, the Complete after it (RUN_THEN_CHANGE): {b}");
         assert!(b["steps"].as_array().into_iter().flatten().all(|r| r["attempt"] == 1), "the Complete after the fabric's change runs no step: {b}");
         let op = format!("node.create:{node}");
         assert_eq!(done_steps(&b, &op, Some(1)), order, "release completes every documented step once, in order: {b}");
@@ -305,7 +305,7 @@ impl Run {
     async fn after_delete(&self, door: &Door, build_id: &str, node: &str, order: &[String]) -> Value {
         let b = self.build_complete(door, build_id).await;
         assert_eq!(b["state"], "complete", "{b}");
-        assert_eq!(b["attempt"], RUN_THEN_CHANGE, "no other attempt was opened than the run and the Complete after the fabric's change: {b}");
+        assert!((1..=RUN_THEN_CHANGE).contains(&b["attempt"].as_u64().unwrap_or(0)), "no other attempt was opened than the run and, unless the fabric was ready from the Build's change before the run was planned, the Complete after it (RUN_THEN_CHANGE): {b}");
         assert!(b["steps"].as_array().into_iter().flatten().all(|r| r["attempt"] == 1), "the Complete after the fabric's change runs no step: {b}");
         let op = format!("node.delete:{node}");
         assert_eq!(done_steps(&b, &op, Some(1)), order, "release completes every documented delete step once, in order: {b}");
