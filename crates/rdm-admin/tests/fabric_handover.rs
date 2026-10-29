@@ -1129,3 +1129,124 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
         );
     });
 }
+
+/// CONTRACT:
+/// - `docs/architecture/lifecycles/node-primary-update.md:45-46` ("1. The primary is commanded from above, as a step of the Build that stops, deletes, replaces or runs `node.connections.delete { scope: All }` on it.")
+/// - `docs/architecture/lifecycles/node-primary-update.md:74-75` ("- **Refused before the row** (step 2, or the writer's own pre-check of the call's revision): refused by name, nothing changed, the Build's step fails by name.")
+/// - `docs/architecture/lifecycles/node-primary-update.md:111-114` ("- **The old primary lost after the update:** the successor and every reader take the primary from the election; the successor's digest carries its role, and the mesh-primary (the successor itself for the `node-admin` type) records it. Completion needs neither gossip delivery nor the old primary's survival.")
+/// - `docs/architecture/lifecycles/node-primary-update.md:157-158` ("1. the fabric-primary's own mesh: the lowest Ready node-admin NodeId there, where the fabric-primary stays by preference;")
+/// - `docs/architecture/lifecycles/node-primary-update.md:223-226` ("Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans). The update's spans carry the operation, the node type, both exact births and the revisions: the successor's install, the record's write, and every refusal by its typed reason.")
+#[test]
+fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_and_records_observability_spans() {
+    use rdm_admin::build_drive::SeatMoveEnd;
+
+    let cap = trace_capture("fabric-handover-conformance");
+    let spans = cap.spans.clone();
+    let _file = SpanFile(spans.clone());
+    cap.run(async {
+        // 1. Refused before the row (step 2): when no Ready successor exists, the update is refused
+        // by name, nothing changes, the Build's step fails by name (`SeatMoveEnd::Failed`), and the
+        // refusal span carries `operation` and the typed `reason` (`no-successor`).
+        let (lone_p, _lone_x) = lone_fabric(NodeStatus::Pending).await;
+        let refused_op = update_operation(
+            Seat::MeshPrimary,
+            "b-conformance",
+            1,
+            "node.connections.delete:mesh1.admin.1",
+        );
+        let refused = lone_p
+            .door
+            .update_own_primaries(Moving::MeshSeat, "b-conformance", 1, &refused_op, None)
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Err(SeatMoveEnd::Failed { step, reason, .. })
+                    if step == "primary-update"
+                        && reason == "cannot transfer: no secondary of type node-admin in mesh mesh1"
+            ),
+            "refused before the row must fail the step by name: {refused:?}"
+        );
+        assert_eq!(
+            lone_p.door.topology_view.primaries().mesh("mesh1"),
+            Some(primary_of(&lone_p, 3)),
+            "nothing changed when refused before the row"
+        );
+        let rejected = spans.named(REJECTED);
+        assert!(
+            rejected
+                .iter()
+                .any(|s| s["operation"] == refused_op && s["reason"] == "no-successor"),
+            "refusal span carries operation and typed reason: {rejected:?}"
+        );
+
+        // 2. Fabric-primary search step 1 & commanded step: in `primaries_fabric(FabricPrimary::P)`,
+        // X (`mesh2.admin.1`, NodeId `000000000001`) has a lower NodeId than N (`mesh1.admin.2`,
+        // NodeId `000000000003`) and M (`mesh1.admin.3`, NodeId `000000000009`), but the
+        // fabric-primary stays in its own mesh (`mesh1`) by preference and chooses N, the lowest
+        // Ready node-admin NodeId there.
+        let f = primaries_fabric(FabricPrimary::P).await;
+        let op = update_operation(
+            Seat::MeshPrimary,
+            "b-conformance",
+            2,
+            "node.delete:mesh1.admin.1",
+        );
+        let revisions = f
+            .p
+            .door
+            .update_own_primaries(Moving::BothSeats, "b-conformance", 2, &op, None)
+            .await
+            .expect("fabric-primary and mesh-primary move to lowest Ready node-admin in own mesh");
+        assert_eq!(
+            revisions,
+            vec![
+                entry("node-admin", &f.p.resolved, &f.n.resolved, 4),
+                entry("fabric", &f.p.resolved, &f.n.resolved, 8),
+            ],
+            "fabric-primary stays in own mesh (N over X) and selects lowest Ready NodeId (N over M)"
+        );
+
+        // 3. Old primary lost after the update: shut down P's router immediately after the update.
+        // N and every reader take the primary from the election; N's digest carries its role
+        // (`is_primary = Some(4)`, `is_fabric_primary = Some(8)`), and completion needs neither
+        // gossip delivery nor P's survival.
+        let _ = f.p._router.shutdown().await;
+        assert_eq!(
+            f.n.door.topology_view.primaries().mesh("mesh1"),
+            Some(primary_of(&f.n, 4))
+        );
+        assert_eq!(
+            f.n.door.topology_view.primaries().fabric(),
+            Some(primary_of(&f.n, 8))
+        );
+        let mut digest = digest_of(&f.n.resolved, &FabricId::mint());
+        f.n.door.digest_view.recorded_primaries(&mut digest);
+        assert_eq!(
+            (digest.is_primary, digest.is_fabric_primary),
+            (Some(4), Some(8)),
+            "successor's digest carries its role at the next revisions without the old primary's survival"
+        );
+
+        // 4. Observability contract: the successor's install span (`via-primary-updated`) carries
+        // `operation`, the node type (`node-admin`, `fabric`), both exact births (`P` and `N`), and
+        // the revisions (`4`, `8`).
+        let updated = spans.named(UPDATED);
+        let p_birth = format!("{}/{}", f.p.resolved.node_id, f.p.resolved.incarnation);
+        let n_birth = format!("{}/{}", f.n.resolved.node_id, f.n.resolved.incarnation);
+        assert!(
+            updated.iter().any(|s| {
+                s["operation"] == op
+                    && s["primaries"].contains("node-admin")
+                    && s["primaries"].contains("fabric")
+                    && s["primaries"].contains(&p_birth)
+                    && s["primaries"].contains(&n_birth)
+                    && s["primaries"].contains("@4")
+                    && s["primaries"].contains("@8")
+            }),
+            "via-primary-updated span carries operation, node type, both exact births, and revisions: {updated:?}"
+        );
+        let _ = (&f.m, &f.x);
+    });
+}
+
