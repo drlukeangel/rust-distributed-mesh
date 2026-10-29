@@ -582,3 +582,304 @@ impl<E: From<StartFailed> + Send + 'static> StartNode for FirstStart<E> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node_hooks::{Addressed, HookOutcome, OnNodeReady, PreNodeReady};
+    use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeKind};
+
+    struct RecordedAfter {
+        steps: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AfterHook for RecordedAfter {
+        async fn topology_installed(&mut self, _: &TopologyView, _: &TopologyRead) {
+            self.steps.lock().unwrap().push("topology_installed");
+        }
+
+        async fn floor(&mut self, step: &tracing::Span) {
+            self.steps.lock().unwrap().push("floor");
+            step.record("owed", "none");
+            step.record("outcome", "unit-cell-floor-checked");
+        }
+
+        async fn report(self: Box<Self>) {
+            self.steps.lock().unwrap().push("report");
+        }
+    }
+
+    struct TestHook {
+        steps: Arc<Mutex<Vec<&'static str>>>,
+        observed_ctx: Arc<Mutex<Vec<(StartKind, bool)>>>,
+        ready_notified: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl PreNodeReady for TestHook {
+        async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
+            self.steps.lock().unwrap().push("pre_node_ready");
+            self.observed_ctx
+                .lock()
+                .unwrap()
+                .push((ctx.start_kind, ctx.inherited));
+            HookOutcome::Ok
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl OnNodeReady for TestHook {
+        async fn on_node_ready(&self, _ctx: &NodeReadyCtx) {
+            self.steps.lock().unwrap().push("on_node_ready");
+            self.ready_notified.notify_one();
+        }
+    }
+
+    struct TestStartPlug {
+        starting: Starting,
+        no_authority: NoAuthority,
+        steps: Arc<Mutex<Vec<&'static str>>>,
+        observed_ctx: Arc<Mutex<Vec<(StartKind, bool)>>>,
+        ready_notified: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl super::super::node_mesh_join::MeshJoin for TestStartPlug {
+        type Error = StartFailed;
+
+        fn join_digest(&self) -> MeshDigest {
+            MeshDigest {
+                held_hash: Default::default(),
+                fabric_id: FabricId::mint(),
+                node: rdm_core::MeshNode {
+                    node_id: self.starting.node_id.clone(),
+                    name: self.starting.path.clone(),
+                    endpoint_id: rdm_core::EndpointId(
+                        self.starting.client.endpoint().id().to_string(),
+                    ),
+                    transport_addr: "127.0.0.1:0".parse().unwrap(),
+                    incarnation: IncarnationId::mint(),
+                    supersedes: None,
+                    runtime: None,
+                },
+                status: MemberStatus::Ready,
+                node_state: Default::default(),
+                admin_api_base: None,
+                digest_seq: 0,
+                emitted_at_rafka_ms: 0,
+                data_dir: None,
+                mesh_id: None,
+                in_flight: None,
+                load: None,
+                gossip: None,
+                is_primary: None,
+                is_fabric_primary: None,
+            }
+        }
+
+        async fn enter_channel(
+            &mut self,
+            _step: tracing::Span,
+            _joined: Option<&JoinAnswer>,
+        ) -> Result<TopologyView, StartFailed> {
+            self.steps.lock().unwrap().push("enter_channel");
+            let ep = self.starting.client.endpoint().clone();
+            let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+            TopologyView::join(
+                &g,
+                &ep,
+                &FabricId::mint(),
+                &self.starting.path.mesh,
+                &MeshId::mint(),
+                &self.starting.name,
+                Arc::new(self.starting.rafka_time.clone()),
+                Vec::new(),
+                &[],
+            )
+            .await
+            .map_err(|e| StartFailed {
+                step: "node.channel",
+                reason: e.to_string(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StartNode for TestStartPlug {
+        fn starting(&self) -> Starting {
+            Starting {
+                root: self.starting.root.clone(),
+                name: self.starting.name.clone(),
+                path: self.starting.path.clone(),
+                node_id: self.starting.node_id.clone(),
+                client: self.starting.client.clone(),
+                rafka_time: self.starting.rafka_time.clone(),
+            }
+        }
+
+        fn joining(&self) -> Joining {
+            Joining::None(self.no_authority)
+        }
+
+        async fn resolve_join_to(&mut self) -> Result<JoinTo, StartFailed> {
+            unreachable!("Joining::None does not resolve join target")
+        }
+
+        async fn joined(
+            &mut self,
+            topology_view: &TopologyView,
+            _: Option<&JoinThrough>,
+            _: Option<&JoinAnswer>,
+        ) -> Result<HookParts, StartFailed> {
+            self.steps.lock().unwrap().push("joined");
+            let hook = Arc::new(TestHook {
+                steps: self.steps.clone(),
+                observed_ctx: self.observed_ctx.clone(),
+                ready_notified: self.ready_notified.clone(),
+            });
+            Ok(HookParts {
+                birth: Birth {
+                    name: self.starting.path.clone(),
+                    node_id: self.starting.node_id.clone(),
+                    incarnation: IncarnationId::mint(),
+                    fabric_id: FabricId::mint(),
+                    mesh_id: MeshId::mint(),
+                    kind: NodeKind::RpcNode,
+                },
+                node_hooks: NodeHooks::new(hook.clone()).with_on_node_ready(hook),
+                events: Events::new(topology_view.digest_view.clone(), Addressed::new()),
+                cancel: CancelToken::new(),
+                state: Arc::default(),
+                runs: HookRuns::Inline {
+                    blocked: Arc::default(),
+                },
+                after: Box::new(RecordedAfter {
+                    steps: self.steps.clone(),
+                }),
+            })
+        }
+    }
+
+    /// Page: `docs/architecture/lifecycles/node-start.md:20`
+    /// "2. Run node.mesh.join... 3. Run pre_node_ready with the start kind and inherited-data-dir
+    /// indication... 4. Obtain complete topology... Fetch Build facts... Refresh rafka-time last...
+    /// 5. Emit NodeStarted... 6. Start ends with node.started. The node then calls on_node_ready once"
+    #[test]
+    fn node_start_executes_join_hook_floor_rafka_time_report_and_on_node_ready_in_order() {
+        let dir = std::env::temp_dir().join(format!("rdm-node-start-unit-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-node-start-unit")
+            .expect("evidence capture starts");
+
+        capture.run(2, async {
+            let ep = rdm_transport::endpoint::bind(
+                iroh::SecretKey::generate(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+            let resolver = Arc::new(rdm_transport::StaticResolver::new());
+            let client = Arc::new(NodeRpcClient::new(ep, resolver));
+            let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
+            rafka_time.adopt(1_000_000);
+
+            // 1. reached_back refuses with commander-unreachable when no active path is held.
+            let missing_key = iroh::SecretKey::generate().public();
+            let err = reached_back("mesh1.rpc.1", &client, &missing_key)
+                .await
+                .expect_err("unconnected endpoint has no active path");
+            assert!(
+                err.contains("commander-unreachable"),
+                "expected commander-unreachable, got {err}"
+            );
+
+            // 2. FirstStart on a fresh Day0Root runs enter_channel -> joined -> pre_node_ready
+            //    (inherited=false) -> floor -> report -> on_node_ready.
+            let steps = Arc::new(Mutex::new(Vec::new()));
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let notify1 = Arc::new(tokio::sync::Notify::new());
+            let root1 = tracing::info_span!("rdm.mesh.node.create.via-boot", node = "mesh1.rpc.1");
+            let mut plug1 = TestStartPlug {
+                starting: Starting {
+                    root: root1,
+                    name: "mesh1.rpc.1".into(),
+                    path: "mesh1.rpc.1".parse().unwrap(),
+                    node_id: NodeId::mint(),
+                    client: client.clone(),
+                    rafka_time: rafka_time.clone(),
+                },
+                no_authority: NoAuthority::Day0Root,
+                steps: steps.clone(),
+                observed_ctx: observed.clone(),
+                ready_notified: notify1.clone(),
+            };
+            node_start(&mut plug1, StartKind::FirstStart)
+                .await
+                .expect("FirstStart succeeds");
+            notify1.notified().await;
+
+            // 3. AfterStop runs with inherited=true.
+            let notify2 = Arc::new(tokio::sync::Notify::new());
+            let root2 = tracing::info_span!("rdm.mesh.node.update.via-start", node = "mesh1.rpc.1");
+            let mut plug2 = TestStartPlug {
+                starting: Starting {
+                    root: root2,
+                    name: "mesh1.rpc.1".into(),
+                    path: "mesh1.rpc.1".parse().unwrap(),
+                    node_id: NodeId::mint(),
+                    client,
+                    rafka_time,
+                },
+                no_authority: NoAuthority::Day0Root,
+                steps: steps.clone(),
+                observed_ctx: observed.clone(),
+                ready_notified: notify2.clone(),
+            };
+            node_start(&mut plug2, StartKind::AfterStop)
+                .await
+                .expect("AfterStop succeeds");
+            notify2.notified().await;
+
+            assert_eq!(
+                *steps.lock().unwrap(),
+                vec![
+                    "enter_channel",
+                    "joined",
+                    "pre_node_ready",
+                    "floor",
+                    "report",
+                    "on_node_ready",
+                    "enter_channel",
+                    "joined",
+                    "pre_node_ready",
+                    "floor",
+                    "report",
+                    "on_node_ready",
+                ]
+            );
+            assert_eq!(
+                *observed.lock().unwrap(),
+                vec![
+                    (StartKind::FirstStart, false),
+                    (StartKind::AfterStop, true),
+                ]
+            );
+        });
+
+        let spans = capture.spans().expect("captured spans");
+        let _ = std::fs::remove_dir_all(&dir);
+        for required in [
+            "rdm.mesh.node.update.via-topology-joined",
+            "rdm.mesh.node.update.via-pre-node-ready-attempt",
+            "rdm.mesh.node.update.via-build-floor",
+            "rdm.mesh.node.update.via-rafka-time-refreshed",
+            "rdm.mesh.node.update.via-on-node-ready",
+        ] {
+            assert!(
+                spans.iter().any(|s| s["name"] == required),
+                "expected span {required} in node_start execution"
+            );
+        }
+    }
+}
