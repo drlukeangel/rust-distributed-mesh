@@ -66,6 +66,10 @@ fn done_steps(build: &Value, operation: &str, attempt: Option<u64>) -> Vec<Strin
 /// The attempts a Build that put the fabric back to pending ends at when its one run ran every
 /// operation: that run, attempt 1, then the attempt claimed once the fabric changed to
 /// ready, which completes it and runs no step (Q154; states.md "Resize and executable replacement").
+/// The page names when the Build completes (the fabric ready again from its own change), not at which
+/// attempt: a removal's change can be ready before its run is planned (the node it removes is not a
+/// planned member, so every mesh is ready at once), and that run completes the Build at attempt 1.
+/// Such a Build ends at 1 or 2 attempts, never more.
 const RUN_THEN_CHANGE: u64 = 2;
 
 /// How many receipts of each step `operation` holds at `attempt`.
@@ -454,7 +458,9 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], delete_order: &[S
     let builds = builds.into_inner().unwrap();
     for (id, attempts) in &builds {
         let b = build_log::build_value(&estate.carrier().await, id).await;
-        assert_eq!((b["state"].as_str(), b["attempt"].as_u64()), (Some("complete"), Some(*attempts)), "Build {id} ends complete at attempt {attempts}: {b}");
+        let attempt = b["attempt"].as_u64().unwrap_or(0);
+        let expected = if *attempts == RUN_THEN_CHANGE { (1..=RUN_THEN_CHANGE).contains(&attempt) } else { attempt == *attempts };
+        assert!(b["state"] == "complete" && expected, "Build {id} ends complete at attempt {attempts}{}: {b}", if *attempts == RUN_THEN_CHANGE { " or 1 (RUN_THEN_CHANGE)" } else { "" });
     }
     let last = builds.last().map(|(id, _)| id.clone()).unwrap_or_default();
     assert_eq!(estate.accepted_build_id().await, last, "no Build was made after the last one the run triggered");
