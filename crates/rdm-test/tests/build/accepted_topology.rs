@@ -112,13 +112,16 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert_eq!(held["state"], "complete", "{held}");
     assert_eq!(paths(&held, "mesh1").len(), 6, "the late admin holds the accepted Build's topology: {held}");
 
-    // 5. A held birth that falls silent is not drift.
-    let held_pid = estate.pid_of("mesh1.rpc.3").await;
+    // 5. A held birth that falls silent is not drift. The hold is a hang (every task but the leader in
+    // a tracer's stop), which the provider reads `running`, so node investigation's tickle reaches it
+    // once released; a SIGSTOP reads `os-stopped`, which re-creates it (node-investigation.md, Q273).
+    let held_pid = estate.pid_of("mesh1.rpc.3").await as u32;
+    let held_rt = rdm_test::process_faults::ExactRuntime { deployment_id: String::new(), control_domain: rdm_test::process_faults::local_control_domain(), pid: held_pid, start: rdm_test::process_faults::start_token(held_pid).expect("mesh1.rpc.3 has a start token") };
     let quiet_from = now_ns();
-    signal(held_pid, "-STOP");
+    let hung = held_rt.hang().expect("the hang is acknowledged by the OS");
     estate.until_node("mesh1.rpc.3", "mesh1.rpc.3 is silent in the view", rdm_transport::topology::staleness_floor() + Duration::from_secs(15), |n| n.filter(|n| matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|_| ())).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
-    signal(held_pid, "-CONT");
+    hung.release();
     let quiet_until = now_ns();
     estate.until_node("mesh1.rpc.3", "mesh1.rpc.3 is heard again", Duration::from_secs(20), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
 

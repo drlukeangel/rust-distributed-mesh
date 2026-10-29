@@ -83,12 +83,13 @@ fn ready_node(name: &str) -> Node {
 ///  one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its steps, in order:
 ///  1. Read the by-destination connections index (connections.md §3.1). It names the peers to try;
 ///     it never proves the node is reachable.
-///  2. node.tickle, direct.
-///  3. The same tickle via those peers.
-///  4. node.runtime.inspect.
-///  Only an answer from the exact birth counts as `reached`."
+///  2. node.runtime.inspect. `exited` or `os-stopped` is the verdict; no tickle is sent.
+///  3. node.tickle, direct.
+///  4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`, or
+///     `unproven` for `unavailable`.
+///  Only an answer from the exact birth counts as `reached`." (Q273)
 #[test]
-fn node_investigation_runs_leads_direct_and_carried_tickle_then_runtime_inspect_only_when_unreached(
+fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_unless_the_runtime_is_proven_gone(
 ) {
     let capture = Capture::new("node-investigation-functional");
     let _guard = tracing::dispatcher::set_default(&capture.dispatch);
@@ -237,12 +238,12 @@ fn node_investigation_runs_leads_direct_and_carried_tickle_then_runtime_inspect_
             commands: None,
         };
 
-        // Case A: Lead carrier reaches the exact birth -> verdict is `Reached`, provider is NOT asked.
+        // Case A: the inspect answers running, then the lead carrier reaches the exact birth -> `Reached`.
         let provider_asked = Arc::new(AtomicBool::new(false));
         let provider_asked_a = provider_asked.clone();
         let found_a = investigate(&target, &view, &tickle_client, async move {
             provider_asked_a.store(true, Ordering::SeqCst);
-            Finding::Exited { code: Some(99) }
+            Finding::Running
         })
         .await;
         assert_eq!(
@@ -257,11 +258,11 @@ fn node_investigation_runs_leads_direct_and_carried_tickle_then_runtime_inspect_
             }
         );
         assert!(
-            !provider_asked.load(Ordering::SeqCst),
-            "when reached via lead carrier, node.runtime.inspect is never run"
+            provider_asked.load(Ordering::SeqCst),
+            "node.runtime.inspect runs first, right after the index read"
         );
 
-        // Case B: Lead carrier cannot reach the birth -> unreached -> step 4 runs `node.runtime.inspect`.
+        // Case B: the inspect proves the runtime exited -> its verdict, and no tickle is sent.
         carrier_reaches.store(false, Ordering::SeqCst);
 
         let provider = ProcessDeploymentProvider::new();
@@ -322,14 +323,14 @@ fn node_investigation_runs_leads_direct_and_carried_tickle_then_runtime_inspect_
     let _ = std::fs::remove_dir_all(&dir);
 
     let direct_spans = capture.named("rdm.node.tickle.resolve.via-direct");
-    assert_eq!(direct_spans.len(), 2);
+    assert_eq!(direct_spans.len(), 1, "case B sends no tickle: the inspect proved the runtime exited");
     assert_eq!(
         direct_spans[0].attributes.get("leads").map(String::as_str),
         Some("mesh2.rpc.1")
     );
 
     let peer_spans = capture.named("rdm.node.tickle.resolve.via-peer");
-    assert_eq!(peer_spans.len(), 2);
+    assert_eq!(peer_spans.len(), 1);
     assert_eq!(
         peer_spans[0].attributes.get("carrier").map(String::as_str),
         Some("mesh2.rpc.1")
@@ -344,14 +345,7 @@ fn node_investigation_runs_leads_direct_and_carried_tickle_then_runtime_inspect_
     );
 
     let unreached_spans = capture.named("rdm.node.tickle.returns-unknown.via-unreached");
-    assert_eq!(unreached_spans.len(), 1);
-    assert_eq!(
-        unreached_spans[0]
-            .attributes
-            .get("next")
-            .map(String::as_str),
-        Some("inspect")
-    );
+    assert!(unreached_spans.is_empty(), "A was reached and B sent no tickle: {} unreached spans", unreached_spans.len());
 
     let inspect_spans = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
     assert_eq!(inspect_spans.len(), 1);

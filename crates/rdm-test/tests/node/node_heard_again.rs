@@ -7,8 +7,9 @@
 //! continues into node.start steps 3 to 5), fabric-node-hooks.md "Where it runs".
 //!
 //! CONTRACT: in a one-mesh estate (two node-admins, two rpc nodes) an rpc node and the node-admin that
-//! is not the mesh-primary each have their exact runtime held (SIGSTOP, acknowledged by the provider)
-//! past the staleness floor and released. While held, the view marks the birth `PendingReconnect` (or
+//! is not the mesh-primary each have their exact runtime hung (every task but the leader in a tracer's
+//! stop, so the provider reads it `running`: a SIGSTOP reads `os-stopped`, which node investigation's
+//! inspect takes as its verdict and recovery re-creates, Q273) past the staleness floor and released. While held, the view marks the birth `PendingReconnect` (or
 //! `Dead`, the ladder's TRUE OFFLINE); nothing re-births it or terminates it (silence is not death).
 //! Once released, the mesh-primary's tickle reaches it, the mesh-primary begins the birth's next
 //! cycle (`via-cycle-begun`) and commands `node.mesh.join` (`via-mesh-join-commanded`, answered
@@ -74,7 +75,7 @@ async fn hold_past_the_floor_then_release(estate: &Estate, node: &str, floor: Du
     let before = estate.node_view(node).await;
     assert_eq!(before.status, NodeStatus::Ready, "{node} is ready before the hold: {before:?}");
     let rt = ExactRuntime::published(Path::new(&estate.data_dir(node).await)).expect("the node's published runtime");
-    rt.apply(Fault::Stop).expect("the hold is acknowledged by the provider");
+    let hung = rt.hang().expect("the hang is acknowledged by the OS");
     estate
         .until_node(node, &format!("{node} is marked unheard in the view"), floor * 3 + Duration::from_secs(30), |n| {
             n.filter(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)).cloned()
@@ -84,7 +85,7 @@ async fn hold_past_the_floor_then_release(estate: &Estate, node: &str, floor: Du
     let during = estate.node_view(node).await;
     assert_eq!((&during.node_id, &during.incarnation_id), (&before.node_id, &before.incarnation_id), "{node} is the same birth while held: silence is not death");
     let release_at = now_nano();
-    rt.apply(Fault::Continue).expect("the release is acknowledged by the provider");
+    hung.release();
     // The released birth's first digest still says Ready (its own stale state): the re-entry
     // is the mesh-primary's commanded join, which begins the birth's next cycle; wait for that, then
     // for the birth ready again as the same birth.
