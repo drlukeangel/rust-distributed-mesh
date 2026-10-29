@@ -3212,15 +3212,15 @@ mod tests {
     }
 
     /// A provider whose exact runtime is this test process and whose birth reports, as the node's own
-    /// `JoinNode` does, to the accepting authority that holds its deployment: the digest the authority
+    /// `JoinNode` does, to the accepting primary that holds its deployment: the digest the primary
     /// validates against the deployment and admits. No digest of the birth reaches any view: gossip is
     /// silent.
-    struct ReportsToTheAuthority {
+    struct ReportsToThePrimary {
         joins: std::sync::Arc<Joins>,
     }
 
     #[async_trait::async_trait]
-    impl DeploymentProvider for ReportsToTheAuthority {
+    impl DeploymentProvider for ReportsToThePrimary {
         fn kind(&self) -> crate::model::ProviderKind {
             crate::model::ProviderKind::Process
         }
@@ -3299,7 +3299,7 @@ mod tests {
     #[tokio::test]
     async fn wait_for_mesh_join_completes_from_the_accepted_report_while_gossip_is_silent() {
         let joins = std::sync::Arc::new(Joins::default());
-        let provider = ReportsToTheAuthority { joins: joins.clone() };
+        let provider = ReportsToThePrimary { joins: joins.clone() };
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let build_id = accepted_build(&builds).await;
         builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();

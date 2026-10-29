@@ -104,7 +104,7 @@ fn healthy(family: Family) -> Evidence {
         seats_detail: String::new(),
         fabric_primary: ["mesh1.admin.1".into(), "mesh1.admin.1".into(), "mesh1.admin.1".into()],
         fabric_home: "mesh1.admin.1".into(),
-        authority_may_move: false,
+        primary_may_move: false,
         incarnation: ["inc-a".into(), "inc-a".into(), "inc-a".into()],
         attempts: [1, 1],
         exact_runtime_alive: true,
@@ -166,7 +166,7 @@ fn plants() -> Vec<(&'static str, &'static str, Plant)> {
         }),
         ("a stalled membership change moves authority and the public candidates disagree", NO_CONTROL_CONSEQUENCE, |e| {
             let c = e.control.as_mut().unwrap();
-            c.authority_may_move = true;
+            c.primary_may_move = true;
             c.fabric_primary[2] = "mesh2.admin.1".into();
             c.seats_as_expected[2] = false;
             c.seats_detail = "fabric primary: advertised [\"mesh2.admin.1\"], expected Some(\"mesh1.admin.1\")".into();
@@ -681,7 +681,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         seats_detail: [seats_detail_before, seats_detail_during, seats_detail_after].join(" | "),
         fabric_primary: [fp_before.clone(), fp_during, fabric_primary(&nodes_after)],
         fabric_home: fp_before,
-        authority_may_move: may_move,
+        primary_may_move: may_move,
         incarnation: [inc_before, inc_during, admin_view(&nodes_after)],
         attempts: [attempts[0], during_marker_attempt],
         exact_runtime_alive: alive,
@@ -793,7 +793,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
         seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
         fabric_primary: [fp_before.clone(), fp_during, fabric_primary(&nodes_after)],
         fabric_home: fp_before,
-        authority_may_move: true,
+        primary_may_move: true,
         incarnation: [inc_before.clone(), inc_during.clone(), nodes_after.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default()],
         attempts,
         exact_runtime_alive: alive,
@@ -894,7 +894,7 @@ async fn silent_case(run: &Run) {
         seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
         fabric_primary: [fp_before.clone(), fabric_primary(&nodes_during), fabric_primary(&nodes_after)],
         fabric_home: fp_before,
-        authority_may_move: false,
+        primary_may_move: false,
         incarnation: [inc_before, inc_during, s(&back["incarnation_id"])],
         attempts: [attempt_before, attempt_during],
         exact_runtime_alive: alive,

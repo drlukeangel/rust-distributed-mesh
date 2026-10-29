@@ -83,7 +83,7 @@ pub enum Family {
     ProviderDomain,
     RuntimeMetadataHydration,
     PendingBeforeBuild,
-    ElectionAuthorityMovement,
+    ElectionPrimaryMovement,
     StaleSlotRace,
     PartitionHeal,
     ExactRuntimeExit,
@@ -107,7 +107,7 @@ impl Family {
         Family::ProviderDomain,
         Family::RuntimeMetadataHydration,
         Family::PendingBeforeBuild,
-        Family::ElectionAuthorityMovement,
+        Family::ElectionPrimaryMovement,
         Family::StaleSlotRace,
         Family::PartitionHeal,
         Family::ExactRuntimeExit,
@@ -131,7 +131,7 @@ impl Family {
             Family::ProviderDomain => "provider-domain",
             Family::RuntimeMetadataHydration => "runtime-metadata-hydration",
             Family::PendingBeforeBuild => "pending-before-build",
-            Family::ElectionAuthorityMovement => "election-authority-movement",
+            Family::ElectionPrimaryMovement => "election-primary-movement",
             Family::StaleSlotRace => "stale-slot-race",
             Family::PartitionHeal => "partition-heal",
             Family::ExactRuntimeExit => "exact-runtime-exit",
@@ -196,7 +196,7 @@ pub struct Control {
     /// The cut is a membership change (a join, a mesh birth): the fabric primary may legitimately
     /// move, and only the public candidates' computation judges it. For a stall of a live admin it
     /// may not move at all.
-    pub authority_may_move: bool,
+    pub primary_may_move: bool,
     pub incarnation: [String; 3],
     /// The Build attempt (or the runtime's birth count) of the work held, before and during: for a held
     /// birth among the Build's other work, the attempts whose receipts acted on that birth.
@@ -428,7 +428,7 @@ pub fn judge(e: &Evidence) -> Result<Verdict, Refusal> {
             // floor after the node at its path.name is Ready the seats go home); what a stall of a live
             // admin never does is leave the seat elsewhere than its home once the stall ended: a
             // hand-back owed as the hold began takes it home during the hold.
-            if !c.authority_may_move && c.fabric_home != c.fabric_primary[2] {
+            if !c.primary_may_move && c.fabric_home != c.fabric_primary[2] {
                 out.push(rej(NO_CONTROL_CONSEQUENCE, format!("the fabric primary did not come home to {} after a stall of a live admin: {:?}", c.fabric_home, c.fabric_primary)));
             }
             if out.len() == before {

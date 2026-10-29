@@ -189,7 +189,7 @@ pub enum Profile {
     Routing,
     /// Restarts, kills and holds of node-admins, and mesh-primary hand-offs (the fabric-primary's
     /// included), under traffic.
-    Authority,
+    Primary,
     /// A mesh made unheard by the others, held, healed, converged, repeated.
     Partition,
     /// Restart, delete (delete), replacement and capacity re-add of role nodes under traffic.
@@ -210,7 +210,7 @@ impl Profile {
         match self {
             Profile::All => true,
             Profile::Routing => matches!(a, Action::Restart { .. } | Action::Kill { .. } | Action::Wedge { .. }) && node.is_some_and(|p| !is_admin_path(p)),
-            Profile::Authority => match a {
+            Profile::Primary => match a {
                 Action::HandOff { .. } => true,
                 Action::Restart { .. } | Action::Kill { .. } | Action::Wedge { .. } => node.is_some_and(is_admin_path),
                 _ => false,
@@ -1901,7 +1901,7 @@ impl Driver {
             seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
             fabric_primary: [fp_before, fabric_primaries(&nodes_during), fabric_primaries(&nodes_after)],
             fabric_home: home,
-            authority_may_move: false,
+            primary_may_move: false,
             incarnation: [inc.clone(), during.as_ref().map(|x| s(&x["incarnation_id"])).unwrap_or_default(), s(&back["incarnation_id"])],
             // The held birth's attempts: none before the hold, and the gained ones that acted on it.
             attempts: [0, acted_during.len() as u64],

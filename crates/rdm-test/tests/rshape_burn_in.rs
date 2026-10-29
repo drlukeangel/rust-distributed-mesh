@@ -6716,7 +6716,7 @@ struct Story {
 }
 
 const S1: Story = Story { id: "S1", profile: SoakProfile::Routing, cycle_kinds: &["restart", "kill", "wedge"], needs_cut: false };
-const S2: Story = Story { id: "S2", profile: SoakProfile::Authority, cycle_kinds: &["restart", "kill", "wedge", "hand-off"], needs_cut: false };
+const S2: Story = Story { id: "S2", profile: SoakProfile::Primary, cycle_kinds: &["restart", "kill", "wedge", "hand-off"], needs_cut: false };
 const S3: Story = Story { id: "S3", profile: SoakProfile::Partition, cycle_kinds: &["heal"], needs_cut: true };
 const S4: Story = Story { id: "S4", profile: SoakProfile::Lifecycle, cycle_kinds: &["restart", "shrink", "replace", "grow-rpc"], needs_cut: false };
 const S6: Story = Story { id: "S6", profile: SoakProfile::Floors, cycle_kinds: &["wedge", "heal"], needs_cut: true };

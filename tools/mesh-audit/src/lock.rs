@@ -23,7 +23,7 @@ pub enum Ratchet {
     NoTransportTagVocabulary,
     DeleteAttemptsRpcStopFirst,
     DeleteHasBoundedFailureArms,
-    DriftSilenceIsNotDeleteAuthority,
+    DriftSilenceIsNotDeleteProof,
     DeleteReceiptNamesCommandArm,
     ConnectionsDeletedIsNotRefusal,
     ForwardPreservesContext,
@@ -55,7 +55,7 @@ impl Ratchet {
         Self::NoTransportTagVocabulary,
         Self::DeleteAttemptsRpcStopFirst,
         Self::DeleteHasBoundedFailureArms,
-        Self::DriftSilenceIsNotDeleteAuthority,
+        Self::DriftSilenceIsNotDeleteProof,
         Self::DeleteReceiptNamesCommandArm,
         Self::ConnectionsDeletedIsNotRefusal,
         Self::ForwardPreservesContext,
@@ -88,7 +88,7 @@ impl Ratchet {
             Self::NoTransportTagVocabulary => "no_transport_tag_vocabulary",
             Self::DeleteAttemptsRpcStopFirst => "delete_attempts_rpc_stop_first",
             Self::DeleteHasBoundedFailureArms => "delete_has_bounded_failure_arms",
-            Self::DriftSilenceIsNotDeleteAuthority => "drift_silence_is_not_delete_authority",
+            Self::DriftSilenceIsNotDeleteProof => "drift_silence_is_not_delete_proof",
             Self::DeleteReceiptNamesCommandArm => "delete_receipt_names_command_arm",
             Self::ConnectionsDeletedIsNotRefusal => "connections_deleted_is_not_refusal",
             Self::ForwardPreservesContext => "forward_preserves_context",
@@ -573,7 +573,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             Some(found) => out.push(Violation::Arms { ratchet, file: PIPELINE.into(), expected: COMMAND_ARMS.iter().map(|s| s.to_string()).collect(), found }),
             None => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "`pub enum CommandAdmission`".into() }),
         },
-        Ratchet::DriftSilenceIsNotDeleteAuthority => {
+        Ratchet::DriftSilenceIsNotDeleteProof => {
             require(root, DRIFT_CELLS, &["fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced"], ratchet, &mut out);
         }
         Ratchet::DeleteReceiptNamesCommandArm => {

@@ -164,7 +164,7 @@ fn drift_silence_never_deletes_a_node_fails_without_its_proof() {
         "fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced",
         "fn a_silent_node_is_replaced",
     );
-    only(check(t.root()), Ratchet::DriftSilenceIsNotDeleteAuthority);
+    only(check(t.root()), Ratchet::DriftSilenceIsNotDeleteProof);
 }
 
 #[test]
