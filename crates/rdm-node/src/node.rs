@@ -556,7 +556,7 @@ async fn start_booted(
     // The data plane of RDM standalone: the originate door's own client, whose dials are the
     // connections this node originates for traffic, each a Direct entry of its log.
     let data_plane = Arc::new(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()).with_delivery(delivery.clone()));
-    // The node's one connections reconciler (connections.md §9.4, §10): an owed Proxy retirement
+    // The node's one connections reconciler (connections.md §9.4, §10): an owed Proxy delete
     // whose write was refused is attempted again while owed, and a recovery attempt an accept armed
     // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own
     // observation. The task ends at the node's stop, with `declare_loop`.

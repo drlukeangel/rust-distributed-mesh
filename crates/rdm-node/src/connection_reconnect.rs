@@ -1,4 +1,4 @@
-//! Per-node Direct reconnect scheduler and Proxy retirement reconciler
+//! Per-node Direct reconnect scheduler and Proxy delete reconciler
 //! (`docs/architecture/connections.md` §9, §10; i148 e3).
 //!
 //! Every node runs the same reconnect mechanism internally in `rdm-node`. Node-admin does not
@@ -45,7 +45,7 @@ use rdm_transport::connections::{Birth, ConnectError, ConnectionsRegistry};
 
 use crate::connections_writer::ConnectionsWriter;
 
-/// How often the reconciler checks what is owed without an explicit wake: an owed Proxy retirement
+/// How often the reconciler checks what is owed without an explicit wake: an owed Proxy delete
 /// whose write was refused is retried, and a pending recovery attempt whose backoff has ended is
 /// dialled.
 pub const RECONCILER_TICK: Duration = Duration::from_millis(500);

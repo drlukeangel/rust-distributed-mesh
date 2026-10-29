@@ -573,7 +573,7 @@ impl NodeSelf {
         }
         // Each Direct entry closed is its data-plane connection closed, on that connection's own
         // span naming the entry (R-CR6: the pool's hard cut is the stop's transport cut alone); a
-        // Proxy rides its carrier's Direct and only its route retires.
+        // Proxy rides its carrier's Direct and only its route deletes.
         let data_plane = self.data_plane.lock().unwrap().clone();
         if let Some(data_plane) = &data_plane {
             for route in routes.iter().filter(|r| r.kind == rdm_core::connections::ConnectionKind::Direct) {

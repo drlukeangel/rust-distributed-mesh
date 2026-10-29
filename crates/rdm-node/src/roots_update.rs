@@ -10,7 +10,7 @@ use rdm_transport::connections::ConnectionsRegistry;
 /// judged on, for the birth `node` (`node_id`, `incarnation`) whose door the request reached: one or
 /// two roots, never none, each refused by name when it is not a key (`RejectedCert`). A set that drops
 /// a root this birth's own member cert still chains under is refused by name, `root-still-chained`
-/// (`RejectedRootStillChained`), and nothing is installed: what keeps a rotation's retirement after
+/// (`RejectedRootStillChained`), and nothing is installed: what keeps a rotation's replacement after
 /// every cert chains to the new root. `secret` says whether the request carried the root secret (a
 /// node-admin's), named on the span, never its value. One span,
 /// `rdm.node.root.update.via-installed`, or `rdm.node.root.reject.via-update` on a refusal.

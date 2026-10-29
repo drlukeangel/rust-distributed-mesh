@@ -707,7 +707,7 @@ async fn alpn_interference_restores_a_while_b_keeps_its_proxy() {
         ConnectionKind::Proxy {
             via: carrier.birth.clone()
         },
-        "restoring ALPN_A must not retire ALPN_B's Proxy"
+        "restoring ALPN_A must not delete ALPN_B's Proxy"
     );
 
     b_send.write_all(b"-and-after").await.unwrap();
@@ -728,7 +728,7 @@ async fn alpn_interference_restores_a_while_b_keeps_its_proxy() {
         !routes
             .iter()
             .any(|r| r.alpn == ALPN_A && r.kind == CoreConnectionKind::Proxy),
-        "ALPN_A retired its Proxy: {routes:?}"
+        "ALPN_A deleted its Proxy: {routes:?}"
     );
     assert!(
         routes.iter().any(|r| r.alpn == ALPN_B

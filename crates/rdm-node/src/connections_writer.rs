@@ -11,7 +11,7 @@
 //! name), its node id and its process birth.
 //!
 //! One obligation is reconciled here (connections.md §10): whenever this node's latest Direct to
-//! a destination is Connected beside its own active Proxy to it, the Proxy's retirement
+//! a destination is Connected beside its own active Proxy to it, the Proxy's delete
 //! (`Disconnected(direct-restored)`) is owed. It is written durably first and applied to the held
 //! projection only once the write lands, so new calls keep the proven Proxy until then. A refused
 //! write leaves the obligation standing: it is derived again from the two latest rows at the next
@@ -28,7 +28,7 @@
 //! [`rdm_transport::AcceptTrigger`], never a row). An accept arriving while an item is pending
 //! coalesces into it and wakes the reconciler, which dials this node's own data-plane connection
 //! once the series' reconnect backoff from its latest Failed row has ended (§9.3), never earlier.
-//! Only that dial's Direct Connected owes the Proxy's retirement; a failed dial is the series'
+//! Only that dial's Direct Connected owes the Proxy's delete; a failed dial is the series'
 //! next Failed row and the attempt waits for its backoff; an attempt toward a birth the topology view no
 //! longer holds is dropped undialled (§9.5 step 1).
 
@@ -107,7 +107,7 @@ struct Inner {
     /// one at a time, so rows land in queue order and the index member of a pair is the last owed.
     queue: tokio::sync::mpsc::UnboundedSender<Owed>,
     /// The one write gate: held across every build, durable write attempt and apply, whether it is
-    /// an observation, a [`ConnectionsWriter::record`] or a retirement settlement, and let go
+    /// an observation, a [`ConnectionsWriter::record`] or a delete settlement, and let go
     /// before a refused write's backoff; and by a start until it holds the name its join answer
     /// handed ([`ConnectionsWriter::hold_rows`]).
     write_gate: Arc<tokio::sync::Mutex<()>>,
@@ -120,7 +120,7 @@ struct Inner {
     opened: Mutex<std::collections::HashMap<(iroh::PublicKey, IncarnationId), NodeConnection>>,
 }
 
-/// The local OS clock: a writer orders its own rows by it and ages its owed retirements by it. No
+/// The local OS clock: a writer orders its own rows by it and ages its owed deletes by it. No
 /// other node reads these stamps as a time; rafka-time is not adopted when a node first observes a
 /// connection (its join).
 fn local_now_ms() -> u64 {
@@ -468,13 +468,13 @@ impl ConnectionsWriter {
         }
     }
 
-    /// The Proxy retirements this node owes now (connections.md §10), derived from the held
+    /// The Proxy deletes this node owes now (connections.md §10), derived from the held
     /// projection's two latest rows per pair: never a queue.
     pub fn owed(&self) -> Vec<NodeConnection> {
         owed_direct_restored(&self.inner.held.lock().unwrap(), local_now_ms())
     }
 
-    /// Settle every Proxy retirement this node owes: each is written durably as
+    /// Settle every Proxy delete this node owes: each is written durably as
     /// `Disconnected(direct-restored)` and applied to the held projection once its write lands,
     /// so new calls cut back to Direct only then. A refused write is named and leaves the
     /// obligation standing for the next attempt. Returns how many landed.
@@ -501,13 +501,13 @@ impl ConnectionsWriter {
                 Ok(()) => {
                     let _ = self.inner.held.lock().unwrap().apply(row);
                     span.record("outcome", "landed");
-                    span.in_scope(|| tracing::info!("the owed Proxy retirement landed; new calls cut back to Direct"));
+                    span.in_scope(|| tracing::info!("the owed Proxy delete landed; new calls cut back to Direct"));
                     landed += 1;
                 }
                 Err(e) => {
                     span.record("outcome", "refused");
                     span.record("detail", e.as_str());
-                    span.in_scope(|| tracing::info!("the owed Proxy retirement write was refused; the Proxy stays effective and the obligation stands"));
+                    span.in_scope(|| tracing::info!("the owed Proxy delete write was refused; the Proxy stays effective and the obligation stands"));
                     return Err(e);
                 }
             }
@@ -529,7 +529,7 @@ impl ConnectionsWriter {
     }
 
     /// The node's one connections reconciler (connections.md §9.4, §10): each `every`, or at once
-    /// when an accept armed an attempt, it attempts every owed retirement again and dials every
+    /// when an accept armed an attempt, it attempts every owed delete again and dials every
     /// pending recovery attempt whose backoff has ended through `dial`, this node's own data plane
     /// (none on a node with no data plane). Derived from the rows each time; the task ends with
     /// the runtime.
@@ -567,13 +567,13 @@ impl ConnectionsWriter {
     /// queued behind every write owed before it (Q169). The row is written until it lands and is
     /// applied to the held projection only once it has; a row built from the held projection (a
     /// failing series' next ordinal) sees every earlier owed row already applied. A Direct
-    /// Connected settles the Proxy retirement it may owe once its own write has landed.
+    /// Connected settles the Proxy delete it may owe once its own write has landed.
     fn observed(&self, build: impl FnOnce(&Self, ConnectionEnd) -> NodeConnection + Send + 'static, origin: &'static str, node: &ResolvedNode) {
         self.owe(Box::new(move |w, own| Some(build(w, own))), Origin::Observed { origin, peer: node.endpoint_id.fmt_short().to_string() });
     }
 
     /// Write one owed row until it lands, each attempt and the apply inside the write gate, then
-    /// settle the retirement it may owe. The queue's consumer takes the next row only once this
+    /// settle the delete it may owe. The queue's consumer takes the next row only once this
     /// one has landed, so rows land in queue order.
     async fn write_owed(&self, owed: Owed) {
         let w = self;
