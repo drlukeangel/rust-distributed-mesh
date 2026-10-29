@@ -7,9 +7,9 @@ one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its ste
 
 1. Read the by-destination connections index ([connections.md §3.1](../connections.md#31-declared-indexes)).
    It names the peers to try; it never proves the node is reachable.
-2. [node.tickle](node-tickle.md), direct.
-3. The same tickle via those peers.
-4. [node.runtime.inspect](node-runtime-inspect.md).
+2. [node.runtime.inspect](node-runtime-inspect.md). `exited` or `os-stopped` is the verdict; no tickle is sent.
+3. [node.tickle](node-tickle.md), direct.
+4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`, or `unproven` for `unavailable`.
 
 Only an answer from the exact birth counts as `reached`.
 
@@ -53,7 +53,7 @@ row deleted ([node.delete](node-delete.md), releasing the name) and reports it t
 |---|---|
 | Caller | The primary above the node: its mesh-primary for a member of any type, the fabric-primary for a mesh-primary or another mesh's node-admin |
 | Target | One node, by `(node.id, incarnation)` |
-| Steps | The by-destination connections index read, node.tickle direct, the same tickle via those peers, node.runtime.inspect |
+| Steps | The by-destination connections index read, node.runtime.inspect, node.tickle direct, the same tickle via those peers |
 | Result | `reached`, `running`, `os-stopped`, `exited` or `unproven` |
 | What follows | Reached: node.mesh.join. Any other verdict: re-created at the same path.name with a new node.id, over the inherited data dir when the verdict is `exited`, over a newly allocated one otherwise |
 | Spans | [node.tickle](node-tickle.md#operation-contract)'s and [node.runtime.inspect](node-runtime-inspect.md#operation-contract)'s own |

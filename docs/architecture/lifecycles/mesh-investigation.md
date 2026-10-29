@@ -121,7 +121,7 @@ sequenceDiagram
         FP->>FP: author FabricStatus degraded
         FP->>P: node.create of a node-admin into mesh-x (a node-admin joining a live mesh)
     else no member answers
-        FP->>A: node investigation of mesh-x's node-admins (tickle, then node.runtime.inspect)
+        FP->>A: node investigation of mesh-x's node-admins (node.runtime.inspect, then the tickle)
         alt reached
             FP->>A: node.mesh.join (commanded back)
         else any other verdict

@@ -28,7 +28,7 @@ the primitive does not.
 | Ladder | Direct first. On failure, the same probe carried by [Forward](../node-rpc-envelope.md#forward-op-0x1a-core) through up to two eligible live peers of the node's mesh, both at once; one failed peer probe does not cancel the other |
 | Ends | Any answer from the node, under the probed incarnation, ends the ladder and cancels the probes still running |
 | Result | `reached { answer }`: the node is alive and said what it is; `unreached`: nobody reached it within the ladder. Unreached is never death |
-| What follows | The caller's: recovery runs the inspect on `unreached`; on `reached` for a node that is off its channel it commands [node.mesh.join](node-mesh-join.md); mesh investigation decides at 60 s |
+| What follows | The caller's: on `unreached` the investigation's verdict is the inspect's answer, read before the tickle; on `reached` for a node that is off its channel it commands [node.mesh.join](node-mesh-join.md); mesh investigation decides at 60 s |
 | Spans | `rdm.node.tickle.resolve.via-direct` for the direct probe, `via-peer` per carrier, each with the answer or the failure; `rdm.node.tickle.returns-unknown.via-unreached` when the ladder ends with no answer; `rdm.node_admin.node.update.via-mesh-join-commanded` when the caller commands the reached node back through node.mesh.join, with the reply |
 
 ## Numbered end-to-end sequence
@@ -136,8 +136,7 @@ the first answer from the node, under the probed incarnation, ends the ladder; `
 ## Failure and receipts
 
 The primitive has no failure of its own: `unreached` is a result, not an error, and it is never
-recorded as the node's death. A caller that needs proof of exit runs
-[node.runtime.inspect](node-runtime-inspect.md) next. Budgets and the certainty of each call
+recorded as the node's death. Proof of exit is [node.runtime.inspect](node-runtime-inspect.md)'s, which node investigation reads before the tickle. Budgets and the certainty of each call
 follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).
 
 ## Observability contract

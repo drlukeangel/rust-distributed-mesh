@@ -17,7 +17,7 @@ node.create of a node-admin into the live mesh.)
 |---|---|
 | Reconciler | The mesh-primary of the member's mesh; the fabric-primary for a mesh-primary (mesh investigation for a mesh with no reachable node-admin) |
 | Detection | The mesh-primary's tick (every gossip interval) reads the members its view marks `PendingReconnect`: unheard past the staleness floor, or marked at once when a command to them was never sent for a reachability reason (step 1) |
-| Investigation | [node investigation](node-investigation.md): the by-destination connections index, node.tickle direct and via peers, node.runtime.inspect; one verdict |
+| Investigation | [node investigation](node-investigation.md): the by-destination connections index, node.runtime.inspect, node.tickle direct and via peers; one verdict |
 | Trigger | The verdict (Q111). Reached: commanded back through node.mesh.join. Any other verdict: re-created. Nothing waits on a proof of termination |
 | Execution | The mesh-primary opens the recovery as the next attempt of the current Build at `(build_id, mesh, attempt)` on its mesh's rows, claims it there and runs it through its own executor, writing each receipt and the attempt's verdict to the Build journal on the store root, where the fabric-primary reads them (R-BI7); it makes no call to the fabric-primary, which may be offline. An unheard mesh-primary's recovery is the fabric-primary's ([mesh investigation](mesh-investigation.md)) |
 | Steps | node.delete of the unheard instance, node.create at the same path.name; the Build's steps are keyed `node.delete:<path.name>` and `node.create:<path.name>` |
@@ -44,9 +44,7 @@ doubling from the gossip interval to the staleness floor.
    holds that birth. A birth heard again runs its `pre_node_ready` hook again before it is
    ready ([fabric-node-hooks.md](../fabric-node-hooks.md#where-it-runs)).
 2. **Investigation.** Only the mesh-primary acts. Half a floor after the mark it runs
-   [node investigation](node-investigation.md) on the exact birth: the by-destination connections index,
-   node.tickle direct, the same tickle via up to two eligible live peers of the birth's mesh sent at
-   once, then node.runtime.inspect. Any answer from the exact birth ends the ladder and cancels the
+   [node investigation](node-investigation.md) on the exact birth: the by-destination connections index, node.runtime.inspect (`exited` or `os-stopped` is the verdict, and no tickle is sent), node.tickle direct, the same tickle via up to two eligible live peers of the birth's mesh sent at once. Any answer from the exact birth ends the ladder and cancels the
    probes still running; one failed peer probe does not cancel the other; every probe names the same
    exact `(node.id, incarnation)`. For an unheard mesh-primary the fabric-primary runs it, without the
    half-floor wait, after the election has named the new mesh-primary
@@ -119,9 +117,9 @@ sequenceDiagram
     participant P as Provider
     participant F as Fabric-primary
     Note over M: tick: member PendingReconnect
-    M->>N: node investigation: tickle (direct, then via peers)
     M->>P: node.runtime.inspect
-    P-->>M: verdict
+    P-->>M: exited or os-stopped is the verdict; else running or unavailable
+    M->>N: tickle (direct, then via peers), unless the inspect gave the verdict
     Note over M: reached: node.mesh.join; otherwise open attempt N of the current Build, run
     Note over M: node.delete → node.deleted (TerminateRuntime first)
     Note over M: node.create, same path.name (inherited data dir when exited)

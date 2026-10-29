@@ -9,10 +9,11 @@
 //! node-tickle.md: direct, then through up to two live peers at once), which this module holds for
 //! every caller of it. Each ladder runs beside the loop, one per exact birth, and the first tick
 //! after it ends folds what it found (node-recovery.md: one loop, on every gossip interval). An
-//! answer is `reachable-silent`: recorded, no action. A ladder nobody answered is the birth held
-//! offline (TRUE OFFLINE) at that fold, and its inspection and recovery follow at once
-//! (node-recovery.md steps 2-3; node-tickle.md "What follows": "recovery runs the inspect on
-//! `unreached`"): nothing holds and nothing is probed again (Q111, Q181). A node that leaves the
+//! answer is `reachable-silent`: recorded, no action. The inspect runs before the ladder (Q273): its
+//! `exited` or `os-stopped` holds the birth offline with no probe sent; a ladder nobody answered is the
+//! birth held offline (TRUE OFFLINE) at that fold, and its recovery follows at once (node-recovery.md
+//! steps 2-3; node-tickle.md "What follows": "on `unreached` the investigation's verdict is the
+//! inspect's answer, read before the tickle"): nothing holds and nothing is probed again (Q111, Q181). A node that leaves the
 //! silent set has returned. The `Dead` status is observer-inferred, never sent, never itself a reason
 //! to act: the investigation's verdict is.
 //! The admin writes the node's status on its row in nodes.storage and shows it in the view.
@@ -1562,8 +1563,9 @@ pub(crate) mod tests {
         }
 
         /// CONTRACT (R-SW1 acceptance: the provider check stays mandatory and comes last;
-        /// node-recovery.md step 2: "node.tickle direct, the same tickle via up to two eligible live peers
-        /// of the birth's mesh sent at once, then node.runtime.inspect"; step 3: "Nothing holds"; Q181):
+        /// node-recovery.md step 2: "node.runtime.inspect (`exited` or `os-stopped` is the verdict, and no
+        /// tickle is sent), node.tickle direct, the same tickle via up to two eligible live peers of the
+        /// birth's mesh sent at once"; step 3: "Nothing holds"; Q181):
         /// TRUE OFFLINE, the only tickle outcome that sends the mesh-primary to the provider
         /// (`recovery_due`), is reached at the fold of the one ladder, only after its direct probe and
         /// both its peer probes ended unanswered, the ladder costing the direct probe's budget plus one
@@ -1711,7 +1713,8 @@ pub(crate) mod tests {
     /// exact birth: ... node.tickle direct, the same tickle via up to two eligible live peers ..., then
     /// node.runtime.inspect"; step 3: "Any other verdict (`running`, `os-stopped`, `exited`, `unproven`):
     /// the recovery below, at once. Nothing holds, nothing is inspected again"; node-tickle.md "What
-    /// follows": "recovery runs the inspect on `unreached`"; Q111, Q181): the mesh-primary's one ladder,
+    /// follows": "on `unreached` the investigation's verdict is the inspect's answer, read before the
+    /// tickle"; Q111, Q181): the mesh-primary's one ladder,
     /// half a floor after the mark, that nobody answers is held offline at the tick that folds it, so the
     /// inspection and the recovery follow on that same tick, whatever kind of member it is (a node-admin
     /// of the mesh-primary's own mesh included). Must NOT happen: a hold-down opened, a second ladder a

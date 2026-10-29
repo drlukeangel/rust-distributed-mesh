@@ -29,8 +29,9 @@ mod tests {
     ///  was never sent for a reachability reason"
     /// CONTRACT: docs/architecture/lifecycles/node-recovery.md:46
     /// "Only the mesh-primary acts. Half a floor after the mark it runs node investigation on the
-    ///  exact birth: the by-destination connections index, node.tickle direct, the same tickle via up
-    ///  to two eligible live peers of the birth's mesh sent at once, then node.runtime.inspect."
+    ///  exact birth: the by-destination connections index, node.runtime.inspect (`exited` or
+    ///  `os-stopped` is the verdict, and no tickle is sent), node.tickle direct, the same tickle via up
+    ///  to two eligible live peers of the birth's mesh sent at once."
     #[test]
     fn watched_and_durable_births_filter_by_mesh_and_recovery_due_requires_mesh_primary_and_exact_incarnation()
     {

@@ -9,7 +9,7 @@ the PID with its start identity, or the immutable container id. It answers `runn
 whose verdict is the one decision about an unheard node (Q111); nothing waits on it as a proof of
 termination. It touches no network and asks the node nothing. It is run by:
 
-- [node investigation](node-investigation.md), as its last step, after the tickles end `unreached`;
+- [node investigation](node-investigation.md), as its first step after the index read: `exited` or `os-stopped` is the verdict and no tickle is sent; on `running` or `unavailable` the tickles follow;
 - [node.delete](node-delete.md), at its start (an `os-stopped` runtime answers no stop: the delete skips the stop by name and begins at `TerminateRuntime`);
 - node recovery's `TerminateRuntime`, at the step's own instant, before it asks the provider to
   terminate ([node recovery](node-recovery.md) step 3);
@@ -27,6 +27,7 @@ termination. It touches no network and asks the node nothing. It is run by:
 | Domain | The handle is acted on only inside its control domain; a cross-domain handle is routed to a domain-local execution path or refused by name ([deployment-provider §2.4](../deployment-provider.md#24-exact-provider-locator-and-control-domain)) |
 | Result | `running`: the exact runtime is alive, however silent the node. `os-stopped`: the operating system holds the exact runtime suspended, so no `node.stop` completed ([deployment provider §2.5](../deployment-provider.md#25-runtime-state-what-the-provider-reports)). `exited { code }`: the provider's terminal status for that exact handle. Each is a verdict of [node investigation](node-investigation.md) when the tickles did not reach the birth |
 | Not a result | A RuntimeFact's presence says neither running nor gone; a provider that cannot answer for the domain answers `unavailable { reason }`, which is investigation's `unproven` |
+| Bound | The provider answers within 2 s. Expiry answers `unavailable { reason }`, never proof of exit, and the provider ends the subprocess it started; node investigation's tickles follow |
 | What follows | The caller's: investigation's verdict re-creates the node on any answer here (`exited` over the inherited data dir, the others over a newly allocated one), with `TerminateRuntime` first on every answer but `os-stopped` (of an `exited` runtime the provider removes what it left, Q145); delete writes the row deleted and publishes `NodeDeleted`; a boot on an inherited dir proceeds as recovery. On an explicit delete, an `os-stopped` result skips the unexecutable Node RPC stop by name and proceeds to `TerminateRuntime` on the exact handle |
 | Not a Node RPC | The inspect is a provider call from the caller's process; it has no op number and no frame. Its span is the evidence |
 | Spans | `rdm.node_admin.node.resolve.via-provider-inspection` with node, node_id, incarnation, the handle, `verdict` (`running` / `os-stopped` / `exited` / `unavailable`), `exit_code` and the reason |
