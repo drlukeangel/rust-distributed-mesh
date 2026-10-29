@@ -558,7 +558,7 @@ impl CertIssuer {
 
     /// `fabric.root.update` step 5 at this admin: `secret` is the fabric's root from now on, kept as
     /// `ca-secret`; the old root's secret and the next root are destroyed (fabric-ca-renew.md).
-    pub fn retire_root_to(&self, secret: SigningKey) -> Result<(), String> {
+    pub fn replace_root_with(&self, secret: SigningKey) -> Result<(), String> {
         if let Some(dir) = self.kept.get() {
             let path = dir.join(CA_SECRET_FILE);
             std::fs::write(&path, rdm_core::certs::encode_key(&secret)).map_err(|e| format!("{}: the new root could not be kept: {e}", path.display()))?;
@@ -938,7 +938,7 @@ mod tests {
         assert!(rdm_core::certs::verify_issuer(minted.cert(), &[new.verifying_key()]).is_ok(), "the issuer chains to the new root");
         assert!(rdm_core::certs::verify_issuer(minted.cert(), &[old.verifying_key()]).is_err(), "and not to the old");
         assert_eq!(issuer.root(), Some(old.verifying_key()), "the old root stays the root until the rotation retires it");
-        issuer.retire_root_to(new.clone()).unwrap();
+        issuer.replace_root_with(new.clone()).unwrap();
         assert_eq!(issuer.root(), Some(new.verifying_key()));
         assert_eq!(issuer.next_root(), None);
         assert_eq!(std::fs::read_to_string(dir.join(CA_SECRET_FILE)).unwrap(), rdm_core::certs::encode_key(&new), "the new root is kept as ca-secret");

@@ -1298,7 +1298,7 @@ impl StatusAuthority {
                 // next root through the overlap, the fabric's root once the set retires the old one; kept
                 // only once the set it rides with is installed.
                 if let (StatusReply::RootsUpdated { .. }, Some(secret), Some(certs)) = (&installed, secret, &self.certs) {
-                    let kept = rdm_core::certs::decode_key(&secret.0).and_then(|k| if *phase == rdm_core::status::RootsPhase::Retired { certs.retire_root_to(k) } else { certs.hold_next_root(k) });
+                    let kept = rdm_core::certs::decode_key(&secret.0).and_then(|k| if *phase == rdm_core::status::RootsPhase::Retired { certs.replace_root_with(k) } else { certs.hold_next_root(k) });
                     if let Err(e) = kept {
                         return rdm_core::reply::status::rejected_cert(format!("{me}: the root's secret: {e}"));
                     }
