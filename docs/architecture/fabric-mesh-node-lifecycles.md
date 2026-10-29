@@ -124,6 +124,7 @@ are explicit.
 | 0x1F FetchBuildFacts, FetchCurrentBuild | [Build facts](node-rpc-envelope.md#build-facts-op-0x1f-rdm) | [node.start](lifecycles/node-start.md#end-to-end-sequence) step 4: FetchCurrentBuild when the missing pointer names no Build, FetchBuildFacts of the Build a blocker names |
 | 0x20 build | [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) | [Node create](lifecycles/node-create.md), [stop](lifecycles/node-stop.md), [start](lifecycles/node-start.md), [delete](lifecycles/node-delete.md); fabric-primary claim-and-dispatch of topology operations; mesh-primary claim-and-run of drift attempts; reattachment |
 | 0x21 PrimaryUpdate | [PrimaryUpdate](node-rpc-envelope.md#primaryupdate-op-0x21-rdm) | [node.primary.update and node.fabric-primary.update](lifecycles/node-primary-update.md), before a primary's [node.connections.delete](lifecycles/node-connections-delete.md), [stop](lifecycles/node-stop.md), replace or delete |
+| 0x22 NodeCommand | [NodeCommand](node-rpc-envelope.md#nodecommand-op-0x22-rdm) | [node.connections.delete](lifecycles/node-connections-delete.md), [stop](lifecycles/node-stop.md), [start](lifecycles/node-start.md): the mesh-primary to the exact node |
 
 ## Terminology firewall
 
@@ -147,7 +148,7 @@ A new node is node.created. Birth and re-birth are the application's names for i
 **Node RPC op code.** A row of the [op ledger](node-rpc-envelope.md#the-op-ledger). A code is
 not a Build operation identity: only `build_id + attempt + operation` names a Build operation.
 A stop step sends StopNode for [node.stop](lifecycles/node-stop.md#command-and-completion-messages) on op
-`0x1B`.
+`0x22` (NodeCommand).
 
 **Topology read.** [node.topology.get](node-rpc-envelope.md#topology-op-0x1e-rdm) reads a node's
 held topology. It is not gossip, not a join and not a Build operation.

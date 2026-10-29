@@ -507,7 +507,7 @@ five sends in all, then nothing. All five sends carry the same `changed_at_rafka
 reinforcement of one status fact, not five status transitions. That is a short internal timer around
 one change, not a heartbeat; no change means no status traffic.
 
-Rafka's backbone cadence is `RAFKA_BACKBONE_INTERVAL_MS`, default 2000 ms.
+The backbone cadence is `RDM_BACKBONE_INTERVAL_MS`, default 2000 ms.
 
 The own-mesh silence window is derived from the heartbeat cadence and is longer than one tick.
 Peer-mesh silence uses direct backbone receipt at node-admins, never forwarded topology.
