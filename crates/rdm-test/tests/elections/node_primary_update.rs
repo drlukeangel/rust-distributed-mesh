@@ -378,6 +378,13 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
     assert_eq!(primaries, vec![heir.clone()], "{watcher} names one {mesh} primary, {heir}: {heard:#?}");
 }
 
+/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:13
+/// "When the unheard mesh's mesh-primary is the fabric-primary, every mesh-primary runs this ladder on it, and its decision step
+/// starts [fabric recovery](fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives) at the
+/// lowest Ready mesh-primary, which takes no primary role (Q122)."
+/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
+/// "When mesh-x's mesh-primary is the fabric-primary, this arm is [fabric recovery](fabric-recovery.md), run by
+/// the lowest Ready mesh-primary on the backbone, which takes no primary role (Q122)."
 /// CONTRACT (Q122; fabric-recovery.md step 2 "Outside its mesh", steps 3-4; mesh-investigation.md steps
 /// 5-6; Q111): every UDP path between every node of the fabric-primary's mesh and every node of the other
 /// mesh is cut while all processes run. Each side hears nothing of the other: at its decision step, after

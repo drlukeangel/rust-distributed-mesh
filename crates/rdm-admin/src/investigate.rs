@@ -992,6 +992,12 @@ mod tests {
         log.iter().filter(|(_, s)| f(s)).map(|(r, _)| *r).collect()
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:5
+    /// "Mesh investigation is the fabric-primary's probe of an unheard peer mesh and its decision
+    /// whether to run node.create of a node-admin into it."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:17
+    /// "One investigation per peer mesh, owned by the fabric-primary. Let t be the elapsed monotonic time
+    /// since the fabric-primary's last valid direct backbone receipt from mesh-x."
     /// CONTRACT (#2803 detection): two carrier-edge-lost probes decide a recovery at 30 intervals, with
     /// the probes at 10 and 20 and the silent mark between them at 15; nothing before.
     #[test]
@@ -1007,17 +1013,31 @@ mod tests {
         assert_eq!(never_heard(&t, "mesh1", &heard), BTreeSet::from(["mesh2".to_string()]), "mesh2 only: mesh1 is this admin's own, mesh3 was heard on the backbone");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:5
+    /// "Mesh investigation is the fabric-primary's probe of an unheard peer mesh and its decision
+    /// whether to run node.create of a node-admin into it."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:17
+    /// "One investigation per peer mesh, owned by the fabric-primary. Let t be the elapsed monotonic time
+    /// since the fabric-primary's last valid direct backbone receipt from mesh-x."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:43
+    /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
+    /// finish first; no silence-only path marks the mesh deleted."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:46
+    /// "- **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+    /// it cannot reach its own node-admin. Record the verdict before opening the node.create attempt."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
+    /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
+    /// fabric is alive, so carrier-edge-lost cannot arise."
     /// CONTRACT (R-D1: loss of peer-mesh control-plane visibility targets lifecycle mutation for every
     /// node in that mesh; mesh-investigation.md: "Let t be the elapsed monotonic time since the
     /// fabric-primary's last valid direct backbone receipt from mesh-x"; step 5: "No answer from any
     /// member in either probe means hold"): the target reads t, not whether the ladder has stepped the
-    /// mesh yet. An admin that took the fabric-primary seat a moment ago holds a ladder that has
+    /// mesh yet. An admin that took the fabric-primary role a moment ago holds a ladder that has
     /// stepped nothing, and a peer mesh its view last heard on the backbone 7 s ago is targeted from that
     /// moment, unheard 7000 ms, no recovery decided; a mesh heard within the tracking rung is not
     /// targeted; a decided recovery is read from the ladder; a mesh the backbone never carried here is
     /// what the ladder holds of it. Must NOT happen: a node of a mesh unheard past the rung claimed or
-    /// dispatched for because the ladder has not stepped it yet (mesh_recover at a fabric-primary seat
-    /// take ran node.create:mesh1.admin.1 0.25 s before its ladder first stepped mesh1).
+    /// dispatched for because the ladder has not stepped it yet.
     #[test]
     fn the_investigation_reads_t_from_the_last_direct_backbone_receipt_before_the_ladder_steps_the_mesh() {
         let mut l = Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500)));
@@ -1040,6 +1060,30 @@ mod tests {
         assert_eq!(l.peer_mesh_unheard("mesh9", None), None, "a mesh never carried on the backbone and never stepped: the ladder holds nothing");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:27
+    /// "1. At 20 s, probe 1 contacts mesh-x's current exact mesh-primary first, then mesh-x's other
+    /// node-admins, with [ProbeNodeState](../node-rpc-envelope.md#status-op-0x1b-rdm)."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:34
+    /// "2. At 30 s, mark mesh-x silent using the shared staleness mark. Send nothing at this mark."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:36
+    /// "3. At 40 s, probe 2 repeats probe 1 (exact mesh-primary first, then the other node-admins,
+    /// each direct then via a peer), preferring a different carrier member."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:43
+    /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
+    /// finish first; no silence-only path marks the mesh deleted."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:46
+    /// "- **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+    /// it cannot reach its own node-admin. Record the verdict before opening the node.create attempt."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:86
+    /// "| unheard interval | Fabric-primary | direct backbone receipt absent | track mesh and last-heard time | `rdm.node_admin.mesh.update.via-unheard` (`mesh`, `at`) |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:87
+    /// "| 20 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | ProbeNodeState direct; else Ping a member and, on pong, Forward carrying ProbeNodeState | probe 1: admin answered (ends the investigation), carrier-edge-lost or unreachable | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=1`, `member`, `carrier`, `outcome`); RPC call/serve chain below |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:88
+    /// "| 30 s | Fabric-primary | no frame | shared mesh silent mark only | `rdm.node_admin.mesh.update.via-unheard` (`mesh`, `at`) |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:89
+    /// "| 40 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | as probe 1 | probe 2, prefer a different carrier member | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=2`, `member`, `carrier`, `outcome`); RPC call/serve chain below |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:91
+    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |"
     #[test]
     fn two_carrier_edge_lost_probes_decide_a_recovery_at_thirty_intervals() {
         let log = walk(&mut ladder(), [CarrierEdgeLost, CarrierEdgeLost]);
@@ -1050,6 +1094,21 @@ mod tests {
         assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: true, latest: CarrierEdgeLost, .. })), vec![30]);
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:36
+    /// "3. At 40 s, probe 2 repeats probe 1 (exact mesh-primary first, then the other node-admins,
+    /// each direct then via a peer), preferring a different carrier member. Record the latest completed probe's outcome; an older
+    /// `carrier-edge-lost` cannot override a newer unreachable outcome."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:43
+    /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
+    /// finish first; no silence-only path marks the mesh deleted."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:46
+    /// "- **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+    /// it cannot reach its own node-admin. Record the verdict before opening the node.create attempt."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
+    /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
+    /// fabric is alive, so carrier-edge-lost cannot arise."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:91
+    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |"
     /// CONTRACT: the latest completed probe decides. An older carrier-edge-lost never overrides a
     /// newer unreachable, and no answer at all holds.
     #[test]
@@ -1076,6 +1135,22 @@ mod tests {
         n
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:17
+    /// "One investigation per peer mesh, owned by the fabric-primary. Let t be the elapsed monotonic time
+    /// since the fabric-primary's last valid direct backbone receipt from mesh-x. Only that receipt starts
+    /// or resets t; forwarded snapshots and forwarded topology never reset or extend it, and the backbone
+    /// interval or a delayed tick never moves a threshold: the thresholds below are elapsed time, not
+    /// counts of intervals."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:27
+    /// "1. At 20 s, probe 1 contacts mesh-x's current exact mesh-primary first, then mesh-x's other
+    /// node-admins, with [ProbeNodeState](../node-rpc-envelope.md#status-op-0x1b-rdm)."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:34
+    /// "2. At 30 s, mark mesh-x silent using the shared staleness mark. Send nothing at this mark."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:36
+    /// "3. At 40 s, probe 2 repeats probe 1 (exact mesh-primary first, then the other node-admins,
+    /// each direct then via a peer), preferring a different carrier member."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:43
+    /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself."
     /// CONTRACT (R-CK1, mesh-investigation.md: "the thresholds below are elapsed time, not
     /// counts of intervals"; step 2 "the shared staleness mark"): the rungs are 20 s, 30 s, 40 s and 60 s of
     /// elapsed time unheard at the 30 s staleness floor, the silent mark being the staleness floor
@@ -1093,6 +1168,36 @@ mod tests {
         assert_eq!((gate.probe1, gate.mark, gate.probe2, gate.decide), (Duration::from_secs(2), Duration::from_secs(3), Duration::from_secs(4), Duration::from_secs(6)));
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:5
+    /// "Remote liveness comes only from direct backbone receipt and a node's own call and connection facts,
+    /// never forwarded topology"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:17
+    /// "One investigation per peer mesh, owned by the fabric-primary. Let t be the elapsed monotonic time
+    /// since the fabric-primary's last valid direct backbone receipt from mesh-x. Only that receipt starts
+    /// or resets t; forwarded snapshots and forwarded topology never reset or extend it, and the backbone
+    /// interval or a delayed tick never moves a threshold: the thresholds below are elapsed time, not
+    /// counts of intervals."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:27
+    /// "1. At 20 s, probe 1 contacts mesh-x's current exact mesh-primary first, then mesh-x's other
+    /// node-admins, with [ProbeNodeState](../node-rpc-envelope.md#status-op-0x1b-rdm)."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:34
+    /// "2. At 30 s, mark mesh-x silent using the shared staleness mark. Send nothing at this mark."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:36
+    /// "3. At 40 s, probe 2 repeats probe 1 (exact mesh-primary first, then the other node-admins,
+    /// each direct then via a peer), preferring a different carrier member."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:39
+    /// "Direct backbone receipt from mesh-x at any point cancels the investigation and resets the
+    /// unheard interval."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:43
+    /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
+    /// finish first; no silence-only path marks the mesh deleted."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
+    /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
+    /// fabric is alive, so carrier-edge-lost cannot arise."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:90
+    /// "| any time | Fabric-primary / answering admin | admin answer or direct backbone receipt | stop / cancel | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome`, `at`) |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:166
+    /// "No status or lifecycle gossip is sent at the 20 s/40 s probes or the 30 s silent mark."
     /// CONTRACT (R-CK1): one investigation chain for a silent peer mesh. Only a direct backbone
     /// receipt starts or resets t: forwarded topology of the mesh arriving every interval neither resets
     /// nor extends it, so the ladder walks probe 1, the mark, probe 2 and the decision at the same
@@ -1156,6 +1261,12 @@ mod tests {
         }
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:27
+    /// "1. At 20 s, probe 1 contacts mesh-x's current exact mesh-primary first, then mesh-x's other
+    /// node-admins, with [ProbeNodeState](../node-rpc-envelope.md#status-op-0x1b-rdm)."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:36
+    /// "3. At 40 s, probe 2 repeats probe 1 (exact mesh-primary first, then the other node-admins,
+    /// each direct then via a peer), preferring a different carrier member."
     /// CONTRACT (mesh-investigation.md step 1: "probe 1 contacts mesh-x's current exact
     /// mesh-primary first, then mesh-x's other node-admins"): a probe carries `ProbeNodeState` first
     /// to the exact birth the mesh-primary record this admin holds names, then to each other node-admin in path order. The
@@ -1177,6 +1288,11 @@ mod tests {
         assert_eq!((order[0].name.to_string(), order[0].incarnation_id.clone()), ("mesh2.admin.3".to_string(), Some(newer.incarnation.clone())), "the record's exact birth is asked, not the older birth the view holds");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:34
+    /// "2. At 30 s, mark mesh-x silent using the shared staleness mark. Send nothing at this mark."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:43
+    /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
+    /// finish first; no silence-only path marks the mesh deleted."
     /// CONTRACT (R-CK1: "a delayed tick never moves a threshold"; mesh-investigation.md step 5:
     /// "Probes still outstanding finish first"): a probe in flight never holds the ladder. At the
     /// gate's rungs (2 s, 3 s, 4 s, 6 s at its 3 s floor) with every probe running 5 s, the silent
@@ -1252,6 +1368,13 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2, "the gate opened: the probe finished from where it was");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:39
+    /// "4. If the node-admin answers either probe (Current or Blocked, under the
+    /// [Status contract](../node-rpc-envelope.md#status-op-0x1b-rdm)), stop the investigation.
+    /// Direct backbone receipt from mesh-x at any point cancels the investigation and resets the
+    /// unheard interval."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:90
+    /// "| any time | Fabric-primary / answering admin | admin answer or direct backbone receipt | stop / cancel | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome`, `at`) |"
     /// CONTRACT (mesh-investigation.md step 4: a direct backbone receipt "cancels the investigation
     /// and resets the unheard interval"): a probe still running when its investigation is cancelled
     /// lands on nothing. The fresh interval makes its own probe 1, the cancelled interval's
@@ -1271,6 +1394,18 @@ mod tests {
         assert_eq!(cancel, vec![Step::Cancel { unheard_ms: 0, probes: 1 }], "a receipt cancels the investigation with its probe in flight");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:39
+    /// "4. If the node-admin answers either probe (Current or Blocked, under the
+    /// [Status contract](../node-rpc-envelope.md#status-op-0x1b-rdm)), stop the investigation."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:43
+    /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
+    /// finish first; no silence-only path marks the mesh deleted."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:46
+    /// "- **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+    /// it cannot reach its own node-admin. Record the verdict before opening the node.create attempt."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
+    /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
+    /// fabric is alive, so carrier-edge-lost cannot arise."
     /// CONTRACT (mesh-investigation.md steps 4-5): over the node-admins one probe asked, any answer is
     /// `admin-alive`; `carrier-edge-lost` only when every one of them was reported lost from inside
     /// the mesh; anything else, a timeout or an unreachable carrier included, is `unreachable`.
@@ -1282,6 +1417,13 @@ mod tests {
         assert_eq!(fold_admin_outcomes(&[]), Unreachable);
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:27
+    /// "A successful contact ends the failed-reachability investigation."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:39
+    /// "4. If the node-admin answers either probe (Current or Blocked, under the
+    /// [Status contract](../node-rpc-envelope.md#status-op-0x1b-rdm)), stop the investigation."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:90
+    /// "| any time | Fabric-primary / answering admin | admin answer or direct backbone receipt | stop / cancel | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome`, `at`) |"
     /// CONTRACT: the node-admin answering either probe stops the investigation: no second probe
     /// after probe 1, no decision.
     #[test]
@@ -1294,6 +1436,13 @@ mod tests {
         assert!(at(&log, |s| matches!(s, Step::Decide { .. })).is_empty(), "{log:?}");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:39
+    /// "Direct backbone receipt from mesh-x at any point cancels the investigation and resets the
+    /// unheard interval."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:86
+    /// "| unheard interval | Fabric-primary | direct backbone receipt absent | track mesh and last-heard time | `rdm.node_admin.mesh.update.via-unheard` (`mesh`, `at`) |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:90
+    /// "| any time | Fabric-primary / answering admin | admin answer or direct backbone receipt | stop / cancel | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome`, `at`) |"
     /// CONTRACT: a backbone receipt cancels the investigation at any point, resets the interval, and
     /// the mesh is then tracked and probed afresh; a mesh heard before it was ever probed cancels
     /// silently.
@@ -1326,6 +1475,17 @@ mod tests {
         assert!(!l.recovery_decided("mesh2"));
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:43
+    /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
+    /// finish first; no silence-only path marks the mesh deleted."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:46
+    /// "- **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+    /// it cannot reach its own node-admin. Record the verdict before opening the node.create attempt."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
+    /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
+    /// fabric is alive, so carrier-edge-lost cannot arise."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:91
+    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |"
     /// CONTRACT (mesh-investigation.md step 5): the 60 s decision on `unreachable` evidence is a hold the
     /// ladder exposes as its own fact, `unreachable_decided`, beside `recovery_decided` and never
     /// with it: the fabric-primary reads the provider's exited verdict of the mesh's node-admins only for
@@ -1513,6 +1673,22 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:12
     /// "- the fabric-primary in [mesh investigation](mesh-investigation.md), on a mesh's primary and then
     ///  its other node-admins (probe 1 at 20 s, probe 2 at 40 s);"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:27
+    /// "1. At 20 s, probe 1 contacts mesh-x's current exact mesh-primary first, then mesh-x's other
+    /// node-admins, with [ProbeNodeState](../node-rpc-envelope.md#status-op-0x1b-rdm). Each target
+    /// follows the established direct-then-via-peer policy: direct first; when that fails,
+    /// [Ping](../node-rpc-envelope.md#ping-op-0x01-core) a few mesh-x members in parallel (active
+    /// connections in the connections table first, otherwise members dialled from held topology) and,
+    /// on a pong, use that member as the carrier for [Forward](../node-rpc-envelope.md#forward-op-0x1a-core)."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:36
+    /// "3. At 40 s, probe 2 repeats probe 1 (exact mesh-primary first, then the other node-admins,
+    /// each direct then via a peer), preferring a different carrier member."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:87
+    /// "| 20 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | ProbeNodeState direct; else Ping a member and, on pong, Forward carrying ProbeNodeState | probe 1: admin answered (ends the investigation), carrier-edge-lost or unreachable | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=1`, `member`, `carrier`, `outcome`); RPC call/serve chain below |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:89
+    /// "| 40 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | as probe 1 | probe 2, prefer a different carrier member | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=2`, `member`, `carrier`, `outcome`); RPC call/serve chain below |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:150
+    /// "A probe of one node-admin uses the [Ping](../node-rpc-envelope.md#ping-op-0x01-core), [Forward](../node-rpc-envelope.md#forward-op-0x1a-core) and [Status](../node-rpc-envelope.md#status-op-0x1b-rdm) schemas:"
     /// CONTRACT (mesh-investigation.md step 1: "probe 1 contacts mesh-x's current exact mesh-primary
     /// first, then mesh-x's other node-admins, with ProbeNodeState. Each target follows the
     /// established direct-then-via-peer policy"; node-tickle.md step 3: "the same probe through up to
@@ -1605,6 +1781,16 @@ mod tests {
         assert_eq!(found.detail.matches("direct: NotSent: not sent: dial deadline; via mesh2.rpc.1: NotSent: not sent: NoActiveRoute; via mesh2.rpc.2: NotSent: not sent: NoActiveRoute").count(), 2, "each node-admin names how each of its probes ended: {}", found.detail);
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:27
+    /// "A successful contact ends the failed-reachability investigation."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:36
+    /// "3. At 40 s, probe 2 repeats probe 1 (exact mesh-primary first, then the other node-admins,
+    /// each direct then via a peer), preferring a different carrier member."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:39
+    /// "4. If the node-admin answers either probe (Current or Blocked, under the
+    /// [Status contract](../node-rpc-envelope.md#status-op-0x1b-rdm)), stop the investigation."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:90
+    /// "| any time | Fabric-primary / answering admin | admin answer or direct backbone receipt | stop / cancel | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome`, `at`) |"
     /// CONTRACT (mesh-investigation.md step 1: "A successful contact ends the failed-reachability
     /// investigation"; step 3: probe 2 "preferring a different carrier member"): the first node-admin
     /// that answers ends the probe, direct or carried, and no node-admin after it is asked; probe 2
@@ -1614,6 +1800,23 @@ mod tests {
     #[tokio::test]
     async fn the_first_answering_node_admin_ends_the_probe_and_probe_two_prefers_other_carriers() {
         let (view, record) = mesh2();
+        let capture = crate::span_capture::Capture::new("answering_admin_stops_probe");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+
+        let rig = Arc::new(Recorder { answers_direct: ["mesh2.admin.2".to_string()].into(), ..Recorder::default() });
+        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::stop_gate::StopGate::new());
+        let start = |n: u8| {
+            let (rig, view, record) = (rig.clone(), view.clone(), record.clone());
+            async move { probe(&*rig, &Mutex::new(BTreeMap::new()), &view, Some(record), "mesh2", n).await }
+        };
+        let steps = inv.tick("mesh2", Duration::from_secs(2), start).await;
+        assert!(steps.iter().any(|s| matches!(s, Step::Probe { n: 1, .. })));
+        tokio::time::timeout(Duration::from_secs(10), inv.landed()).await.unwrap();
+        assert_eq!(rig.made(), calls(&["direct mesh2.admin.2"]), "the exact mesh-primary answered direct: nothing else is asked");
+        let verdicts = capture.named("rdm.node_admin.mesh.update.via-probe-verdict");
+        assert_eq!(verdicts.len(), 1, "answering probe emits via-probe-verdict: {verdicts:?}");
+        assert_eq!(verdicts[0].attributes.get("mesh").map(String::as_str), Some("mesh2"));
+        assert_eq!(verdicts[0].attributes.get("outcome").map(String::as_str), Some("admin-alive"));
 
         let rig = Recorder { answers_direct: ["mesh2.admin.2".to_string()].into(), ..Recorder::default() };
         let found = probe(&rig, &Mutex::new(BTreeMap::new()), &view, Some(record.clone()), "mesh2", 1).await;

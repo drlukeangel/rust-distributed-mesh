@@ -369,6 +369,50 @@ mod tests {
         assert_eq!(tried, vec!["mesh2.rpc.3", "mesh2.rpc.4", "mesh2.rpc.1", "mesh2.rpc.2"]);
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:95
+    /// "The RPC chain uses `rdm.node_rpc.request.update.via-call` and
+    /// `rdm.node_rpc.request.serve.via-direct` for Ping and outer Forward."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:178
+    /// "The node-admin that step 5 or step 6 creates joins mesh-x under mesh-x's own MeshId and never mints another.
+    /// The mesh is still in the accepted topology, so the attempt belongs to the SAME accepted Build."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:185
+    /// "1. The node.create of step 6 opens an attempt of the SAME accepted Build and deploys the mesh's
+    /// first node-admin (its MeshId, seed and mesh-primary launch mode). It records the deployed birth;
+    /// the node-admin binds port 0 and the OS assigns the port."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:188
+    /// "2. The node-admin calls JoinNode on its MAKER, the fabric-primary, then GetTopology on that
+    /// maker. It installs complete topology snapshots and obtains its control/status context."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:190
+    /// "3. It calls GetTopology on a LOCAL node of its own mesh to obtain current topology; members
+    /// can exit while the mesh has no node-admin. It installs complete snapshots and joins its mesh
+    /// channel using member addresses (RDM's `get_topology` in `rdm-admin`'s reenter module)."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:196
+    /// "4. Before it is ready, it sends one bounded Ping, once, to every node IN ITS OWN MESH
+    /// (a 2 s deadline each, at most 8 at once). A reply identifies a live exact birth; no reply
+    /// is \"not yet reached\", never death."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:205
+    /// "5. Every node the sweep did not reach goes to [node recovery](node-recovery.md): the new
+    /// mesh-primary's [node investigation](node-investigation.md), then recovery on its verdict.
+    /// A missing Ping reply is the trigger, never the verdict."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:208
+    /// "6. The fabric-primary claims the creation of the missing secondary node-admin on its own log
+    /// and calls the new mesh-primary with `build.attempt.run`; the executor adopts the won claim and
+    /// runs it as an attempt of that same Build."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:253
+    /// "| Fabric-primary | accepted Build / node.create | same Build attempt; the mesh's MeshId | `rdm.node_admin.node.update.via-build`, `rdm.node_admin.deployment.update.via-pipeline` |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:254
+    /// "| Joining node-admin → maker | JoinNode | [Join schema](../node-rpc-envelope.md#join-op-0x1d-rdm); exact deployed birth admitted | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.node_admin.node.update.via-join` |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:255
+    /// "| Joining node-admin → maker / local node | GetTopology | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); complete meshes installed | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read-install` |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:256
+    /// "| Mesh-primary → own members | Ping once | [Ping schema](../node-rpc-envelope.md#ping-op-0x01-core); exact-birth reply or non-answer | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct` |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:257
+    /// "| Mesh-primary / provider | node recovery | node investigation, one recovery attempt on its verdict | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:258
+    /// "| Fabric-primary → new mesh-primary | build.attempt.run | [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm); the fabric-primary claims on its own log, the executor adopts the won claim | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct` (op 0x20) |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:264
+    /// "Joining composes deployment, topology reads, Ping, Build claims and readiness; it has no opcode of
+    /// its own. A provider creates the process."
     /// CONTRACT (docs/architecture/lifecycles/fabric-recovery.md:98-100: "1. Load the durable topology and the
     /// accepted Build map; bind port 0 and retain the OS-assigned endpoint. The first GetTopology targets a node
     /// from that durable map: OWN MESH first, install only complete source snapshots. Stabilize the own mesh

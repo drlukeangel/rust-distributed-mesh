@@ -450,6 +450,16 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let _ = std::fs::remove_dir_all(&data_root);
 }
 
+/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:290
+/// "While [fabric.delete](fabric-delete.md) runs, a mesh whose mesh-primary does not answer its
+/// mesh.delete is reached through this investigation. The same probes reach the unheard mesh: its
+/// exact mesh-primary first, then its other node-admins, each direct then via a peer. During
+/// fabric.delete the outcome is a delete, never a node.create of a node-admin:"
+/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:295
+/// "- a node-admin that answers runs that mesh's [mesh.delete](mesh-delete.md);"
+/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:296
+/// "- if no node-admin answers, the fabric-primary tickles each remaining node of the mesh directly,
+/// and on any successful connection runs [node.delete](node-delete.md) for that node, as executor."
 /// crit:e12.s59.2 — An unanswered mesh during `fabric.delete` (R-FS1 revised; node-recovery.md step 3:
 /// any verdict but `reached` re-creates or deletes, nothing waits for a proof):
 /// 1. No member answers and none runs: every member is deleted by its node.delete (its node row
