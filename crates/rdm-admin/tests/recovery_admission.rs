@@ -1918,17 +1918,15 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
         }),
         "expected CreateStep::Complete span ending node.created: {step_spans:?}"
     );
-    assert!(
-        !capture.spans("rdm.node.tickle.resolve.via-direct").is_empty(),
-        "investigation step span emitted on mesh-primary"
-    );
-    assert!(
-        !capture.spans("rdm.node.tickle.returns-unknown.via-unreached").is_empty(),
-        "investigation unreached span emitted on mesh-primary"
-    );
+    // node.runtime.inspect is the investigation's first step after the index read, and its `exited`
+    // is the verdict: no tickle is sent (node-investigation.md, Q273).
     assert!(
         !capture.spans("rdm.node_admin.node.resolve.via-provider-inspection").is_empty(),
-        "investigation verdict span emitted on mesh-primary"
+        "investigation step and verdict span emitted on mesh-primary"
+    );
+    assert!(
+        capture.spans("rdm.node.tickle.resolve.via-direct").is_empty(),
+        "no tickle is sent once the inspect gave the verdict"
     );
     assert!(
         !capture.spans("rdm.node_admin.build.update.via-claim-decision").is_empty(),
