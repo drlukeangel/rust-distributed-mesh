@@ -2081,4 +2081,38 @@ mod refused_caller_terminate {
         let action = e.builds.current().await.unwrap().unwrap().action;
         assert!(format!("{action:?}").contains("Terminate"), "the attempt terminates the exact birth: {action:?}");
     }
+
+    /// CONTRACT (node-investigation.md; Q217; red in the tail at 72891eaf7, build_op's resumed executor:
+    /// its mesh-primary decided it `delete-deleted-birth` at its join and reported it, and the
+    /// fabric-primary refused the termination `unknown-node`, its atlas not yet holding the mesh-primary's
+    /// deleted row and the recovery's re-create not completed, so the runtime was never ended): a birth a
+    /// node workflow deleted, whose `NodeDeleted` receipt the current Build holds, is admitted for
+    /// `node.terminate` whatever this fabric-primary's atlas holds of its row. Must NOT happen: the report
+    /// refused `unknown-node` while the Build that deleted the birth holds its receipt.
+    #[tokio::test]
+    async fn a_birth_the_current_build_holds_deleted_is_admitted_for_node_terminate_before_its_row_is_heard() {
+        let e = estate().await;
+        let me: PathName = e.fabric_primary().await.parse().unwrap();
+        let mut cp = ControlPlane::new(e.builds.clone(), e.accepted.clone(), me.clone(), e.view.read().await.clone(), crate::adopted_time());
+        cp.topology = e.view.clone();
+        let _ = cp.node_rows.set(crate::records_of(&*e.view.read().await).await);
+        let cp = Arc::new(cp);
+        let before = e.builds.current().await.unwrap().unwrap();
+        let path: PathName = secondary_rpc(&e, &me.mesh).await.parse().unwrap();
+        let n = e.view.read().await.node(&path).cloned().unwrap();
+        let incarnation = n.incarnation_id.clone().unwrap();
+        // The recovery's node.delete of this exact birth receipted NodeDeleted in the current Build; this
+        // fabric-primary's atlas holds no deleted row of it.
+        let operation = format!("node.delete:{path}");
+        let op = rdm_core::LifecycleOp { build_id: before.build_id.to_string(), attempt: before.attempt, operation: operation.clone(), node_id: n.node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+        e.builds
+            .append_step_receipt(&rdm_admin::build_state::BuildStepReceipt { mesh: None, build_id: before.build_id.clone(), attempt: before.attempt, operation, step: "NodeDeleted".into(), outcome: rdm_admin::build_state::StepOutcome::Complete, output: serde_json::to_value(&op).ok(), executor: None })
+            .await
+            .unwrap();
+        let opened = match cp.open_terminate(tracing::Span::none(), "returned-birth", path.clone(), n.node_id.clone(), incarnation.clone()).await {
+            Ok(Recovery::Opened(o)) => o,
+            other => panic!("the birth the current Build deleted is admitted for node.terminate: {other:?}"),
+        };
+        assert_eq!((opened.build_id.clone(), opened.attempt), (before.build_id.clone(), before.attempt + 1), "the next attempt of the current Build");
+    }
 }

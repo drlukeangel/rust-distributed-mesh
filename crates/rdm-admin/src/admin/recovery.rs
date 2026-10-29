@@ -787,9 +787,13 @@ impl RecoverySubmitter {
         };
         tracing::Span::current().record("fabric_primary", fp_name.to_string().as_str());
         // The fabric-primary's answer that is not an open: an attempt holding the mesh, or another
-        // fabric-primary, keeps the report owed; any other refusal ends it by name.
+        // fabric-primary, keeps the report owed; so does `unknown-node`: this admin reports only a birth
+        // whose record it holds deleted or another birth holds the path of, and the fabric-primary learns
+        // of the delete with its receipt, which the deleting attempt's run carries up after this admin
+        // wrote the row (the one delivery rule: owed until answered). Any other refusal ends it by name.
         let answered = |reply: BuildReply| match reply {
             BuildReply::BuildInProgress { .. } => TerminateTurn::Owed(format!("{fp_name} answered build-in-progress: {reply:?}"), OwedWake::Schedule),
+            BuildReply::Rejected { ref reason, .. } if reason == "unknown-node" => TerminateTurn::Owed(format!("{fp_name} does not hold the delete yet: {reply:?}"), OwedWake::Schedule),
             BuildReply::NotFabricPrimary { .. } => TerminateTurn::Owed(format!("{fp_name} answered not-fabric-primary: {reply:?}"), OwedWake::View),
             other => TerminateTurn::Refused(format!("{me}: the termination of {path} ({node_id}) was refused: {other:?}")),
         };

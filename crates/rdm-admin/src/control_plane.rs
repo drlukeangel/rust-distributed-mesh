@@ -946,12 +946,17 @@ impl ControlPlane {
         let outer = tracing::Span::current();
         async {
             self.require_fabric_primary(route).await?;
-            if !self.atlas.holds_deleted(&node_id, &incarnation) && self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)?.is_none() {
+            let (_admitted, current) = self.current_read().await?;
+            // A node workflow deleted it: the current Build holds its `NodeDeleted` receipt for this exact
+            // birth (the fabric-primary writes every receipt), whether or not the recovery's re-create
+            // has completed and whether or not this atlas has heard the deleting mesh-primary's row.
+            let deleted_here = current.steps.iter().filter_map(|s| crate::build_state::delete_step_birth(s, "NodeDeleted")).any(|(p, n, i)| p == path && n == node_id && i == incarnation);
+            if !deleted_here && !self.atlas.holds_deleted(&node_id, &incarnation) && self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)?.is_none() {
                 let reject = BuildReject::UnknownNode { node: path.to_string(), step: None };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
-            let (_admitted, current) = self.current_settled().await?;
+            settled(&current)?;
             let operation = format!("node.terminate:{path}@{}", incarnation.as_str());
             if let Some(done) = current.steps.iter().find(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete) {
                 return Ok(Recovery::AlreadyApplied(Opened { build_id: current.build_id.clone(), attempt: done.attempt, mesh: None }));
