@@ -305,4 +305,33 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("impl NodeProtocol for Status") && found[0].contains("| `0x1B` | `status` | [`Status`]"), "{found:?}");
     }
+
+    /// CONTRACT: tools/docgen/src/lib.rs:45 "The workflow: render the pages from `root` and write them into `out`."
+    #[test]
+    fn run_writes_rendered_pages_into_out_and_reports_unwritable_out() {
+        let root = rafka_mesh_audit::workspace_root();
+        let expected = pages(&root).expect("pages(&root) renders");
+        let out = std::env::temp_dir().join(format!("rdm-docgen-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        run(&root, &out).expect("rdm_docgen::run succeeds on workspace root");
+
+        let mut written: Vec<String> = std::fs::read_dir(&out)
+            .expect("out directory exists")
+            .filter_map(|e| e.ok().and_then(|e| e.file_name().into_string().ok()))
+            .collect();
+        written.sort();
+        assert_eq!(written, vec!["config.md".to_string(), "spans.md".to_string()]);
+
+        for p in &expected {
+            let disk = std::fs::read_to_string(out.join(p.file)).unwrap();
+            assert_eq!(disk, p.body, "written {} must equal rendered page body", p.file);
+        }
+        let _ = std::fs::remove_dir_all(&out);
+
+        let file_as_out = std::env::temp_dir().join(format!("rdm-docgen-file-out-{}", std::process::id()));
+        std::fs::write(&file_as_out, "not a directory").unwrap();
+        let err = run(&root, &file_as_out).expect_err("out path that is a regular file must fail run");
+        assert!(err.to_string().contains("creating"), "unexpected error: {err}");
+        let _ = std::fs::remove_file(&file_as_out);
+    }
 }
