@@ -112,8 +112,7 @@ The prefix renders from `node_type` over ONE 12-character id space, human-readab
 
 ### 2.2 The node `path.name` is what a reference STORES — the `endpoint_id` is resolved at dial time
 
-An application names nodes in its own configuration (Rafka: a topic's `replica.targets` and its
-placement, [`topics.md`](/home/admin/rafka-v2/docs/architecture/topics.md) §6.3), so a stored reference to
+An application names nodes in its own configuration, so a stored reference to
 a node is its `path.name` (`mesh1.broker.1`), not its minted id or its iroh key.
 
 - **Every dial resolves `path.name` → the node → its `endpoint_id` from the `topology-nodes`
@@ -170,8 +169,7 @@ adoption launch, are new nodes: the first step mints a new id, never the inherit
 The fabric has one nodes store on its shared store root (R14), held by every mesh, so a mesh whose
 peer goes unheard keeps serving with a complete record of the fabric as it last knew it. It is the
 fabric's record of every node in every mesh, and each mesh-primary writes its own mesh's rows into
-it. How an application replicates its own copy of that record to every mesh is the application's
-(Rafka: [`system-org.md`](/home/admin/rafka-v2/docs/architecture/system-org.md) §1).
+it. How an application replicates its own copy of that record to every mesh is the application's.
 
 **This is what the one-writer-per-mesh rule buys.** Because a mesh-primary only ever authors its
 OWN mesh's rows, two meshes that could not hear each other cannot have written conflicting versions
@@ -462,14 +460,11 @@ Every state in that table has a reader. That is the bar a state has to clear to 
 ### 4.2 Two state models, and they do not meet
 
 `NodeState` (`rdm-core/src/digest.rs`) and a node's status (its row, §1 rule 2) are separate state
-families that never share an enum or a type; an application's own entity lifecycle (Rafka's
-[state-model.md](/home/admin/rafka-v2/docs/architecture/state-model.md)) is a third, the application's.
+families that never share an enum or a type; an application's own entity lifecycle is a third, the application's.
 
 ### 4.3 A returning node's catch-up is the application's, never a node status
 
-A node has no catch-up status. What an application copies to a returning node of its own kind
-(Rafka's per-topic broker re-sync, [`broker-re-sync.md`](/home/admin/rafka-v2/docs/architecture/broker-re-sync.md))
-runs after the node is ready, with the application's own routing keeping clients off it, and
+A node has no catch-up status. What an application copies to a returning node of its own kind runs after the node is ready, with the application's own routing keeping clients off it, and
 grants no readiness of its own (Q69). Its admission is the [Join schema](node-rpc-envelope.md#join-op-0x1d-rdm).
 
 - **The mesh-primary is the one writer of its mesh's node rows**, its own
@@ -510,8 +505,7 @@ second path to Ready is a defect.
 
 - **Internal node work begins when that node itself is ready**; node, mesh and fabric
   readiness are separate scopes ([States](lifecycles/states.md#states)), and what a start completes
-  is [node start](lifecycles/node-start.md). An application's internal workers (Rafka: compute's
-  job loop, [`jobs.md`](/home/admin/rafka-v2/docs/architecture/jobs.md)) wait on their own node's
+  is [node start](lifecycles/node-start.md). An application's internal workers wait on their own node's
   readiness and nothing else; once open it stays open, and a later status change stops no work
   already started.
   - **node-admin does not admit an incomplete birth.** Missing prerequisite topology or
@@ -633,7 +627,7 @@ defines.
 reachable serves again on return under its own identity. Only
 [node.delete](lifecycles/node-delete.md) releases a node's identity and name, never its storage.
 The offline verdict writes no application work of its own; what an application does on a node's
-release is the application's (Rafka: [`replication-and-failover.md`](/home/admin/rafka-v2/docs/architecture/replication-and-failover.md) §2).
+release is the application's.
 A silent member is its mesh-primary's
 [node recovery](lifecycles/node-recovery.md); a peer mesh is the fabric-primary's
 [mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation).
@@ -663,7 +657,7 @@ elected fabric-primary alone accepts a Fabric topology change
 
 Node-to-node connections, their durable log, indexes and proxy routes are
 [connections.md](connections.md). Which node serves an application operation and how the caller
-reaches it is the application's routing (Rafka: [`replica-routing.md`](/home/admin/rafka-v2/docs/architecture/replica-routing.md) §3);
+reaches it is the application's routing;
 a member that is actually down is its mesh-primary's [node recovery](lifecycles/node-recovery.md).
 
 **The calling node stays in service, and it is `Degraded` while a peer is reached only through a
@@ -702,11 +696,5 @@ Four rules the taxonomy enforces:
    handshake, the identity load/mint before an id exists to log).
 
 ## Cross-references
-
-Rafka's pages that build on this one: the delete contract's consumer
-([`replication-and-failover.md`](/home/admin/rafka-v2/docs/architecture/replication-and-failover.md) §2), its resident stores and the hook
-([`entity-framework.md`](/home/admin/rafka-v2/docs/architecture/entity-framework.md)), placement by `path.name`
-([`topics.md`](/home/admin/rafka-v2/docs/architecture/topics.md) §6.3), its data plane
-([`data-plane-transport.md`](/home/admin/rafka-v2/docs/architecture/data-plane-transport.md)).
 
 - **Gossip — delivery, topics, topology, the JoinNode (op `0x1D`), every gossiped kind:** [`gossip.md`](gossip.md)

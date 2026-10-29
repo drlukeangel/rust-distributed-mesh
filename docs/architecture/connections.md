@@ -7,10 +7,9 @@ proxy/carrier routes, and the per-node direct-reconnect reconciler. It is generi
 broker, compute and node-admin nodes, and is the target generic connection/reachability substrate for
 Node RPC/RDM. Broker replica routing is one consumer; it does not own this subsystem.
 
-Mesh byte movement, pooled iroh connections, dialing, stream framing and pool mechanics remain in
-[`data-plane-transport.md`](/home/admin/rafka-v2/docs/architecture/data-plane-transport.md). Topic semantic routing remains in
-[`replica-routing.md`](/home/admin/rafka-v2/docs/architecture/replica-routing.md): `orgs.topics` decides WHICH broker serves an operation;
-this subsystem decides HOW the source node reaches that already-chosen destination.
+Mesh byte movement, pooled iroh connections, dialing, stream framing and pool mechanics are the
+transport's, not this subsystem's. Which node serves an application operation is the application's
+routing; this subsystem decides HOW the source node reaches that already-chosen destination.
 
 This ruling is explicit mesh-change permission for **#2722** within the scope defined here: the
 `NodeConnection` durable-format move, Direct/Proxy connection kinds, Failed state, the latest-per-kind

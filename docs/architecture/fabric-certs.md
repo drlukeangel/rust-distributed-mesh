@@ -100,7 +100,7 @@ The member cert is in [`NodeReadyCtx`](fabric-node-hooks.md#pre_node_ready) befo
 
 Cert validity and expiry are judged on rafka-time, and a birth's first JoinNode, judged before it
 holds rafka-time, on the local clock named `local-bootstrap`
-([origin-ordering.md §rafka-time](/home/admin/rafka-v2/docs/architecture/origin-ordering.md#rafka-time)).
+([rafka-time](fabric-node-hooks.md#rafka-time)).
 A presented cert is judged with a skew allowance of one staleness floor (`RDM_STALENESS_MS`) on either
 side of its validity.
 

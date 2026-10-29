@@ -10,8 +10,7 @@ themselves are [a node-admin joining a live mesh](lifecycles/mesh-investigation.
 **Related:** [`fabric-mesh-node-lifecycles.md`](fabric-mesh-node-lifecycles.md) (every node
 workflow node-admin drives, its events and its gossip),
 [`fabric-node-lifecycle-elections.md`](fabric-node-lifecycle-elections.md)
-(the primaries), [`build.md`](build.md) (the current Build, Builds),
-[`day0.md`](/home/admin/rafka-v2/docs/architecture/day0.md) (the system org's birth, which runs on top of a Day-0 fabric).
+(the primaries), [`build.md`](build.md) (the current Build, Builds).
 
 ---
 

@@ -144,13 +144,30 @@ Each time a Build's terminal state is recorded, the fabric-primary sends the app
 
 ## rafka-time
 
-rafka-time is the fabric's one global time, kept by RDM; how a node adopts and disciplines it
-is [origin-ordering.md §rafka-time](/home/admin/rafka-v2/docs/architecture/origin-ordering.md#rafka-time).
+rafka-time is the fabric's one global time, kept by RDM. Every node's rafka-time descends from the
+fabric-primary's:
+
+- **The fabric's root adopts its own clock, once.** The Day-0 root, a node-admin with no launcher,
+  no seeds and no recovery flag, adopts its own OS clock as rafka-time at boot; so does the
+  node-admin a [fabric recovery](lifecycles/fabric-recovery.md#nothing-alive) launches when every
+  node the store names is confirmed gone by the provider. No node serves rafka-time to either.
+- **Every other process adopts from the answer to its pull:** the JoinNode answer, its start's last
+  step (a `GetTopology` read), a re-entry's read, and a mesh-primary's pull from a new
+  fabric-primary when the fabric-primary changes. A node adopts from whichever node answers; a
+  mesh-primary adopts only from the fabric-primary, refuses any other answer by name and keeps the
+  rafka-time it holds. A change of fabric-primary changes the node that serves rafka-time, not the
+  clock. Neither side estimates network delay: the value is adopted as the answering node read it.
+- **A node answers a pull with the rafka-time it adopted**, never its own clock.
+- **Between pulls a node keeps its rafka-time on its primary's** (a node's mesh-primary; a
+  mesh-primary's, the fabric-primary) from the stamps that primary already publishes, and from
+  nothing else: a stamp ahead of the clock steps it forward at once; a clock whose least-delayed
+  sample of a window is behind by more than the jitter allowance has run fast and slows until the
+  excess is gone. A read answers `max(reference + elapsed, last returned)`, so rafka-time never
+  steps back, and the OS clock takes no part in a read.
 
 RDM exposes it to the application through one public, cloneable `RafkaTime` handle with
 `now_ms()`. The app gets the handle from the running node returned by RDM's start, and from
 `NodeReadyCtx`. It is the same instance every RDM stamp reads; there is no second clock.
-Rafka stamps its OrderKey `writer_timestamp_ms` from it.
 
 ## Observability
 

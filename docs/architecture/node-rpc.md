@@ -5,7 +5,7 @@ This page owns the Node RPC runtime, how one invocation executes: the resolver, 
 
 **Crates:** RDM `rdm-transport` (the runtime) and `rdm-core` (descriptor, framing and outcome vocabulary).
 
-**Companion architecture:** [`connections.md`](connections.md) owns Direct/Proxy/Failed connection facts, effective node-to-node reachability, the protocol carrier-policy hook and direct reconnect reconciliation; [`data-plane-transport.md`](/home/admin/rafka-v2/docs/architecture/data-plane-transport.md) owns Iroh/QUIC transport mechanics; [`ops-protocol-and-usage.md`](/home/admin/rafka-v2/docs/architecture/ops-protocol-and-usage.md) owns broker `DataFrame` operation semantics; [`readers-and-writers.md`](/home/admin/rafka-v2/docs/architecture/readers-and-writers.md) owns reader/writer attempt policy; [`lifecycles/states.md`](lifecycles/states.md) owns node states and the primaries, and [`node-identity-and-state.md`](node-identity-and-state.md) node identity and topology; [`internal-mesh-auth.md`](/home/admin/rafka-v2/docs/architecture/internal-mesh-auth.md) owns the gateway↔broker trust model; trust between mesh nodes is [`fabric-certs.md`](fabric-certs.md#on-a-connection).
+**Companion architecture:** [`connections.md`](connections.md) owns Direct/Proxy/Failed connection facts, effective node-to-node reachability, the protocol carrier-policy hook and direct reconnect reconciliation; [`lifecycles/states.md`](lifecycles/states.md) owns node states and the primaries, and [`node-identity-and-state.md`](node-identity-and-state.md) node identity and topology; trust between mesh nodes is [`fabric-certs.md`](fabric-certs.md#on-a-connection).
 
 ---
 
@@ -168,8 +168,7 @@ The layers are deliberately three, not two:
 
 `rafka-reach-reroute` adapts Rafka's callers to the middle layer and owns no route truth.
 
-Write attempt policy and read walks are the application's (Rafka: writer-ingress and its readers,
-[readers-and-writers.md](/home/admin/rafka-v2/docs/architecture/readers-and-writers.md)), never this layer's.
+Write attempt policy and read walks are the application's, never this layer's.
 
 A future maintainer must not "simplify" this by moving retries into the connections layer or fallbacks into node-rpc.
 
@@ -181,7 +180,7 @@ Node RPC is a runtime, **not a wire protocol of its own**.
 
 Every wire family is one op with one codec. Its declaration is the envelope's [`NodeProtocol`](node-rpc-envelope.md#section-2-the-body). Every shared refusal constructor and the reply classifier are required, never defaulted away.
 
-An ordinary product op is addable entirely in rafka-v2: define its typed request and reply and its op and descriptor, register the owning role's handler, and invoke the typed client. Adding it needs no RDM revision change. A missing generic capability is implemented and proven in RDM, then imported at one exact revision; the product never copies or reimplements the generic algorithm after import.
+An ordinary product op is addable entirely in the application: define its typed request and reply and its op and descriptor, register the owning role's handler, and invoke the typed client. Adding it needs no RDM revision change. A missing generic capability is implemented and proven in RDM, then imported at one exact revision; the product never copies or reimplements the generic algorithm after import.
 
 Streaming adds a frame type and classifier:
 

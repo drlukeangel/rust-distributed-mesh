@@ -838,8 +838,7 @@ and `value` (`None` is a tombstone), opaque to RDM. RDM authors `id`, `source` a
 starts no trace of its own and no byte of `data` enters a span), chunks `data` over
 `MAX_MESSAGE_BYTES` under one `id`, and hands the receiver the whole event with a span parented
 to the author's. Stale, duplicate and gap for a row are the framework's comparator over
-`sequence` and `order_key`, across authors, never RDM's (Rafka's comparator is its
-[entity framework](/home/admin/rafka-v2/docs/architecture/entity-framework.md)). The receive seam holds the row under
+`sequence` and `order_key`, across authors, never RDM's. The receive seam holds the row under
 the subject's org and refuses an empty org by name. An undeclared type is refused by name
 on publish and dropped by name on receive.
 

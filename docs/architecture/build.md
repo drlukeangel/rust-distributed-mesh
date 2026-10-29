@@ -684,7 +684,7 @@ A compatibility wrapper is allowed only when it delegates to the imported mechan
 
 ## 16. Test ownership
 
-Framework mechanisms are proven once by the Mesh product feature that owns them; a downstream Rafka application feature consumes those guarantees and tests only the application semantics it adds ([mesh product taxonomy §4](/home/admin/rafka-v2/docs/eng/mesh-product-taxonomy.md#4-prove-framework-mechanics-once)).
+Framework mechanisms are proven once by the Mesh product feature that owns them; a downstream application feature consumes those guarantees and tests only the application semantics it adds.
 
 RDM's role executables, the demo's `rshape-broker`, `rshape-gateway`, `rshape-compute` and `rshape-node-admin` (`demo/`), are role processes on `rdm-node` that carry no Rafka product behaviour; they are not Rafka's product roles. A generic proof runs node-admins, the RPC proof nodes of `rdm-test` and these role processes, and asserts no Rafka customer or product state; that proof stays in Rafka.
 

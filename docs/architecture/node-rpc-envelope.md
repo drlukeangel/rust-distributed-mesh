@@ -474,10 +474,10 @@ pub enum MalformedKind { TooLarge, UnknownVariant, Corrupt, TypesOverCap }
 ```
 
 RDM-owned Node RPC instrumentation uses the `rdm` owner root under the repository grammar
-`rdm.node_rpc.<entity>.<action>.via-<reason>`. Rafka-owned handlers and integration bindings keep
-`rafka`; third-party spans keep their native namespace. Resource `service.name` names the host
+`rdm.node_rpc.<entity>.<action>.via-<reason>`. An application's own handlers keep its own
+namespace; third-party spans keep their native namespace. Resource `service.name` names the host
 process, while `caller_system` identifies invocation origin and is observability only. See
-[observability conventions](/home/admin/rafka-v2/docs/eng/observability-conventions.md). Runtime acceptance cites the
+[telemetry](telemetry.md). Runtime acceptance cites the
 names below.
 
 Every canonical call emits `rdm.node_rpc.request.update.via-call` on the caller and
@@ -1657,8 +1657,7 @@ The owner records each frame before acknowledging recovery; repeated frames caus
 
 A transitional catalog entry uses its compatibility codec; being live in the ledger does not
 turn a struct, raw snapshot or fire-and-forget message into a postcard request/reply enum.
-The exact bodies and typed replies of Rafka's adapters are rafka-v2's
-[`node-rpc-rafka-ops.md`](/home/admin/rafka-v2/docs/architecture/node-rpc-rafka-ops.md).
+The exact bodies and typed replies of Rafka's adapters are Rafka's own.
 A compatibility rail without a typed reply enum has none. Numeric domain fields named fabric_id do not key transport;
 transport uses endpoint_id.
 
@@ -1666,8 +1665,7 @@ transport uses endpoint_id.
 
 rafka's own families on this envelope (legacy-control `0x10`, data-frame `0x12`, snapshot `0x13`, control `0x14`,
 credential-resolve `0x15`, forward-write `0x17`, forward-read `0x18`, peer-tickle `0x19`) are rafka's product
-ops: their schemas, directions and reply enums are in rafka-v2
-[`docs/architecture/node-rpc-rafka-ops.md`](/home/admin/rafka-v2/docs/architecture/node-rpc-rafka-ops.md).
+ops: their schemas, directions and reply enums are Rafka's own.
 They ride the same target, context and body, the same ledger and the same runtime rules as every op here;
 nothing in this repository serves them.
 
