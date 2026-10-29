@@ -2508,3 +2508,160 @@ impl AsyncRead for RecvStream {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[test]
+    fn validate_alpns_carrier_policy_and_memory_sink_settle_proxy_on_direct_restore_and_drop_open_routes() {
+        // docs/architecture/connections.md:49,89 — "`Direct` means an open data-plane
+        // connection the source originated to the destination for traffic... `Proxy` means
+        // the source has proven a usable two-hop path to the destination through one exact
+        // carrier: `source -> carrier -> destination`. It is still logically a connection
+        // from `source` to `destination`; `carrier` records how it is realized."
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let (capture, layer) = crate::span_capture("connections-unit", exporter.clone());
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+
+        // 1. validate_alpns refuses empty, duplicate, and control-plane ALPNs, and Alpn::carrier_policy maps proxy policy.
+        let app_alpn = Alpn {
+            name: b"app-data/1".to_vec(),
+            proxy: true,
+            carriers: vec![NodeKind::RpcNode],
+        };
+        let direct_only_alpn = Alpn {
+            name: b"direct-only/1".to_vec(),
+            proxy: false,
+            carriers: vec![NodeKind::RpcNode],
+        };
+        assert_eq!(
+            app_alpn.carrier_policy(),
+            CarrierPolicy::Proxy {
+                carrier_kind: NodeKind::RpcNode
+            }
+        );
+        assert_eq!(direct_only_alpn.carrier_policy(), CarrierPolicy::NoProxy);
+        assert!(validate_alpns(&[app_alpn.clone(), direct_only_alpn]).is_ok());
+        assert!(validate_alpns(&[Alpn {
+            name: Vec::new(),
+            proxy: false,
+            carriers: Vec::new(),
+        }])
+        .unwrap_err()
+        .contains("empty name"));
+        assert!(validate_alpns(&[app_alpn.clone(), app_alpn.clone()])
+            .unwrap_err()
+            .contains("duplicate Alpn"));
+        assert!(validate_alpns(&[Alpn {
+            name: crate::ALPN.to_vec(),
+            proxy: false,
+            carriers: Vec::new(),
+        }])
+        .unwrap_err()
+        .contains("Node RPC ALPN"));
+        assert!(validate_alpns(&[Alpn {
+            name: iroh_gossip::ALPN.to_vec(),
+            proxy: false,
+            carriers: Vec::new(),
+        }])
+        .unwrap_err()
+        .contains("gossip ALPN"));
+
+        // 2. StreamError::from_io round-trips through into_io.
+        let reset_err = StreamError::Reset { code: 42 };
+        let io_err = reset_err.clone().into_io();
+        assert_eq!(StreamError::from_io(&io_err), Some(reset_err));
+
+        // 3. MemoryConnectionsSink records Proxy Connected, settles it with a Disconnected row when Direct Connected lands,
+        // and owed_drop disconnects only open routes.
+        let src_birth = Birth {
+            name: PathName::new("mesh1", NodeKind::Gateway, 1),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+        };
+        let carrier_birth = Birth {
+            name: PathName::new("mesh1", NodeKind::Gateway, 2),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+        };
+        let dst_birth = Birth {
+            name: PathName::new("mesh1", NodeKind::Broker, 1),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+        };
+        let sink = MemoryConnectionsSink::new(src_birth.clone());
+
+        let proxy_row = sink.record(NodeConnection {
+            id: ConnectionId::mint(),
+            source: src_birth.to_end(),
+            destination: dst_birth.to_end(),
+            kind: CoreKind::Proxy,
+            alpn: b"app-data/1".to_vec(),
+            state: ConnectionState::Connected,
+            carrier: Some(carrier_birth.to_end()),
+            recovery: None,
+            reason: None,
+            logged_at_ms: 0,
+        });
+        assert_eq!(
+            open_pair_source(&sink.held().lock().unwrap(), &proxy_row),
+            Some(src_birth.to_end())
+        );
+
+        let direct_row = sink.record(NodeConnection {
+            id: ConnectionId::mint(),
+            source: src_birth.to_end(),
+            destination: dst_birth.to_end(),
+            kind: CoreKind::Direct,
+            alpn: b"app-data/1".to_vec(),
+            state: ConnectionState::Connected,
+            carrier: None,
+            recovery: None,
+            reason: None,
+            logged_at_ms: 0,
+        });
+
+        // Direct Connected automatically retired the Proxy entry with a Disconnected row.
+        let history = sink.history();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[2].kind, CoreKind::Proxy);
+        assert_eq!(history[2].state, ConnectionState::Disconnected);
+        assert_eq!(
+            open_pair_source(&sink.held().lock().unwrap(), &proxy_row),
+            None
+        );
+
+        // Dropping the already-retired proxy_row writes nothing.
+        sink.record_drops(&[proxy_row], "peer-left");
+        assert_eq!(sink.history().len(), 3);
+
+        // Even if the node renames its birth, owed_drop on the still-open direct_row uses the source the pair landed with.
+        let renamed_birth = Birth {
+            name: PathName::new("mesh1", NodeKind::Gateway, 9),
+            node_id: src_birth.node_id.clone(),
+            incarnation: src_birth.incarnation.clone(),
+        };
+        sink.set_own_birth(renamed_birth);
+        sink.record_drops(&[direct_row.clone()], "peer-left");
+        let after_drops = sink.history();
+        assert_eq!(after_drops.len(), 4);
+        assert_eq!(after_drops[3].kind, CoreKind::Direct);
+        assert_eq!(after_drops[3].state, ConnectionState::Disconnected);
+        assert_eq!(after_drops[3].reason.as_deref(), Some("peer-left"));
+
+        capture
+            .flush(std::time::Duration::from_secs(5))
+            .expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.name == "rdm.node_admin.connection.update.via-observed"),
+            "expected rdm.node_admin.connection.update.via-observed span"
+        );
+    }
+}
+
