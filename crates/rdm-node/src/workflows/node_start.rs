@@ -761,10 +761,25 @@ mod tests {
         }
     }
 
-    /// Page: `docs/architecture/lifecycles/node-start.md:20`
-    /// "2. Run node.mesh.join... 3. Run pre_node_ready with the start kind and inherited-data-dir
-    /// indication... 4. Obtain complete topology... Fetch Build facts... Refresh rafka-time last...
-    /// 5. Emit NodeStarted... 6. Start ends with node.started. The node then calls on_node_ready once"
+    /// CONTRACT (docs/architecture/lifecycles/node-start.md:20, 22-23, 45-66, 121-122, 126-127):
+    /// "1. A stopped process remains the same exact runtime and keeps its endpoint/port; it does not start
+    /// a new process or load a new executable.
+    /// 2. Run node.mesh.join... 3. Run pre_node_ready with the start kind and inherited-data-dir
+    /// indication...
+    /// 4. Obtain complete topology through node.topology.get. Install only complete source snapshots;
+    /// partial snapshots never complete start. The read is the node's hydration sync (Q234): with the
+    /// topology it carries the node's own whole row, the recorded primaries the mesh-primary holds (a lost
+    /// birth's marked gone) and each mesh's id, and a node-admin started by a launch reads none of them
+    /// from the store (Q227). Fetch Build facts only when the node is below the primary's floor, after the
+    /// hook and before node.started... Refresh rafka-time **last**, so it is current when the node re-enters.
+    /// 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot
+    /// nor a Blocked hook permits it. That frame is the node's report: the mesh-primary sets Ready on that
+    /// exact birth through the node status apply, not a caller op. The node also declares Ready to its
+    /// mesh-primary as an owed message, as it declares Stopped (Q36, Q87); frame and declaration apply once
+    /// (Q49). A typed refusal of that apply completes no readiness.
+    /// 6. Start ends with node.started. The node then calls on_node_ready once"
+    /// "Failures and stream certainty follow the caller execution contract."
+    /// "Trace propagation, step spans and correlation follow the runtime spans."
     #[test]
     fn node_start_executes_join_hook_floor_rafka_time_report_and_on_node_ready_in_order() {
         let dir = std::env::temp_dir().join(format!("rdm-node-start-unit-{}", NodeId::mint()));

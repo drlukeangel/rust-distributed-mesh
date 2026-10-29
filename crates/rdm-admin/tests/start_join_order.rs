@@ -213,11 +213,20 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     assert_eq!(order, ["joined", "node.started"], "node.joined is taken at the admitted join, before the birth's node.started: {published:?}");
 }
 
-/// CONTRACT (docs/architecture/lifecycles/node-start.md:29-32, 88-96):
+/// CONTRACT (docs/architecture/lifecycles/node-start.md:22-23, 29-32, 61-66, 88-96, 121-122, 126-127):
+/// "1. A stopped process remains the same exact runtime and keeps its endpoint/port; it does not start a
+/// new process or load a new executable."
 /// "node.start clears NodeStopped at NodeJoined, or, for an executor whose replayed start of a birth
 /// its view holds stopped is answered `AlreadyApplied`, at that answer: the join it did not see ...
-/// If join fails after start: CommandAccepted / Failed { step: \"node.join\", reason: \"...\", code } (Terminal).
+/// 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot
+/// nor a Blocked hook permits it. That frame is the node's report: the mesh-primary sets Ready on that
+/// exact birth through the node status apply, not a caller op. The node also declares Ready to its
+/// mesh-primary as an owed message, as it declares Stopped (Q36, Q87); frame and declaration apply once
+/// (Q49). A typed refusal of that apply completes no readiness."
+/// "If join fails after start: CommandAccepted / Failed { step: \"node.join\", reason: \"...\", code } (Terminal).
 /// No node.joined, node.started or downstream success follows that failure."
+/// "Failures and stream certainty follow the caller execution contract."
+/// "Trace propagation, step spans and correlation follow the runtime spans."
 /// Injects one fault per step of `node.start` (lost reply at `StartNode`, join failure at `StartNode`,
 /// a cut at `WaitForNodeReady` while the birth is suspended followed by resume and step-receipt reuse,
 /// and a replayed `StartNode` answered `AlreadyAdmitted`) and asserts the page's failure or recovery
@@ -429,9 +438,18 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
 
         let view1 = builds.read_build(&build_id).await.unwrap();
         assert!(
+            !view1.steps.iter().any(|r| r.attempt == 3 && r.step == DeleteStep::Complete.name()),
+            "attempt 3 whose readiness apply was refused/cut completes no readiness: {:?}",
+            view1.steps
+        );
+        assert!(
             view1.steps.iter().any(|r| r.attempt == 4 && r.step == DeleteStep::Complete.name() && r.outcome == StepOutcome::Complete),
             "attempt 4 must record Complete: {:?}",
             view1.steps
+        );
+        assert!(
+            provider.terminated.lock().unwrap().is_empty(),
+            "node.start keeps the same exact runtime and terminates or spawns nothing"
         );
     });
 
