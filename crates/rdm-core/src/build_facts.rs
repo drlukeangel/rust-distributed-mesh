@@ -252,3 +252,134 @@ impl StreamingProtocol for BuildFacts {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::outcome::Code;
+
+    /// CONTRACT: docs/architecture/node-rpc-envelope.md:1253 "Direction: peer read between node-admins. RDM owns this server stream; it is not forwardable. A non-node-admin answers 421 UNSERVED_OP. Request ceiling 1024 bytes; reply ceiling 8 KiB. There is no cursor. REQUEST_VARIANTS is 2; REPLY_VARIANTS is 11. Positions are fixed in the shown order (FetchBuildFacts=0, FetchCurrentBuild=1; Facts=0 through NoCurrentBuild=10), the two last appended, none reordered."
+    #[test]
+    fn build_facts_protocol_wire_positions_and_stream_classifications_match_contract() {
+        assert_eq!(BuildFacts::OP, 0x1F);
+        assert_eq!(BuildFacts::NAME, "build-facts");
+        assert!(!BuildFacts::FORWARDABLE);
+        assert_eq!(BuildFacts::MAX_REQUEST_FRAME_BYTES, 1024);
+        assert_eq!(BuildFacts::MAX_REPLY_FRAME_BYTES, 8 * 1024);
+        assert_eq!(BuildFacts::REQUEST_VARIANTS, 2);
+        assert_eq!(BuildFacts::REPLY_VARIANTS, 11);
+
+        let r0 = BuildFactsRequest::FetchBuildFacts {
+            build_id: "cq2tyb03krac".into(),
+        };
+        let r1 = BuildFactsRequest::FetchCurrentBuild;
+        assert_eq!(r0.op(), "fetch-build-facts");
+        assert_eq!(r1.op(), "fetch-current-build");
+
+        let b0 = BuildFacts::encode_request(&r0).unwrap();
+        let b1 = BuildFacts::encode_request(&r1).unwrap();
+        assert_eq!(b0[0], 0);
+        assert_eq!(b1[0], 1);
+        assert_eq!(BuildFacts::decode_request(&b0).unwrap(), r0);
+        assert_eq!(BuildFacts::decode_request(&b1).unwrap(), r1);
+
+        let replies = [
+            (
+                0u8,
+                BuildFactsReply::Facts {
+                    build_id: "cq2tyb03krac".into(),
+                    chunk_index: 0,
+                    chunk_count: 1,
+                    facts: vec![1, 2],
+                },
+                "facts",
+                FrameKind::Data,
+            ),
+            (
+                1,
+                BuildFactsReply::End {
+                    build_id: "cq2tyb03krac".into(),
+                    facts: 1,
+                    chunks: 1,
+                    complete: true,
+                },
+                "end",
+                FrameKind::Terminal,
+            ),
+            (
+                2,
+                BuildFactsReply::NotReady {
+                    reason: "booting".into(),
+                },
+                "not-ready",
+                FrameKind::Refusal(ReplyKind::NotReady),
+            ),
+            (
+                3,
+                BuildFactsReply::UnknownBuild {
+                    build_id: "cq2tyb03krac".into(),
+                },
+                "unknown-build",
+                FrameKind::Refusal(ReplyKind::new(Code::NotFound)),
+            ),
+            (
+                4,
+                BuildFactsReply::PeerUnresolved {
+                    reason: "missing".into(),
+                },
+                "peer-unresolved",
+                FrameKind::Refusal(ReplyKind::PeerUnresolved),
+            ),
+            (
+                5,
+                BuildFactsReply::Busy {
+                    reason: "full".into(),
+                },
+                "busy",
+                FrameKind::Refusal(ReplyKind::Busy),
+            ),
+            (
+                6,
+                BuildFactsReply::ConnectionsDeleting {
+                    reason: "closing".into(),
+                },
+                "connections-deleting",
+                FrameKind::Refusal(ReplyKind::ConnectionsDeleting),
+            ),
+            (
+                7,
+                BuildFactsReply::Malformed {
+                    kind: MalformedKind::Corrupt,
+                },
+                "malformed",
+                FrameKind::Refusal(ReplyKind::Malformed(MalformedKind::Corrupt)),
+            ),
+            (
+                8,
+                BuildFactsReply::Unauthorized {
+                    reason: "denied".into(),
+                },
+                "unauthorized",
+                FrameKind::Refusal(ReplyKind::Unauthorized),
+            ),
+            (9, BuildFactsReply::Started, "started", FrameKind::Started),
+            (
+                10,
+                BuildFactsReply::NoCurrentBuild {
+                    reason: "empty".into(),
+                },
+                "no-current-build",
+                FrameKind::Refusal(ReplyKind::new(Code::NotFound)),
+            ),
+        ];
+
+        for (pos, reply, name, expected_kind) in replies {
+            assert_eq!(reply.name(), name);
+            assert_eq!(BuildFacts::reply_detail(&reply), name);
+            assert_eq!(BuildFacts::frame_kind(&reply), expected_kind);
+            let encoded = BuildFacts::encode_reply(&reply).unwrap();
+            assert_eq!(encoded[0], pos);
+            assert_eq!(BuildFacts::decode_reply(&encoded).unwrap(), reply);
+        }
+    }
+}

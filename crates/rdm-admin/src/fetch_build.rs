@@ -306,3 +306,63 @@ impl FetchBuild {
         ));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CONTRACT: docs/architecture/node-rpc-envelope.md:1290 "The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer, unreadable-build, behind-floor. no-pointer, which names no Build, reads `FetchCurrentBuild`: the responder selects its current accepted Build once for the request and streams that Build's facts, every chunk and End naming its id, or answers `NoCurrentBuild` and the blocker stays; every other blocker reads `FetchBuildFacts` of the Build it names. No blocker is read by a second JoinNode. It asks the fabric-primary first, then other node-admins, then the launcher. Read-only recovery is authorized and uses bounded backoff, 250 ms doubling to 4 s."
+    #[test]
+    fn ready_blockers_select_typed_fetch_need_and_double_backoff_from_250ms_to_4s_cap() {
+        let me: PathName = "mesh1.admin.2".parse().unwrap();
+        let bid = BuildId::parse("cq2tyb03krac").unwrap();
+
+        let no_current = NodeAdminNotReady::NoCurrentBuild {
+            me: me.clone(),
+            wanted: None,
+        };
+        assert_eq!(no_current.kind(), "no-current-build");
+        assert_eq!(no_current.need(), Need::CurrentBuild);
+
+        let wanted = NodeAdminNotReady::NoCurrentBuild {
+            me: me.clone(),
+            wanted: Some(bid.clone()),
+        };
+        assert_eq!(wanted.kind(), "no-current-build-wanted");
+        assert_eq!(wanted.need(), Need::BuildFacts(bid.clone()));
+
+        let unreadable = NodeAdminNotReady::UnreadableBuild {
+            me: me.clone(),
+            build_id: bid.clone(),
+            error: "corrupt".into(),
+        };
+        assert_eq!(unreadable.kind(), "unreadable-build");
+        assert_eq!(unreadable.need(), Need::BuildFacts(bid.clone()));
+
+        let behind = NodeAdminNotReady::BehindFloor {
+            me: me.clone(),
+            build_id: bid.clone(),
+            held: 1,
+            floor: 3,
+        };
+        assert_eq!(behind.kind(), "behind-floor");
+        assert_eq!(behind.need(), Need::BuildFacts(bid));
+
+        let store_unreadable = NodeAdminNotReady::BuildStoreUnreadable {
+            me,
+            error: "io".into(),
+        };
+        assert_eq!(store_unreadable.kind(), "build-store-unreadable");
+        assert_eq!(store_unreadable.need(), Need::Nothing);
+
+        assert_eq!(BACKOFF_BASE, Duration::from_millis(250));
+        assert_eq!(BACKOFF_CAP, Duration::from_secs(4));
+        assert_eq!(backoff_for(1), Duration::from_millis(250));
+        assert_eq!(backoff_for(2), Duration::from_millis(500));
+        assert_eq!(backoff_for(3), Duration::from_millis(1000));
+        assert_eq!(backoff_for(4), Duration::from_millis(2000));
+        assert_eq!(backoff_for(5), Duration::from_secs(4));
+        assert_eq!(backoff_for(6), Duration::from_secs(4));
+        assert_eq!(backoff_for(20), Duration::from_secs(4));
+    }
+}
