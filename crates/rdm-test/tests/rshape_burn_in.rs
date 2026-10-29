@@ -5860,10 +5860,6 @@ fn fabric_primaries_of(view: &[Value]) -> Vec<String> {
     view.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect()
 }
 
-/// Every named member is held unheard (silent or offline) in `view`.
-fn holds_all_unheard(view: &[Value], names: &[String]) -> bool {
-    names.iter().all(|name| view.iter().any(|n| n["name"] == name.as_str() && matches!(n["status"].as_str(), Some("pending-reconnect") | Some("dead"))))
-}
 
 async fn cut_spawn_run(cell: &str, shape: Shape) {
     if !cuts_here(cell) {
@@ -6216,10 +6212,19 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     // who was cut, on which ports, at which instant, and who held each primary then.
     eprintln!("{}", json!({"event": "fault.udp-drop", "cut_at_ns": cut_at, "victims": victims.iter().map(|v| json!({"name": v["name"], "node_id": v["node_id"], "incarnation_id": v["incarnation_id"], "udp_ports": udp_ports(&st.nodes, &[s(&v["name"])])})).collect::<Vec<_>>(), "fabric_primary": st.fp["name"], "mesh_primaries": [st.primary_of("mesh1")["name"].clone(), st.primary_of("mesh2")["name"].clone()]}));
     let bound = window * 6 + Duration::from_secs(40);
-    // Every node-admin that is not a victim marks every victim silent in its own view.
+    // Every node-admin that is not a victim marks every victim silent in its own view: its own silence mark
+    // (node-recovery.md step 1, `rdm.mesh.topology.update.via-member-stale`) after the cut. Its view's
+    // status is not read: an unheard mesh-primary is investigated at once by the fabric-primary once the
+    // election names its successor (node-recovery.md step 2, "without the half-floor wait"), so a victim
+    // may be recovered, a new birth at its path, within moments of its mark.
     for o in &observers {
         let name = s(&o["name"]);
-        wait_for(&format!("{name} holds every victim unheard"), bound, || async { holds_all_unheard(&f.estate.node_values_at(&name).await, &vnames).then_some(()) }).await;
+        wait_for(&format!("{name} holds every victim unheard"), bound, || async {
+            let spans = f.estate.spans();
+            let marked: BTreeSet<String> = named(&spans, "rdm.mesh.topology.update.via-member-stale").into_iter().filter(|sp| sp["attributes"]["node"] == name.as_str() && start_ns(sp) >= cut_at).map(|sp| s(&sp["attributes"]["member"])).collect();
+            vnames.iter().all(|v| marked.contains(v)).then_some(())
+        })
+        .await;
     }
     let silent_at = now_ns();
     // Each of them in the other mesh re-feeds each victim whose mesh it hears nothing of: its coverage of a
