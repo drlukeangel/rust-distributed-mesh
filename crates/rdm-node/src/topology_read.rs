@@ -560,3 +560,77 @@ fn refusal_of(r: TopologyReply) -> TopologyFailure {
         other => TopologyFailure::Refused(format!("{}: {other:?}", other.name())),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshId, MeshNode, NodeId, NodeKind, PathName};
+    use std::collections::HashSet;
+    use std::net::SocketAddr;
+
+    /// CONTRACT: docs/architecture/query.md:79
+    /// "A node holds its own topology: the latest gossiped digest of every node it hears, the primaries and"
+    #[tokio::test]
+    async fn with_gone_configures_topology_door_with_proven_gone_primary_incarnations() {
+        let ep = rdm_transport::endpoint::bind(
+            iroh::SecretKey::from_bytes(&[19u8; 32]),
+            "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+        )
+        .await
+        .unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
+        rafka_time.adopt(1_000_000);
+        let fabric_id = FabricId::mint();
+        let mesh_id = MeshId::mint();
+        let view = TopologyView::join(
+            &gossip,
+            &ep,
+            &fabric_id,
+            "mesh1",
+            &mesh_id,
+            "mesh1.admin.1",
+            Arc::new(rafka_time.clone()),
+            Vec::new(),
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let own_digest = MeshDigest {
+            held_hash: Default::default(),
+            fabric_id,
+            node: MeshNode {
+                node_id: NodeId::mint(),
+                name: PathName::new("mesh1", NodeKind::NodeAdmin, 1),
+                endpoint_id: EndpointId(ep.id().to_string()),
+                transport_addr: "127.0.0.1:9000".parse().unwrap(),
+                incarnation: IncarnationId::mint(),
+                supersedes: None,
+                runtime: None,
+            },
+            status: MemberStatus::Ready,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 1_000_000,
+            data_dir: None,
+            mesh_id: Some(mesh_id),
+            in_flight: None,
+            load: None,
+            gossip: None,
+            is_primary: Some(1),
+            is_fabric_primary: Some(1),
+        };
+
+        let gone_inc = IncarnationId::mint();
+        let gone_expected = gone_inc.clone();
+        let door = TopologyDoor::new(view, Arc::new(move || own_digest.clone()), rafka_time)
+            .with_gone(Arc::new(move || HashSet::from([gone_expected.clone()])));
+
+        let held_gone = door.gone.as_ref().expect("with_gone attaches the GoneSource")();
+        assert_eq!(held_gone, HashSet::from([gone_inc]));
+        ep.close().await;
+    }
+}
+
