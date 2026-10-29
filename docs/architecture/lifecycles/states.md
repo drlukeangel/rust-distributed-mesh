@@ -153,6 +153,7 @@ are separate facts.
   status changes do not wait for the entire check-in checklist.
 - A new primary, through election or recovery, re-sends the current state's command.
   Members already done check in again, and the checklist rebuilds itself.
+- A primary taking its role reads the accepted Build from the fabric-primary (`FetchCurrentBuild`, 0x1F) before it counts its fresh checklist; the request is owed until answered, and the checklist is neither counted from facts held before the read nor completed while the read is unanswered (Q204, Q276).
 - A member leaves the checklist only through the accepted removal or its re-creation,
   never by a timer.
 - A check-in is a message the member owes its primary ([Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes),

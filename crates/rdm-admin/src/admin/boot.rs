@@ -2955,10 +2955,23 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let fabric_states = states_slot.get().cloned().expect("the fabric states are built before the hierarchy runs");
                                         let stop = stop_gate.clone();
                                         let claim_door = claim_slot.clone();
+                                        // A mesh-primary taking its role reads the accepted Build from the fabric-primary before it
+                                        // counts its fresh checklist (states.md "The check-in checklist", Q276): node start's Build floor
+                                        // read again, `FetchCurrentBuild` to the fabric-primary the view names, owed until answered.
+                                        let fabric_primary_only: crate::fetch_build::Responders = {
+                                            let topology = control.topology.clone();
+                                            Arc::new(move || {
+                                                let topology = topology.clone();
+                                                Box::pin(async move { topology.read().await.fabric_primary().map(|n| crate::fetch_build::Responder { name: n.name.clone(), node_id: n.node_id.clone() }).into_iter().collect() })
+                                            })
+                                        };
+                                        let (build_read_client, build_read_log) = (node_rpc.client.clone(), journal.clone());
                                         let (atlas, atlas_rows) = (control.atlas.clone(), nodes_storage.clone());
                                         hierarchy = tokio::spawn(async move {
                                             let mut was_fabric_primary = false;
                                             let mut was_mesh_primary = false;
+                                            let mut build_read = crate::fetch_build::FetchBuild::new(me.clone(), build_read_client, build_read_log, fabric_primary_only);
+                                            let mut build_read_owed = false;
                                             let mut unreadable_named: Option<String> = None;
                                             loop {
                                                 // Held here while the admin is stopped: its own wait, outside every lock.
@@ -3045,6 +3058,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let announcing = if (mesh_primary, fabric_primary) != (was_mesh_primary, was_fabric_primary) { Some(roles.write().await) } else { None };
                                                 // The declarations held before this admin wrote rows (Q59 = x) are its first write
                                                 // after it takes a seat that writes them.
+                                                // Taking the mesh-primary role opens the read of the accepted Build from the fabric-primary; the
+                                                // fabric-primary itself reads none (it is the read's source); giving the role up ends it (Q276).
+                                                if mesh_primary && !was_mesh_primary && !fabric_primary {
+                                                    build_read_owed = true;
+                                                } else if !mesh_primary || fabric_primary {
+                                                    build_read_owed = false;
+                                                }
                                                 let took_a_writing_seat = (mesh_primary && !was_mesh_primary) || (fabric_primary && !was_fabric_primary);
                                                 was_mesh_primary = mesh_primary;
                                                 backbone.set_mesh_primary(mesh_primary);
@@ -3133,9 +3153,23 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                 };
                                                 let mut announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), false, false).await;
+                                                // While the read of the accepted Build is owed, the checklist is neither counted from the facts
+                                                // held before it nor completed: the turn sends the read (or takes its answer) and counts on the
+                                                // next turn's read of the Build log, which then holds the fabric-primary's Build (Q276).
+                                                let mut build_read_now = false;
+                                                if build_read_owed {
+                                                    if build_read.absorbed().await {
+                                                        build_read_owed = false;
+                                                    } else {
+                                                        build_read.tick(Some(&crate::fetch_build::NodeAdminNotReady::NoCurrentBuild { me: me.clone(), wanted: None })).await;
+                                                    }
+                                                    build_read_now = true;
+                                                }
                                                 // A status adopted from the previous publisher is republished only when its checklist is
                                                 // complete: the planned births checked in, every mesh primary reported.
-                                                if announced.mesh_awaiting_checklist || announced.fabric_awaiting_checklist {
+                                                if build_read_now {
+                                                    // The read is owed or was answered this turn: nothing is counted, nothing ended.
+                                                } else if announced.mesh_awaiting_checklist || announced.fabric_awaiting_checklist {
                                                     // An unreadable builds store steps no checklist: the adopted status waits, named above.
                                                     if let Some(current) = current {
                                                         let planned = current.as_ref().map(|b| crate::checklist::planned(&b.topology, &mesh));
@@ -3169,11 +3203,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // heartbeat and anti-entropy).
                                                 let decides = |v: &Topology| (v.members().map(|n| (n.name.clone(), n.status, n.is_primary, n.is_fabric_primary)).collect::<Vec<_>>(), v.meshes.iter().map(|m| (m.name.clone(), m.status)).collect::<Vec<_>>());
                                                 let decided_on = decides(&t);
-                                                let publication_wake = tokio::time::sleep_until(tokio::time::Instant::now() + gossip_interval());
+                                                let publication_wake = tokio::time::sleep_until(tokio::time::Instant::now() + if build_read_now && !build_read_owed { std::time::Duration::ZERO } else { gossip_interval() });
                                                 tokio::pin!(publication_wake);
                                                 loop {
                                                     tokio::select! {
                                                         _ = &mut publication_wake => break,
+                                                        _ = build_read.request_ended(), if build_read_owed => break,
                                                         _ = fabric_states.change_due() => break,
                                                         _ = records.wake.report_notify.notified() => break,
                                                         _ = async { match claimed.as_mut() { Some(c) => c.as_mut().await, None => std::future::pending().await } } => break,

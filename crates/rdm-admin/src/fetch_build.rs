@@ -239,6 +239,27 @@ impl FetchBuild {
         }
     }
 
+    /// Whether the request in flight has ended with a complete stream absorbed: taken once, its
+    /// responder's backoff cleared; a request that failed backs its responder off and answers `false`,
+    /// as does one still in flight or none. A primary taking its role reads its Build this way
+    /// (states.md "The check-in checklist", Q276).
+    pub async fn absorbed(&mut self) -> bool {
+        if !self.in_flight.as_ref().is_some_and(|h| h.is_finished()) {
+            return false;
+        }
+        match self.in_flight.take().expect("checked above").await {
+            Ok(End::Absorbed(from)) => {
+                self.backoff.remove(&from);
+                true
+            }
+            Ok(End::Failed(from)) => {
+                self.backoff.entry(from).or_default().failed(Instant::now());
+                false
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Resolves when the request in flight ends; never while none is.
     pub async fn request_ended(&self) {
         if self.in_flight.is_some() {

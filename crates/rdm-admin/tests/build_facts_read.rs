@@ -386,6 +386,47 @@ fn a_build_the_entry_named_is_held_current_once_its_facts_are_fetched() {
 }
 
 // @feature: node-lifecycle
+/// CONTRACT (states.md "The check-in checklist", Q276): a primary taking its role reads the accepted
+/// Build from the fabric-primary before it counts its fresh checklist: `FetchCurrentBuild`, the start's
+/// Build floor read again, owed until answered. Its answer is taken once (`absorbed`), and the primary's
+/// own log then holds the fabric-primary's current Build.
+#[test]
+fn a_primary_taking_its_role_reads_the_fabric_primarys_current_build_once() {
+    let cap = capture();
+    let (story, id) = story!(cap, "rdm.test.build.update.via-role-taken-read", async {
+        let fabric = FabricId::mint();
+        let id = BuildId::mint();
+        let fabric_primary = admin("mesh1.admin.1", &fabric).await;
+        holds(&fabric_primary, &id, 2).await;
+        let responder = node_of(&fabric_primary).await;
+        let taking = caller("mesh2.admin.1", &fabric, &[&responder]).await;
+        assert_eq!(taking.0.log.current_build().await.unwrap().into_build_id(), None, "the primary holds no Build before the read");
+        let mut h = fetch_build(&taking, responders(vec![&responder]));
+        assert!(!h.absorbed().await, "nothing is taken before a read is sent");
+        let read = NodeAdminNotReady::NoCurrentBuild { me: taking.0.name.clone(), wanted: None };
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            if h.absorbed().await {
+                break;
+            }
+            assert!(Instant::now() < until, "the read was answered within 10 s");
+            h.tick(Some(&read)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!h.absorbed().await, "the answer is taken once");
+        assert_eq!(taking.0.log.current_build().await.unwrap().into_build_id(), Some(id.clone()), "the primary's log holds the fabric-primary's current Build");
+        assert_eq!(responder.calls.load(Ordering::SeqCst), 1, "one read");
+        for n in [&responder, &taking.1] {
+            n.ep.close().await;
+        }
+        id
+    });
+    let spans = cap.spans(story);
+    assert_eq!(spans.children(FETCH).len(), 1, "one read, under the role-taking turn;\n{}", spans.render());
+    let _ = id;
+}
+
+// @feature: node-lifecycle
 /// CONTRACT: the stream is a snapshot of the responder's facts for the one Build asked, `End` is
 /// explicit about completeness, and a Build it holds no fact of is a typed refusal. Its trace: the
 /// two reads are two call spans under the cell's root, the first of which opened a stream.
