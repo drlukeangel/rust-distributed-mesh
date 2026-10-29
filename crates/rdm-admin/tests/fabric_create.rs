@@ -12,6 +12,9 @@ use tracing_subscriber::layer::SubscriberExt as _;
 const MEMORY: &str = "memory";
 
 struct Captured {
+    trace_id: String,
+    span_id: String,
+    parent_span_id: String,
     attributes: BTreeMap<String, String>,
 }
 
@@ -42,6 +45,9 @@ impl Capture {
             .into_iter()
             .filter(|s| s.name == name)
             .map(|s| Captured {
+                trace_id: s.span_context.trace_id().to_string(),
+                span_id: s.span_context.span_id().to_string(),
+                parent_span_id: s.parent_span_id.to_string(),
                 attributes: s
                     .attributes
                     .iter()
@@ -52,11 +58,22 @@ impl Capture {
     }
 }
 
-/// CONTRACT: docs/architecture/lifecycles/fabric-create.md:5 "`fabric.create(spec)` brings a fabric into being with its first mesh. The fabric id is minted with status pending, each mesh's first node-admin is created, the first mesh's primary becomes the fabric-primary, and the fabric changes to ready."
-/// docs/architecture/lifecycles/fabric-create.md:17 "The first node-admin is the only eligible candidate and is both mesh-primary and fabric-primary"
-/// docs/architecture/lifecycles/fabric-create.md:18 "The fabric-primary creates the fabric row and its own mesh's row at Day 0, written to the store root at once"
-/// docs/architecture/lifecycles/fabric-create.md:35 "When every mesh the accepted Build names is ready, the fabric-primary sets the fabric ready (Q174)."
-/// docs/architecture/lifecycles/fabric-create.md:37 "The application is told once (`on_fabric_ready`) and opens client traffic."
+/// CONTRACT:
+/// - `docs/architecture/lifecycles/fabric-create.md:5-8` — "`fabric.create(spec)` brings a fabric into being with its first mesh. The fabric id is minted with status pending, each mesh's first node-admin is created, the first mesh's primary becomes the fabric-primary, and the fabric changes to ready."
+/// - `docs/architecture/lifecycles/fabric-create.md:16` — "Identity order | The fabric id is minted first, each mesh with that fabric id, each node with its mesh id ([identity creation order](../fabric-primary.md#11-identity-creation-order)); the bootstrap admin's own node id is minted before its mesh's, by the bootstrap's first step, before anything else of its boot (Q208)"
+/// - `docs/architecture/lifecycles/fabric-create.md:17` — "Primaries | The first node-admin is the only eligible candidate and is both mesh-primary and fabric-primary"
+/// - `docs/architecture/lifecycles/fabric-create.md:18` — "Rows | The fabric-primary creates the fabric row and its own mesh's row at Day 0, written to the store root at once"
+/// - `docs/architecture/lifecycles/fabric-create.md:19` — "Status | pending, then ready ([States](states.md#setting-a-state))"
+/// - `docs/architecture/lifecycles/fabric-create.md:20` — "Completion | `fabric.created` when the fabric is ready"
+/// - `docs/architecture/lifecycles/fabric-create.md:21` — "Wire | [Typed-object mapping](../node-rpc-envelope.md#typed-object-contract); the accepted topology is carried by the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm)"
+/// - `docs/architecture/lifecycles/fabric-create.md:25-27` — "1. Mint the fabric id; its status is pending. `fabric.root.create`: the bootstrap admin takes the fabric root from `CertChoice::Ca` or, with no seeds and no anchor, mints one; `fabric.ca.create`: it mints RDM's CA under that root ([fabric certs](../fabric-certs.md#the-cert-workflows))."
+/// - `docs/architecture/lifecycles/fabric-create.md:28-30` — "2. [node.create](node-create.md) of the first node-admin, whose own mesh comes into being with it ([mesh absent](node-create.md#mesh-absent)). Every further mesh comes into being with its first node-admin, created by a Build after the fabric's first ready (Q170)."
+/// - `docs/architecture/lifecycles/fabric-create.md:31-34` — "3. The first mesh's first node-admin is the first fabric-primary. It is both mesh-primary and fabric-primary, accepts the first Build ([ready root](../build.md#101-ready-root--deadlock-guard)), and creates the fabric row and its own mesh's row. Every other mesh's row is created by that mesh's primary."
+/// - `docs/architecture/lifecycles/fabric-create.md:35-36` — "4. When every mesh the accepted Build names is ready, the fabric-primary sets the fabric [ready](states.md#the-fabrics-ready) (Q174)."
+/// - `docs/architecture/lifecycles/fabric-create.md:37` — "5. The application is told once (`on_fabric_ready`) and opens client traffic."
+/// - `docs/architecture/lifecycles/fabric-create.md:38` — "6. Emit `fabric.created`. The call ends here."
+/// - `docs/architecture/lifecycles/fabric-create.md:71-72` — "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty)."
+/// - `docs/architecture/lifecycles/fabric-create.md:76-77` — "Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans)."
 #[test]
 fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_notifies_app_once() {
     let capture = Capture::new(
@@ -78,6 +95,21 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
     std::fs::create_dir_all(&data_dir).unwrap();
     std::fs::create_dir_all(&store_dir).unwrap();
 
+    // Also verify explicit CertChoice::Ca root is accepted before exercising Day-0 unseeded root minting.
+    let explicit_dir = dir.join("explicit-ca");
+    std::fs::create_dir_all(&explicit_dir).unwrap();
+    let explicit_secret = rdm_core::certs::mint_key();
+    let explicit_pub = explicit_secret.verifying_key();
+    let explicit_issuer = rdm_admin::certs::CertChoice::Ca {
+        secret: explicit_secret,
+        issuing: None,
+    }
+    .issuer(&explicit_dir, true, rdm_transport::clock::RafkaTime::unadopted())
+    .expect("CertChoice::Ca mints RDM's CA under the given root on Day 0");
+    assert_eq!(explicit_issuer.root(), Some(explicit_pub));
+
+    // Step 1 / Identity order (Q208): AdminConfig::from_env mints the fabric id and the bootstrap
+    // admin's own node id before its mesh id is minted during start_on.
     let cfg = AdminConfig::from_env(|k| match k {
         "RDM_DATA_DIR" => Some(data_dir.display().to_string()),
         "RDM_STORE_DIR" => Some(store_dir.display().to_string()),
@@ -86,9 +118,12 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         _ => None,
     })
     .expect("valid Day-0 AdminConfig");
+    assert!(cfg.mesh_id.is_none(), "bootstrap admin's own node_id and fabric_id are minted before mesh_id");
 
     let expected_fabric_id = cfg.fabric_id.clone();
     let expected_node_id = cfg.node_id.clone();
+    let day0_certs = rdm_admin::certs::CertChoice::from_material(&data_dir, &cfg.mesh, true, |_| None)
+        .expect("Day-0 bootstrap with no seeds and no anchor mints the fabric root");
 
     rt.block_on(async move {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FabricReadyCtx>();
@@ -103,8 +138,9 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         let running = start_on(
             cfg,
             Wiring {
+                certs: day0_certs,
                 fabric_hooks: hooks,
-                ..Wiring::no_certs()
+                ..Wiring::default()
             },
             providers,
         )
@@ -127,7 +163,7 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         assert_eq!(view.meshes.len(), 1);
         assert_eq!(view.meshes[0].name, "mesh1");
         assert_eq!(view.meshes[0].status, ScopeStatus::Ready);
-        assert!(view.meshes[0].id.is_some(), "mesh1 has a minted MeshId");
+        let mesh_id = view.meshes[0].id.clone().expect("mesh1 has a minted MeshId");
 
         let admin_node = view
             .node(&"mesh1.admin.1".parse().unwrap())
@@ -136,6 +172,29 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         assert_eq!(admin_node.status, NodeStatus::Ready);
         assert!(admin_node.is_primary, "first node-admin is mesh-primary");
         assert!(admin_node.is_fabric_primary, "first node-admin is fabric-primary");
+
+        // Wire / Build carrier & Completion: the Day-0 Build carries the accepted root topology
+        // and reaches Complete once the fabric is ready.
+        let build_id: rdm_admin::build::BuildId = ready_ctx.build_id.parse().unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let day0_proj = loop {
+            let current = running
+                .control
+                .builds
+                .read_build(&build_id)
+                .await
+                .expect("reads Day-0 Build");
+            if current.state == rdm_admin::build_state::BuildState::Complete
+                || tokio::time::Instant::now() >= deadline
+            {
+                break current;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(day0_proj.build_id, build_id);
+        assert_eq!(day0_proj.state, rdm_admin::build_state::BuildState::Complete);
+        assert!(day0_proj.submitted_change.is_none());
+        assert_eq!(day0_proj.topology.meshes.get("mesh1").map(|m| &m.mesh_id), Some(&mesh_id));
 
         running.leave().await;
     });
@@ -146,6 +205,14 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
 
     let _ = std::fs::remove_dir_all(&dir);
 
+    assert!(
+        !capture.named("rdm.node_admin.cert.create.via-day-zero-root").is_empty(),
+        "Day 0 without seeds or anchor must mint the fabric root (fabric.root.create)"
+    );
+    assert!(
+        !capture.named("rdm.node_admin.cert.create.via-ca-create").is_empty(),
+        "Day 0 must mint RDM's CA under the fabric root (fabric.ca.create)"
+    );
     assert!(
         !capture.named("rdm.mesh.node.create.via-identity-minted").is_empty(),
         "Day 0 must mint node identity"
@@ -162,6 +229,10 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
     assert_eq!(
         node_claims[0].attributes.get("outcome").map(String::as_str),
         Some("row-written")
+    );
+    assert_eq!(
+        node_claims[0].attributes.get("operation").map(String::as_str),
+        Some("fabric-create")
     );
 
     let fabric_rows: Vec<_> = capture
@@ -182,14 +253,15 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         Some("mesh1")
     );
 
+    let accepted_spans = capture.named("rdm.node_admin.build.create.via-accepted");
     assert!(
-        !capture.named("rdm.node_admin.build.create.via-accepted").is_empty(),
+        !accepted_spans.is_empty(),
         "Day 0 accepts the root Build"
     );
-    assert!(
-        !capture.named("rdm.node_admin.fabric.update.via-every-mesh-ready").is_empty(),
-        "every mesh ready span emitted"
-    );
+    let change_spans = capture.named("rdm.node_admin.fabric.update.via-change");
+    assert_eq!(change_spans.len(), 1, "fabric change root span emitted once");
+    let every_mesh = capture.named("rdm.node_admin.fabric.update.via-every-mesh-ready");
+    assert_eq!(every_mesh.len(), 1, "every mesh ready span emitted once");
     let entered: Vec<_> = capture
         .named("rdm.node_admin.fabric.update.via-state-entered")
         .into_iter()
@@ -206,4 +278,12 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         notified[0].attributes.get("bound").map(String::as_str),
         Some("true")
     );
+
+    // Observability contract: step spans correlate under the fabric change trace and parent to it.
+    assert_eq!(every_mesh[0].trace_id, change_spans[0].trace_id);
+    assert_eq!(every_mesh[0].parent_span_id, change_spans[0].span_id);
+    assert_eq!(entered[0].trace_id, change_spans[0].trace_id);
+    assert_eq!(entered[0].parent_span_id, change_spans[0].span_id);
+    assert_eq!(notified[0].trace_id, change_spans[0].trace_id);
+    assert_eq!(notified[0].parent_span_id, change_spans[0].span_id);
 }
