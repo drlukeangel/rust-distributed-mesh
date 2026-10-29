@@ -414,7 +414,7 @@ per_exe node-admin-core rafka-node-admin-core
 per_exe rdm-admin rdm-admin
 per_exe rpc-testkit rafka-node-rpc-testkit
 per_exe rdm-test rdm-test
-case "$PKGS " in *"-p rafka-admin-ui "*) echo "admin-ui sh:$(exe rafka-admin-ui ui_flows cmd | tr '\n' ' ') true" >> $D/jobs ;; esac
+case "$PKGS " in *"-p rdm-admin-ui "*) echo "admin-ui sh:$(exe rdm-admin-ui ui_flows cmd | tr '\n' ' ') true" >> $D/jobs ;; esac
 per_exe node-base rafka-node-base
 per_exe rdm-node rdm-node
 per_exe mesh-transport rafka-mesh-transport
@@ -452,7 +452,7 @@ for line in open(sys.argv[1]):
         continue
     identity = row["package_id"]
     name = identity.rsplit("#", 1)[-1].split("@", 1)[0] if "@" in identity.rsplit("#", 1)[-1] else identity.split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1]
-    if name not in ("rafka-admin-ui", "rshape-consumer") or row["executable"] in seen:
+    if name not in ("rdm-admin-ui", "rshape-consumer") or row["executable"] in seen:
         continue
     seen.add(row["executable"])
     directory = shlex.quote(os.path.dirname(row["manifest_path"]))

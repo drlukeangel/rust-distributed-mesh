@@ -9,7 +9,7 @@ Start it next to the UI:
 ```sh
 cargo build -p rdm-test-runner
 RDM_TESTS_TREE=/path/to/rdm-checkout RDM_TEST_RUNNER_BIND_ADDR=127.0.0.1:19190 target/debug/rdm-test-runner &
-RDM_TEST_RUNNER_URL=http://127.0.0.1:19190 RDM_ADMIN_UI_BIND_ADDR=127.0.0.1:19090 demo/target/debug/rafka-admin-ui
+RDM_TEST_RUNNER_URL=http://127.0.0.1:19190 RDM_ADMIN_UI_BIND_ADDR=127.0.0.1:19090 demo/target/debug/rdm-admin-ui
 ```
 
 - `RDM_TESTS_TREE`: the checkout whose `cargo build --tests --bins` output is run (default `/home/admin/rust-distributed-mesh`).

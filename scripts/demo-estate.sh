@@ -28,8 +28,8 @@
 #                                                role process still running is named and stopped
 #
 # Inputs: RDM_DEMO_BIN (the directory holding rshape-node-admin, rshape-gateway, rshape-compute,
-# rshape-broker, rafka-admin-ui and, for `example`, rshape-example, built from demo/ against this
-# tree: `cargo build --bins` in the consumer workspace and `cargo build --bin rafka-admin-ui` in
+# rshape-broker, rdm-admin-ui and, for `example`, rshape-example, built from demo/ against this
+# tree: `cargo build --bins` in the consumer workspace and `cargo build --bin rdm-admin-ui` in
 # demo/admin-ui; scripts/i143-rshape-build-consumer.sh's --bin-dir holds them all), RDM_DEMO_PROBE (the
 # rdm-rpc-probe of this tree's build, default target/debug/rdm-rpc-probe), RDM_DEMO_WEB (the built web
 # bundle, default demo/admin-ui/web/dist), RDM_DEMO_UI_BIND (default 127.0.0.1:0: the operating system picks
@@ -91,7 +91,7 @@ up() {
   echo "$birth" > "$ROOT/birth.json"; echo "$base" > "$ROOT/api_base"
   echo "day-0 admin up: $base (pid $(cat "$ROOT/admin1.pid"))"
   RDM_NODE_ADMIN_BIRTH="$birth" RDM_ADMIN_UI_BIND_ADDR=$UI_BIND RDM_UI_STATIC_DIR=$WEB JAEGER_QUERY_URL=$JAEGER \
-    setsid nohup "$BIN/rafka-admin-ui" > "$ROOT/ui.log" 2>&1 < /dev/null &
+    setsid nohup "$BIN/rdm-admin-ui" > "$ROOT/ui.log" 2>&1 < /dev/null &
   echo $! > "$ROOT/ui.pid"
   # The UI's port is the one it bound, as its admin's row config holds it (admin_ui_port).
   local port=""

@@ -9,11 +9,11 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rafka_admin_ui::chaos::{Chaos, FABRIC_PRIMARY_REFUSAL};
-use rafka_admin_ui::control::{self, BuildEvents};
-use rafka_admin_ui::timeline::{Event, Evidence};
-use rafka_admin_ui::view;
-use rafka_admin_ui::admin::Admin;
+use rdm_admin_ui::chaos::{Chaos, FABRIC_PRIMARY_REFUSAL};
+use rdm_admin_ui::control::{self, BuildEvents};
+use rdm_admin_ui::timeline::{Event, Evidence};
+use rdm_admin_ui::view;
+use rdm_admin_ui::admin::Admin;
 use rdm_client::BuildId;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -104,7 +104,7 @@ struct FaultBody {
 }
 
 /// A record answers 403 when the fabric-primary was aimed at, 200 otherwise (applied or refused by the kit).
-fn answer(record: rafka_admin_ui::chaos::FaultRecord) -> Response {
+fn answer(record: rdm_admin_ui::chaos::FaultRecord) -> Response {
     let status = if record.detail["refusal"] == FABRIC_PRIMARY_REFUSAL { StatusCode::FORBIDDEN } else { StatusCode::OK };
     (status, Json(record)).into_response()
 }
@@ -241,7 +241,7 @@ async fn put_ui_port(admin: Arc<Admin>, port: u16) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _telemetry = rdm_transport::telemetry::init_telemetry("rafka-admin-ui");
+    let _telemetry = rdm_transport::telemetry::init_telemetry("rdm-admin-ui");
     let bind = std::env::var("RDM_ADMIN_UI_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:0".into());
     let static_dir = std::env::var("RDM_UI_STATIC_DIR").unwrap_or_else(|_| format!("{}/web/dist", env!("CARGO_MANIFEST_DIR")));
     let state = AppState {

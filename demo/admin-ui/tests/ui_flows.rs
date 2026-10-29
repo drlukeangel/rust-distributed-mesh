@@ -6,8 +6,8 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use rafka_admin_ui::admin::Admin;
-use rafka_admin_ui::control::{router, BuildEvents};
+use rdm_admin_ui::admin::Admin;
+use rdm_admin_ui::control::{router, BuildEvents};
 use rdm_client::BuildId;
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
@@ -136,7 +136,7 @@ async fn without_a_node_admin_the_ui_says_so_by_name() {
 async fn topology_labels_mesh_primary_on_node_admins_only_and_serves_node_admins_connection_facts() {
     let d = dir("topology");
     let (_running, admin) = node_admin(&d).await;
-    let t = rafka_admin_ui::view::topology(&admin).await.unwrap();
+    let t = rdm_admin_ui::view::topology(&admin).await.unwrap();
     let seat = |n: &str| t["nodes"].as_array().unwrap().iter().find(|x| x["name"] == n).unwrap()["seat"].as_str().unwrap().to_string();
     assert_eq!(seat("mesh1.admin.1"), "fabric primary · mesh primary");
     assert_eq!(t["edge_errors"], json!([]), "the node-admin answers its connection facts, an empty list here: {t}");

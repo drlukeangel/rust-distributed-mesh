@@ -2,7 +2,7 @@
 //! refused by name when it is aimed at the fabric-primary (nothing is signalled).
 
 #![cfg(target_os = "linux")]
-use rafka_admin_ui::chaos::{Chaos, NodeFacts, FABRIC_PRIMARY_REFUSAL};
+use rdm_admin_ui::chaos::{Chaos, NodeFacts, FABRIC_PRIMARY_REFUSAL};
 use serde_json::json;
 use rdm_test::process_faults::{local_control_domain, proc_state, start_token};
 use std::process::{Command, Stdio};

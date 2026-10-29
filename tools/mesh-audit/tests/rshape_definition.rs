@@ -26,7 +26,7 @@ const FORK_URLS: [&str; 4] = [
 ];
 const CONSUMER: &str = "demo";
 /// The demo workspace's own packages: the consumer and the admin UI (its one member).
-const LOCAL_PACKAGES: [&str; 2] = ["rshape-consumer", "rafka-admin-ui"];
+const LOCAL_PACKAGES: [&str; 2] = ["rshape-consumer", "rdm-admin-ui"];
 const UI_DIR: &str = "demo/admin-ui";
 const BINS: [&str; 4] = ["rshape-node-admin", "rshape-compute", "rshape-gateway", "rshape-broker"];
 /// The RDM packages a consumer may import: the public node composition surface and what it
@@ -228,12 +228,12 @@ fn check_sources(files: &[(String, String)]) -> Vec<String> {
                 for word in roots.flat_map(|part| part.split(|c: char| !(c.is_alphanumeric() || c == '_'))) {
                     if let Some(krate) = word.strip_prefix("rafka_") {
                         let pkg = format!("rafka-{}", krate.replace('_', "-"));
-                        if pkg != "rafka-admin-ui" && !APPROVED_RDM.contains(&pkg.as_str()) {
+                        if !LOCAL_PACKAGES.contains(&pkg.as_str()) && !APPROVED_RDM.contains(&pkg.as_str()) {
                             v.push(format!("rshape-consumer-business-dependency: {path}:{} names crate `{pkg}`", i + 1));
                         }
                     } else if let Some(krate) = word.strip_prefix("rdm_") {
                         let pkg = format!("rdm-{}", krate.replace('_', "-"));
-                        if !APPROVED_RDM.contains(&pkg.as_str()) {
+                        if !LOCAL_PACKAGES.contains(&pkg.as_str()) && !APPROVED_RDM.contains(&pkg.as_str()) {
                             v.push(format!("rshape-consumer-business-dependency: {path}:{} names crate `{pkg}`", i + 1));
                         }
                     }

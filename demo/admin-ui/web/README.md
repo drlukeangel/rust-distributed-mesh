@@ -1,73 +1,54 @@
-# React + TypeScript + Vite
+# `rdm-admin-ui` web interface
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+`demo/admin-ui/web` is the React and TypeScript browser interface served by the `rdm-admin-ui`
+binary (`demo/admin-ui`).
 
-Currently, two official plugins are available:
+RDM's own crates expose only [Node RPC](../../../docs/architecture/node-rpc.md); no RDM crate serves
+HTTP. `rdm-admin-ui` is the demo application's HTTP control client: it attaches to a `node-admin`
+over `rdm-client` (`RDM_NODE_ADMIN_BIRTH`) and serves this single-page app alongside `/api/*` routes
+for:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- reading the fabric, meshes, nodes, connections, and Builds (`/api/overview`, `/api/topology`,
+  `/api/nodes`, `/api/builds`, `/api/timeline`),
+- submitting node, mesh, and fabric lifecycle operations and Builds (`/api/nodes/:name/stop`,
+  `/api/nodes/:name/start`, `/api/nodes/:name/replace`, `/api/nodes/:name/delete`, `/api/nodes`,
+  `/api/meshes`, `/api/fabric/bootstrap`), and
+- driving process and network fault injection on the demo estate (`/api/chaos/*`).
 
-## React Compiler
+## Building the static bundle
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+From the repository root:
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm --prefix demo/admin-ui/web ci
+npm --prefix demo/admin-ui/web run build
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+This compiles the TypeScript sources and writes the production bundle to `demo/admin-ui/web/dist`.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Running with the demo estate
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+`scripts/demo-estate.sh up` builds (if needed) and starts `rdm-admin-ui` attached to the Day-0
+`node-admin`, pointing `RDM_UI_STATIC_DIR` at `demo/admin-ui/web/dist`, and prints the bound URL
+(also written to `target/demo-estate-current/ui.url`):
+
+```bash
+RDM_DEMO_BIN=$PWD/demo/target/debug scripts/demo-estate.sh up
+```
+
+## Running `rdm-admin-ui` standalone
+
+To attach `rdm-admin-ui` to any running `node-admin` whose stdout printed `RDM_NODE_BIRTH=rdm://...`:
+
+```bash
+RDM_NODE_ADMIN_BIRTH="rdm://<birth-token>" \
+RDM_UI_STATIC_DIR="$PWD/demo/admin-ui/web/dist" \
+RDM_ADMIN_UI_BIND_ADDR="127.0.0.1:8080" \
+cargo run --locked --manifest-path demo/Cargo.toml -p rdm-admin-ui --bin rdm-admin-ui
+```
+
+For local frontend development with Vite hot reload:
+
+```bash
+npm --prefix demo/admin-ui/web run dev
 ```

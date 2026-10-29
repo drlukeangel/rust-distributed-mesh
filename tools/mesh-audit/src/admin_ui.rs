@@ -53,7 +53,7 @@ pub fn lifecycle_violations(root: &Path) -> Vec<String> {
     for f in files {
         let Ok(text) = std::fs::read_to_string(&f) else { continue };
         for (n, line) in text.lines().enumerate() {
-            let code = line.split("//").next().unwrap_or("");
+            let code = line.split("//").next().unwrap_or("").replace("rdm_admin_ui", "");
             for (needle, why) in FORBIDDEN {
                 if code.contains(needle) {
                     out.push(format!("{}:{}: `{needle}`: {why}", f.display(), n + 1));

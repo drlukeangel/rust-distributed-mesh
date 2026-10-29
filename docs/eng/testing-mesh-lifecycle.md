@@ -123,4 +123,4 @@ Every `up` names a new fabric and new meshes (`fabric-<tag>`, `mesh-<tag>-1`, `m
 run reuses another's names. Every process exports to `OTEL_EXPORTER_OTLP_ENDPOINT` (default the
 `.99` collector), and the UI reads flames from `JAEGER_QUERY_URL` (default Jaeger on `.99`).
 `RDM_DEMO_BIN` holds the consumer's `rshape-node-admin`, `rshape-gateway`, `rshape-compute`,
-`rshape-broker` and `rafka-admin-ui`, built from `demo/`.
+`rshape-broker` and `rdm-admin-ui`, built from `demo/`.

@@ -79,7 +79,7 @@ for line in open(sys.argv[1]):
         continue
     identity = row["package_id"]
     name = identity.rsplit("#", 1)[-1].split("@", 1)[0] if "@" in identity.rsplit("#", 1)[-1] else identity.split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1]
-    if name not in ("rafka-admin-ui", "rshape-consumer") or row["executable"] in seen:
+    if name not in ("rdm-admin-ui", "rshape-consumer") or row["executable"] in seen:
         continue
     seen.add(row["executable"])
     directory = os.path.dirname(row["manifest_path"])
@@ -106,7 +106,7 @@ rdm = []
 for p in m["packages"]:
     src = p.get("source")
     if src is None:
-        if p["name"] not in ("rshape-consumer", "rafka-admin-ui"):
+        if p["name"] not in ("rshape-consumer", "rdm-admin-ui"):
             bad.append(f"path package {p['name']} at {p['manifest_path']}")
         continue
     if src.startswith("git+"):
@@ -136,8 +136,8 @@ for b in $BINS; do
     cp "$TARGET/debug/$b" "$BIN_DIR/$b"
 done
 # The demo's admin UI binary rides beside the node binaries (not part of the hashed set).
-[ -x "$TARGET/debug/rafka-admin-ui" ] || refuse "binary rafka-admin-ui was not built at $TARGET/debug/rafka-admin-ui"
-cp "$TARGET/debug/rafka-admin-ui" "$BIN_DIR/rafka-admin-ui"
+[ -x "$TARGET/debug/rdm-admin-ui" ] || refuse "binary rdm-admin-ui was not built at $TARGET/debug/rdm-admin-ui"
+cp "$TARGET/debug/rdm-admin-ui" "$BIN_DIR/rdm-admin-ui"
 # So does the consumer guide's compiled example (demo-estate.sh example; not part of the hashed set).
 [ -x "$TARGET/debug/rshape-example" ] || refuse "binary rshape-example was not built at $TARGET/debug/rshape-example"
 cp "$TARGET/debug/rshape-example" "$BIN_DIR/rshape-example"
