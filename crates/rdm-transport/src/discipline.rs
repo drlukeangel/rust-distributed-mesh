@@ -28,84 +28,84 @@ use crate::topology::PrimaryView;
 /// What a received frame is to the clock.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Verdict {
-    /// Not the authority's stamp: nothing is offered and nothing is said (every other node's
+    /// Not the primary's stamp: nothing is offered and nothing is said (every other node's
     /// heartbeat lands here, every two seconds).
-    NotTheAuthority,
-    /// The authority's stamp, which may not be taken, and why.
-    Refused { authority: String, reason: &'static str },
-    /// The authority's stamp, eligible.
-    Sample { authority: String, stamp_ms: u64 },
+    NotThePrimary,
+    /// The primary's stamp, which may not be taken, and why.
+    Refused { primary: String, reason: &'static str },
+    /// The primary's stamp, eligible.
+    Sample { primary: String, stamp_ms: u64 },
 }
 
 /// A member's view of one mesh-channel digest, as its digest view holds it after the heartbeat: `d.status`
-/// is the status held for the authority's birth.
+/// is the status held for the primary's birth.
 pub(crate) fn from_mesh_primary_digest(mesh: &str, me: &str, i_am_mesh_primary: bool, seats: &PrimaryView, d: &MeshDigest, admitted_as_newer: bool) -> Verdict {
     if i_am_mesh_primary || d.node.name.mesh != mesh || d.node.name.to_string() == me {
-        return Verdict::NotTheAuthority;
+        return Verdict::NotThePrimary;
     }
-    let Some(holder) = seats.mesh(mesh) else { return Verdict::NotTheAuthority };
+    let Some(holder) = seats.mesh(mesh) else { return Verdict::NotThePrimary };
     if !holder.is_birth(&d.node.node_id, &d.node.incarnation) {
-        return Verdict::NotTheAuthority;
+        return Verdict::NotThePrimary;
     }
-    let authority = d.node.name.to_string();
+    let primary = d.node.name.to_string();
     if !admitted_as_newer {
-        return Verdict::Refused { authority, reason: "digest-not-newer" };
+        return Verdict::Refused { primary, reason: "digest-not-newer" };
     }
     if d.status != MemberStatus::Ready {
-        return Verdict::Refused { authority, reason: "authority-not-ready" };
+        return Verdict::Refused { primary, reason: "authority-not-ready" };
     }
-    Verdict::Sample { authority, stamp_ms: d.emitted_at_rafka_ms }
+    Verdict::Sample { primary, stamp_ms: d.emitted_at_rafka_ms }
 }
 
 /// A mesh primary's view of one backbone mesh topology that installed.
 pub(crate) fn from_fabric_primary_members(me: &str, i_am_mesh_primary: bool, seats: &PrimaryView, publisher: &PublisherId, publisher_digest: Option<&MeshDigest>, published_at_rafka_ms: u64) -> Verdict {
     if !i_am_mesh_primary || publisher.node == me {
-        return Verdict::NotTheAuthority;
+        return Verdict::NotThePrimary;
     }
-    let Some(holder) = seats.fabric() else { return Verdict::NotTheAuthority };
+    let Some(holder) = seats.fabric() else { return Verdict::NotThePrimary };
     if holder.node_id != publisher.node_id || holder.incarnation != publisher.incarnation {
-        return Verdict::NotTheAuthority;
+        return Verdict::NotThePrimary;
     }
-    let authority = publisher.node.clone();
-    let Some(d) = publisher_digest else { return Verdict::Refused { authority, reason: "authority-not-in-its-aggregate" } };
+    let primary = publisher.node.clone();
+    let Some(d) = publisher_digest else { return Verdict::Refused { primary, reason: "authority-not-in-its-aggregate" } };
     if d.node.node_id != holder.node_id {
-        return Verdict::Refused { authority, reason: "aggregate-birth-is-not-the-seat-holder" };
+        return Verdict::Refused { primary, reason: "aggregate-birth-is-not-the-seat-holder" };
     }
     if d.status != MemberStatus::Ready {
-        return Verdict::Refused { authority, reason: "authority-not-ready" };
+        return Verdict::Refused { primary, reason: "authority-not-ready" };
     }
-    Verdict::Sample { authority, stamp_ms: published_at_rafka_ms }
+    Verdict::Sample { primary, stamp_ms: published_at_rafka_ms }
 }
 
 /// Offer a verdict to `clock` and say what became of it. Spans are written for what moved the
-/// clock or decided it (a step, a slew, a full window), and for an authority's stamp refused;
+/// clock or decided it (a step, a slew, a full window), and for a primary's stamp refused;
 /// a sample that only joins the window says nothing.
 pub(crate) fn offer(clock: &SharedClock, node: &str, source: &'static str, verdict: Verdict) {
     match verdict {
-        Verdict::NotTheAuthority => {}
-        Verdict::Refused { authority, reason } => {
-            tracing::info_span!("rdm.mesh.entry.reject.via-rafka-time-sample", node, authority = %authority, source, reason)
+        Verdict::NotThePrimary => {}
+        Verdict::Refused { primary, reason } => {
+            tracing::info_span!("rdm.mesh.entry.reject.via-rafka-time-sample", node, primary = %primary, source, reason)
                 .in_scope(|| tracing::info!("the authority's stamp is not an eligible sample: the clock is unchanged"));
         }
-        Verdict::Sample { authority, stamp_ms } => match clock.observe(stamp_ms) {
+        Verdict::Sample { primary, stamp_ms } => match clock.observe(stamp_ms) {
             Observed::Collecting => {}
             // Under a millisecond ahead is the ordinary resolution of a stamp, not a step worth a span.
             Observed::Stepped { by_ms: 0 } => {}
             Observed::Stepped { by_ms } => {
-                tracing::info_span!("rdm.mesh.entry.update.via-rafka-time-observed", node, authority = %authority, source, outcome = "stepped-forward", stamp_ms, by_ms)
+                tracing::info_span!("rdm.mesh.entry.update.via-rafka-time-observed", node, primary = %primary, source, outcome = "stepped-forward", stamp_ms, by_ms)
                     .in_scope(|| tracing::info!("the authority's stamp was ahead of this clock: its reference stepped forward to it"));
             }
             Observed::SlewStarted { best_offset_ms, excess_ms, ppm, recovers_in_ms } => {
-                tracing::info_span!("rdm.mesh.entry.update.via-rafka-time-observed", node, authority = %authority, source, outcome = "slew-started", stamp_ms, best_offset_ms, excess_ms, slew_ppm = ppm, recovers_in_ms)
+                tracing::info_span!("rdm.mesh.entry.update.via-rafka-time-observed", node, primary = %primary, source, outcome = "slew-started", stamp_ms, best_offset_ms, excess_ms, slew_ppm = ppm, recovers_in_ms)
                     .in_scope(|| tracing::info!("a full window of the authority's stamps stood behind this clock by more than the jitter allowance: it sheds the excess"));
             }
             Observed::Within { best_offset_ms, jitter_ms } => {
-                tracing::info_span!("rdm.mesh.entry.update.via-rafka-time-observed", node, authority = %authority, source, outcome = "within-allowance", stamp_ms, best_offset_ms, jitter_ms)
+                tracing::info_span!("rdm.mesh.entry.update.via-rafka-time-observed", node, primary = %primary, source, outcome = "within-allowance", stamp_ms, best_offset_ms, jitter_ms)
                     .in_scope(|| tracing::info!("a full window of the authority's stamps stood within the jitter allowance: the clock is left as it is"));
             }
             Observed::Ignored(Ignored::NotDisciplined) => {}
             Observed::Ignored(why) => {
-                tracing::info_span!("rdm.mesh.entry.reject.via-rafka-time-sample", node, authority = %authority, source, reason = why.reason(), stamp_ms)
+                tracing::info_span!("rdm.mesh.entry.reject.via-rafka-time-sample", node, primary = %primary, source, reason = why.reason(), stamp_ms)
                     .in_scope(|| tracing::info!("the authority's stamp moved nothing"));
             }
         },
@@ -157,7 +157,7 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let seats = with_primary(Seat::MeshPrimary, MESH, &id, &inc, 1);
         let d = digest("mesh1.admin.1", &id, &inc, MemberStatus::Ready, 7_000);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, true), Verdict::Sample { authority: "mesh1.admin.1".into(), stamp_ms: 7_000 });
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, true), Verdict::Sample { primary: "mesh1.admin.1".into(), stamp_ms: 7_000 });
     }
 
     /// CONTRACT: a publisher that has not declared itself ready (pre-adoption) offers no sample.
@@ -167,7 +167,7 @@ mod tests {
         let seats = with_primary(Seat::MeshPrimary, MESH, &id, &inc, 1);
         for status in [MemberStatus::Pending, MemberStatus::ConnectionsDeleting, MemberStatus::Leaving] {
             let d = digest("mesh1.admin.1", &id, &inc, status, 7_000);
-            assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, true), Verdict::Refused { authority: "mesh1.admin.1".into(), reason: "authority-not-ready" }, "{status:?}");
+            assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, true), Verdict::Refused { primary: "mesh1.admin.1".into(), reason: "authority-not-ready" }, "{status:?}");
         }
     }
 
@@ -177,7 +177,7 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let seats = with_primary(Seat::MeshPrimary, MESH, &id, &inc, 1);
         let d = digest("mesh1.admin.1", &id, &inc, MemberStatus::Ready, 7_000);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, false), Verdict::Refused { authority: "mesh1.admin.1".into(), reason: "digest-not-newer" });
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, false), Verdict::Refused { primary: "mesh1.admin.1".into(), reason: "digest-not-newer" });
     }
 
     /// CONTRACT: only the seat holder's exact birth is the authority: another member, another
@@ -190,16 +190,16 @@ mod tests {
         let older_birth = digest("mesh1.admin.1", &id, &IncarnationId::mint(), MemberStatus::Ready, 7_000);
         let other_mesh = digest("mesh2.admin.1", &id, &inc, MemberStatus::Ready, 7_000);
         for d in [&other_member, &older_birth, &other_mesh] {
-            assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, d, true), Verdict::NotTheAuthority, "{}", d.node.name);
+            assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, d, true), Verdict::NotThePrimary, "{}", d.node.name);
         }
         let d = digest("mesh1.admin.1", &id, &inc, MemberStatus::Ready, 7_000);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &PrimaryView::default(), &d, true), Verdict::NotTheAuthority, "no seat record");
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &PrimaryView::default(), &d, true), Verdict::NotThePrimary, "no seat record");
         // The authority retargets with the seat record: the superseded holder offers nothing.
         let (id2, inc2) = (NodeId::mint(), IncarnationId::mint());
         seats.take(Seat::MeshPrimary, &Primary { mesh: MESH.into(), node_id: id2.clone(), incarnation: inc2.clone(), revision: 2 });
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, true), Verdict::NotTheAuthority);
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, true), Verdict::NotThePrimary);
         let heir = digest("mesh1.admin.2", &id2, &inc2, MemberStatus::Ready, 9_000);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &heir, true), Verdict::Sample { authority: "mesh1.admin.2".into(), stamp_ms: 9_000 });
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &heir, true), Verdict::Sample { primary: "mesh1.admin.2".into(), stamp_ms: 9_000 });
     }
 
     /// CONTRACT: a mesh primary takes no mesh-channel digest (it observes the backbone), and a node
@@ -209,8 +209,8 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let seats = with_primary(Seat::MeshPrimary, MESH, &id, &inc, 1);
         let d = digest("mesh1.admin.1", &id, &inc, MemberStatus::Ready, 7_000);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.admin.2", true, &seats, &d, true), Verdict::NotTheAuthority);
-        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.admin.1", false, &seats, &d, true), Verdict::NotTheAuthority);
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.admin.2", true, &seats, &d, true), Verdict::NotThePrimary);
+        assert_eq!(from_mesh_primary_digest(MESH, "mesh1.admin.1", false, &seats, &d, true), Verdict::NotThePrimary);
     }
 
     fn publisher(name: &str, id: &NodeId, inc: &IncarnationId) -> PublisherId {
@@ -225,11 +225,11 @@ mod tests {
         let seats = with_primary(Seat::FabricPrimary, "mesh2", &id, &inc, 3);
         let auth = digest("mesh2.admin.1", &id, &inc, MemberStatus::Ready, 1);
         let p = publisher("mesh2.admin.1", &id, &inc);
-        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&auth), 12_000), Verdict::Sample { authority: "mesh2.admin.1".into(), stamp_ms: 12_000 });
+        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&auth), 12_000), Verdict::Sample { primary: "mesh2.admin.1".into(), stamp_ms: 12_000 });
         // Pre-adoption fabric-primary: still pending in its own mesh topology.
         let pending = digest("mesh2.admin.1", &id, &inc, MemberStatus::Pending, 1);
-        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&pending), 12_000), Verdict::Refused { authority: "mesh2.admin.1".into(), reason: "authority-not-ready" });
-        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, None, 12_000), Verdict::Refused { authority: "mesh2.admin.1".into(), reason: "authority-not-in-its-aggregate" });
+        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&pending), 12_000), Verdict::Refused { primary: "mesh2.admin.1".into(), reason: "authority-not-ready" });
+        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, None, 12_000), Verdict::Refused { primary: "mesh2.admin.1".into(), reason: "authority-not-in-its-aggregate" });
     }
 
     /// CONTRACT: the fabric-primary never adjusts from a follower, and a mesh primary takes no
@@ -243,14 +243,14 @@ mod tests {
         let other = publisher("mesh3.admin.1", &NodeId::mint(), &other_inc);
         let other_digest = digest("mesh3.admin.1", &NodeId::mint(), &other_inc, MemberStatus::Ready, 1);
         // A follower mesh primary's mesh topology.
-        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &other, Some(&other_digest), 5), Verdict::NotTheAuthority);
+        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &other, Some(&other_digest), 5), Verdict::NotThePrimary);
         // The fabric-primary itself, and a node that is not a mesh primary.
         let p = publisher("mesh2.admin.1", &id, &inc);
-        assert_eq!(from_fabric_primary_members("mesh2.admin.1", true, &seats, &p, Some(&auth), 5), Verdict::NotTheAuthority);
-        assert_eq!(from_fabric_primary_members("mesh1.admin.2", false, &seats, &p, Some(&auth), 5), Verdict::NotTheAuthority);
+        assert_eq!(from_fabric_primary_members("mesh2.admin.1", true, &seats, &p, Some(&auth), 5), Verdict::NotThePrimary);
+        assert_eq!(from_fabric_primary_members("mesh1.admin.2", false, &seats, &p, Some(&auth), 5), Verdict::NotThePrimary);
         // A superseded fabric-primary's mesh topology once the seat moved.
         let (id2, inc2) = (NodeId::mint(), IncarnationId::mint());
         seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh3".into(), node_id: id2, incarnation: inc2, revision: 4 });
-        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&auth), 5), Verdict::NotTheAuthority);
+        assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&auth), 5), Verdict::NotThePrimary);
     }
 }
