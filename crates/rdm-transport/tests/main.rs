@@ -36,6 +36,7 @@ mod refeed_scheduler;
 mod channel_stopped;
 mod peer_location_view;
 mod gossip_stats;
+mod load_sampling;
 mod heartbeat_spans;
 mod lifecycle_frames_wire;
 mod digest_frames_wire;
