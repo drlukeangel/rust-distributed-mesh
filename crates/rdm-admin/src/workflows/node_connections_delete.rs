@@ -366,8 +366,8 @@ mod tests {
             "expected rdm.node_admin.connection.delete.via-connections-deleting"
         );
         assert!(
-            !capture.named("rdm.node_admin.connection.delete.via-connections-delete").is_empty(),
-            "expected rdm.node_admin.connection.delete.via-connections-delete"
+            !capture.named("rdm.node_admin.connection.delete.via-connection-delete").is_empty(),
+            "expected rdm.node_admin.connection.delete.via-connection-delete"
         );
     }
 }

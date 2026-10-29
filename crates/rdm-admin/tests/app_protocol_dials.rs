@@ -6,7 +6,7 @@
 //! executable (`rdm-node-admin`, `faulted-node-admin`, the demo's `rshape-node-admin`, each
 //! `rdm_admin::entry::run_on`) can take its app protocols' `Connections`, so no estate ever had an admin
 //! open an app-protocol connection. The first dial a Day-0 admin made on a registered app ALPN was
-//! Rafka's (Rafka 141: `rdm.node.connections.reject.via-refused{source=mesh1.admin.1 cert_expires_at=0
+//! Rafka's (Rafka 141: `rdm.node.connection.reject.via-refused{source=mesh1.admin.1 cert_expires_at=0
 //! reason=no-credential}`).
 //!
 //! The matrix (fabric-certs.md §When a cert is issued, §On a connection; node-connections-admit.md):

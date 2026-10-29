@@ -78,7 +78,7 @@ while the call or frame continues (telemetry.md §2). The carriers are telemetry
 | a forwarded call (Forward `0x1A`) | the inner call keeps the origin's `CallContext` | the runtime does it (`rdm.node_rpc.request.serve.via-carried-inner`) |
 | a gossip frame | the envelope's `traceparent` and `tracestate` | publish from inside the span the frame belongs to; the receive span is its child ([gossip.md §3.4](../architecture/gossip.md#34-the-envelope)) |
 | a node's launch | `TRACEPARENT` (and `TRACESTATE`) in the launch environment | the boot span `rdm.mesh.node.create.via-deployment` is the `DeployRuntime` step's child; the launcher's own values never reach the child |
-| a data-plane connection | the connection's present frame | the tunnel span `rdm.node.connections.create.via-tunnel` is the opener's child |
+| a data-plane connection | the connection's present frame | the tunnel span `rdm.node.connection.create.via-tunnel` is the opener's child |
 
 For a carrier of your own, the helpers are `rdm_transport::current_traceparent()`,
 `current_tracestate()`, `traceparent_of(&span)`, `set_parent(&span, traceparent)` and

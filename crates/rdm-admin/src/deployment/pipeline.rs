@@ -2019,7 +2019,7 @@ impl DeploymentPipeline<'_> {
     /// `node.connection.delete:<path>`. A node-admin target that held a seat had it moved by
     /// node.primary.update before this runs (the fabric-primary's drive, `crate::executor::seat_move`);
     /// the exact birth's mesh-primary sets connections-deleting at admission and holds the birth's
-    /// `node.connections.deleted` with its receipt. The process keeps running; nothing
+    /// `node.connection.deleted` with its receipt. The process keeps running; nothing
     /// stops it and nothing is deleted.
     pub fn delete_connections<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
@@ -2036,7 +2036,7 @@ impl DeploymentPipeline<'_> {
                     self.command_op(&ctx, &node)?;
                     match self.observer.send_command(&node, crate::node_commands::NodeCommand::DeleteConnections, &ctx).await {
                         a @ CommandAdmission::ConnectionsDeleted { .. } => Ok(a),
-                        other => Err(StepFailure::coded(other.code(), format!("{}: node.connection.delete {{ All }} ended {other:?}; no node.connections.deleted is held", node.name))),
+                        other => Err(StepFailure::coded(other.code(), format!("{}: node.connection.delete {{ All }} ended {other:?}; no node.connection.deleted is held", node.name))),
                     }
                 })
                 .await?;

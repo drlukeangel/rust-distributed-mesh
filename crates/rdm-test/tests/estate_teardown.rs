@@ -105,7 +105,7 @@ async fn an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before
         assert!(published_after.is_empty(), "{node} published nothing after it left its mesh: {published_after:?}");
         evidence.push(json!({"node": node, "connections_deleting_owed": deleting["trace_id"], "left": leaving[0]["trace_id"], "stopped_owed": stopped["trace_id"]}));
     }
-    let connections_deleted: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-connections-delete").collect();
+    let connections_deleted: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-connection-delete").collect();
     assert!(connections_deleted.is_empty(), "no node runs the deleted connections delete: {connections_deleted:?}");
     estate.artifact("signal-stop.json", &json!({"rpc_nodes": evidence}));
 }

@@ -20,7 +20,7 @@ neither scope touches them: a node that has had its connections deleted is still
 | `Connections([id, …])` | Close exactly the named connections, each by the minted id of its open entry as `node.connection.get` returns it. Sets no node-wide status and does not make the node non-routable. An empty list is refused by name. An id the node does not know, or finds already closed, is named in the completion, never ignored |
 | Identity | Same node.id, incarnation, endpoint, port, name and data dir |
 | Entry (`All`) | The [connections-deleting](states.md#who-sets-each-state) status, set by the mesh-primary when the node reports `ConnectionsDeleting` on the command's stream, its block on new application work in force. A command that never reached the node changes no state |
-| End event | `node.connections.deleted`, naming every connection id it closed |
+| End event | `node.connection.deleted`, naming every connection id it closed |
 | Receipt (`All`) | A `ConnectionsReceipt`: `Established { in_flight, closed }`, or at the bound `Deadline { last_in_flight, closed, held }`, `held` being the connections still open |
 | Bound | `RDM_CONNECTIONS_DELETE_DEADLINE_MS` |
 | Process | Running; no gossip cut, Node RPC pool cut, exit or identity release is implied |
@@ -35,11 +35,11 @@ neither scope touches them: a node that has had its connections deleted is still
 node.connection.delete { scope: All }
   ← CommandAccepted
   ← ConnectionsDeleting
-  ← node.connections.deleted ConnectionsReceipt [Established { in_flight, closed } | Deadline { last_in_flight, closed, held }]
+  ← node.connection.deleted ConnectionsReceipt [Established { in_flight, closed } | Deadline { last_in_flight, closed, held }]
 
 node.connection.delete { scope: Connections([id, …]) }
   ← CommandAccepted
-  ← node.connections.deleted closed ids, unknown ids, already-closed ids
+  ← node.connection.deleted closed ids, unknown ids, already-closed ids
 ```
 
 Admission is not completion: the caller reads the stream through its completion, and a stream broken after `CommandAccepted` is incomplete, never a claimed closure. `Deadline` records the last observed in-flight count and the
@@ -64,7 +64,7 @@ not complete this stream or replace its receipt.
 1. Resolve the exact `(node.id, incarnation)` and call `node.connection.delete` with its scope.
 2. `Connections([id, …])`: refuse an empty list by name. Close exactly the named connections and
    queue each drop under the node's current name (Q169); the drops land behind the answer. Return
-   `node.connections.deleted` naming the ids closed, the ids unknown and the ids already closed. The node's status does not change, and the
+   `node.connection.deleted` naming the ids closed, the ids unknown and the ids already closed. The node's status does not change, and the
    sequence ends here.
 3. `All`, in this order:
    1. The node blocks admission of new application work and reports `ConnectionsDeleting` on the
@@ -75,12 +75,12 @@ not complete this stream or replace its receipt.
    3. Wait for eligible work to reach zero.
    4. Close every open connection, each open Direct or Proxy connection of the node.
    5. Queue the drop rows under the node's current name (Q169); they land behind the answer.
-   6. Return `node.connections.deleted` carrying `Established` and the closed ids.
+   6. Return `node.connection.deleted` carrying `Established` and the closed ids.
 4. The node's mesh-primary sets connections-deleted from that completion. Graceful success is never
    reported after interrupting work, and connections-deleted is never published while a covered
    connection is open.
 5. At `RDM_CONNECTIONS_DELETE_DEADLINE_MS` an `All` that has not reached zero returns incomplete
-   closure: `node.connections.deleted` carrying `Deadline`, the remaining in-flight count and the
+   closure: `node.connection.deleted` carrying `Deadline`, the remaining in-flight count and the
    connections still open. The node stays connections-deleting. A new `node.connection.delete`
    attempt, or [node.stop](node-stop.md), leaves that state; a stop may hard-cut, and its receipt
    keeps the deadline evidence.
@@ -103,9 +103,9 @@ sequenceDiagram
     N-->>M: ConnectionsDeleting
     Note over M: connections-deleting
     Note over N: finish admitted work, close every open connection
-    N-->>M: node.connections.deleted with receipt and closed ids
+    N-->>M: node.connection.deleted with receipt and closed ids
     Note over M: connections-deleted (Established only)
-    M-->>C: node.connections.deleted
+    M-->>C: node.connection.deleted
 ```
 
 ## Failure and receipts

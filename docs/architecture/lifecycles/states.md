@@ -27,7 +27,7 @@ Neither a Build nor the rectifier ever declares the fabric ready.
 | node pending | the node's mesh-primary | the node's accepted join report, on the start call or a commanded join, once per join ([node-mesh-join.md](node-mesh-join.md) step 10) |
 | node ready | the node's mesh-primary | the node's node.started report, after every start gate ([`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) among them); the node then calls [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) |
 | node connections-deleting | the node's mesh-primary | the node's `ConnectionsDeleting` report on the command stream of `node.connection.delete { scope: All }`, its block on new application work in force, standalone or as the acknowledgement on node.stop's stream |
-| node connections-deleted | the node's mesh-primary | the node's node.connections.deleted completion carrying `Established`, standalone or `StopConnectionsDeleted` on node.stop's stream; a `Deadline` completion leaves the node connections-deleting |
+| node connections-deleted | the node's mesh-primary | the node's node.connection.deleted completion carrying `Established`, standalone or `StopConnectionsDeleted` on node.stop's stream; a `Deadline` completion leaves the node connections-deleting |
 | node leaving | the node's mesh-primary | the acknowledgement of node.mesh.leave: `CommandAccepted` on the `LeaveMesh` command stream (0x22), or `Leaving` on node.stop's stream |
 | node left | the node's mesh-primary | node.mesh.leave's completion: `MeshLeft` on the `LeaveMesh` command stream, or `StopMeshLeft` on node.stop's stream |
 | node stopping | the node's mesh-primary | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |
@@ -119,7 +119,7 @@ changes first, the observed topology only as the executor acts.
 A node at rest is stopped or deleted. Stopped: in the system with its identity kept, receiving no
 traffic, silent on gossip and not advancing. Deleted: not in the system.
 
-connections-deleting is live and not routable; node.connections.deleted carries
+connections-deleting is live and not routable; node.connection.deleted carries
 `ConnectionsReceipt`: Established { in_flight, closed } or, at the bound, Deadline { last_in_flight, closed, held }.
 stopped is not live and is still present. node.stop runs `node.connection.delete { scope: All }`,
 then cuts its gossip neighbours and its Node RPC pool, which are not connections, but preserves

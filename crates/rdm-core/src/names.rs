@@ -188,7 +188,7 @@ pub enum NodeEvent {
     Joined,
     /// `node.started`: the node reports its hook passed, nothing pending.
     Started,
-    /// `node.connections.deleted`: the hard cut.
+    /// `node.connection.deleted`: the hard cut.
     ConnectionsDeleted,
     /// `node.stopped`: the node reported it is stopped, on the stop call's own stream.
     Stopped,
@@ -208,7 +208,7 @@ impl NodeEvent {
             Self::Created => "node.created",
             Self::Joined => "node.joined",
             Self::Started => "node.started",
-            Self::ConnectionsDeleted => "node.connections.deleted",
+            Self::ConnectionsDeleted => "node.connection.deleted",
             Self::Stopped => "node.stopped",
             Self::Deleted => "node.deleted",
             Self::Updated => "node.updated",
@@ -222,7 +222,7 @@ impl NodeEvent {
             Self::Created => tracing::info_span!("rdm.node_admin.node.create.via-created-frame", event = "node.created"),
             Self::Started => tracing::info_span!("rdm.node_admin.node.update.via-started-frame", event = "node.started"),
             Self::Joined => tracing::info_span!("rdm.node_admin.node.update.via-joined-frame", event = "node.joined"),
-            Self::ConnectionsDeleted => tracing::info_span!("rdm.node_admin.connection.delete.via-deleted-frame", event = "node.connections.deleted"),
+            Self::ConnectionsDeleted => tracing::info_span!("rdm.node_admin.connection.delete.via-deleted-frame", event = "node.connection.deleted"),
             Self::Stopped => tracing::info_span!("rdm.node_admin.node.update.via-stopped-frame", event = "node.stopped"),
             Self::Deleted => tracing::info_span!("rdm.node_admin.node.delete.via-deleted-frame", event = "node.deleted"),
             Self::Updated => tracing::info_span!("rdm.node_admin.node.update.via-updated-frame", event = "node.updated"),

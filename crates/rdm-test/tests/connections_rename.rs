@@ -142,7 +142,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         // no pool is hard-cut before the whole All.
         {
             let held = during.0.lock().unwrap();
-            let deleted: Vec<u64> = held.iter().filter(|(_, (n, _, f))| n == "rdm.node_admin.connection.delete.via-connections-delete" && f.get("node") == Some(&born.to_string()) && f.get("destination").map(String::as_str) == Some("mesh1.admin.1")).map(|(k, _)| *k).collect();
+            let deleted: Vec<u64> = held.iter().filter(|(_, (n, _, f))| n == "rdm.node_admin.connection.delete.via-connection-delete" && f.get("node") == Some(&born.to_string()) && f.get("destination").map(String::as_str) == Some("mesh1.admin.1")).map(|(k, _)| *k).collect();
             assert_eq!(deleted.len(), 1, "the All deletes the one data-plane connection on its own span");
             let early: Vec<_> = held.iter().filter(|(k, (n, _, _))| n == "rdm.node_rpc.connection.delete.via-hard-cut" && **k < deleted[0]).map(|(_, (_, _, f))| f.clone()).collect();
             assert!(early.is_empty(), "no pool is hard-cut before the All has deleted its connections: {early:#?}");

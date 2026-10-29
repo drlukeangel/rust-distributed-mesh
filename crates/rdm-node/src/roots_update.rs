@@ -13,10 +13,10 @@ use rdm_transport::connections::ConnectionsRegistry;
 /// (`RejectedRootStillChained`), and nothing is installed: what keeps a rotation's retirement after
 /// every cert chains to the new root. `secret` says whether the request carried the root secret (a
 /// node-admin's), named on the span, never its value. One span,
-/// `rdm.node.roots.update.via-installed`, or `rdm.node.roots.reject.via-update` on a refusal.
+/// `rdm.node.root.update.via-installed`, or `rdm.node.root.reject.via-update` on a refusal.
 pub fn install_roots(registry: &ConnectionsRegistry, node: &str, node_id: &NodeId, incarnation: &IncarnationId, roots: &[String], phase: RootsPhase, secret: bool) -> StatusReply {
     let refused = |reason: String| {
-        tracing::info_span!("rdm.node.roots.reject.via-update", node, phase = ?phase, reason = %reason).in_scope(|| tracing::info!("node.roots.update refused"));
+        tracing::info_span!("rdm.node.root.reject.via-update", node, phase = ?phase, reason = %reason).in_scope(|| tracing::info!("node.roots.update refused"));
         reason
     };
     if roots.is_empty() || roots.len() > 2 {
@@ -42,7 +42,7 @@ pub fn install_roots(registry: &ConnectionsRegistry, node: &str, node_id: &NodeI
         }
     }
     registry.roots().replace(set);
-    tracing::info_span!("rdm.node.roots.update.via-installed", node, roots = %roots.join(","), phase = ?phase, secret = if secret { "carried" } else { "public-only" })
+    tracing::info_span!("rdm.node.root.update.via-installed", node, roots = %roots.join(","), phase = ?phase, secret = if secret { "carried" } else { "public-only" })
         .in_scope(|| tracing::info!("the fabric's trusted root set is installed"));
     StatusReply::RootsUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), roots: roots.to_vec() }
 }
@@ -59,7 +59,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:43
-    /// "| Spans | `rdm.node_admin.root.update.via-caller` (phase, root_expires_at, previous_root_expires_at, nodes, outcome) on the fabric-primary; `rdm.node.roots.update.via-installed` (node, roots, phase, secret ∈ {`carried`, `public-only`}) on each node |"
+    /// "| Spans | `rdm.node_admin.root.update.via-caller` (phase, root_expires_at, previous_root_expires_at, nodes, outcome) on the fabric-primary; `rdm.node.root.update.via-installed` (node, roots, phase, secret ∈ {`carried`, `public-only`}) on each node |"
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:49
     /// "| Caller | The fabric-primary |"
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:50
@@ -144,12 +144,12 @@ mod tests {
         });
 
         let spans = capture.spans().unwrap();
-        let installed: Vec<_> = spans.iter().filter(|s| s["name"].as_str() == Some("rdm.node.roots.update.via-installed")).collect();
+        let installed: Vec<_> = spans.iter().filter(|s| s["name"].as_str() == Some("rdm.node.root.update.via-installed")).collect();
         assert_eq!(installed.len(), 3, "expected 3 via-installed spans, got {installed:?}");
         assert_eq!(installed[0]["attributes"]["secret"].as_str(), Some("public-only"));
         assert_eq!(installed[1]["attributes"]["secret"].as_str(), Some("carried"));
         assert_eq!(installed[2]["attributes"]["phase"].as_str(), Some("Retired"));
-        let rejected: Vec<_> = spans.iter().filter(|s| s["name"].as_str() == Some("rdm.node.roots.reject.via-update")).collect();
+        let rejected: Vec<_> = spans.iter().filter(|s| s["name"].as_str() == Some("rdm.node.root.reject.via-update")).collect();
         assert_eq!(rejected.len(), 4, "expected 4 reject.via-update spans, got {rejected:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }

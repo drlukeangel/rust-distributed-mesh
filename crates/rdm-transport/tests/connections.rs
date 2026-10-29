@@ -600,7 +600,7 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
     let admission: Vec<&serde_json::Value> = spans
         .iter()
-        .filter(|s| matches!(s["name"].as_str(), Some("rdm.node.connections.create.via-admitted" | "rdm.node.connections.create.via-no-certs-configured" | "rdm.node.connections.reject.via-refused" | "rdm.node.connections.update.via-presented")))
+        .filter(|s| matches!(s["name"].as_str(), Some("rdm.node.connection.serve.via-admitted" | "rdm.node.connection.serve.via-no-certs-configured" | "rdm.node.connection.reject.via-refused" | "rdm.node.connection.create.via-dial")))
         .collect();
     let product = String::from_utf8_lossy(ALPN_A).into_owned();
     assert!(
@@ -608,7 +608,7 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
         "no admission span names Node RPC's or gossip's ALPN: {admission:#?}"
     );
     // The acceptor holds no certs: its one admission is by name (`NoCerts`).
-    let admitted: Vec<_> = admission.iter().filter(|s| s["name"] == "rdm.node.connections.create.via-no-certs-configured" && s["attributes"]["destination"] == acceptor_birth.as_str()).collect();
+    let admitted: Vec<_> = admission.iter().filter(|s| s["name"] == "rdm.node.connection.serve.via-no-certs-configured" && s["attributes"]["destination"] == acceptor_birth.as_str()).collect();
     assert_eq!(admitted.len(), 1, "exactly the one product dial was admitted: {admission:#?}");
 }
 
@@ -910,19 +910,24 @@ async fn a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned
     let conn_b = accept_task.await.unwrap();
 
     let spans_after_open = recorded.spans.lock().unwrap().clone();
-    let presented_span = spans_after_open
+    assert!(
+        spans_after_open.iter().any(|(_, name, _)| name == "rdm.node.connection.create.via-dial"),
+        "rdm.node.connection.create.via-dial span not in {:?}",
+        spans_after_open
+    );
+    let observed_span = spans_after_open
         .iter()
-        .find(|(_, name, _)| name == "rdm.node.connections.update.via-presented")
+        .find(|(_, name, _)| name == "rdm.node_admin.connection.update.via-observed")
         .unwrap_or_else(|| {
             panic!(
-                "rdm.node.connections.update.via-presented span not in {:?}",
+                "rdm.node_admin.connection.update.via-observed span not in {:?}",
                 spans_after_open
             )
         });
     assert_eq!(
-        presented_span.2.as_ref(),
+        observed_span.2.as_ref(),
         Some(&caller_id),
-        "via-presented span must parent to the caller's span"
+        "via-observed span must parent to the caller's span"
     );
 
     let before_bytes_len = recorded.spans.lock().unwrap().len();
@@ -1034,7 +1039,7 @@ async fn a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned
 /// the invocation's end; pool.rs: a dial's span is a root of its own, linked (follows_from) to the
 /// call that started it, never current while the dial runs): the transport spawns a connection's
 /// driver task with the span current at its connect, and that task lives as long as the
-/// connection. A Direct or Proxy open therefore connects under `rdm.node.connections.create.via-dial`,
+/// connection. A Direct or Proxy open therefore connects under `rdm.node.connection.create.via-dial`,
 /// a root linked to the opener's span (the Proxy's: to its tunnel span), so the caller's span
 /// closes when its last handle drops while its connection still carries streams, and the dial's
 /// span closes with the dial. Must NOT happen: the caller's span, and every span above it, held
@@ -1092,7 +1097,7 @@ async fn a_callers_span_closes_while_its_direct_and_proxy_connections_live() {
                 .unwrap()
                 .iter()
                 .filter(|(id, name, _)| {
-                    name == "rdm.node.connections.create.via-dial" && follows.contains(&(id.clone(), from.clone()))
+                    name == "rdm.node.connection.create.via-dial" && follows.contains(&(id.clone(), from.clone()))
                 })
                 .map(|(id, _, parent)| (id.clone(), parent.clone()))
                 .collect()
@@ -1184,7 +1189,7 @@ async fn a_callers_span_closes_while_its_direct_and_proxy_connections_live() {
         .lock()
         .unwrap()
         .iter()
-        .find(|(_, name, parent)| name == "rdm.node.connections.create.via-tunnel" && parent.as_ref() == Some(&caller_proxy_id))
+        .find(|(_, name, parent)| name == "rdm.node.connection.create.via-tunnel" && parent.as_ref() == Some(&caller_proxy_id))
         .map(|(id, _, _)| id.clone())
         .expect("the opener's tunnel span is the caller's child");
     assert!(lives.is_closed(&tunnel), "the opener's tunnel span closed with the open");
@@ -1578,7 +1583,7 @@ fn the_tunnel_handshake_carries_the_destinations_admitted_at_the_exact_birth_and
 
     let (trace_id, proxy_row_id) = rt.block_on(async {
         let root_span = tracing::info_span!(
-            "rdm.test.connections.create.via-proxy-tunnel",
+            "rdm.test.connection.create.via-proxy-tunnel",
             source = "mesh1.rpc.1",
             carrier = "mesh1.gateway.1",
             destination = "mesh1.rpc.2",
@@ -1702,7 +1707,7 @@ fn the_tunnel_handshake_carries_the_destinations_admitted_at_the_exact_birth_and
     // The peers hold no certs: each admission is by name (node-connections-admit.md `NoCerts`).
     let admits: Vec<_> = trace_spans
         .iter()
-        .filter(|s| s["name"] == "rdm.node.connections.create.via-admitted" || s["name"] == "rdm.node.connections.create.via-no-certs-configured")
+        .filter(|s| s["name"] == "rdm.node.connection.serve.via-admitted" || s["name"] == "rdm.node.connection.serve.via-no-certs-configured")
         .collect();
     assert_eq!(
         admits.len(),
@@ -1711,7 +1716,7 @@ fn the_tunnel_handshake_carries_the_destinations_admitted_at_the_exact_birth_and
     );
     let tunnels: Vec<_> = trace_spans
         .iter()
-        .filter(|s| s["name"] == "rdm.node.connections.create.via-tunnel")
+        .filter(|s| s["name"] == "rdm.node.connection.create.via-tunnel")
         .collect();
     assert_eq!(
         tunnels.len(),
@@ -2177,7 +2182,7 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
 /// CONTRACT (connections.md §10: "A stream Proxy (i148, a tunnel) outlives its retirement ...
 /// `node.connection.get` lists it by its row id with `route: retired`, and `node.connection.delete
 /// { All | [ids] }` closes it by that id like any other. Its end writes no second row; it is spanned
-/// `rdm.node.connections.delete.via-tunnel-ended`"): a tunnel opened through the carrier, its route
+/// `rdm.node.connection.delete.via-tunnel-ended`"): a tunnel opened through the carrier, its route
 /// then retired by a Direct Connected (`Disconnected(direct-restored)` held), is closed by
 /// `node.connection.delete { [its id] }`: its end is one `via-tunnel-ended` span naming the entry,
 /// the source, the carrier, the destination and the alpn, and the log holds the one Proxy
@@ -2229,21 +2234,21 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
     let ended: Vec<Vec<String>> = spans
         .iter()
-        .filter(|s| s["name"] == "rdm.node.connections.delete.via-tunnel-ended")
+        .filter(|s| s["name"] == "rdm.node.connection.delete.via-tunnel-ended")
         .map(|s| ["entry", "source", "carrier", "destination", "alpn"].iter().map(|k| s["attributes"][*k].as_str().unwrap_or_default().to_string()).collect())
         .collect();
     assert_eq!(ended, vec![vec![tunnel_id, names.0, names.1, names.2, String::from_utf8_lossy(ALPN_A).to_string()]], "the tunnel's end is one span naming it");
 }
 
-/// The carrier's `rdm.node.connections.create.via-tunnel` span among `spans`: the child of the
+/// The carrier's `rdm.node.connection.create.via-tunnel` span among `spans`: the child of the
 /// source's tunnel span for `entry` (telemetry.md §3, data-plane row).
 fn carriers_tunnel_span<'a>(spans: &'a [serde_json::Value], entry: &str) -> Option<&'a serde_json::Value> {
-    let source = spans.iter().find(|s| s["name"] == "rdm.node.connections.create.via-tunnel" && s["attributes"]["entry"] == entry && s["attributes"]["kind"] == "proxy")?;
-    spans.iter().find(|s| s["name"] == "rdm.node.connections.create.via-tunnel" && s["parent_span_id"] == source["span_id"])
+    let source = spans.iter().find(|s| s["name"] == "rdm.node.connection.create.via-tunnel" && s["attributes"]["entry"] == entry && s["attributes"]["kind"] == "proxy")?;
+    spans.iter().find(|s| s["name"] == "rdm.node.connection.create.via-tunnel" && s["parent_span_id"] == source["span_id"])
 }
 
 /// CONTRACT (telemetry.md §3, data-plane row: "a carrier's tunnel span
-/// `rdm.node.connections.create.via-tunnel` is its child and passes its own context on to the
+/// `rdm.node.connection.create.via-tunnel` is its child and passes its own context on to the
 /// destination"; §4: a connection's life is never held by the span that opened it): a Proxy opened
 /// through the carrier and carrying a stream both ways; while it still carries, the carrier's tunnel
 /// span is already exported, the source's tunnel span its parent, naming the entry, with outcome
@@ -2299,7 +2304,7 @@ fn a_carriers_tunnel_span_is_exported_once_the_tunnel_opens_while_the_tunnel_sti
 /// any other"; §1: the carrier carries traffic for as long as the connection stands): a Proxy open
 /// through the carrier is deleted by id on the source (`node.connection.delete { [its id] }`). The
 /// carrier's two legs close: the destination's connection ends within the bound; and the carrier ends
-/// its tunnel on its own span, `rdm.node.connections.delete.via-carrier-tunnel-ended`, naming the
+/// its tunnel on its own span, `rdm.node.connection.delete.via-carrier-tunnel-ended`, naming the
 /// entry, the source, the carrier, the destination and the alpn, and the close the source's leg
 /// carried (`node.connection.delete`), in the opener's trace. Must NOT happen: the destination's leg
 /// left open, or the carrier's tunnel ending unspanned.
@@ -2333,11 +2338,11 @@ fn a_proxy_deleted_by_id_closes_the_carriers_legs_and_ends_its_tunnel_on_the_car
         (entry, names, far_closed)
     });
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
-    let ended: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node.connections.delete.via-carrier-tunnel-ended").collect();
+    let ended: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node.connection.delete.via-carrier-tunnel-ended").collect();
     assert_eq!(ended.len(), 1, "the carrier's tunnel ends on one span of its own: {ended:#?}");
     let attrs: Vec<String> = ["entry", "source", "carrier", "destination", "alpn", "closed"].iter().map(|k| ended[0]["attributes"][*k].as_str().unwrap_or_default().to_string()).collect();
     assert_eq!(attrs, vec![entry.clone(), names.0, names.1, names.2, String::from_utf8_lossy(ALPN_A).to_string(), "node.connection.delete".to_string()], "{}", ended[0]);
-    let source_tunnel = spans.iter().find(|s| s["name"] == "rdm.node.connections.create.via-tunnel" && s["attributes"]["entry"] == entry.as_str() && s["attributes"]["kind"] == "proxy").expect("the source's tunnel span");
+    let source_tunnel = spans.iter().find(|s| s["name"] == "rdm.node.connection.create.via-tunnel" && s["attributes"]["entry"] == entry.as_str() && s["attributes"]["kind"] == "proxy").expect("the source's tunnel span");
     assert_eq!(ended[0]["trace_id"], source_tunnel["trace_id"], "the carrier's tunnel end is in the opener's trace");
     assert!(far_closed.is_some(), "the carrier closed the destination's leg once the source's leg was deleted");
 }
@@ -2744,7 +2749,7 @@ async fn refusal_of(tamper: impl FnOnce(&Chain, &TestPeer) -> rdm_core::certs::S
 /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:25 — "Row | ... an admission
 /// is the ordinary `Connected` fact"
 /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:28 — "Spans |
-/// `rdm.node.connections.create.via-admitted` (source, destination, connection, alpn,
+/// `rdm.node.connection.serve.via-admitted` (source, destination, connection, alpn,
 /// cert_expires_at, clock)"
 /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:32 — "1. The dialer's QUIC
 /// connection on a registered ALPN completes; iroh has checked the peer holds the private key of
@@ -2778,7 +2783,7 @@ fn an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert() {
     let product = String::from_utf8_lossy(ALPN_A).into_owned();
     let admitted: Vec<(String, String, bool, String, u64, String)> = spans
         .iter()
-        .filter(|s| s["name"] == "rdm.node.connections.create.via-admitted")
+        .filter(|s| s["name"] == "rdm.node.connection.serve.via-admitted")
         .map(|s| {
             let conn = s["attributes"]["connection"]
                 .as_u64()
@@ -2806,7 +2811,8 @@ fn an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert() {
 }
 
 /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:28 — "Spans | ...
-/// `rdm.node.connections.update.via-presented` (destination, alpn, cert_expires_at) on the dialer"
+/// `rdm.node.connection.create.via-dial` (destination, alpn, cert_expires_at, outcome, reason,
+/// elapsed_ms) on the dialer"
 /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:34 — "2. The dialer opens the
 /// first bi-stream, writes the member cert it holds (the one most recently installed: its
 /// JoinNode's or its last node.cert.renew's), and waits."
@@ -2822,22 +2828,30 @@ fn a_presented_dial_is_spanned_on_the_dialer_with_destination_alpn_and_the_prese
     });
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
     let product = String::from_utf8_lossy(ALPN_A).into_owned();
-    let presented: Vec<(String, String, u64)> = spans
+    let dials: Vec<&serde_json::Value> = spans
         .iter()
-        .filter(|s| s["name"] == "rdm.node.connections.update.via-presented")
-        .map(|s| {
-            (
-                s["attributes"]["destination"].as_str().unwrap_or_default().to_string(),
-                s["attributes"]["alpn"].as_str().unwrap_or_default().to_string(),
-                s["attributes"]["cert_expires_at"].as_str().and_then(|v| v.parse().ok()).or_else(|| s["attributes"]["cert_expires_at"].as_u64()).unwrap_or(0),
-            )
-        })
+        .filter(|s| s["name"] == "rdm.node.connection.create.via-dial")
         .collect();
-    assert_eq!(
-        presented,
-        vec![("mesh1.rpc.2".to_string(), product, expiry)],
-        "the dialer's via-presented span names destination, alpn, and the presented cert's expiry"
+    assert_eq!(dials.len(), 1, "one dial span on the dialer: {dials:#?}");
+    let dial = dials[0];
+    let dial_fields = (
+        dial["attributes"]["destination"].as_str().unwrap_or_default().to_string(),
+        dial["attributes"]["alpn"].as_str().unwrap_or_default().to_string(),
+        dial["attributes"]["cert_expires_at"].as_str().and_then(|v| v.parse().ok()).or_else(|| dial["attributes"]["cert_expires_at"].as_u64()).unwrap_or(0),
+        dial["attributes"]["outcome"].as_str().unwrap_or_default().to_string(),
     );
+    assert_eq!(
+        dial_fields,
+        ("mesh1.rpc.2".to_string(), product, expiry, "connected".to_string()),
+        "the dialer's via-dial span names destination, alpn, the presented cert's expiry, and outcome"
+    );
+    let verdicts: Vec<&serde_json::Value> = spans
+        .iter()
+        .filter(|s| s["name"] == "rdm.node.connection.serve.via-admitted")
+        .collect();
+    assert_eq!(verdicts.len(), 1, "one verdict span on the acceptor: {verdicts:#?}");
+    assert_eq!(verdicts[0]["trace_id"], dial["trace_id"], "the receiver's verdict span shares the dial's trace");
+    assert_eq!(verdicts[0]["parent_span_id"], dial["span_id"], "the receiver's verdict span is the dial's child in the trace");
 }
 
 /// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 6): a member cert the issuing
@@ -2915,8 +2929,8 @@ async fn an_inbound_connection_is_refused_by_name_on_expired() {
 }
 
 /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:28 — "Spans |
-/// `rdm.node.connections.create.via-admitted` (source, destination, connection, alpn,
-/// cert_expires_at, clock) or `rdm.node.connections.reject.via-refused` (the same, plus `reason`)
+/// `rdm.node.connection.serve.via-admitted` (source, destination, connection, alpn,
+/// cert_expires_at, clock) or `rdm.node.connection.reject.via-refused` (the same, plus `reason`)
 /// on the acceptor"
 /// CONTRACT: docs/architecture/lifecycles/node-connections-admit.md:37 — "`refused { reason }`:
 /// the verdict is written back, the `Refused` fact is written, the connection is closed."
@@ -2931,17 +2945,48 @@ async fn an_inbound_connection_is_refused_by_name_on_expired() {
 fn a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_was_judged_on() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-admit-refused-fields").expect("the cell's evidence file can be created");
     let expiry = CHAIN_NOW_MS - 2 * floor_ms() - 1_000;
+    let carrier_expiry = CHAIN_NOW_MS + 90_000;
     capture.run(4, async {
         let chain = Chain::minted("mesh1", 3_600, CHAIN_NOW_MS);
         let root = chain.root.verifying_key();
         let refused = dial_presenting(vec![root], |dialer| rdm_core::certs::cert_to_bytes(&chain.member(dialer, expiry))).await;
         assert_eq!(refused, Err(ConnectError::Refused { reason: "expired".into() }), "a cert expired by more than a floor is refused `expired`");
+
+        // Also verify Proxy refusals (at the carrier, and at the destination through the carrier)
+        // end the caller's via-dial span with outcome="refused" and reason, and record
+        // cert_expires_at on the carrier's via-tunnel span.
+        let alpns = [gateway_alpn(ALPN_A)];
+        let source = TestPeer::bind("mesh1.rpc.3", &alpns).await;
+        let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+        let dest = TestPeer::bind("mesh1.rpc.4", &alpns).await;
+        source.know(&carrier);
+        carrier.know(&dest);
+        carrier.know(&source);
+        dest.know(&carrier);
+        seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+        source.registry.set_member_cert(rdm_core::certs::cert_to_bytes(&chain.member(&source, expiry)));
+        carrier.registry.set_member_cert(rdm_core::certs::cert_to_bytes(&chain.member(&carrier, carrier_expiry)));
+        let carrier_admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(false), calls: AtomicUsize::new(0) });
+        let dest_admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(false), calls: AtomicUsize::new(0) });
+        carrier.registry.set_admitter(carrier_admitter.clone());
+        dest.registry.set_admitter(dest_admitter.clone());
+        let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+        assert_eq!(dialer_s.open(&dest.birth).await.unwrap_err(), ConnectError::Refused { reason: "expired member cert".into() });
+        *source.sink.held().lock().unwrap() = rdm_core::connections::ConnectionsHeld::new();
+        carrier_admitter.allow.store(true, Ordering::SeqCst);
+        assert_eq!(dialer_s.open(&dest.birth).await.unwrap_err(), ConnectError::Refused { reason: "expired member cert".into() });
+        source.shutdown().await;
+        carrier.shutdown().await;
+        dest.shutdown().await;
     });
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
     let product = String::from_utf8_lossy(ALPN_A).into_owned();
-    let refused: Vec<(String, String, bool, String, u64, String, String)> = spans
+    let refused_spans: Vec<&serde_json::Value> = spans
         .iter()
-        .filter(|s| s["name"] == "rdm.node.connections.reject.via-refused")
+        .filter(|s| s["name"] == "rdm.node.connection.reject.via-refused" && s["attributes"]["destination"] == "mesh1.rpc.2")
+        .collect();
+    let refused: Vec<(String, String, bool, String, u64, String, String)> = refused_spans
+        .iter()
         .map(|s| {
             let conn = s["attributes"]["connection"]
                 .as_u64()
@@ -2961,9 +3006,32 @@ fn a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_wa
         .collect();
     assert_eq!(
         refused,
-        vec![("mesh1.rpc.1".to_string(), "mesh1.rpc.2".to_string(), true, product, expiry, "rafka-time".to_string(), "expired".to_string())],
+        vec![("mesh1.rpc.1".to_string(), "mesh1.rpc.2".to_string(), true, product.clone(), expiry, "rafka-time".to_string(), "expired".to_string())],
         "the refusal names source, destination, connection, alpn, the presented cert's expiry, the clock it was judged on and the reason"
     );
+    let direct_dial = spans
+        .iter()
+        .find(|s| s["name"] == "rdm.node.connection.create.via-dial" && s["attributes"]["destination"] == "mesh1.rpc.2")
+        .expect("the direct dial span");
+    assert_eq!(direct_dial["attributes"]["outcome"], "refused");
+    assert_eq!(direct_dial["attributes"]["reason"], "expired");
+    assert_eq!(refused_spans[0]["trace_id"], direct_dial["trace_id"], "the refusal verdict span shares the dial's trace");
+    assert_eq!(refused_spans[0]["parent_span_id"], direct_dial["span_id"], "the refusal verdict span is the dial's child in the trace");
+
+    let proxy_dials: Vec<_> = spans
+        .iter()
+        .filter(|s| s["name"] == "rdm.node.connection.create.via-dial" && (s["attributes"]["destination"] == "mesh1.gateway.1" || s["attributes"]["destination"] == "mesh1.rpc.4"))
+        .collect();
+    assert_eq!(proxy_dials.len(), 3, "two caller dials to carrier and one carrier dial to destination: {proxy_dials:#?}");
+    assert!(
+        proxy_dials.iter().all(|s| s["attributes"]["outcome"] == "refused" && s["attributes"]["reason"] == "expired member cert"),
+        "every refused dial (Direct, Proxy, and through a carrier) ends with outcome=refused and reason: {proxy_dials:#?}"
+    );
+    let carrier_tunnel = spans
+        .iter()
+        .find(|s| s["name"] == "rdm.node.connection.create.via-tunnel" && s["attributes"]["carrier"] == "mesh1.gateway.1" && s["attributes"]["cert_expires_at"].as_str().and_then(|v| v.parse::<u64>().ok()).or_else(|| s["attributes"]["cert_expires_at"].as_u64()) == Some(carrier_expiry))
+        .expect("the carrier's via-tunnel span carries cert_expires_at");
+    assert_eq!(carrier_tunnel["attributes"]["outcome"], "refused: expired member cert");
 }
 
 /// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 4, §Time): a member cert whose
@@ -3023,7 +3091,7 @@ async fn a_root_set_replaced_at_runtime_is_read_by_the_next_admission() {
 /// CONTRACT (node-connections-admit.md `NoCerts`: "A node-admin started `NoCerts` admits every
 /// connection by name, spanned `via-no-certs-configured`"): an acceptor admitting on no root set (its
 /// launcher holds no certs) admits a dialer whatever it presents, a cert of no fabric and empty bytes
-/// alike. Each admission is spanned `rdm.node.connections.create.via-no-certs-configured` (source,
+/// alike. Each admission is spanned `rdm.node.connection.serve.via-no-certs-configured` (source,
 /// destination, alpn) and never `via-admitted`: no cert was judged, so none is named admitted.
 #[test]
 fn a_no_certs_acceptor_admits_by_name() {
@@ -3052,11 +3120,11 @@ fn a_no_certs_acceptor_admits_by_name() {
     });
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["attributes"]["destination"] == acceptor_name.as_str()).collect::<Vec<_>>();
-    let by_name = named("rdm.node.connections.create.via-no-certs-configured");
+    let by_name = named("rdm.node.connection.serve.via-no-certs-configured");
     assert_eq!(by_name.len(), 2, "each admission is spanned by name: {by_name:#?}");
     let product = String::from_utf8_lossy(ALPN_A).into_owned();
     assert!(by_name.iter().all(|s| s["attributes"]["source"] == dialer_name.as_str() && s["attributes"]["alpn"] == product.as_str()), "{by_name:#?}");
-    assert_eq!(named("rdm.node.connections.create.via-admitted"), Vec::<&serde_json::Value>::new(), "no cert was judged admitted");
+    assert_eq!(named("rdm.node.connection.serve.via-admitted"), Vec::<&serde_json::Value>::new(), "no cert was judged admitted");
 }
 
 /// CONTRACT (fabric-certs.md §On a connection: "RDM never registers the step for its own two ALPNs: a
@@ -3105,9 +3173,9 @@ async fn an_unknown_key_dials(acceptor: &TestPeer, name: &str) -> Vec<NodeConnec
     acceptor.sink.history()
 }
 
-/// The `rdm.node.connections.reject.via-refused` spans' `source` attributes.
+/// The `rdm.node.connection.reject.via-refused` spans' `source` attributes.
 fn refused_sources(spans: &[serde_json::Value]) -> Vec<String> {
-    spans.iter().filter(|s| s["name"] == "rdm.node.connections.reject.via-refused").map(|s| s["attributes"]["source"].as_str().unwrap_or_default().to_string()).collect()
+    spans.iter().filter(|s| s["name"] == "rdm.node.connection.reject.via-refused").map(|s| s["attributes"]["source"].as_str().unwrap_or_default().to_string()).collect()
 }
 
 /// CONTRACT (node-connections-admit.md Row and Never, Q212): a dialer whose key no topology view

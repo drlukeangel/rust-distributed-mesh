@@ -673,10 +673,10 @@ const CHUNK_BYTES: usize = 32 * 1024;
 /// cannot be read is refused `NotReady` and nothing streams; the stream is `Started` naming the current
 /// Build, then per Build its `Topology` chunks, its `Steps` chunks and its `Build` header, then `End`.
 /// A forgotten Build has left the views and is passed over. A pair the Build header's schema refuses
-/// is `RejectedFilter`, naming it. One `rdm.node_admin.build.resolve.via-builds-get` span.
+/// is `RejectedFilter`, naming it. One `rdm.node_admin.build.resolve.via-build-get` span.
 pub async fn serve_builds(me: &PathName, builds: &dyn crate::build_state::BuildStateAdapter, filter: rdm_core::filter::Filter, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
     let span = tracing::info_span!(
-        "rdm.node_admin.build.resolve.via-builds-get",
+        "rdm.node_admin.build.resolve.via-build-get",
         node = %me,
         properties = %filter.properties(),
         current = tracing::field::Empty,

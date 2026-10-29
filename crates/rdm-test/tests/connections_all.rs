@@ -203,7 +203,7 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
         assert!(matches!(&reply, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name: {reply:?}");
         let all = NodeCommandRequest::DeleteConnections { node_id, incarnation, scope: ConnectionScope::All };
         assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "the node deletes its connections afterwards");
-        assert_eq!(named(&spans, "rdm.node_admin.status.update.via-connections-delete-node"), 0, "nothing ran for the reserved position");
+        assert_eq!(named(&spans, "rdm.node_admin.status.update.via-connection-delete-node"), 0, "nothing ran for the reserved position");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

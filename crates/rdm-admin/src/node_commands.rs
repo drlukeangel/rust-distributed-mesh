@@ -21,7 +21,7 @@ use tokio::sync::watch;
 /// Which of the two commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeCommand {
-    /// `node.connection.delete { All }`; its reply is `node.connections.deleted`.
+    /// `node.connection.delete { All }`; its reply is `node.connection.deleted`.
     DeleteConnections,
     /// `stop-node`; completes with `node-left`, which is the reply of the call.
     Stop,
@@ -41,7 +41,7 @@ impl NodeCommand {
     /// The completion's name.
     pub fn completion(self) -> &'static str {
         match self {
-            Self::DeleteConnections => "node.connections.deleted",
+            Self::DeleteConnections => "node.connection.deleted",
             Self::Stop => "node-left",
             Self::Start => "node-started",
         }

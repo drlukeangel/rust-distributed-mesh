@@ -65,7 +65,7 @@ pub enum Up {
     InProcess(Topology),
 }
 
-/// Who sent a property command (`node.config.update`, `node.tags.*`) to an admin, as its view names the
+/// Who sent a property command (`node.config.update`, `node.tag.*`) to an admin, as its view names the
 /// call's endpoint: what decides whether an admin that is not the fabric-primary carries it up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SentBy {
@@ -94,7 +94,7 @@ impl SentBy {
     }
 
     /// The sender of a command a caller sends to the node's mesh-primary (`node.name.update`,
-    /// node-name-update.md step 1; `node.tags.*`): every endpoint that is not a node-admin the view
+    /// node-name-update.md step 1; `node.tag.*`): every endpoint that is not a node-admin the view
     /// holds, a caller outside the fabric (an endpoint the view holds no birth for) included, is the
     /// caller's; a node-admin's is the fabric-primary's command sent down, or a carrier of it.
     pub fn of_writer_call(sender: Option<&crate::model::Node>) -> Self {

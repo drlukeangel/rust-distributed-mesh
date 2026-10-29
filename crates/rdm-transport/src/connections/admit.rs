@@ -226,10 +226,10 @@ pub(super) async fn admit(registry: &ConnectionsRegistry, alpn: &Alpn, connectio
         Ok((cert_expires_at, clock)) => {
             // A node started with no certs judged no cert: it admitted by name, and says so.
             let span = if by_name {
-                tracing::info_span!("rdm.node.connections.create.via-no-certs-configured", source = %present.caller.name, destination = %own.name, connection = connection.stable_id(), alpn = %alpn_str)
+                tracing::info_span!("rdm.node.connection.serve.via-no-certs-configured", source = %present.caller.name, destination = %own.name, connection = connection.stable_id(), alpn = %alpn_str)
             } else {
                 tracing::info_span!(
-                    "rdm.node.connections.create.via-admitted",
+                    "rdm.node.connection.serve.via-admitted",
                     source = %present.caller.name,
                     destination = %own.name,
                     connection = connection.stable_id(),
@@ -273,7 +273,7 @@ async fn refuse(
     let cert_expires_at = present.map_or(0, |p| presented_expiry(&p.cert));
     let clock = registry.inner.admitter.lock().unwrap().clock();
     let span = tracing::info_span!(
-        "rdm.node.connections.reject.via-refused",
+        "rdm.node.connection.reject.via-refused",
         source = %source,
         destination = %own.name,
         connection = connection.stable_id(),

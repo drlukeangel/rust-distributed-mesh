@@ -15,7 +15,7 @@
 //!
 //! The trace (R-CR6): the route's observed fact (`rdm.node_admin.connection.update.via-observed`)
 //! names its entry and the peer it was dialled to, and `All` deletes that data-plane connection on
-//! the connection's own span (`rdm.node_admin.connection.delete.via-connections-delete`) naming the
+//! the connection's own span (`rdm.node_admin.connection.delete.via-connection-delete`) naming the
 //! same entry and peer. What must NOT happen: `All` hard-cutting a pool
 //! (`rdm.node_rpc.connection.delete.via-hard-cut`): that is the stop's own transport cut alone.
 
@@ -150,7 +150,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
             other => panic!("checked above: {other:?}"),
         };
         let fields_of = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, _, f)| f.clone()).collect() };
-        let deletes = fields_of("rdm.node_admin.connection.delete.via-connections-delete");
+        let deletes = fields_of("rdm.node_admin.connection.delete.via-connection-delete");
         assert_eq!(deletes.len(), 1, "All deletes the one data-plane connection, on its own span: {deletes:#?}");
         assert_eq!((deletes[0].get("entry"), deletes[0].get("node").map(String::as_str), deletes[0].get("destination").map(String::as_str)), (Some(&closed), Some("mesh1.rpc.7"), Some("mesh1.admin.1")), "{deletes:#?}");
         let observed = fields_of("rdm.node_admin.connection.update.via-observed");

@@ -727,7 +727,7 @@ impl ConnectionsRegistry {
         };
         if !still_active_route {
             tracing::info_span!(
-                "rdm.node.connections.delete.via-tunnel-ended",
+                "rdm.node.connection.delete.via-tunnel-ended",
                 source = %row.source.name,
                 carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
                 destination = %row.destination.name,
@@ -1031,10 +1031,10 @@ enum CarrierOpen {
 
 impl AlpnProtocolHandler {
     /// The carrier's side of a Proxy (connections.md §7). Its tunnel span
-    /// `rdm.node.connections.create.via-tunnel`, the opener's child (telemetry.md §3), ends once the
+    /// `rdm.node.connection.create.via-tunnel`, the opener's child (telemetry.md §3), ends once the
     /// tunnel is opened or not, never held for the tunnel's life (§4). An opened tunnel is carried
     /// until either leg closes; the carrier then closes the other and spans the tunnel's end,
-    /// `rdm.node.connections.delete.via-carrier-tunnel-ended`, in the opener's trace.
+    /// `rdm.node.connection.delete.via-carrier-tunnel-ended`, in the opener's trace.
     #[allow(clippy::too_many_arguments)]
     async fn carry(
         &self,
@@ -1050,13 +1050,16 @@ impl AlpnProtocolHandler {
         let floor = rdm_core::cadence::staleness_floor();
         let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
         let own_now = self.registry.inner.sink.own_birth();
+        let cert = self.registry.inner.member_cert.lock().unwrap().clone();
+        let presented_at = admit::presented_expiry(&cert);
         let tunnel_span = tracing::info_span!(
-            "rdm.node.connections.create.via-tunnel",
+            "rdm.node.connection.create.via-tunnel",
             source = %origin.name,
             carrier = %own_now.name,
             destination = %destination.name,
             alpn = %alpn_str,
             entry = %id,
+            cert_expires_at = presented_at,
             outcome = tracing::field::Empty,
         );
         if let Some(tp) = opener.traceparent.as_deref() {
@@ -1066,7 +1069,7 @@ impl AlpnProtocolHandler {
         let carrier_tp = Trace::of(&tunnel_span, opener);
         let ended_names = (origin.name.to_string(), own_now.name.to_string(), destination.name.to_string(), id.to_string());
         let opened = self
-            .open_carrier_legs(&mut ctrl_send, carrier_tp.clone(), id, origin, destination, alpn, own_now, &tunnel_span)
+            .open_carrier_legs(&mut ctrl_send, carrier_tp.clone(), id, origin, destination, alpn, own_now, cert, presented_at, &tunnel_span)
             .await;
         tunnel_span.record(
             "outcome",
@@ -1089,7 +1092,7 @@ impl AlpnProtocolHandler {
                     .retain(|(src, _)| src.stable_id() != connection.stable_id());
                 let (source, carrier, destination, entry) = ended_names;
                 let ended = tracing::info_span!(
-                    "rdm.node.connections.delete.via-carrier-tunnel-ended",
+                    "rdm.node.connection.delete.via-carrier-tunnel-ended",
                     source = %source,
                     carrier = %carrier,
                     destination = %destination,
@@ -1123,10 +1126,11 @@ impl AlpnProtocolHandler {
         destination: Birth,
         alpn: Vec<u8>,
         own_now: Birth,
+        cert: Vec<u8>,
+        presented_at: u64,
         tunnel_span: &tracing::Span,
     ) -> CarrierOpen {
         let floor = rdm_core::cadence::staleness_floor();
-        let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
         async fn refuse(ctrl_send: &mut iroh::endpoint::SendStream, reason: &str) -> CarrierOpen {
             let _ = write_control_msg(ctrl_send, &ControlAnswer::Refused { reason: reason.to_string() }).await;
             CarrierOpen::Answered { outcome: format!("refused: {reason}") }
@@ -1175,43 +1179,41 @@ impl AlpnProtocolHandler {
             iroh::EndpointAddr::new(resolved_dest.endpoint_id).with_ip_addr(resolved_dest.transport_addr);
         // The destination's leg is dialled as a root linked to the tunnel span, so its driver never
         // holds the tunnel span for the leg's life (telemetry.md §4).
-        let Ok(Ok((dst_conn, mut dst_ctrl_send, mut dst_ctrl_recv))) = tokio::time::timeout(
+        let Ok(Ok((dst_conn, mut dst_ctrl_send, mut dst_ctrl_recv, dial))) = tokio::time::timeout(
             floor,
-            dial_root(&self.registry.inner.endpoint, &self.alpn.name, &destination, dst_addr, tunnel_span),
+            dial_root(&self.registry.inner.endpoint, &self.alpn.name, &destination, dst_addr, presented_at, tunnel_span),
         )
         .await
         else {
             return refuse(ctrl_send, INVALID_CARRIER_EDGE_LOST).await;
         };
 
-        let cert = self.registry.inner.member_cert.lock().unwrap().clone();
-
-        let presented_at = admit::presented_expiry(&cert);
         let dst_present = PresentFrame {
             caller: own_now.clone(),
             cert,
             traceparent: carrier_tp.traceparent,
             tracestate: carrier_tp.tracestate,
         };
-        tunnel_span.in_scope(|| {
-            tracing::info_span!(
-                "rdm.node.connections.update.via-presented",
-                destination = %destination.name,
-                alpn = %alpn_str,
-                cert_expires_at = presented_at,
-            )
-            .in_scope(|| tracing::info!("carrier presented member credential to destination"));
-        });
         if write_control_msg(&mut dst_ctrl_send, &dst_present).await.is_err() {
-            return CarrierOpen::Ended { outcome: "not-opened: the presentation to the destination was not written".to_string() };
+            let outcome = "not-opened: the presentation to the destination was not written";
+            dial.ended(outcome);
+            return CarrierOpen::Ended { outcome: outcome.to_string() };
         }
 
         let dst_verdict: AdmitVerdict =
             match tokio::time::timeout(floor, read_control_msg(&mut dst_ctrl_recv)).await {
                 Ok(Ok(Some(v))) => v,
-                _ => return CarrierOpen::Ended { outcome: "not-opened: the destination's verdict did not arrive".to_string() },
+                Ok(Ok(None)) | Ok(Err(_)) if refused_close(&dst_conn).is_some() => {
+                    AdmitVerdict::Refused { reason: refused_close(&dst_conn).unwrap_or_default() }
+                }
+                _ => {
+                    let outcome = "not-opened: the destination's verdict did not arrive";
+                    dial.ended(outcome);
+                    return CarrierOpen::Ended { outcome: outcome.to_string() };
+                }
             };
         if let AdmitVerdict::Refused { reason } = dst_verdict {
+            dial.refused(&reason);
             dst_conn.close(iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED), reason.as_bytes());
             return refuse(ctrl_send, &reason).await;
         }
@@ -1224,23 +1226,36 @@ impl AlpnProtocolHandler {
             via: Some(own_now),
         };
         if write_control_msg(&mut dst_ctrl_send, &dst_intent).await.is_err() {
-            return CarrierOpen::Ended { outcome: "not-opened: the intent to the destination was not written".to_string() };
+            let outcome = "not-opened: the intent to the destination was not written";
+            dial.ended(outcome);
+            return CarrierOpen::Ended { outcome: outcome.to_string() };
         }
 
         let dst_answer: ControlAnswer =
             match tokio::time::timeout(floor, read_control_msg(&mut dst_ctrl_recv)).await {
                 Ok(Ok(Some(a))) => a,
-                _ => return CarrierOpen::Ended { outcome: "not-opened: the destination's answer did not arrive".to_string() },
+                _ => {
+                    let outcome = "not-opened: the destination's answer did not arrive";
+                    dial.ended(outcome);
+                    return CarrierOpen::Ended { outcome: outcome.to_string() };
+                }
             };
         if write_control_msg(ctrl_send, &dst_answer).await.is_err() {
-            return CarrierOpen::Ended { outcome: "not-opened: the answer to the source was not written".to_string() };
+            let outcome = "not-opened: the answer to the source was not written";
+            dial.ended(outcome);
+            return CarrierOpen::Ended { outcome: outcome.to_string() };
         }
 
         match &dst_answer {
             ControlAnswer::Opened { peer } if peer.incarnation == destination.incarnation && peer.node_id == destination.node_id => {
+                dial.connected();
                 CarrierOpen::Opened { dst_conn, dst_ctrl: (dst_ctrl_send, dst_ctrl_recv) }
             }
             answer => {
+                match answer {
+                    ControlAnswer::Refused { reason } => dial.refused(reason),
+                    ControlAnswer::Opened { .. } => dial.ended("not-opened: the destination answered as another birth"),
+                }
                 dst_conn.close(iroh::endpoint::VarInt::from_u32(CLOSE_CODE_PEER_LEFT), b"tunnel-rejected");
                 CarrierOpen::Answered {
                     outcome: match answer {
@@ -1544,7 +1559,7 @@ impl Dialer {
                         Err(e) => return Err(e),
                     }
                 }
-                caller_span.in_scope(|| tracing::info!(direct = %reason, "rdm.node.connections.open.via-no-active-route: the Direct dial was not sent and every carrier refused"));
+                caller_span.in_scope(|| tracing::info!(direct = %reason, "rdm.node.connection.open.via-no-active-route: the Direct dial was not sent and every carrier refused"));
                 Err(ConnectError::NoActiveRoute { direct: Some(reason) })
             }
             Err(e) => Err(e),
@@ -1594,8 +1609,10 @@ impl Dialer {
             }
         };
 
+        let cert = self.registry.inner.member_cert.lock().unwrap().clone();
+        let presented_at = admit::presented_expiry(&cert);
         let addr = iroh::EndpointAddr::new(resolved.endpoint_id).with_ip_addr(resolved.transport_addr);
-        let (quic_conn, mut ctrl_send, mut ctrl_recv) = match self.dial(destination, addr, caller_span).await {
+        let (quic_conn, mut ctrl_send, mut ctrl_recv, dial) = match self.dial(destination, addr, presented_at, caller_span).await {
             Ok(dialled) => dialled,
             Err(reason) => {
                 self.record_direct_failure(own, destination, &reason, caller_span);
@@ -1603,27 +1620,16 @@ impl Dialer {
             }
         };
 
-        let cert = self.registry.inner.member_cert.lock().unwrap().clone();
-
-        let presented_at = admit::presented_expiry(&cert);
-        let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
+        let present_tp = if trace.traceparent.is_some() { trace } else { Trace::of(&dial.span, Trace::default()) };
         let present = PresentFrame {
             caller: own.clone(),
             cert,
-            traceparent: trace.traceparent,
-            tracestate: trace.tracestate,
+            traceparent: present_tp.traceparent,
+            tracestate: present_tp.tracestate,
         };
-        caller_span.in_scope(|| {
-            tracing::info_span!(
-                "rdm.node.connections.update.via-presented",
-                destination = %destination.name,
-                alpn = %alpn_str,
-                cert_expires_at = presented_at,
-            )
-            .in_scope(|| tracing::info!("presented member credential on the connection's control stream"));
-        });
 
         if let Err(reason) = write_control_msg(&mut ctrl_send, &present).await {
+            dial.ended(&reason);
             self.record_direct_failure(own, destination, &reason, caller_span);
             return Err(ConnectError::NotSent { reason });
         }
@@ -1637,15 +1643,18 @@ impl Dialer {
             }
             Ok(Ok(None)) => {
                 let reason = "acceptor closed control stream before verdict".to_string();
+                dial.ended(&reason);
                 self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
             Ok(Err(reason)) => {
+                dial.ended(&reason);
                 self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
             Err(_) => {
                 let reason = "timed out waiting for admission verdict".to_string();
+                dial.ended(&reason);
                 self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
@@ -1656,6 +1665,7 @@ impl Dialer {
             // Failed row with the acceptor's reason, so this source's reconnect series exists and
             // continues from it (connections.md §9.1, §9.3).
             AdmitVerdict::Refused { reason } => {
+                dial.refused(&reason);
                 self.record_direct_failure(own, destination, &format!("refused: {reason}"), caller_span);
                 quic_conn.close(
                     iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED),
@@ -1673,6 +1683,7 @@ impl Dialer {
             destination: destination.clone(),
         };
         if let Err(reason) = write_control_msg(&mut ctrl_send, &intent).await {
+            dial.ended(&reason);
             self.record_direct_failure(own, destination, &reason, caller_span);
             return Err(ConnectError::NotSent { reason });
         }
@@ -1681,30 +1692,38 @@ impl Dialer {
             Ok(Ok(Some(a))) => a,
             Ok(Ok(None)) => {
                 let reason = "acceptor closed control stream before intent answer".to_string();
+                dial.ended(&reason);
                 self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
             Ok(Err(reason)) => {
+                dial.ended(&reason);
                 self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
             Err(_) => {
                 let reason = "timed out waiting for intent answer".to_string();
+                dial.ended(&reason);
                 self.record_direct_failure(own, destination, &reason, caller_span);
                 return Err(ConnectError::NotSent { reason });
             }
         };
 
         match answer {
-            ControlAnswer::Refused { reason } => Err(ConnectError::Refused { reason }),
+            ControlAnswer::Refused { reason } => {
+                dial.refused(&reason);
+                Err(ConnectError::Refused { reason })
+            }
             ControlAnswer::Opened { peer } => {
                 if peer.incarnation != destination.incarnation || peer.node_id != destination.node_id {
+                    dial.ended("wrong-incarnation");
                     quic_conn.close(iroh::endpoint::VarInt::from_u32(CLOSE_CODE_PEER_LEFT), b"wrong-incarnation");
                     return Err(ConnectError::WrongIncarnation {
                         held: destination.incarnation.clone(),
                         found: peer.incarnation,
                     });
                 }
+                dial.connected();
                 let row = NodeConnection {
                     id: row_id.clone(),
                     source: own.to_end(),
@@ -1754,7 +1773,7 @@ impl Dialer {
         let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
         let tunnel_span = caller_span.in_scope(|| {
             tracing::info_span!(
-                "rdm.node.connections.create.via-tunnel",
+                "rdm.node.connection.create.via-tunnel",
                 source = %own.name,
                 carrier = %carrier.name,
                 destination = %destination.name,
@@ -1784,53 +1803,52 @@ impl Dialer {
                 reason: format!("{e:?}"),
             })?;
 
+        let cert = self.registry.inner.member_cert.lock().unwrap().clone();
+        let presented_at = admit::presented_expiry(&cert);
         let addr = iroh::EndpointAddr::new(resolved.endpoint_id).with_ip_addr(resolved.transport_addr);
-        let (quic_conn, mut ctrl_send, mut ctrl_recv) = self
-            .dial(carrier, addr, &tunnel_span)
+        let (quic_conn, mut ctrl_send, mut ctrl_recv, dial) = self
+            .dial(carrier, addr, presented_at, &tunnel_span)
             .await
             .map_err(|reason| ConnectError::NotSent { reason })?;
 
-        let cert = self.registry.inner.member_cert.lock().unwrap().clone();
-
-        let presented_at = admit::presented_expiry(&cert);
         let present = PresentFrame {
             caller: own.clone(),
             cert,
             traceparent: tunnel_tp.traceparent,
             tracestate: tunnel_tp.tracestate,
         };
-        tunnel_span.in_scope(|| {
-            tracing::info_span!(
-                "rdm.node.connections.update.via-presented",
-                destination = %carrier.name,
-                alpn = %alpn_str,
-                cert_expires_at = presented_at,
-            )
-            .in_scope(|| tracing::info!("presented member credential to carrier on tunnel control stream"));
-        });
 
-        write_control_msg(&mut ctrl_send, &present)
-            .await
-            .map_err(|reason| ConnectError::NotSent { reason })?;
+        if let Err(reason) = write_control_msg(&mut ctrl_send, &present).await {
+            dial.ended(&reason);
+            return Err(ConnectError::NotSent { reason });
+        }
 
         let floor = rdm_core::cadence::staleness_floor();
         let verdict: AdmitVerdict = match tokio::time::timeout(floor, read_control_msg(&mut ctrl_recv)).await {
             Ok(Ok(Some(v))) => v,
-            Ok(Ok(None)) => {
-                return Err(ConnectError::NotSent {
-                    reason: "carrier closed control stream before verdict".to_string(),
-                });
+            Ok(Ok(None)) | Ok(Err(_)) if refused_close(&quic_conn).is_some() => {
+                AdmitVerdict::Refused { reason: refused_close(&quic_conn).unwrap_or_default() }
             }
-            Ok(Err(reason)) => return Err(ConnectError::NotSent { reason }),
+            Ok(Ok(None)) => {
+                let reason = "carrier closed control stream before verdict".to_string();
+                dial.ended(&reason);
+                return Err(ConnectError::NotSent { reason });
+            }
+            Ok(Err(reason)) => {
+                dial.ended(&reason);
+                return Err(ConnectError::NotSent { reason });
+            }
             Err(_) => {
-                return Err(ConnectError::NotSent {
-                    reason: "timed out waiting for carrier admission verdict".to_string(),
-                });
+                let reason = "timed out waiting for carrier admission verdict".to_string();
+                dial.ended(&reason);
+                return Err(ConnectError::NotSent { reason });
             }
         };
 
         match verdict {
             AdmitVerdict::Refused { reason } => {
+                dial.refused(&reason);
+                tunnel_span.record("outcome", format!("refused: {reason}").as_str());
                 quic_conn.close(
                     iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED),
                     reason.as_bytes(),
@@ -1853,27 +1871,32 @@ impl Dialer {
             alpn: self.alpn.name.clone(),
             via: None,
         };
-        write_control_msg(&mut ctrl_send, &intent)
-            .await
-            .map_err(|reason| ConnectError::NotSent { reason })?;
+        if let Err(reason) = write_control_msg(&mut ctrl_send, &intent).await {
+            dial.ended(&reason);
+            return Err(ConnectError::NotSent { reason });
+        }
 
         let answer: ControlAnswer = match tokio::time::timeout(floor, read_control_msg(&mut ctrl_recv)).await {
             Ok(Ok(Some(a))) => a,
             Ok(Ok(None)) => {
-                return Err(ConnectError::NotSent {
-                    reason: "carrier closed control stream before tunnel answer".to_string(),
-                });
+                let reason = "carrier closed control stream before tunnel answer".to_string();
+                dial.ended(&reason);
+                return Err(ConnectError::NotSent { reason });
             }
-            Ok(Err(reason)) => return Err(ConnectError::NotSent { reason }),
+            Ok(Err(reason)) => {
+                dial.ended(&reason);
+                return Err(ConnectError::NotSent { reason });
+            }
             Err(_) => {
-                return Err(ConnectError::NotSent {
-                    reason: "timed out waiting for tunnel answer".to_string(),
-                });
+                let reason = "timed out waiting for tunnel answer".to_string();
+                dial.ended(&reason);
+                return Err(ConnectError::NotSent { reason });
             }
         };
 
         match answer {
             ControlAnswer::Refused { reason } => {
+                dial.refused(&reason);
                 tunnel_span.record("outcome", format!("refused: {reason}").as_str());
                 quic_conn.close(
                     iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED),
@@ -1891,6 +1914,7 @@ impl Dialer {
             }
             ControlAnswer::Opened { peer } => {
                 if peer.incarnation != destination.incarnation || peer.node_id != destination.node_id {
+                    dial.ended("wrong-incarnation");
                     quic_conn.close(
                         iroh::endpoint::VarInt::from_u32(CLOSE_CODE_PEER_LEFT),
                         b"wrong-incarnation",
@@ -1900,6 +1924,7 @@ impl Dialer {
                         found: peer.incarnation,
                     });
                 }
+                dial.connected();
                 let recorded = match held_proxy {
                     Some(existing) => NodeConnection {
                         id: row_id.clone(),
@@ -1965,9 +1990,10 @@ impl Dialer {
         &self,
         to: &Birth,
         addr: iroh::EndpointAddr,
+        cert_expires_at: u64,
         opener: &tracing::Span,
-    ) -> Result<(iroh::endpoint::Connection, iroh::endpoint::SendStream, iroh::endpoint::RecvStream), String> {
-        dial_root(&self.registry.inner.endpoint, &self.alpn.name, to, addr, opener).await
+    ) -> Result<(iroh::endpoint::Connection, iroh::endpoint::SendStream, iroh::endpoint::RecvStream, DialSpan), String> {
+        dial_root(&self.registry.inner.endpoint, &self.alpn.name, to, addr, cert_expires_at, opener).await
     }
 
     /// Owe the dial's `Failed` row (Q169): built when the writer takes it, from the held
@@ -2019,7 +2045,46 @@ impl Dialer {
     }
 }
 
-/// A data-plane connection's dial: `rdm.node.connections.create.via-dial`, a root linked (follows_from)
+/// The caller's `rdm.node.connection.create.via-dial` span, held across the presentation and
+/// verdict so it ends with `outcome = "connected"` or `outcome = "refused"` and `reason`, and
+/// dropped before `open` returns so it is never held open for the connection's life.
+struct DialSpan {
+    span: tracing::Span,
+    started: std::time::Instant,
+    finished: bool,
+}
+
+impl DialSpan {
+    fn connected(mut self) {
+        self.span.record("outcome", "connected");
+        self.span.record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+        self.finished = true;
+    }
+
+    fn refused(mut self, reason: &str) {
+        self.span.record("outcome", "refused");
+        self.span.record("reason", reason);
+        self.span.record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+        self.finished = true;
+    }
+
+    fn ended(mut self, outcome: &str) {
+        self.span.record("outcome", outcome);
+        self.span.record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+        self.finished = true;
+    }
+}
+
+impl Drop for DialSpan {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.span.record("outcome", "closed");
+            self.span.record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+        }
+    }
+}
+
+/// A data-plane connection's dial: `rdm.node.connection.create.via-dial`, a root linked (follows_from)
 /// to `opener`, run on a task of its own so the connection's driver takes the dial's span, never the
 /// opener's (telemetry.md §4). The source's open and the carrier's leg to the destination dial here.
 async fn dial_root(
@@ -2027,14 +2092,17 @@ async fn dial_root(
     alpn: &[u8],
     to: &Birth,
     addr: iroh::EndpointAddr,
+    cert_expires_at: u64,
     opener: &tracing::Span,
-) -> Result<(iroh::endpoint::Connection, iroh::endpoint::SendStream, iroh::endpoint::RecvStream), String> {
+) -> Result<(iroh::endpoint::Connection, iroh::endpoint::SendStream, iroh::endpoint::RecvStream, DialSpan), String> {
     let span = tracing::info_span!(
         parent: None,
-        "rdm.node.connections.create.via-dial",
+        "rdm.node.connection.create.via-dial",
         destination = %to.name,
         alpn = %String::from_utf8_lossy(alpn),
+        cert_expires_at = cert_expires_at,
         outcome = tracing::field::Empty,
+        reason = tracing::field::Empty,
         elapsed_ms = tracing::field::Empty,
     );
     span.follows_from(opener);
@@ -2049,10 +2117,15 @@ async fn dial_root(
             Ok((conn, send, recv))
         }
         .await;
-        span.record("outcome", match &out { Ok(_) => "connected", Err(e) => e.as_str() });
-        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-        drop(span);
-        out
+        match out {
+            Ok((conn, send, recv)) => Ok((conn, send, recv, DialSpan { span, started, finished: false })),
+            Err(e) => {
+                span.record("outcome", e.as_str());
+                span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                drop(span);
+                Err(e)
+            }
+        }
     };
     let mut task = DialTask(match dispatch {
         Some(d) => tokio::spawn(tracing::instrument::WithSubscriber::with_subscriber(dial, d)),

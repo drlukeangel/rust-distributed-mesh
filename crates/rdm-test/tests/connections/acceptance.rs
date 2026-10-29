@@ -105,7 +105,7 @@
 //! | Never: nothing inferred about the dialer | none | none | the refusal cells: the refused dialer's path.name stays ready |
 //! | `NoCerts` admits by name | `t:connections::a_no_certs_acceptor_admits_by_name`; `p:member_cert::a_mesh_primary_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and_says_so` | none | - |
 //! | a read the acceptor cannot complete writes nothing | `t:connections::a_dial_that_presents_nothing_within_the_floor_is_no_credential` (its reset arm) | none | - |
-//! | spans `via-admitted`, `via-refused`, `via-presented` | `t:connections::an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert`; `t:connections::a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_was_judged_on` | none | the refusal cells |
+//! | spans `via-admitted`, `via-refused`, `via-dial` | `t:connections::an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert`; `t:connections::a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_was_judged_on` | none | the refusal cells |
 //!
 //! # lifecycles/node-connections-delete.md
 //!
@@ -266,13 +266,13 @@ async fn one_discovered_proxy_carries_every_later_open_with_no_direct_dial() {
     // the second open's trace.
     let spans = estate.spans();
     // The source's own tunnel spans: the carrier's tunnel span names the same source, and records no kind.
-    let tunnels: Vec<&Value> = named(&spans, "rdm.node.connections.create.via-tunnel").into_iter().filter(|sp| sp["attributes"]["source"] == SOURCE && sp["attributes"]["destination"] == DEST && sp["attributes"]["kind"] == "proxy").collect();
+    let tunnels: Vec<&Value> = named(&spans, "rdm.node.connection.create.via-tunnel").into_iter().filter(|sp| sp["attributes"]["source"] == SOURCE && sp["attributes"]["destination"] == DEST && sp["attributes"]["kind"] == "proxy").collect();
     assert_eq!(tunnels.len(), 2, "two tunnels from the source: {tunnels:#?}");
     let (cold, held_open) = (tunnels[0], tunnels[1]);
     // Each tunnel's carrier span is its child (telemetry.md §3), exported though both tunnels are
     // still open when the estate stops: it ends once its tunnel opens, never at the tunnel's end.
     for tunnel in [cold, held_open] {
-        let carried: Vec<&Value> = named(&spans, "rdm.node.connections.create.via-tunnel").into_iter().filter(|sp| sp["parent_span_id"] == tunnel["span_id"]).collect();
+        let carried: Vec<&Value> = named(&spans, "rdm.node.connection.create.via-tunnel").into_iter().filter(|sp| sp["parent_span_id"] == tunnel["span_id"]).collect();
         assert_eq!(carried.len(), 1, "the carrier's tunnel span is the source tunnel's child: {tunnel} {carried:#?}");
         assert_eq!((s(&carried[0]["attributes"]["carrier"]), s(&carried[0]["attributes"]["entry"]), s(&carried[0]["attributes"]["outcome"])), (CARRIER.to_string(), s(&tunnel["attributes"]["entry"]), "opened".to_string()), "{}", carried[0]);
     }
@@ -472,7 +472,7 @@ async fn a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects
     assert!(s(&none["reason"]).contains("NoActiveRoute"), "the source exposes no active route by name: {none}");
     estate.stop().await;
     let spans = estate.spans();
-    let tunnels: Vec<&Value> = named(&spans, "rdm.node.connections.create.via-tunnel").into_iter().filter(|sp| sp["attributes"]["source"] == SOURCE && sp["attributes"]["carrier"] == CARRIER && sp["attributes"]["destination"] == DEST).collect();
+    let tunnels: Vec<&Value> = named(&spans, "rdm.node.connection.create.via-tunnel").into_iter().filter(|sp| sp["attributes"]["source"] == SOURCE && sp["attributes"]["carrier"] == CARRIER && sp["attributes"]["destination"] == DEST).collect();
     assert!(!tunnels.is_empty(), "{tunnels:#?}");
     estate.record_trace_url(&s(&tunnels.last().unwrap()["trace_id"]));
 }
@@ -549,7 +549,7 @@ async fn refused_dial(estate: &Estate, name: &str, target_name: &str, cert: Vec<
     };
     let _ = router.shutdown().await;
     let span = wait_for("the acceptor's refusal span is exported", Duration::from_secs(15), || async {
-        named(&estate.spans(), "rdm.node.connections.reject.via-refused").into_iter().find(|sp| s(&sp["attributes"]["source"]) == short).cloned()
+        named(&estate.spans(), "rdm.node.connection.reject.via-refused").into_iter().find(|sp| s(&sp["attributes"]["source"]) == short).cloned()
     })
     .await;
     let acceptor = estate.node_value(target_name).await;
@@ -559,7 +559,7 @@ async fn refused_dial(estate: &Estate, name: &str, target_name: &str, cert: Vec<
 
 /// CONTRACT (node-connections-admit.md step 4 and Result: "`refused { reason }`: the verdict is written
 /// back ... the connection is closed", Failure: "A dialer that writes no cert within the floor is
-/// `no-credential`", Spans: "`rdm.node.connections.reject.via-refused` (the same, plus `reason`) on the
+/// `no-credential`", Spans: "`rdm.node.connection.reject.via-refused` (the same, plus `reason`) on the
 /// acceptor", Never: "no status set, no frame published, no mark on any node"; connections.md §12): a
 /// dial on a live rpc node's registered app protocol presenting empty bytes is refused `no-credential`:
 /// the dialer reads the verdict by name, the acceptor's span names the reason, its own path.name and
@@ -577,7 +577,7 @@ async fn a_dial_presenting_no_member_cert_is_refused_no_credential_on_the_accept
     estate.stop().await;
     let spans = estate.spans();
     let short = s(&refused["attributes"]["source"]);
-    assert!(named(&spans, "rdm.node.connections.create.via-admitted").into_iter().all(|sp| s(&sp["attributes"]["source"]) != short && sp["attributes"]["source"] != "mesh1.rpc.8"), "the dial was never admitted");
+    assert!(named(&spans, "rdm.node.connection.serve.via-admitted").into_iter().all(|sp| s(&sp["attributes"]["source"]) != short && sp["attributes"]["source"] != "mesh1.rpc.8"), "the dial was never admitted");
     estate.record_trace_url(&s(&refused["trace_id"]));
 }
 

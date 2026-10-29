@@ -40,7 +40,7 @@ Nothing is cut and nothing reconnects at any step of either.
 | Steps | 1 write the new root secret beside the old one on the fabric-primary; row `minted`; 2 `node.roots.update { roots: [old, new] }` to every node, admins first (the secret to admins, the public set to every other node); row `distributed`; 3 `fabric.ca.renew` under the new anchor, which re-mints every issuer; row `ca-rotated`; 4 wait until every cert row chains to the new anchor (at most one member TTL after step 3); 5 `node.roots.update { roots: [new] }` to every node; row `retired`; the old secret is destroyed everywhere |
 | Bound | The old anchor's own expiry: a rotation not retired by then is surfaced on `fabric.get` as `roots: stalled` |
 | Never | A cert cut short, a status set, a frame published, a connection closed; a node that has not yet received a phase keeps the set it holds, which admits both anchors' chains throughout |
-| Spans | `rdm.node_admin.root.update.via-caller` (phase, root_expires_at, previous_root_expires_at, nodes, outcome) on the fabric-primary; `rdm.node.roots.update.via-installed` (node, roots, phase, secret ∈ {`carried`, `public-only`}) on each node |
+| Spans | `rdm.node_admin.root.update.via-caller` (phase, root_expires_at, previous_root_expires_at, nodes, outcome) on the fabric-primary; `rdm.node.root.update.via-installed` (node, roots, phase, secret ∈ {`carried`, `public-only`}) on each node |
 
 ### `node.roots.update`, the primitive
 

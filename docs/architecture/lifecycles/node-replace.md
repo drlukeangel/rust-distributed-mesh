@@ -64,7 +64,7 @@ leaves the Build at the named step; resume or run the explicit compensation step
 
 ```text
 forward:
-  node.connections.delete(node[1], All) → node.connections.deleted
+  node.connection.delete(node[1], All) → node.connection.deleted
   node.mesh.leave(node[1]) → node.mesh.left
   node.name.update(node[1], name.old) → row written, applied → node.name.updated
   node[1].stop → every stop event
@@ -72,9 +72,9 @@ forward:
   node.create(name) → every FirstStart event, config and tags inherited, node.created
   Rafka data-transfer step
 rollback:
-  node.connections.delete(node[2], All), node.mesh.leave(node[2]), node[2].delete → node.deleted
+  node.connection.delete(node[2], All), node.mesh.leave(node[2]), node[2].delete → node.deleted
   node[1].start → every AfterStop event, joined as name.old
-  node.connections.delete(node[1], All), node.mesh.leave(node[1])
+  node.connection.delete(node[1], All), node.mesh.leave(node[1])
   node.name.update(node[1], name.old → name) → node.name.updated
   node[1].stop → every stop event
   node[1].start → every AfterStop event, joined as name
@@ -98,7 +98,7 @@ sequenceDiagram
     R->>F: build.create(replace steps)
     F->>M: build.attempt.run
     M->>N1: node.connection.delete All, then node.mesh.leave
-    M-->>F: node.connections.deleted, node.mesh.left
+    M-->>F: node.connection.deleted, node.mesh.left
     M->>N1: node.name.update to name.old (row first, then applied)
     M-->>F: node.name.updated
     M->>N1: node[1].stop

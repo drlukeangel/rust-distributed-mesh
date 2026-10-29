@@ -1117,7 +1117,7 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
         let mut rpc2_a = rpc2.connections(ALPN_A).unwrap();
 
         let flow = tracing::info_span!(
-            "rdm.demo.connections.proxy_to_direct",
+            "rdm.demo.connection.proxy_to_direct",
             source = "mesh1.rpc.1",
             carrier = "mesh1.gateway.1",
             destination = "mesh1.rpc.2"
@@ -1283,7 +1283,7 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
         assert!(
             spans
                 .iter()
-                .any(|s| s["name"] == "rdm.node.connections.create.via-tunnel"
+                .any(|s| s["name"] == "rdm.node.connection.create.via-tunnel"
                     && s["attributes"]["source"] == "mesh1.rpc.1"
                     && s["attributes"]["carrier"] == "mesh1.gateway.1"
                     && s["attributes"]["destination"] == "mesh1.rpc.2"),
@@ -1294,7 +1294,7 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
                 .iter()
                 // Each acceptor admits on the dialer's cert chain (node-connections-admit.md: via-admitted
                 // names the cert's expiry), never by name.
-                .filter(|s| s["name"] == "rdm.node.connections.create.via-admitted" && {
+                .filter(|s| s["name"] == "rdm.node.connection.serve.via-admitted" && {
                     let e = &s["attributes"]["cert_expires_at"];
                     e.as_u64().or_else(|| e.as_str().and_then(|e| e.parse().ok())).is_some_and(|e| e > 0)
                 })
@@ -1303,7 +1303,7 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
             "three-node trace must include the three cert admission spans across source, carrier, and destination"
         );
         assert!(
-            !spans.iter().any(|s| s["name"] == "rdm.node.connections.create.via-no-certs-configured"),
+            !spans.iter().any(|s| s["name"] == "rdm.node.connection.serve.via-no-certs-configured"),
             "a fabric with certs admits no connection by name"
         );
     });

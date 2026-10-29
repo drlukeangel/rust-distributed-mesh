@@ -145,7 +145,7 @@ records and applies every property that differs, each by its own operation. It d
 | `tags` | in place: the node's tag rows |
 | `storage`, `placement` | onto the row, effective at the node's next birth; with an executable change they ride that re-birth (Q157) |
 
-Only a resize or a replacement puts the fabric back to pending ([states.md](lifecycles/states.md#resize-and-executable-replacement)); a change of `config`, `tags`, `storage` or `placement` alone leaves it ready. A node's `config` and `tags` change at any time, between Builds and while one runs, through `node.config.update` and `node.tags.*`; the last write wins: a property a Build applied to a node, at its create's claim or by its own operation, is not applied again by a later attempt of that Build.
+Only a resize or a replacement puts the fabric back to pending ([states.md](lifecycles/states.md#resize-and-executable-replacement)); a change of `config`, `tags`, `storage` or `placement` alone leaves it ready. A node's `config` and `tags` change at any time, between Builds and while one runs, through `node.config.update` and `node.tag.*`; the last write wins: a property a Build applied to a node, at its create's claim or by its own operation, is not applied again by a later attempt of that Build.
 
 ~~~text
 B.topology:

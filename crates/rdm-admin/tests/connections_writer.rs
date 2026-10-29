@@ -950,7 +950,7 @@ fn attr(sp: &serde_json::Value, k: &str) -> Option<String> {
 /// row's), the attempt's Direct Connected (`via-observed`), the Proxy's `Disconnected
 /// (direct-restored)` (`via-retirement`), a first Direct Failed toward another destination
 /// (`via-observed`, its round and ordinal 1) and a connections delete's drop
-/// (`via-connections-delete`). Every transition span names source, destination, kind, state and
+/// (`via-connection-delete`). Every transition span names source, destination, kind, state and
 /// reason; every Proxy transition its carrier; every Direct Failed and every reconnect attempt its
 /// round and ordinal. Must NOT happen: a landed transition whose span leaves out any of them.
 #[test]
@@ -989,7 +989,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
     });
     let _ = std::fs::remove_dir_all(&dir);
     let named = |n: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == n).collect() };
-    let transitions: Vec<&serde_json::Value> = ["rdm.node_admin.connection.update.via-observed", "rdm.node_admin.connection.update.via-retirement", "rdm.node_admin.connection.update.via-connections-delete"].into_iter().flat_map(named).collect();
+    let transitions: Vec<&serde_json::Value> = ["rdm.node_admin.connection.update.via-observed", "rdm.node_admin.connection.update.via-retirement", "rdm.node_admin.connection.update.via-connection-delete"].into_iter().flat_map(named).collect();
     let kinds: Vec<(String, String, Option<String>)> = transitions.iter().map(|sp| (sp["name"].as_str().unwrap().rsplit('.').next().unwrap().to_string(), format!("{}->{}", attr(sp, "source").unwrap_or_default(), attr(sp, "destination").unwrap_or_default()), attr(sp, "state"))).collect();
     assert_eq!(transitions.len(), 5, "five transitions landed (Proxy Connected, Direct Connected, Proxy Disconnected, Direct Failed, the drop): {kinds:?}");
     for sp in &transitions {
@@ -1007,7 +1007,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
     }
     let retirement = named("rdm.node_admin.connection.update.via-retirement");
     assert_eq!(retirement.iter().map(|sp| (attr(sp, "kind"), attr(sp, "state"), attr(sp, "reason"), attr(sp, "outcome"))).collect::<Vec<_>>(), vec![(Some("proxy".into()), Some("disconnected".into()), Some("direct-restored".into()), Some("landed".into()))], "{retirement:?}");
-    let drop = named("rdm.node_admin.connection.update.via-connections-delete");
+    let drop = named("rdm.node_admin.connection.update.via-connection-delete");
     assert_eq!(drop.iter().map(|sp| (attr(sp, "destination"), attr(sp, "kind"), attr(sp, "state"))).collect::<Vec<_>>(), vec![(Some(names.2.clone()), Some("direct".into()), Some("disconnected".into()))], "{drop:?}");
     let failed: Vec<&&serde_json::Value> = transitions.iter().filter(|sp| attr(sp, "state").as_deref() == Some("failed")).collect();
     assert_eq!(failed.iter().map(|sp| (attr(sp, "destination"), attr(sp, "recovery_round"), attr(sp, "attempt_ordinal"))).collect::<Vec<_>>(), vec![(Some(names.3.clone()), Some("1".into()), Some("1".into()))], "a Direct Failed names its round and ordinal: {failed:?}");

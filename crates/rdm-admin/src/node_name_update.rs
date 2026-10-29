@@ -143,7 +143,7 @@ struct Admission {
     quiet: Result<(), (crate::model::NodeStatus, Vec<ConnectionId>, String)>,
 }
 
-/// [`Admission`] of `held`: live, its `node.connections.deleted` of an `All` held with nothing left
+/// [`Admission`] of `held`: live, its `node.connection.deleted` of an `All` held with nothing left
 /// held, then its `node.mesh.left` (`left`). A stopped node is never renamed: it is renamed live, after
 /// its connections and its mesh, and stopped after (node-replace.md).
 fn admission_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool) -> Admission {
@@ -157,11 +157,11 @@ fn admission_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDele
     match deleted {
         None => Admission {
             labels: (format!("{:?}", held.status), "none-deleted", on_mesh),
-            quiet: Err((held.status, vec![], format!("is {:?} and its mesh-primary holds no node.connections.deleted for this birth", held.status))),
+            quiet: Err((held.status, vec![], format!("is {:?} and its mesh-primary holds no node.connection.deleted for this birth", held.status))),
         },
         Some(r) if !r.all => Admission {
             labels: (format!("{:?}", r.status_at_cut), "partial", on_mesh),
-            quiet: Err((r.status_at_cut, vec![], format!("is {:?}, and its last node.connection.delete named exact connections, not All: it holds no node.connections.deleted of every connection", r.status_at_cut))),
+            quiet: Err((r.status_at_cut, vec![], format!("is {:?}, and its last node.connection.delete named exact connections, not All: it holds no node.connection.deleted of every connection", r.status_at_cut))),
         },
         Some(r) if !r.held.is_empty() => Admission {
             labels: (format!("{:?}", r.status_at_cut), "held", on_mesh),

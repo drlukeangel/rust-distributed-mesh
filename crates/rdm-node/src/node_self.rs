@@ -583,7 +583,7 @@ impl NodeSelf {
                             w.direct_closed(&c.key.peer, inc);
                         }
                         tracing::info_span!(
-                            "rdm.node_admin.connection.delete.via-connections-delete",
+                            "rdm.node_admin.connection.delete.via-connection-delete",
                             node = %self.held_name(),
                             entry = %route.id,
                             destination = %route.destination.name,
@@ -1597,7 +1597,7 @@ pub fn connections_answer(held: &HeldConnections, filter: &rdm_core::filter::Fil
     match &reply {
         StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %node, read, connections = count, bytes, max, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the held connections encode past the Status reply bound; nothing of them is sent")),
-        _ => tracing::info_span!("rdm.node_admin.node.serve.via-connections-get", node = %node, properties = %filter.properties(), connections = count, complete, "otel.kind" = "internal")
+        _ => tracing::info_span!("rdm.node_admin.node.serve.via-connection-get", node = %node, properties = %filter.properties(), connections = count, complete, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the connections the node holds answered")),
     }
     reply
@@ -2070,7 +2070,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         for expected in [
             "rdm.node.status.reject.via-request-not-handled",
-            "rdm.node_admin.node.serve.via-connections-get",
+            "rdm.node_admin.node.serve.via-connection-get",
             "rdm.node_admin.node.reject.via-filter",
             "rdm.node_admin.node.update.via-stop-declarations",
         ] {

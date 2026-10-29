@@ -218,7 +218,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
     assert!(served("rdm.node_admin.mesh.serve.via-get", &|f| at(f, "properties", "name") && at(f, "meshes", "1")), "mesh.get [name: mesh1] served");
     assert!(served("rdm.node_admin.mesh.serve.via-get", &|f| at(f, "pairs", "(name, [mesh9])") && at(f, "meshes", "0")), "mesh.get [name: mesh9] served, empty");
     assert!(served("rdm.node_admin.fabric.serve.via-get", &|f| at(f, "read", "fabric.get") && at(f, "fabrics", "1")), "fabric.get served");
-    assert!(served("rdm.node_admin.node.serve.via-connections-get", &|f| at(f, "node", "mesh1.admin.1")), "node.connection.get served by the admin");
+    assert!(served("rdm.node_admin.node.serve.via-connection-get", &|f| at(f, "node", "mesh1.admin.1")), "node.connection.get served by the admin");
 }
 
 fn labels(l: &[&str]) -> BTreeSet<String> {
@@ -468,7 +468,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         }
         let _ = std::fs::remove_dir_all(&root);
     });
-    assert!(spans.0.lock().unwrap().values().any(|(n, _, f)| n == "rdm.node_admin.node.serve.via-connections-get" && f.get("node").map(String::as_str) == Some("mesh1.rpc.1")), "node.connection.get served by the rpc node");
+    assert!(spans.0.lock().unwrap().values().any(|(n, _, f)| n == "rdm.node_admin.node.serve.via-connection-get" && f.get("node").map(String::as_str) == Some("mesh1.rpc.1")), "node.connection.get served by the rpc node");
 }
 
 /// The fields of every span named `name` that `node` opened, as the cell's capture holds them.

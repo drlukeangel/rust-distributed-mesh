@@ -36,7 +36,7 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
    graceful closure of every open connection of the node, each open Direct or Proxy entry of its
    connections log. Its acknowledgement, `ConnectionsDeleting` (Data), goes on the stop stream once
    its block on new application work is in force, and the mesh-primary writes connections-deleting
-   from it; its completion, node.connections.deleted with its `Established` or `Deadline` receipt
+   from it; its completion, node.connection.deleted with its `Established` or `Deadline` receipt
    and the closed ids, goes on the stop stream as `StopConnectionsDeleted { receipt }` (Data), and the
    mesh-primary writes connections-deleted from an `Established` one. The child call keeps its spans
    and receipt. On the deadline the stop may hard-cut, and its receipt keeps the deadline evidence.
@@ -102,7 +102,7 @@ sequenceDiagram
     M->>N: node.stop
     N-->>M: CommandAccepted (stopping)
     N-->>M: ConnectionsDeleting (node.connection.delete acknowledged)
-    N-->>M: StopConnectionsDeleted with receipt and closed ids (node.connections.deleted)
+    N-->>M: StopConnectionsDeleted with receipt and closed ids (node.connection.deleted)
     N-->>M: Leaving (node.mesh.leave acknowledged)
     Note over N: gossip neighbours and Node RPC pool left
     N-->>M: StopMeshLeft (node.mesh.left)

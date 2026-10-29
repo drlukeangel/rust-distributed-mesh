@@ -611,7 +611,7 @@ impl ConnectionsWriter {
                 ),
                 Origin::Drop { closed_entry, reason } => tracing::info_span!(
                     parent: &parent,
-                    "rdm.node_admin.connection.update.via-connections-delete",
+                    "rdm.node_admin.connection.update.via-connection-delete",
                     source = %row.source.name,
                     destination = %row.destination.name,
                     carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),

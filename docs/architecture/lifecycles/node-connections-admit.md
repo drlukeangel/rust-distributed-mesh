@@ -24,8 +24,8 @@ identity. The cert check is the credential R-RX1 assumed, not a sender gate.
 | Result | `admitted`: the connection is served. `refused { reason }` with `no-credential`, `ca-bad-signature`, `ca-expired`, `issuer-bad-signature`, `issuer-expired`, `issuer-mesh-mismatch`, `member-outlives-issuer`, `issuer-outlives-ca`, `bad-signature` or `expired`: the verdict is written, then the connection is closed |
 | Row | A refusal is written as the connection fact `Refused` with its reason, source the dialer when a topology view names its key, destination the acceptor; a dialer no view names is refused with the span only, no row ([connections.md §1.2](../connections.md#12-connection-state)); an admission is the ordinary `Connected` fact |
 | Never | Anything about the dialer inferred beyond this one connection: `Refused` is the acceptor's fact about one dial, never proof about the dialer; no status set, no frame published, no mark on any node |
-| `NoCerts` | A node-admin started `NoCerts` admits every connection by name, spanned `via-no-certs-configured`; an empty cert presented to a fabric with certs is `no-credential` |
-| Spans | `rdm.node.connections.create.via-admitted` (source, destination, connection, alpn, cert_expires_at, clock) or `rdm.node.connections.reject.via-refused` (the same, plus `reason`) on the acceptor; `rdm.node.connections.update.via-presented` (destination, alpn, cert_expires_at) on the dialer |
+| `NoCerts` | A node-admin started `NoCerts` admits every connection by name, spanned `rdm.node.connection.serve.via-no-certs-configured`; an empty cert presented to a fabric with certs is `no-credential` |
+| Spans | `rdm.node.connection.serve.via-admitted` (source, destination, connection, alpn, cert_expires_at, clock) or `rdm.node.connection.reject.via-refused` (the same, plus `reason`) on the acceptor, as the dial span's child; `rdm.node.connection.create.via-dial` (destination, alpn, cert_expires_at, outcome, reason, elapsed_ms) on the dialer |
 
 ## Numbered end-to-end sequence
 

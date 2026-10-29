@@ -98,11 +98,11 @@ The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/n
 
 ## Tags
 
-A tag is a label on a node (and on a mesh: `mesh.tags.*`, the same shape). It selects nodes; it
+A tag is a label on a node (and on a mesh: `mesh.tag.*`, the same shape). It selects nodes; it
 holds no value (values go in `config`). It is an annotation with no execution semantics: RDM
 decides nothing on a tag, and the provider reads none
 ([deployment-provider.md §4](../architecture/deployment-provider.md#4-storage-policy-and-the-data-dir)).
-The contract is the `node.tags` row on [node-rpc-envelope.md](../architecture/node-rpc-envelope.md#typed-objects-mapped-to-wire-and-execution-owners)
+The contract is the `node.tag.get/create/delete` row on [node-rpc-envelope.md](../architecture/node-rpc-envelope.md#typed-objects-mapped-to-wire-and-execution-owners)
 and the `tags` row of [Node properties](../architecture/node-rpc-envelope.md#node-properties).
 
 | How do I… | What happens |

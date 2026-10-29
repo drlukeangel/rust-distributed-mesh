@@ -78,8 +78,8 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
                 while let Ok((mut send, mut recv)) = conn.accept_bi().await {
                     let Ok(bytes) = recv.read_to_end(1 << 20).await else { break };
                     let answer = format!("echo {own}: {}", String::from_utf8_lossy(&bytes));
-                    // The connection itself is RDM's record (`rdm.node.connections.create.via-admitted`,
-                    // `update.via-presented`); the role's answer is its own log line, no span of the app's.
+                    // The connection itself is RDM's record (`rdm.node.connection.serve.via-admitted`,
+                    // `rdm.node.connection.create.via-dial`); the role's answer is its own log line, no span of the app's.
                     tracing::info!(target: "rshape", node = %own, peer = %conn.peer().name, kind = ?conn.kind(), bytes = bytes.len(), "a data-plane stream answered");
                     if send.write_all(answer.as_bytes()).await.is_err() || send.finish().is_err() {
                         break;

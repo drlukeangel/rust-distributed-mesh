@@ -2925,13 +2925,13 @@ mod tests {
     }
 
     /// CONTRACT (build.md §1, "The Build applies the diff", and its last line: "A node's `config` and
-    /// `tags` change at any time between Builds as well, through `node.config.update` and `node.tags.*`;
+    /// `tags` change at any time between Builds as well, through `node.config.update` and `node.tag.*`;
     /// the last write wins"; node-config-update.md: "It is admitted at any time (Q166) ... never refused
     /// because a Build is running: ... any interleaving with a Build is a serial order of the two"): a
     /// property this Build already applied to a path is not applied again by a later attempt of it,
     /// whether its create's claim wrote it (`PrepareStorage` of the path's `node.create`, the entry's
     /// config, tags, storage and placement onto the row) or its own `node.config.update` /
-    /// `node.tags.*` completed; a write the node or a caller made after it stands. mesh1.rpc.1's entry
+    /// `node.tag.*` completed; a write the node or a caller made after it stands. mesh1.rpc.1's entry
     /// names config {} and no label; its row carries {port: 7} and the label y, the node's own writes
     /// after this Build created it: no operation. A replacement's successor claims its seed's properties,
     /// never the entry's: the entry's are still applied. A later Build, whose receipts hold none of these,

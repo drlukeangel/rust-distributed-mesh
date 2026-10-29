@@ -1464,7 +1464,7 @@ mod tests {
     #[test]
     fn a_span_that_logs_an_error_or_names_a_refusal_is_flagged() {
         let err_event = json!({"name": "x", "attributes": {"level": "ERROR"}});
-        assert_eq!(severity("rdm.node.update.via-connections-delete", &[err_event]), "error");
+        assert_eq!(severity("rdm.node.update.via-connection-delete", &[err_event]), "error");
         assert_eq!(severity("rdm.node_rpc.request.reject.via-stale", &[]), "error");
         assert_eq!(severity("rdm.node_rpc.request.serve", &[json!({"attributes": {"level": "WARN"}})]), "warn");
         assert_eq!(severity("rdm.node_rpc.request.serve", &[]), "ok");

@@ -368,7 +368,7 @@ fn a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admi
         let past = first.cert.expiry_ms + rdm_core::cadence::staleness_floor().as_millis() as u64 + 200;
         until("rafka-time passes the first cert's expiry and its skew", BOUND, async || (a.rafka_time.now_ms() > past && b.rafka_time.now_ms() > past).then_some(())).await;
         a.data_connections_for_testkit().probe_direct(&birth_of(&b), ALPN).await.expect("the renewed member is admitted past its first cert's expiry");
-        let admitted = named(&spans, "rdm.node.connections.create.via-admitted").into_iter().rfind(|f| f.get("source").map(String::as_str) == Some("mesh1.rpc.1")).expect("the admission fact");
+        let admitted = named(&spans, "rdm.node.connection.serve.via-admitted").into_iter().rfind(|f| f.get("source").map(String::as_str) == Some("mesh1.rpc.1")).expect("the admission fact");
         assert!(num(&admitted, "cert_expires_at") > first.cert.expiry_ms, "admitted on a cert expiring after the first: {admitted:?}");
         stop_all(vec![a, b], vec![root]).await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -454,7 +454,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         // status reaches it (rdm.mesh.topology.update.via-projected-status), after the admin's row is written:
         // the renewal is compared against the peer's settled view of it, never its first digest.
         let (digest_before, _) = until("mesh1.rpc.2's view holds mesh1.rpc.1's digest ready", BOUND, async || b.topology_view.digest_view.get(a.digest.node.node_id.as_str()).filter(|(d, _)| d.status == rdm_core::digest::MemberStatus::Ready)).await;
-        let connection_spans = |spans: &crate::common::Spans| spans.0.lock().unwrap().values().filter(|(n, _, _)| n.starts_with("rdm.node.connections.")).count();
+        let connection_spans = |spans: &crate::common::Spans| spans.0.lock().unwrap().values().filter(|(n, _, _)| n.starts_with("rdm.node.connection.")).count();
         let before = connection_spans(&spans);
 
         until("mesh1.rpc.1 is renewed and installs it", BOUND, async || {
@@ -767,7 +767,7 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         assert_eq!(certs::verify_issuer(&new_issuer, &[test_root_public()]), Ok(()), "the new issuer chains to the root");
         newer.data_connections_for_testkit().probe_direct(&birth_of(&holder), ALPN).await.expect("the old issuer's holder admits the new issuer's member");
         assert!(!named(&spans, "rdm.node.cert.update.via-installed").iter().any(|f| f.get("node").map(String::as_str) == Some("mesh1.rpc.1")), "the holder still holds the old issuer's cert");
-        let admitted = named(&spans, "rdm.node.connections.create.via-admitted").into_iter().rfind(|f| f.get("destination").map(String::as_str) == Some("mesh1.rpc.1")).expect("the admission fact");
+        let admitted = named(&spans, "rdm.node.connection.serve.via-admitted").into_iter().rfind(|f| f.get("destination").map(String::as_str) == Some("mesh1.rpc.1")).expect("the admission fact");
         assert_eq!(num(&admitted, "cert_expires_at"), signed(&newer.member_cert).cert.expiry_ms);
         stop_all(vec![holder, newer, first], vec![admin2, root]).await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -1068,7 +1068,7 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:42
 /// "| Never | A cert cut short, a status set, a frame published, a connection closed; a node that has not yet received a phase keeps the set it holds, which admits both anchors' chains throughout |"
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:43
-/// "| Spans | `rdm.node_admin.root.update.via-caller` (phase, root_expires_at, previous_root_expires_at, nodes, outcome) on the fabric-primary; `rdm.node.roots.update.via-installed` (node, roots, phase, secret ∈ {`carried`, `public-only`}) on each node |"
+/// "| Spans | `rdm.node_admin.root.update.via-caller` (phase, root_expires_at, previous_root_expires_at, nodes, outcome) on the fabric-primary; `rdm.node.root.update.via-installed` (node, roots, phase, secret ∈ {`carried`, `public-only`}) on each node |"
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:49
 /// "| Caller | The fabric-primary |"
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:50
@@ -1134,7 +1134,7 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
         let alone = vec![hex(&new.verifying_key())];
         for node in ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"] {
             until(&format!("{node} installs the new root alone"), BOUND, async || {
-                named(&spans, "rdm.node.roots.update.via-installed").into_iter().find(|f| f.get("node").map(String::as_str) == Some(node) && f.get("roots").is_some_and(|r| r.contains(&alone[0]) && !r.contains(',')))
+                named(&spans, "rdm.node.root.update.via-installed").into_iter().find(|f| f.get("node").map(String::as_str) == Some(node) && f.get("roots").is_some_and(|r| r.contains(&alone[0]) && !r.contains(',')))
             })
             .await;
         }

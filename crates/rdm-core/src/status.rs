@@ -512,7 +512,7 @@ pub enum StatusRequest {
     /// mesh-primary, the only writer of its mesh's rows, through a carrier (Forward `0x1A`) when it
     /// cannot reach it directly, to add `labels` to the node's tags. Each label is its own key of the
     /// node store's tags index, a blind put: a label the node already carries is ignored and named in
-    /// the reply. Answered [`StatusReply::TagsCreated`] (`node.tags.created`) once the row and its
+    /// the reply. Answered [`StatusReply::TagsCreated`] (`node.tag.created`) once the row and its
     /// index entries are written; a non-label, an empty list, or labels that would carry the node past
     /// [`MAX_NODE_TAGS`] are [`StatusReply::RejectedTags`] with nothing written. No precondition but
     /// the fabric having first reached ready; the node is told nothing. A single call,
@@ -529,7 +529,7 @@ pub enum StatusRequest {
     },
     /// `node.tag.delete` (node-rpc-envelope.md node.tags; R-TG1): as [`StatusRequest::CreateTags`],
     /// removing every label (`All`) or the named ones; each removed label's index key is tombstoned.
-    /// Answered [`StatusReply::TagsDeleted`] (`node.tags.deleted`) naming any named label the node
+    /// Answered [`StatusReply::TagsDeleted`] (`node.tag.deleted`) naming any named label the node
     /// did not carry.
     ///
     /// Position 27 on the wire.
@@ -1656,7 +1656,7 @@ pub enum StatusReply {
         /// Never read.
         status: String,
     },
-    /// The reply of a `CreateTags` (`node.tags.created`): the mesh-primary wrote the node's row
+    /// The reply of a `CreateTags` (`node.tag.created`): the mesh-primary wrote the node's row
     /// carrying the labels and their tags index entries.
     ///
     /// Position 45 on the wire.
@@ -1669,7 +1669,7 @@ pub enum StatusReply {
         /// (`AlreadyApplied` for those).
         already_carried: BTreeSet<String>,
     },
-    /// The reply of a `DeleteTags` (`node.tags.deleted`): the mesh-primary wrote the node's row
+    /// The reply of a `DeleteTags` (`node.tag.deleted`): the mesh-primary wrote the node's row
     /// without the labels and tombstoned their tags index entries.
     ///
     /// Position 46 on the wire.

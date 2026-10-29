@@ -605,7 +605,7 @@ A stream Proxy (i148, a tunnel) outlives its retirement. `Proxy Disconnected(rea
 the route, so the next `open` goes Direct; the tunnel that is already open and its streams run to their own
 end. Until then it is a held connection (§4.2): `node.connection.get` lists it by its row id with
 `route: retired`, and `node.connection.delete { All | [ids] }` closes it by that id like any other. Its end
-writes no second row; it is spanned `rdm.node.connections.delete.via-tunnel-ended`.
+writes no second row; it is spanned `rdm.node.connection.delete.via-tunnel-ended`.
 
 ---
 
@@ -644,8 +644,8 @@ reason
 ```
 
 Proxy transitions additionally identify the carrier. Reconnect attempts identify the recovery round and
-attempt ordinal. An admission verdict is spanned `rdm.node.connections.create.via-admitted` or
-`rdm.node.connections.reject.via-refused` with the named reason, on the acceptor.
+attempt ordinal. An admission verdict is spanned `rdm.node.connection.serve.via-admitted` or
+`rdm.node.connection.reject.via-refused` with the named reason, on the acceptor.
 
 The reconnect attempt span is owned by node-base and records whether it:
 
