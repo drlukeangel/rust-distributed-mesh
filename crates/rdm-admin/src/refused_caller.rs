@@ -312,16 +312,15 @@ mod tests {
         n
     }
 
-    /// CONTRACT (Q207, Q217; #3211 red 3): a birth of mesh1.rpc.2 was deleted (its record written
-    /// deleted, its Digest refused, so no view holds it), and its runtime comes back and declares
-    /// Stopped to its mesh-primary, the fabric-primary here. The declaration is refused `SubjectUnknown`
-    /// at once, and the declaration door decides the caller by its path.name and the atlas: nothing
-    /// else is at the path and its record is deleted, so it is deleted (`delete-deleted-birth`), the
-    /// current Build still needing the path (`needed`, node recovery's re-create), decided at the root
-    /// itself, and reported for `node.terminate` (`via-returned-reported` naming the exact birth; the
-    /// rig builds no Build door, so the open is refused naming it).
-    /// Must NOT happen: the refusal and nothing decided (the red), the caller re-admitted, or the
-    /// refusal held on the decision.
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:31
+    /// "A caller birth a primary does not hold (its Digest refused by name under [gossip.md §3.1 receiver
+    ///  rules](../gossip.md#31-frame-catalog), its status declaration refused `SubjectUnknown`, or its join
+    ///  report refused `JoinMismatch` because the row at its path.name holds another node) is decided by
+    ///  its path.name and the primary's atlas, one decision for the fabric-primary and every mesh-primary (Q207)"
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:43
+    /// "A deleted caller is reported to the fabric-primary (`rdm.node_admin.node.update.via-returned-reported`),
+    ///  which terminates its runtime under `node.terminate:<path>@<incarnation>`; each decision is one
+    ///  `rdm.node_admin.node.update.via-refused-caller` span."
     #[tokio::test]
     async fn a_deleted_birth_that_declares_stopped_is_refused_and_deleted_through_the_declaration_door() {
         let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));

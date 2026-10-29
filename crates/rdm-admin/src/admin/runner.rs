@@ -2399,4 +2399,86 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:20
+    /// "The verdict is the one decision (Q111). Reached: the node is commanded back through
+    ///  [node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path.name with a
+    ///  new node.id (Q110)."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:25
+    /// "Nothing waits on a proof of termination: not node recovery, a primary change, a name's release,
+    ///  node.delete or mesh.delete."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:28
+    /// "Data dir: if the provider step finds the runtime exited, the re-created node takes the inherited data
+    ///  dir; on any other verdict, a newly allocated one (R-FM2)."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:54
+    /// "Caller: The primary above the node: its mesh-primary for a member of any type, the fabric-primary for a mesh-primary or another mesh's node-admin"
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:58
+    /// "What follows: Reached: node.mesh.join. Any other verdict: re-created at the same path.name with a new node.id, over the inherited data dir when the verdict is `exited`, over a newly allocated one otherwise"
+    #[tokio::test]
+    async fn delete_read_exited_selects_inherited_data_dir_only_when_terminate_runtime_verdict_is_exited() {
+        use crate::build::ExitedBirth;
+        use crate::build_state::{BuildStepReceipt, StepOutcome};
+        use crate::deployment::pipeline::{DeleteStep, TerminalReceipt};
+
+        let (dir, runner, builds, build_id) = runner_rig("delete-read-exited-r-fm2").await;
+        let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
+        let exited_birth = ExitedBirth {
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+        };
+        let operation = format!("node.delete:{rpc}");
+
+        // 1. No TerminateRuntime receipt yet -> Err naming the birth and operation.
+        let missing = runner
+            .delete_read_exited(&*builds, &build_id, 1, &rpc, &exited_birth)
+            .await
+            .expect_err("missing TerminateRuntime receipt must fail by name");
+        assert!(
+            missing.contains("holds no completed TerminateRuntime") && missing.contains(&operation),
+            "{missing}"
+        );
+
+        // 2. For every TerminateRuntime verdict (`exited`, `running`, `os-stopped`, `unavailable`),
+        //    only `"exited"` selects the inherited data dir (`true`); every other verdict selects a
+        //    newly allocated one (`false`), without waiting on a proof of termination on non-exited verdicts.
+        for (attempt, verdict, expected_inherited) in [
+            (1u32, "exited", true),
+            (2u32, "running", false),
+            (3u32, "os-stopped", false),
+            (4u32, "unavailable", false),
+        ] {
+            let terminal = TerminalReceipt {
+                node: rpc.to_string(),
+                node_id: exited_birth.node_id.to_string(),
+                incarnation_id: exited_birth.incarnation.as_str().to_string(),
+                runtime: None,
+                exit_code: (verdict == "exited").then_some(0),
+                verdict: Some(verdict.into()),
+                data_dir: Some("/data/mesh1.rpc.1".into()),
+            };
+            builds
+                .append_step_receipt(&BuildStepReceipt {
+                    mesh: None,
+                    build_id: build_id.clone(),
+                    attempt,
+                    operation: operation.clone(),
+                    step: DeleteStep::TerminateRuntime.name().into(),
+                    outcome: StepOutcome::Complete,
+                    output: Some(serde_json::to_value(&terminal).unwrap()),
+                    executor: None,
+                })
+                .await
+                .unwrap();
+            let got = runner
+                .delete_read_exited(&*builds, &build_id, attempt, &rpc, &exited_birth)
+                .await
+                .expect("TerminateRuntime receipt present");
+            assert_eq!(
+                got, expected_inherited,
+                "verdict `{verdict}` on attempt {attempt} must yield inherited={expected_inherited}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

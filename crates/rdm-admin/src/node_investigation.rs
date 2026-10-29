@@ -289,7 +289,10 @@ mod tests {
         StatusReply::Current { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Ready }
     }
 
-    /// CONTRACT (Q107 item 1 step a; connections.md §3.2, carrier discovery
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:8
+    /// "1. Read the by-destination connections index ([connections.md §3.1](../connections.md#31-declared-indexes)).
+    ///    It names the peers to try; it never proves the node is reachable."
+    /// (Q107 item 1 step a; connections.md §3.2, carrier discovery
     /// `rtable(destination).filter(state=active).filter(kind=direct)`): the leads are the sources, in
     /// any mesh, of the `Direct` `Connected` rows to the exact birth, resolved to ready members of the
     /// view, in path order, one per node. Must NOT be a lead: a row marked dropped or failed, a row to
@@ -418,12 +421,22 @@ mod tests {
         f
     }
 
-    /// CONTRACT (Q107 item 1; node-investigation.md: "Only an answer from the exact birth counts as
-    /// `reached`"; node-runtime-inspect.md "Result"): an answer from the exact birth, direct or carried,
-    /// is `reached` with that answer and its carrier, and the provider is never asked; with nobody
-    /// reaching it, the verdict is the provider's, `running`, `os-stopped`, `exited` or `unproven`; a
-    /// node with no birth runs no ladder and is unproven by name, the provider not asked. An answer
-    /// naming another birth reaches nothing.
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:5
+    /// "A primitive. Node investigation is the one function every caller uses on one exact birth, ending in
+    ///  one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:10
+    /// "2. [node.runtime.inspect](node-runtime-inspect.md). `exited` or `os-stopped` is the verdict; no tickle is sent.
+    ///  3. [node.tickle](node-tickle.md), direct.
+    ///  4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`, or `unproven` for `unavailable`.
+    ///  Only an answer from the exact birth counts as `reached`."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:20
+    /// "The verdict is the one decision (Q111). Reached: the node is commanded back through
+    ///  [node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path.name with a
+    ///  new node.id (Q110)."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:55
+    /// "Target: One node, by `(node.id, incarnation)`
+    ///  Steps: The by-destination connections index read, node.runtime.inspect, node.tickle direct, the same tickle via those peers
+    ///  Result: `reached`, `running`, `os-stopped`, `exited` or `unproven`"
     #[tokio::test]
     async fn only_the_exact_births_answer_is_reached_and_only_the_provider_proves_an_exit() {
         let (node, view) = world();
@@ -488,12 +501,10 @@ mod tests {
         }
     }
 
-    /// CONTRACT (node-investigation.md, Q182): "a tickle answered by a birth that has left a command
-    /// unanswered past the floor is not `reached`": the exact birth's answer, direct or carried, is not
-    /// `reached` while it has such a command, and the verdict continues to the provider's inspection;
-    /// the same answers from a birth with no such command are `reached`. Must NOT happen: the answer of
-    /// a birth that does not answer commands ending the investigation as `reached`, and the provider
-    /// never being asked.
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:16
+    /// "A node that does not answer a command is silent, whatever it gossips (Q182): an owed command it
+    ///  leaves unanswered past the staleness floor starts node investigation on its birth as silence does,
+    ///  and a tickle answered by a birth that has left a command unanswered past the floor is not `reached`."
     #[tokio::test]
     async fn a_birth_with_a_command_unanswered_past_the_floor_is_not_reached_by_its_tickle_answer() {
         let (node, view) = world();
@@ -512,13 +523,15 @@ mod tests {
 
     // @feature: node-investigation
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:5
-    /// "Node investigation is the one function every caller uses on one exact birth, ending in
+    /// "A primitive. Node investigation is the one function every caller uses on one exact birth, ending in
     ///  one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its steps, in order:
-    ///  1. Read the by-destination connections index (connections.md §3.1). It names the peers to try;
-    ///     it never proves the node is reachable.
-    ///  2. node.tickle, direct.
-    ///  3. The same tickle via those peers.
-    ///  4. node.runtime.inspect."
+    ///  1. Read the by-destination connections index ([connections.md §3.1](../connections.md#31-declared-indexes)).
+    ///     It names the peers to try; it never proves the node is reachable.
+    ///  2. [node.runtime.inspect](node-runtime-inspect.md). `exited` or `os-stopped` is the verdict; no tickle is sent.
+    ///  3. [node.tickle](node-tickle.md), direct.
+    ///  4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`, or `unproven` for `unavailable`."
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:59
+    /// "Spans: [node.tickle](node-tickle.md#operation-contract)'s and [node.runtime.inspect](node-runtime-inspect.md#operation-contract)'s own"
     #[tokio::test]
     async fn investigate_orders_leads_before_mesh_carriers_and_emits_provider_inspection_span_on_unreached()
     {

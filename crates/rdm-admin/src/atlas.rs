@@ -973,10 +973,13 @@ mod tests {
         out
     }
 
-    /// CONTRACT (Q207, #3211 red 3): a deleted birth whose path.name was re-created declares Stopped and
-    /// is refused as unknown; its mesh-primary's atlas holds another birth at that path.name now, so the
-    /// caller is deleted, whatever the topology needs. Must NOT happen: the caller's own deleted record
-    /// read as the birth at its path (re-admitting it over the successor).
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:31
+    /// "A caller birth a primary does not hold ... is decided by its path.name and the primary's atlas,
+    ///  one decision for the fabric-primary and every mesh-primary (Q207): another birth at that path.name
+    ///  now, or an op executing that re-creates it there, deletes the caller; nothing there, its record
+    ///  live and the topology needing the path re-admits it through [node.mesh.join](node-mesh-join.md);
+    ///  nothing there and the topology not needing it deletes it. A caller whose record is deleted is
+    ///  deleted, its runtime terminated, never re-admitted; a path still needed is recovered by re-create (Q217)."
     #[tokio::test]
     async fn a_deleted_birth_whose_path_is_re_created_is_deleted() {
         let (old, old_inc) = record("mesh2.compute.2", NodeStatus::Deleted);
@@ -1062,6 +1065,12 @@ mod tests {
         assert_eq!(atlas.refused_caller(&NodeId::mint(), &IncarnationId::mint(), &planned(&[])), CallerDecision::NoRecord);
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:39
+    /// "A node-admin's atlas is its topology and its in-flight commands over the meshes it is primary for,
+    ///  its own mesh as a mesh-primary and every mesh as the fabric-primary, each filled once from the node
+    ///  records as it takes that primary and narrowed off as it hands it away. A node-admin that is not the
+    ///  fabric-primary verifies its decision at the root with `fabric.atlas.get` before it acts, and the
+    ///  root's answer wins, except that a caller whose record it holds deleted stays deleted (Q217)."
     /// CONTRACT (Q207, "call home and verify at the root"): the fabric-primary's `fabric.atlas.get`
     /// wins over the mesh-primary's own decision: another birth at the path there deletes the caller;
     /// the caller current there is re-admitted, unless this admin holds its record deleted (Q217: never
@@ -1090,9 +1099,10 @@ mod tests {
         assert_eq!(deleted.verified((&caller, &inc), &row(&other, &other_inc), true), CallerDecision::DeleteHeld { path: at.clone(), by: format!("{other}@{}", other_inc.as_str()) });
     }
 
-    /// CONTRACT (Q207, 0004/0005): an admin that takes a mesh's primary fills that mesh once from its
-    /// node records; one that hands it away narrows it off; one that takes the fabric-primary holds every
-    /// mesh. Must NOT happen: a mesh read again on a call that takes nothing.
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:39
+    /// "A node-admin's atlas is its topology and its in-flight commands over the meshes it is primary for,
+    ///  its own mesh as a mesh-primary and every mesh as the fabric-primary, each filled once from the node
+    ///  records as it takes that primary and narrowed off as it hands it away."
     #[tokio::test]
     async fn a_mesh_taken_is_filled_once_and_a_mesh_handed_away_is_narrowed() {
         let (a, _) = record("mesh1.rpc.1", NodeStatus::Ready);

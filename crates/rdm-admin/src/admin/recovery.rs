@@ -1007,12 +1007,10 @@ mod superseded_tests {
         }
     }
 
-    /// CONTRACT (node-investigation.md, Q142: "a second birth another executor made at the path.name
-    /// across a cut is a superseded birth ... its mesh-primary writes its row deleted"): after a heal the
-    /// view holds two live births at mesh1.admin.1; the path's name claim names the first. The second's
-    /// record is written deleted and its `node.delete:<path>` is answered for its NodeDeleted; the first is
-    /// untouched, and a path with one birth, or whose claim names neither, answers nothing. Must NOT
-    /// happen: the claim's own birth deleted, or two live records left at one path.name.
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:46
+    /// "A second birth another executor made at the path.name across a cut is made a deleted birth by its
+    ///  mesh-primary, which writes its row deleted ([node.delete](node-delete.md), releasing the name) and
+    ///  reports it the same way (Q142)."
     #[tokio::test]
     async fn a_second_birth_at_a_path_after_a_heal_is_written_deleted_and_the_claims_birth_stands() {
         let storage = MemoryNodesStorage::default();
