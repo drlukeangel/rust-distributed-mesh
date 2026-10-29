@@ -1258,3 +1258,546 @@ async fn the_fabric_primary_claims_the_recovery_of_a_meshs_only_node_admin_for_i
     let p = builds.read_build(&b0).await.unwrap();
     assert_eq!((o.mesh.as_deref(), p.attempt_executors.get(&o.attempt).map(String::as_str)), (None, Some("mesh1.admin.1")), "claimed in the fabric lane for the fabric-primary, mesh2's acting primary: {:?}", p.attempt_executors);
 }
+
+// @feature: node-recovery
+/// CONTRACT (docs/architecture/lifecycles/node-recovery.md:80-95):
+/// "3. node.delete of the target instance, as a target with no RPC to the old process and no stop
+/// frames. Its first step is `TerminateRuntime { node_id, incarnation, handle }` on the exact runtime
+/// handle recorded at launch, read at the step's instant and never skipped for what it reads, except
+/// `os-stopped`, which recovery leaves as it is ... A `running` runtime is the provider's
+/// `terminate(handle, Graceful)` ... An `exited` runtime is the same call: the provider removes what
+/// the runtime left ... A terminate the provider refuses ends the attempt `Failed { step:
+/// TerminateRuntime, reason }` by name; the next tick after its backoff decides again.
+/// 4. node.create at the same path.name, its spec naming the old data dir when the verdict was `exited`
+/// (or a newly allocated data dir otherwise ...): it loads the endpoint key from the kept data dir
+/// (or mints a new endpoint key in the fresh data dir) and binds port 0, with a new node.id,
+/// incarnation and port."
+#[test]
+fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
+    use rdm_admin::build::BuildId;
+    use rdm_admin::build_state::BuildAccepted;
+    use rdm_admin::deployment::endpoint::RPC_NODE;
+    use rdm_admin::deployment::pipeline::{
+        CommandAdmission, CommandContext, Completion, CreateRequest, CreateStep, DeleteRequest,
+        DeleteStep, DeploymentPipeline, LaunchTemplate, LifecycleEvents, NodeObserver, Publication,
+        Timeouts, TopologySink,
+    };
+    use rdm_admin::deployment::provider::{
+        DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found,
+        ResolvedNodeLaunch, TerminationMode,
+    };
+    use rdm_admin::join::{JoinReport, Joins};
+    use rdm_core::{LifecycleOp, MemberStatus, MeshDigest, MeshNode, RuntimeFact, RuntimeProvider};
+    use std::collections::{BTreeMap, VecDeque};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    const REC_DOMAIN: &str = "process:recovery-faults-cell";
+
+    struct RecoveryFaultProvider {
+        old_dep: DeploymentId,
+        inspects: Mutex<VecDeque<DeploymentStatus>>,
+        terminate_errs: Mutex<VecDeque<Option<String>>>,
+        terminates: Mutex<Vec<(DeploymentId, TerminationMode)>>,
+        spawn_calls: AtomicUsize,
+        joins: Arc<Joins>,
+        pending_report: Mutex<Option<JoinReport>>,
+        fabric_id: FabricId,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for RecoveryFaultProvider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            REC_DOMAIN.into()
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+            let n = self.spawn_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let pid = 5000 + n as u32;
+            let handle = DeploymentHandle {
+                deployment_id: spec.deployment_id.clone(),
+                provider: ProviderKind::Process,
+                pid: Some(pid),
+                start: Some(1),
+                container: None,
+                domain: Some(REC_DOMAIN.into()),
+            };
+            let node_id: NodeId = spec.env.get(rdm_core::launch::ENV_NODE_ID).unwrap().parse().unwrap();
+            let incarnation: IncarnationId =
+                spec.env.get(rdm_core::launch::ENV_INCARNATION).unwrap().parse().unwrap();
+            let key =
+                rdm_admin::deployment::pipeline::inspect_transport_key(&spec.data_dir).unwrap();
+            let runtime = handle.fact().unwrap();
+            let digest = MeshDigest {
+                held_hash: Default::default(),
+                fabric_id: self.fabric_id.clone(),
+                node: MeshNode {
+                    node_id,
+                    name: spec.node.clone(),
+                    endpoint_id: key,
+                    transport_addr: "127.0.0.1:46100".parse().unwrap(),
+                    incarnation,
+                    supersedes: None,
+                    runtime: Some(runtime),
+                },
+                status: MemberStatus::Pending,
+                node_state: Default::default(),
+                admin_api_base: None,
+                digest_seq: 1,
+                emitted_at_rafka_ms: 1,
+                data_dir: Some(spec.data_dir.display().to_string()),
+                mesh_id: None,
+                in_flight: None,
+                load: None,
+                gossip: None,
+                is_primary: None,
+                is_fabric_primary: None,
+            };
+            *self.pending_report.lock().unwrap() = Some(JoinReport {
+                digest,
+                listeners: Vec::new(),
+            });
+            Ok(handle)
+        }
+        async fn terminate(
+            &self,
+            handle: &DeploymentHandle,
+            mode: TerminationMode,
+        ) -> Result<(), DeployError> {
+            self.terminates
+                .lock()
+                .unwrap()
+                .push((handle.deployment_id.clone(), mode));
+            if let Some(Some(reason)) = self.terminate_errs.lock().unwrap().pop_front() {
+                return Err(DeployError::Terminate {
+                    deployment: handle.deployment_id.to_string(),
+                    reason,
+                });
+            }
+            Ok(())
+        }
+        async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus {
+            if handle.deployment_id == self.old_dep {
+                self.inspects
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(DeploymentStatus::Running)
+            } else {
+                if let Some(report) = self.pending_report.lock().unwrap().take() {
+                    self.joins.report(&report);
+                }
+                DeploymentStatus::Running
+            }
+        }
+        async fn signal_stop(&self, _handle: &DeploymentHandle) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn find(&self, _spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+            Ok(Found::NeverLaunched)
+        }
+    }
+
+    struct RecoveryObserver {
+        ready_err: Mutex<Option<String>>,
+        ready_entered: tokio::sync::Notify,
+        commands: Mutex<Vec<rdm_admin::node_commands::NodeCommand>>,
+    }
+
+    #[async_trait::async_trait]
+    impl NodeObserver for RecoveryObserver {
+        async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
+            None
+        }
+        async fn ready(&self, _: &Node) -> Result<(), String> {
+            self.ready_entered.notify_waiters();
+            match self.ready_err.lock().unwrap().clone() {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
+        }
+        async fn send_command(
+            &self,
+            _: &Node,
+            cmd: rdm_admin::node_commands::NodeCommand,
+            _: &CommandContext,
+        ) -> CommandAdmission {
+            self.commands.lock().unwrap().push(cmd);
+            CommandAdmission::NotSent {
+                reason: "unreached recovery sends no RPC to the old birth".into(),
+                code: rdm_core::outcome::Code::FailedPrecondition,
+            }
+        }
+        async fn await_completion(
+            &self,
+            _: &Node,
+            _: rdm_admin::node_commands::NodeCommand,
+            _: &CommandContext,
+            _: Duration,
+        ) -> Completion {
+            Completion::NotAwaited {
+                admission: "unreached".into(),
+            }
+        }
+    }
+
+    struct NoopSink;
+    impl TopologySink for NoopSink {
+        fn publish(&self, _: Node) {}
+        fn remove(&self, _: &PathName) {}
+        fn remove_birth(&self, _: &PathName, _: &NodeId, _: &IncarnationId) {}
+    }
+
+    struct NoopEvents;
+    #[async_trait::async_trait]
+    impl LifecycleEvents for NoopEvents {
+        async fn deleting(&self, _: &LifecycleOp) {}
+        async fn deleted(&self, _: &LifecycleOp) {}
+        async fn stopped(&self, _: &LifecycleOp) {}
+        async fn joined(&self, _: &LifecycleOp) {}
+        async fn leaving(&self, _: &LifecycleOp) {}
+        fn now_rafka_ms(&self) -> u64 {
+            1_000_000
+        }
+    }
+
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let (pipeline_cap, layer) =
+        rdm_transport::span_capture("node-recovery-step-faults", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture {
+        exporter,
+        pipeline: pipeline_cap,
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    rt.block_on(async {
+        let root_dir = std::env::temp_dir().join(format!(
+            "rdm-node-recovery-faults-{}-{}",
+            std::process::id(),
+            BuildId::mint()
+        ));
+        std::fs::create_dir_all(&root_dir).unwrap();
+
+        let fabric_id = FabricId::mint();
+        let target_name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let old_id = NodeId::mint();
+        let old_inc = IncarnationId::mint();
+        let old_dep = DeploymentId::mint();
+        let old_data_dir = root_dir.join(format!("{target_name}-{old_id}"));
+        std::fs::create_dir_all(&old_data_dir).unwrap();
+        let old_key =
+            rdm_node::node::load_or_mint_key(&old_data_dir).expect("mint old endpoint key");
+        let old_endpoint_id = EndpointId(old_key.public().to_string());
+
+        let mut old_node = Node::allocated(target_name.clone());
+        old_node.node_id = old_id.clone();
+        old_node.incarnation_id = Some(old_inc.clone());
+        old_node.deployment_id = Some(old_dep.clone());
+        old_node.endpoint_id = Some(old_endpoint_id.clone());
+        old_node.provider = Some(ProviderKind::Process);
+        old_node.data_dir = Some(old_data_dir.display().to_string());
+        old_node.status = NodeStatus::PendingReconnect;
+
+        let old_handle = DeploymentHandle {
+            deployment_id: old_dep.clone(),
+            provider: ProviderKind::Process,
+            pid: Some(4100),
+            start: Some(1),
+            container: None,
+            domain: Some(REC_DOMAIN.into()),
+        };
+
+        let template = LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: fabric_id.clone(),
+            executable: std::env::current_exe().unwrap(),
+            seeds: vec![],
+            launcher: rdm_core::launch::Launcher {
+                name: "mesh1.admin.1".parse().unwrap(),
+                node_id: NodeId::mint(),
+                incarnation: IncarnationId::mint(),
+            },
+            env: BTreeMap::new(),
+            data_root: root_dir.clone(),
+            store_dir: root_dir.clone(),
+            issuing: None,
+            roots: Default::default(),
+            connections_delete_deadline: Duration::from_secs(5),
+            declared: Default::default(),
+            binding: None,
+        };
+
+        let joins = Arc::new(Joins::default());
+        let provider = RecoveryFaultProvider {
+            old_dep: old_dep.clone(),
+            inspects: Mutex::new(VecDeque::from([
+                // Attempt 1 (running + provider terminate refuses): inspect at TerminateRuntime -> Running
+                DeploymentStatus::Running,
+                // Attempt 2 (os-stopped in recovery): inspect at TerminateRuntime -> OsStopped
+                DeploymentStatus::OsStopped,
+                // Build 2 attempt 1 (exited in recovery): inspect at TerminateRuntime -> Exited(137),
+                // then inspect after terminate -> Exited(137).
+                DeploymentStatus::Exited { code: Some(137) },
+                DeploymentStatus::Exited { code: Some(137) },
+            ])),
+            terminate_errs: Mutex::new(VecDeque::from([
+                Some("provider daemon unreachable".into()),
+                None,
+                None,
+            ])),
+            terminates: Mutex::new(Vec::new()),
+            spawn_calls: AtomicUsize::new(0),
+            joins: joins.clone(),
+            pending_report: Mutex::new(None),
+            fabric_id: fabric_id.clone(),
+        };
+        let observer = RecoveryObserver {
+            ready_err: Mutex::new(None),
+            ready_entered: tokio::sync::Notify::new(),
+            commands: Mutex::new(Vec::new()),
+        };
+        let builds = MemoryBuildStateAdapter::new();
+        let build_id = BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted {
+                build_id: build_id.clone(),
+                topology: FabricTopology::root(
+                    "fabric1",
+                    "mesh1",
+                    MeshId::parse("meshd0000001").unwrap(),
+                ),
+                submitted_change: None,
+                submitted_at_ms: 1000,
+            })
+            .await
+            .unwrap();
+
+        let pipeline = DeploymentPipeline {
+            provider: &provider,
+            joins: &joins,
+            observer: &observer,
+            sink: &NoopSink,
+            lifecycle: &NoopEvents,
+            builds: &builds,
+            template: &template,
+            timeouts: Timeouts {
+                bind: Duration::from_millis(200),
+                join: Duration::from_millis(200),
+                ready: Duration::from_millis(100),
+                stop_grace: Duration::from_millis(100),
+                completion: Duration::from_millis(100),
+            },
+        };
+
+        // 1. Attempt 1: unreached `Running` birth whose provider `terminate` fails -> ends at
+        // `Failed { step: TerminateRuntime }` with no RPC sent to the old birth.
+        builds
+            .claim_attempt(&BuildAttemptClaim {
+                claimant: None,
+                mesh: None,
+                build_id: build_id.clone(),
+                attempt: 1,
+                executor: "mesh1.admin.1".into(),
+            })
+            .await
+            .unwrap();
+        let err1 = pipeline
+            .delete_node(&DeleteRequest {
+                build_id: build_id.clone(),
+                attempt: 1,
+                node: old_node.clone(),
+                handle: old_handle.clone(),
+                unreached: true,
+            })
+            .await
+            .expect_err("refused provider terminate must fail TerminateRuntime");
+        assert_eq!(err1.step, DeleteStep::TerminateRuntime.name());
+        assert!(
+            err1.reason.contains("provider daemon unreachable"),
+            "unexpected reason: {}",
+            err1.reason
+        );
+        assert!(
+            observer.commands.lock().unwrap().is_empty(),
+            "recovery delete must send no RPC to the unreached birth"
+        );
+        assert_eq!(provider.terminates.lock().unwrap().len(), 1);
+
+        // 2. Attempt 2: unreached `OsStopped` birth -> recovery leaves the suspended runtime as it is
+        // (no `provider.terminate` call, `verdict = Some("os-stopped")`), and `node.create` allocates a
+        // fresh data dir (`data_dir: None`) with a newly minted endpoint key.
+        builds
+            .claim_attempt(&BuildAttemptClaim {
+                claimant: None,
+                mesh: None,
+                build_id: build_id.clone(),
+                attempt: 2,
+                executor: "mesh1.admin.1".into(),
+            })
+            .await
+            .unwrap();
+        let term_os = pipeline
+            .delete_node(&DeleteRequest {
+                build_id: build_id.clone(),
+                attempt: 2,
+                node: old_node.clone(),
+                handle: old_handle.clone(),
+                unreached: true,
+            })
+            .await
+            .expect("os-stopped recovery delete completes without terminating the suspended runtime");
+        assert_eq!(term_os.verdict.as_deref(), Some("os-stopped"));
+        assert_eq!(term_os.exit_code, None);
+        assert_eq!(
+            provider.terminates.lock().unwrap().len(),
+            1,
+            "os-stopped recovery delete must not call provider.terminate"
+        );
+
+        let created_fresh = pipeline
+            .create(&CreateRequest {
+                build_id: build_id.clone(),
+                attempt: 2,
+                node: target_name.clone(),
+                spec: &RPC_NODE,
+                entry: None,
+                // verdict != "exited" -> fresh data dir (node-recovery.md step 4)
+                data_dir: if term_os.verdict.as_deref() == Some("exited") {
+                    Some(old_data_dir.clone())
+                } else {
+                    None
+                },
+                held_runtimes: Vec::new(),
+            })
+            .await
+            .expect("recovery create after os-stopped verdict succeeds in fresh data dir");
+        assert_ne!(
+            created_fresh.node.endpoint_id.as_ref(),
+            Some(&old_endpoint_id),
+            "os-stopped recovery must mint a fresh endpoint key in a newly allocated data dir"
+        );
+        assert_ne!(created_fresh.node.node_id, old_id);
+
+        // 3. Unreached `Exited` birth (`verdict == "exited"`): `provider.terminate` is called once to
+        // remove what the runtime left, and `node.create` inherits `old_data_dir` and `old_endpoint_id`.
+        // Inject a cut at `WaitForNodeReady` during `node.create`, then resume on the next attempt and
+        // assert `DeployRuntime` is reused without a second spawn.
+        let build_id_2 = BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted {
+                build_id: build_id_2.clone(),
+                topology: FabricTopology::root(
+                    "fabric1",
+                    "mesh1",
+                    MeshId::parse("meshd0000001").unwrap(),
+                ),
+                submitted_change: None,
+                submitted_at_ms: 2000,
+            })
+            .await
+            .unwrap();
+        builds
+            .claim_attempt(&BuildAttemptClaim {
+                claimant: None,
+                mesh: None,
+                build_id: build_id_2.clone(),
+                attempt: 1,
+                executor: "mesh1.admin.1".into(),
+            })
+            .await
+            .unwrap();
+        let term_exited = pipeline
+            .delete_node(&DeleteRequest {
+                build_id: build_id_2.clone(),
+                attempt: 1,
+                node: old_node.clone(),
+                handle: old_handle.clone(),
+                unreached: true,
+            })
+            .await
+            .expect("exited recovery delete completes after calling provider.terminate once");
+        assert_eq!(term_exited.verdict.as_deref(), Some("exited"));
+        assert_eq!(term_exited.exit_code, Some(137));
+        assert_eq!(
+            provider.terminates.lock().unwrap().len(),
+            2,
+            "exited recovery delete must call provider.terminate once"
+        );
+
+        *observer.ready_err.lock().unwrap() = Some("not ready before cut".into());
+        let create_req_cut = CreateRequest {
+            build_id: build_id_2.clone(),
+            attempt: 1,
+            node: target_name.clone(),
+            spec: &RPC_NODE,
+            entry: None,
+            data_dir: Some(old_data_dir.clone()),
+            held_runtimes: Vec::new(),
+        };
+        tokio::select! {
+            res = pipeline.create(&create_req_cut) => panic!("expected cut at WaitForNodeReady, got {res:?}"),
+            _ = observer.ready_entered.notified() => {}
+        }
+        assert_eq!(provider.spawn_calls.load(Ordering::SeqCst), 2);
+
+        // Resume on attempt 2: reuses the inherited-dir birth without spawning a new runtime.
+        *observer.ready_err.lock().unwrap() = None;
+        builds
+            .claim_attempt(&BuildAttemptClaim {
+                claimant: None,
+                mesh: None,
+                build_id: build_id_2.clone(),
+                attempt: 2,
+                executor: "mesh1.admin.1".into(),
+            })
+            .await
+            .unwrap();
+        let created_inherited = pipeline
+            .create(&CreateRequest {
+                attempt: 2,
+                ..create_req_cut
+            })
+            .await
+            .expect("resumed recovery create completes over inherited data dir");
+        assert_eq!(
+            provider.spawn_calls.load(Ordering::SeqCst),
+            2,
+            "resumed recovery create must reuse DeployRuntime receipt without spawning again"
+        );
+        assert_eq!(
+            created_inherited.node.endpoint_id.as_ref(),
+            Some(&old_endpoint_id),
+            "exited recovery create must retain the endpoint key from the inherited data dir"
+        );
+        assert_ne!(created_inherited.node.node_id, old_id);
+
+        let _ = std::fs::remove_dir_all(&root_dir);
+    });
+
+    drop(rt);
+
+    let step_spans = capture.spans("rdm.node_admin.deployment.update.via-step");
+    assert!(
+        step_spans.iter().any(|(_, a)| {
+            a.get("step").map(String::as_str) == Some(DeleteStep::TerminateRuntime.name())
+                && a.get("outcome").map(String::as_str) == Some("failed")
+        }),
+        "expected failed TerminateRuntime span on attempt 1: {step_spans:?}"
+    );
+    assert!(
+        step_spans.iter().any(|(_, a)| {
+            a.get("step").map(String::as_str) == Some(CreateStep::DeployRuntime.name())
+                && a.get("attempt").map(String::as_str) == Some("2")
+                && a.get("outcome").map(String::as_str) == Some("reused")
+        }),
+        "expected reused DeployRuntime span on resumed recovery create: {step_spans:?}"
+    );
+}
