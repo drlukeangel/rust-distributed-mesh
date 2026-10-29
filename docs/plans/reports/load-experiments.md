@@ -125,3 +125,41 @@ node 0.030; every target passed. The idle node-admin's samples, inclusive:
   target. Nothing moves; the profile is repeated at L2.
 
 **Next.** M7 (gossip bytes per second) and M6 at L1, then L2 with the same profile.
+
+---
+
+## E4: gossip cost at L1 (2026-10-28)
+
+**What.** L1 with evidence on, at `6d7aeaf3c` plus M7: the gossip bytes per second each node takes in over a
+5-minute steady window once the fabric is ready, from every `rdm.mesh.topology.update.via-frame` span
+(one per frame delivered to the node, `bytes` its content), the largest node's total and, per channel
+kind, the largest node's share. These are the bytes a node's gossip delivered, not what its transport
+carried: repeats and gossip control messages are the transport's own and are not counted.
+
+**Why.** Load-testing.md step 2: M7, with a target of 50 KB/s per node at every profile. E3 found half an
+idle node-admin's CPU in the transport carrying gossip, so M7 sizes that traffic.
+
+**Conditions.** Shared box (lanes 2, 5 and 7 busy), load average 6.7 / 20.7 / 21.7 at the start. Release
+build, defaults (gossip 2 s, backbone 2 s, staleness 30 s).
+
+**Outcome.** Every target passed.
+
+| measure | result | target |
+|---|---|---|
+| M1 bring-up | 1.3 s | 15 s |
+| M2 creates per second | 12.9 /s | reported |
+| M7 largest node, every channel | 30.5 KB/s | 50 KB/s |
+| M7 largest node, backbone | 18.5 KB/s | reported |
+| M7 largest node, its mesh channel | 12.1 KB/s | reported |
+| M5 one node.create / node.delete Build | max 253 ms / 82 ms | 5 s |
+| M8 node-admin / rpc node idle (evidence on) | 0.056 / 0.032 cores | 0.10 cores |
+
+**Read.**
+- M7 is inside its target at 20 nodes but already at 61 % of it, and the larger share is the backbone
+  (gossip.md §3.3: every node-admin holds every mesh complete, loads included). The backbone a node-admin
+  takes in grows with the fabric's meshes and nodes, so at L2 (48 nodes) and L3 (100) M7 is the measure
+  most likely to cross its target first. That is a prediction for L2 to test, not a finding yet.
+- A node's mesh channel (12.1 KB/s) at 10 nodes a mesh is about 2.4 KB per node per 2 s heartbeat.
+- M2's 12.9 creates/s and M1's 1.3 s are on a quieter box than E1 (load 6.7 against 11.5).
+
+**Next.** M6 (Node RPC) at L1, then L2 with M7 and the idle profile.

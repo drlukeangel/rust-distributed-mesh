@@ -78,10 +78,11 @@ A profile runs only once the one before it passes. L2 to L4 are added as the har
 |---|---|---|
 | M1 | bring-up: the Day-0 Build of the whole profile, from the first admin's launch to the fabric ready | per profile |
 | M2 | node creates per second during bring-up | reported |
+| M7 | gossip bytes per second each node takes in over 5 min steady (`rdm.mesh.topology.update.via-frame` `bytes`), the largest node's total and per channel kind; evidence pass only | 50 KB/s per node |
 | M5 | one-node `node.create` and `node.delete` Builds, 20 each, accepted to complete | max under 5 s |
 | M8 | idle CPU (cores) and RSS (GB), the largest per role, over 20 s once settled | 0.10 cores, 0.5 GB |
 
-M3, M4, M6, M7, M9 and M10 come next (load-testing.md, Steps 2 to 4).
+M3, M4, M6, M9 and M10 come next (load-testing.md, Steps 2 to 4).
 
 ## Adding a measure
 

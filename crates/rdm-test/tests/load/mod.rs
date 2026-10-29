@@ -173,6 +173,47 @@ fn role_of(dir: &std::path::Path) -> &'static str {
     }
 }
 
+/// M7's steady window (load-testing.md: 5 minutes at steady state).
+const STEADY: Duration = Duration::from_secs(300);
+
+fn now_ns() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
+}
+
+/// M7: the gossip bytes per second each node takes in between `from` and `to` (ns), from every
+/// `rdm.mesh.topology.update.via-frame` span (one per frame delivered to the node, `bytes` its content):
+/// the largest node's total over every channel, and per channel the largest node's. A frame's bytes
+/// are what the node's gossip delivered, not what its transport carried (repeats and gossip control
+/// messages are the transport's own).
+fn gossip_bytes(spans: &[Value], from: u64, to: u64) -> (f64, std::collections::BTreeMap<String, f64>) {
+    let secs = (to - from) as f64 / 1e9;
+    let mut by: std::collections::BTreeMap<(String, String), u64> = Default::default();
+    for sp in named(spans, "rdm.mesh.topology.update.via-frame") {
+        let at = sp["start_unix_nano"].as_u64().or_else(|| sp["start_unix_nano"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0);
+        if at < from || at >= to {
+            continue;
+        }
+        let a = &sp["attributes"];
+        let bytes = a["bytes"].as_u64().or_else(|| a["bytes"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0);
+        *by.entry((s(&a["node"]), channel_kind(&s(&a["channel"])))).or_default() += bytes;
+    }
+    let kbs = |b: u64| b as f64 / 1024.0 / secs;
+    let mut nodes: std::collections::BTreeMap<String, u64> = Default::default();
+    let mut channels: std::collections::BTreeMap<String, f64> = Default::default();
+    for ((node, channel), b) in by {
+        *nodes.entry(node).or_default() += b;
+        let c = channels.entry(channel).or_default();
+        *c = c.max(kbs(b));
+    }
+    (nodes.into_values().map(kbs).fold(0.0, f64::max), channels)
+}
+
+/// A channel's kind for M7's rows: `mesh` for every mesh's own channel (`mesh:<name>`), else its name
+/// (`backbone`).
+fn channel_kind(channel: &str) -> String {
+    if channel.starts_with("mesh:") { "mesh".into() } else { channel.into() }
+}
+
 /// M8: idle CPU (cores) and RSS (GB) of every runtime over `window`, the largest per role.
 async fn idle_cost(estate: &Estate, window: Duration) -> Vec<(&'static str, f64, f64)> {
     let runtimes = estate.live_runtimes();
@@ -194,8 +235,9 @@ async fn idle_cost(estate: &Estate, window: Duration) -> Vec<(&'static str, f64,
     worst.into_iter().map(|(r, (c, m))| (r, c, m)).collect()
 }
 
-/// L1 (load-testing.md Steps, 1): bring-up (M1), create rate (M2, reported), one-node Build latency
-/// (M5, 20 samples, a target on the max) and idle cost (M8), on the 2-mesh, 20-node profile.
+/// L1 (load-testing.md Steps, 1 and 2): bring-up (M1), create rate (M2, reported), gossip cost (M7, 5 min
+/// steady), one-node Build latency (M5, 20 samples, a target on the max) and idle cost (M8), on the
+/// 2-mesh, 20-node profile.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "load: run by scripts/rdm-load.sh"]
 async fn load_profile_l1_baseline() {
@@ -236,6 +278,18 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
     for (role, cores, gb) in idle_cost(&estate, Duration::from_secs(20)).await {
         rows.value("M8", &format!("{role} idle cpu"), "cores", cores, Some(0.10));
         rows.value("M8", &format!("{role} idle rss"), "GB", gb, Some(0.5));
+    }
+
+    // M7: gossip cost at steady state, read from the frames each node takes in (evidence on only).
+    if evidence {
+        let from = now_ns();
+        tokio::time::sleep(STEADY).await;
+        let to = now_ns();
+        let (per_node, per_channel) = gossip_bytes(&estate.spans(), from, to);
+        rows.value("M7", "largest node, all channels", "KB/s", per_node, Some(50.0));
+        for (channel, kbs) in per_channel {
+            rows.value("M7", &format!("largest node, {channel}"), "KB/s", kbs, None);
+        }
     }
 
     // M5: one node added then removed, each its own Build, accepted to complete; 20 samples each.
