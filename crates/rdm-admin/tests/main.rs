@@ -230,6 +230,7 @@ mod topology_read;
 mod fabric_create;
 mod fabric_states;
 mod fabric_delete;
+mod build_reattach;
 
 #[allow(dead_code)]
 #[path = "../../../tools/test-support/gossip_wire.rs"]
