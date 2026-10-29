@@ -64,6 +64,7 @@
 
 # Running a fabric
 
+- [Troubleshooting](eng/troubleshooting.md)
 - [Fabric recovery runbook](eng/fabric-recovery-runbook.md)
 - [Node storage runbook](eng/node-storage-runbook.md)
 - [Provider runbook](eng/provider-runbook.md)
