@@ -1,6 +1,6 @@
 # Consumer guide: an application on RDM
 
-One index for an application built on RDM (Rafka is the first). Each line answers one "how do I…"
+One index for an application built on RDM. Each line answers one "how do I…"
 and links the page that owns it. The pages are the contract; this guide only points at them. Read
 the linked page before asking: every answer here was already on one.
 
@@ -9,11 +9,11 @@ the linked page before asking: every answer here was already on one.
 | How do I… | Where |
 |---|---|
 | compose the node-admin and my node kinds (my seams, hooks, app protocols, storage adapters) | [build.md, Node-admin composition and customer seams](../architecture/build.md#node-admin-composition-and-customer-seams) |
-| start a fabric (Day 0) and give it its root | [fabric-certs.md, How RDM is instantiated](../architecture/fabric-certs.md#how-rdm-is-instantiated); `RDM_CA_SECRET` in the env table (`CLAUDE.md`) |
-| know every environment variable a node reads | the env table in `CLAUDE.md` (no other configuration mechanism exists) |
-| hand a node a secret | `RDM_DECLARED_SECRETS` in the env table (Q150): declared by name with the kinds it is set on; never in a row, a span or a record |
+| start a fabric (Day 0) and give it its root | [fabric-certs.md, How RDM is instantiated](../architecture/fabric-certs.md#how-rdm-is-instantiated); `RDM_CA_SECRET` in [Configuration](../reference/rdm/config.md) |
+| know every environment variable a node reads | [Configuration](../reference/rdm/config.md) (no other configuration mechanism exists) |
+| hand a node a secret | `RDM_DECLARED_SECRETS` in [build-deployment.md §3](../architecture/build-deployment.md) and [Configuration](../reference/rdm/config.md) (Q150): declared by name with the kinds it is set on; never in a row, a span or a record |
 | pass a variable through to every node (`RUST_LOG`, `RUST_BACKTRACE`, …) | RDM's fixed pass-through list (`crates/rdm-admin/src/admin/records.rs` `PASSTHROUGH`); under the process provider the host environment also reaches the child, minus `RDM_*`, the trace context and declared names |
-| bind my listeners (REST, Kafka, …) | `RDM_LISTENERS` in the env table: one per listener my wiring declares on the kind, port 0, the bound port reported at the join and published on the node row |
+| bind my listeners (REST, Kafka, …) | `RDM_LISTENERS` in [Configuration](../reference/rdm/config.md): one per listener my wiring declares on the kind, port 0, the bound port reported at the join and published on the node row |
 | run on processes or containers | `MESH_SPAWN_TYPE`; [deployment-provider.md §2.6–2.7](../architecture/deployment-provider.md#26-the-process-provider) |
 
 ## Changing the topology
@@ -24,7 +24,7 @@ the linked page before asking: every answer here was already on one.
 | name the executable each node runs, and replace it | [build-deployment.md](../architecture/build-deployment.md) |
 | move RDM's records to my own backend, read where they go, return to a previous one | [topology storage provider how-to](../features/topology-storage-provider/how-to.md); the contract on [storage.md §2](../architecture/storage.md#2-topology_storage_provider-where-rdms-records-go) |
 | know when the fabric is usable | [states.md](../architecture/lifecycles/states.md): pending → ready; a Build that changes the fabric is Complete only after its own ready (Q154) |
-| stop, start, restart, delete one node | the lifecycle pages under [lifecycles/](../architecture/fabric-mesh-node-lifecycles.md) (`node-stop.md`, `node-start.md`, `node-restart.md`, `node-delete.md`) |
+| stop, start, replace or delete one node | the lifecycle pages under [lifecycles/](../architecture/fabric-mesh-node-lifecycles.md) (`node-stop.md`, `node-start.md`, `node-replace.md`, `node-delete.md`) |
 | delete the whole fabric | [fabric-delete.md](../architecture/lifecycles/fabric-delete.md): wait for the fabric.delete stream's `Complete` (fabric.deleted), then `node.delete` of the fabric-primary to its `node.deleted`; the process then exits by itself. Kill nothing before that |
 
 ## Reading by property
@@ -45,10 +45,10 @@ nothing matches.
 
 | Read | Address | Properties a pair may name | Answers, in order | Served by |
 |---|---|---|---|---|
-| `fabrics.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | the fabric-primary |
-| `meshes.get` | — | `id`, `name`, `status`, `primary_admin` | meshes, by name | the fabric-primary |
+| `fabrics.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary`, `admin_api_base`, `build_id`, `meshes`, `topology_storage_provider` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | the fabric-primary |
+| `meshes.get` | — | `id`, `name`, `status`, `primary_admin`, `admin_api_base`, `nodes` | meshes, by name | the fabric-primary |
 | `nodes.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `kind`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path.name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from its atlas |
-| `connections.get` | `node` (id, incarnation), required | `id`, `destination`, `kind`, `state` | the exact birth's own connections from its connections log | the exact birth |
+| `connections.get` | `node` (id, incarnation), required | `id`, `source`, `destination`, `kind`, `state`, `carrier`, `reason`, `logged_at_ms` | the exact birth's own connections from its connections log | the exact birth |
 
 Written as the pair list the wire carries:
 
@@ -92,7 +92,7 @@ The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/n
 | small per-node settings | the node's `config` map: mine, RDM never reads it; replaced whole by `node.config.update`, a node's own (`config_update`) going up through its mesh-primary and a caller's down from the fabric-primary; a Build's `config` supersedes the node's current map, whoever set it, so read the node's current config (`nodes.get`) before composing a Build: every write is a PUT (Q236); at most 32 keys and 2048 bytes ([node-config-update.md](../architecture/lifecycles/node-config-update.md), [gossip.md §3.1](../architecture/gossip.md#31-frame-catalog)) |
 | mesh and fabric attributes | `mesh.config.*`, `fabric.config.*` ([node-rpc-envelope.md](../architecture/node-rpc-envelope.md#typed-objects-mapped-to-wire-and-execution-owners)) |
 | labels to select nodes by | `tags`: see [Tags](#tags) below |
-| a node's durable data | under its `RDM_DATA_DIR`; carried across restart and re-birth by its path's storage policy ([node-storage-runbook.md](node-storage-runbook.md)) |
+| a node's durable data | under its `RDM_DATA_DIR`; carried across stop and start, recovery and replacement by its path's storage policy ([node-storage-runbook.md](node-storage-runbook.md)) |
 | my rows and events | my own storage, and my events on gossip ([gossip.md §8](../architecture/gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); RDM orders nothing of mine |
 | RDM's own records on my storage | the storage adapters ([build.md §5](../architecture/build.md#5-buildstateadapter)): persistence only, RDM writes whole records |
 | which backend RDM's records go to (`topology_storage_provider`), and registering mine | [topology storage provider overview](../features/topology-storage-provider/overview.md) |
@@ -145,6 +145,6 @@ count against the config cap.
 | following a call, a Build or a birth across processes | [telemetry.md](../architecture/telemetry.md) |
 | no node-admin is alive: bring the fabric-primary back | [fabric-recovery-runbook.md](fabric-recovery-runbook.md) |
 | a node's data dir is gone or broken | [provider-runbook.md](provider-runbook.md) |
-| a stateful node's data across restart, re-birth, replacement, delete | [node-storage-runbook.md](node-storage-runbook.md) |
+| a stateful node's data across stop and start, recovery, replacement and delete | [node-storage-runbook.md](node-storage-runbook.md) |
 | a storage change that stays blocked, fails before its switch, or meets a restart | [topology storage provider runbook](../features/topology-storage-provider/runbook.md) |
 | a refusal | its code and named detail: [node-rpc-envelope.md, Runtime spans](../architecture/node-rpc-envelope.md#runtime-spans); every refusal names its reason |
