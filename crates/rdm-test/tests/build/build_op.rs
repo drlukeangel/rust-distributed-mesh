@@ -1321,7 +1321,8 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
 /// inspect's `os-stopped` verdict (no tickle is sent, Q273), runs its recovery's `node.delete` to
 /// `NodeDeleted` (its row written `Deleted`, before `node.create` writes a re-created birth). Resumed there,
 /// with the recovery then let on, `mesh2.admin.1` is refused by name at a door of `mesh2.admin.2` (its
-/// Digest, once the view holds it deleted, or a declaration it still owed, refused `SubjectUnknown`) and
+/// Digest, once the view holds it deleted; a declaration it still owed, refused `SubjectUnknown`; or a
+/// join, refused `JoinMismatch` on `status`) and
 /// decided as `delete-deleted-birth`, never `re-admit`, reported to the fabric-primary
 /// (`via-returned-reported` outcome `opened`), and its runtime is terminated while the re-created birth
 /// holds `mesh2.admin.1`.
@@ -1345,6 +1346,12 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
     wait_for("the resumed birth's runtime ended", crate::node_recovery_due() * 2, || async { rt.check().is_err().then_some(()) }).await;
     let held = estate.node_value(SUSPENDED).await;
     assert_eq!((s(&held["node_id"]), s(&held["status"])), (s(&recovered["node_id"]), "ready".to_string()), "the re-created birth holds its path.name: {held}");
+    // The decision ends once its terminate report is answered: owed while an attempt holds the mesh
+    // (the recovery that re-created the birth), so it is waited for, never cut by the estate's stop.
+    wait_for("the refused caller's decision is reported to the fabric-primary", crate::node_recovery_due() * 2, || async {
+        spans_named(&estate.spans(), "rdm.node_admin.node.update.via-refused-caller").into_iter().find(|d| attr(d, "node_id") == node_id && attr(d, "decision") == "delete-deleted-birth" && attr(d, "outcome") == "terminate-reported").map(|_| ())
+    })
+    .await;
 
     estate.stop().await;
     let spans = estate.spans();
@@ -1357,8 +1364,8 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
     assert!(decisions.iter().all(|d| attr(d, "decision") != "re-admit"), "a deleted birth is never re-admitted: {decisions:#?}");
     let refused_decided = decisions
         .iter()
-        .find(|d| ["digest", "declaration"].contains(&attr(d, "door").as_str()) && attr(d, "decision") == "delete-deleted-birth" && attr(d, "outcome") == "terminate-reported")
-        .unwrap_or_else(|| panic!("expected a digest or declaration door decision delete-deleted-birth with terminate-reported: {decisions:#?}"));
+        .find(|d| ["digest", "declaration", "join"].contains(&attr(d, "door").as_str()) && attr(d, "decision") == "delete-deleted-birth" && attr(d, "outcome") == "terminate-reported")
+        .unwrap_or_else(|| panic!("expected a digest, declaration or join door decision delete-deleted-birth with terminate-reported: {decisions:#?}"));
     assert_eq!(attr(refused_decided, "own"), "delete-deleted-birth", "{refused_decided}");
 
     let reported = spans_named(&spans, "rdm.node_admin.node.update.via-returned-reported")

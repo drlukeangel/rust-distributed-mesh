@@ -667,11 +667,12 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
                 Some(held) => return (rdm_core::reply::stale(held.clone()), None),
                 None => return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None),
             }
-            // A birth this admin's atlas holds deleted is not held, whatever the view still
+            // A birth this admin's atlas holds deleted (its record deleted, or its delete completed; a
+            // withdrawn claim is not a delete) is not held, whatever the view still
             // shows before the departure lands: refused `SubjectUnknown` and decided as every refused
             // caller is, deleted and never re-admitted (node-investigation.md; Q207, Q217), as the join
             // door refuses it on `status`.
-            if auth.atlas.get().is_some_and(|a| a.holds_deleted(&subject.node_id, incarnation)) {
+            if auth.atlas.get().is_some_and(|a| a.holds_deleted_by_delete(&subject.node_id, incarnation)) {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None);
             }
             if let Some(operation) = operation {

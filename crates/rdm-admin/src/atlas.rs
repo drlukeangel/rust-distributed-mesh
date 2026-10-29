@@ -425,6 +425,16 @@ impl Atlas {
         recorded || held.effects.get(incarnation.as_str()).is_some_and(|e| e.lifecycle == Lifecycle::Deleted)
     }
 
+    /// Whether the atlas holds the birth `(node_id, incarnation)` deleted by a delete: its node's record
+    /// `Deleted` with that birth, or a node.delete of that birth completed. A withdrawn claim is not a
+    /// delete: its birth may still live, surplus, until a removal deletes it (node-investigation.md: "a
+    /// caller whose record is deleted is deleted"; Q217).
+    pub(crate) fn holds_deleted_by_delete(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+        let held = self.held.lock().unwrap();
+        let recorded = held.records.get(node_id).is_some_and(|r| r.status == NodeStatus::Deleted && r.birth(incarnation).is_some());
+        recorded || held.effects.get(incarnation.as_str()).is_some_and(|e| e.lifecycle == Lifecycle::Deleted)
+    }
+
     /// `mesh` is the mesh whose rows this admin's writer writes and feeds to this atlas.
     pub fn writes(&self, mesh: &str) {
         self.held.lock().unwrap().written.insert(mesh.to_string());
