@@ -49,8 +49,9 @@ Every program exports its spans to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http:
 | [fabric_adoption_launch.rs](fabric_adoption_launch.rs) | caller | `fabric-adoption-launch` | An adoption launch on a fresh data directory (`RDM_NODE_NAME`, `RDM_FABRIC_ID`, `RDM_MESH`, `RDM_STORE_DIR` with no launcher): `AdminConfig::from_env` adopts the live fabric's identity at the lost fabric-primary's `path.name` with a fresh `node_id`, and refuses recovery flags or non-admin paths by name. |
 | [fabric_primary_takeover.rs](fabric_primary_takeover.rs) | caller | `fabric-primary-takeover` | A successor fabric-primary taking over and hydrating the immutable Fabric identity, the accepted Build's required Mesh set, and the complete Mesh-status view (`expected == observed`) before publishing Fabric `Ready`, without minting a new Build. |
 | [mesh_investigation.rs](mesh_investigation.rs) | caller | `mesh.investigation` | The fabric-primary's investigation of an unheard peer mesh: the ladder's rungs (`probe 1`, `mark`, `probe 2`, `decide`), probes carried through the peer mesh's live role nodes answering `carrier-edge-lost`, re-creation of the peer mesh's node-admins, and the fabric returning to `Ready`. |
+| [node_recovery.rs](node_recovery.rs) | caller | `node.recovery` | A member whose runtime process exited unexpectedly: its mesh-primary proves the exit via `node.runtime.inspect`, runs `node.delete` then `node.create` at the same `path.name` over the inherited `data_dir` with a new `node_id` and `incarnation_id`, and keeps the current Build `Complete`. |
 
 The examples that change the fabric (`node_name_update`, `node_mesh_leave`, `forward`, `node_tags`,
 `build_reattach`, `node_primary_update`, `fabric_primary_update`, `executable_dirs`,
-`fabric_recovery`, `fabric_primary_takeover`, `mesh_investigation`) act on the node they are given; run
-them against a demo estate, not a fabric that carries traffic.
+`fabric_recovery`, `fabric_primary_takeover`, `mesh_investigation`, `node_recovery`) act on the node
+they are given; run them against a demo estate, not a fabric that carries traffic.
