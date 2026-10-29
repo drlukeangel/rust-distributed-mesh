@@ -656,3 +656,266 @@ pub fn spread(source: &str, destination: &str, destination_incarnation: &str) ->
     }
     hash
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ConnectionId;
+    use std::sync::Arc;
+
+    fn end(name: &str, node_id: NodeId, incarnation: Option<IncarnationId>) -> ConnectionEnd {
+        ConnectionEnd {
+            name: name.parse().unwrap(),
+            node_id,
+            incarnation,
+        }
+    }
+
+    /// CONTRACT: docs/architecture/connections.md:116
+    /// "`Failed` is valid for Direct recovery attempts. It means only that this source failed to establish the
+    /// named direct connection. It is never global proof that the destination node is dead."
+    /// CONTRACT: docs/architecture/connections.md:148
+    /// "// Proxy only: carrier, carrier_node_id, carrier_incarnation_id; // Direct Failed only: recovery_round, attempt_ordinal"
+    #[test]
+    fn shape_refusal_and_is_active_direct_enforce_connection_row_invariants() {
+        let src = end("mesh1.rpc.1", NodeId::mint(), Some(IncarnationId::mint()));
+        let dst = end("mesh1.rpc.2", NodeId::mint(), Some(IncarnationId::mint()));
+        let car = end("mesh1.rpc.3", NodeId::mint(), Some(IncarnationId::mint()));
+
+        let valid_direct = NodeConnection {
+            id: ConnectionId::mint(),
+            source: src.clone(),
+            destination: dst.clone(),
+            kind: ConnectionKind::Direct,
+            alpn: ALPN.to_vec(),
+            state: ConnectionState::Connected,
+            carrier: None,
+            recovery: None,
+            reason: None,
+            logged_at_ms: 100,
+        };
+        assert!(valid_direct.is_active_direct());
+        assert_eq!(valid_direct.shape_refusal(), None);
+
+        let disconnected_direct = NodeConnection {
+            state: ConnectionState::Disconnected,
+            ..valid_direct.clone()
+        };
+        assert!(!disconnected_direct.is_active_direct());
+        assert_eq!(disconnected_direct.shape_refusal(), None);
+
+        // Empty ALPN is refused.
+        let empty_alpn = NodeConnection {
+            alpn: Vec::new(),
+            ..valid_direct.clone()
+        };
+        assert!(empty_alpn.shape_refusal().is_some_and(|r| r.contains("non-empty alpn")));
+
+        // Proxy Failed and Proxy Refused are refused.
+        let proxy_failed = NodeConnection {
+            kind: ConnectionKind::Proxy,
+            state: ConnectionState::Failed,
+            carrier: Some(car.clone()),
+            ..valid_direct.clone()
+        };
+        assert!(!proxy_failed.is_active_direct());
+        assert!(proxy_failed.shape_refusal().is_some_and(|r| r.contains("Failed is a Direct state only")));
+
+        let proxy_refused = NodeConnection {
+            kind: ConnectionKind::Proxy,
+            state: ConnectionState::Refused,
+            carrier: Some(car.clone()),
+            ..valid_direct.clone()
+        };
+        assert!(proxy_refused.shape_refusal().is_some_and(|r| r.contains("Refused is a Direct state only")));
+
+        // Direct Failed without recovery is refused; with recovery is admitted.
+        let direct_failed_no_rec = NodeConnection {
+            state: ConnectionState::Failed,
+            recovery: None,
+            ..valid_direct.clone()
+        };
+        assert!(direct_failed_no_rec.shape_refusal().is_some_and(|r| r.contains("recovery round and attempt ordinal")));
+
+        let direct_failed_ok = NodeConnection {
+            state: ConnectionState::Failed,
+            recovery: Some(DirectRecovery {
+                recovery_round: 1,
+                attempt_ordinal: 1,
+            }),
+            ..valid_direct.clone()
+        };
+        assert_eq!(direct_failed_ok.shape_refusal(), None);
+
+        // Non-Failed carrying recovery is refused.
+        let connected_with_rec = NodeConnection {
+            recovery: Some(DirectRecovery {
+                recovery_round: 1,
+                attempt_ordinal: 1,
+            }),
+            ..valid_direct.clone()
+        };
+        assert!(connected_with_rec.shape_refusal().is_some_and(|r| r.contains("only a Direct Failed entry carries a recovery")));
+
+        // Proxy without carrier and Direct with carrier are refused.
+        let proxy_no_carrier = NodeConnection {
+            kind: ConnectionKind::Proxy,
+            carrier: None,
+            ..valid_direct.clone()
+        };
+        assert!(proxy_no_carrier.shape_refusal().is_some_and(|r| r.contains("a Proxy entry names its carrier")));
+
+        let direct_with_carrier = NodeConnection {
+            carrier: Some(car),
+            ..valid_direct
+        };
+        assert!(direct_with_carrier.shape_refusal().is_some_and(|r| r.contains("a Direct entry names no carrier")));
+    }
+
+    /// CONTRACT: docs/architecture/connections.md:325
+    /// "A valid active Proxy overrides an active Direct until the proxy is durably retired"
+    /// CONTRACT: docs/architecture/connections.md:482
+    /// "A reconnect series exists when the latest Direct record for this source and destination is Failed for the
+    /// current destination incarnation and no newer Direct Connected supersedes it."
+    #[test]
+    fn held_projection_and_resolve_for_respect_incarnations_and_precedence() {
+        let src_id = NodeId::mint();
+        let src_inc = IncarnationId::mint();
+        let src = end("mesh1.rpc.1", src_id.clone(), Some(src_inc.clone()));
+
+        let dst_id = NodeId::mint();
+        let dst_inc1 = IncarnationId::mint();
+        let dst_inc2 = IncarnationId::mint();
+        let dst = end("mesh1.rpc.2", dst_id.clone(), Some(dst_inc1.clone()));
+
+        let car_id = NodeId::mint();
+        let car_inc = IncarnationId::mint();
+        let car = end("mesh1.rpc.3", car_id.clone(), Some(car_inc.clone()));
+
+        let topo = Arc::new(StaticIncarnations::default());
+        topo.set(src_id, src.name.clone(), src_inc);
+        topo.set(dst_id.clone(), dst.name.clone(), dst_inc1.clone());
+        topo.set(car_id.clone(), car.name.clone(), car_inc);
+
+        let mut held = ConnectionsHeld::new();
+        assert_eq!(held.own_source(), None);
+        assert_eq!(held.own_proxy(&dst.name), None);
+        assert_eq!(held.active_directs_to_for(&dst.name, ALPN), None);
+
+        held.set_own_source(src.name.clone());
+        held.set_topology_view(topo.clone());
+        held.mark_complete();
+        assert_eq!(held.own_source(), Some(&src.name));
+        assert_eq!(held.own_proxy(&dst.name), Some(None));
+        assert_eq!(held.end_superseded(&dst), Some(false));
+
+        let direct_id = ConnectionId::mint();
+        let direct_conn = NodeConnection {
+            id: direct_id.clone(),
+            source: src.clone(),
+            destination: dst.clone(),
+            kind: ConnectionKind::Direct,
+            alpn: ALPN.to_vec(),
+            state: ConnectionState::Connected,
+            carrier: None,
+            recovery: None,
+            reason: None,
+            logged_at_ms: 100,
+        };
+        assert!(!held.holds_direct_fact_for(&src.name, &dst.name, ALPN));
+        held.apply(direct_conn.clone()).unwrap();
+        assert!(held.holds_direct_fact_for(&src.name, &dst.name, ALPN));
+        assert_eq!(held.active_direct_by_id(&direct_id), Some(&direct_conn));
+        assert_eq!(held.active_directs_to_for(&dst.name, ALPN).unwrap(), vec![&direct_conn]);
+        assert!(!held.names_superseded_destination(&direct_conn));
+
+        // Active Proxy overrides active Direct when allowed by CarrierPolicy.
+        let proxy_conn = NodeConnection {
+            id: ConnectionId::mint(),
+            source: src.clone(),
+            destination: dst.clone(),
+            kind: ConnectionKind::Proxy,
+            alpn: ALPN.to_vec(),
+            state: ConnectionState::Connected,
+            carrier: Some(car.clone()),
+            recovery: None,
+            reason: None,
+            logged_at_ms: 110,
+        };
+        held.apply(proxy_conn.clone()).unwrap();
+        assert_eq!(held.own_proxy(&dst.name), Some(Some(&proxy_conn)));
+
+        let via_proxy = resolve_for(
+            &held,
+            &src.name,
+            &dst.name,
+            ALPN,
+            CarrierPolicy::Proxy {
+                carrier_kind: NodeKind::RpcNode,
+            },
+        );
+        assert_eq!(
+            via_proxy,
+            RouteResolution {
+                route: EffectiveRoute::ViaPeer {
+                    carrier: car.name.clone(),
+                    proxy: proxy_conn.clone(),
+                },
+                retire: None,
+            }
+        );
+
+        let no_proxy_policy = resolve_for(&held, &src.name, &dst.name, ALPN, CarrierPolicy::NoProxy);
+        assert_eq!(
+            no_proxy_policy,
+            RouteResolution {
+                route: EffectiveRoute::Direct { known: true },
+                retire: None,
+            }
+        );
+
+        // When Direct fails for the current destination incarnation and Proxy disconnects,
+        // `latest_direct_failed_for` is true and `resolve_for` returns `NoActiveRoute`.
+        let proxy_drop = NodeConnection {
+            id: ConnectionId::mint(),
+            state: ConnectionState::Disconnected,
+            reason: Some("closed".into()),
+            logged_at_ms: 120,
+            ..proxy_conn
+        };
+        held.apply(proxy_drop).unwrap();
+        assert_eq!(held.own_proxy(&dst.name), Some(None));
+
+        let direct_failed = NodeConnection {
+            id: ConnectionId::mint(),
+            state: ConnectionState::Failed,
+            recovery: Some(DirectRecovery {
+                recovery_round: 1,
+                attempt_ordinal: 1,
+            }),
+            reason: Some("dial failed".into()),
+            logged_at_ms: 130,
+            ..direct_conn.clone()
+        };
+        held.apply(direct_failed).unwrap();
+        assert!(held.latest_direct_failed_for(&src.name, &dst.name, ALPN));
+        assert_eq!(
+            resolve_for(&held, &src.name, &dst.name, ALPN, CarrierPolicy::NoProxy).route,
+            EffectiveRoute::NoActiveRoute
+        );
+
+        // Superseding the destination incarnation invalidates the stale Failed fact and makes
+        // `end_superseded` / `names_superseded_destination` true.
+        topo.set(dst_id.clone(), dst.name.clone(), dst_inc2);
+        assert_eq!(held.end_superseded(&dst), Some(true));
+        assert!(held.names_superseded_destination(&direct_conn));
+        assert!(!held.latest_direct_failed_for(&src.name, &dst.name, ALPN));
+        assert_eq!(
+            resolve_for(&held, &src.name, &dst.name, ALPN, CarrierPolicy::NoProxy).route,
+            EffectiveRoute::Direct { known: false }
+        );
+
+        topo.depart(dst_id, dst.name.clone());
+        assert_eq!(held.end_superseded(&dst), Some(true));
+    }
+}
