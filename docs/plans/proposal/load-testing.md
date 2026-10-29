@@ -24,8 +24,10 @@ measures, and a profile passes when every measure with a target is inside it (§
 
 ### The harness
 
-- **Where:** a new test target `crates/rdm-test/tests/load/` and a driver `scripts/rdm-load.sh <profile>`,
-  built from the gate's build (`scripts/cells.sh`), so it measures exactly what the gate proves.
+- **Where:** a new test target `crates/rdm-test/tests/load/` and a driver `scripts/rdm-load.sh <profile>`.
+  The nodes under load run a frozen **release** build of the SHA (`cargo build --release --bins`): the
+  gate's build is a debug build, and a debug build measures its own overhead on the CPU-bound paths
+  (gossip encode, postcard, hashing), not RDM. Each row names the build it ran.
 - **Estates:** `rdm_test::estate::Estate` with a profile `{ meshes, admins_per_mesh, nodes_per_mesh }`
   on the process provider. The container provider is a second pass, once the process numbers hold.
 - **Measurement:** spans only, read from the evidence JSONL and from ClickHouse on .99, plus `/proc`
@@ -96,15 +98,19 @@ are reported beside it and the row carries n. At the largest passing profile M3 
 that profile. M2 and M9 are reported with no target. M10 runs once, at the largest passing profile. The
 next profile runs only when the one before passes.
 
-**Conditions.** Every run is on the gate's build (`scripts/cells.sh`, the build every gate and soak
-measures), at the defaults (`RDM_GOSSIP_INTERVAL_MS` 2000, `RDM_STALENESS_MS` 30000, the cert TTLs), with
-`RDM_EVIDENCE_DIR` set and OTLP export to the collector on .99, and alone on the box: no gate, soak or cell
-runs beside it (the gate's leaked-process step kills a run's nodes). A row is compared only with a row
+**Conditions.** Every run is on the frozen release build of the SHA, at the defaults
+(`RDM_GOSSIP_INTERVAL_MS` 2000, `RDM_STALENESS_MS` 30000, the cert TTLs), with OTLP export to the
+collector on .99, and alone on the box: the driver refuses to start while any lane is busy
+(`scripts/lane-status.sh` lists a process in it) and names the busy lane, and no gate, soak or cell runs
+beside it (the gate's leaked-process step kills a run's nodes). Each profile runs twice: once with
+`RDM_EVIDENCE_DIR` set, for the measures' traces (the slowest sample's flame), and once with it unset,
+for M6 and M8, which the evidence JSONL's own CPU and I/O would otherwise inflate. A row is compared only with a row
 taken under the same conditions; the row carries the SHA, the profile and the box. A changed cadence,
 build, telemetry setting or host is a new baseline, never a comparison.
 M8's thresholds are CLAUDE.md's alert thresholds, set against a release-build baseline (about 0.02 cores,
-0.06 GB); the gate's build is read first at L1, and an idle node-admin above the threshold there is a finding
-read as a flame before any target moves.
+0.06 GB), the build the load runs on. The gate's debug build's idle cost is read once at L1 beside it, as a
+comparison and never a target; an idle release node-admin above the threshold is a finding read as a flame
+before any target moves.
 
 ### Chaos at scale
 
@@ -122,7 +128,10 @@ separate step.
 
 1. The harness and L1, with M1, M2, M5, M8: the baseline row at L1 must match today's R-shape numbers
    (bring-up of the 2/2/3/3 × 2 estate is about 7-9 s, i143-prd.md e10.s2). rdm#187.
-2. M3, M4, M6, M7 at L1.
+2. M3, M4, M6, M7 at L1. M6 runs first, short, to read the order of magnitude: today's only Node RPC
+   load cell (`crates/rdm-transport/tests/flood.rs`) asks 200 round trips in 10 s (about 20/s from 32
+   callers) against a 2,000/s target, so a gap of that size is a finding read as a flame at L1, before any
+   profile ramps.
 3. L2, then L3, then L4. Each red row is a unit: the trace of its slowest sample read as a flame, the
    cause fixed at its root (no tuning a constant to pass without the flame that shows why).
 4. M9, the 100-sample M3 and M5 run, then M10 at the largest passing profile.
