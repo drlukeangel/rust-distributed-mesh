@@ -1,5 +1,5 @@
 //! `connections-reconnect`: the source-owned Direct reconnect schedule, exponential backoff with
-//! deterministic jitter, and ordered Proxy retirement (`docs/architecture/connections.md:1`,
+//! deterministic jitter, and ordered Proxy deletion (`docs/architecture/connections.md:1`,
 //! `crates/rdm-node/src/connection_reconnect.rs:51`, `crates/rdm-core/src/reconnect.rs:1`).
 //!
 //! When a source's latest `Direct` connection entry to a destination is `Failed` for the
@@ -7,7 +7,7 @@
 //! from that indexed row (`logged_at_ms + reconnect_backoff(ordinal) + deterministic_jitter`).
 //! Each failed attempt appends `next_failure` at `attempt_ordinal + 1` in the same recovery round.
 //! Once a scheduled `Direct` dial succeeds (`Connected`), `owed_direct_restored` produces the
-//! ordered `Proxy Disconnected(reason=direct-restored)` entry before retiring the Proxy route.
+//! ordered `Proxy Disconnected(reason=direct-restored)` entry before deleting the Proxy route.
 //!
 //! Build: `cargo build --example connections_reconnect` in `demo/`.
 //! Run against a live estate (`scripts/demo-estate.sh up`):
@@ -142,7 +142,7 @@ async fn main() -> Result<()> {
     assert_eq!(owed.len(), 1);
     assert_eq!(owed[0].reason.as_deref(), Some(DIRECT_RESTORED));
     println!(
-        "Direct Connected at {}ms: owed Proxy retirement state={:?} reason={:?}",
+        "Direct Connected at {}ms: owed Proxy delete state={:?} reason={:?}",
         item_2.due_ms, owed[0].state, owed[0].reason
     );
     held.apply(owed[0].clone()).map_err(|e| anyhow!("{e:?}"))?;

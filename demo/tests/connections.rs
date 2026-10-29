@@ -1064,7 +1064,7 @@ fn concurrent_streams_from_both_ends_preserve_pairing_finish_reset_and_stop_code
     });
 }
 
-/// Row 5 — `retirement breaks lifecycle control`:
+/// Row 5 — `deletion breaks lifecycle control`:
 /// Restore Direct during a long Proxy stream: that stream continues, the next `open` is Direct,
 /// `node.connection.delete` by the tunnel's id still closes it. Also captures and verifies the
 /// three-node flame (`rpc.1` → `gateway.1` → `rpc.2`).
@@ -1181,8 +1181,8 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
             .unwrap();
         drop(probe_on_a);
 
-        let retired_row = wait_for_row(&proxy_file, ConnectionState::Disconnected).await;
-        assert_eq!(retired_row.reason.as_deref(), Some("direct-restored"));
+        let deleted_row = wait_for_row(&proxy_file, ConnectionState::Disconnected).await;
+        assert_eq!(deleted_row.reason.as_deref(), Some("direct-restored"));
         wait_for_row(
             &direct_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", ALPN_A),
             ConnectionState::Connected,

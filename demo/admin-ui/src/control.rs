@@ -231,7 +231,7 @@ async fn create_mesh(State(c): State<Control>, Json(body): Json<MeshRequest>) ->
     answer(&c, "create mesh", r, None, Some(&body.name))
 }
 
-/// Retire a whole mesh: one Build (members first, its node-admins last).
+/// Delete a whole mesh: one Build (members first, its node-admins last).
 async fn remove_mesh(State(c): State<Control>, Path(name): Path<String>) -> Response {
     let admin = match client(&c) {
         Ok(a) => a,
