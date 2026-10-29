@@ -680,3 +680,106 @@ pub(crate) async fn view_rebuild_due(wake: &mut ViewWake, gate: &crate::stop_gat
     let woken = wake.moved().await;
     (gate.turn("view-rebuild").await, woken)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fabric_builds::SeatRecord;
+    use crate::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
+    use rdm_core::{Primary, Seat};
+
+    /// CONTRACT: docs/architecture/build.md:453
+    /// "One writer per key: the fabric-primary writes the Fabric record and every topology attempt's Build facts"
+    /// CONTRACT: docs/architecture/node-identity-and-state.md:149
+    /// "node.delete releases the node's identity and name; its row stays. The node's mesh-primary writes
+    /// the row with status deleted, keeping the record and its config; the deleted row releases..."
+    #[tokio::test]
+    async fn fabric_primary_source_build_records_reader_takes_path_row_name_and_describe_absence_behave_as_specified() {
+        let dv = DigestView::default();
+        let records = Arc::new(Records::default());
+        let me_id = NodeId::mint();
+        let me_inc = IncarnationId::mint();
+        let me_name: PathName = "mesh1.admin.1".parse().unwrap();
+        let view = Arc::new(std::sync::OnceLock::new());
+
+        // 1. `fabric_seat_source` and `build_records_reader`:
+        //    When no fabric primary is recorded, `fabric_seat_source` returns `Open { holder: None }`
+        //    and `build_records_reader` returns `Some` when `unlaunched = true`, `None` when `unlaunched = false`.
+        let primary_src = fabric_seat_source(&dv, &records, (me_id.clone(), me_inc.clone()), &me_name, view.clone());
+        assert_eq!((primary_src.read)(), SeatRecord::Open { holder: None });
+
+        let reader_launched = build_records_reader(&dv, &records, (me_id.clone(), me_inc.clone()), &me_name, false, view.clone());
+        let reader_unlaunched = build_records_reader(&dv, &records, (me_id.clone(), me_inc.clone()), &me_name, true, view.clone());
+        assert_eq!(reader_launched(), None);
+        assert_eq!(reader_unlaunched(), Some(me_name.to_string()));
+
+        // When the fabric primary names this exact birth, both `primary_src` and `reader_launched` name `me_name`.
+        dv.seats.take(
+            Seat::FabricPrimary,
+            &Primary {
+                mesh: "mesh1".to_string(),
+                node_id: me_id.clone(),
+                incarnation: me_inc.clone(),
+                revision: 1,
+            },
+        );
+        assert_eq!((primary_src.read)(), SeatRecord::Open { holder: Some(me_name.to_string()) });
+        assert_eq!(reader_launched(), Some(me_name.to_string()));
+
+        // When a newer revision moves the fabric primary to another birth, `primary_src` reports `Moved` and `reader_launched` returns `None`.
+        let other_id = NodeId::mint();
+        let other_inc = IncarnationId::mint();
+        dv.seats.take(
+            Seat::FabricPrimary,
+            &Primary {
+                mesh: "mesh1".to_string(),
+                node_id: other_id,
+                incarnation: other_inc,
+                revision: 2,
+            },
+        );
+        assert!(matches!((primary_src.read)(), SeatRecord::Moved { .. }));
+        assert_eq!(reader_launched(), None);
+
+        // 2. `takes_path` and `row_name`:
+        //    `row_name` reads a birth's row from `NodesStorage` and indicates whether the row released its name (`Deleted` / `Withdrawn`).
+        //    `takes_path` lets a candidate whose row has not released its name take the path from a listed birth whose row released its name.
+        let store = MemoryNodesStorage::default();
+        let rpc_path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let old_id = NodeId::mint();
+        let old_inc = IncarnationId::mint();
+        let new_id = NodeId::mint();
+        let new_inc = IncarnationId::mint();
+
+        let (r_none, rel_none) = row_name(&me_name, &store, &new_id, &new_inc, &rpc_path).await;
+        assert!(matches!(r_none, RowName::At(ref p) if p == &rpc_path));
+        assert!(!rel_none);
+
+        store.put_node(&NodeRow::new(rpc_path.clone(), old_id.clone(), NodeStatus::Deleted)).await.unwrap();
+        let (r_del, rel_del) = row_name(&me_name, &store, &old_id, &old_inc, &rpc_path).await;
+        assert!(matches!(r_del, RowName::At(ref p) if p == &rpc_path));
+        assert!(rel_del);
+
+        let mut row_names = RowNames::default();
+        row_names.released.insert((old_id.clone(), old_inc.clone()));
+
+        let mut old_node = Node::allocated(rpc_path.clone());
+        old_node.node_id = old_id;
+        old_node.incarnation_id = Some(old_inc);
+
+        let mut new_node = Node::allocated(rpc_path.clone());
+        new_node.node_id = new_id;
+        new_node.incarnation_id = Some(new_inc);
+
+        assert_eq!(row_names.takes_path(&old_node, &new_node), Some(true));
+        assert_eq!(row_names.takes_path(&new_node, &old_node), Some(false));
+        assert_eq!(row_names.takes_path(&new_node, &new_node), None);
+
+        // 3. `describe_absence` formats the view digests, removed set, and records entry for an absent path.
+        records.removed.lock().unwrap().insert((rpc_path.clone(), None));
+        let desc = describe_absence(&dv, &records, &rpc_path);
+        assert!(desc.contains("no digest for the name"), "{desc}");
+        assert!(desc.contains("removed: [none]"), "{desc}");
+        assert!(desc.contains("records: none"), "{desc}");
+    }
+}
