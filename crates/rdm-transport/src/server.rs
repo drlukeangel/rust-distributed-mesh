@@ -1113,3 +1113,93 @@ impl ProtocolHandler for NodeRpcServer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ServedBirth, ServerBuilder};
+    use rdm_core::ping::{Ping, PingReply, PingRequest};
+    use std::net::SocketAddr;
+
+    /// CONTRACT: docs/architecture/node-rpc-envelope.md:38
+    /// "Every request carries a `CallContext` in its outer envelope"
+    /// CONTRACT: docs/architecture/connections.md:384
+    /// "node.connections.delete hard-cuts the live transport connection(s) it names"
+    #[tokio::test]
+    async fn apply_context_records_peer_metadata_and_close_connections_from_cuts_matching_peer_unless_spared() {
+        // 1. `apply_context` records `caller_system` and allowlisted span baggage onto `span`.
+        let secret = iroh::SecretKey::from_bytes(&[29u8; 32]);
+        let mut ctx = CallContext::default();
+        ctx.traceparent = Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into());
+        ctx.caller_system = Some("rdm-cli".into());
+        ctx.baggage = Some("test_case=ctx-1".into());
+        let peer_ctx = PeerContext {
+            endpoint_id: secret.public(),
+            context: ctx,
+            delivery: None,
+            acceptance: Acceptance::detached(),
+        };
+        let span = tracing::info_span!(
+            "rdm.node_rpc.request.serve.via-direct",
+            caller_system = tracing::field::Empty,
+            test_case = tracing::field::Empty,
+            scenario = tracing::field::Empty,
+            operation = tracing::field::Empty,
+        );
+        apply_context(&span, &peer_ctx);
+
+        // 2. `close_connections_from` spares the connection when `spare == Some(peer)` and cuts it otherwise.
+        let server_ep = crate::endpoint::bind(
+            iroh::SecretKey::from_bytes(&[31u8; 32]),
+            "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+        )
+        .await
+        .unwrap();
+        let client_ep = crate::endpoint::bind(
+            iroh::SecretKey::from_bytes(&[32u8; 32]),
+            "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+        )
+        .await
+        .unwrap();
+        let client_peer = client_ep.id();
+
+        let server = ServerBuilder::new()
+            .serve::<Ping, _, _>(OpOwner::Core, |_peer, req: PingRequest| async move {
+                let PingRequest::Ping { payload } = req;
+                Ok(PingReply::Pong { payload })
+            })
+            .build(ServedBirth {
+                node_id: "node-1".into(),
+                incarnation: "inc-1".into(),
+            })
+            .unwrap();
+
+        let server_addr = iroh::EndpointAddr::new(server_ep.id())
+            .with_ip_addr(server_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
+
+        let server_clone = server.clone();
+        let server_ep_clone = server_ep.clone();
+        let accept_task = tokio::spawn(async move {
+            let incoming = server_ep_clone.accept().await.unwrap();
+            let conn = server_clone.on_accepting(incoming.accept().unwrap()).await.unwrap();
+            server_clone.inner.connections.lock().unwrap().insert(conn.stable_id(), conn.clone());
+            conn
+        });
+
+        let client_conn = client_ep.connect(server_addr, crate::ALPN).await.unwrap();
+        let _accepted_conn = accept_task.await.unwrap();
+
+        // Spared peer is not cut:
+        assert_eq!(server.close_connections_from(client_peer, Some(client_peer), "spared"), 0);
+        assert!(client_conn.close_reason().is_none());
+
+        // Unspared peer is hard-cut:
+        assert_eq!(server.close_connections_from(client_peer, None, "cut-by-test"), 1);
+        client_conn.closed().await;
+        assert!(client_conn.close_reason().is_some());
+
+        client_ep.close().await;
+        server_ep.close().await;
+    }
+}
+
