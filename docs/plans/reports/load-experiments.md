@@ -203,3 +203,43 @@ callers.
   L2 moves.
 
 **Next.** M6 at 64 and 128 callers and for 60 s (the measure's window), then M3 and M4 at L1.
+
+---
+
+## E6 and E7: Node RPC at 60 s, 32 and 128 callers (2026-10-28)
+
+**What.** L1 with evidence off at `981a3a827`, M6 at its measure's window: 60 s of `node.topology.get` of its own
+mesh against `mesh2.admin.2` directly, at 32 callers and then 128, the target (at least 2,000 completions/s,
+p99 under 50 ms, read on p99 with hundreds of thousands of samples) checked on each. E7 repeats it with the
+node's CPU and the callers' process CPU over each window.
+
+**Why.** E5 left open whether its 7,674/s was the node's ceiling or the client's, and ran 10 s, not the
+measure's 60.
+
+**Outcome.**
+
+| run | callers | completions | p50 / p99 / max | without a reply | node CPU | callers' CPU |
+|---|---|---|---|---|---|---|
+| E6 | 32 | 7,708 /s | 4 / 7 / 11 ms | 0 | | |
+| E6 | 128 | 7,311 /s | 15 / 50 / 140 ms | 0 | | |
+| E7 | 32 | 7,838 /s | 4 / 6 / 10 ms | 0 | 4.6 cores | 4.3 cores |
+| E7 | 128 | 7,400 /s | 15 / 50 / 124 ms | 0 | 4.4 cores | 4.0 cores |
+
+E6 failed its run: at 128 callers the p99 (50 ms, by rounding over the bound) missed the target. It was kept
+as it ran (rows in `981a3a827.jsonl`).
+
+**Read.**
+- The rate is flat from 32 to 128 callers (about 7,400-7,800/s) and only the queue grows: 128 callers at
+  7,400/s is 17 ms each by Little's law, the p50 seen. 128 callers is past the ceiling and its p99 is the
+  queue's. The target names a rate (2,000/s at p99 under 50 ms); the held concurrency meets it at 3.9 times
+  that rate with p99 6 ms. So from E7 on the target is read at 32 callers and 128 is a saturation probe,
+  reported with no target. That is reading the target at the rate it names, not moving it; a run that
+  cannot reach 2,000/s at p99 under 50 ms at 32 callers still fails.
+- Neither side is CPU-bound by the box: the node used 4.6 of 20 cores and the client 4.3, both flat with
+  more callers. The ceiling is elsewhere: one QUIC connection carries every caller (one client endpoint,
+  one node), and each read costs the node about 0.59 ms of CPU (4.6 cores / 7,838 per s) to answer a
+  10-member snapshot, which is high for a read that changes nothing.
+- No call ended without a reply in about 1.8 million.
+
+**Next.** A CPU profile of the node during M6 (`--perf`, its window moved to M6's) to see where the 0.59 ms
+goes, and M6 from two client processes to see whether the connection is the ceiling. Then M3 and M4.

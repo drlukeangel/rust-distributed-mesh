@@ -71,6 +71,29 @@ impl Rows {
         self.rows.push(json!({"measure": measure, "what": what, "unit": unit, "value": v, "target": target, "pass": pass}));
     }
 
+    /// A rate with a lower target: it passes at or above `floor`.
+    fn at_least(&mut self, measure: &str, what: &str, unit: &str, v: f64, floor: f64) {
+        let pass = v >= floor;
+        if !pass {
+            self.missed.push(format!("{measure} {what}: {v:.1} {unit} under the target {floor:.1}"));
+        }
+        self.rows.push(json!({"measure": measure, "what": what, "unit": unit, "value": v, "target_at_least": floor, "pass": pass}));
+    }
+
+    /// A measure of `samples` (milliseconds) with a target on its p99, for a measure with hundreds of
+    /// samples or more (load-testing.md "Samples": a p99 target only at 100 samples).
+    fn time_p99(&mut self, measure: &str, what: &str, samples: Vec<f64>, target_ms: f64) {
+        let n = self.rows.len();
+        self.time(measure, what, samples, None, None);
+        let p99 = self.rows[n]["p99"].as_f64().unwrap_or(f64::NAN);
+        let pass = samples_enough(&self.rows[n]) && p99 <= target_ms;
+        if !pass {
+            self.missed.push(format!("{measure} {what}: p99 {p99:.0} ms over the target {target_ms:.0} ms (n {})", self.rows[n]["n"]));
+        }
+        self.rows[n]["target_p99"] = json!(target_ms);
+        self.rows[n]["pass"] = json!(pass);
+    }
+
     /// Append every row to the SHA's file and print the table; panics naming every missed target.
     fn finish(mut self) {
         let end = box_context();
@@ -97,6 +120,10 @@ impl Rows {
     }
 }
 
+fn samples_enough(row: &Value) -> bool {
+    row["n"].as_u64().unwrap_or(0) >= 100
+}
+
 fn s(v: &Value) -> String {
     v.as_str().map(String::from).unwrap_or_else(|| v.to_string())
 }
@@ -107,10 +134,17 @@ fn summary(r: &Value) -> String {
         Some(false) => "MISS",
         None => "reported",
     };
-    if r["value"].is_null() {
-        format!("p50 {:>8.0} p99 {:>8.0} max {:>8.0} {}  target {}  {pass}", r["p50"].as_f64().unwrap_or(f64::NAN), r["p99"].as_f64().unwrap_or(f64::NAN), r["max"].as_f64().unwrap_or(f64::NAN), s(&r["unit"]), s(&r["target"]))
+    let target = if !r["target_at_least"].is_null() {
+        format!("at least {}", s(&r["target_at_least"]))
+    } else if !r["target_p99"].is_null() {
+        format!("p99 {}", s(&r["target_p99"]))
     } else {
-        format!("{:.3} {}  target {}  {pass}", r["value"].as_f64().unwrap_or(f64::NAN), s(&r["unit"]), s(&r["target"]))
+        s(&r["target"])
+    };
+    if r["value"].is_null() {
+        format!("n {} p50 {:>8.0} p99 {:>8.0} max {:>8.0} {}  target {target}  {pass}", r["n"], r["p50"].as_f64().unwrap_or(f64::NAN), r["p99"].as_f64().unwrap_or(f64::NAN), r["max"].as_f64().unwrap_or(f64::NAN), s(&r["unit"]))
+    } else {
+        format!("{:.3} {}  target {target}  {pass}", r["value"].as_f64().unwrap_or(f64::NAN), s(&r["unit"]))
     }
 }
 
@@ -208,6 +242,9 @@ async fn rpc_load(estate: &Estate, node: &rdm_core::PathName, concurrency: usize
     }
     (latencies, errors, start.elapsed().as_secs_f64())
 }
+
+/// M6's window per concurrency (load-testing.md: 60 s per op).
+const M6_WINDOW: Duration = Duration::from_secs(60);
 
 /// M7's steady window (load-testing.md: 5 minutes at steady state).
 const STEADY: Duration = Duration::from_secs(300);
@@ -316,14 +353,36 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
         rows.value("M8", &format!("{role} idle rss"), "GB", gb, Some(0.5));
     }
 
-    // M6 (short, load-testing.md Steps 2): Node RPC against one idle node-admin, evidence off only.
+    // M6 (load-testing.md: 60 s per op at a held concurrency): Node RPC against one idle node-admin,
+    // evidence off only. The target is read at the held concurrency (32 callers); 128 callers is the
+    // saturation probe, reported with no target: past the node's ceiling the rate holds and only the
+    // queue grows (E6), so its p99 is the queue's. The node's CPU over each window is reported beside it.
     if !evidence {
         let at: rdm_core::PathName = format!("{}.admin.{}", meshes.last().unwrap(), p.admins).parse().unwrap();
-        let (latencies, errors, secs) = rpc_load(&estate, &at, 32, Duration::from_secs(10)).await;
-        let rate = latencies.len() as f64 / secs;
-        rows.value("M6", &format!("topology.get at {at}, 32 callers, completions"), "/s", rate, None);
-        rows.value("M6", &format!("topology.get at {at}, 32 callers, errors"), "count", errors as f64, None);
-        rows.time("M6", &format!("topology.get at {at}, 32 callers"), latencies, None, None);
+        let pid = estate.live_runtimes().into_iter().find(|(d, _)| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{at}-")))).map(|(_, pid)| pid);
+        for (callers, target) in [(32, true), (128, false)] {
+            let (t0, c0) = (pid.and_then(cpu_ticks), cpu_ticks(std::process::id()));
+            let (latencies, errors, secs) = rpc_load(&estate, &at, callers, M6_WINDOW).await;
+            let what = format!("topology.get at {at}, {callers} callers");
+            let rate = latencies.len() as f64 / secs;
+            if target {
+                rows.at_least("M6", &format!("{what}, completions"), "/s", rate, 2000.0);
+            } else {
+                rows.value("M6", &format!("{what}, completions"), "/s", rate, None);
+            }
+            rows.value("M6", &format!("{what}, calls without a reply"), "count", errors as f64, None);
+            if let (Some(t0), Some(t1)) = (t0, pid.and_then(cpu_ticks)) {
+                rows.value("M6", &format!("{what}, the node's cpu"), "cores", t1.saturating_sub(t0) as f64 / 100.0 / secs, None);
+            }
+            if let (Some(c0), Some(c1)) = (c0, cpu_ticks(std::process::id())) {
+                rows.value("M6", &format!("{what}, the callers' process cpu"), "cores", c1.saturating_sub(c0) as f64 / 100.0 / secs, None);
+            }
+            if target {
+                rows.time_p99("M6", &what, latencies, 50.0);
+            } else {
+                rows.time("M6", &what, latencies, None, None);
+            }
+        }
     }
 
     // M7: gossip cost at steady state, read from the frames each node takes in (evidence on only).

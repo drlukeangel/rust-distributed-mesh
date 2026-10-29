@@ -78,7 +78,7 @@ A profile runs only once the one before it passes. L2 to L4 are added as the har
 |---|---|---|
 | M1 | bring-up: the Day-0 Build of the whole profile, from the first admin's launch to the fabric ready | per profile |
 | M2 | node creates per second during bring-up | reported |
-| M6 | Node RPC: 32 callers sending `node.topology.get` of its own mesh to one non-primary node-admin directly for 10 s (the short run); completions per second, latency, calls ended without a reply; evidence-off pass only | reported (target 2,000/s at p99 under 50 ms once at 60 s) |
+| M6 | Node RPC: callers sending `node.topology.get` of its own mesh to one non-primary node-admin directly for 60 s, at 32 callers (the held concurrency) and 128 (the saturation probe, reported); completions per second, latency, calls ended without a reply, the node's and the callers' CPU; evidence-off pass only | at 32 callers: at least 2,000/s, p99 under 50 ms |
 | M7 | gossip bytes per second each node takes in over 5 min steady (`rdm.mesh.topology.update.via-frame` `bytes`), the largest node's total and per channel kind; evidence pass only | 50 KB/s per node |
 | M5 | one-node `node.create` and `node.delete` Builds, 20 each, accepted to complete | max under 5 s |
 | M8 | idle CPU (cores) and RSS (GB), the largest per role, over 20 s once settled | 0.10 cores, 0.5 GB |
