@@ -847,3 +847,157 @@ fn mesh_primary_pulls_rafka_time_from_new_fabric_primary_on_primary_change_into_
     assert_eq!(adopted[0]["kind"].as_str(), "fabric-primary");
     assert_eq!(adopted[0]["served_by"].as_str(), "mesh1.admin.2");
 }
+
+// @feature: node-topology-get
+/// CONTRACT (docs/architecture/query.md §2: `node.topology.get` answers what the target node holds;
+/// Q266: a read of one mesh copies that mesh's source alone, does not build the stored map when the
+/// requested mesh has a held snapshot, and reads the lost incarnations once per read rather than once
+/// per primary record): under concurrent readers asking for single meshes (`mesh1`, `mesh2`, `mesh3`)
+/// and the whole fabric (`None`), every one-mesh read answers the exact same publisher, topology
+/// version, members, primary records, and rafka-time kind as the whole read answers for that mesh.
+#[test]
+fn a_one_mesh_topology_read_answers_what_the_whole_read_answers_for_that_mesh_under_concurrent_readers() {
+    let cap = capture("one-mesh-matches-whole-concurrent");
+    cap.run(async {
+        use rdm_core::{Primary, Seat};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let fabric = FabricId::mint();
+        let server = node(&fabric, "mesh1", "mesh1.admin.1", |b| b).await;
+        let stored_calls = Arc::new(AtomicUsize::new(0));
+        let gone_calls = Arc::new(AtomicUsize::new(0));
+        let lost_inc = IncarnationId::mint();
+        {
+            let d = own_digest(&server, &fabric);
+            let stored_row = stored_of(&member_of(&fabric, "mesh4", "rpc", 1));
+            let sc = stored_calls.clone();
+            let stored: rdm_admin::topology_read::StoredSource = Arc::new(move || {
+                sc.fetch_add(1, Ordering::SeqCst);
+                let rows = vec![stored_row.clone()];
+                Box::pin(async move {
+                    Ok(rdm_admin::topology_read::StoredMap {
+                        nodes: rows,
+                        mesh_ids: [("mesh4".to_string(), MeshId::mint())].into_iter().collect(),
+                    })
+                })
+            });
+            let gc = gone_calls.clone();
+            let lost = lost_inc.clone();
+            let gone: rdm_admin::topology_read::GoneSource = Arc::new(move || {
+                gc.fetch_add(1, Ordering::SeqCst);
+                [lost.clone()].into_iter().collect()
+            });
+            let _ = server.slot.set(Arc::new(
+                TopologyDoor::new(server.topology_view.clone(), Arc::new(move || d.clone()), server.time.clone())
+                    .with_stored(stored)
+                    .with_gone(gone),
+            ));
+        }
+
+        let (pub1, pub2, pub3) = (publisher("mesh1.admin.1"), publisher("mesh2.admin.1"), publisher("mesh3.admin.1"));
+        let m1: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh1", "rpc", k)).collect();
+        let m2: Vec<MeshDigest> = (1..=4).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect();
+        let m3: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh3", "rpc", k)).collect();
+        hold(&server.topology_view, &snap("mesh1", &pub1, 3, m1));
+        hold(&server.topology_view, &snap("mesh2", &pub2, 7, m2));
+        hold(&server.topology_view, &snap("mesh3", &pub3, 11, m3));
+
+        let fp_holder = Primary { mesh: "mesh1".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 2 };
+        let mp1 = fp_holder.clone();
+        let mp2 = Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: lost_inc.clone(), revision: 4 };
+        let mp3 = Primary { mesh: "mesh3".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 5 };
+        server.topology_view.primaries().take(Seat::FabricPrimary, &fp_holder);
+        server.topology_view.primaries().take(Seat::MeshPrimary, &mp1);
+        server.topology_view.primaries().take(Seat::MeshPrimary, &mp2);
+        server.topology_view.primaries().take(Seat::MeshPrimary, &mp3);
+
+        // First: a single-mesh read of a held snapshot does not build the stored map, and reads gone once.
+        let probe = node(&fabric, "mesh1", "mesh1.rpc.9", |b| b).await;
+        let t_probe = target_of(&probe, &server);
+        let one_m2 = get_topology(&probe.client, &t_probe, "mesh1", &probe.topology_view, Some("mesh2"), None).await.unwrap();
+        assert_eq!(stored_calls.load(Ordering::SeqCst), 0, "a held mesh's read never builds the stored map");
+        assert_eq!(gone_calls.load(Ordering::SeqCst), 1, "gone incarnations are read once per read, not once per primary record");
+        assert_eq!(one_m2.installed.len(), 1);
+
+        let whole_caller = node(&fabric, "mesh1", "mesh1.rpc.8", |b| b).await;
+        let t_whole = target_of(&whole_caller, &server);
+        let whole = get_topology(&whole_caller.client, &t_whole, "mesh1", &whole_caller.topology_view, None, None).await.unwrap();
+        assert_eq!(stored_calls.load(Ordering::SeqCst), 1, "the whole read builds the stored map once");
+        assert_eq!(gone_calls.load(Ordering::SeqCst), 2, "the whole read also reads gone once");
+
+        let member_ids = |installed: &[rdm_admin::topology_read::ReadMesh], mesh: &str| -> (PublisherId, u64, Vec<String>) {
+            let m = installed.iter().find(|x| x.mesh == mesh).unwrap_or_else(|| panic!("missing {mesh}"));
+            let mut ids: Vec<String> = m.members.iter().map(|d| d.node.node_id.to_string()).collect();
+            ids.sort();
+            (m.publisher.clone(), m.topology_version, ids)
+        };
+        let expected: std::collections::BTreeMap<String, (PublisherId, u64, Vec<String>)> = ["mesh1", "mesh2", "mesh3"]
+            .into_iter()
+            .map(|m| (m.to_string(), member_ids(&whole.installed, m)))
+            .collect();
+
+        // Concurrent readers asking for mesh1, mesh2, mesh3, and None simultaneously.
+        let mut readers = Vec::new();
+        for idx in 0..12u32 {
+            readers.push(node(&fabric, "mesh1", &format!("mesh1.rpc.{}", 10 + idx), |b| b).await);
+        }
+        let mut tasks = Vec::new();
+        for (idx, r) in readers.iter().enumerate() {
+            let t = target_of(r, &server);
+            let client = r.client.clone();
+            let view = r.topology_view.clone();
+            let ask = match idx % 4 {
+                0 => Some("mesh1"),
+                1 => Some("mesh2"),
+                2 => Some("mesh3"),
+                _ => None,
+            };
+            let exp = expected.clone();
+            let seats_expected = whole.seats.clone();
+            let fp_expected = fp_holder.clone();
+            let mp1_expected = mp1.clone();
+            let mp2_expected = mp2.clone();
+            let mp3_expected = mp3.clone();
+            tasks.push(tokio::spawn(async move {
+                let read = get_topology(&client, &t, "mesh1", &view, ask, None).await.unwrap();
+                assert_eq!(read.rafka_time.expect("rafka-time served").kind, Some(PrimaryKind::FabricPrimary));
+                assert_eq!(read.seats, seats_expected, "every read answers the exact same primary records and gone flags as the whole read");
+                assert!(read.seats.iter().any(|(s, p, gone)| *s == Seat::MeshPrimary && *p == mp2_expected && *gone), "mp2 is marked gone in read.seats");
+                match ask {
+                    Some(m) => {
+                        assert_eq!(read.meshes, 1);
+                        assert_eq!(read.installed.len(), 1);
+                        assert!(read.stored.is_empty());
+                        assert_eq!(member_ids(&read.installed, m), exp[m], "one-mesh read of {m} matches whole read");
+                    }
+                    None => {
+                        assert_eq!(read.meshes, 4);
+                        assert_eq!(read.installed.len(), 3);
+                        assert_eq!(read.stored.len(), 1);
+                        for m in ["mesh1", "mesh2", "mesh3"] {
+                            assert_eq!(member_ids(&read.installed, m), exp[m], "whole read of {m} matches reference");
+                        }
+                    }
+                }
+                assert_eq!(view.primaries().fabric(), Some(fp_expected));
+                assert_eq!(view.primaries().mesh("mesh1"), Some(mp1_expected));
+                assert_eq!(view.primaries().mesh("mesh2"), Some(mp2_expected));
+                assert_eq!(view.primaries().mesh("mesh3"), Some(mp3_expected));
+            }));
+        }
+        for task in tasks {
+            task.await.expect("concurrent reader succeeded");
+        }
+        assert_eq!(gone_calls.load(Ordering::SeqCst), 2 + 12, "every concurrent read invoked GoneSource once");
+        assert_eq!(stored_calls.load(Ordering::SeqCst), 1 + 3, "only the 3 whole-fabric reads among the 12 concurrent reads built the stored map");
+
+        for r in readers {
+            r.ep.close().await;
+        }
+        whole_caller.ep.close().await;
+        probe.ep.close().await;
+        server.ep.close().await;
+    });
+    let serves = cap.named("rdm.mesh.topology.serve.via-read");
+    assert_eq!(serves.len(), 14, "2 initial + 12 concurrent reads served: {serves:?}");
+    assert!(serves.iter().all(|s| s["outcome"] == "served"), "{serves:?}");
+}
