@@ -180,11 +180,11 @@ impl Estate {
         let peers = self.peers().await;
         let views = match views_of(peers.as_ref(), admin, &self.fabric_id).await {
             Ok(views) => views,
-            // A read carried up and not answered yet ends the same way at any birth of the path.
-            Err(end @ ViewsEnd::NotYet(_)) => return Err(end),
-            // The path may hold a new birth (a node-admin re-created at its path.name, by fabric recovery
-            // or a replace): every known admin's view names it, and the read goes to that birth once more.
-            Err(ViewsEnd::Ended(_)) => {
+            // A read not answered yet (carried up, query.md §1, or not answered within its 2 s bound) or one
+            // that ended: the path may hold a new birth (a node-admin re-created at its path.name, by fabric
+            // recovery or a replace), which every known admin's view names, so the read goes to the path's
+            // birth once more; still unanswered, it is not answered yet, and a wait on it goes on to its bound.
+            Err(ViewsEnd::NotYet(_) | ViewsEnd::Ended(_)) => {
                 self.relearn(&peers).await;
                 views_of(peers.as_ref(), admin, &self.fabric_id).await?
             }
@@ -971,7 +971,7 @@ pub async fn views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Resul
     let ended = |read: String, e: CallEnd| if not_yet(&e) { ViewsEnd::NotYet(format!("{read} at {admin} is not answered yet: {e}")) } else { ViewsEnd::Ended(format!("{read} at {admin} ended: {e}")) };
     let fabrics = Fabrics::new(peers.carrier_at(admin.clone()));
     let f = match tokio::time::timeout(std::time::Duration::from_secs(2), the_fabric(&fabrics)).await {
-        Err(_) => return Err(ViewsEnd::Ended(format!("fabrics.get at {admin} did not answer within 2 s"))),
+        Err(_) => return Err(ViewsEnd::NotYet(format!("fabrics.get at {admin} is not answered within 2 s: a read it carried up (query.md §1) waits on its own bound"))),
         Ok(Err(e)) => return Err(ended("fabrics.get".into(), e)),
         Ok(Ok(f)) if f.id.to_string() != fabric_id => return Err(ViewsEnd::Ended(format!("fabrics.get at {admin} answered the Fabric {}, not {fabric_id}", f.id))),
         Ok(Ok(f)) => f,
@@ -985,7 +985,7 @@ pub async fn views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Resul
     let (at, carrier) = match f.fabric_primary.clone() {
         _ if primary => (admin.clone(), peers.carrier_at(admin.clone())),
         Some(fp) if peers.node_at(&fp).map(|id| id.to_string()) != fp_id => match tokio::time::timeout(std::time::Duration::from_secs(2), peers.carrier_following(admin, &fp)).await {
-            Err(_) => return Err(ViewsEnd::Ended(format!("the birth of {fp}, the fabric-primary, read at {admin} did not answer within 2 s"))),
+            Err(_) => return Err(ViewsEnd::NotYet(format!("the birth of {fp}, the fabric-primary, read at {admin} is not answered within 2 s"))),
             Ok(Err(e)) => return Err(ended(format!("the birth of {fp}, the fabric-primary,"), e)),
             Ok(Ok(carrier)) => (fp, carrier),
         },
@@ -998,7 +998,7 @@ pub async fn views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Resul
     for mesh in f.meshes.iter().filter(|m| !m.nodes.is_empty()) {
         let read = format!("nodes.get [mesh: {}]", mesh.name);
         match tokio::time::timeout(std::time::Duration::from_secs(2), mesh_nodes(&nodes, &mesh.name)).await {
-            Err(_) => return Err(ViewsEnd::Ended(format!("{read} at {at} did not answer within 2 s"))),
+            Err(_) => return Err(ViewsEnd::NotYet(format!("{read} at {at} is not answered within 2 s"))),
             Ok(Err(e)) if not_yet(&e) => return Err(ViewsEnd::NotYet(format!("{read} at {at}, the fabric-primary {admin} names, is not answered yet: {e}"))),
             Ok(Err(e)) => return Err(ViewsEnd::Ended(format!("{read} at {at}, the fabric-primary {admin} names, ended: {e}"))),
             Ok(Ok(views)) => all.extend(views),
