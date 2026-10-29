@@ -100,9 +100,10 @@ next profile runs only when the one before passes.
 
 **Conditions.** Every run is on the frozen release build of the SHA, at the defaults
 (`RDM_GOSSIP_INTERVAL_MS` 2000, `RDM_STALENESS_MS` 30000, the cert TTLs), with OTLP export to the
-collector on .99, and alone on the box: the driver refuses to start while any lane is busy
-(`scripts/lane-status.sh` lists a process in it) and names the busy lane, and no gate, soak or cell runs
-beside it (the gate's leaked-process step kills a run's nodes). Each profile runs twice: once with
+collector on .99. Runs may share the box with other lanes' work (Luke, 2026-10-28: "it's just more
+load"): the driver records in each row the lanes that were busy (`scripts/lane-status.sh`) and the box's
+load average at the start and end, so a row taken under other load is never read as a quiet-box baseline.
+No lane gate runs in the load run's own lane (the gate's leaked-process step kills a run's nodes). Each profile runs twice: once with
 `RDM_EVIDENCE_DIR` set, for the measures' traces (the slowest sample's flame), and once with it unset,
 for M6 and M8, which the evidence JSONL's own CPU and I/O would otherwise inflate. A row is compared only with a row
 taken under the same conditions; the row carries the SHA, the profile and the box. A changed cadence,
