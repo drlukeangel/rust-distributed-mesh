@@ -53,9 +53,9 @@ pub fn lifecycle_violations(root: &Path) -> Vec<String> {
     for f in files {
         let Ok(text) = std::fs::read_to_string(&f) else { continue };
         for (n, line) in text.lines().enumerate() {
-            let code = line.split("//").next().unwrap_or("").replace("rdm_admin_ui", "");
+            let code = line.split("//").next().unwrap_or("");
             for (needle, why) in FORBIDDEN {
-                if code.contains(needle) {
+                if names(code, needle) {
                     out.push(format!("{}:{}: `{needle}`: {why}", f.display(), n + 1));
                 }
             }
@@ -68,6 +68,18 @@ pub fn lifecycle_violations(root: &Path) -> Vec<String> {
         }
     }
     out
+}
+
+/// Whether `code` holds `needle`: an identifier needle only as a whole identifier, so `rdm_admin`
+/// is not found inside `rdm_admin_ui`, the admin UI's own crate; any other needle as written.
+fn names(code: &str, needle: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    if !needle.chars().all(ident) {
+        return code.contains(needle);
+    }
+    code.match_indices(needle).any(|(at, _)| {
+        !code[..at].chars().next_back().is_some_and(ident) && !code[at + needle.len()..].chars().next().is_some_and(ident)
+    })
 }
 
 /// The lines of the manifest's `[dependencies]` table.
