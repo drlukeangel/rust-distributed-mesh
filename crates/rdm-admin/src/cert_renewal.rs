@@ -148,6 +148,10 @@ impl Outcome {
 /// process): the bytes it presents from now on.
 pub type InstallOwn = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 
+/// The fabric-primary's own `node.roots.update` (its exact birth, the set, the phase, whether its secret
+/// rides along), answered as a node answers it.
+pub type OwnRoots = Arc<dyn Fn(&IncarnationId, &[String], rdm_core::status::RootsPhase, Option<rdm_core::status::RootSecretHex>) -> StatusReply + Send + Sync>;
+
 /// What the renewal ticks act through.
 pub struct Renewals {
     /// This admin.
@@ -181,17 +185,26 @@ pub struct Renewals {
     /// The fabric store and the fabric's id the CA row is written to (fabric-ca-renew.md "write the CA
     /// row"); set once at start, absent in a cell that writes none.
     fabric: std::sync::OnceLock<(Arc<dyn crate::fabric_storage::FabricStorage>, crate::model::FabricId)>,
+    /// The fabric-primary's own install of a root set (`node.roots.update` on itself, in process).
+    own_roots: std::sync::OnceLock<OwnRoots>,
+    /// The births that answered a root set of the rotation, by birth and the phase the set belongs to.
+    roots_acked: Mutex<BTreeSet<String>>,
 }
 
 impl Renewals {
     /// The renewal ticks of the admin `me`.
     pub fn new(me: PathName, node_id: NodeId, issuer: Arc<CertIssuer>, nodes_storage: Arc<dyn NodesStorage>, caches: crate::record_cache::Caches, client: Arc<NodeRpcClient>, install_own: InstallOwn) -> Arc<Self> {
-        Arc::new(Self { me, node_id, issuer, nodes_storage, caches, client, install_own, in_flight: Mutex::default(), updating: Mutex::default(), issued: Mutex::default(), signing: Mutex::default(), ca_due: Mutex::default(), fabric: std::sync::OnceLock::new() })
+        Arc::new(Self { me, node_id, issuer, nodes_storage, caches, client, install_own, in_flight: Mutex::default(), updating: Mutex::default(), issued: Mutex::default(), signing: Mutex::default(), ca_due: Mutex::default(), fabric: std::sync::OnceLock::new(), own_roots: std::sync::OnceLock::new(), roots_acked: Mutex::default() })
     }
 
     /// Where the CA row is written: the fabric store and the fabric's id, set once.
     pub fn set_fabric(&self, storage: Arc<dyn crate::fabric_storage::FabricStorage>, fabric_id: crate::model::FabricId) {
         let _ = self.fabric.set((storage, fabric_id));
+    }
+
+    /// The fabric-primary's own install of a root set, once its node is running.
+    pub fn set_own_roots(&self, install: OwnRoots) {
+        let _ = self.own_roots.set(install);
     }
 
     /// Whether this admin writes the record of `n` in `view`: the primary of `n`'s mesh, or the
@@ -383,6 +396,7 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
     }
     let Some(now) = r.issuer.now_ms() else { return };
     renew_ca(r, view, now).await;
+    rotate_roots(r, view).await;
     for m in &view.meshes {
         let admins: Vec<(Node, IncarnationId)> = view.births().filter(|n| n.mesh == m.name && n.kind == NodeKind::NodeAdmin).filter_map(|n| Some((n.clone(), n.incarnation_id.clone()?))).collect();
         // Every admin's dates of the mesh, a re-created admin's predecessor's included: the schedule is theirs.
@@ -473,6 +487,139 @@ async fn renew_ca(r: &Renewals, view: &Topology, now: u64) {
             span.record("outcome", "refused");
             span.in_scope(|| tracing::warn!(error = %e, "the fabric CA could not be renewed: tried again next tick"));
         }
+    }
+}
+
+/// `fabric.root.update`'s phases (fabric-ca-renew.md "Numbered end-to-end sequence (root update)") on the
+/// fabric-primary's tick, from the roots row and the next root it holds: `minted`, both roots to every
+/// live birth, node-admins first, the secret to the admins (row `distributed` on the last receipt);
+/// `distributed`, a new fabric CA signed by the new root, every mesh's issuer due under it (row
+/// `ca-rotated`); `ca-rotated`, once every live birth's member cert chains to the new root, the new
+/// root alone to every live birth (row `retired` on the last receipt, the old secret destroyed here as
+/// on every admin). A birth not answered is sent again on the next tick; a birth born mid-rotation is
+/// sent the set its phase holds. One span per phase move, `rdm.node_admin.root.update.via-caller`.
+async fn rotate_roots(r: &Arc<Renewals>, view: &Topology) {
+    use rdm_core::status::RootsPhase;
+    let Some((_, fabric_id)) = r.fabric.get() else { return };
+    let Some(row) = r.caches.fabric.get(fabric_id).and_then(|record| record.roots) else { return };
+    if row.phase == RootsPhase::Retired {
+        return;
+    }
+    let (Some(old), Some(new)) = (row.roots.first().cloned(), row.roots.get(1).cloned()) else { return };
+    let both = vec![old.clone(), new.clone()];
+    let move_to = |phase: RootsPhase| async move {
+        let span = tracing::info_span!("rdm.node_admin.root.update.via-caller", node = %r.me, phase = ?phase, root_expires_at = tracing::field::Empty, previous_root_expires_at = row.expires_at, nodes = view.births().count() as u64, outcome = tracing::field::Empty);
+        write_roots_row(r, |held| held.phase = phase).await;
+        span.record("outcome", "moved");
+        span.in_scope(|| tracing::info!("the root rotation moved to its next phase"));
+        span
+    };
+    match row.phase {
+        RootsPhase::Minted => {
+            if distribute_roots(r, view, &both, RootsPhase::Distributed).await {
+                move_to(RootsPhase::Distributed).await;
+            }
+        }
+        RootsPhase::Distributed => {
+            // A birth born since the set went out holds it before the CA moves under the new root.
+            if !distribute_roots(r, view, &both, RootsPhase::Distributed).await {
+                return;
+            }
+            match r.issuer.renew_ca_under_next_root() {
+                Ok(Some((ca, previous))) => {
+                    r.ca_due.lock().unwrap().extend(view.meshes.iter().map(|m| m.name.clone()));
+                    tracing::Instrument::instrument(write_ca_row(r, |held| *held = crate::fabric_storage::CaRow { expires_at: ca.expiry_ms(), previous_expires_at: previous, issuer_receipts: Default::default() }), tracing::Span::current()).await;
+                    move_to(RootsPhase::CaRotated).await.record("root_expires_at", ca.expiry_ms());
+                }
+                Ok(None) => tracing::warn!("the root rotation is at distributed and this fabric-primary holds no next root: nothing is minted"),
+                Err(e) => tracing::warn!(error = %e, "the fabric CA could not be minted under the new root: tried again next tick"),
+            }
+        }
+        RootsPhase::CaRotated => {
+            if !distribute_roots(r, view, &both, RootsPhase::Distributed).await || !every_cert_under_new_ca(r, view).await {
+                return;
+            }
+            if distribute_roots(r, view, &[new.clone()], RootsPhase::Retired).await {
+                move_to(RootsPhase::Retired).await;
+            }
+        }
+        RootsPhase::Retired => {}
+    }
+}
+
+/// `node.roots.update` of `roots` (the set phase `phase` holds) to every live birth of `view` not yet
+/// answered: node-admins first, the next root's secret to each admin, the fabric-primary itself in
+/// process, each mesh's own primary directly and its other births through that primary. Whether every
+/// live birth has answered.
+async fn distribute_roots(r: &Arc<Renewals>, view: &Topology, roots: &[String], phase: rdm_core::status::RootsPhase) -> bool {
+    let secret = r.issuer.next_root_secret().map(rdm_core::status::RootSecretHex);
+    let mut births: Vec<(Node, IncarnationId)> = view.births().filter(|n| n.status.is_live()).filter_map(|n| Some((n.clone(), n.incarnation_id.clone()?))).collect();
+    births.sort_by_key(|(n, _)| n.kind != NodeKind::NodeAdmin);
+    let owed: Vec<(Node, IncarnationId)> = births.into_iter().filter(|(n, i)| !r.roots_acked.lock().unwrap().contains(&roots_key(&n.node_id, i, phase))).collect();
+    let sends = owed.iter().map(|(n, incarnation)| {
+        let secret = (n.kind == NodeKind::NodeAdmin).then(|| secret.clone()).flatten();
+        let req = StatusRequest::UpdateRoots { node_id: n.node_id.clone(), incarnation: incarnation.clone(), roots: roots.to_vec(), phase, secret: secret.clone() };
+        let carrier = view.node_type_primary(&n.mesh, NodeKind::NodeAdmin).map(|p| p.node_id.clone()).filter(|p| *p != n.node_id && !view.is_mesh_primary(&n.mesh, &r.node_id));
+        async move {
+            let reply = if n.node_id == r.node_id {
+                r.own_roots.get().map(|own| own(incarnation, roots, phase, secret))
+            } else {
+                let out = match &carrier {
+                    Some(c) => r.client.call_via::<Status>(&NodeTarget::ExactNode(c.clone()), &n.node_id, &req, &CallOptions::default()).await.0,
+                    None => r.client.call::<Status>(&NodeTarget::ExactNode(n.node_id.clone()), &req, &CallOptions::default()).await.0,
+                };
+                match out {
+                    RpcOutcome::Reply(reply) => Some(reply.into_value()),
+                    _ => None,
+                }
+            };
+            if matches!(reply, Some(StatusReply::RootsUpdated { .. })) {
+                r.roots_acked.lock().unwrap().insert(roots_key(&n.node_id, incarnation, phase));
+            }
+        }
+    });
+    futures_util::future::join_all(sends).await;
+    view.births().filter(|n| n.status.is_live()).filter_map(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))).all(|(id, i)| r.roots_acked.lock().unwrap().contains(&roots_key(&id, &i, phase)))
+}
+
+/// The key of a birth's answer to a root set of phase `phase`.
+fn roots_key(node_id: &NodeId, incarnation: &IncarnationId, phase: rdm_core::status::RootsPhase) -> String {
+    format!("{node_id}/{}/{phase:?}", incarnation.as_str())
+}
+
+/// Whether every live birth of `view` holds a member cert issued under the new CA (fabric-ca-renew.md
+/// step 4: the rotation retires the old root only once nothing chains to it). A row keeps a cert's
+/// dates, not the cert: a member cert chains to the new root when its issuer is its mesh's first issuer
+/// under the new CA or a later one, so its `issuer_expires_at` is at or past that mesh's receipt on the
+/// CA row; every issuer under the old CA was minted before the new CA, and expires before the receipt.
+async fn every_cert_under_new_ca(r: &Renewals, view: &Topology) -> bool {
+    let Some((_, fabric_id)) = r.fabric.get() else { return false };
+    let Some(ca) = r.caches.fabric.get(fabric_id).and_then(|record| record.ca) else { return false };
+    for n in view.births().filter(|n| n.status.is_live()) {
+        let Some(incarnation) = n.incarnation_id.as_ref() else { return false };
+        let Some(receipt) = ca.issuer_receipts.get(&n.mesh).copied() else { return false };
+        let dates = match r.caches.nodes.known_row(&*r.nodes_storage, &n.node_id).await {
+            Ok(row) => row.and_then(|row| row.birth(incarnation).and_then(|b| b.cert.clone())),
+            Err(_) => return false,
+        };
+        if !dates.is_some_and(|d| d.issuer_expires_at >= receipt) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Change the roots row of the Fabric record the fabric-primary writes, as `change` says. A store that
+/// refuses is named and the next tick writes again.
+async fn write_roots_row(r: &Renewals, change: impl FnOnce(&mut crate::fabric_storage::RootsRow)) {
+    let Some((storage, fabric_id)) = r.fabric.get() else { return };
+    let written = r.caches.update_fabric(&**storage, fabric_id, None, |record| {
+        if let Some(row) = record.roots.as_mut() {
+            change(row);
+        }
+    }).await;
+    if let Err(e) = written {
+        tracing::warn!(error = %e, "the roots row is not written: written again next tick");
     }
 }
 

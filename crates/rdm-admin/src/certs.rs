@@ -36,6 +36,9 @@ pub const ENV_CA_SECRET: &str = rdm_core::launch::ENV_CA_SECRET;
 
 /// The file in a node-admin's data dir that keeps the fabric's root it holds.
 pub const CA_SECRET_FILE: &str = "ca-secret";
+/// The next root's secret a node-admin holds through a root rotation, beside `ca-secret`, from its
+/// `distributed` phase to its `retired` one, when it becomes `ca-secret` (fabric-ca-renew.md).
+pub const NEXT_SECRET_FILE: &str = "ca-secret-next";
 
 /// The file in a node-admin's data dir that keeps the fabric CA it holds: the CA's key and its
 /// root-signed cert, as hex, one per line.
@@ -158,6 +161,12 @@ impl CertChoice {
                 }
                 let issuer = CertIssuer::with_root(secret, ca, issuing, time);
                 let _ = issuer.kept.set(data_dir.to_path_buf());
+                // A rotation's next root kept before a restart is held again (fabric-ca-renew.md).
+                match std::fs::read_to_string(data_dir.join(NEXT_SECRET_FILE)) {
+                    Ok(hex) => *issuer.next_root.lock().unwrap() = Some(rdm_core::certs::decode_key(hex.trim()).map_err(|e| format!("{}: {e}", data_dir.join(NEXT_SECRET_FILE).display()))?),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(format!("{}: the next root this data dir keeps cannot be read: {e}", data_dir.join(NEXT_SECRET_FILE).display())),
+                }
                 Ok(issuer)
             }
         }
@@ -301,19 +310,22 @@ pub struct CertIssuer {
     /// The data dir its fabric CA is kept beside (`fabric-ca`), once known: a renewed or installed CA
     /// is kept there, so a restart reads back the current one (fabric-certs.md §Custody).
     kept: std::sync::OnceLock<std::path::PathBuf>,
+    /// The next root a root rotation carried to this admin (`ca-secret-next`), until it retires the
+    /// old one (fabric-ca-renew.md "fabric.root.update").
+    next_root: Mutex<Option<SigningKey>>,
 }
 
 impl CertIssuer {
     /// The explicit choice of no certs, on `time`.
     pub fn no_certs(time: RafkaTime) -> Self {
-        Self { material: std::sync::RwLock::new(Material::NoCerts), time, issuers: Mutex::default(), mints: Mutex::default(), policy: Mutex::default(), kept: std::sync::OnceLock::new() }
+        Self { material: std::sync::RwLock::new(Material::NoCerts), time, issuers: Mutex::default(), mints: Mutex::default(), policy: Mutex::default(), kept: std::sync::OnceLock::new(), next_root: Mutex::default() }
     }
 
     /// An issuer holding the fabric's root `secret`, the fabric CA `ca`, and its own mesh's issuing key
     /// `issuing` when its launch gave it one, on `time`.
     pub fn with_root(secret: SigningKey, ca: CaKey, issuing: Option<IssuingKey>, time: RafkaTime) -> Self {
         let issuers = issuing.into_iter().map(|k| (k.mesh().to_string(), k)).collect();
-        Self { material: std::sync::RwLock::new(Material::Root(secret, ca)), time, issuers: Mutex::new(issuers), mints: Mutex::default(), policy: Mutex::default(), kept: std::sync::OnceLock::new() }
+        Self { material: std::sync::RwLock::new(Material::Root(secret, ca)), time, issuers: Mutex::new(issuers), mints: Mutex::default(), policy: Mutex::default(), kept: std::sync::OnceLock::new(), next_root: Mutex::default() }
     }
 
     /// Hold `policy`, the fabric's cert policy, from now on (fabric-certs.md §Tracking: read once by
@@ -502,6 +514,62 @@ impl CertIssuer {
         drop(material);
         self.keep(&ca);
         CaInstall::Installed { previous_expires_at: previous }
+    }
+
+    /// The next root's secret this admin holds through a rotation, as hex: what `node.roots.update`
+    /// carries to every other node-admin (fabric-ca-renew.md step 2).
+    pub fn next_root_secret(&self) -> Option<String> {
+        self.next_root.lock().unwrap().as_ref().map(rdm_core::certs::encode_key)
+    }
+
+    /// The next root this admin holds through a rotation, as its public key.
+    pub fn next_root(&self) -> Option<VerifyingKey> {
+        self.next_root.lock().unwrap().as_ref().map(|k| k.verifying_key())
+    }
+
+    /// Hold `secret` as the next root, through a rotation's `distributed` phase to its `retired` one, and
+    /// keep it beside the data dir (`ca-secret-next`): an admin started again holds it, the way it
+    /// holds `ca-secret` (fabric-ca-renew.md step 2).
+    pub fn hold_next_root(&self, secret: SigningKey) -> Result<(), String> {
+        if let Some(dir) = self.kept.get() {
+            let path = dir.join(NEXT_SECRET_FILE);
+            std::fs::write(&path, rdm_core::certs::encode_key(&secret)).map_err(|e| format!("{}: the next root could not be kept: {e}", path.display()))?;
+        }
+        *self.next_root.lock().unwrap() = Some(secret);
+        Ok(())
+    }
+
+    /// `fabric.root.update` step 3: a new fabric CA signed by the next root this admin holds, held from
+    /// now on and kept; every mesh's issuer minted under the old CA is due from then on. The root it
+    /// signs with stays the next root until the rotation retires the old one. Returns the new CA and
+    /// the expiry of the one it replaces; `None` without a next root or certs.
+    pub fn renew_ca_under_next_root(&self) -> Result<Option<(CaKey, u64)>, IssueFailure> {
+        let now_ms = self.now("the fabric CA")?;
+        let Some(next) = self.next_root.lock().unwrap().clone() else { return Ok(None) };
+        let mut material = self.material.write().unwrap();
+        let Material::Root(root, old) = &*material else { return Ok(None) };
+        let ca = CaKey::mint(&next, self.policy().ca_ttl_secs, now_ms);
+        let previous = old.expiry_ms();
+        *material = Material::Root(root.clone(), ca.clone());
+        drop(material);
+        self.keep(&ca);
+        Ok(Some((ca, previous)))
+    }
+
+    /// `fabric.root.update` step 5 at this admin: `secret` is the fabric's root from now on, kept as
+    /// `ca-secret`; the old root's secret and the next root are destroyed (fabric-ca-renew.md).
+    pub fn retire_root_to(&self, secret: SigningKey) -> Result<(), String> {
+        if let Some(dir) = self.kept.get() {
+            let path = dir.join(CA_SECRET_FILE);
+            std::fs::write(&path, rdm_core::certs::encode_key(&secret)).map_err(|e| format!("{}: the new root could not be kept: {e}", path.display()))?;
+            let _ = std::fs::remove_file(dir.join(NEXT_SECRET_FILE));
+        }
+        let mut material = self.material.write().unwrap();
+        if let Material::Root(_, ca) = &*material {
+            *material = Material::Root(secret, ca.clone());
+        }
+        *self.next_root.lock().unwrap() = None;
+        Ok(())
     }
 
     /// Keep `ca` beside the data dir, when it is known; a write that fails is named and the CA stays held.
@@ -846,6 +914,36 @@ mod tests {
         assert_ne!(before.cert().ca.cert, after.cert().ca.cert);
         assert!(rdm_core::certs::verify_issuer(after.cert(), &[root.verifying_key()]).is_ok(), "the renewed issuer chains to the same root");
         assert!(CertIssuer::no_certs(time_at(1_000)).renew_ca().unwrap().is_none(), "an admin with no certs renews nothing");
+    }
+
+    /// fabric.root.update at one admin (fabric-ca-renew.md "Numbered end-to-end sequence (root update)"):
+    /// the next root is held and kept beside the data dir and read back on a start; step 3's CA is
+    /// signed by the next root, so an issuer minted under it chains to the new root and not the old;
+    /// step 5 makes the next root the root, kept as `ca-secret`, and destroys `ca-secret-next`.
+    #[test]
+    fn a_root_rotation_holds_the_next_root_mints_the_ca_under_it_and_retires_the_old() {
+        let (old, new) = (rdm_core::certs::mint_key(), rdm_core::certs::mint_key());
+        let dir = std::env::temp_dir().join(format!("rdm-root-rotation-{}", rdm_core::certs::encode_key(&rdm_core::certs::mint_key())));
+        std::fs::create_dir_all(&dir).unwrap();
+        let issuer = CertIssuer::with_root(old.clone(), ca_of(&old), None, time_at(5_000));
+        issuer.kept.set(dir.clone()).unwrap();
+        assert_eq!(issuer.next_root(), None);
+        issuer.hold_next_root(new.clone()).unwrap();
+        assert_eq!(issuer.next_root(), Some(new.verifying_key()));
+        assert_eq!(std::fs::read_to_string(dir.join(NEXT_SECRET_FILE)).unwrap(), rdm_core::certs::encode_key(&new), "the next root is kept beside the data dir");
+        assert_eq!(issuer.next_root_secret(), Some(rdm_core::certs::encode_key(&new)));
+        let (ca, _) = issuer.renew_ca_under_next_root().unwrap().expect("a CA under the next root");
+        let (minted, _) = issuer.renew_issuer("mesh1").unwrap();
+        assert_eq!(minted.cert().ca.cert, ca.cert().cert);
+        assert!(rdm_core::certs::verify_issuer(minted.cert(), &[new.verifying_key()]).is_ok(), "the issuer chains to the new root");
+        assert!(rdm_core::certs::verify_issuer(minted.cert(), &[old.verifying_key()]).is_err(), "and not to the old");
+        assert_eq!(issuer.root(), Some(old.verifying_key()), "the old root stays the root until the rotation retires it");
+        issuer.retire_root_to(new.clone()).unwrap();
+        assert_eq!(issuer.root(), Some(new.verifying_key()));
+        assert_eq!(issuer.next_root(), None);
+        assert_eq!(std::fs::read_to_string(dir.join(CA_SECRET_FILE)).unwrap(), rdm_core::certs::encode_key(&new), "the new root is kept as ca-secret");
+        assert!(!dir.join(NEXT_SECRET_FILE).exists(), "the next root's file is destroyed");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Q275 (fabric-ca-renew.md step 2; node-issuer-update.md): the CA a renewal mints rides

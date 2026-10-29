@@ -124,6 +124,8 @@ pub enum FabricOp {
     Get,
     /// `fabrics.atlas.get`: the fabric-primary's atlas (fabric-atlas.md R-FA4).
     AtlasGet,
+    /// `fabric.root.update`: a new root's secret to the fabric-primary (fabric-ca-renew.md).
+    RootUpdate,
 }
 
 impl FabricOp {
@@ -132,6 +134,7 @@ impl FabricOp {
         match self {
             Self::Get => "fabrics.get",
             Self::AtlasGet => "fabrics.atlas.get",
+            Self::RootUpdate => "fabric.root.update",
         }
     }
 
@@ -140,6 +143,7 @@ impl FabricOp {
         match self {
             Self::Get => tracing::info_span!("rdm.node_admin.fabric.resolve.via-call", op = "fabrics.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
             Self::AtlasGet => tracing::info_span!("rdm.node_admin.fabric.resolve.via-atlas-call", op = "fabrics.atlas.get", outcome = tracing::field::Empty),
+            Self::RootUpdate => tracing::info_span!("rdm.node_admin.root.update.via-call", op = "fabric.root.update", outcome = tracing::field::Empty),
         }
     }
 }

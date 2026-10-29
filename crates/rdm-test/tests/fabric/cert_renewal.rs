@@ -889,3 +889,67 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     let mut estate = estate;
     estate.stop().await;
 }
+
+// @feature: node-lifecycle
+/// CONTRACT (fabric-ca-renew.md "fabric.root.update, the caller op" and its numbered sequence):
+/// `fabric.root.update { secret }` to the fabric-primary is answered `fabric.root.updated` at `minted`;
+/// while it is in flight another root is refused `rotation-in-progress` and the same root
+/// `root-already-trusted`. The phases follow on the fabric-primary's tick, each one
+/// `rdm.node_admin.root.update.via-caller` span: both roots to every birth, node-admins first
+/// (`distributed`); a new CA signed by the new root, every mesh's issuer under it (`ca-rotated`); once
+/// every member renewed under it (a 12 s member TTL), the new root alone to every birth (`retired`).
+/// At the end every birth installed the new root alone, both node-admins keep the new root as
+/// `ca-secret` and no `ca-secret-next`, and the member's cert chains to the new root and not the old.
+#[test]
+fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() {
+    let cell = "a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases";
+    if crate::own_process::delegated(module_path!(), cell) {
+        return;
+    }
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        use rdm_core::status::{RootSecretHex, RootsPhase};
+        let dir = cell_dir("root-rotation");
+        let root = boot_root(&dir, &policy(&[])).await;
+        let (second, second_env) = launched_admin(&root, &dir).await;
+        let a = member(&root, &dir, "mesh1.rpc.1").await;
+        let door = root.status_authority().expect("the fabric-primary's Status door");
+        let new = certs::mint_key();
+        let hex = |k: &certs::VerifyingKey| rdm_core::launch::encode_hex(k.as_bytes());
+        // The call goes to the fabric-primary once its view names it so.
+        until("mesh1.admin.1's view names it the fabric-primary", BOUND, async || fabric_get(&root).await.and_then(|f| f.fabric_primary).filter(|p| p.to_string() == "mesh1.admin.1")).await;
+        let answered = door.apply(None, &StatusRequest::UpdateRoot { secret: RootSecretHex(certs::encode_key(&new)) }).await;
+        assert_eq!(answered, StatusReply::RootUpdated { phase: RootsPhase::Minted }, "the rotation is accepted at minted");
+        let same = door.apply(None, &StatusRequest::UpdateRoot { secret: RootSecretHex(certs::encode_key(&new)) }).await;
+        assert_eq!(same, StatusReply::RejectedRootAlreadyTrusted { root: hex(&new.verifying_key()) }, "the same root is trusted already");
+        let other = door.apply(None, &StatusRequest::UpdateRoot { secret: RootSecretHex(certs::encode_key(&certs::mint_key())) }).await;
+        assert!(matches!(other, StatusReply::RejectedRotationInProgress { .. }), "another root while one is in flight: {other:?}");
+
+        let moved = |phase: &'static str| {
+            let spans = spans.clone();
+            async move || named(&spans, "rdm.node_admin.root.update.via-caller").into_iter().find(|f| f.get("phase").map(String::as_str) == Some(phase) && f.get("outcome").map(String::as_str) == Some("moved"))
+        };
+        until("the rotation is distributed", BOUND, moved("Distributed")).await;
+        until("the rotation is ca-rotated", BOUND, moved("CaRotated")).await;
+        until("the rotation is retired", BOUND * 2, moved("Retired")).await;
+
+        let alone = vec![hex(&new.verifying_key())];
+        for node in ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"] {
+            until(&format!("{node} installs the new root alone"), BOUND, async || {
+                named(&spans, "rdm.node.roots.update.via-installed").into_iter().find(|f| f.get("node").map(String::as_str) == Some(node) && f.get("roots").is_some_and(|r| r.contains(&alone[0]) && !r.contains(',')))
+            })
+            .await;
+        }
+        let second_dir = PathBuf::from(second_env.get("RDM_DATA_DIR").expect("the launch names its data dir"));
+        for (who, data) in [("mesh1.admin.1", dir.clone()), ("mesh1.admin.2", second_dir)] {
+            assert_eq!(std::fs::read_to_string(data.join(rdm_admin::certs::CA_SECRET_FILE)).unwrap().trim(), certs::encode_key(&new), "{who} keeps the new root as ca-secret");
+            assert!(!data.join(rdm_admin::certs::NEXT_SECRET_FILE).exists(), "{who} keeps no ca-secret-next");
+        }
+        // `retired` moves only once every member's cert row names an issuer under the new CA
+        // (`every_cert_under_new_ca`): the member was renewed and installed it on the way.
+        assert!(!renewals_of(&spans, "mesh1.rpc.1").into_iter().filter(|f| f.get("outcome").map(String::as_str) == Some("installed")).collect::<Vec<_>>().is_empty(), "the member was renewed under the new issuer before the old root retired");
+        stop_all(vec![a], vec![root, second]).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}

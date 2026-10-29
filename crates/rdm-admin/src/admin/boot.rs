@@ -2883,6 +2883,24 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }),
                                         );
                                         renewals.set_fabric(fabric_storage.clone(), cfg.fabric_id.clone());
+                                        {
+                                            // The fabric-primary's own node.roots.update, in process: the set installed on its own birth, the
+                                            // root's secret it rides with kept as the door keeps it (fabric-ca-renew.md).
+                                            let (own_roots, roots_issuer, roots_me, roots_id) = (own_commands.clone(), issuer.clone(), name.to_string(), node_id.clone());
+                                            renewals.set_own_roots(Arc::new(move |incarnation: &rdm_core::IncarnationId, roots: &[String], phase: rdm_core::status::RootsPhase, secret: Option<rdm_core::status::RootSecretHex>| {
+                                                let Some(registry) = own_roots.get().and_then(|o| o.registry()) else {
+                                                    return rdm_core::reply::status::not_ready(format!("{roots_me} holds no connections registry yet; node.roots.update is refused"));
+                                                };
+                                                let installed = rdm_node::roots_update::install_roots(&registry, &roots_me, &roots_id, incarnation, roots, phase, secret.is_some());
+                                                if let (rdm_core::status::StatusReply::RootsUpdated { .. }, Some(secret)) = (&installed, secret) {
+                                                    let kept = rdm_core::certs::decode_key(&secret.0).and_then(|k| if phase == rdm_core::status::RootsPhase::Retired { roots_issuer.retire_root_to(k) } else { roots_issuer.hold_next_root(k) });
+                                                    if let Err(e) = kept {
+                                                        return rdm_core::reply::status::rejected_cert(format!("{roots_me}: the root's secret: {e}"));
+                                                    }
+                                                }
+                                                installed
+                                            }));
+                                        }
                                         let (topology, gate) = (control.topology.clone(), stop_gate.clone());
                                         let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
                                         tasks.push(tokio::spawn(async move {

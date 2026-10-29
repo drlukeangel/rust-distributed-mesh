@@ -30,7 +30,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_thirty_six_variant_wire_schema() {
+fn requests_match_the_frozen_thirty_seven_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Stopped, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
@@ -93,6 +93,8 @@ fn requests_match_the_frozen_thirty_six_variant_wire_schema() {
         (NodeConfigUpdated { node_id: node(), config: [("k".to_string(), "v".to_string())].into(), revision: 3 }, "220c30313233343536373839616201016b017603"),
         // node.roots.update, appended last: node_id | incarnation | roots (len 1: "ab") | phase Distributed (1) | secret Some("cd")
         (UpdateRoots { node_id: node(), incarnation: birth(), roots: vec!["ab".into()], phase: rdm_core::status::RootsPhase::Distributed, secret: Some(rdm_core::status::RootSecretHex("cd".into())) }, "230c3031323334353637383961620c397763707266677776746879010261620101026364"),
+        // fabric.root.update, appended last: secret "ab"
+        (UpdateRoot { secret: rdm_core::status::RootSecretHex("ab".into()) }, "24026162"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -103,7 +105,7 @@ fn requests_match_the_frozen_thirty_six_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_sixty_variant_wire_schema() {
+fn replies_match_the_frozen_sixty_three_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use StatusReply::*;
     let fixtures = [
@@ -219,6 +221,12 @@ fn replies_match_the_frozen_sixty_variant_wire_schema() {
         (RootsUpdated { node_id: node(), incarnation: birth(), roots: vec!["ab".into()] }, "3a0c3031323334353637383961620c39776370726667777674687901026162"),
         // root-still-chained, appended last: root "ab"
         (RejectedRootStillChained { root: "ab".into() }, "3b026162"),
+        // fabric.root.updated, appended last: phase Minted (0)
+        (RootUpdated { phase: rdm_core::status::RootsPhase::Minted }, "3c00"),
+        // rotation-in-progress, appended last: phase Distributed (1)
+        (RejectedRotationInProgress { phase: rdm_core::status::RootsPhase::Distributed }, "3d01"),
+        // root-already-trusted, appended last: root "ab"
+        (RejectedRootAlreadyTrusted { root: "ab".into() }, "3e026162"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
@@ -396,5 +404,5 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
 
 #[test]
 fn every_reply_variant_of_status_classifies_to_one_code() {
-    replies_match_the_frozen_sixty_variant_wire_schema();
+    replies_match_the_frozen_sixty_three_variant_wire_schema();
 }

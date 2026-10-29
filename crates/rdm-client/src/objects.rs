@@ -386,6 +386,24 @@ impl Fabrics {
         r
     }
 
+    /// `fabric.root.update` (fabric-ca-renew.md "fabric.root.update, the caller op"): the new root's
+    /// `secret` to the fabric-primary, which holds it beside the old one and answers the phase its
+    /// roots row is at (`minted`); refused by name while a rotation is in flight
+    /// (`rotation-in-progress`) and for a root already trusted (`root-already-trusted`).
+    pub async fn update_root(&self, secret: rdm_core::status::RootSecretHex) -> Result<rdm_core::status::RootsPhase, CallEnd> {
+        let span = FabricOp::RootUpdate.span();
+        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let call = async {
+            match read(&self.carrier, &target, &StatusRequest::UpdateRoot { secret }).await? {
+                StatusReply::RootUpdated { phase } => Ok(phase),
+                other => Err(refused(&target, FabricOp::RootUpdate.name(), other)),
+            }
+        };
+        let r = tracing::Instrument::instrument(call, span.clone()).await;
+        ended_read(&span, FabricOp::RootUpdate.name(), &r);
+        r
+    }
+
     /// Await the typed fact `holds` of the fabric as the admin the carrier starts at reports it
     /// (`fabrics.get`), read at half the gossip interval so a fact that spreads by gossip is read as it
     /// lands. `fact` names it. An admin that does not report it within `within` ends the call

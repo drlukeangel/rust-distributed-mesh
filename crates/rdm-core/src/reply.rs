@@ -30,6 +30,15 @@ pub fn rejected_cert(reason: String) -> StatusReply { StatusReply::RejectedCert 
 /// Construct the typed root-still-chained outcome: a `node.roots.update` set that drops a root the
 /// birth still chains under, refused by name and nothing installed (fabric-ca-renew.md).
 pub fn root_still_chained(root: String) -> StatusReply { StatusReply::RejectedRootStillChained { root } }
+/// Construct the typed `fabric.root.updated` outcome: the rotation accepted, its roots row at `phase`
+/// (fabric-ca-renew.md).
+pub fn root_updated(phase: crate::status::RootsPhase) -> StatusReply { StatusReply::RootUpdated { phase } }
+/// Construct the typed rotation-in-progress outcome: `fabric.root.update` refused by name while a
+/// rotation is in flight at `phase` (fabric-ca-renew.md).
+pub fn rotation_in_progress(phase: crate::status::RootsPhase) -> StatusReply { StatusReply::RejectedRotationInProgress { phase } }
+/// Construct the typed root-already-trusted outcome: `fabric.root.update` refused by name for a root
+/// the fabric trusts (fabric-ca-renew.md).
+pub fn root_already_trusted(root: String) -> StatusReply { StatusReply::RejectedRootAlreadyTrusted { root } }
 /// Construct the typed rejected-invalid-mesh-transition outcome.
 pub fn rejected_invalid_mesh_transition(current: MeshState) -> StatusReply { StatusReply::RejectedInvalidMeshTransition { current } }
 /// Construct the typed peer-unresolved outcome.

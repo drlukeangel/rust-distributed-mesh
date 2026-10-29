@@ -721,7 +721,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
-        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateRoots { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::NodeConfigUpdated { .. } => {
+        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateRoots { .. } | StatusRequest::UpdateRoot { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::NodeConfigUpdated { .. } => {
             (crate::node_self::request_not_handled(&me_name.to_string(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state, changed_at_rafka_ms } => {
@@ -1285,7 +1285,7 @@ impl StatusAuthority {
             }
             // node.roots.update (fabric-ca-renew.md "node.roots.update, the primitive"): this admin's exact
             // birth installs the fabric's trusted root set.
-            StatusRequest::UpdateRoots { node_id, incarnation, roots, phase, .. } => {
+            StatusRequest::UpdateRoots { node_id, incarnation, roots, phase, secret } => {
                 let me = self.held_name_in(&view).to_string();
                 if view.own(&self.node_id).and_then(|n| n.incarnation_id.as_ref()) != Some(incarnation) {
                     return rdm_core::reply::stale(view.own(&self.node_id).and_then(|n| n.incarnation_id.clone()).unwrap_or_else(|| incarnation.clone()));
@@ -1293,8 +1293,22 @@ impl StatusAuthority {
                 let Some(registry) = self.own.get().and_then(|o| o.registry()) else {
                     return rdm_core::reply::status::not_ready(format!("{me} holds no connections registry yet; {} is refused", req.op()));
                 };
-                return rdm_node::roots_update::install_roots(&registry, &me, node_id, incarnation, roots, *phase, false);
+                let installed = rdm_node::roots_update::install_roots(&registry, &me, node_id, incarnation, roots, *phase, secret.is_some());
+                // The root secret a node-admin is carried (fabric-ca-renew.md step 2 and step 5): held as the
+                // next root through the overlap, the fabric's root once the set retires the old one; kept
+                // only once the set it rides with is installed.
+                if let (StatusReply::RootsUpdated { .. }, Some(secret), Some(certs)) = (&installed, secret, &self.certs) {
+                    let kept = rdm_core::certs::decode_key(&secret.0).and_then(|k| if *phase == rdm_core::status::RootsPhase::Retired { certs.retire_root_to(k) } else { certs.hold_next_root(k) });
+                    if let Err(e) = kept {
+                        return rdm_core::reply::status::rejected_cert(format!("{me}: the root's secret: {e}"));
+                    }
+                }
+                return installed;
             }
+            // fabric.root.update (fabric-ca-renew.md "fabric.root.update, the caller op"): the fabric-primary
+            // holds the new root as the next root, writes the roots row `minted` and answers; the phases
+            // follow on its renewal tick (`cert_renewal::rotate_roots`).
+            StatusRequest::UpdateRoot { secret } => return self.update_root(&view, secret).await,
             _ => {}
         }
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
@@ -1393,6 +1407,55 @@ impl StatusAuthority {
     /// decode, name this admin's mesh, be the key its cert names, and verify to a root this admin
     /// holds; it is installed, so every member cert it signs from now carries it, and answered
     /// `node.issuer.updated`. Anything else is refused by name and what it holds is kept.
+    /// `fabric.root.update` at the fabric-primary: refused by name for a root already trusted and while a
+    /// rotation is in flight; otherwise the next root held and kept, the roots row written `minted`
+    /// (the old root and the new, and the old anchor's bound, the current CA's expiry), answered
+    /// `fabric.root.updated`.
+    async fn update_root(&self, view: &Topology, secret: &rdm_core::status::RootSecretHex) -> StatusReply {
+        let me = self.held_name_in(view).to_string();
+        if !view.own(&self.node_id).is_some_and(|n| n.is_fabric_primary) {
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "fabric-primary".into() });
+        }
+        let Some(certs) = &self.certs else {
+            return rdm_core::reply::status::rejected_cert(format!("{me}: this admin holds no certs"));
+        };
+        let new = match rdm_core::certs::decode_key(&secret.0) {
+            Ok(k) => k,
+            Err(e) => return rdm_core::reply::status::rejected_cert(format!("the root's secret: {e}")),
+        };
+        let hex = |k: &rdm_core::certs::VerifyingKey| rdm_core::launch::encode_hex(k.as_bytes());
+        let new_pub = new.verifying_key();
+        if certs.root() == Some(new_pub) || certs.next_root() == Some(new_pub) {
+            return rdm_core::reply::status::root_already_trusted(hex(&new_pub));
+        }
+        if let Some(row) = self.caches.fabric.get(&self.fabric_id).and_then(|r| r.roots).filter(|r| r.phase != rdm_core::status::RootsPhase::Retired) {
+            return rdm_core::reply::status::rotation_in_progress(row.phase);
+        }
+        let Some(old) = certs.root() else {
+            return rdm_core::reply::status::rejected_cert(format!("{me}: this admin holds no root"));
+        };
+        if let Err(e) = certs.hold_next_root(new) {
+            return rdm_core::reply::status::rejected_cert(e);
+        }
+        let expires_at = certs.ca_dates().map(|(_, expires, _)| expires).unwrap_or(0);
+        let roots = vec![hex(&old), hex(&new_pub)];
+        let span = tracing::info_span!("rdm.node_admin.root.update.via-caller", node = %me, phase = "minted", root_expires_at = tracing::field::Empty, previous_root_expires_at = expires_at, nodes = 0u64, outcome = tracing::field::Empty);
+        let row = crate::fabric_storage::RootsRow { phase: rdm_core::status::RootsPhase::Minted, roots, expires_at };
+        let written = self.caches.update_fabric(&*self.fabric_storage, &self.fabric_id, None, |record| record.roots = Some(row.clone())).await;
+        match written {
+            Ok(_) => {
+                span.record("outcome", "minted");
+                span.in_scope(|| tracing::info!("the new root is held beside the old one: the rotation's phases follow on the renewal tick"));
+                rdm_core::reply::status::root_updated(rdm_core::status::RootsPhase::Minted)
+            }
+            Err(e) => {
+                span.record("outcome", "unwritten");
+                span.in_scope(|| tracing::warn!(error = %e, "the roots row is not written: the rotation is not accepted"));
+                rdm_core::reply::status::not_ready(format!("{me}: the roots row is not written: {e}"))
+            }
+        }
+    }
+
     async fn update_own_issuer(&self, view: &Topology, sender: &str, incarnation: &IncarnationId, key: &rdm_core::status::IssuingKeyHex, cert: &str, ca_key: &rdm_core::status::CaKeyHex) -> StatusReply {
         let me = match self.own_birth(view, incarnation) {
             Ok(me) => me.clone(),

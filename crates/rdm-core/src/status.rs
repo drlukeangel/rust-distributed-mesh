@@ -671,6 +671,17 @@ pub enum StatusRequest {
         /// The new root's secret, carried to a node-admin only.
         secret: Option<RootSecretHex>,
     },
+    /// Caller (`fabric.root.update`; fabric-ca-renew.md "fabric.root.update, the caller op"): the app or a
+    /// person hands the fabric-primary a new root secret, the trust anchor, and the rotation's phases
+    /// begin; answered [`StatusReply::RootUpdated`], or refused by name while a rotation is in flight
+    /// ([`StatusReply::RejectedRotationInProgress`]) and for a root already trusted
+    /// ([`StatusReply::RejectedRootAlreadyTrusted`]). Appended last: no variant before it moves.
+    ///
+    /// Position 36 on the wire.
+    UpdateRoot {
+        /// The new root's secret.
+        secret: RootSecretHex,
+    },
 }
 
 /// A read as one shape (Q167): the entity, the exact birth a `connections.get` reads, and the filter.
@@ -1111,6 +1122,7 @@ impl StatusRequest {
             Self::RenewCert { .. } => "node.cert.renew",
             Self::UpdateIssuer { .. } => "node.issuer.update",
             Self::UpdateRoots { .. } => "node.roots.update",
+            Self::UpdateRoot { .. } => "fabric.root.update",
         }
     }
 }
@@ -1801,6 +1813,30 @@ pub enum StatusReply {
         /// The root, as hex.
         root: String,
     },
+    /// `fabric.root.updated`: the rotation is accepted, its roots row `minted`; its progress is
+    /// `fabrics.get`'s roots. Appended last: no variant before it moves.
+    ///
+    /// Position 60 on the wire.
+    RootUpdated {
+        /// The rotation's phase now.
+        phase: RootsPhase,
+    },
+    /// `fabric.root.update` refused by name (`rotation-in-progress`): a rotation is in flight, at `phase`.
+    /// Appended last: no variant before it moves.
+    ///
+    /// Position 61 on the wire.
+    RejectedRotationInProgress {
+        /// The phase of the rotation in flight.
+        phase: RootsPhase,
+    },
+    /// `fabric.root.update` refused by name (`root-already-trusted`): the root is one the fabric trusts.
+    /// Appended last: no variant before it moves.
+    ///
+    /// Position 62 on the wire.
+    RejectedRootAlreadyTrusted {
+        /// The root's public key, as hex.
+        root: String,
+    },
 }
 
 /// The event a Blocked `pre_node_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -2050,6 +2086,9 @@ impl StatusReply {
             Self::RejectedFilter { .. } => "rejected-filter",
             Self::RootsUpdated { .. } => "roots-updated",
             Self::RejectedRootStillChained { .. } => "root-still-chained",
+            Self::RootUpdated { .. } => "fabric.root.updated",
+            Self::RejectedRotationInProgress { .. } => "rotation-in-progress",
+            Self::RejectedRootAlreadyTrusted { .. } => "root-already-trusted",
         }
     }
 }
@@ -2090,8 +2129,8 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 36;
-    const REPLY_VARIANTS: u32 = 60;
+    const REQUEST_VARIANTS: u32 = 37;
+    const REPLY_VARIANTS: u32 = 63;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -2158,6 +2197,9 @@ impl NodeProtocol for Status {
             StatusReply::RejectedFilter { .. } => "rejected-filter",
             StatusReply::RootsUpdated { .. } => "roots-updated",
             StatusReply::RejectedRootStillChained { .. } => "root-still-chained",
+            StatusReply::RootUpdated { .. } => "fabric.root.updated",
+            StatusReply::RejectedRotationInProgress { .. } => "rotation-in-progress",
+            StatusReply::RejectedRootAlreadyTrusted { .. } => "root-already-trusted",
         }
     }
 
@@ -2227,6 +2269,8 @@ impl NodeProtocol for Status {
             StatusReply::RejectedFilter { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
             StatusReply::RootsUpdated { .. } => ReplyKind::Success,
             StatusReply::RejectedRootStillChained { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::RootUpdated { .. } => ReplyKind::Success,
+            StatusReply::RejectedRotationInProgress { .. } | StatusReply::RejectedRootAlreadyTrusted { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
         }
     }
 
@@ -2366,6 +2410,9 @@ mod tests {
             (StatusReply::rejected_filter("nodes.get: the pair (zone, [eu-1]) names no property of a node row"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::RootsUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), roots: vec!["ab".into()] }, ReplyKind::Success),
             (StatusReply::RejectedRootStillChained { root: "ab".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::RootUpdated { phase: RootsPhase::Minted }, ReplyKind::Success),
+            (StatusReply::RejectedRotationInProgress { phase: RootsPhase::Distributed }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::RejectedRootAlreadyTrusted { root: "ab".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -2419,6 +2466,7 @@ mod tests {
             StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into(), ca_key: CaKeyHex("ef".into()) },
             StatusRequest::Get { entity: crate::filter::Entity::Nodes, node: None, filter: crate::filter::Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold", "silver"]) },
             StatusRequest::UpdateRoots { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), roots: vec!["ab".into()], phase: RootsPhase::Distributed, secret: Some(RootSecretHex("cd".into())) },
+            StatusRequest::UpdateRoot { secret: RootSecretHex("ab".into()) },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
