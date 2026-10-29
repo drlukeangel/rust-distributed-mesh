@@ -63,7 +63,7 @@ async fn own_view(r: &Running) -> rdm_core::views::NodeView {
     tokio::time::timeout(BOUND, async {
         loop {
             let answer = r
-                .status_authority()
+                .status_door()
                 .unwrap()
                 .apply(
                     None,

@@ -139,11 +139,11 @@ pub struct GossipLifecycle {
     /// This admin's view projected and installed at once ([`view_projector`]): a stop this executor
     /// applied to its own digest view is in its view before the next step decides from it, as a moved row is.
     pub project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
-    /// This admin's status authority: a stop's `stopped` is recorded in the birth's declared-state
+    /// This admin's Status door: a stop's `stopped` is recorded in the birth's declared-state
     /// row there, which publishes NodeStopped once, from the reply or the birth's declaration,
-    /// whichever arrives first (i146 Q29, Q36). An executor with no status authority (a rig) holds no
+    /// whichever arrives first (i146 Q29, Q36). An executor with no Status door (a rig) holds no
     /// declared row: it publishes from the reply alone.
-    pub authority: crate::status_rpc::AuthoritySlot,
+    pub status_door: crate::status_rpc::StatusDoorSlot,
 }
 
 /// NodeStopped for `op`'s exact birth, published by its mesh-primary (node-stop.md step 5): the
@@ -206,7 +206,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         .await
     }
     async fn stopped(&self, op: &rdm_core::LifecycleOp) {
-        match self.authority.get() {
+        match self.status_door.get() {
             Some(_) => {
                 // The command stream's owner already recorded NodeStopped before recovery.
             }
@@ -1392,8 +1392,8 @@ impl AdminRunner {
         // A mesh-primary that replied `blocked` to a storage change runs no other operation until it is
         // unblocked: an operation issues commands (storage.md §2 step 1).
         if !matches!(op, BuildOperation::BlockStorage { .. } | BuildOperation::SwitchStorage { .. } | BuildOperation::UnblockStorage { .. } | BuildOperation::FinishStorage { .. }) {
-            if let Some(authority) = self.observer.authority.get() {
-                authority.commands.admitted().await;
+            if let Some(status_door) = self.observer.status_door.get() {
+                status_door.commands.admitted().await;
             }
         }
         let ended: Result<(), crate::executor::RunEnd> = match op {
@@ -1442,7 +1442,7 @@ impl AdminRunner {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt, operation = %op.key());
                 self.apply_in_place(build_id, attempt, node, op).instrument(span).await
             }
-            BuildOperation::BlockStorage { mesh, change } => self.storage_changes.block_mesh(&*builds, build_id, attempt, mesh, change, self.observer.authority.get().cloned()).await,
+            BuildOperation::BlockStorage { mesh, change } => self.storage_changes.block_mesh(&*builds, build_id, attempt, mesh, change, self.observer.status_door.get().cloned()).await,
             BuildOperation::UnblockStorage { mesh, change } => {
                 // A node that will not move is re-created at its path.name on the decided provider, steps of
                 // this attempt of the change's own Build (node.delete then node.create, as node recovery's;
@@ -1455,7 +1455,7 @@ impl AdminRunner {
                     self.refresh_view().await;
                     created
                 };
-                self.storage_changes.unblock_mesh(&*builds, build_id, attempt, mesh, change, self.observer.authority.get().cloned(), self.topology.clone(), &recreate).await
+                self.storage_changes.unblock_mesh(&*builds, build_id, attempt, mesh, change, self.observer.status_door.get().cloned(), self.topology.clone(), &recreate).await
             }
             BuildOperation::FinishStorage { change } => self.storage_changes.finish(&*builds, build_id, attempt, change).await,
             BuildOperation::SwitchStorage { change } => {
@@ -1473,7 +1473,7 @@ impl AdminRunner {
                         .await
                         .and_then(|done| done.ok_or_else(|| "this fabric-primary holds no Fabric record".to_string()))
                 };
-                self.storage_changes.switch(&*builds, build_id, attempt, change, self.observer.authority.get().cloned(), fabric_row).await
+                self.storage_changes.switch(&*builds, build_id, attempt, change, self.observer.status_door.get().cloned(), fabric_row).await
             }
         };
         ended
@@ -1500,7 +1500,7 @@ impl AdminRunner {
             _ => "DeleteTags",
         };
         let put = async {
-            let Some(authority) = self.observer.authority.get() else {
+            let Some(status_door) = self.observer.status_door.get() else {
                 return Err(format!("{key}: {me} holds no status authority yet to write the row of {node}; nothing is written"));
             };
             let reply = match op {
@@ -1511,16 +1511,16 @@ impl AdminRunner {
                     let held = self.builds.read_build(build_id).await.map_err(|e| format!("{key}: the accepted Build {build_id} could not be read for {node}'s create spec; nothing is written: {e}"))?;
                     let spec = held.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).cloned().ok_or_else(|| format!("{key}: the accepted Build {build_id} names no create spec for {node}; nothing is written"))?;
                     let req = StatusRequest::UpdateNodeConfig { node_id, incarnation, config: entry.config.clone() };
-                    match authority.update_config_from_spec(&req, spec.storage_persistence, spec.placement).await {
+                    match status_door.update_config_from_spec(&req, spec.storage_persistence, spec.placement).await {
                         StatusReply::ConfigUpdated { .. } => return Ok(()),
                         refused => refused,
                     }
                 }
-                BuildOperation::CreateTags { labels, .. } => match authority.apply(None, &StatusRequest::CreateTags { node_id, incarnation, labels: labels.clone() }).await {
+                BuildOperation::CreateTags { labels, .. } => match status_door.apply(None, &StatusRequest::CreateTags { node_id, incarnation, labels: labels.clone() }).await {
                     StatusReply::TagsCreated { .. } => return Ok(()),
                     refused => refused,
                 },
-                BuildOperation::DeleteTags { labels, .. } => match authority.apply(None, &StatusRequest::DeleteTags { node_id, incarnation, scope: TagScope::Labels(labels.clone()) }).await {
+                BuildOperation::DeleteTags { labels, .. } => match status_door.apply(None, &StatusRequest::DeleteTags { node_id, incarnation, scope: TagScope::Labels(labels.clone()) }).await {
                     StatusReply::TagsDeleted { .. } => return Ok(()),
                     refused => refused,
                 },
@@ -1599,10 +1599,10 @@ impl AdminRunner {
                 async {
                     let template = self.template_for(node.kind, &node.mesh).await?;
                     let leave = async {
-                        let Some(authority) = self.observer.authority.get() else {
+                        let Some(status_door) = self.observer.status_door.get() else {
                             return Err(format!("{key}: {me} holds no status authority yet to carry node.mesh.leave to {node}; nothing is sent"));
                         };
-                        match authority.carry_mesh_leave(&birth.node_id, &birth.incarnation, build_id.as_str(), attempt, &key).await? {
+                        match status_door.carry_mesh_leave(&birth.node_id, &birth.incarnation, build_id.as_str(), attempt, &key).await? {
                             rdm_core::status::StatusReply::MeshLeft { .. } => Ok(()),
                             refused => Err(format!("{key}: node.mesh.leave of {node} ({}) answered {refused:?}", birth.node_id)),
                         }
@@ -1631,11 +1631,11 @@ impl AdminRunner {
                 async {
                     let template = self.template_for(node.kind, &node.mesh).await?;
                     let put = async {
-                        let Some(authority) = self.observer.authority.get() else {
+                        let Some(status_door) = self.observer.status_door.get() else {
                             return Err(format!("{key}: {me} holds no status authority yet to serve node.name.update; nothing is written"));
                         };
                         let req = rdm_core::status::StatusRequest::UpdateName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.name() };
-                        match authority.update_name(&req).await {
+                        match status_door.update_name(&req).await {
                             rdm_core::status::StatusReply::NameUpdated { .. } => Ok(()),
                             refused => Err(format!("{key}: node.name.update of {node} ({}) to {name} answered {refused:?}", birth.node_id)),
                         }
@@ -2298,7 +2298,7 @@ mod tests {
                 digest_view: topology_view.digest_view.clone(),
                 client: Some(node_rpc.client.clone()),
                 commands: Arc::default(),
-                authority: Arc::default(),
+                status_door: Arc::default(),
                 handover: Arc::default(),
                 unreachable: records.unreachable.clone(),
             }),
@@ -2324,7 +2324,7 @@ mod tests {
                 me,
                 mesh_deleter: Arc::default(),
                 project: None,
-                authority: Arc::default(),
+                status_door: Arc::default(),
             }),
             leaves: Arc::new(crate::mesh_delete::MeshDeleteView::default()),
             mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),

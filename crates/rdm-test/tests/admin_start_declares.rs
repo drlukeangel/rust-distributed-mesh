@@ -167,8 +167,8 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         assert_eq!(call(&root, &launch, &command(&launch, true)).await, StatusReply::Started, "the launched admin starts after its stop");
         until_ready("mesh1.admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
         tokio::time::timeout(DECLARED, spans.recorded("rdm.node_admin.node.update.via-command-frame", |f| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("frame").map(String::as_str) == Some("node-started"))).await.expect("the mesh-primary records NodeStarted on the open command stream");
-        let authority = root.status_authority().unwrap();
-        assert_eq!(authority.declared.lock().unwrap().node(&launch.node_id, &launch.incarnation), Some(rdm_core::status::NodeState::Ready));
+        let door = root.status_door().unwrap();
+        assert_eq!(door.declared.lock().unwrap().node(&launch.node_id, &launch.incarnation), Some(rdm_core::status::NodeState::Ready));
         let ready_declarations: Vec<_> = own_declarations(&spans, "mesh1.admin.2").into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready"))).collect();
         assert_eq!(ready_declarations, first, "the open start reports readiness on its stream, with no second Ready declaration");
 

@@ -102,7 +102,7 @@ impl NodeObserver for LiveMesh {
             me.incarnation_id = Some(birth.incarnation.clone());
             me.is_primary = true;
             let fabric_id = self.topology_view.digest_view.get(node.node_id.as_str()).expect("the fixture holds its commanded birth").0.fabric_id;
-            let authority = rdm_admin::status_rpc::StatusAuthority {
+            let door = rdm_admin::status_rpc::StatusDoor {
                 certs: None,
                 app_channels: None,
                 me: me.name.clone(), node_id: me.node_id.clone(), fabric_id: fabric_id.clone(),
@@ -119,8 +119,8 @@ impl NodeObserver for LiveMesh {
                 republish: Default::default(), configure: Default::default(), pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
                 digest_view: Some(self.topology_view.digest_view.clone()), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
             };
-            assert!(authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default(), Default::default()))).is_ok());
-            return authority.carry_lifecycle(node, cmd == rdm_admin::node_commands::NodeCommand::Start, ctx).await;
+            assert!(door.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default(), Default::default()))).is_ok());
+            return door.carry_lifecycle(node, cmd == rdm_admin::node_commands::NodeCommand::Start, ctx).await;
         }
         rdm_admin::node_commands::send_command(&self.client, &self.commands, &target, node, cmd, ctx).await
     }

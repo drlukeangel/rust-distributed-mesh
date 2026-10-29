@@ -313,11 +313,11 @@ impl rdm_admin::storage::NodesStorage for Unreadable {
 
 /// The fabric-primary `me`'s Status door over `view`, its atlas `atlas` and its nodes store
 /// `nodes_storage`; every other store in memory.
-fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atlas>, nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>) -> rdm_admin::status_rpc::StatusAuthority {
+fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atlas>, nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>) -> rdm_admin::status_rpc::StatusDoor {
     let slot = Arc::new(std::sync::OnceLock::new());
     let _ = slot.set(atlas);
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
-    rdm_admin::status_rpc::StatusAuthority {
+    rdm_admin::status_rpc::StatusDoor {
         certs: None,
         app_channels: None,
         declaration_seam: None,

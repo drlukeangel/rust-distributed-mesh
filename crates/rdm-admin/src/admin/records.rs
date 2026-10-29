@@ -430,21 +430,21 @@ pub struct ServingDoor {
     pub(crate) ready: Arc<std::sync::atomic::AtomicBool>,
     /// This admin's exact birth.
     pub(crate) birth: (NodeId, IncarnationId),
-    /// Whether the Status authority is filled.
-    pub(crate) authority_filled: Box<dyn Fn() -> bool + Send + Sync>,
+    /// Whether the Status door is filled.
+    pub(crate) status_door_filled: Box<dyn Fn() -> bool + Send + Sync>,
     /// The name this admin booted under, for the span.
     pub(crate) boot_name: PathName,
 }
 
 impl ServingDoor {
     /// The door over the router's gate `ready` for the birth `birth`, booted as `boot_name`.
-    pub fn new(ready: Arc<std::sync::atomic::AtomicBool>, birth: (NodeId, IncarnationId), authority_filled: Box<dyn Fn() -> bool + Send + Sync>, boot_name: PathName) -> Self {
-        Self { ready, birth, authority_filled, boot_name }
+    pub fn new(ready: Arc<std::sync::atomic::AtomicBool>, birth: (NodeId, IncarnationId), status_door_filled: Box<dyn Fn() -> bool + Send + Sync>, boot_name: PathName) -> Self {
+        Self { ready, birth, status_door_filled, boot_name }
     }
 
     /// Open the door if it is closed, the authority is filled and `view` holds this admin's exact birth.
     pub(crate) fn open_if_held(&self, view: &Topology) {
-        if self.ready.load(std::sync::atomic::Ordering::SeqCst) || !(self.authority_filled)() {
+        if self.ready.load(std::sync::atomic::Ordering::SeqCst) || !(self.status_door_filled)() {
             return;
         }
         if let Some(own) = view.births().find(|n| n.node_id == self.birth.0 && n.incarnation_id.as_ref() == Some(&self.birth.1)) {

@@ -194,7 +194,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             digest_view: root.topology_view.digest_view.clone(),
             client: Some(root.node_rpc.client.clone()),
             commands: Arc::default(),
-            authority: Arc::default(),
+            status_door: Arc::default(),
             handover: Arc::default(),
             unreachable: Arc::default(),
         };

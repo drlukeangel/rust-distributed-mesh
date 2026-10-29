@@ -4,7 +4,7 @@
 
 pub use crate::status_rpc::{
     declared_of_member, member_of_declared, ConnectionsDeletedReceipt, Declared, MeshReport,
-    Reporter, SeatFold, StatusAuthority,
+    Reporter, SeatFold, StatusDoor,
 };
 pub use crate::admin::ServingDoor;
 

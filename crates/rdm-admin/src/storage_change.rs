@@ -297,7 +297,7 @@ impl StorageChanges {
         }
     }
 
-    fn door(status_door: Option<Arc<crate::status_rpc::StatusAuthority>>) -> Result<Arc<crate::status_rpc::StatusAuthority>, crate::executor::RunEnd> {
+    fn door(status_door: Option<Arc<crate::status_rpc::StatusDoor>>) -> Result<Arc<crate::status_rpc::StatusDoor>, crate::executor::RunEnd> {
         status_door.ok_or_else(|| crate::executor::RunEnd::Incomplete("this admin holds no status door yet".into()))
     }
 
@@ -305,7 +305,7 @@ impl StorageChanges {
     /// complete, replies `blocked` (its receipt) and gossips a current mesh topology of its mesh; it issues no
     /// new command until it is unblocked.
     #[allow(clippy::too_many_arguments)]
-    pub async fn block_mesh(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>) -> Result<(), crate::executor::RunEnd> {
+    pub async fn block_mesh(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusDoor>>) -> Result<(), crate::executor::RunEnd> {
         let door = Self::door(status_door)?;
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-block", build_id = %build_id.log(), change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, in_flight = tracing::field::Empty, outcome = tracing::field::Empty);
         let in_flight = door.commands.block().await;
@@ -323,7 +323,7 @@ impl StorageChanges {
     /// re-created at `path` by `recreate` on the provider this mesh-primary writes (i149 R19), and the move
     /// is carried to the new birth. No timer ends it.
     #[allow(clippy::too_many_arguments)]
-    async fn move_until<F, Fut>(&self, door: &crate::status_rpc::StatusAuthority, topology: &Arc<RwLock<Topology>>, build_id: &BuildId, change_id: &ChangeId, mesh: &str, path: &PathName, provider: &str, recreate: &F) -> PathEnd
+    async fn move_until<F, Fut>(&self, door: &crate::status_rpc::StatusDoor, topology: &Arc<RwLock<Topology>>, build_id: &BuildId, change_id: &ChangeId, mesh: &str, path: &PathName, provider: &str, recreate: &F) -> PathEnd
     where
         F: Fn(PathName, crate::build::ExitedBirth) -> Fut,
         Fut: std::future::Future<Output = Result<(), crate::executor::RunEnd>>,
@@ -395,7 +395,7 @@ impl StorageChanges {
     /// `recreate`, steps of this attempt (i149 R19); once every node moved or was re-created it replies
     /// `unblocked` (its receipt) and issues commands again.
     #[allow(clippy::too_many_arguments)]
-    pub async fn unblock_mesh<F, Fut>(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>, topology: Arc<RwLock<Topology>>, recreate: &F) -> Result<(), crate::executor::RunEnd>
+    pub async fn unblock_mesh<F, Fut>(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusDoor>>, topology: Arc<RwLock<Topology>>, recreate: &F) -> Result<(), crate::executor::RunEnd>
     where
         F: Fn(PathName, crate::build::ExitedBirth) -> Fut,
         Fut: std::future::Future<Output = Result<(), crate::executor::RunEnd>>,
@@ -416,7 +416,7 @@ impl StorageChanges {
     }
 
     /// This admin moved onto `provider`, its own row recording it.
-    async fn move_own(&self, door: &crate::status_rpc::StatusAuthority, build_id: &BuildId, change_id: &ChangeId, provider: &str) -> Result<(), crate::executor::RunEnd> {
+    async fn move_own(&self, door: &crate::status_rpc::StatusDoor, build_id: &BuildId, change_id: &ChangeId, provider: &str) -> Result<(), crate::executor::RunEnd> {
         let own = door.own.get().and_then(|own| own.storage_moves()).ok_or_else(|| crate::executor::RunEnd::Incomplete("this admin holds no storage handle yet".into()))?;
         match own.serve(build_id, change_id, provider).await {
             NodeCommandReply::StorageStepped { .. } => {}
@@ -433,7 +433,7 @@ impl StorageChanges {
     /// learns it from the record alone.
     /// A fabric.delete accepted meanwhile ends the operation.
     #[allow(clippy::too_many_arguments)]
-    pub async fn switch(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusAuthority>>, fabric_row: impl std::future::Future<Output = Result<(), String>>) -> Result<(), crate::executor::RunEnd> {
+    pub async fn switch(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusDoor>>, fabric_row: impl std::future::Future<Output = Result<(), String>>) -> Result<(), crate::executor::RunEnd> {
         let door = Self::door(status_door)?;
         let interrupted = Arc::new(tokio::sync::Notify::new());
         *self.running.lock().unwrap() = Some(Running { change_id: change.change_id.clone(), interrupted: interrupted.clone() });
@@ -449,7 +449,7 @@ impl StorageChanges {
         ran
     }
 
-    async fn switch_steps(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange, door: &Arc<crate::status_rpc::StatusAuthority>, fabric_row: impl std::future::Future<Output = Result<(), String>>) -> Result<(), crate::executor::RunEnd> {
+    async fn switch_steps(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, change: &StorageChange, door: &Arc<crate::status_rpc::StatusDoor>, fabric_row: impl std::future::Future<Output = Result<(), String>>) -> Result<(), crate::executor::RunEnd> {
         if let Some(seam) = &door.command_frame_seam {
             seam.before_storage_switch(&change.change_id).await;
         }

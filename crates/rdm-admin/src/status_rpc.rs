@@ -505,7 +505,7 @@ pub fn set_member_status(digest_view: &rdm_transport::topology::DigestView, rece
 
 /// What the service reads and writes: this admin's identity, its current view, what it applied,
 /// and the rows it writes.
-pub struct StatusAuthority {
+pub struct StatusDoor {
     /// This admin's own declaration and the application channels it holds.
     pub app_channels: Option<rdm_transport::topology::TopologyView>,
     /// This admin's `path.name`: what it is named by in spans and refusals.
@@ -554,7 +554,7 @@ pub struct StatusAuthority {
     /// its digest and server exist.
     pub own: Arc<OnceLock<Arc<crate::node_self::NodeSelf>>>,
     /// What this admin signs with: the issuing key `node.issuer.update` installs, and the rafka-time
-    /// `fabric.get` judges a stalled renewal on. `None` for an authority that holds no certs (a
+    /// `fabric.get` judges a stalled renewal on. `None` for a Status door that holds no certs (a
     /// testkit admin side).
     pub certs: Option<Arc<crate::certs::CertIssuer>>,
     /// What serves `DeleteMesh` (as a leaving mesh's primary) and `MeshDeleted` (as the
@@ -563,7 +563,7 @@ pub struct StatusAuthority {
     /// Testkit knob: hold the next reply past the caller's bound after applying (acceptance 2:
     /// apply + reply loss is `Indeterminate`, and the retry is `AlreadyApplied`).
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
-    /// Wakes this admin's declarer: a view this authority changed, and a down op's receipt.
+    /// Wakes this admin's declarer: a view this Status door changed, and a down op's receipt.
     pub wake: Arc<crate::status_declare::DeclareWake>,
     /// This admin's fabric states; filled once the admin holds the handles they act through.
     pub fabric_states: Arc<OnceLock<Arc<crate::fabric_status::FabricStates>>>,
@@ -624,17 +624,17 @@ pub enum Effect {
 /// The decision, pure over a view and what was applied: what the admin does with a declaration.
 /// It is decided for the subject the request names, never for its caller (node-rpc.md §14). It
 /// reads `declared` and returns the effect to commit; it writes nothing.
-pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req: &StatusRequest) -> (StatusReply, Option<Effect>) {
-    let me = match view.own(&auth.node_id) {
+pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &StatusRequest) -> (StatusReply, Option<Effect>) {
+    let me = match view.own(&door.node_id) {
         Some(n) => n,
         None => return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "a view holding this admin".into() }), None),
     };
-    let me_name = auth.held_name_in(view);
+    let me_name = door.held_name_in(view);
     match req {
         StatusRequest::DeclareNodeState { node_id, incarnation, state, operation } => {
             // The role first: an admin that is no mesh-primary, and runs no fabric recovery, answers that
             // it is not the primary, whatever it holds of the subject (node-status.md "Status report").
-            let recovering = auth.fabric_recovery.get().is_some_and(|read| read(view).is_some_and(|fr| crate::fabric_recovery::executes_for(Some(read), view, &me_name, &fr.target.mesh)));
+            let recovering = door.fabric_recovery.get().is_some_and(|read| read(view).is_some_and(|fr| crate::fabric_recovery::executes_for(Some(read), view, &me_name, &fr.target.mesh)));
             if !me.is_primary && !recovering {
                 let mesh = view.births().find(|n| n.node_id == *node_id).map_or(me.mesh.as_str(), |n| n.mesh.as_str());
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("mesh-primary of {mesh}") }), None);
@@ -646,7 +646,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             let subject = match view.births().find(|n| n.node_id == *node_id) {
                 Some(n) => n,
                 None => {
-                    watched = auth.durable.lock().unwrap().iter().find(|n| n.node_id == *node_id).cloned();
+                    watched = door.durable.lock().unwrap().iter().find(|n| n.node_id == *node_id).cloned();
                     match watched.as_ref() {
                         Some(n) => n,
                         None => return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None),
@@ -657,7 +657,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             // which sets its status (node-status.md "Status report"). While fabric recovery runs and the
             // mesh has no mesh-primary, its executor takes the declarations of the node it re-creates at
             // the target's path.name: its own node.create waits on them (build.md §5.3, Q122).
-            let recovers = auth.fabric_recovery.get().is_some_and(|read| crate::fabric_recovery::executes_for(Some(read), view, &me_name, &subject.mesh) && read(view).is_some_and(|fr| fr.at.as_ref() == Some(&subject.name)));
+            let recovers = door.fabric_recovery.get().is_some_and(|read| crate::fabric_recovery::executes_for(Some(read), view, &me_name, &subject.mesh) && read(view).is_some_and(|fr| fr.at.as_ref() == Some(&subject.name)));
             if !(me.is_primary && me.mesh == subject.mesh) && !recovers {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("mesh-primary of {}", subject.mesh) }), None);
             }
@@ -672,7 +672,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             // shows before the departure lands: refused `SubjectUnknown` and decided as every refused
             // caller is, deleted and never re-admitted (node-investigation.md; Q207, Q217), as the join
             // door refuses it on `status`.
-            if auth.atlas.get().is_some_and(|a| a.holds_deleted_by_delete(&subject.node_id, incarnation)) {
+            if door.atlas.get().is_some_and(|a| a.holds_deleted_by_delete(&subject.node_id, incarnation)) {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None);
             }
             if let Some(operation) = operation {
@@ -702,7 +702,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             // The subject Mesh, as this holder knows it: an id its own Build created, else the id a
             // Mesh carries in the view. The fabric seat moves to whichever admin has the lowest node
             // id, which may hold a Mesh it never created.
-            let held = (auth.mesh_ids)().values().any(|id| id == mesh_id) || view.meshes.iter().any(|m| m.id.as_ref() == Some(mesh_id));
+            let held = (door.mesh_ids)().values().any(|id| id == mesh_id) || view.meshes.iter().any(|m| m.id.as_ref() == Some(mesh_id));
             if !held {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None);
             }
@@ -731,11 +731,11 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             // The mesh's primary writes its status (node-identity-and-state.md 4.3): an admin whose view
             // names another admin the mesh's primary is not the receiver. One whose view names none
             // yet is the admin the hand-off created, before its own seat shows in its view.
-            if let Some(primary) = view.node_type_primary(mesh_name, NodeKind::NodeAdmin).filter(|p| p.node_id != auth.node_id) {
+            if let Some(primary) = view.node_type_primary(mesh_name, NodeKind::NodeAdmin).filter(|p| p.node_id != door.node_id) {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("the mesh-primary of {mesh_name}, which this admin's view names {} ({})", primary.name, primary.node_id) }), None);
             }
             // Never a replacement mesh id to satisfy the operation.
-            if let Some(held) = (auth.mesh_ids)().get(mesh_name) {
+            if let Some(held) = (door.mesh_ids)().get(mesh_name) {
                 if held != mesh_id {
                     return (rdm_core::reply::status::rejected_stale_mesh(held.clone()), None);
                 }
@@ -750,8 +750,8 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             if !me.is_primary {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "mesh-primary".into() }), None);
             }
-            if *fabric_id != auth.fabric_id {
-                return (rdm_core::reply::status::rejected_stale_fabric(auth.fabric_id.clone()), None);
+            if *fabric_id != door.fabric_id {
+                return (rdm_core::reply::status::rejected_stale_fabric(door.fabric_id.clone()), None);
             }
             let key = event_key(event);
             if declared.fabric.get(fabric_id).is_some_and(|events| events.contains(&key)) {
@@ -855,7 +855,7 @@ fn apply_mesh(declared: &Declared, mesh_id: &MeshId, state: MeshState, at: u64) 
     }
 }
 
-impl StatusAuthority {
+impl StatusDoor {
     /// The `path.name` this admin holds now: what its digest view or its view names its birth,
     /// falling back to `self.me` before its birth is in either.
     pub async fn held_name(&self) -> crate::model::PathName {
@@ -1360,7 +1360,7 @@ impl StatusAuthority {
     }
 }
 
-impl StatusAuthority {
+impl StatusDoor {
     /// This admin's exact birth in `view`, when `incarnation` is it; else the reply that refuses the
     /// call naming the birth held (R-RX5: the birth the call reached answers it).
     fn own_birth(&self, view: &Topology, incarnation: &IncarnationId) -> Result<crate::model::Node, StatusReply> {
@@ -1645,7 +1645,7 @@ pub(crate) fn read_answered_at(view: &Topology, me_id: &rdm_core::NodeId, held: 
     if own { ReadAt::Here } else { ReadAt::FabricPrimary }
 }
 
-impl StatusAuthority {
+impl StatusDoor {
     /// Keep the declared state `row`, and the operation effect that produced it when one did, on its
     /// birth's node record: the record held, the facts applied, written whole (a birth of another mesh:
     /// the fabric-primary accepting the join report of a birth of a mesh with no primary, Q97). A state
@@ -2603,7 +2603,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
 /// fabric-primary's `node.issuer.update` of an admin of this admin's mesh, forwarded through it as the
 /// mesh-primary, returns `IssuerUpdated`; as that admin's writer it writes the signing cert dates
 /// answered on the admin's record. Anything else carried is not read.
-struct CarriedIssuerDates(Arc<OnceLock<Arc<StatusAuthority>>>);
+struct CarriedIssuerDates(Arc<OnceLock<Arc<StatusDoor>>>);
 
 #[async_trait::async_trait]
 impl rdm_transport::CarriedReplies for CarriedIssuerDates {
@@ -2613,17 +2613,17 @@ impl rdm_transport::CarriedReplies for CarriedIssuerDates {
             return;
         }
         let (Ok(StatusRequest::UpdateIssuer { incarnation, cert, .. }), Ok(StatusReply::IssuerUpdated { node_id, incarnation: answered, .. })) = (Status::decode_request(request), Status::decode_reply(reply)) else { return };
-        let Some(auth) = self.0.get().cloned() else { return };
+        let Some(door) = self.0.get().cloned() else { return };
         if node_id != *target || answered != incarnation {
             return;
         }
         // The admin installed the cert carried, or refused it: its dates are that cert's.
         let Ok(signed) = rdm_core::certs::decode_issuing_cert(&cert) else { return };
-        auth.write_carried_issuer(&node_id, &incarnation, &signed).await;
+        door.write_carried_issuer(&node_id, &incarnation, &signed).await;
     }
 }
 
-impl StatusAuthority {
+impl StatusDoor {
     /// Write the signing cert dates admin `node_id`'s birth `incarnation` answered, carried through this
     /// admin, on the admin's record when this admin writes its mesh's records.
     async fn write_carried_issuer(&self, node_id: &NodeId, incarnation: &IncarnationId, signed: &rdm_core::certs::SignedIssuingCert) {
@@ -2648,19 +2648,19 @@ impl StatusAuthority {
 }
 
 /// Serve `Status` on this admin, and the node command op 0x22 for this admin as a commanded node
-/// (i144 R22). `authority` is filled once the admin holds a view; until then a declaration is
+/// (i144 R22). `door` is filled once the admin holds a view; until then a declaration is
 /// `NotReady` by name.
-pub fn serve(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -> ServerBuilder {
-    serve_node_command(b.observe_carried(Arc::new(CarriedIssuerDates(authority.clone()))), authority.clone()).serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |peer: PeerContext, req: StatusRequest| {
-        let authority = authority.clone();
+pub fn serve(b: ServerBuilder, door: Arc<OnceLock<Arc<StatusDoor>>>) -> ServerBuilder {
+    serve_node_command(b.observe_carried(Arc::new(CarriedIssuerDates(door.clone()))), door.clone()).serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |peer: PeerContext, req: StatusRequest| {
+        let door = door.clone();
         async move {
-            let Some(auth) = authority.get().cloned() else {
+            let Some(door) = door.get().cloned() else {
                 return Ok(rdm_core::reply::status::not_ready("this admin holds no view yet".into()));
             };
             let peer_id = EndpointId(peer.endpoint_id.to_string());
-            let sender = auth.sender_of(&peer_id).await;
-            let reply = auth.apply_from(Some(peer.endpoint_id), sender, &req).await;
-            if auth.hold_next_reply.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            let sender = door.sender_of(&peer_id).await;
+            let reply = door.apply_from(Some(peer.endpoint_id), sender, &req).await;
+            if door.hold_next_reply.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
             }
             Ok(reply)
@@ -2672,20 +2672,20 @@ pub fn serve(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -
 /// answered on the command's ordered reply stream by the admin's own birth
 /// ([`crate::node_self::NodeSelf::serve_node_command`]). Nothing checks who is calling (node-rpc.md
 /// §14): the caller, as this admin's view holds it, is the command's commander.
-fn serve_node_command(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -> ServerBuilder {
+fn serve_node_command(b: ServerBuilder, door: Arc<OnceLock<Arc<StatusDoor>>>) -> ServerBuilder {
     use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
     b.serve_stream::<NodeCommand, _, _>(OpOwner::Product("rdm".into()), move |peer: PeerContext, req: NodeCommandRequest, sink| {
-        let authority = authority.clone();
+        let door = door.clone();
         async move {
-            let Some(auth) = authority.get().cloned() else {
+            let Some(door) = door.get().cloned() else {
                 return Ok(rdm_core::reply::node_command::not_ready("this admin holds no view yet".into()));
             };
-            let Some(own) = auth.own.get().cloned() else {
-                return Ok(rdm_core::reply::node_command::not_ready(format!("{} has not yet joined its mesh; {} is refused", auth.me, req.op())));
+            let Some(own) = door.own.get().cloned() else {
+                return Ok(rdm_core::reply::node_command::not_ready(format!("{} has not yet joined its mesh; {} is refused", door.me, req.op())));
             };
-            let sender = auth.sender_of(&EndpointId(peer.endpoint_id.to_string())).await;
+            let sender = door.sender_of(&EndpointId(peer.endpoint_id.to_string())).await;
             let reply = own.serve_node_command_on(sender.as_ref().map(|n| &n.node_id), Some(peer.endpoint_id), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
-            tracing::info_span!("rdm.node_admin.status.update.via-command", node = %auth.me, op = req.op(), sender = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.status.update.via-command", node = %door.me, op = req.op(), sender = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("a node command naming this admin was decided"));
             Ok(reply)
         }
@@ -2856,7 +2856,7 @@ impl CarryEnd {
 }
 
 /// Shared handles, for the admin's wiring.
-pub type AuthoritySlot = Arc<OnceLock<Arc<StatusAuthority>>>;
+pub type StatusDoorSlot = Arc<OnceLock<Arc<StatusDoor>>>;
 
 /// Publishes NodeStopped for the birth of `row` stopped by `operation` (i146 Q29, Q36).
 pub type StoppedPublisher = Arc<dyn Fn(crate::status_rpc::Declaration, DeclaredOperation) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
@@ -2864,7 +2864,7 @@ pub type StoppedPublisher = Arc<dyn Fn(crate::status_rpc::Declaration, DeclaredO
 #[allow(dead_code)]
 fn _assert_send_sync() {
     fn f<T: Send + Sync>() {}
-    f::<StatusAuthority>();
+    f::<StatusDoor>();
     let _ = RwLock::new(());
 }
 
@@ -2915,7 +2915,7 @@ mod tests {
             nodes: vec![admin.clone(), rpc.clone()],
         }));
         let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
-        let authority = StatusAuthority {
+        let door = StatusDoor {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -2948,11 +2948,11 @@ mod tests {
             digest_view: None,
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
-        crate::offline::put_silence_status(&*status, &authority.caches.nodes, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
+        crate::offline::put_silence_status(&*status, &door.caches.nodes, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
         let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
-        assert_eq!(authority.apply(Some(rpc.clone()), &declare).await, R::Applied);
+        assert_eq!(door.apply(Some(rpc.clone()), &declare).await, R::Applied);
         assert_eq!(stored_silence(&*status, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "the authority's declared-state put erased the mesh primary's silence status");
-        authority.begin_cycle(&rpc, rpc.incarnation_id.as_ref().unwrap()).await;
+        door.begin_cycle(&rpc, rpc.incarnation_id.as_ref().unwrap()).await;
         assert_eq!(stored_silence(&*status, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "a cycle begin erased the mesh primary's silence status");
     }
 
@@ -2981,7 +2981,7 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![admin.clone(), declared_first.clone(), stream_first.clone(), measured.clone()],
         }));
-        let authority = StatusAuthority {
+        let door = StatusDoor {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -3020,43 +3020,43 @@ mod tests {
             into.lock().unwrap().push((row.node_id, op.operation, op.attempt));
             Box::pin(async {})
         });
-        let _ = authority.stopped.set(publisher);
+        let _ = door.stopped.set(publisher);
         let stop_of = |n: &crate::model::Node, kind: &str| DeclaredOperation { build_id: "b".into(), attempt: 2, operation: format!("{kind}:{}", n.name) };
         let declare = |n: &crate::model::Node, operation: Option<DeclaredOperation>| StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation };
         let stream = |n: &crate::model::Node, op: &DeclaredOperation| rdm_core::LifecycleOp { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), name: n.name.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
 
         // The declaration first, then a repeat of it, then the stop stream's stopped.
         let stop = stop_of(&declared_first, "node.stop");
-        assert_eq!(authority.apply(Some(declared_first.clone()), &declare(&declared_first, Some(stop.clone()))).await, R::Applied);
-        assert_eq!(authority.apply(Some(declared_first.clone()), &declare(&declared_first, Some(stop.clone()))).await, R::AlreadyApplied, "a repeat of the declaration");
-        assert_eq!(authority.stop_received(&stream(&declared_first, &stop)).await, R::AlreadyApplied, "the stop stream's stopped after the declaration");
+        assert_eq!(door.apply(Some(declared_first.clone()), &declare(&declared_first, Some(stop.clone()))).await, R::Applied);
+        assert_eq!(door.apply(Some(declared_first.clone()), &declare(&declared_first, Some(stop.clone()))).await, R::AlreadyApplied, "a repeat of the declaration");
+        assert_eq!(door.stop_received(&stream(&declared_first, &stop)).await, R::AlreadyApplied, "the stop stream's stopped after the declaration");
         // The stop stream's stopped first, then the declaration.
         let stop2 = stop_of(&stream_first, "node.stop");
-        assert_eq!(authority.stop_received(&stream(&stream_first, &stop2)).await, R::Applied);
-        assert_eq!(authority.apply(Some(stream_first.clone()), &declare(&stream_first, Some(stop2.clone()))).await, R::AlreadyApplied, "the declaration after the stop stream's stopped");
+        assert_eq!(door.stop_received(&stream(&stream_first, &stop2)).await, R::Applied);
+        assert_eq!(door.apply(Some(stream_first.clone()), &declare(&stream_first, Some(stop2.clone()))).await, R::AlreadyApplied, "the declaration after the stop stream's stopped");
         // Q49: beginning a new cycle never forgets an operation already applied for the birth.
-        authority.begin_cycle(&stream_first, stream_first.incarnation_id.as_ref().unwrap()).await;
+        door.begin_cycle(&stream_first, stream_first.incarnation_id.as_ref().unwrap()).await;
         let ready = StatusRequest::DeclareNodeState { node_id: stream_first.node_id.clone(), incarnation: stream_first.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
-        assert_eq!(authority.apply(Some(stream_first.clone()), &ready).await, R::Applied);
-        assert_eq!(authority.apply(Some(stream_first.clone()), &declare(&stream_first, Some(stop2.clone()))).await, R::AlreadyApplied, "Q49: the old stop declaration after the next cycle began cannot apply again");
-        assert_eq!(authority.stop_received(&stream(&stream_first, &stop2)).await, R::AlreadyApplied, "Q49: the frame names the same applied operation");
-        assert_eq!(authority.apply(Some(stream_first.clone()), &declare(&stream_first, None)).await, R::Applied, "Q49: without an operation the normal forward transition still applies");
+        assert_eq!(door.apply(Some(stream_first.clone()), &ready).await, R::Applied);
+        assert_eq!(door.apply(Some(stream_first.clone()), &declare(&stream_first, Some(stop2.clone()))).await, R::AlreadyApplied, "Q49: the old stop declaration after the next cycle began cannot apply again");
+        assert_eq!(door.stop_received(&stream(&stream_first, &stop2)).await, R::AlreadyApplied, "Q49: the frame names the same applied operation");
+        assert_eq!(door.apply(Some(stream_first.clone()), &declare(&stream_first, None)).await, R::Applied, "Q49: without an operation the normal forward transition still applies");
         // A Leaving the birth measured itself: applied, and nothing published.
-        assert_eq!(authority.apply(Some(measured.clone()), &declare(&measured, None)).await, R::Applied);
+        assert_eq!(door.apply(Some(measured.clone()), &declare(&measured, None)).await, R::Applied);
 
         assert_eq!(
             *published.lock().unwrap(),
             vec![(declared_first.node_id.clone(), stop.operation.clone(), 2), (stream_first.node_id.clone(), stop2.operation.clone(), 2)],
             "NodeStopped once per stop, from whichever reached the mesh-primary first, and from nothing else"
         );
-        let recovered = folded(&*authority.nodes_storage, &*authority.meshes_storage, &*authority.fabric_storage, &authority.me.mesh).await;
-        assert_eq!(recovered.operations, authority.declared.lock().unwrap().operations, "Q49: the successor folds every applied operation, including the previous cycle's stop");
+        let recovered = folded(&*door.nodes_storage, &*door.meshes_storage, &*door.fabric_storage, &door.me.mesh).await;
+        assert_eq!(recovered.operations, door.declared.lock().unwrap().operations, "Q49: the successor folds every applied operation, including the previous cycle's stop");
 
     }
 
     /// The status authority of `admin`, with `topology` as its view and `status` as its status store.
-    fn mesh_primary_with_store(admin: &crate::model::Node, topology: Arc<tokio::sync::RwLock<Topology>>, fabric_id: FabricId, status: Arc<crate::storage::MemoryNodesStorage>) -> StatusAuthority {
-        StatusAuthority {
+    fn mesh_primary_with_store(admin: &crate::model::Node, topology: Arc<tokio::sync::RwLock<Topology>>, fabric_id: FabricId, status: Arc<crate::storage::MemoryNodesStorage>) -> StatusDoor {
+        StatusDoor {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -3111,8 +3111,8 @@ mod tests {
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), rpc.clone()] }));
         let status = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let authority = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id, status.clone()));
-        assert_eq!(authority.joined_pending(&rpc.node_id, &rpc.name, &birth, true).await, R::Applied, "the accepted join report records its Pending");
+        let door = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id, status.clone()));
+        assert_eq!(door.joined_pending(&rpc.node_id, &rpc.name, &birth, true).await, R::Applied, "the accepted join report records its Pending");
         let on_record = async || {
             let rows = crate::storage::NodesStorage::nodes(&*status, "mesh1").await.unwrap();
             let mut states: Vec<NodeState> = Declaration::of_records(&rows).into_iter().filter(|r| r.node_id == rpc.node_id).map(|r| r.state).collect();
@@ -3120,21 +3120,21 @@ mod tests {
             states
         };
         assert_eq!(on_record().await, vec![NodeState::Pending], "the Pending is on the record before the block");
-        assert_eq!(authority.commands.block().await, 0, "no command in flight at the block");
+        assert_eq!(door.commands.block().await, 0, "no command in flight at the block");
         let ready = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state: NodeState::Ready, operation: None };
         let mut report = {
-            let (authority, rpc) = (authority.clone(), rpc.clone());
-            tokio::spawn(async move { authority.apply(Some(rpc), &ready).await })
+            let (door, rpc) = (door.clone(), rpc.clone());
+            tokio::spawn(async move { door.apply(Some(rpc), &ready).await })
         };
         let early = tokio::time::timeout(std::time::Duration::from_millis(500), &mut report).await;
         assert!(early.is_err(), "the report is not answered while its mesh-primary is blocked: {early:?}");
-        assert_eq!(authority.declared.lock().unwrap().node(&rpc.node_id, &birth), Some(NodeState::Pending), "the report is not applied while blocked");
+        assert_eq!(door.declared.lock().unwrap().node(&rpc.node_id, &birth), Some(NodeState::Pending), "the report is not applied while blocked");
         assert_eq!(on_record().await, vec![NodeState::Pending], "nothing is written while the mesh-primary is blocked: the record holds what was copied");
-        authority.commands.unblock();
+        door.commands.unblock();
         let answered = tokio::time::timeout(std::time::Duration::from_secs(10), report).await.expect("the report is answered after the unblock").unwrap();
         assert_eq!(answered, R::Applied, "the report is applied after the unblock");
         assert!(on_record().await.contains(&NodeState::Ready), "its row is written before the answer: {:?}", on_record().await);
-        assert_eq!(authority.declared.lock().unwrap().node(&rpc.node_id, &birth), Some(NodeState::Ready), "the declared state holds the report");
+        assert_eq!(door.declared.lock().unwrap().node(&rpc.node_id, &birth), Some(NodeState::Ready), "the declared state holds the report");
     }
 
     /// CONTRACT (Q97, node-mesh-join.md step 10: "The node's mesh-primary (the fabric-primary for a
@@ -3158,9 +3158,9 @@ mod tests {
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), own.clone(), other.clone()] }));
         let status = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let authority = mesh_primary_with_store(&admin, topology, fabric_id, status.clone());
+        let door = mesh_primary_with_store(&admin, topology, fabric_id, status.clone());
         for n in [&own, &other] {
-            assert_eq!(authority.joined_pending(&n.node_id, &n.name, n.incarnation_id.as_ref().unwrap(), true).await, R::Applied, "{}'s accepted join report records its Pending", n.name);
+            assert_eq!(door.joined_pending(&n.node_id, &n.name, n.incarnation_id.as_ref().unwrap(), true).await, R::Applied, "{}'s accepted join report records its Pending", n.name);
         }
         let births = |rows: Vec<crate::status_rpc::Declaration>| rows.into_iter().map(|r| (r.node_id, r.state)).collect::<Vec<_>>();
         let declared_of = async |mesh: &str| Declaration::of_records(&crate::storage::NodesStorage::nodes(&*status, mesh).await.unwrap());
@@ -3168,7 +3168,7 @@ mod tests {
         assert_eq!(births(own_rows.clone()), vec![(own.node_id.clone(), NodeState::Pending)], "mesh1's rows hold its own birth's Pending and nothing of mesh2's: {own_rows:?}");
         assert_eq!(births(declared_of("mesh2").await), vec![(other.node_id.clone(), NodeState::Pending)], "mesh2's birth's Pending is among mesh2's rows");
         for n in [&own, &other] {
-            authority.begin_cycle(n, n.incarnation_id.as_ref().unwrap()).await;
+            door.begin_cycle(n, n.incarnation_id.as_ref().unwrap()).await;
         }
         assert!(declared_of("mesh1").await.is_empty(), "the own birth's begun cycle clears its declared states on its record");
         assert!(declared_of("mesh2").await.is_empty(), "mesh2's birth's begun cycle clears its declared states on its record");
@@ -3198,7 +3198,7 @@ mod tests {
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), rpc.clone()] }));
         let status = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let authority = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id.clone(), status.clone()));
+        let door = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id.clone(), status.clone()));
         // The join door, its accepted report's Pending recorded by this authority as boot wires it.
         let replies: Arc<Mutex<Vec<R>>> = Arc::default();
         let joins = Arc::new(crate::join::Joins::default());
@@ -3219,11 +3219,11 @@ mod tests {
             install: Arc::new(|_| {}),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new({
-                let (authority, replies) = (authority.clone(), replies.clone());
+                let (door, replies) = (door.clone(), replies.clone());
                 move |d: rdm_core::MeshDigest, new_join: bool| {
-                    let (authority, replies) = (authority.clone(), replies.clone());
+                    let (door, replies) = (door.clone(), replies.clone());
                     Box::pin(async move {
-                        let reply = authority.joined_pending(&d.node.node_id, &d.node.name, &d.node.incarnation, new_join).await;
+                        let reply = door.joined_pending(&d.node.node_id, &d.node.name, &d.node.incarnation, new_join).await;
                         replies.lock().unwrap().push(reply);
                     })
                 }
@@ -3274,8 +3274,8 @@ mod tests {
             is_fabric_primary: None,
         };
         // The birth's last cycle's cut, as this mesh-primary holds it: a begun cycle forgets it.
-        let cut = || { authority.declared.lock().unwrap().meshes_left.insert((rpc.node_id.clone(), birth.clone())); };
-        let cut_held = || authority.declared.lock().unwrap().meshes_left.contains(&(rpc.node_id.clone(), birth.clone()));
+        let cut = || { door.declared.lock().unwrap().meshes_left.insert((rpc.node_id.clone(), birth.clone())); };
+        let cut_held = || door.declared.lock().unwrap().meshes_left.contains(&(rpc.node_id.clone(), birth.clone()));
         let door = &door;
         let serve = move |what: &'static str| {
             let (report, replies) = (report.clone(), replies.clone());
@@ -3396,7 +3396,7 @@ mod tests {
             nodes: vec![admin.clone(), rpc.clone()],
         }));
         let status: Arc<SlowPuts> = Arc::new(Default::default());
-        let authority = StatusAuthority {
+        let door = StatusDoor {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -3433,19 +3433,19 @@ mod tests {
         let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state, operation: None };
         let (leaving, ready) = (declare(NodeState::Stopped), declare(NodeState::Ready));
         let dates = crate::storage::CertDates { issued_at: 1, expires_at: 10, issuer_expires_at: 100, renew_at: 7 };
-        let renewal = authority.caches.nodes.update_birth(&*status, &rpc, &birth, |b| b.cert = Some(dates.clone()));
-        let (a, b, c) = tokio::join!(authority.apply(Some(rpc.clone()), &leaving), authority.apply(Some(rpc.clone()), &ready), renewal);
+        let renewal = door.caches.nodes.update_birth(&*status, &rpc, &birth, |b| b.cert = Some(dates.clone()));
+        let (a, b, c) = tokio::join!(door.apply(Some(rpc.clone()), &leaving), door.apply(Some(rpc.clone()), &ready), renewal);
         // Each declaration is decided, written and decided again over what is held: one of the two is
         // Applied, the other Applied or refused as backward once the greater one landed.
         assert!(matches!((&a, &b), (R::Applied, R::Applied) | (R::Applied, R::RejectedInvalidNodeTransition { .. }) | (R::RejectedInvalidNodeTransition { .. }, R::Applied)), "{a:?} {b:?}");
         assert!(c.is_ok(), "the renewal's dates are written: {c:?}");
-        let held = authority.declared.lock().unwrap().node(&rpc.node_id, &birth);
+        let held = door.declared.lock().unwrap().node(&rpc.node_id, &birth);
         assert_eq!(held, Some(NodeState::Stopped), "memory holds the greater state");
         let record = crate::storage::NodesStorage::node(&status.inner, &rpc.node_id).await.unwrap().expect("the node's record");
         let facts = record.birth(&birth).expect("the birth's facts");
         assert!(facts.declared.contains(&NodeState::Stopped), "the greater declaration stands on the record: {facts:?}");
         assert_eq!(facts.cert.as_ref(), Some(&dates), "the renewal's dates stand beside them");
-        let rehydrated = folded(&*status, &*authority.meshes_storage, &*authority.fabric_storage, "mesh1").await;
+        let rehydrated = folded(&*status, &*door.meshes_storage, &*door.fabric_storage, "mesh1").await;
         assert_eq!(rehydrated.node(&rpc.node_id, &birth), held, "a restarted authority folds the record back to the state it held");
     }
 
@@ -3491,8 +3491,8 @@ mod tests {
     }
 
     /// The status authority of the admin born as `me`, deciding over `view`.
-    fn mesh_primary_of(me: &crate::model::Node, view: Topology) -> StatusAuthority {
-        StatusAuthority {
+    fn mesh_primary_of(me: &crate::model::Node, view: Topology) -> StatusDoor {
+        StatusDoor {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -3557,14 +3557,14 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![m2p.clone()],
         };
-        let auth = mesh_primary_of(&m2p, view.clone());
-        auth.durable.lock().unwrap().push(member.clone());
+        let door = mesh_primary_of(&m2p, view.clone());
+        door.durable.lock().unwrap().push(member.clone());
         let declare = |n: &crate::model::Node| StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
-        let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare(&member));
+        let (reply, effect) = decide(&door, &view, &Declared::default(), &declare(&member));
         assert_eq!(reply, R::Applied, "the mesh-primary applies the Ready of a birth it watches through durable rows");
         assert!(matches!(effect, Some(Effect::Node(ref row, NodeState::Ready, None)) if row.node_id == member.node_id && row.name == member.name), "{effect:?}");
         let stranger = node("mesh2.rpc.9");
-        let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare(&stranger));
+        let (reply, effect) = decide(&door, &view, &Declared::default(), &declare(&stranger));
         assert_eq!(reply, R::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a birth neither viewed nor watched is unknown");
         assert!(effect.is_none());
     }
@@ -3601,11 +3601,11 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![m2p.clone(), m2a.clone(), viewed.clone()],
         };
-        let auth = mesh_primary_of(&m2a, view.clone());
-        auth.durable.lock().unwrap().push(row_only.clone());
+        let door = mesh_primary_of(&m2a, view.clone());
+        door.durable.lock().unwrap().push(row_only.clone());
         let declare = |n: &crate::model::Node| StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
         for (subject, what) in [(&viewed, "a birth its view holds"), (&row_only, "a birth only a durable row names"), (&stranger, "a birth it holds nothing of")] {
-            let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare(subject));
+            let (reply, effect) = decide(&door, &view, &Declared::default(), &declare(subject));
             assert_eq!(reply, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } }, "{what}: the admin that is no primary says so");
             assert!(effect.is_none(), "{what}: nothing applied");
         }
@@ -3746,15 +3746,15 @@ mod tests {
         };
         assert_ne!(deleted.node_id, successor.node_id, "a replace mints a new node id");
         assert_eq!(view.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds mesh1's seat in this view");
-        let auth = mesh_primary_of(&successor, view.clone());
+        let door = mesh_primary_of(&successor, view.clone());
         let holding_me = |r: &StatusReply| matches!(r, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "a view holding this admin");
 
         let declare = StatusRequest::DeclareNodeState { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
-        let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare);
+        let (reply, effect) = decide(&door, &view, &Declared::default(), &declare);
         assert!(holding_me(&reply) && effect.is_none(), "the deleted birth's seat is not this admin's: {reply:?}");
 
         let stop = StatusRequest::JoinMesh { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.mesh.join:mesh1.admin.1".into() };
-        let reply = auth.apply(Some(owner.clone()), &stop).await;
+        let reply = door.apply(Some(owner.clone()), &stop).await;
         assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a JoinMesh naming this admin's node id reaches the subject's own door: {reply:?}");
     }
 
@@ -3777,16 +3777,16 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![me.clone()],
         };
-        let auth = mesh_primary_of(&me, view);
+        let door = mesh_primary_of(&me, view);
         let incarnation = me.incarnation_id.clone().unwrap();
         let stop = StatusRequest::JoinMesh { node_id: me.node_id.clone(), incarnation: incarnation.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.mesh.join:mesh1.admin.2".into() };
-        let reply = auth.apply(None, &stop).await;
+        let reply = door.apply(None, &stop).await;
         assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a JoinMesh from a stranger reaches the subject's own door: {reply:?}");
         let probe = StatusRequest::ProbeNodeState { node_id: me.node_id.clone(), incarnation: incarnation.clone() };
-        let reply = auth.apply(None, &probe).await;
+        let reply = door.apply(None, &probe).await;
         assert!(matches!(&reply, R::Current { node_id, state: NodeState::Ready, .. } if *node_id == me.node_id), "a probe from a stranger is answered by the subject: {reply:?}");
         let stale = StatusRequest::JoinMesh { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "node.mesh.join:mesh1.admin.2".into() };
-        assert_eq!(auth.apply(None, &stale).await, R::RejectedStaleIncarnation { held: incarnation });
+        assert_eq!(door.apply(None, &stale).await, R::RejectedStaleIncarnation { held: incarnation });
     }
 
     /// CONTRACT (node-rpc.md §14; checklist.rs `fabric_missing`: "a report counts only from the exact
@@ -3819,25 +3819,25 @@ mod tests {
             nodes: vec![fp.clone(), m1_member.clone(), m2_primary.clone(), m2_member.clone()],
         };
         view.meshes.push(crate::model::Mesh { id: Some(m2_id.clone()), name: "mesh2".into(), status: crate::model::ScopeStatus::Ready });
-        let auth = mesh_primary_of(&fp, view);
+        let door = mesh_primary_of(&fp, view);
         let ready = StatusRequest::DeclareMeshState { mesh_id: m2_id.clone(), state: MeshState::Ready, changed_at_rafka_ms: 0 };
-        assert_eq!(auth.apply(Some(m2_primary.clone()), &ready).await, R::Applied);
-        assert_eq!(auth.apply(Some(m2_member.clone()), &ready).await, R::Applied, "decided for mesh2, whoever sends it, and answered Applied again (Q144)");
-        assert_eq!(auth.apply(Some(m1_member.clone()), &ready).await, R::Applied);
-        let held = auth.declared.lock().unwrap().clone();
+        assert_eq!(door.apply(Some(m2_primary.clone()), &ready).await, R::Applied);
+        assert_eq!(door.apply(Some(m2_member.clone()), &ready).await, R::Applied, "decided for mesh2, whoever sends it, and answered Applied again (Q144)");
+        assert_eq!(door.apply(Some(m1_member.clone()), &ready).await, R::Applied);
+        let held = door.declared.lock().unwrap().clone();
         assert_eq!(held.report_of("mesh2", Some(&m2_primary)).map(|r| r.incarnation), m2_primary.incarnation_id.clone(), "the primary's report stands: {:?}", held.reports);
         assert!(held.report_of("mesh1", Some(&fp)).is_none(), "a declaration of mesh2 is never mesh1's report: {:?}", held.reports);
         // A mesh's primary this admin's view does not hold yet: its report is kept by its endpoint and
         // counts for its birth once the view holds it.
         let m3_id = MeshId::mint();
         let m3_primary = admin("mesh3.admin.1", "mesh3", true, false);
-        auth.topology.write().await.meshes.push(crate::model::Mesh { id: Some(m3_id.clone()), name: "mesh3".into(), status: crate::model::ScopeStatus::Pending });
+        door.topology.write().await.meshes.push(crate::model::Mesh { id: Some(m3_id.clone()), name: "mesh3".into(), status: crate::model::ScopeStatus::Pending });
         let key = iroh::SecretKey::generate().public();
         let mut m3_primary = m3_primary;
         m3_primary.endpoint_id = Some(EndpointId(key.to_string()));
         let ready3 = StatusRequest::DeclareMeshState { mesh_id: m3_id, state: MeshState::Ready, changed_at_rafka_ms: 0 };
-        assert_eq!(auth.apply_from(Some(key), None, &ready3).await, R::Applied, "decided for mesh3 from an endpoint the view holds no birth for");
-        let held = auth.declared.lock().unwrap().clone();
+        assert_eq!(door.apply_from(Some(key), None, &ready3).await, R::Applied, "decided for mesh3 from an endpoint the view holds no birth for");
+        let held = door.declared.lock().unwrap().clone();
         assert_eq!(held.report_of("mesh3", Some(&m3_primary)).map(|r| r.incarnation), m3_primary.incarnation_id.clone(), "the endpoint's report counts for the birth the view holds at it: {:?}", held.reports);
         assert!(held.report_of("mesh3", Some(&m2_member)).is_none(), "and for no other birth");
     }
@@ -3896,7 +3896,7 @@ mod tests {
             nodes: vec![admin.clone(), restarted.clone(), deleted.clone(), standing.clone()],
         }));
         let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
-        let authority = StatusAuthority {
+        let door = StatusDoor {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -3931,7 +3931,7 @@ mod tests {
         };
         for n in [&restarted, &deleted, &standing] {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
-            assert_eq!(authority.apply(Some(n.clone()), &declare).await, R::Applied, "{}", n.name);
+            assert_eq!(door.apply(Some(n.clone()), &declare).await, R::Applied, "{}", n.name);
         }
         let digest_view = rdm_transport::topology::DigestView::default();
         // rpc.1 restarted: the view holds its next incarnation.
@@ -3954,7 +3954,7 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3051-superseded-rows");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            authority.drop_superseded(&digest_view).await;
+            door.drop_superseded(&digest_view).await;
         }
         let by_incarnation = capture.named("rdm.node_admin.status.remove.via-new-incarnation");
         let by_deletion = capture.named("rdm.node_admin.status.remove.via-node-deleted");
@@ -3966,7 +3966,7 @@ mod tests {
         use crate::storage::NodesStorage as _;
         let rows: Vec<String> = Declaration::of_records(&status.nodes("mesh1").await.unwrap()).into_iter().map(|r| r.node_id.to_string()).collect();
         assert_eq!(rows, vec![standing.node_id.to_string()], "only the birth the view still holds keeps its declared-state row");
-        let held = authority.declared.lock().unwrap().clone();
+        let held = door.declared.lock().unwrap().clone();
         assert_eq!(held.node(&restarted.node_id, restarted.incarnation_id.as_ref().unwrap()), None, "the restarted node's old birth is forgotten");
         assert_eq!(held.node(&deleted.node_id, deleted.incarnation_id.as_ref().unwrap()), None, "the deleted birth is forgotten");
         assert_eq!(held.node(&standing.node_id, standing.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "the held birth keeps its state");
@@ -3998,7 +3998,7 @@ mod tests {
             nodes: vec![admin.clone(), exited.clone()],
         }));
         let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
-        let authority = StatusAuthority {
+        let door = StatusDoor {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -4032,21 +4032,21 @@ mod tests {
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
-        assert_eq!(authority.apply(Some(exited.clone()), &declare).await, R::Applied);
+        assert_eq!(door.apply(Some(exited.clone()), &declare).await, R::Applied);
         // The recovery created a new node at the path; the exited birth's departure is no longer held.
         let mut recovered = exited.clone();
         recovered.node_id = NodeId::mint();
         recovered.incarnation_id = Some(IncarnationId::mint());
         // The records of the recovery: the exited birth's row is Deleted (it released the path.name),
         // and the new node's row claims the name over it.
-        assert!(crate::node_rows::write_deleted(&*status, &authority.caches.nodes, &exited.name, &exited.node_id, None).await.is_ok(), "the exited birth's Deleted row is written");
+        assert!(crate::node_rows::write_deleted(&*status, &door.caches.nodes, &exited.name, &exited.node_id, None).await.is_ok(), "the exited birth's Deleted row is written");
         assert_eq!(crate::node_rows::write_record(&*status, &crate::storage::NodeRow::new(recovered.name.clone(), recovered.node_id.clone(), recovered.status)).await, Ok(Ok(())), "the new node's row claims the path.name");
         let digest_view = rdm_transport::topology::DigestView::default();
         digest_view.record(digest_of(&recovered, recovered.incarnation_id.clone().unwrap()));
         let capture = crate::span_capture::Capture::new("i143-3051-recovered-rows");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            authority.drop_superseded(&digest_view).await;
+            door.drop_superseded(&digest_view).await;
         }
         let by_new_node = capture.named("rdm.node_admin.status.remove.via-new-node");
         for s in &by_new_node {
@@ -4059,7 +4059,7 @@ mod tests {
         );
         use crate::storage::NodesStorage as _;
         assert!(Declaration::of_records(&status.nodes("mesh1").await.unwrap()).is_empty(), "no declared state of the exited birth is left");
-        assert_eq!(authority.declared.lock().unwrap().node(&exited.node_id, exited.incarnation_id.as_ref().unwrap()), None, "the exited birth is forgotten");
+        assert_eq!(door.declared.lock().unwrap().node(&exited.node_id, exited.incarnation_id.as_ref().unwrap()), None, "the exited birth is forgotten");
         assert!(folded(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.nodes.is_empty(), "a restarted authority folds nothing of it back");
     }
 
@@ -4093,7 +4093,7 @@ mod tests {
             nodes: vec![admin.clone(), current.clone()],
         }));
         let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
-        let authority = StatusAuthority {
+        let door = StatusDoor {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -4128,9 +4128,9 @@ mod tests {
         };
         // The records: the predecessor's row is Deleted (it released the path.name), and the current
         // birth's row claims the name over it.
-        assert!(crate::node_rows::write_deleted(&*status, &authority.caches.nodes, &predecessor.name, &predecessor.node_id, None).await.is_ok(), "the predecessor's Deleted row is written");
+        assert!(crate::node_rows::write_deleted(&*status, &door.caches.nodes, &predecessor.name, &predecessor.node_id, None).await.is_ok(), "the predecessor's Deleted row is written");
         let declare = StatusRequest::DeclareNodeState { node_id: current.node_id.clone(), incarnation: current.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
-        assert_eq!(authority.apply(Some(current.clone()), &declare).await, R::Applied);
+        assert_eq!(door.apply(Some(current.clone()), &declare).await, R::Applied);
         use crate::storage::NodesStorage as _;
         assert_eq!(status.name_claim(&current.name).await.unwrap(), Some(current.node_id.clone()), "the current birth holds the path.name's claim");
         // This admin's view still holds the predecessor's digest (its deletion never applied here), and
@@ -4140,7 +4140,7 @@ mod tests {
         let capture = crate::span_capture::Capture::new("superseded-rows-read-from-records");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            authority.drop_superseded(&digest_view).await;
+            door.drop_superseded(&digest_view).await;
         }
         let removed: Vec<_> = ["rdm.node_admin.status.remove.via-new-node", "rdm.node_admin.status.remove.via-new-incarnation", "rdm.node_admin.status.remove.via-node-deleted"]
             .into_iter()
@@ -4153,7 +4153,7 @@ mod tests {
         assert!(removed.is_empty(), "the current birth's declared state is not removed: {:?}", removed.iter().map(|s| (s.name.clone(), s.attributes.clone())).collect::<Vec<_>>());
         let rows: Vec<String> = Declaration::of_records(&status.nodes("mesh1").await.unwrap()).into_iter().map(|r| r.node_id.to_string()).collect();
         assert_eq!(rows, vec![current.node_id.to_string()], "the current birth keeps its declared-state row");
-        assert_eq!(authority.declared.lock().unwrap().node(&current.node_id, current.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "the current birth keeps its state");
+        assert_eq!(door.declared.lock().unwrap().node(&current.node_id, current.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "the current birth keeps its state");
         assert_eq!(folded(&*status, &crate::storage::MemoryMeshStorage::default(), &crate::fabric_storage::MemoryFabricStorage::new(), "mesh1").await.nodes.len(), 1, "a restarted authority folds the current birth back");
     }
 

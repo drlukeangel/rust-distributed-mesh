@@ -173,7 +173,7 @@ fn signed(bytes: &[u8]) -> SignedCert {
 
 /// `node.get [id: node]` on `admin`'s Status authority.
 async fn node_get(admin: &Running, node: &NodeId) -> Option<NodeView> {
-    match admin.status_authority()?.apply(None, &StatusRequest::Get { entity: Entity::Nodes, node: None, filter: Filter::new().eq("id", [node.to_string()]) }).await {
+    match admin.status_door()?.apply(None, &StatusRequest::Get { entity: Entity::Nodes, node: None, filter: Filter::new().eq("id", [node.to_string()]) }).await {
         StatusReply::Nodes { mut nodes } => nodes.pop(),
         _ => None,
     }
@@ -181,7 +181,7 @@ async fn node_get(admin: &Running, node: &NodeId) -> Option<NodeView> {
 
 /// `fabric.get` on `admin`'s Status authority.
 async fn fabric_get(admin: &Running) -> Option<FabricView> {
-    match admin.status_authority()?.apply(None, &StatusRequest::Get { entity: Entity::Fabrics, node: None, filter: Filter::new() }).await {
+    match admin.status_door()?.apply(None, &StatusRequest::Get { entity: Entity::Fabrics, node: None, filter: Filter::new() }).await {
         StatusReply::Fabrics { mut fabrics } => fabrics.pop(),
         _ => None,
     }
@@ -1107,7 +1107,7 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
         let root = boot_root(&dir, &policy(&[])).await;
         let (second, second_env) = launched_admin(&root, &dir).await;
         let a = member(&root, &dir, "mesh1.rpc.1").await;
-        let door = root.status_authority().expect("the fabric-primary's Status door");
+        let door = root.status_door().expect("the fabric-primary's Status door");
         let new = certs::mint_key();
         let hex = |k: &certs::VerifyingKey| rdm_core::launch::encode_hex(k.as_bytes());
         // The call goes to the fabric-primary once its view names it so.

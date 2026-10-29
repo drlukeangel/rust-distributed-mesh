@@ -145,7 +145,7 @@ fn a_stopped_births_signal_runs_no_second_stop() {
         assert_eq!(alls.len(), 1, "its node.connection.delete {{ All }} ran once, at the command: {alls:#?}");
         let owed = of("rdm.node_rpc.status.update.via-owed-on-signal");
         assert!(owed.is_empty(), "a stopped birth owes nothing on its signal: {owed:#?}");
-        let held = root.status_authority().unwrap().declared.lock().unwrap().node(&launch.node_id, &launch.incarnation);
+        let held = root.status_door().unwrap().declared.lock().unwrap().node(&launch.node_id, &launch.incarnation);
         assert_eq!(held, Some(NodeState::Stopped), "its mesh-primary holds it Stopped");
 
         root.leave().await;
@@ -208,7 +208,7 @@ fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
         let began = std::time::Instant::now();
         tokio::time::timeout(WRONG, rpc.stop()).await.expect("the live node's process ends on its signal");
         let stopped_in = began.elapsed();
-        let held = root.status_authority().unwrap().declared.lock().unwrap().node(&launch.node_id, &launch.incarnation);
+        let held = root.status_door().unwrap().declared.lock().unwrap().node(&launch.node_id, &launch.incarnation);
         let admin_id = root.digest.lock().unwrap().node.node_id.clone();
         root.leave().await;
         let _ = std::fs::remove_dir_all(&base);

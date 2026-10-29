@@ -632,10 +632,10 @@ pub async fn root_lifecycle_reply(root: &rdm_admin::admin::Running, launch: &rdm
         Q::StartNode { build_id, attempt, operation, .. } => (true, build_id, attempt, operation),
         _ => return None,
     };
-    let authority = root.status_authority().expect("the primary's command owner");
-    let subject = authority.topology.read().await.births().find(|n| n.node_id == launch.node_id).cloned().expect("the primary holds the commanded birth");
+    let door = root.status_door().expect("the primary's command owner");
+    let subject = door.topology.read().await.births().find(|n| n.node_id == launch.node_id).cloned().expect("the primary holds the commanded birth");
     let ctx = CommandContext { build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
-    Some(match authority.carry_lifecycle(&subject, start, &ctx).await {
+    Some(match door.carry_lifecycle(&subject, start, &ctx).await {
         A::Started {} => R::Started,
         A::Stopped { receipt } => R::Stopped { receipt },
         A::StartFailed { step, reason, .. } => R::StartFailed { step, reason },

@@ -100,7 +100,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         records.install_read(&me, &view, &digest_view, &fabric, rebuild).await;
         let live_before = status_of(&*view.read().await);
         records.set_backbone(backbone.clone(), &*view.read().await);
-        let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me: me.clone(), mesh_deleter: Arc::new(std::sync::OnceLock::new()), project: None, authority: Default::default() };
+        let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me: me.clone(), mesh_deleter: Arc::new(std::sync::OnceLock::new()), project: None, status_door: Default::default() };
 
         let root = tracing::info_span!("cell.mesh-delete-view", cell);
         let trace_id = trace_id(&root);

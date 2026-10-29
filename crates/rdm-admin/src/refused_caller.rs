@@ -263,8 +263,8 @@ mod tests {
     }
 
     /// The status door of `admin` over `topology`, `rows` and `builds`: no certs, no app channels.
-    fn status_door_of(admin: &Node, fabric_id: rdm_core::FabricId, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>) -> crate::status_rpc::StatusAuthority {
-        crate::status_rpc::StatusAuthority {
+    fn status_door_of(admin: &Node, fabric_id: rdm_core::FabricId, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>) -> crate::status_rpc::StatusDoor {
+        crate::status_rpc::StatusDoor {
             certs: None,
             app_channels: None,
             declaration_seam: None,

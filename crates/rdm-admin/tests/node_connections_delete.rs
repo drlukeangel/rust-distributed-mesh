@@ -9,7 +9,7 @@ use rdm_admin::model::{
 };
 use rdm_admin::node_config::NodeConfigs;
 use rdm_admin::node_self::NodeSelf;
-use rdm_admin::status_rpc::{CarryEnd, Declared, StatusAuthority};
+use rdm_admin::status_rpc::{CarryEnd, Declared, StatusDoor};
 use rdm_admin::storage::{MemoryConnectionsStorage, MemoryMeshStorage, MemoryNodesStorage, NodesStorage};
 use rdm_admin::topology::Topology;
 use rdm_core::connections::{ConnectionEnd, ConnectionsHeld};
@@ -363,7 +363,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let mut mesh_ids = BTreeMap::new();
         mesh_ids.insert("mesh1".to_string(), mesh_id.clone());
 
-        let authority = StatusAuthority {
+        let door = StatusDoor {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -401,7 +401,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         };
 
         // 1. Unknown subject, stale incarnation, and empty Connections([]) scope are refused by name.
-        let unknown_subject = authority
+        let unknown_subject = door
             .carry_connections_delete(&NodeId::mint(), &subject_inc, &ConnectionScope::All)
             .await;
         assert!(matches!(
@@ -411,7 +411,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             })
         ));
 
-        let stale_birth = authority
+        let stale_birth = door
             .carry_connections_delete(&subject_id, &IncarnationId::mint(), &ConnectionScope::All)
             .await;
         assert!(matches!(
@@ -419,7 +419,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             CarryEnd::Refused(StatusReply::RejectedStaleIncarnation { ref held }) if *held == subject_inc
         ));
 
-        let empty_scope = authority
+        let empty_scope = door
             .carry_connections_delete(
                 &subject_id,
                 &subject_inc,
@@ -448,7 +448,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             .clone();
         let unknown_id = ConnectionId::mint();
 
-        let named_end = authority
+        let named_end = door
             .carry_connections_delete(
                 &subject_id,
                 &subject_inc,
@@ -491,7 +491,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             .id
             .clone();
 
-        let all_end = authority
+        let all_end = door
             .carry_connections_delete(&subject_id, &subject_inc, &ConnectionScope::All)
             .await;
         assert!(matches!(
