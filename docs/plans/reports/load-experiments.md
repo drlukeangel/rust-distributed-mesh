@@ -5,12 +5,20 @@ One entry per load run: what was tested, why, under what conditions, and what ca
 [load-testing.md](../proposal/load-testing.md) (Q265). Rows are in
 `$HOME/rust-distributed-mesh-deploy/load/<short sha>.jsonl`.
 
+**Cadence correction (2026-10-28, Q267).** E1 to E8 ran at the tests' fast cadence, not the production one
+they name: the driver ran the cell through `scripts/cells.sh`, which exported staleness 3000 ms, gossip
+500 ms and backbone 500 ms for every run. Their gossip bytes (M7) and idle cost (M8) are therefore taken at
+four times the production gossip rate and ten times the production backbone rate (2 s and 5 s since Q267),
+and are not a production baseline. From E9 the driver runs at the production cadence and each row records
+the cadence it ran at; L1 is re-taken there.
+
 ---
 
 ## E1: the L1 baseline (2026-10-28)
 
 **What.** Profile L1, the first run of the harness: 2 meshes, 2 node-admins and 8 rpc nodes each (20 nodes),
-process provider, release build of `fec9936fe`, defaults (gossip 2 s, staleness 30 s). Measures M1
+process provider, release build of `fec9936fe`, at the tests' fast cadence (staleness 3 s, gossip 500 ms,
+backbone 500 ms; the cadence correction above), not the defaults its first record named. Measures M1
 (bring-up), M2 (creates per second, reported), M5 (one-node create and delete Builds, 20 each) and M8 (idle
 CPU and RSS per role over 20 s once settled).
 
@@ -61,7 +69,7 @@ baseline CLAUDE.md names, and E1 named this pass as the check before calling it 
 
 **Conditions.** A shared box: lanes 2 and 7 (Gemini) and lane 5 (37 orphaned processes of an interrupted
 landing's estate, still running) held processes; load average 4.96 / 15.53 / 20.64 at the start, on 20
-cores. Release build, defaults.
+cores. Release build, the tests' fast cadence (the cadence correction above).
 
 **Outcome.** Every target passed.
 
@@ -140,7 +148,8 @@ carried: repeats and gossip control messages are the transport's own and are not
 idle node-admin's CPU in the transport carrying gossip, so M7 sizes that traffic.
 
 **Conditions.** Shared box (lanes 2, 5 and 7 busy), load average 6.7 / 20.7 / 21.7 at the start. Release
-build, defaults (gossip 2 s, backbone 2 s, staleness 30 s).
+build, the tests' fast cadence (gossip 500 ms, backbone 500 ms, staleness 3 s; the cadence correction above),
+not the defaults this entry first named.
 
 **Outcome.** Every target passed.
 

@@ -58,8 +58,10 @@ for l in open(path):
 PY
 )
 [ -n "${exe:-}" ] || { echo "cells: no test executable '$target' in $pkg from this build" >&2; exit 2; }
-# Every executable runs at the gate's cadence, as the gate exports it for every executable (tools/test-runner lib.rs).
-export RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 RAFKA_BACKBONE_INTERVAL_MS=500
+# Every executable runs at the gate's cadence, as the gate exports it for every executable (tools/test-runner lib.rs),
+# unless the caller sets a cadence itself: the load harness runs at the production cadence (scripts/rdm-load.sh, Q267).
+export RDM_STALENESS_MS=${RDM_STALENESS_MS:-3000} RDM_GOSSIP_INTERVAL_MS=${RDM_GOSSIP_INTERVAL_MS:-500} RDM_BACKBONE_INTERVAL_MS=${RDM_BACKBONE_INTERVAL_MS:-500}
+export RAFKA_STALENESS_MS=${RAFKA_STALENESS_MS:-$RDM_STALENESS_MS} RAFKA_GOSSIP_INTERVAL_MS=${RAFKA_GOSSIP_INTERVAL_MS:-$RDM_GOSSIP_INTERVAL_MS} RAFKA_BACKBONE_INTERVAL_MS=${RAFKA_BACKBONE_INTERVAL_MS:-$RDM_BACKBONE_INTERVAL_MS}
 # Test stores in RAM: every temp dir a cell makes (each estate's store root and data dirs, each testkit
 # span directory) is under this run's own directory on tmpfs, made here and removed when the run ends.
 # 2026-10-28, rdm#117's fsync measurement: a Day-0 admin makes ~30 serial fsyncs before it is Ready, and

@@ -106,18 +106,26 @@ impl Rows {
             r["profile"] = json!(self.profile);
             r["build"] = json!(self.build);
             r["evidence"] = json!(self.evidence);
+            r["cadence"] = cadence();
             r["profiled"] = json!(std::env::var_os("RDM_LOAD_PERF").is_some());
             r["box_start"] = self.context.clone();
             r["box_end"] = end.clone();
             out.push_str(&r.to_string());
             out.push('\n');
-            println!("[load] {} {} {} {:<4} {:<28} {}", self.profile, self.build, if self.evidence { "evidence" } else { "no-evidence" }, s(&r["measure"]), s(&r["what"]), summary(r));
+            println!("[load] {} {} {} gossip {}/{} {:<4} {:<28} {}", self.profile, self.build, if self.evidence { "evidence" } else { "no-evidence" }, s(&r["cadence"]["gossip_ms"]), s(&r["cadence"]["backbone_ms"]), s(&r["measure"]), s(&r["what"]), summary(r));
         }
         use std::io::Write as _;
         std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap().write_all(out.as_bytes()).unwrap();
         println!("[load] rows: {}", path.display());
         assert!(self.missed.is_empty(), "{} missed {} target(s):\n{}", self.profile, self.missed.len(), self.missed.join("\n"));
     }
+}
+
+/// The cadence the run's nodes ran at (load-testing.md "Conditions": a changed cadence is a new baseline,
+/// never a comparison), as the environment the estate hands every node names it.
+fn cadence() -> Value {
+    let ms = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u64>().ok());
+    json!({"staleness_ms": ms("RDM_STALENESS_MS"), "gossip_ms": ms("RDM_GOSSIP_INTERVAL_MS"), "backbone_ms": ms("RDM_BACKBONE_INTERVAL_MS")})
 }
 
 fn samples_enough(row: &Value) -> bool {

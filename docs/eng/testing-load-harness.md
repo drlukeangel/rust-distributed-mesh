@@ -38,7 +38,9 @@ The driver:
    points the estate at the release node binaries with `RDM_BIN_DIR`;
 3. runs the profile's cell and prints one line per measure, then the path of the rows file.
 
-It needs no lock. A run may share the box with other lanes' work: each row records the box's load
+The nodes run at the production cadence (staleness 30 s, gossip 2 s, backbone 5 s; Q267), set by the driver
+over the tests' fast cadence that `cells.sh` exports for every other run, and each row records it
+(`cadence`). It needs no lock. A run may share the box with other lanes' work: each row records the box's load
 average and the lanes that were busy at the start and end of the run, so a row taken under other load
 is never read as a quiet-box baseline. Never run a lane gate in the load run's own lane: the gate's
 leaked-process step kills the run's nodes.
