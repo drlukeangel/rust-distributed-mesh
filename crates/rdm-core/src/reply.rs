@@ -27,6 +27,9 @@ pub fn rejected_invalid_node_transition(current: NodeState) -> StatusReply { Sta
 /// Construct the typed rejected-cert outcome: a renewed member cert or an issuer update refused by
 /// name, what the receiver holds kept (node-cert-renew.md, node-issuer-update.md).
 pub fn rejected_cert(reason: String) -> StatusReply { StatusReply::RejectedCert { reason } }
+/// Construct the typed root-still-chained outcome: a `node.roots.update` set that drops a root the
+/// birth still chains under, refused by name and nothing installed (fabric-ca-renew.md).
+pub fn root_still_chained(root: String) -> StatusReply { StatusReply::RejectedRootStillChained { root } }
 /// Construct the typed rejected-invalid-mesh-transition outcome.
 pub fn rejected_invalid_mesh_transition(current: MeshState) -> StatusReply { StatusReply::RejectedInvalidMeshTransition { current } }
 /// Construct the typed peer-unresolved outcome.

@@ -37,7 +37,7 @@ pub fn install_roots(registry: &ConnectionsRegistry, node: &str, node_id: &NodeI
             if rdm_core::certs::verify_issuer(&own.issuer, &[dropped]).is_ok() {
                 let root = rdm_core::launch::encode_hex(dropped.as_bytes());
                 refused(format!("root-still-chained: this birth's member cert still chains under {root}"));
-                return StatusReply::RejectedRootStillChained { root };
+                return rdm_core::reply::status::root_still_chained(root);
             }
         }
     }
