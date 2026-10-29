@@ -1419,4 +1419,81 @@ mod tests {
         }
         assert!(red.is_empty(), "Reconcile variant rows that differ from the pages:\n  {}", red.join("\n  "));
     }
+
+    // @feature: on-mesh-ready
+    #[test]
+    fn notify_mesh_ready_delivers_mesh_ready_ctx_on_own_task_and_emits_bound_attribute() {
+        // docs/architecture/fabric-node-hooks.md:125 — "Once its mesh's ready is on its Mesh
+        // record (states.md#who-sets-each-state, Q144), the mesh-primary calls `on_mesh_ready`
+        // once, with `MeshReadyCtx { fabric_id, mesh_id, mesh }`, on a task of its own. The notice
+        // gates nothing in RDM."
+        let capture = crate::span_capture::Capture::new("notify-mesh-ready-unit");
+        let dispatch = capture.dispatch.clone();
+        let d = dispatch.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+            .build()
+            .unwrap();
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+
+        let fabric_id = FabricId::mint();
+        let m1_id = MeshId::mint();
+        let m2_id = MeshId::mint();
+        let m2_id_for_assert = m2_id.clone();
+        let fabric_id_for_assert = fabric_id.clone();
+
+        let received = rt.block_on(async move {
+            notify_mesh_ready(
+                None,
+                crate::wiring::MeshReadyCtx {
+                    fabric_id: fabric_id.clone(),
+                    mesh_id: m1_id,
+                    mesh: "mesh1".into(),
+                },
+            );
+
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let tx_slot = std::sync::Mutex::new(Some(tx));
+            let hook: crate::wiring::MeshReadyNotice = Arc::new(move |ctx| {
+                if let Some(tx) = tx_slot.lock().unwrap().take() {
+                    let _ = tx.send(ctx);
+                }
+                Box::pin(async {})
+            });
+            notify_mesh_ready(
+                Some(hook),
+                crate::wiring::MeshReadyCtx {
+                    fabric_id,
+                    mesh_id: m2_id,
+                    mesh: "mesh2".into(),
+                },
+            );
+            rx.await.expect("on_mesh_ready invoked on its own task")
+        });
+        drop(rt);
+
+        assert_eq!(received.fabric_id, fabric_id_for_assert);
+        assert_eq!(received.mesh_id, m2_id_for_assert);
+        assert_eq!(received.mesh, "mesh2");
+
+        let spans = capture.named("rdm.node_admin.mesh.update.via-on-mesh-ready");
+        assert!(
+            spans.iter().any(|s| {
+                s.attributes.get("mesh").map(String::as_str) == Some("mesh1")
+                    && s.attributes.get("bound").map(String::as_str) == Some("false")
+            }),
+            "expected unbound via-on-mesh-ready span for mesh1: {spans:?}"
+        );
+        assert!(
+            spans.iter().any(|s| {
+                s.attributes.get("mesh").map(String::as_str) == Some("mesh2")
+                    && s.attributes.get("mesh_id").map(String::as_str)
+                        == Some(m2_id_for_assert.as_str())
+                    && s.attributes.get("bound").map(String::as_str) == Some("true")
+            }),
+            "expected bound via-on-mesh-ready span for mesh2: {spans:?}"
+        );
+    }
 }

@@ -5,7 +5,7 @@ use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::build_state::BuildState;
 use rdm_admin::model::ScopeStatus;
 use rdm_admin::storage_backend::{MemoryBackend, TopologyStorageProviders};
-use rdm_admin::wiring::{FabricHooks, FabricReadyCtx, Wiring};
+use rdm_admin::wiring::{FabricHooks, FabricReadyCtx, MeshReadyCtx, Wiring};
 use rdm_core::meta::NodeSpec;
 use rdm_core::NodeKind;
 use std::collections::BTreeMap;
@@ -291,5 +291,151 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
                 && s.attributes.get("to").map(String::as_str) == Some("pending")
         }),
         "resize Build enters pending from ready"
+    );
+}
+
+// @feature: on-mesh-ready
+/// CONTRACT: docs/architecture/fabric-node-hooks.md:125
+/// "Once its mesh's ready is on its Mesh record (states.md#who-sets-each-state, Q144), the
+/// mesh-primary calls `on_mesh_ready` once, with `MeshReadyCtx { fabric_id, mesh_id, mesh }`,
+/// on a task of its own. The notice gates nothing in RDM."
+#[test]
+fn mesh_primary_fires_on_mesh_ready_once_after_mesh_record_commits_ready_and_without_gating_boot() {
+    let capture = Capture::new(
+        "mesh_primary_fires_on_mesh_ready_once_after_mesh_record_commits_ready_and_without_gating_boot",
+    );
+    let dispatch = capture.dispatch.clone();
+    let d = dispatch.clone();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+        .build()
+        .unwrap();
+    let _guard = tracing::dispatcher::set_default(&dispatch);
+
+    let dir = std::env::temp_dir().join(format!("rdm-on-mesh-ready-{}", rdm_core::NodeId::mint()));
+    let data_dir = dir.join("admin");
+    let store_dir = dir.join("store");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(&store_dir).unwrap();
+
+    let cfg = AdminConfig::from_env(|k| match k {
+        "RDM_DATA_DIR" => Some(data_dir.display().to_string()),
+        "RDM_STORE_DIR" => Some(store_dir.display().to_string()),
+        "MESH_SPAWN_TYPE" => Some("process".into()),
+        rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER => Some(MEMORY.into()),
+        _ => None,
+    })
+    .expect("valid Day-0 AdminConfig");
+
+    let (ready_ctx, expected_fabric_id, expected_mesh_id) = rt.block_on(async move {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MeshReadyCtx>();
+        let proceed = Arc::new(tokio::sync::Notify::new());
+        let proceed_for_hook = proceed.clone();
+        let hooks = FabricHooks {
+            on_mesh_ready: Some(Arc::new(move |ctx| {
+                let _ = tx.send(ctx);
+                let proceed = proceed_for_hook.clone();
+                Box::pin(async move {
+                    proceed.notified().await;
+                })
+            })),
+            ..FabricHooks::no_app_work()
+        };
+        let providers = TopologyStorageProviders::new().register(MEMORY, Arc::new(MemoryBackend));
+        let running = start_on(
+            cfg,
+            Wiring {
+                fabric_hooks: hooks,
+                ..Wiring::no_certs()
+            },
+            providers,
+        )
+        .await
+        .expect("Day-0 node-admin starts on memory backend");
+
+        let ready_ctx = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+            .await
+            .expect("on_mesh_ready called within 30s")
+            .expect("on_mesh_ready channel open");
+
+        // While `on_mesh_ready` is still blocked waiting on `proceed`, the mesh's Ready state is
+        // already durable on its MeshRecord in mesh storage, and the fabric reaches Ready without
+        // waiting on `on_mesh_ready` ("The notice gates nothing in RDM").
+        let meshes = running.runner.mesh_storage.meshes().await.expect("read meshes");
+        let mesh1_record = meshes
+            .iter()
+            .find(|m| m.name == "mesh1")
+            .expect("mesh1 record exists");
+        assert!(
+            mesh1_record
+                .states
+                .contains(&rdm_core::status::MeshState::Ready),
+            "Ready is committed on MeshRecord before on_mesh_ready runs: {mesh1_record:?}"
+        );
+
+        let view = running.control.topology.read().await.clone();
+        let expected_fabric_id = view.fabric.id.clone();
+        let expected_mesh_id = mesh1_record.mesh_id.clone();
+
+        // Release `on_mesh_ready` and verify no second notice was emitted.
+        proceed.notify_one();
+        assert!(
+            rx.try_recv().is_err(),
+            "on_mesh_ready is called once on entry to Ready"
+        );
+
+        running.leave().await;
+        (ready_ctx, expected_fabric_id, expected_mesh_id)
+    });
+    drop(rt);
+
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(ready_ctx.fabric_id, expected_fabric_id);
+    assert_eq!(ready_ctx.mesh_id, expected_mesh_id);
+    assert_eq!(ready_ctx.mesh, "mesh1");
+
+    let applied_spans = capture.named("rdm.node_admin.mesh.update.via-applied");
+    assert!(
+        applied_spans.iter().any(|s| {
+            s.attributes.get("mesh").map(String::as_str) == Some("mesh1")
+                && s.attributes.get("state").map(String::as_str) == Some("Ready")
+                && s.attributes.get("outcome").map(String::as_str) == Some("recorded")
+        }),
+        "expected rdm.node_admin.mesh.update.via-applied span for mesh1 Ready: {:?}",
+        applied_spans
+            .iter()
+            .map(|s| &s.attributes)
+            .collect::<Vec<_>>()
+    );
+
+    let on_mesh_ready_spans = capture.named("rdm.node_admin.mesh.update.via-on-mesh-ready");
+    assert_eq!(
+        on_mesh_ready_spans.len(),
+        1,
+        "via-on-mesh-ready span emitted exactly once"
+    );
+    assert_eq!(
+        on_mesh_ready_spans[0]
+            .attributes
+            .get("mesh")
+            .map(String::as_str),
+        Some("mesh1")
+    );
+    assert_eq!(
+        on_mesh_ready_spans[0]
+            .attributes
+            .get("mesh_id")
+            .map(String::as_str),
+        Some(expected_mesh_id.as_str())
+    );
+    assert_eq!(
+        on_mesh_ready_spans[0]
+            .attributes
+            .get("bound")
+            .map(String::as_str),
+        Some("true")
     );
 }
