@@ -138,7 +138,8 @@ every admin through `node.roots.update` (the secret to admins, the public set to
 internal CA rotation touches no node's trust set. Every admin also holds the current CA material:
 written into its launch beside the root (`RDM_FABRIC_CA_KEY`; the bootstrap admin mints it on day 0,
 `fabric.ca.create`) and kept as `fabric-ca` beside its data dir, which it reads back on a restart the
-way it reads `ca-secret`.
+way it reads `ca-secret`. At each CA renewal `node.issuer.update` re-writes it, carrying the CA material with
+the issuing material minted under it ([fabric.ca.renew](lifecycles/fabric-ca-renew.md) step 2).
 Only the fabric-primary mints and rotates with it; a successor the election names over an unheard
 fabric-primary mints and rotates from its own copy, so the loss of a fabric-primary costs the chain nothing.
 The root is never in a row, a frame or a digest.

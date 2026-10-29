@@ -603,8 +603,12 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The issuing key's secret, as hex.
         key: IssuingKeyHex,
-        /// The root-signed issuing cert, as hex (`rdm_core::certs::encode_issuing_cert`).
+        /// The root-signed issuing cert, as hex (`rdm_core::certs::encode_issuing_cert`); it carries the
+        /// signed cert of the fabric CA it is minted under.
         cert: String,
+        /// The key of that fabric CA, as hex: installed with the issuing material, as the launch writes
+        /// it (`RDM_ISSUING_KEY` beside `RDM_FABRIC_CA_KEY`; fabric.ca.renew step 2, Q275).
+        ca_key: CaKeyHex,
     },
     /// `fabrics.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): a caller asks the
     /// fabric-primary for its atlas, answered [`StatusReply::Atlas`]. A read. Appended last: no
@@ -720,6 +724,18 @@ pub struct IssuingKeyHex(pub String);
 impl std::fmt::Debug for IssuingKeyHex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "IssuingKeyHex({} hex digits)", self.0.len())
+    }
+}
+
+/// A fabric CA's key carried by [`StatusRequest::UpdateIssuer`], as hex: its debug form names its
+/// length, never its value.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CaKeyHex(pub String);
+
+impl std::fmt::Debug for CaKeyHex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CaKeyHex({} hex digits)", self.0.len())
     }
 }
 
@@ -2400,7 +2416,7 @@ mod tests {
             StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "join-mesh:mesh1.rpc.1".into() },
             StatusRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "leave-mesh:mesh1.rpc.1".into() },
             StatusRequest::RenewCert { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), cert: vec![1, 2, 3] },
-            StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into() },
+            StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into(), ca_key: CaKeyHex("ef".into()) },
             StatusRequest::Get { entity: crate::filter::Entity::Nodes, node: None, filter: crate::filter::Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold", "silver"]) },
             StatusRequest::UpdateRoots { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), roots: vec!["ab".into()], phase: RootsPhase::Distributed, secret: Some(RootSecretHex("cd".into())) },
         ];

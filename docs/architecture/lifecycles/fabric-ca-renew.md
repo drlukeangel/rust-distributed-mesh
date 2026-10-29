@@ -22,7 +22,7 @@ Nothing is cut and nothing reconnects at any step of either.
 |---|---|
 | Runner | The fabric-primary, which holds the root secret (as every node-admin does, [custody](../fabric-certs.md#custody)) |
 | When | Its own tick, once the CA has lived `RDM_CERT_RENEW_AT` of its TTL (`RDM_CA_CERT_TTL_SECS`, default 365 days); also run by `fabric.root.update` step 3, under the new anchor |
-| Steps | 1 mint a new CA keypair and sign its cert with the root; write the CA row; 2 [mesh.issuer.renew](mesh-issuer-renew.md) for every mesh under the new CA; members renew under the new issuers at their own points |
+| Steps | 1 mint a new CA keypair and sign its cert with the root; write the CA row; 2 [mesh.issuer.renew](mesh-issuer-renew.md) for every mesh under the new CA, each `node.issuer.update` carrying the new CA material; members renew under the new issuers at their own points |
 | Trust set | Unchanged: the new CA chains to the same anchor every node already trusts |
 | Overlap | The old CA, and every issuer and member it signed, stay valid to their own expiry; an issuer never outlives its CA, a member never its issuer |
 | Receipt | The CA row carries each mesh's issuer receipt; complete when every mesh in the view has one |
@@ -96,7 +96,7 @@ An internal `fabric.ca.renew` is step 3 alone, with no caller and no `node.roots
 A node not reached in a phase is retried every tick; the phase does not advance without it, and
 nothing expires meanwhile that the overlap does not cover. A successor fabric-primary continues from
 the roots row and the CA row, and from its own copy of the root secret, which every node-admin holds
-([custody](../fabric-certs.md#custody)).
+([custody](../fabric-certs.md#custody)). A successor that does not hold the CA the CA row names (a renewal whose step 2 had not reached it) never mints under a CA it does not hold: it runs `fabric.ca.renew` again from the root secret, and step 2 reaches every admin under the new CA.
 
 ## Observability contract
 

@@ -156,7 +156,9 @@ impl CertChoice {
                         return Err(format!("{}: the kept fabric CA is not the CA its mesh's issuer chains to", kept.display()));
                     }
                 }
-                Ok(CertIssuer::with_root(secret, ca, issuing, time))
+                let issuer = CertIssuer::with_root(secret, ca, issuing, time);
+                let _ = issuer.kept.set(data_dir.to_path_buf());
+                Ok(issuer)
             }
         }
     }
@@ -232,6 +234,23 @@ enum Material {
     Root(SigningKey, CaKey),
 }
 
+/// What [`CertIssuer::install_ca`] did with a fabric CA `node.issuer.update` carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaInstall {
+    /// Newer than the one held: held and kept from now on.
+    Installed {
+        /// The expiry of the CA it replaced.
+        previous_expires_at: u64,
+    },
+    /// The CA held already, or an admin configured with no certs: nothing changes.
+    Held,
+    /// Older than the one held: refused `ca-older`, nothing installed.
+    Older {
+        /// The expiry of the CA held.
+        held_expires_at: u64,
+    },
+}
+
 /// One member cert issue (fabric-certs.md §Tracking): the bytes the birth is handed, and what its cert
 /// row records of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,19 +298,22 @@ pub struct CertIssuer {
     mints: Mutex<BTreeMap<String, IssuerMint>>,
     /// The fabric's cert policy this admin issues under: the defaults until it is set.
     policy: Mutex<rdm_core::certs::CertPolicy>,
+    /// The data dir its fabric CA is kept beside (`fabric-ca`), once known: a renewed or installed CA
+    /// is kept there, so a restart reads back the current one (fabric-certs.md §Custody).
+    kept: std::sync::OnceLock<std::path::PathBuf>,
 }
 
 impl CertIssuer {
     /// The explicit choice of no certs, on `time`.
     pub fn no_certs(time: RafkaTime) -> Self {
-        Self { material: std::sync::RwLock::new(Material::NoCerts), time, issuers: Mutex::default(), mints: Mutex::default(), policy: Mutex::default() }
+        Self { material: std::sync::RwLock::new(Material::NoCerts), time, issuers: Mutex::default(), mints: Mutex::default(), policy: Mutex::default(), kept: std::sync::OnceLock::new() }
     }
 
     /// An issuer holding the fabric's root `secret`, the fabric CA `ca`, and its own mesh's issuing key
     /// `issuing` when its launch gave it one, on `time`.
     pub fn with_root(secret: SigningKey, ca: CaKey, issuing: Option<IssuingKey>, time: RafkaTime) -> Self {
         let issuers = issuing.into_iter().map(|k| (k.mesh().to_string(), k)).collect();
-        Self { material: std::sync::RwLock::new(Material::Root(secret, ca)), time, issuers: Mutex::new(issuers), mints: Mutex::default(), policy: Mutex::default() }
+        Self { material: std::sync::RwLock::new(Material::Root(secret, ca)), time, issuers: Mutex::new(issuers), mints: Mutex::default(), policy: Mutex::default(), kept: std::sync::OnceLock::new() }
     }
 
     /// Hold `policy`, the fabric's cert policy, from now on (fabric-certs.md §Tracking: read once by
@@ -451,7 +473,44 @@ impl CertIssuer {
         let ca = CaKey::mint(root, self.policy().ca_ttl_secs, now_ms);
         let previous = old.expiry_ms();
         *material = Material::Root(root.clone(), ca.clone());
+        self.keep(&ca);
         Ok(Some((ca, previous)))
+    }
+
+    /// The key, as hex, of the fabric CA `issuing` is minted under, when it is the CA this admin holds:
+    /// what `node.issuer.update` carries beside the issuing material (fabric-ca-renew.md step 2, Q275).
+    pub fn ca_key_of(&self, issuing: &IssuingKey) -> Option<String> {
+        let Material::Root(_, ca) = self.material() else { return None };
+        (ca.cert() == &issuing.cert().ca).then(|| rdm_core::certs::encode_key(ca.secret()))
+    }
+
+    /// `node.issuer.update`'s install of the fabric CA `ca` (its key and its cert, which chains to the root
+    /// the caller verified): held from now on, and kept beside the data dir, when it is newer than the one
+    /// held. The CA held already is [`CaInstall::Held`]; an older one is [`CaInstall::Older`] and nothing
+    /// is installed (node-issuer-update.md, `ca-older`; Q275).
+    pub fn install_ca(&self, ca: CaKey) -> CaInstall {
+        let mut material = self.material.write().unwrap();
+        let Material::Root(root, held) = &*material else { return CaInstall::Held };
+        if held.cert() == ca.cert() {
+            return CaInstall::Held;
+        }
+        if ca.expiry_ms() <= held.expiry_ms() {
+            return CaInstall::Older { held_expires_at: held.expiry_ms() };
+        }
+        let previous = held.expiry_ms();
+        *material = Material::Root(root.clone(), ca.clone());
+        drop(material);
+        self.keep(&ca);
+        CaInstall::Installed { previous_expires_at: previous }
+    }
+
+    /// Keep `ca` beside the data dir, when it is known; a write that fails is named and the CA stays held.
+    fn keep(&self, ca: &CaKey) {
+        if let Some(dir) = self.kept.get() {
+            if let Err(e) = keep_ca(dir, ca) {
+                tracing::warn!(error = %e, "the fabric CA is held but not kept: a restart reads back the one kept before");
+            }
+        }
     }
 
     /// Whether the issuing key this admin holds for `mesh` was minted under the fabric CA it holds now:
@@ -787,5 +846,28 @@ mod tests {
         assert_ne!(before.cert().ca.cert, after.cert().ca.cert);
         assert!(rdm_core::certs::verify_issuer(after.cert(), &[root.verifying_key()]).is_ok(), "the renewed issuer chains to the same root");
         assert!(CertIssuer::no_certs(time_at(1_000)).renew_ca().unwrap().is_none(), "an admin with no certs renews nothing");
+    }
+
+    /// Q275 (fabric-ca-renew.md step 2; node-issuer-update.md): the CA a renewal mints rides
+    /// node.issuer.update to every other admin, which holds it and keeps it beside its data dir; the CA it
+    /// holds already changes nothing; an older one is refused `ca-older` and nothing is installed.
+    #[test]
+    fn an_admin_installs_and_keeps_a_newer_fabric_ca_and_refuses_an_older_one() {
+        let root = rdm_core::certs::mint_key();
+        let first = ca_of(&root);
+        let fabric_primary = CertIssuer::with_root(root.clone(), first.clone(), None, time_at(5_000));
+        let dir = std::env::temp_dir().join(format!("rdm-ca-install-{}", rdm_core::certs::encode_key(&rdm_core::certs::mint_key())));
+        let other = CertIssuer::with_root(root.clone(), first.clone(), None, time_at(5_000));
+        other.kept.set(dir.clone()).unwrap();
+        let (renewed, _) = fabric_primary.renew_ca().unwrap().expect("the fabric-primary renews its CA");
+        let (issuing, _) = fabric_primary.renew_issuer("mesh1").unwrap();
+        assert_eq!(fabric_primary.ca_key_of(&issuing), Some(rdm_core::certs::encode_key(renewed.secret())), "the issuer rides with the CA it is minted under");
+        assert_eq!(other.install_ca(renewed.clone()), CaInstall::Installed { previous_expires_at: first.expiry_ms() });
+        assert_eq!(read_ca(&dir.join(FABRIC_CA_FILE)).unwrap().map(|ca| ca.cert().clone()), Some(renewed.cert().clone()), "the installed CA is kept beside the data dir");
+        assert_eq!(other.ca_key_of(&issuing), Some(rdm_core::certs::encode_key(renewed.secret())), "the admin now holds the CA the issuer is minted under");
+        assert_eq!(other.install_ca(renewed.clone()), CaInstall::Held, "the CA held already changes nothing");
+        assert_eq!(other.install_ca(first.clone()), CaInstall::Older { held_expires_at: renewed.expiry_ms() }, "an older CA is refused");
+        assert_eq!(other.ca_dates().unwrap().1, renewed.expiry_ms(), "nothing installed on the refusal");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

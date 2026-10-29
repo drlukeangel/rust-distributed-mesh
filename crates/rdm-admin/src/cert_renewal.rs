@@ -449,13 +449,18 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
 /// chains to the root every node already trusts. One span, `rdm.node_admin.ca.update.via-renewal`.
 async fn renew_ca(r: &Renewals, view: &Topology, now: u64) {
     let Some((_, expires, renew_at)) = r.issuer.ca_dates() else { return };
-    if now < renew_at {
+    // A successor that does not hold the CA the CA row names (a renewal whose step 2 had not reached
+    // it) never mints under a CA it does not hold: it renews again from the root secret, at once
+    // (fabric-ca-renew.md, Q275). The row is the one this admin's caches hold; nothing is read here.
+    let behind_row = r.fabric.get().and_then(|(_, id)| r.caches.fabric.get(id)).and_then(|record| record.ca.map(|row| row.expires_at)).is_some_and(|row| row > expires);
+    if now < renew_at && !behind_row {
         return;
     }
     let meshes: Vec<String> = view.meshes.iter().map(|m| m.name.clone()).collect();
-    let span = tracing::info_span!("rdm.node_admin.ca.update.via-renewal", ca_expires_at = tracing::field::Empty, previous_ca_expires_at = expires, meshes = meshes.len(), outcome = tracing::field::Empty);
+    let span = tracing::info_span!("rdm.node_admin.ca.update.via-renewal", ca_expires_at = tracing::field::Empty, previous_ca_expires_at = expires, meshes = meshes.len(), reason = tracing::field::Empty, outcome = tracing::field::Empty);
     match r.issuer.renew_ca() {
         Ok(Some((ca, previous))) => {
+            span.record("reason", if behind_row { "behind-ca-row" } else { "renew-at" });
             span.record("ca_expires_at", ca.expiry_ms());
             span.record("previous_ca_expires_at", previous);
             span.record("outcome", "minted");
@@ -539,11 +544,14 @@ async fn update_one(r: &Renewals, mesh: &str, admin: &Node, carrier: Option<&Nod
             .in_scope(|| tracing::info!("the mesh's new issuer is installed in process"));
         Outcome::Installed
     } else {
+        // The CA the issuer is minted under rides with it (Q275): this admin minted it under the CA it holds.
+        let ca_key = rdm_core::status::CaKeyHex(r.issuer.ca_key_of(key).unwrap_or_default());
         let req = StatusRequest::UpdateIssuer {
             node_id: admin.node_id.clone(),
             incarnation: incarnation.clone(),
             key: IssuingKeyHex(rdm_core::certs::encode_key(key.secret())),
             cert: rdm_core::certs::encode_issuing_cert(key.cert()),
+            ca_key,
         };
         let call = async {
             match carrier {

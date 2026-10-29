@@ -84,7 +84,7 @@ fn requests_match_the_frozen_thirty_six_variant_wire_schema() {
         // node_id | incarnation | cert (len 3) (i145 e3, node.cert.renew)
         (RenewCert { node_id: node(), incarnation: birth(), cert: vec![1, 2, 3] }, "1e0c3031323334353637383961620c39776370726667777674687903010203"),
         // node_id | incarnation | key "ab" | cert "cd" (node.issuer.update)
-        (UpdateIssuer { node_id: node(), incarnation: birth(), key: rdm_core::status::IssuingKeyHex("ab".into()), cert: "cd".into() }, "1f0c3031323334353637383961620c397763707266677776746879026162026364"),
+        (UpdateIssuer { node_id: node(), incarnation: birth(), key: rdm_core::status::IssuingKeyHex("ab".into()), cert: "cd".into(), ca_key: rdm_core::status::CaKeyHex("ef".into()) }, "1f0c3031323334353637383961620c397763707266677776746879026162026364026566"),
         // fabrics.atlas.get (fabric-atlas.md R-FA4), appended last
         (GetAtlas, "20"),
         // The reads (Q167), appended last: entity Nodes (2) | node None | pairs (len 1: "mesh", values (len 1: "mesh1"))

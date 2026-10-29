@@ -1279,9 +1279,9 @@ impl StatusAuthority {
                 };
             }
             StatusRequest::RenewCert { incarnation, cert, .. } => return self.renew_own_cert(&view, incarnation, cert, req).await,
-            StatusRequest::UpdateIssuer { incarnation, key, cert, .. } => {
+            StatusRequest::UpdateIssuer { incarnation, key, cert, ca_key, .. } => {
                 let from = sender.as_ref().map(|n| n.name.to_string()).or_else(|| peer.map(|k| k.fmt_short().to_string())).unwrap_or_default();
-                return self.update_own_issuer(&view, &from, incarnation, key, cert).await;
+                return self.update_own_issuer(&view, &from, incarnation, key, cert, ca_key).await;
             }
             // node.roots.update (fabric-ca-renew.md "node.roots.update, the primitive"): this admin's exact
             // birth installs the fabric's trusted root set.
@@ -1393,7 +1393,7 @@ impl StatusAuthority {
     /// decode, name this admin's mesh, be the key its cert names, and verify to a root this admin
     /// holds; it is installed, so every member cert it signs from now carries it, and answered
     /// `node.issuer.updated`. Anything else is refused by name and what it holds is kept.
-    async fn update_own_issuer(&self, view: &Topology, sender: &str, incarnation: &IncarnationId, key: &rdm_core::status::IssuingKeyHex, cert: &str) -> StatusReply {
+    async fn update_own_issuer(&self, view: &Topology, sender: &str, incarnation: &IncarnationId, key: &rdm_core::status::IssuingKeyHex, cert: &str, ca_key: &rdm_core::status::CaKeyHex) -> StatusReply {
         let me = match self.own_birth(view, incarnation) {
             Ok(me) => me.clone(),
             Err(refused) => return refused,
@@ -1412,10 +1412,22 @@ impl StatusAuthority {
             }
             let roots: Vec<rdm_core::certs::VerifyingKey> = certs.root().into_iter().chain(self.own.get().map(|o| o.roots()).unwrap_or_default()).collect();
             rdm_core::certs::verify_issuer(&signed, &roots).map_err(|e| format!("{e}: the issuing cert's chain does not verify to a root this admin holds"))?;
-            Ok(rdm_core::certs::IssuingKey::from_parts(secret, signed))
+            // The CA the issuer is minted under, its cert the one the issuing cert carries (verified to
+            // the root just above): its key must be the one that cert names (Q275).
+            let ca_secret = rdm_core::certs::decode_key(&ca_key.0).map_err(|e| format!("the CA key: {e}"))?;
+            if ca_secret.verifying_key() != signed.ca.cert.ca_pub {
+                return Err("the CA key is not the key the issuing cert's CA cert names".to_string());
+            }
+            let ca = rdm_core::certs::CaKey::from_parts(ca_secret, signed.ca.clone());
+            Ok((rdm_core::certs::IssuingKey::from_parts(secret, signed), ca))
         })();
         match checked {
-            Ok(key) => {
+            Ok((key, ca)) => {
+                // The CA first, then the issuer minted under it, installed together as the launch writes
+                // them; a CA older than the one held installs nothing (node-issuer-update.md, `ca-older`).
+                if let crate::certs::CaInstall::Older { held_expires_at } = certs.install_ca(ca.clone()) {
+                    return rdm_core::reply::status::rejected_cert(format!("ca-older: the CA {sender} sent expires at {}, before the one {} holds ({held_expires_at})", ca.expiry_ms(), self.me));
+                }
                 let expiry = key.expiry_ms();
                 let installed = key.cert().clone();
                 let previous = certs.install_issuer(key);
