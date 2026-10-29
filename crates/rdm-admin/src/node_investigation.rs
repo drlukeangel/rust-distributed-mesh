@@ -493,4 +493,143 @@ mod tests {
             assert!(!asked.load(Ordering::SeqCst), "reached: the provider is not asked");
         }
     }
+
+    // @feature: node-investigation
+    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:5
+    /// "Node investigation is the one function every caller uses on one exact birth, ending in
+    ///  one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its steps, in order:
+    ///  1. Read the by-destination connections index (connections.md §3.1). It names the peers to try;
+    ///     it never proves the node is reachable.
+    ///  2. node.tickle, direct.
+    ///  3. The same tickle via those peers.
+    ///  4. node.runtime.inspect."
+    #[tokio::test]
+    async fn investigate_orders_leads_before_mesh_carriers_and_emits_provider_inspection_span_on_unreached()
+    {
+        struct LeadsRig {
+            rows: Vec<NodeConnection>,
+            asked: Mutex<Vec<String>>,
+        }
+
+        #[async_trait::async_trait]
+        impl TickleCalls for LeadsRig {
+            fn caller(&self) -> String {
+                "mesh1.admin.1".into()
+            }
+            fn deadline(&self) -> std::time::Duration {
+                std::time::Duration::from_secs(1)
+            }
+            async fn direct(&self, _node: &Node, _probe: &StatusRequest) -> ProbeEnd {
+                self.asked.lock().unwrap().push("direct".into());
+                ProbeEnd::Other {
+                    end: "NotSent",
+                    detail: "not sent: Deadline".into(),
+                }
+            }
+            async fn via_peer(
+                &self,
+                carrier: &Node,
+                _node: &Node,
+                _probe: &StatusRequest,
+            ) -> ProbeEnd {
+                self.asked.lock().unwrap().push(carrier.name.to_string());
+                ProbeEnd::Other {
+                    end: "NotSent",
+                    detail: "not sent: Deadline".into(),
+                }
+            }
+            fn carriers(&self, view: &Topology, node: &Node) -> Vec<Node> {
+                let me = of(view, "mesh1.admin.1").node_id;
+                crate::offline::eligible_carriers(view, node, Some(&me))
+                    .cloned()
+                    .collect()
+            }
+            async fn leads(&self, view: &Topology, node: &Node) -> Result<Vec<Node>, String> {
+                let me = of(view, "mesh1.admin.1").node_id;
+                Ok(leads_of(&self.rows, view, node, Some(&me)))
+            }
+        }
+
+        let (node, view) = world();
+        let m1 = of(&view, "mesh2.rpc.1");
+        let r3 = of(&view, "mesh1.rpc.3");
+        let rows = vec![
+            row(&m1, &node, ConnectionKind::Direct, ConnectionState::Connected),
+            row(&r3, &node, ConnectionKind::Direct, ConnectionState::Connected),
+        ];
+        let rig = LeadsRig {
+            rows,
+            asked: Mutex::default(),
+        };
+
+        let capture = crate::span_capture::Capture::new("node-investigation-unit-order");
+        let found = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            let node_for_inspect = node.clone();
+            investigate(&node, &view, &rig, async move {
+                let outcome = crate::deployment::provider::Inspected::Exited(Some(0));
+                span_inspection(
+                    "mesh1.admin.1",
+                    &node_for_inspect,
+                    &outcome,
+                    None,
+                    "node-investigation",
+                );
+                outcome.into()
+            })
+            .await
+        };
+
+        assert_eq!(found, Finding::Exited { code: Some(0) });
+        assert_eq!((found.name(), found.detail()), ("exited", "0".to_string()));
+        assert_eq!(
+            *rig.asked.lock().unwrap(),
+            vec![
+                "direct".to_string(),
+                "mesh1.rpc.3".to_string(),
+                "mesh2.rpc.1".to_string()
+            ],
+            "direct probe first, then the two leads in path order before non-lead mesh1.rpc.2"
+        );
+
+        let direct_spans = capture.named("rdm.node.tickle.resolve.via-direct");
+        assert_eq!(direct_spans.len(), 1);
+        assert_eq!(
+            direct_spans[0].attributes.get("leads").map(String::as_str),
+            Some("mesh1.rpc.3,mesh2.rpc.1")
+        );
+
+        let peer_spans = capture.named("rdm.node.tickle.resolve.via-peer");
+        assert_eq!(peer_spans.len(), 2);
+        assert!(peer_spans
+            .iter()
+            .all(|s| s.attributes.get("lead").map(String::as_str) == Some("true")));
+
+        let unreached_spans = capture.named("rdm.node.tickle.returns-unknown.via-unreached");
+        assert_eq!(unreached_spans.len(), 1);
+        assert_eq!(
+            unreached_spans[0]
+                .attributes
+                .get("next")
+                .map(String::as_str),
+            Some("inspect")
+        );
+
+        let inspect_spans = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
+        assert_eq!(inspect_spans.len(), 1);
+        assert_eq!(
+            inspect_spans[0]
+                .attributes
+                .get("verdict")
+                .map(String::as_str),
+            Some("exited")
+        );
+        assert_eq!(
+            inspect_spans[0]
+                .attributes
+                .get("exit_code")
+                .map(String::as_str),
+            Some("0")
+        );
+    }
 }
