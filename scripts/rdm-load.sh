@@ -3,19 +3,21 @@
 #
 # The nodes under load are a release build of the lane's commit (cargo build --release --bins), the
 # estate pointed at them with RDM_BIN_DIR; --debug runs on the gate's debug build instead; --no-evidence
-# runs the profile with no span evidence written (load_profile_<profile>_no_evidence). The cell is
+# runs the profile with no span evidence written (load_profile_<profile>_no_evidence); --perf=<dir> records a
+# CPU profile of one node of each role over M8's idle window into <dir> (its rows are marked profiled). The cell is
 # rdm-test's load_profile_<profile>_baseline, ignored by every gate and run here with --ignored. Its rows
 # are appended to $HOME/rust-distributed-mesh-deploy/load/<short sha>.jsonl. No lock is taken; the rows
 # record the box's load and busy lanes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-profile="${1:?usage: rdm-load.sh <L1|L2|L3|L4> [--debug] [--no-evidence]}"
+profile="${1:?usage: rdm-load.sh <L1|L2|L3|L4> [--debug] [--no-evidence] [--perf=<dir>]}"
 shift
 build="" cell=baseline
 for a in "$@"; do
     case "$a" in
         --debug) build=--debug ;;
         --no-evidence) cell=no_evidence ;;
+        --perf=*) export RDM_LOAD_PERF="${a#--perf=}" ;;
         *) echo "rdm-load: unknown argument $a"; exit 2 ;;
     esac
 done

@@ -84,3 +84,44 @@ cores. Release build, defaults.
   CPU profile of one idle admin at L1, owed before L2.
 
 **Next.** The idle node-admin's CPU profile (above); then M3, M4, M6 and M7 at L1 (step 2), M6 first.
+
+---
+
+## E3: where an idle node-admin's CPU goes (2026-10-28)
+
+**What.** L1 with evidence off (as E2), at `cd555cd8f`, with a CPU profile of one node-admin and one rpc node
+over M8's 20 s idle window: `scripts/rdm-load.sh L1 --no-evidence --perf=<dir>` (`perf record -F 499 -g`;
+files in `$HOME/rust-distributed-mesh-deploy/load/perf-idle-cd555cd8f/`). Its M8 rows are marked
+`profiled`: the profiler's own cost is in them.
+
+**Why.** E2 left an idle node-admin at 0.044 cores, twice CLAUDE.md's release baseline (about 0.02); E2's
+read names its flame as owed before L2.
+
+**Conditions.** Shared box, load average 29.7 / 19.2 / 20.1 at the start (a lane gate ran beside it). The
+numbers below are shares of one idle admin's samples (482 samples, about 0.05 cores), not absolute costs.
+
+**Outcome.** M1 2.1 s, M5 create max 238 ms, delete max 85 ms, M8 node-admin 0.053 cores (profiled), rpc
+node 0.030; every target passed. The idle node-admin's samples, inclusive:
+
+| where | share |
+|---|---|
+| the QUIC transport (iroh / noq send, receive, connection tasks) | about 40 % |
+| RDM's topology channel receive task (`topology::Channel::join`'s frame task) | 11.7 % |
+| of which `topology::View::take_snapshot` cloning every `MeshDigest` (`Backbone::join`) | 5.9 % |
+| `topology::DigestView::all` collecting a `Vec<MeshDigest>` | 6.5 % |
+| iroh-gossip's plumtree message handling (blake3 message ids) | 5.5 % |
+| one node-admin boot task (`start_booted` closure 51) | 6.4 % |
+
+**Read.**
+- No single defect: an idle admin's CPU follows the traffic it handles. About half is the transport
+  carrying gossip and backbone frames, which scales with the gossip and backbone cadences and the node
+  count; that is M7's measure (bytes per second per node), next in step 2.
+- RDM's own share is the receive path copying the whole view per frame: `take_snapshot` clones every
+  `MeshDigest` and `DigestView::all` builds a fresh `Vec` (together about 12 %). That grows with the node
+  count, so L2 and L3 read it again; it is a candidate for a flame-backed change only if those
+  profiles show it growing, and any change there is a gossip change (CLAUDE.md: Luke's permission and a
+  Jaeger flame).
+- 0.02 cores was an empty shell's baseline; an admin of a 20-node fabric at 0.044-0.05 is inside the 0.10
+  target. Nothing moves; the profile is repeated at L2.
+
+**Next.** M7 (gossip bytes per second) and M6 at L1, then L2 with the same profile.

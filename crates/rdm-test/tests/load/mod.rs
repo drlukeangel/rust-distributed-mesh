@@ -83,6 +83,7 @@ impl Rows {
             r["profile"] = json!(self.profile);
             r["build"] = json!(self.build);
             r["evidence"] = json!(self.evidence);
+            r["profiled"] = json!(std::env::var_os("RDM_LOAD_PERF").is_some());
             r["box_start"] = self.context.clone();
             r["box_end"] = end.clone();
             out.push_str(&r.to_string());
@@ -140,6 +141,29 @@ fn rss_gb(pid: u32) -> Option<f64> {
 }
 
 /// The role of a live runtime from its directory name (`mesh1.admin.1-<id>`, `mesh2.rpc.3-<id>`).
+/// With `RDM_LOAD_PERF` naming a directory, a CPU profile of one process of each role over the idle window
+/// (`perf record -g`, `<dir>/<role>.<pid>.perf.data`): the flame an idle cost over its baseline is read
+/// from (load-testing.md: a finding is read as a flame before any number moves). The profiler's own cost
+/// is in that run's M8, which `Rows` marks `profiled`.
+fn profile_one_per_role(procs: &[(&'static str, u32, u64)], window: Duration) -> Vec<std::process::Child> {
+    let Ok(dir) = std::env::var("RDM_LOAD_PERF") else { return Vec::new() };
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut seen = std::collections::BTreeSet::new();
+    procs
+        .iter()
+        .filter(|(role, ..)| seen.insert(*role))
+        .map(|(role, pid, _)| {
+            let out = format!("{dir}/{role}.{pid}.perf.data");
+            println!("[load] profiling {role} pid {pid} over {} s into {out}", window.as_secs());
+            std::process::Command::new("perf")
+                .args(["record", "-q", "-F", "499", "-g", "-p", &pid.to_string(), "-o", &out, "--", "sleep", &window.as_secs().to_string()])
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .expect("perf runs")
+        })
+        .collect()
+}
+
 fn role_of(dir: &std::path::Path) -> &'static str {
     let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     if name.contains(".admin.") {
@@ -153,7 +177,11 @@ fn role_of(dir: &std::path::Path) -> &'static str {
 async fn idle_cost(estate: &Estate, window: Duration) -> Vec<(&'static str, f64, f64)> {
     let runtimes = estate.live_runtimes();
     let before: Vec<(&'static str, u32, u64)> = runtimes.iter().filter_map(|(d, p)| cpu_ticks(*p).map(|t| (role_of(d), *p, t))).collect();
+    let profiles = profile_one_per_role(&before, window);
     tokio::time::sleep(window).await;
+    for mut p in profiles {
+        let _ = p.wait();
+    }
     let hz = 100.0;
     let mut worst: std::collections::BTreeMap<&'static str, (f64, f64)> = Default::default();
     for (role, pid, t0) in before {
