@@ -679,6 +679,8 @@ pub struct Estate {
     pub(crate) births: std::sync::Mutex<std::collections::BTreeMap<rdm_client::PathName, MeshNode>>,
     /// Set once the estate has waited for its fabric to reach ready ([`Self::until_fabric_ready`]).
     pub(crate) ready: std::sync::OnceLock<FabricReady>,
+    /// The incremental reader of the estate's `.spans.jsonl` files ([`Self::spans`], [`Self::spans_named`]).
+    spans: std::sync::Mutex<SpanReader>,
     /// Dropped last: stops the reaper and removes the root.
     _scope: EstateScope,
 }
@@ -789,7 +791,7 @@ impl Estate {
         };
         // A container fabric's id is the one minted for its network: the estate holds it from
         // birth, so a panic before the fabric answers still removes the fabric's containers.
-        let mut estate = Self { owner, root, artifacts, evidence, admin: birth.name.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, executables, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(Vec::new()), births: Default::default(), ready: std::sync::OnceLock::new(), _scope: scope };
+        let mut estate = Self { owner, root, artifacts, evidence, admin: birth.name.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, executables, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(Vec::new()), births: Default::default(), ready: std::sync::OnceLock::new(), spans: Default::default(), _scope: scope };
         estate.hold_printed(birth);
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
@@ -949,28 +951,19 @@ impl Estate {
 
     /// Every span every process of this estate wrote, ordered by start time.
     ///
-    /// A `build_id` span attribute formatted as `bid_xxxx-xxxx-xxxx` (`R-BI5a`) is stripped to its
-    /// 12-character bare id for scenario comparisons against REST/RPC `build_id` strings; the
-    /// `.spans.jsonl` files on disk keep the raw `bid_xxxx-xxxx-xxxx` rendering.
+    /// Reads only complete lines appended since the last call; a file that shrank or was replaced is
+    /// read from `0`. A `build_id` span attribute formatted as `bid_xxxx-xxxx-xxxx` (`R-BI5a`) is
+    /// stripped to its 12-character bare id for scenario comparisons against REST/RPC `build_id`
+    /// strings; the `.spans.jsonl` files on disk keep the raw `bid_xxxx-xxxx-xxxx` rendering.
     pub fn spans(&self) -> Vec<Value> {
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&self.evidence).into_iter().flatten().flatten() {
-            if e.path().to_string_lossy().ends_with(".spans.jsonl") {
-                let text = std::fs::read_to_string(e.path()).unwrap_or_default();
-                out.extend(text.lines().filter_map(|l| {
-                    let mut v = serde_json::from_str::<Value>(l).ok()?;
-                    if let Some(s) = v["attributes"]["build_id"].as_str() {
-                        if s.len() == 18 && s.starts_with("bid_") && s.as_bytes()[8] == b'-' && s.as_bytes()[13] == b'-' {
-                            let bare = format!("{}{}{}", &s[4..8], &s[9..13], &s[14..18]);
-                            v["attributes"]["build_id"] = Value::String(bare);
-                        }
-                    }
-                    Some(v)
-                }));
-            }
-        }
-        out.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
-        out
+        self.spans.lock().unwrap().all(&self.evidence)
+    }
+
+    /// [`Self::spans`], keeping only spans whose `name` is one of `names` and deciding that from the
+    /// line's bytes before parsing it into a [`Value`]. Each name set keeps its own file offsets and
+    /// kept spans.
+    pub fn spans_named(&self, names: &[&str]) -> Vec<Value> {
+        self.spans.lock().unwrap().named(&self.evidence, names)
     }
 
     /// Where the estate's evidence is kept when it ends: `<artifacts>/spans`.
@@ -1459,6 +1452,172 @@ impl Drop for ProbeObservation {
     }
 }
 
+/// Incremental reader of an estate's `.spans.jsonl` files: keeps per-file byte offsets and parsed
+/// spans across calls, reading only complete lines appended since the last call and re-reading a
+/// file from `0` when it shrank or was replaced. [`Self::named`] keeps its own offsets and spans per
+/// name set, checking the `"name":"` field in the line's bytes before parsing the line into a
+/// [`Value`].
+#[derive(Default)]
+pub(crate) struct SpanReader {
+    all: SpanStream,
+    by_names: std::collections::BTreeMap<Vec<String>, SpanStream>,
+}
+
+impl SpanReader {
+    pub(crate) fn all(&mut self, dir: &Path) -> Vec<Value> {
+        self.all.read(dir, None)
+    }
+
+    pub(crate) fn named(&mut self, dir: &Path, names: &[&str]) -> Vec<Value> {
+        let mut set: Vec<String> = names.iter().map(|s| (*s).to_string()).collect();
+        set.sort();
+        set.dedup();
+        self.by_names.entry(set).or_default().read(dir, Some(names))
+    }
+}
+
+#[derive(Default)]
+struct SpanStream {
+    files: std::collections::BTreeMap<PathBuf, FileSpans>,
+}
+
+struct FileSpans {
+    file_id: (u64, u64),
+    offset: u64,
+    prefix: Vec<u8>,
+    spans: Vec<Value>,
+}
+
+impl SpanStream {
+    fn read(&mut self, dir: &Path, names: Option<&[&str]>) -> Vec<Value> {
+        use std::io::{Seek, SeekFrom};
+        use std::os::unix::fs::{FileExt, MetadataExt};
+
+        let mut seen = std::collections::BTreeSet::new();
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = e.path();
+            if path.to_string_lossy().ends_with(".spans.jsonl") {
+                seen.insert(path);
+            }
+        }
+        self.files.retain(|path, _| seen.contains(path));
+
+        for path in seen {
+            let Ok(mut file) = std::fs::File::open(&path) else { continue };
+            let Ok(meta) = file.metadata() else { continue };
+            let file_id = (meta.dev(), meta.ino());
+            let len = meta.len();
+            let reset = match self.files.get(&path) {
+                None => true,
+                Some(cur) => {
+                    if cur.file_id != file_id || len < cur.offset {
+                        true
+                    } else if !cur.prefix.is_empty() {
+                        let mut head = vec![0u8; cur.prefix.len()];
+                        file.read_exact_at(&mut head, 0).is_err() || head != cur.prefix
+                    } else {
+                        false
+                    }
+                }
+            };
+            if reset {
+                self.files.insert(
+                    path.clone(),
+                    FileSpans { file_id, offset: 0, prefix: Vec::new(), spans: Vec::new() },
+                );
+            }
+            let entry = self.files.get_mut(&path).unwrap();
+            if file.seek(SeekFrom::Start(entry.offset)).is_err() {
+                continue;
+            }
+            let mut buf = Vec::new();
+            if file.read_to_end(&mut buf).is_err() || buf.is_empty() {
+                continue;
+            }
+            let Some(end) = buf.iter().rposition(|&b| b == b'\n') else {
+                continue;
+            };
+            let complete = &buf[..=end];
+            if entry.prefix.len() < 256 {
+                let take = (256 - entry.prefix.len()).min(complete.len());
+                entry.prefix.extend_from_slice(&complete[..take]);
+            }
+            entry.offset += (end + 1) as u64;
+            for raw in complete.split(|&b| b == b'\n') {
+                let line = raw.strip_suffix(b"\r").unwrap_or(raw);
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(wanted) = names {
+                    if !line_carries_name(line, wanted) {
+                        continue;
+                    }
+                }
+                let mut v = serde_json::from_slice::<Value>(line).unwrap_or_else(|e| {
+                    panic!("{}: span line is not JSON ({e}): {}", path.display(), String::from_utf8_lossy(line))
+                });
+                if let Some(wanted) = names {
+                    if !v["name"].as_str().is_some_and(|n| wanted.contains(&n)) {
+                        continue;
+                    }
+                }
+                if let Some(s) = v["attributes"]["build_id"].as_str() {
+                    if s.len() == 18 && s.starts_with("bid_") && s.as_bytes()[8] == b'-' && s.as_bytes()[13] == b'-' {
+                        let bare = format!("{}{}{}", &s[4..8], &s[9..13], &s[14..18]);
+                        v["attributes"]["build_id"] = Value::String(bare);
+                    }
+                }
+                entry.spans.push(v);
+            }
+        }
+
+        let mut out: Vec<Value> = self.files.values().flat_map(|f| f.spans.iter().cloned()).collect();
+        out.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
+        out
+    }
+}
+
+/// Whether `line` contains a `"name":"<value>"` field whose value is one of `names`, checked on the
+/// raw bytes before parsing the line as JSON.
+fn line_carries_name(mut line: &[u8], names: &[&str]) -> bool {
+    const FIELD: &[u8] = b"\"name\":";
+    while let Some(pos) = line.windows(FIELD.len()).position(|w| w == FIELD) {
+        let mut rest = &line[pos + FIELD.len()..];
+        while let Some((&b, tail)) = rest.split_first() {
+            if b.is_ascii_whitespace() {
+                rest = tail;
+            } else {
+                break;
+            }
+        }
+        let Some(rest) = rest.strip_prefix(b"\"") else {
+            line = rest;
+            continue;
+        };
+        let mut end = 0;
+        while end < rest.len() {
+            if rest[end] == b'\\' {
+                end += 2;
+                continue;
+            }
+            if rest[end] == b'"' {
+                break;
+            }
+            end += 1;
+        }
+        if end < rest.len() {
+            let found = &rest[..end];
+            if names.iter().any(|n| n.as_bytes() == found) {
+                return true;
+            }
+            line = &rest[end + 1..];
+        } else {
+            break;
+        }
+    }
+    false
+}
+
 /// Spans by name.
 pub fn named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     spans.iter().filter(|s| s["name"] == name).collect()
@@ -1767,5 +1926,85 @@ impl crate::container_faults::ContainerEstate for Estate {
     }
     fn live_containers(&self) -> Vec<(String, String)> {
         Estate::live_containers(self)
+    }
+}
+
+#[cfg(test)]
+mod span_reader_tests {
+    use super::SpanReader;
+    use std::io::Write;
+
+    /// CONTRACT: the incremental span reader reads only complete lines appended since its last call,
+    /// holds a half line (no `\n`) until it is completed, reads a replaced or shrunk file from `0`,
+    /// and in `named` keeps only the listed names while deciding from the line's bytes before
+    /// parsing JSON (a non-JSON line carrying another name is neither a parse error nor a kept span).
+    #[test]
+    fn incremental_reader_reads_appended_lines_re_reads_a_replaced_file_and_filters_by_name_before_parsing() {
+        let dir = std::env::temp_dir().join(format!("rdm-span-reader-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("rdm-node-admin.1-1.spans.jsonl");
+
+        std::fs::write(
+            &file,
+            "{\"name\":\"rdm.one\",\"start_unix_nano\":1,\"attributes\":{\"build_id\":\"bid_aaaa-bbbb-cccc\"}}\n",
+        )
+        .unwrap();
+
+        let mut reader = SpanReader::default();
+        let first = reader.all(&dir);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0]["name"], "rdm.one");
+        assert_eq!(first[0]["attributes"]["build_id"], "aaaabbbbcccc");
+
+        {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+            f.write_all(b"{\"name\":\"rdm.two\",\"start_unix_nano\":2}\n{\"name\":\"rdm.three\",\"start_unix_nano\":3").unwrap();
+        }
+        let second = reader.all(&dir);
+        let names: Vec<&str> = second.iter().filter_map(|s| s["name"].as_str()).collect();
+        assert_eq!(names, vec!["rdm.one", "rdm.two"], "the whole line appears once and the half line not until completed");
+
+        {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+            f.write_all(b"}\n").unwrap();
+        }
+        let third = reader.all(&dir);
+        let names: Vec<&str> = third.iter().filter_map(|s| s["name"].as_str()).collect();
+        assert_eq!(names, vec!["rdm.one", "rdm.two", "rdm.three"], "the completed line now appears");
+
+        let replacement = dir.join("rdm-node-admin.1-1.spans.jsonl.new");
+        std::fs::write(&replacement, "{\"name\":\"rdm.from_zero\",\"start_unix_nano\":4}\n").unwrap();
+        std::fs::rename(&replacement, &file).unwrap();
+        let replaced = reader.all(&dir);
+        let names: Vec<&str> = replaced.iter().filter_map(|s| s["name"].as_str()).collect();
+        assert_eq!(names, vec!["rdm.from_zero"], "a replaced file is read from 0");
+
+        let second_file = dir.join("rdm-rpc-node.2-1.spans.jsonl");
+        std::fs::write(
+            &second_file,
+            concat!(
+                "{\"name\":\"rdm.unlisted\", not valid json at all\n",
+                "{\"name\":\"rdm.wanted.a\",\"start_unix_nano\":10}\n",
+                "{\"events\":[{\"name\":\"rdm.unlisted\"}],\"name\":\"rdm.wanted.b\",\"start_unix_nano\":20}\n",
+                "{\"name\":\"rdm.other\",\"start_unix_nano\":30}\n",
+            ),
+        )
+        .unwrap();
+
+        let filtered = reader.named(&dir, &["rdm.wanted.a", "rdm.wanted.b"]);
+        let filtered_names: Vec<&str> = filtered.iter().filter_map(|s| s["name"].as_str()).collect();
+        assert_eq!(
+            filtered_names,
+            vec!["rdm.wanted.a", "rdm.wanted.b"],
+            "spans_named keeps only the listed names and never parses the non-JSON line carrying another name"
+        );
+
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reader.named(&dir, &["rdm.unlisted"]);
+        }));
+        assert!(err.is_err(), "a line that is parsed when its name is requested fails on invalid JSON");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

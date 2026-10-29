@@ -462,7 +462,7 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
     rows.time("M1", "bring-up: every node ready in the view", ms(settled), None, None);
     rows.time("M1", "bring-up, launch to ready", ms(bring_up), Some(p.bring_up.as_millis() as f64), None);
     if evidence {
-        let spans = estate.spans();
+        let spans = estate.spans_named(&["rdm.node_admin.deployment.update.via-step"]);
         let creates = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "Complete" && sp["attributes"]["outcome"] == "complete").count();
         rows.value("M2", "node creates per second", "creates/s", creates as f64 / bring_up.as_secs_f64(), None);
     }
@@ -516,7 +516,7 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
         let from = now_ns();
         tokio::time::sleep(STEADY).await;
         let to = now_ns();
-        let (per_node, per_channel) = gossip_bytes(&estate.spans(), from, to);
+        let (per_node, per_channel) = gossip_bytes(&estate.spans_named(&["rdm.mesh.topology.update.via-frame"]), from, to);
         rows.value("M7", "largest node, all channels", "KB/s", per_node, Some(50.0));
         for (channel, kbs) in per_channel {
             rows.value("M7", &format!("largest node, {channel}"), "KB/s", kbs, None);
@@ -548,7 +548,24 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
                 out.push(polled);
                 continue;
             }
-            match spread_from_spans(&estate.spans(), &admins, &subject.to_string(), status, since) {
+            // The view poll above returned once every admin's topology held the status; each admin's
+            // BatchSpanProcessor exports its closed spans on a 200 ms schedule (telemetry.rs:298), so
+            // read incremental spans across one export window before declaring a sample unseen.
+            let flush_until = Instant::now() + Duration::from_millis(500);
+            let sampled = loop {
+                let spans = estate.spans_named(&[
+                    "rdm.mesh.topology.update.from-command-admitted",
+                    "rdm.mesh.topology.update.from-node-started",
+                    "rdm.mesh.topology.update.via-member-state",
+                    "rdm.mesh.topology.update.via-projected-status",
+                ]);
+                match spread_from_spans(&spans, &admins, &subject.to_string(), status, since) {
+                    Ok(ms) => break Ok(ms),
+                    Err(missing) if Instant::now() >= flush_until => break Err(missing),
+                    Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+                }
+            };
+            match sampled {
                 Ok(ms) => out.push(ms),
                 Err(missing) => unseen.extend(missing),
             }
@@ -574,7 +591,7 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
         let ready_ns = killed_ns + (ms * 1e6) as u64;
         to_ready.push(ms);
         if evidence {
-            let spans = estate.spans();
+            let spans = estate.spans_named(&["rdm.mesh.topology.update.via-member-stale"]);
             let mark = named(&spans, "rdm.mesh.topology.update.via-member-stale")
                 .into_iter()
                 .filter(|sp| s(&sp["attributes"]["member"]) == victim.to_string())
