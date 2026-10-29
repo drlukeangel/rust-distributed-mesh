@@ -231,6 +231,7 @@ mod fabric_create;
 mod fabric_states;
 mod fabric_delete;
 mod build_reattach;
+mod build_executables;
 
 #[allow(dead_code)]
 #[path = "../../../tools/test-support/gossip_wire.rs"]
