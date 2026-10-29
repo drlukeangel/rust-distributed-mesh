@@ -121,6 +121,23 @@ named direct connection. It is never global proof that the destination node is d
 naming the reason, one of node.connection.create's `refused` reasons (its Result row). It is the
 acceptor's fact about one dial, never proof about the dialer.
 
+### 1.3 One dial: its rows and its spans
+
+A connection is created by its caller, and only by it: the dial is node.connection.create, and the
+member cert rides it in the first stream's present frame, never a separate call. The receiver serves or
+refuses that presentation and creates nothing. Each side writes only its own facts; each recorded fact is
+one whole append-only row (§3); an accept writes nothing (R-CN1).
+
+| Step | The caller | The receiver |
+|---|---|---|
+| Dial | `rdm.node.connection.create.via-dial` opens (destination, alpn, cert_expires_at), a root linked to the opener's span; the present frame carries the opener's trace (or the dial's when the opener carries none) | — |
+| Admitted | the dial ends `outcome = connected`; it writes `Direct Connected` | `rdm.node.connection.serve.via-admitted` (source, destination, connection, alpn, cert_expires_at, clock), in the caller's trace; no row |
+| Refused | the dial ends `outcome = refused` with the `reason`; it writes `Direct Failed`, reason `refused: <reason>`, so its reconnect series continues from it (§9.1) | `rdm.node.connection.reject.via-refused` (the same, plus `reason`); it writes `Refused` naming the reason |
+| Through a carrier | The opener's `rdm.node.connection.create.via-tunnel` carries `cert_expires_at`; the carrier dials the destination. After the destination's `admitted` comes back through the carrier (§7), the opener writes `Proxy Connected` naming the carrier. | the destination serves or refuses as above |
+| Ended | `Disconnected` when the connection closes or is deleted (node.connection.delete); a tunnel's end is spanned `rdm.node.connection.delete.via-tunnel-ended` and writes no second row | — |
+
+`Refused` and `Failed` are each one side's fact about one dial: neither is proof about the other side.
+
 ---
 
 ## 2. Target `NodeConnection` shape
