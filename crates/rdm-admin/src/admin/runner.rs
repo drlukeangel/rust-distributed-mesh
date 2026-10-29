@@ -32,7 +32,7 @@ pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, m
 /// names `state`, else the declaration's applied here by the mesh's MeshId; 0 when it holds neither
 /// (mesh-investigation.md step 7: the successor republishes the held MeshStatus, preserving changed_at).
 pub(crate) fn held_mesh_changed_at(digest_view: &DigestView, records: &Records, mesh: &str, state: rdm_core::status::MeshState) -> u64 {
-    let heard = digest_view.statuses.mesh(mesh).filter(|h| super::reconcile::mesh_state_of(&h.status).ok() == Some(state)).map(|h| h.changed_at_rafka_ms);
+    let heard = digest_view.statuses.mesh_lifecycle(mesh).or_else(|| digest_view.statuses.mesh(mesh)).filter(|h| super::reconcile::mesh_state_of(&h.status).ok() == Some(state)).map(|h| h.changed_at_rafka_ms);
     let declared = || {
         let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned()?;
         let declared = records.declared.lock().unwrap();
@@ -42,7 +42,7 @@ pub(crate) fn held_mesh_changed_at(digest_view: &DigestView, records: &Records, 
 }
 
 pub(crate) fn held_mesh_state(digest_view: &DigestView, records: &Records, mesh: &str) -> rdm_core::status::MeshState {
-    let heard = digest_view.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok());
+    let heard = digest_view.statuses.mesh_lifecycle(mesh).or_else(|| digest_view.statuses.mesh(mesh)).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok());
     let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned();
     let declared = mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
     heard.max(declared).unwrap_or(rdm_core::status::MeshState::Pending)

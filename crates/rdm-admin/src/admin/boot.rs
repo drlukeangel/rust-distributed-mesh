@@ -3030,7 +3030,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 // Every mesh the Build names, its section held here or not (Q284).
                                                 let named = current.and_then(|c| c.as_ref()).map(|b| b.topology.mesh_names()).unwrap_or_default();
-                                                records.set_heard_ready(records.planned().keys().chain(named.iter()).chain(std::iter::once(&mesh)).filter(|m| topology_view.mesh_status(m).is_some_and(|h| h.status == rdm_transport::topology::MESH_READY)).cloned().collect());
+                                                records.set_heard_ready(records.planned().keys().chain(named.iter()).chain(std::iter::once(&mesh)).filter(|m| topology_view.digest_view.statuses.mesh_lifecycle(m).or_else(|| topology_view.mesh_status(m)).is_some_and(|h| h.status == rdm_transport::topology::MESH_READY)).cloned().collect());
                                                 // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
                                                 records.set_heard_dead(topology_view.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
                                                     topology_view.digest_view.all().into_iter().find(|d| d.node.name.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
@@ -3158,7 +3158,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let heard = topology_view.digest_view.current(topology_view.digest_view.staleness_floor());
                                                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                                                 // A status is sent when it changed, never per turn (gossip.md §3.2).
-                                                let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
+                                                // A mesh primary publishes its mesh's lifecycle word (Q272; states.md:12), never the
+                                                // fabric-primary's `degraded` health marker that the view projects until the successor's
+                                                // first send replaces it.
+                                                let mesh_status = match t.meshes.iter().find(|m| m.name == mesh).map(|m| m.status) {
+                                                    Some(crate::model::ScopeStatus::Degraded) => {
+                                                        let ready = t.mesh_unready(&mesh, records.planned().get(&mesh)).is_empty()
+                                                            || (records.heard_ready(&mesh) && t.node_type_primary(&mesh, NodeKind::NodeAdmin).is_some());
+                                                        status_of(if ready { crate::model::ScopeStatus::Ready } else { crate::model::ScopeStatus::Pending })
+                                                    }
+                                                    Some(s) => status_of(s),
+                                                    None => String::new(),
+                                                };
                                                 // The fabric's status as the live records state it: a checklist that just cleared the adopted
                                                 // degraded must not be answered by the older projection `t`.
                                                 // The fabric-primary publishes the state it holds now, not the projection's last refresh:
@@ -3173,7 +3184,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         other => status_of(other),
                                                     }
                                                 };
-                                                let mut announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), false, false).await;
+                                                let degraded_meshes = |records: &Records| -> Vec<(String, Option<u64>)> {
+                                                    records.peer_recoveries().into_iter().map(|r| (r.mesh, r.verdict_rafka_ms)).collect()
+                                                };
+                                                let mut announced = backbone.announce_statuses_with_degraded_meshes(&mesh_status, &fabric_status(&records), false, false, &degraded_meshes(&records)).await;
                                                 // While the read of the accepted Build is owed, the checklist is neither counted from the facts
                                                 // held before it nor completed: the turn sends the read (or takes its answer) and counts on the
                                                 // next turn's read of the Build log, which then holds the fabric-primary's Build (Q276).
@@ -3197,7 +3211,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         // The checklist a new primary runs before it republishes the status it adopted (R-S3).
                                                         let done = fabric_states.adopted_step(announced, crate::fabric_status::AdoptedInputs { view: &t, planned, digest_view: &topology_view.digest_view });
                                                         if done.mesh || done.fabric {
-                                                            announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), done.mesh, done.fabric).await;
+                                                            announced = backbone.announce_statuses_with_degraded_meshes(&mesh_status, &fabric_status(&records), done.mesh, done.fabric, &degraded_meshes(&records)).await;
                                                         }
                                                     }
                                                 } else {

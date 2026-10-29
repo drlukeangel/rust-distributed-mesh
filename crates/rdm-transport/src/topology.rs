@@ -809,6 +809,25 @@ impl StatusPublisher {
         self.role
     }
 
+    /// Set the author birth and committed primary revision this publisher stamps onto new status frames.
+    pub fn set_author(&mut self, author: Option<(crate::envelope::Birth, u64)>) {
+        self.author = author;
+    }
+
+    /// The fabric-primary's observation that a peer mesh is `degraded` at `verdict_ms`
+    /// (mesh-investigation.md:65, states.md:12, R-DG1): sent on the five-send schedule (1 s apart) at the
+    /// revision `self.author` carries (the mesh's Mesh row revision).
+    pub fn observe_degraded(&mut self, now: Instant, verdict_ms: u64) -> Option<Frame> {
+        if !self.role {
+            return None;
+        }
+        if self.schedule.held().is_some_and(|h| h.changed_at_rafka_ms != verdict_ms) {
+            self.schedule.reset();
+            self.context = None;
+        }
+        self.schedule.observe("degraded", now, verdict_ms).map(|f| self.frame(&f))
+    }
+
     fn frame(&mut self, fact: &StatusFact) -> Frame {
         let frame = match &self.scope {
             StatusScope::Mesh(mesh) => {
@@ -917,6 +936,10 @@ pub const MESH_READY: &str = "ready";
 #[derive(Debug, Clone)]
 pub struct StatusView {
     meshes: Arc<Mutex<HashMap<String, HeldStatus<MeshStatus>>>>,
+    /// The latest lifecycle status (`pending`, `ready`, `leaving`, `dead`; states.md:12) held for each
+    /// mesh, preserved across the fabric-primary's `degraded` health marker so a successor or hand-off
+    /// adopts the lifecycle status and its `changed_at_rafka_ms` (Q272).
+    lifecycle: Arc<Mutex<HashMap<String, MeshStatus>>>,
     fabric: Arc<Mutex<Option<HeldStatus<FabricStatus>>>>,
     /// Ticks each time a mesh status is taken or dropped: a routing fact (states.md "Routing"). A
     /// local observation; nothing is sent.
@@ -930,7 +953,7 @@ impl<T> std::ops::Deref for HeldStatus<T> { type Target = T; fn deref(&self) -> 
 
 impl Default for StatusView {
     fn default() -> Self {
-        Self { meshes: Arc::default(), fabric: Arc::default(), mesh_changes: Arc::new(tokio::sync::watch::Sender::new(0)) }
+        Self { meshes: Arc::default(), lifecycle: Arc::default(), fabric: Arc::default(), mesh_changes: Arc::new(tokio::sync::watch::Sender::new(0)) }
     }
 }
 
@@ -941,6 +964,22 @@ impl StatusView {
         match f.data() {
             Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms, .. } => {
                 let mut held = self.meshes.lock().unwrap();
+                // An unauthored lifecycle hand-off (`ApplyMeshState`, Q272) arriving while an authored
+                // `degraded` frame is held records the mesh's held lifecycle state and its original
+                // `changed_at_rafka_ms` without replacing the authored `degraded` frame before the
+                // successor's checklist completes.
+                if context.is_none() && mesh_state_rank(status).is_some() && held.get(mesh).is_some_and(|h| h.context.is_some() && h.status == "degraded") {
+                    let mut lifecycle = self.lifecycle.lock().unwrap();
+                    let admit = lifecycle.get(mesh).is_none_or(|l| mesh_state_rank(status) > mesh_state_rank(&l.status) || (l.status == *status && *changed_at_rafka_ms > l.changed_at_rafka_ms));
+                    if admit {
+                        lifecycle.insert(mesh.clone(), MeshStatus { status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms });
+                        drop(lifecycle);
+                        drop(held);
+                        self.mesh_changes.send_modify(|v| *v += 1);
+                        return true;
+                    }
+                    return false;
+                }
                 // The same fact under its author's context replaces one held without any (a hand-off's
                 // state or a self-applied one, held before its publisher sent it; Q272): what this node
                 // holds and serves from then on is the authored frame.
@@ -948,7 +987,11 @@ impl StatusView {
                 if !authors_held && !crate::receive_order::admit_status_context("mesh-status", mesh, held.get(mesh).and_then(|h| h.context.as_ref()), f.context(), held.get(mesh).map(|h| h.status.as_str()).unwrap_or(""), status).unwrap_or_else(|| crate::receive_order::admit_status("mesh-status", mesh, held.get(mesh).map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms, h.status.as_str())), status, publisher, *changed_at_rafka_ms)) {
                     return false;
                 }
-                held.insert(mesh.clone(), HeldStatus { value: MeshStatus { status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms }, context: context.cloned() });
+                let value = MeshStatus { status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms };
+                if mesh_state_rank(status).is_some() {
+                    self.lifecycle.lock().unwrap().insert(mesh.clone(), value.clone());
+                }
+                held.insert(mesh.clone(), HeldStatus { value, context: context.cloned() });
                 drop(held);
                 self.mesh_changes.send_modify(|v| *v += 1);
                 true
@@ -975,9 +1018,20 @@ impl StatusView {
         self.meshes.lock().unwrap().get(mesh).map(|h| h.value.clone())
     }
 
+    /// The latest lifecycle status (`pending`, `ready`, `leaving`, `dead`) held for `mesh`.
+    pub fn mesh_lifecycle(&self, mesh: &str) -> Option<MeshStatus> {
+        self.lifecycle.lock().unwrap().get(mesh).cloned()
+    }
+
+    /// The committed primary revision of the status frame held for `mesh`, if authored.
+    pub fn mesh_revision(&self, mesh: &str) -> Option<u64> {
+        self.meshes.lock().unwrap().get(mesh).and_then(|h| h.context.as_ref()?.primary_revision())
+    }
+
     /// Forget the status held for `mesh`: the mesh left, and nothing of it is kept or replayed.
     /// Answers the status that was held. A status dropped is a routing fact as one taken is.
     pub fn forget_mesh(&self, mesh: &str) -> Option<String> {
+        self.lifecycle.lock().unwrap().remove(mesh);
         let dropped = self.meshes.lock().unwrap().remove(mesh).map(|h| h.value.status);
         if dropped.is_some() {
             self.mesh_changes.send_modify(|v| *v += 1);
@@ -1236,7 +1290,7 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeStopped { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
         Frame::NodeConnectionsDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeConnectionsDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me.to_string()) }),
-        Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {
+        Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if (mesh != own_mesh || status == "degraded") && publisher != me => {
             Some(Frame::MeshStatus { mesh, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })
         }
         Frame::FabricStatus { fabric, status, publisher, forwarded_by: None, changed_at_rafka_ms } if publisher != me => {
@@ -3592,6 +3646,7 @@ pub struct Backbone {
     topology_view: TopologyView,
     mesh_status: Arc<Mutex<StatusPublisher>>,
     fabric_status: Arc<Mutex<StatusPublisher>>,
+    peer_mesh_status: Arc<Mutex<HashMap<String, StatusPublisher>>>,
     /// Wakes the status sender when a change starts its reinforcement.
     wake: Arc<tokio::sync::Notify>,
     /// This admin's exact identity as a publisher: its path name and the birth that holds it.
@@ -3620,6 +3675,69 @@ pub struct Backbone {
 /// - `aggregate`: every publication's mesh topology of this admin's own mesh, on the backbone and
 ///   into its own mesh (`mesh`).
 pub type Withhold = Arc<dyn Fn(&'static str, &'static str) -> bool + Send + Sync>;
+
+/// The status frames `me` owes on this turn ([`Backbone::announce_statuses_with_degraded_meshes`]): its
+/// own mesh's while it holds its mesh-primary seat, the fabric's while it holds the fabric-primary
+/// seat, and each peer mesh `degraded_meshes` names as under recovery by this fabric-primary
+/// (`(mesh, verdict_rafka_ms)` from `Records::peer_recoveries`; mesh-investigation.md:65, states.md:12,
+/// R-DG1), authored at the revision of that mesh's Mesh row.
+#[allow(clippy::too_many_arguments)]
+pub fn status_announcements(
+    fabric: &FabricId,
+    me: &PublisherId,
+    own_mesh: &str,
+    digest_view: &DigestView,
+    mesh_pub: &mut StatusPublisher,
+    fabric_pub: &mut StatusPublisher,
+    peer_pubs: &mut HashMap<String, StatusPublisher>,
+    mesh_status: &str,
+    fabric_status: &str,
+    mesh_checklist: bool,
+    fabric_checklist: bool,
+    degraded_meshes: &[(String, Option<u64>)],
+    now: Instant,
+    now_ms: u64,
+) -> (Vec<Frame>, Announced) {
+    let heard_mesh = digest_view.statuses.mesh_lifecycle(own_mesh).or_else(|| digest_view.statuses.mesh(own_mesh)).map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
+    let heard_fabric = digest_view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
+    let author = crate::envelope::Birth::publisher(fabric, me);
+    let owned = |h: Primary| h.is_birth(&author.node, &author.incarnation).then_some((author.clone(), h.revision));
+    mesh_pub.author = digest_view.seats.mesh(own_mesh).and_then(owned);
+    fabric_pub.author = digest_view.seats.fabric().and_then(owned);
+    let mut frames: Vec<Frame> = [
+        if mesh_pub.author.is_some() { mesh_pub.observe(mesh_status, heard_mesh, mesh_checklist, now, now_ms) } else { None },
+        if fabric_pub.author.is_some() { fabric_pub.observe(fabric_status, heard_fabric, fabric_checklist, now, now_ms) } else { None },
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if fabric_pub.author.is_some() {
+        peer_pubs.retain(|m, _| degraded_meshes.iter().any(|(d, _)| d == m));
+        for (peer_mesh, verdict_ms) in degraded_meshes {
+            let revision = digest_view
+                .seats
+                .mesh(peer_mesh)
+                .map(|h| h.revision)
+                .or_else(|| digest_view.statuses.mesh_revision(peer_mesh))
+                .unwrap_or(0);
+            if digest_view.statuses.mesh_revision(peer_mesh).is_some_and(|held_rev| held_rev > revision) {
+                peer_pubs.remove(peer_mesh);
+                continue;
+            }
+            let p = peer_pubs.entry(peer_mesh.clone()).or_insert_with(|| StatusPublisher::new(&me.node, StatusScope::Mesh(peer_mesh.clone())));
+            p.set_role(true);
+            p.author = Some((author.clone(), revision));
+            let floor = digest_view.statuses.mesh_lifecycle(peer_mesh).map(|h| h.changed_at_rafka_ms + 1).unwrap_or(0);
+            let stamp = verdict_ms.unwrap_or_else(|| p.schedule.held().map(|h| h.changed_at_rafka_ms).unwrap_or_else(|| now_ms.max(floor)));
+            if let Some(f) = p.observe_degraded(now, stamp) {
+                frames.push(f);
+            }
+        }
+    } else {
+        peer_pubs.clear();
+    }
+    (frames, Announced { mesh_awaiting_checklist: mesh_pub.awaiting_checklist(), fabric_awaiting_checklist: fabric_pub.awaiting_checklist() })
+}
 
 impl Backbone {
     fn current_name(&self) -> String {
@@ -3726,6 +3844,7 @@ impl Backbone {
             topology_view: topology_view.clone(),
             mesh_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh(mesh.to_string())))),
             fabric_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Fabric(topology_view.fabric.clone())))),
+            peer_mesh_status: Arc::default(),
             wake: Arc::default(),
             publisher: author,
             full_due: topology_view.forward_path.owes_full(),
@@ -3743,7 +3862,14 @@ impl Backbone {
         let me = self.clone();
         tokio::spawn(async move {
             loop {
-                let next = [me.mesh_status.lock().unwrap().next_due(), me.fabric_status.lock().unwrap().next_due()].into_iter().flatten().min();
+                let next = {
+                    let peers = me.peer_mesh_status.lock().unwrap();
+                    [me.mesh_status.lock().unwrap().next_due(), me.fabric_status.lock().unwrap().next_due()]
+                        .into_iter()
+                        .chain(peers.values().map(StatusPublisher::next_due))
+                        .flatten()
+                        .min()
+                };
                 match next {
                     Some(at) => {
                         tokio::select! {
@@ -3754,7 +3880,13 @@ impl Backbone {
                     None => me.wake.notified().await,
                 }
                 let now = Instant::now();
-                let due: Vec<Frame> = [me.mesh_status.lock().unwrap().due(now), me.fabric_status.lock().unwrap().due(now)].into_iter().flatten().collect();
+                let due: Vec<Frame> = {
+                    let mut peers = me.peer_mesh_status.lock().unwrap();
+                    peers.retain(|m, p| me.topology_view.view.digest_view.statuses.mesh_revision(m).zip(p.author.as_ref()).is_none_or(|(held_rev, (_, rev))| held_rev <= *rev));
+                    let mut out: Vec<Frame> = [me.mesh_status.lock().unwrap().due(now), me.fabric_status.lock().unwrap().due(now)].into_iter().flatten().collect();
+                    out.extend(peers.values_mut().filter_map(|p| p.due(now)));
+                    out
+                };
                 for f in due {
                     me.send_status(&f).await;
                 }
@@ -3783,19 +3915,36 @@ impl Backbone {
     /// only once that scope's checklist is complete (`mesh_checklist` / `fabric_checklist`), with its old
     /// instant. The answer says which adopted statuses still wait for their checklist.
     pub async fn announce_statuses(&self, mesh_status: &str, fabric_status: &str, mesh_checklist: bool, fabric_checklist: bool) -> Announced {
+        self.announce_statuses_with_degraded_meshes(mesh_status, fabric_status, mesh_checklist, fabric_checklist, &[]).await
+    }
+
+    /// [`Self::announce_statuses`], plus each peer mesh `degraded_meshes` names as under recovery by
+    /// this fabric-primary (`(mesh, verdict_rafka_ms)` from `Records::peer_recoveries`;
+    /// mesh-investigation.md:65, states.md:12, R-DG1): its `MeshStatus` `degraded` goes out on the same
+    /// channels and five-send cadence as `FabricStatus` `degraded`, authored at the revision of that
+    /// mesh's Mesh row.
+    pub async fn announce_statuses_with_degraded_meshes(&self, mesh_status: &str, fabric_status: &str, mesh_checklist: bool, fabric_checklist: bool, degraded_meshes: &[(String, Option<u64>)]) -> Announced {
         let (now, now_ms) = (Instant::now(), self.topology_view.clock.now_rafka_ms());
         let (first, announced): (Vec<Frame>, Announced) = {
-            let view = &self.topology_view.view;
-            let heard_mesh = view.digest_view.statuses.mesh(&self.mesh).map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
-            let heard_fabric = view.digest_view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
             let mut mesh = self.mesh_status.lock().unwrap();
             let mut fabric = self.fabric_status.lock().unwrap();
-            let author = crate::envelope::Birth::publisher(&self.fabric, &self.current_publisher());
-            let owned = |h: Primary| h.is_birth(&author.node, &author.incarnation).then_some((author.clone(), h.revision));
-            mesh.author = view.digest_view.seats.mesh(&self.mesh).and_then(owned);
-            fabric.author = view.digest_view.seats.fabric().and_then(owned);
-            let frames = [if mesh.author.is_some() { mesh.observe(mesh_status, heard_mesh, mesh_checklist, now, now_ms) } else { None }, if fabric.author.is_some() { fabric.observe(fabric_status, heard_fabric, fabric_checklist, now, now_ms) } else { None }].into_iter().flatten().collect();
-            (frames, Announced { mesh_awaiting_checklist: mesh.awaiting_checklist(), fabric_awaiting_checklist: fabric.awaiting_checklist() })
+            let mut peers = self.peer_mesh_status.lock().unwrap();
+            status_announcements(
+                &self.fabric,
+                &self.current_publisher(),
+                &self.mesh,
+                &self.topology_view.view.digest_view,
+                &mut mesh,
+                &mut fabric,
+                &mut peers,
+                mesh_status,
+                fabric_status,
+                mesh_checklist,
+                fabric_checklist,
+                degraded_meshes,
+                now,
+                now_ms,
+            )
         };
         if !first.is_empty() {
             self.wake.notify_one();
@@ -3847,6 +3996,9 @@ impl Backbone {
     /// Be (or stop being) the fabric-status publisher: the fabric primary.
     pub fn set_fabric_primary(&self, primary: bool) {
         self.fabric_status.lock().unwrap().set_role(primary);
+        if !primary {
+            self.peer_mesh_status.lock().unwrap().clear();
+        }
         if let Some(role) = Self::role(&self.status_publishing, primary) {
             tracing::info_span!("rdm.mesh.fabric.update.via-status-publisher", node = %self.current_name(), fabric = %self.fabric, role)
                 .in_scope(|| tracing::info!("fabric status publication"));

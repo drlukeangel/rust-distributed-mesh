@@ -370,7 +370,18 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         .expect("the successor is handed the mesh's held state after the decision");
     assert!(rank(&handed.0) >= rank(&held.0), "the hand-off is never behind the held MeshStatus {held:?}: {handed:?}");
     let expected = if handed.1 != "0" { handed.clone() } else { held.clone() };
-    let republished: Vec<&&Value> = sends.iter().filter(|sp| sp["attributes"]["scope"] == scope.as_str() && start(sp) >= start(&decision)).collect();
+    let degraded_sends: Vec<&&Value> = sends
+        .iter()
+        .filter(|sp| sp["attributes"]["scope"] == scope.as_str() && sp["attributes"]["status"] == "degraded" && start(sp) >= start(&decision))
+        .collect();
+    assert!(!degraded_sends.is_empty(), "the fabric primary sends {scope} degraded at the via-recovery decision: {sends:?}");
+    for sp in &degraded_sends {
+        assert_eq!(s(&sp["attributes"]["node"]), fabric_holder, "the mesh's degraded marker is authored by the fabric primary: {sp}");
+    }
+    let republished: Vec<&&Value> = sends
+        .iter()
+        .filter(|sp| sp["attributes"]["scope"] == scope.as_str() && sp["attributes"]["status"] != "degraded" && start(sp) >= start(&decision))
+        .collect();
     assert!(!republished.is_empty(), "the successor primary republishes the held MeshStatus (a via-status-send for {scope} after the decision): none");
     for sp in &republished {
         assert_eq!(s(&sp["attributes"]["node"]), lost_admin, "the mesh's status is its own primary's: {sp}");
@@ -382,7 +393,9 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         .map(start)
         .min()
         .expect("the successor primary's checklist completed");
+    let first_degraded = degraded_sends.iter().map(|sp| start(sp)).min().unwrap();
     let first_republish = republished.iter().map(|sp| start(sp)).min().unwrap();
+    assert!(first_degraded < first_republish, "the fabric primary's {scope} degraded send precedes the successor's republish: {first_degraded} vs {first_republish}");
     assert!(first_republish >= checklist_complete, "the held MeshStatus is republished only after the checklist completed: {first_republish} vs {checklist_complete}");
     let cleared = named(&spans, "rdm.node_admin.mesh.update.via-recovered")
         .into_iter()

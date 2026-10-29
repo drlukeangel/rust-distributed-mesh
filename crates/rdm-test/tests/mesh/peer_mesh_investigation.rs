@@ -196,11 +196,11 @@ fn mesh_status_change_before(spans: &[Value], mesh: &str, before_ms: u64) -> Opt
         .map(|sp| attr(sp, "changed_at_rafka_ms"))
 }
 
-/// The MeshStatus sends of `mesh` at or after `from_ms`, by (sender, changed_at): how many, and when the first.
+/// The lifecycle MeshStatus sends of `mesh` at or after `from_ms`, by (sender, changed_at): how many, and when the first.
 fn mesh_sends_after(spans: &[Value], mesh: &str, from_ms: u64) -> BTreeMap<(String, String), (usize, u64)> {
     let scope = format!("mesh:{mesh}");
     let mut out: BTreeMap<(String, String), (usize, u64)> = BTreeMap::new();
-    for sp in named(spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "scope") == scope && at_ns(sp) / 1_000_000 >= from_ms) {
+    for sp in named(spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "scope") == scope && attr(sp, "status") != "degraded" && at_ns(sp) / 1_000_000 >= from_ms) {
         let at = at_ns(sp) / 1_000_000;
         let e = out.entry((attr(sp, "node"), attr(sp, "changed_at_rafka_ms"))).or_insert((0, at));
         e.0 += 1;
@@ -397,8 +397,10 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     // the mark is stepped at its rung, before probe 2's, however long probe 1 runs.
     assert!(unheard(marks[0]) < rungs().probe2, "the mark is stepped at its rung, before probe 2's at {:?}, not when probe 1 ends: {:?}", rungs().probe2, unheard(marks[0]));
     let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send");
+    let authored_for_peer_before_verdict: Vec<&&Value> = sends.iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "scope") == format!("mesh:{}", f.lost) && at_ns(sp) < at_ns(verdict)).collect();
+    assert!(authored_for_peer_before_verdict.is_empty(), "the fabric primary sends no MeshStatus for {} during probing: {authored_for_peer_before_verdict:#?}", f.lost);
     let authored_for_peer: Vec<&&Value> = sends.iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "scope") == format!("mesh:{}", f.lost)).collect();
-    assert!(authored_for_peer.is_empty(), "the fabric primary never authors {}'s MeshStatus: {authored_for_peer:#?}", f.lost);
+    assert!(!authored_for_peer.is_empty() && authored_for_peer.iter().all(|sp| attr(sp, "status") == "degraded"), "the fabric primary authors {}'s MeshStatus degraded at the verdict and no lifecycle status: {authored_for_peer:#?}", f.lost);
     // Degraded is the fabric primary's alone. The return to ready is the seat holder's: the fabric
     // primary's while it holds the seat, else the admin that took it (the election is the lowest ready NodeId).
     let sent_by = |status: &str, from_ms: u64, only_fp: bool| -> BTreeMap<(String, String), usize> {

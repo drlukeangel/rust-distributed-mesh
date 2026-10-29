@@ -1802,6 +1802,90 @@ mod fully_crashed_mesh {
         assert_eq!(after.attempt, before.attempt, "no attempt was opened");
         assert!(e.born().is_empty(), "no node was created: {:?}", e.born());
     }
+
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:65
+    /// "At that same moment, both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded) are marked degraded (R-DG1), on either arm: the 60 s carrier-edge-lost verdict and the no-member-answers arm on its verdict, sent under [gossip §3.2](../gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy)."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:68
+    /// "Probing itself sends no FabricStatus or MeshStatus."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:166
+    /// "No status or lifecycle gossip is sent at the 20 s/40 s probes or the 30 s silent mark."
+    /// CONTRACT: docs/architecture/lifecycles/states.md:12
+    /// "MeshStatus also carries a `degraded` health marker, set when a mesh is given a new node-admin by the fabric-primary (on either investigation arm, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status."
+    /// CONTRACT: docs/architecture/gossip.md:472
+    /// "| `rdm.mesh.status` | `P(revision) + \".\" + P(changed_at_rafka_ms)` from the Mesh row's `revision` |"
+    #[tokio::test]
+    async fn the_decision_on_each_arm_emits_mesh_degraded_beside_fabric_degraded_with_the_mesh_row_revision_and_nothing_at_the_probes() {
+        use rdm_core::{Primary, PublisherId, Seat};
+        use rdm_transport::topology::{status_announcements, Frame, StatusPublisher, StatusScope};
+        use std::collections::HashMap;
+        use std::time::{Duration, Instant};
+
+        let fabric_id = FabricId::parse("fab000000001").unwrap();
+        let fp_node = NodeId::parse("200000000001").unwrap();
+        let fp_inc = IncarnationId::parse("yrz49j303y01").unwrap();
+        let peer_node = NodeId::parse("300000000001").unwrap();
+        let peer_inc = IncarnationId::parse("yrz49j303y02").unwrap();
+        let fp_pub = PublisherId { node: "mesh1.admin.1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone() };
+        let digest_view = DigestView::default();
+        // mesh1 holds seat revision 1 (and fabric-primary revision 1); mesh2's Mesh row holds revision 7.
+        digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone(), revision: 1 });
+        digest_view.seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone(), revision: 1 });
+        digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh2".into(), node_id: peer_node.clone(), incarnation: peer_inc.clone(), revision: 7 });
+        let lost_birth = rdm_transport::envelope::Birth { fabric: fabric_id.clone(), node: peer_node.clone(), incarnation: peer_inc.clone() };
+        let initial_mesh1 = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 500 }
+            .authored(&rdm_transport::envelope::Birth::publisher(&fabric_id, &fp_pub), 1, 500);
+        let initial_mesh2 = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1_000 }
+            .authored(&lost_birth, 7, 1_000);
+        assert!(digest_view.statuses.take(&initial_mesh1, &fabric_id));
+        assert!(digest_view.statuses.take(&initial_mesh2, &fabric_id));
+
+        let mut mesh_pub = StatusPublisher::new("mesh1.admin.1", StatusScope::Mesh("mesh1".into()));
+        let mut fabric_pub = StatusPublisher::new("mesh1.admin.1", StatusScope::Fabric(fabric_id.clone()));
+        let mut peer_pubs: HashMap<String, StatusPublisher> = HashMap::new();
+        mesh_pub.set_role(true);
+        fabric_pub.set_role(true);
+        let t0 = Instant::now();
+        // Baseline: mesh1 and fabric1 are ready; checklists complete.
+        let _ = status_announcements(&fabric_id, &fp_pub, "mesh1", &digest_view, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, "ready", "ready", true, true, &[], t0, 1_000);
+        let _ = status_announcements(&fabric_id, &fp_pub, "mesh1", &digest_view, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, "ready", "ready", true, true, &[], t0, 1_000);
+
+        let records = rdm_admin::admin::Records::default();
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let step = |records: &rdm_admin::admin::Records, mesh_pub: &mut StatusPublisher, fabric_pub: &mut StatusPublisher, peer_pubs: &mut HashMap<String, StatusPublisher>, at_ms: u64| -> Vec<Frame> {
+            let fabric_status = if records.peer_recovering() { "degraded" } else { "ready" };
+            let degraded: Vec<(String, Option<u64>)> = records.peer_recoveries().into_iter().map(|r| (r.mesh, r.verdict_rafka_ms)).collect();
+            status_announcements(&fabric_id, &fp_pub, "mesh1", &digest_view, mesh_pub, fabric_pub, peer_pubs, "ready", fabric_status, false, false, &degraded, t0 + Duration::from_millis(at_ms), at_ms).0
+        };
+
+        // 20 s probe 1, 30 s silent mark, and 40 s probe 2: no recovery is open, so nothing is sent.
+        for rung_ms in [20_000, 30_000, 40_000] {
+            let emitted = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, rung_ms);
+            assert!(emitted.is_empty(), "nothing is sent at {rung_ms} ms: {emitted:?}");
+        }
+
+        // Arm 1: 60 s carrier-edge-lost verdict opens recovery with verdict_rafka_ms = Some(60_000).
+        assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: Some(60_000), opened_at: t0, lost: vec![peer_inc.clone()] }, "carrier-edge-lost", true));
+        let arm1 = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, 60_000);
+        assert_eq!(arm1.len(), 2, "carrier-edge-lost verdict emits FabricStatus degraded and MeshStatus degraded: {arm1:?}");
+        assert!(arm1.iter().any(|f| matches!(f.data(), Frame::FabricStatus { status, publisher, changed_at_rafka_ms: 60_000, .. } if status == "degraded" && publisher == "mesh1.admin.1")));
+        let mesh_deg_1 = arm1.iter().find(|f| matches!(f.data(), Frame::MeshStatus { .. })).expect("MeshStatus degraded on carrier-edge-lost");
+        assert!(matches!(mesh_deg_1.data(), Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms: 60_000, .. } if mesh == "mesh2" && status == "degraded" && publisher == "mesh1.admin.1"));
+        assert_eq!(mesh_deg_1.context().unwrap().primary_revision(), Some(7), "stamped with mesh2's Mesh row revision");
+
+        // Clear recovery and return to ready before testing Arm 2 (fully-crashed).
+        records.close_peer_recovery("mesh2");
+        let _ = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, 65_000);
+        assert!(peer_pubs.is_empty(), "closing the recovery drops the peer publisher");
+
+        // Arm 2: fully-crashed verdict opens recovery with verdict_rafka_ms = None.
+        assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: None, opened_at: t0, lost: vec![peer_inc] }, "fully-crashed", false));
+        let arm2 = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, 70_000);
+        assert_eq!(arm2.len(), 2, "fully-crashed verdict emits FabricStatus degraded and MeshStatus degraded: {arm2:?}");
+        assert!(arm2.iter().any(|f| matches!(f.data(), Frame::FabricStatus { status, publisher, changed_at_rafka_ms: 70_000, .. } if status == "degraded" && publisher == "mesh1.admin.1")));
+        let mesh_deg_2 = arm2.iter().find(|f| matches!(f.data(), Frame::MeshStatus { .. })).expect("MeshStatus degraded on fully-crashed");
+        assert!(matches!(mesh_deg_2.data(), Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms: 70_000, .. } if mesh == "mesh2" && status == "degraded" && publisher == "mesh1.admin.1"));
+        assert_eq!(mesh_deg_2.context().unwrap().primary_revision(), Some(7), "stamped with mesh2's Mesh row revision");
+    }
 }
 
 /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:69
