@@ -20,7 +20,7 @@ demo: … the load proof").
 
 A load harness, `rdm-load`, runs estates of growing size on the process provider and measures each
 lifecycle and rate from RDM's own telemetry. It asserts behaviour nowhere a cell already does: it
-measures, and a run passes when every measure is inside its target (§Targets).
+measures, and a profile passes when every measure with a target is inside it (§Targets, "Passing and advancing").
 
 ### The harness
 
