@@ -684,7 +684,7 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
         assert!(matches!(&ev_refused, StatusReply::NotReady { reason } if reason.contains("fabric.storage does not hold the Fabric event")), "{ev_refused:?}");
         assert!(rig3.authority.declared.lock().unwrap().fabric.is_empty());
         // The fabric-primary puts the fact on the fabric, then applies it.
-        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new() }); r.events.push("ready".into()); store.fabric.put_fabric(&r).await.unwrap(); }
+        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.events.push("ready".into()); store.fabric.put_fabric(&r).await.unwrap(); }
         assert_eq!(reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await), StatusReply::Applied);
 
         // The authority restarts over the same facts: what it folds is what it applied.
@@ -875,7 +875,7 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
         let rig = rig_with(receiver, &[&fp1, &fp2], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let ready = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::Ready };
         // Each event is the fabric-primary's fact on the fabric before it applies it at a mesh-primary.
-        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new() }); r.events.push("ready".into()); store.fabric.put_fabric(&r).await.unwrap(); }
+        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.events.push("ready".into()); store.fabric.put_fabric(&r).await.unwrap(); }
         assert_eq!(reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await), StatusReply::Applied);
         // The seat moves: fp2 holds it, fp1 does not.
         {
@@ -890,7 +890,7 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
             }
         }
         let shutdown = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } };
-        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new() }); r.events.push("shutdown-initiated:mesh1.admin.1".into()); store.fabric.put_fabric(&r).await.unwrap(); }
+        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.events.push("shutdown-initiated:mesh1.admin.1".into()); store.fabric.put_fabric(&r).await.unwrap(); }
         let old = reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await);
         assert_eq!(old, StatusReply::AlreadyApplied, "the old authority's repeat of an applied key is the same event");
         assert_eq!(reply(&call(&rig, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "previously applied events survive the move");

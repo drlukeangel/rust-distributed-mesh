@@ -2882,6 +2882,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                             }),
                                         );
+                                        renewals.set_fabric(fabric_storage.clone(), cfg.fabric_id.clone());
                                         let (topology, gate) = (control.topology.clone(), stop_gate.clone());
                                         let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
                                         tasks.push(tokio::spawn(async move {

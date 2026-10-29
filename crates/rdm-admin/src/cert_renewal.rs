@@ -178,12 +178,20 @@ pub struct Renewals {
     /// The meshes whose issuer is re-minted under the fabric CA this admin renewed (fabric-ca-renew.md
     /// step 2), each until its next issuing key is minted.
     ca_due: Mutex<BTreeSet<String>>,
+    /// The fabric store and the fabric's id the CA row is written to (fabric-ca-renew.md "write the CA
+    /// row"); set once at start, absent in a cell that writes none.
+    fabric: std::sync::OnceLock<(Arc<dyn crate::fabric_storage::FabricStorage>, crate::model::FabricId)>,
 }
 
 impl Renewals {
     /// The renewal ticks of the admin `me`.
     pub fn new(me: PathName, node_id: NodeId, issuer: Arc<CertIssuer>, nodes_storage: Arc<dyn NodesStorage>, caches: crate::record_cache::Caches, client: Arc<NodeRpcClient>, install_own: InstallOwn) -> Arc<Self> {
-        Arc::new(Self { me, node_id, issuer, nodes_storage, caches, client, install_own, in_flight: Mutex::default(), updating: Mutex::default(), issued: Mutex::default(), signing: Mutex::default(), ca_due: Mutex::default() })
+        Arc::new(Self { me, node_id, issuer, nodes_storage, caches, client, install_own, in_flight: Mutex::default(), updating: Mutex::default(), issued: Mutex::default(), signing: Mutex::default(), ca_due: Mutex::default(), fabric: std::sync::OnceLock::new() })
+    }
+
+    /// Where the CA row is written: the fabric store and the fabric's id, set once.
+    pub fn set_fabric(&self, storage: Arc<dyn crate::fabric_storage::FabricStorage>, fabric_id: crate::model::FabricId) {
+        let _ = self.fabric.set((storage, fabric_id));
     }
 
     /// Whether this admin writes the record of `n` in `view`: the primary of `n`'s mesh, or the
@@ -374,7 +382,7 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
         return;
     }
     let Some(now) = r.issuer.now_ms() else { return };
-    renew_ca(r, view, now);
+    renew_ca(r, view, now).await;
     for m in &view.meshes {
         let admins: Vec<(Node, IncarnationId)> = view.births().filter(|n| n.mesh == m.name && n.kind == NodeKind::NodeAdmin).filter_map(|n| Some((n.clone(), n.incarnation_id.clone()?))).collect();
         // Every admin's dates of the mesh, a re-created admin's predecessor's included: the schedule is theirs.
@@ -394,9 +402,19 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
                 Some(mint) => now >= mint.renew_at,
                 None => newest.is_some_and(|row| now >= row.renew_at),
             };
+        let for_ca = r.ca_due.lock().unwrap().contains(&m.name);
         let current = match (due, held) {
             (true, held) => match mint_next(r, &m.name, held.map(|h| h.expires_at).unwrap_or(newest_row)) {
-                Some(mint) => mint,
+                Some(mint) => {
+                    // The mesh's issuer under the renewed CA: its receipt on the CA row.
+                    if for_ca {
+                        write_ca_row(r, |row| {
+                            row.issuer_receipts.insert(m.name.clone(), mint.expires_at);
+                        })
+                        .await;
+                    }
+                    mint
+                }
                 None => continue,
             },
             (false, Some(mint)) => mint,
@@ -429,7 +447,7 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
 /// `RDM_CERT_RENEW_AT` of its TTL, a new CA is minted under the same root and held from then on, and
 /// every mesh of `view` is due for `mesh.issuer.renew` under it. The trust set is unchanged: the new CA
 /// chains to the root every node already trusts. One span, `rdm.node_admin.ca.update.via-renewal`.
-fn renew_ca(r: &Renewals, view: &Topology, now: u64) {
+async fn renew_ca(r: &Renewals, view: &Topology, now: u64) {
     let Some((_, expires, renew_at)) = r.issuer.ca_dates() else { return };
     if now < renew_at {
         return;
@@ -443,12 +461,24 @@ fn renew_ca(r: &Renewals, view: &Topology, now: u64) {
             span.record("outcome", "minted");
             r.ca_due.lock().unwrap().extend(meshes);
             span.in_scope(|| tracing::info!("the fabric CA is renewed under the same root: every mesh's issuer is re-minted under it"));
+            tracing::Instrument::instrument(write_ca_row(r, |row| *row = crate::fabric_storage::CaRow { expires_at: ca.expiry_ms(), previous_expires_at: previous, issuer_receipts: Default::default() }), span).await;
         }
         Ok(None) => {}
         Err(e) => {
             span.record("outcome", "refused");
             span.in_scope(|| tracing::warn!(error = %e, "the fabric CA could not be renewed: tried again next tick"));
         }
+    }
+}
+
+/// Change the CA row of the Fabric record the fabric-primary writes, as `change` says (fabric-ca-renew.md
+/// "Receipt": the CA row carries each mesh's issuer receipt). A store that refuses is named on the span
+/// and the next tick writes again.
+async fn write_ca_row(r: &Renewals, change: impl FnOnce(&mut crate::fabric_storage::CaRow)) {
+    let Some((storage, fabric_id)) = r.fabric.get() else { return };
+    let written = r.caches.update_fabric(&**storage, fabric_id, None, |record| change(record.ca.get_or_insert_with(Default::default))).await;
+    if let Err(e) = written {
+        tracing::warn!(error = %e, "the CA row is not written: written again next tick");
     }
 }
 

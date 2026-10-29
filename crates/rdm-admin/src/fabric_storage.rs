@@ -129,6 +129,41 @@ pub struct FabricRecord {
     /// deleted by RDM.
     #[serde(default)]
     pub previous_topology_storage_providers: Vec<String>,
+    /// The fabric CA's row (fabric-ca-renew.md "fabric.ca.renew": "write the CA row"), written by the
+    /// fabric-primary at each CA renewal; `None` before the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca: Option<CaRow>,
+    /// The root rotation's row (fabric-ca-renew.md "fabric.root.update": "the roots row is durable and
+    /// a successor continues from it"); `None` while no rotation was ever asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roots: Option<RootsRow>,
+}
+
+/// The fabric CA's row (fabric-ca-renew.md "fabric.ca.renew"): the CA's expiry, the one it replaced,
+/// and each mesh's issuer receipt under it; the renewal is complete when every mesh of the view has one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaRow {
+    /// When the current CA expires, rafka-time ms.
+    pub expires_at: u64,
+    /// When the CA it replaced expires, rafka-time ms.
+    pub previous_expires_at: u64,
+    /// Each mesh's issuer re-minted under this CA: the issuer's expiry, by mesh name.
+    #[serde(default)]
+    pub issuer_receipts: std::collections::BTreeMap<String, u64>,
+}
+
+/// The root rotation's row (fabric-ca-renew.md "fabric.root.update"): its phase, the roots of the
+/// rotation as public keys in hex (the old first, then the new), and the bound it must retire by,
+/// the old anchor's own expiry (the expiry of the last CA it signed), past which `fabrics.get` surfaces
+/// `roots: stalled`. The root secret is never in a row (fabric-certs.md §Custody).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootsRow {
+    /// The rotation's phase.
+    pub phase: rdm_core::status::RootsPhase,
+    /// The old root and the new, each an ed25519 public key as hex.
+    pub roots: Vec<String>,
+    /// The old anchor's own expiry, rafka-time ms.
+    pub expires_at: u64,
 }
 
 /// The `topology_storage_provider` of a record written before the field: RDM's file backend.
@@ -139,7 +174,7 @@ pub(crate) fn file_provider() -> Option<String> {
 impl FabricRecord {
     /// The record of `identity`, no event applied yet.
     pub fn new(identity: FabricIdentity) -> Self {
-        Self { fabric_id: identity.fabric_id, name: identity.name, events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new() }
+        Self { fabric_id: identity.fabric_id, name: identity.name, events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None }
     }
 
     /// The fabric's identity.
