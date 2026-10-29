@@ -1077,3 +1077,337 @@ impl AdminRunner {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::accepted::{FabricTopology, MeshTopology};
+    use crate::build::MeshDesired;
+    use crate::build_state::{BuildAccepted, BuildStateAdapter as _, MemoryBuildStateAdapter};
+    use crate::deployment::pipeline::DeleteStep;
+    use crate::deployment::process::ProcessDeploymentProvider;
+    use crate::lifecycle::{HookRegistry, LifecycleTransitionPipeline, MemoryReceiptLog};
+    use crate::model::{Fabric, ScopeStatus};
+    use rdm_transport::topology::{Backbone, TopologyView};
+    use std::net::SocketAddr;
+
+    /// CONTRACT: docs/architecture/lifecycles/mesh-delete.md:166
+    /// "Each member's `NodeStopped` and `NodeDeleted` are [node.delete](node-delete.md)'s"
+    #[tokio::test]
+    async fn delete_mesh_and_mesh_left_after_delete_resume_from_receipts_and_record_mesh_left_on_final_primary_exit() {
+        let ep = rdm_transport::endpoint::bind(
+            iroh::SecretKey::from_bytes(&[37u8; 32]),
+            "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+        )
+        .await
+        .unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(5_000_000);
+        let fabric_id = FabricId::mint();
+        let mesh1_id = MeshId::mint();
+        let mesh2_id = MeshId::mint();
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let node_id = NodeId::mint();
+        let incarnation = IncarnationId::mint();
+
+        let topology_view = TopologyView::join(
+            &gossip,
+            &ep,
+            &fabric_id,
+            "mesh1",
+            &mesh1_id,
+            "mesh1.admin.1",
+            Arc::new(time.clone()),
+            vec![],
+            &[],
+        )
+        .await
+        .unwrap();
+        let backbone = Backbone::join(
+            &gossip,
+            &ep,
+            &topology_view,
+            "mesh1",
+            rdm_core::PublisherId {
+                node: "mesh1.admin.1".to_string(),
+                incarnation: incarnation.clone(),
+                node_id: node_id.clone(),
+            },
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let dir = crate::test_support::tempdir("admin-mesh-delete-unit");
+        let providers = crate::storage_backend::TopologyStorageProviders::file(dir.clone());
+        let scope = crate::storage_backend::StorageScope {
+            data_dir: dir.clone(),
+            fabric_id: fabric_id.clone(),
+            own_mesh: "mesh1".into(),
+            writer: incarnation.clone(),
+            node_id: node_id.clone(),
+        };
+        let topology_storage = crate::storage_backend::TopologyStorageHandle::open(&providers, "file", scope)
+            .await
+            .unwrap();
+        let storage_changes = Arc::new(crate::storage_change::StorageChanges::new(
+            topology_storage,
+            providers,
+            fabric_id.clone(),
+            node_id.clone(),
+        ));
+
+        let node_rpc = crate::node_rpc::ProcessNodeRpc::new(
+            Arc::new(rdm_transport::LiveNodeResolver::default()),
+            ep.clone(),
+        );
+        let provider_dyn: Arc<dyn DeploymentProvider> = Arc::new(ProcessDeploymentProvider::new());
+        let records = Arc::new(Records::default());
+        let topology = Arc::new(RwLock::new(Topology {
+            fabric: Fabric {
+                id: fabric_id.clone(),
+                name: "fab".into(),
+                status: ScopeStatus::Ready,
+                provider: ProviderKind::Process,
+            },
+            meshes: Vec::new(),
+            nodes: Vec::new(),
+        }));
+        let adapter = Arc::new(MemoryBuildStateAdapter::new());
+        let handover = Arc::new(crate::fabric_handover::HandoverDoor {
+            fabric: "fab".into(),
+            me: me.clone(),
+            node_id: node_id.clone(),
+            incarnation: incarnation.clone(),
+            topology: topology.clone(),
+            digest_view: topology_view.digest_view.clone(),
+            topology_view: topology_view.clone(),
+            backbone: backbone.clone(),
+            client: node_rpc.client.clone(),
+            records: records.clone(),
+            locks: Default::default(),
+            memo: Default::default(),
+            decisions: Arc::default(),
+            project_view: Arc::new(|| Box::pin(async {})),
+            finish_writes: Arc::new(|| Box::pin(async {})),
+            looker: crate::seat_watch::Looker {
+                me: me.clone(),
+                me_id: node_id.clone(),
+                topology_view: topology_view.clone(),
+                client: node_rpc.client.clone(),
+                provider: provider_dyn.clone(),
+                nodes: None,
+                heard_again: Default::default(),
+                connections: None,
+                commands: None,
+            },
+        });
+        let template = LaunchTemplate {
+            fabric: "fab".into(),
+            fabric_id: fabric_id.clone(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
+            seeds: vec![],
+            launcher: rdm_core::launch::Launcher {
+                name: me.clone(),
+                node_id: node_id.clone(),
+                incarnation: incarnation.clone(),
+            },
+            env: BTreeMap::new(),
+            data_root: dir.clone(),
+            store_dir: dir.clone(),
+            issuing: None,
+            roots: Default::default(),
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
+            binding: None,
+        };
+        let nodes_storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let mesh_storage = Arc::new(crate::storage::MemoryMeshStorage::default());
+        let fabric_storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::default());
+        records.set_status(
+            nodes_storage.clone(),
+            mesh_storage.clone(),
+            fabric_storage.clone(),
+            "mesh1".into(),
+            me.clone(),
+            node_id.clone(),
+        );
+        records.set_rows(Arc::new(
+            crate::node_rows::NodeRows::new(
+                me.clone(),
+                node_id.clone(),
+                topology.clone(),
+                nodes_storage.clone(),
+            )
+            .with_written(records.caches.nodes.clone()),
+        ));
+        let runner = Arc::new(AdminRunner {
+            storage_changes,
+            drives: Arc::new(crate::build_drive::Drives::default()),
+            listeners: Default::default(),
+            mesh_deleter: Arc::default(),
+            connections: None,
+            nodes_storage,
+            mesh_storage: mesh_storage.clone(),
+            fabric_storage,
+            provider: provider_dyn,
+            joins: Arc::new(crate::join::Joins::default()),
+            observer: Arc::new(TopologyObserver {
+                digest_view: topology_view.digest_view.clone(),
+                client: Some(node_rpc.client.clone()),
+                commands: Arc::default(),
+                authority: Arc::default(),
+                handover: Arc::default(),
+                unreachable: records.unreachable.clone(),
+            }),
+            records: records.clone(),
+            builds: adapter.clone(),
+            local: adapter.clone(),
+            template,
+            admin_env: BTreeMap::new(),
+            lifecycle: LifecycleTransitionPipeline::new(
+                HookRegistry::new().build().unwrap(),
+                Arc::new(MemoryReceiptLog::default()),
+            ),
+            handles: Mutex::new(HashMap::new()),
+            topology,
+            fabric: "fab".into(),
+            fabric_id: fabric_id.clone(),
+            fabric_provider: ProviderKind::Process,
+            digest_view: topology_view.digest_view.clone(),
+            me: me.clone(),
+            node_id: node_id.clone(),
+            endpoint: Some(ep.clone()),
+            node_rpc,
+            lifecycle_events: Arc::new(GossipLifecycle {
+                topology_view,
+                backbone,
+                me: me.clone(),
+                mesh_deleter: Arc::default(),
+                project: None,
+                authority: Arc::default(),
+            }),
+            leaves: Arc::new(crate::mesh_delete::MeshDeleteView::default()),
+            mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),
+            handover,
+            issuer: Arc::new(crate::certs::CertIssuer::no_certs(time)),
+        });
+
+        // Set up a Build with `mesh.delete:<mesh2_id>` and its `MeshDeleted` completion receipt.
+        let build_id = crate::build::BuildId::mint();
+        let mut fab_top = FabricTopology::root("fab", "mesh1", mesh1_id);
+        fab_top.meshes.insert(
+            "mesh2".into(),
+            MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1)])),
+        );
+        adapter
+            .publish_accepted(&BuildAccepted {
+                build_id: build_id.clone(),
+                topology: fab_top,
+                submitted_change: None,
+                submitted_at_ms: 1000,
+            })
+            .await
+            .unwrap();
+
+        let final_id = NodeId::mint();
+        let final_inc = IncarnationId::mint();
+        runner
+            .nodes_storage
+            .put_node(&crate::storage::NodeRow::new(
+                "mesh2.admin.1".parse().unwrap(),
+                final_id.clone(),
+                NodeStatus::Deleted,
+            ))
+            .await
+            .unwrap();
+        let final_birth = RosterBirth {
+            node: "mesh2.admin.1".into(),
+            node_id: final_id.to_string(),
+            incarnation_id: final_inc.to_string(),
+        };
+        let final_proof = RuntimeProof {
+            deployment_id: "dep-final".into(),
+            provider: "process".into(),
+            control_domain_fingerprint: "dom-1".into(),
+            locator_kind: "process".into(),
+            locator_fingerprint: "loc-1".into(),
+        };
+        let outer = crate::mesh_delete::operation(&mesh2_id);
+        let manifest = ExitManifest {
+            mesh_id: mesh2_id.to_string(),
+            roster: vec![final_birth.clone()],
+            final_primary: final_birth.clone(),
+            final_runtime: Some(final_proof.clone()),
+            receipts: Vec::new(),
+        };
+        let key = MeshDeleteKey {
+            mesh_id: mesh2_id.clone(),
+            build_id: build_id.clone(),
+            attempt: 1,
+            operation: outer.clone(),
+        };
+        crate::mesh_delete::record_completion(&*adapter, &key, "mesh1.admin.1", &manifest)
+            .await
+            .unwrap();
+
+        // 1. `delete_mesh` resumes after `MeshDeleted` completion (`OwnerResume::Deleted`) and returns `Ok(())`.
+        records.meshes.lock().unwrap().insert("mesh2".into(), mesh2_id.clone());
+        assert_eq!(runner.delete_mesh(&build_id, 1, "mesh2", &mesh2_id).await, Ok(()));
+
+        // 2. `mesh_left_after_delete` records `MeshLeft` and drops `mesh2` from `records.meshes` once the final
+        //    primary's `TerminateRuntime` receipt is present on its `node.delete` Build.
+        let del_op = "node.delete:mesh2.admin.1".to_string();
+        let term = TerminalReceipt {
+            node: "mesh2.admin.1".into(),
+            node_id: final_id.to_string(),
+            incarnation_id: final_inc.to_string(),
+            runtime: Some(final_proof),
+            exit_code: Some(0),
+            verdict: None,
+            data_dir: None,
+        };
+        adapter
+            .append_step_receipt(&BuildStepReceipt {
+                mesh: None,
+                build_id: build_id.clone(),
+                attempt: 1,
+                operation: del_op.clone(),
+                step: DeleteStep::TerminateRuntime.name().into(),
+                outcome: StepOutcome::Complete,
+                output: serde_json::to_value(&term).ok(),
+                executor: Some("mesh1.admin.1".into()),
+            })
+            .await
+            .unwrap();
+
+        let op = rdm_core::LifecycleOp {
+            build_id: build_id.to_string(),
+            attempt: 1,
+            operation: del_op,
+            node_id: final_id,
+            incarnation: final_inc,
+            name: "mesh2.admin.1".parse().unwrap(),
+            event_at_rafka_ms: 5_000_000,
+            traceparent: None,
+            tracestate: None,
+        };
+        assert_eq!(
+            adapter.mesh_deleted_of(&op.node_id, &op.incarnation).await.unwrap(),
+            Some((build_id.clone(), 1, outer.clone()))
+        );
+        runner.mesh_left_after_delete(&op).await;
+        assert_eq!(runner.mesh_left_in(&op, &build_id, 1, &outer).await, Ok("already-applied"));
+        assert!(!records.meshes.lock().unwrap().contains_key("mesh2"));
+
+        // 3. `delete_mesh` also returns `Ok(())` when `OwnerResume::Left` is reached.
+        records.meshes.lock().unwrap().insert("mesh2".into(), mesh2_id.clone());
+        assert_eq!(runner.delete_mesh(&build_id, 1, "mesh2", &mesh2_id).await, Ok(()));
+        assert!(!records.meshes.lock().unwrap().contains_key("mesh2"));
+
+        ep.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
