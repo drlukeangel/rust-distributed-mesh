@@ -520,7 +520,6 @@ fn a_consumer_that_acknowledges_before_it_records_fails_the_conformance_harness(
 /// every stream frame is acked once its owner records and accepts it (`acks_sent` and `acks_received`
 /// equal the recorded frame count on every stream, and the producer owes nothing).
 #[test]
-#[ignore = "page/code difference: node-rpc §31 / rdm#206"]
 fn every_stream_frame_is_acked_once_its_owner_can_recover_it_under_concurrent_consumers() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-conformance-accepted-after-record-concurrent").expect("the cell's evidence file can be created");
     capture.run(8, async {

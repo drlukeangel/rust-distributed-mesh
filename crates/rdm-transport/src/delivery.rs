@@ -200,9 +200,12 @@ impl AckOnRecovery {
         (&self.invocation, self.seq)
     }
 
-    /// The owner can recover the frame: ack it on the stream its latest copy arrived on.
+    /// The owner can recover the frame: ack it on the stream its latest copy arrived on. The frame
+    /// stays owed until its ack is written, so the direction the ack goes on is held open for it
+    /// (`unrecovered_on`): a direction finished while the ack was still being written took no ack
+    /// (rdm#206: `via-ack-not-written`, `Gone("the direction is closed: it was finished")`).
     pub(crate) async fn write(self) {
-        let held = self.d.inner.st.lock().unwrap().calls.get_mut(&self.invocation).and_then(|s| s.unrecovered.remove(&self.delivery_seq));
+        let held = self.d.inner.st.lock().unwrap().calls.get(&self.invocation).and_then(|s| s.unrecovered.get(&self.delivery_seq).cloned());
         let Some((ack, to)) = held else {
             tracing::info_span!("rdm.node_rpc.delivery.reject.via-ack-without-invocation", delivery_id = %self.invocation, seq = self.seq, frame_delivery_seq = self.delivery_seq)
                 .in_scope(|| tracing::warn!("the invocation holds no owed ack for this frame: no ack is written"));
@@ -213,6 +216,9 @@ impl AckOnRecovery {
                 self.d.write_ack(out, &ack, AckOf::Response).await;
             }
             AckTo::NewStream(conn) => self.d.ack_on_new_stream(conn, &ack, AckOf::Response).await,
+        }
+        if let Some(slot) = self.d.inner.st.lock().unwrap().calls.get_mut(&self.invocation) {
+            slot.unrecovered.remove(&self.delivery_seq);
         }
     }
 }
