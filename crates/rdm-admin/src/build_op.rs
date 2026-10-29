@@ -1090,3 +1090,134 @@ pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc
 fn build_id_of(id: &str) -> Result<BuildId, BuildReply> {
     BuildId::parse(id).map_err(|e| rdm_core::reply::build::rejected("invalid-request".into(), format!("the request names a Build id that is not a Crockford id: {e}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::accepted::{FabricTopology, MeshTopology};
+    use crate::build::MeshDesired;
+    use crate::build_state::{BuildAccepted, BuildStateAdapter as _, MemoryBuildStateAdapter};
+    use crate::control_plane::InProgress;
+    use crate::model::{MeshId, NodeId, NodeKind};
+    use rdm_core::meta::NodeSpec;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// CONTRACT: docs/architecture/build.md:453
+    /// "One writer per key: the fabric-primary writes the Fabric record and every topology attempt's Build facts"
+    #[tokio::test]
+    async fn refusal_reply_and_with_entries_translate_refusals_and_populate_plan_entry_specs() {
+        // 1. `refusal_reply` maps each control-plane `Refusal` variant to its typed `BuildReply`.
+        let held_id = BuildId::mint();
+        assert!(matches!(
+            refusal_reply(Refusal::BadRequest("bad".into())),
+            BuildReply::Rejected { ref reason, ref detail } if reason == "invalid-request" && detail == "bad"
+        ));
+        assert!(matches!(
+            refusal_reply(Refusal::NotFound("missing".into())),
+            BuildReply::Rejected { ref reason, ref detail } if reason == "not-found" && detail == "missing"
+        ));
+        assert!(matches!(
+            refusal_reply(Refusal::Conflict("clash".into())),
+            BuildReply::Rejected { ref reason, ref detail } if reason == "conflict" && detail == "clash"
+        ));
+        assert!(matches!(
+            refusal_reply(Refusal::BuildInProgress(InProgress {
+                current_build_id: held_id.clone(),
+                mesh: Some("mesh1".into()),
+                held_by: Some("mesh1.admin.1".into()),
+            })),
+            BuildReply::BuildInProgress { ref current_build_id, .. } if current_build_id == held_id.as_str()
+        ));
+        assert!(matches!(
+            refusal_reply(Refusal::NotClaimant {
+                mesh: "mesh1".into(),
+                fabric_primary: Some("mesh1.admin.1".into()),
+                mesh_primary: Some("mesh1.admin.1".into()),
+            }),
+            BuildReply::NotClaimant { .. }
+        ));
+        assert!(matches!(
+            refusal_reply(Refusal::NotPrimary(Some("mesh1.admin.1".into()))),
+            BuildReply::NotFabricPrimary { fabric_primary: Some(ref fp) } if fp == "mesh1.admin.1"
+        ));
+        assert!(matches!(
+            refusal_reply(Refusal::AttemptTaken("taken".into())),
+            BuildReply::AttemptTaken { ref detail } if detail == "taken"
+        ));
+        assert!(matches!(
+            refusal_reply(Refusal::Unavailable("wait".into())),
+            BuildReply::NotReady { ref reason } if reason == "wait"
+        ));
+        assert!(matches!(
+            refusal_reply(Refusal::State(BuildStateError::SeatYielded {
+                node: "mesh1.admin.1".into(),
+                by: "revision 2".into(),
+                to: None,
+            })),
+            BuildReply::SeatYielded { .. }
+        ));
+
+        // 2. `with_entries` populates `EntrySpec` from the stored Build's accepted topology for create/config ops,
+        //    and leaves plans without create/config ops untouched without reading the store.
+        let adapter = MemoryBuildStateAdapter::new();
+        let build_id = BuildId::mint();
+        let node_path: PathName = "mesh1.rpc.1".parse().unwrap();
+
+        let stop_only = RunPlan {
+            operations: vec![BuildOperation::StopNode {
+                node: node_path.clone(),
+                node_id: NodeId::mint(),
+                from_incarnation: IncarnationId::mint(),
+            }],
+            hand_off_to: None,
+        };
+        let untouched = with_entries(&adapter, &build_id, stop_only.clone()).await.unwrap();
+        assert_eq!(untouched.operations.len(), 1);
+
+        let mut mesh_top = MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]));
+        let mut spec = mesh_top.spec(&node_path).unwrap().clone();
+        spec.tags = BTreeSet::from(["role-rpc".to_string()]);
+        spec.config = BTreeMap::from([("k".to_string(), "v".to_string())]);
+        mesh_top.set_spec(spec).unwrap();
+        let mut fab_top = FabricTopology::root("fab", "mesh1", MeshId::mint());
+        fab_top.meshes.insert("mesh1".into(), mesh_top);
+
+        adapter
+            .publish_accepted(&BuildAccepted {
+                build_id: build_id.clone(),
+                topology: fab_top,
+                submitted_change: None,
+                submitted_at_ms: 1000,
+            })
+            .await
+            .unwrap();
+
+        let plan_with_create = RunPlan {
+            operations: vec![
+                BuildOperation::CreateNode {
+                    node: node_path.clone(),
+                    over: None,
+                    executable: None,
+                    entry: None,
+                },
+                BuildOperation::UpdateConfig {
+                    node: node_path.clone(),
+                    entry: None,
+                },
+            ],
+            hand_off_to: None,
+        };
+        let populated = with_entries(&adapter, &build_id, plan_with_create).await.unwrap();
+        for op in &populated.operations {
+            match op {
+                BuildOperation::CreateNode { entry, .. } | BuildOperation::UpdateConfig { entry, .. } => {
+                    let spec = entry.as_ref().expect("entry populated from accepted topology");
+                    assert_eq!(spec.tags, BTreeSet::from(["role-rpc".to_string()]));
+                    assert_eq!(spec.config.get("k").map(String::as_str), Some("v"));
+                }
+                other => panic!("unexpected op: {other:?}"),
+            }
+        }
+    }
+}
+
