@@ -1016,7 +1016,7 @@ impl AdminRunner {
                 let (record, handle) = self.handle_for(&n).await?;
                 (Node { name: node.clone(), ..record }, handle)
             }
-            None => self.handles.lock().unwrap().get(node).cloned().filter(|(rec, _)| pin.is(rec)).ok_or_else(|| format!("{op}:{node}: birth {} at incarnation {} is not in this admin's view and no runtime handle of it is held", pin.node_id, pin.incarnation.as_str()))?,
+            None => self.handles.lock().unwrap().get(node).cloned().filter(|(rec, _)| pin.is(rec)).ok_or_else(|| crate::executor::RunEnd::Incomplete(format!("{op}:{node}: birth {} at incarnation {} is not in this admin's view and no runtime handle of it is held", pin.node_id, pin.incarnation.as_str())))?,
         };
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = DeleteRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, unreached: false };
@@ -1153,13 +1153,13 @@ impl AdminRunner {
 
     /// The stopped birth `from` at `node`: its record and exact runtime, and what the rejoin is
     /// verified against.
-    pub(crate) async fn stopped_birth(&self, op: &str, node: &PathName, pin: Option<&crate::build::PinnedBirth>) -> Result<(Node, DeploymentHandle, crate::join::Deployed), String> {
+    pub(crate) async fn stopped_birth(&self, op: &str, node: &PathName, pin: Option<&crate::build::PinnedBirth>) -> Result<(Node, DeploymentHandle, crate::join::Deployed), crate::executor::RunEnd> {
         let seen = match pin {
             // The pinned birth, verified against this admin's view before any effect (build.md §4.4).
-            Some(pin) => pin.held_in(&*self.topology.read().await, &format!("{op}:{node}"), node).map_err(|r| r.to_string())?,
+            Some(pin) => pin.held_in(&*self.topology.read().await, &format!("{op}:{node}"), node).map_err(|r| crate::executor::RunEnd::failed(r.to_string()))?,
             None => self.topology.read().await.node(node).cloned(),
         };
-        let seen = seen.ok_or_else(|| format!("{op}:{node} is not in this admin's view"))?;
+        let seen = seen.ok_or_else(|| crate::executor::RunEnd::Incomplete(format!("{op}:{node} is not in this admin's view")))?;
         let (record, handle) = self.handle_for(&seen).await?;
         // The record the pipeline starts is the view's: it carries the endpoint, the address and the data dir the birth was admitted at.
         let record = Node { status: seen.status, stopped: seen.stopped, ..record };
@@ -1223,7 +1223,7 @@ impl AdminRunner {
                     // "Failure": a runtime whose delete has no receipt is never reported deleted).
                     None => match self.begun_delete_birth(build_id, node).await?.filter(|b| pin.is(b)) {
                         Some(birth) => self.handle_for(&birth).await?,
-                        None => return Err(format!("node.delete:{node}: {} holds neither birth {} at incarnation {} in its view nor a runtime handle of it", self.held_name(), pin.node_id, pin.incarnation.as_str()).into()),
+                        None => return Err(crate::executor::RunEnd::Incomplete(format!("node.delete:{node}: {} holds neither birth {} at incarnation {} in its view nor a runtime handle of it", self.held_name(), pin.node_id, pin.incarnation.as_str()))),
                     },
                 }
             }
@@ -1484,11 +1484,15 @@ impl AdminRunner {
     /// puts the entry's config as `node.config.update` does (row first, then the node) and writes the
     /// entry's storage and placement onto the row with it; `CreateTags` / `DeleteTags` put the labels as
     /// `node.tags.create` / `node.tags.delete` do. The node is the birth this admin's view holds at the
-    /// path; one the view does not hold fails the operation by name, nothing written.
+    /// path; one the view does not hold yet ends the step incomplete, nothing written.
     async fn apply_in_place(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
         use rdm_core::status::{StatusReply, StatusRequest, TagScope};
         let me = self.held_name();
         let key = op.key();
+        let held = self.topology.read().await.node(node).and_then(|n| n.incarnation_id.clone().map(|incarnation| (n.node_id.clone(), incarnation)));
+        let Some((node_id, incarnation)) = held else {
+            return Err(crate::executor::RunEnd::Incomplete(format!("{key}: {me} holds no birth at {node}; nothing is written")));
+        };
         let template = self.template_for(node.kind, &node.mesh).await?;
         let step = match op {
             BuildOperation::UpdateConfig { .. } => "UpdateConfig",
@@ -1498,10 +1502,6 @@ impl AdminRunner {
         let put = async {
             let Some(authority) = self.observer.authority.get() else {
                 return Err(format!("{key}: {me} holds no status authority yet to write the row of {node}; nothing is written"));
-            };
-            let held = self.topology.read().await.node(node).and_then(|n| n.incarnation_id.clone().map(|incarnation| (n.node_id.clone(), incarnation)));
-            let Some((node_id, incarnation)) = held else {
-                return Err(format!("{key}: {me} holds no birth at {node}; nothing is written"));
             };
             let reply = match op {
                 BuildOperation::UpdateConfig { entry, .. } => {
@@ -1584,7 +1584,7 @@ impl AdminRunner {
                 let held = seen.or_else(|| self.handles.lock().unwrap().get(node).map(|(n, _)| n.clone()));
                 match held.and_then(|n| n.incarnation_id.clone().map(|incarnation| crate::build::PinnedBirth { node_id: n.node_id.clone(), incarnation })) {
                     Some(b) => b,
-                    None => return Err(crate::executor::RunEnd::failed(format!("{key}: the step acts on the node an earlier step of the Build made at {node}, and {me} holds no birth at {node}"))),
+                    None => return Err(crate::executor::RunEnd::Incomplete(format!("{key}: the step acts on the node an earlier step of the Build made at {node}, and {me} holds no birth at {node}"))),
                 }
             }
         };
@@ -2193,5 +2193,210 @@ mod tests {
         assert_eq!(hash_outcomes(&capture, &file.executable), std::collections::BTreeMap::from([("refused".to_string(), 1), ("refused-shared".to_string(), 3)]));
         let s = capture.named("rdm.node_admin.deployment.resolve.via-executable-hash");
         eprintln!("span rdm.node_admin.deployment.resolve.via-executable-hash trace_id={} {:?}", s[0].trace_id, s.iter().map(|s| (s.attributes.get("launch_id"), s.attributes.get("outcome"))).collect::<Vec<_>>());
+    }
+
+    async fn runner_rig(cell: &str) -> (std::path::PathBuf, Arc<AdminRunner>, Arc<crate::build_state::MemoryBuildStateAdapter>, crate::build::BuildId) {
+        use crate::accepted::{FabricTopology, MeshTopology};
+        use crate::build::MeshDesired;
+        use crate::build_state::BuildAccepted;
+        use crate::deployment::process::ProcessDeploymentProvider;
+        use crate::lifecycle::{HookRegistry, LifecycleTransitionPipeline, MemoryReceiptLog};
+        use rdm_transport::topology::{Backbone, TopologyView};
+
+        let dir = crate::test_support::tempdir(cell);
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[41u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let fabric_id = FabricId::mint();
+        let mesh1_id = crate::model::MeshId::mint();
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(5_000_000);
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let node_id = NodeId::mint();
+        let incarnation = IncarnationId::mint();
+
+        let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh1_id, "mesh1.admin.1", Arc::new(time.clone()), vec![], &[]).await.unwrap();
+        let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: incarnation.clone(), node_id: node_id.clone() }, vec![]).await.unwrap();
+        let providers = crate::storage_backend::TopologyStorageProviders::file(dir.clone());
+        let scope = crate::storage_backend::StorageScope { data_dir: dir.clone(), fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: incarnation.clone(), node_id: node_id.clone() };
+        let topology_storage = crate::storage_backend::TopologyStorageHandle::open(&providers, "file", scope).await.unwrap();
+        let storage_changes = Arc::new(crate::storage_change::StorageChanges::new(topology_storage, providers, fabric_id.clone(), node_id.clone()));
+        let node_rpc = crate::node_rpc::ProcessNodeRpc::new(Arc::new(rdm_transport::LiveNodeResolver::default()), ep.clone());
+        let provider_dyn: Arc<dyn DeploymentProvider> = Arc::new(ProcessDeploymentProvider::new());
+        let records = Arc::new(Records::default());
+        let mut admin_node = Node::allocated(me.clone());
+        admin_node.node_id = node_id.clone();
+        admin_node.incarnation_id = Some(incarnation.clone());
+        admin_node.status = NodeStatus::Ready;
+        admin_node.is_primary = true;
+        admin_node.is_fabric_primary = true;
+        let topology = Arc::new(RwLock::new(Topology {
+            fabric: crate::model::Fabric { id: fabric_id.clone(), name: "fab".into(), status: crate::model::ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![crate::model::Mesh { id: Some(mesh1_id.clone()), name: "mesh1".into(), status: crate::model::ScopeStatus::Ready }],
+            nodes: vec![admin_node],
+        }));
+        let adapter = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        let handover = Arc::new(crate::fabric_handover::HandoverDoor {
+            fabric: "fab".into(),
+            me: me.clone(),
+            node_id: node_id.clone(),
+            incarnation: incarnation.clone(),
+            topology: topology.clone(),
+            digest_view: topology_view.digest_view.clone(),
+            topology_view: topology_view.clone(),
+            backbone: backbone.clone(),
+            client: node_rpc.client.clone(),
+            records: records.clone(),
+            locks: Default::default(),
+            memo: Default::default(),
+            decisions: Arc::default(),
+            project_view: Arc::new(|| Box::pin(async {})),
+            finish_writes: Arc::new(|| Box::pin(async {})),
+            looker: crate::seat_watch::Looker {
+                me: me.clone(),
+                me_id: node_id.clone(),
+                topology_view: topology_view.clone(),
+                client: node_rpc.client.clone(),
+                provider: provider_dyn.clone(),
+                nodes: None,
+                heard_again: Default::default(),
+                connections: None,
+                commands: None,
+            },
+        });
+        let template = LaunchTemplate {
+            fabric: "fab".into(),
+            fabric_id: fabric_id.clone(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
+            seeds: vec![],
+            launcher: rdm_core::launch::Launcher { name: me.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() },
+            env: BTreeMap::new(),
+            data_root: dir.clone(),
+            store_dir: dir.clone(),
+            issuing: None,
+            roots: Default::default(),
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
+            binding: None,
+        };
+        let nodes_storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let mesh_storage = Arc::new(crate::storage::MemoryMeshStorage::default());
+        let fabric_storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::default());
+        records.set_status(nodes_storage.clone(), mesh_storage.clone(), fabric_storage.clone(), "mesh1".into(), me.clone(), node_id.clone());
+        records.set_rows(Arc::new(crate::node_rows::NodeRows::new(me.clone(), node_id.clone(), topology.clone(), nodes_storage.clone()).with_written(records.caches.nodes.clone())));
+        let runner = Arc::new(AdminRunner {
+            storage_changes,
+            drives: Arc::new(crate::build_drive::Drives::default()),
+            listeners: Default::default(),
+            mesh_deleter: Arc::default(),
+            connections: None,
+            nodes_storage,
+            mesh_storage,
+            fabric_storage,
+            provider: provider_dyn,
+            joins: Arc::new(crate::join::Joins::default()),
+            observer: Arc::new(TopologyObserver {
+                digest_view: topology_view.digest_view.clone(),
+                client: Some(node_rpc.client.clone()),
+                commands: Arc::default(),
+                authority: Arc::default(),
+                handover: Arc::default(),
+                unreachable: records.unreachable.clone(),
+            }),
+            records,
+            builds: adapter.clone(),
+            local: adapter.clone(),
+            template,
+            admin_env: BTreeMap::new(),
+            lifecycle: LifecycleTransitionPipeline::new(HookRegistry::new().build().unwrap(), Arc::new(MemoryReceiptLog::default())),
+            handles: Mutex::new(HashMap::new()),
+            topology,
+            fabric: "fab".into(),
+            fabric_id,
+            fabric_provider: ProviderKind::Process,
+            digest_view: topology_view.digest_view.clone(),
+            me: me.clone(),
+            node_id,
+            endpoint: Some(ep),
+            node_rpc,
+            lifecycle_events: Arc::new(GossipLifecycle {
+                topology_view,
+                backbone,
+                me,
+                mesh_deleter: Arc::default(),
+                project: None,
+                authority: Arc::default(),
+            }),
+            leaves: Arc::new(crate::mesh_delete::MeshDeleteView::default()),
+            mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),
+            handover,
+            issuer: Arc::new(crate::certs::CertIssuer::no_certs(time)),
+        });
+        let build_id = crate::build::BuildId::mint();
+        let mut fab_top = FabricTopology::root("fab", "mesh1", mesh1_id);
+        fab_top.meshes.insert("mesh1".into(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])));
+        adapter.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: fab_top, submitted_change: None, submitted_at_ms: 1000 }).await.unwrap();
+        (dir, runner, adapter, build_id)
+    }
+
+    /// CONTRACT (build.md:338, Q274): "A pinned birth its view does not hold yet is incomplete
+    /// evidence, not a replacement: the step ends incomplete and resumes on that same pinned birth
+    /// when its view moves, never on a newer birth at its name." Another birth at the name is still
+    /// refused `birth-replaced`, and a permanent error on a held birth is still `Failed`.
+    #[tokio::test]
+    async fn a_pinned_birth_the_executors_view_does_not_hold_yet_ends_incomplete_while_birth_replaced_and_permanent_errors_fail() {
+        use crate::build::PinnedBirth;
+        use crate::executor::RunEnd;
+
+        let (dir, runner, builds, build_id) = runner_rig("pinned-birth-incomplete").await;
+        let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
+        let pinned = PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let ops = [
+            BuildOperation::DeleteLiveNode { node: rpc.clone(), exited: None, birth: Some(pinned.clone()) },
+            BuildOperation::StopNode { node: rpc.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
+            BuildOperation::DeleteConnections { node: rpc.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
+            BuildOperation::StartNode { node: rpc.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
+            BuildOperation::CreateTags { node: rpc.clone(), labels: std::collections::BTreeSet::from(["env".into()]) },
+            BuildOperation::Step { step: rdm_core::build::Step::Update { node: rpc.renamed(), name: rpc.clone() }, birth: None, entry: None },
+        ];
+
+        // 1. Not-yet-held birth in the executor's view: every operation ends Incomplete, and no
+        //    Failed step receipt is recorded.
+        for op in &ops {
+            let err = runner.run_op(&build_id, None, 1, op).await.expect_err("not-yet-held birth ends incomplete");
+            assert!(matches!(err, RunEnd::Incomplete(_)), "{} must end Incomplete when the view holds no birth yet: {err:?}", op.key());
+        }
+        assert!(builds.read_build(&build_id).await.unwrap().steps.is_empty(), "incomplete evidence writes no Failed step receipt");
+
+        // 2. Another birth at the name: refused `birth-replaced` (`RunEnd::Failed`), and the
+        //    replacement birth in the view is untouched.
+        let mut replacement = Node::allocated(rpc.clone());
+        replacement.node_id = NodeId::mint();
+        replacement.incarnation_id = Some(IncarnationId::mint());
+        replacement.status = NodeStatus::Ready;
+        let replacement_pin = PinnedBirth::of(&replacement).unwrap();
+        runner.topology.write().await.nodes.push(replacement);
+        for op in &ops[..4] {
+            let err = runner.run_op(&build_id, None, 1, op).await.expect_err("another birth at the name is refused");
+            match err {
+                RunEnd::Failed { reason, .. } => assert!(reason.starts_with("birth-replaced: "), "{}: {reason}", op.key()),
+                other => panic!("{} on a replaced birth must end Failed with birth-replaced, got {other:?}", op.key()),
+            }
+        }
+        assert_eq!(PinnedBirth::of(runner.topology.read().await.node(&rpc).unwrap()), Some(replacement_pin), "the replacement birth is untouched");
+
+        // 3. The view now holds the exact pinned birth, but no runtime record or status store is
+        //    present: that permanent error ends `RunEnd::Failed`, never `RunEnd::Incomplete`.
+        {
+            let mut v = runner.topology.write().await;
+            let n = v.nodes.iter_mut().find(|n| n.name == rpc).unwrap();
+            n.node_id = pinned.node_id.clone();
+            n.incarnation_id = Some(pinned.incarnation.clone());
+        }
+        for op in &ops[..5] {
+            let err = runner.run_op(&build_id, None, 1, op).await.expect_err("permanent error on a held birth fails");
+            assert!(matches!(err, RunEnd::Failed { .. }), "{} with a permanent error on a held birth must end Failed, got {err:?}", op.key());
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
