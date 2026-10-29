@@ -800,4 +800,127 @@ mod tests {
         assert_eq!((reported["outcome"].as_str(), reported["sends"].as_str(), reported["build_id"].as_str(), reported["attempt"].as_str()), (Some("opened"), Some("2"), Some("b8"), Some("8")), "the report ends once the fabric-primary opened the termination, naming its Build and attempt: {reported}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// CONTRACT (docs/architecture/lifecycles/node-investigation.md: "A caller whose record is deleted
+    /// is deleted, its runtime terminated, never re-admitted"; docs/architecture/node-rpc.md §43: "an
+    /// internal command is owed until it is answered or its target is gone"; Q217): when a mesh-primary
+    /// (`mesh2.admin.2`) decides a caller (`mesh2.admin.1`) `delete-deleted-birth` and reports its
+    /// termination before the fabric-primary holds the delete's `NodeDeleted` receipt or deleted row,
+    /// `ControlPlane::open_terminate` refuses `unknown-node`, `RecoverySubmitter::report_terminate` keeps
+    /// the termination report owed, and once the current Build holds the birth's `NodeDeleted` receipt,
+    /// the next send is admitted (`Recovery::Opened`).
+    #[tokio::test]
+    async fn a_deleted_births_terminate_refused_unknown_node_stays_owed_until_the_fabric_primary_holds_its_node_deleted_receipt() {
+        use rdm_core::build::{Build, BuildChange, BuildReply, BuildRequest, BuildSubmit, Disposition};
+        use rdm_core::views::AtlasView;
+        let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-terminate-unknown-node-owed").expect("the cell's evidence file can be created");
+        let mut admin = birth("mesh2.admin.2", NodeKind::NodeAdmin);
+        admin.is_primary = true;
+        let mut fp = birth("mesh1.admin.1", NodeKind::NodeAdmin);
+        fp.is_primary = true;
+        fp.is_fabric_primary = true;
+        let caller = birth("mesh2.admin.1", NodeKind::NodeAdmin);
+        let caller_inc = caller.incarnation_id.clone().unwrap();
+        let fabric_id = rdm_core::FabricId::mint();
+        let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process };
+        let meshes: Vec<crate::model::Mesh> = ["mesh1", "mesh2"].into_iter().map(|m| crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: m.into(), status: crate::model::ScopeStatus::Ready }).collect();
+        let planned = Topology { fabric: fabric.clone(), meshes: meshes.clone(), nodes: vec![fp.clone(), admin.clone(), caller.clone()] };
+        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), "mesh1.admin.1").await.unwrap();
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric: fabric.clone(), meshes: meshes.clone(), nodes: vec![fp.clone(), admin.clone()] }));
+        let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
+        for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
+            let mut r = NodeRow::new(n.name.clone(), n.node_id.clone(), status);
+            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
+            rows.put_node(&r).await.unwrap();
+        }
+
+        // The fabric-primary's real ControlPlane: its atlas holds no deleted row of caller yet, and its
+        // Build state receives the NodeDeleted receipt only after the first open_terminate is refused.
+        let fp_builds: Arc<dyn crate::build_state::BuildStateAdapter> = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        let fp_accepted = crate::accepted::AcceptedStore::seeded(&*fp_builds, fabric_id, crate::accepted::FabricTopology::of_observed(&planned), "mesh1.admin.1").await.unwrap();
+        let before = fp_builds.current().await.unwrap().unwrap();
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(1_000);
+        let cp = Arc::new(crate::control_plane::ControlPlane::new(fp_builds.clone(), fp_accepted, fp.name.clone(), planned.clone(), time));
+
+        let fp_key = iroh::SecretKey::generate();
+        let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let fp_addr = fp_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+        let terminates = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
+        let asked = terminates.clone();
+        let cp_served = cp.clone();
+        let fp_builds_served = fp_builds.clone();
+        let before_id = before.build_id.clone();
+        let before_attempt = before.attempt;
+        let server = rdm_transport::ServerBuilder::new()
+            .serve::<rdm_core::status::Status, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| async move {
+                Ok(match req {
+                    StatusRequest::GetAtlas => StatusReply::Atlas { atlas: AtlasView { nodes: Vec::new() } },
+                    other => StatusReply::NotReady { reason: format!("the cell's fabric-primary answers fabrics.atlas.get only, not {}", other.op()) },
+                })
+            })
+            .serve_stream::<Build, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer, req: BuildRequest, sink| {
+                let asked = asked.clone();
+                let cp = cp_served.clone();
+                let fp_builds = fp_builds_served.clone();
+                let before_id = before_id.clone();
+                async move {
+                    let BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Terminate { node, node_id, incarnation }) } = req else {
+                        return Ok(rdm_core::reply::build::malformed(rdm_core::outcome::MalformedKind::UnknownVariant));
+                    };
+                    let sends = {
+                        let mut a = asked.lock().unwrap();
+                        a.push((node.to_string(), node_id.to_string(), incarnation.as_str().to_string()));
+                        a.len()
+                    };
+                    let span = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "returned-birth", node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str());
+                    match cp.open_terminate(span, "returned-birth", node.clone(), node_id.clone(), incarnation.clone()).await {
+                        Ok(crate::control_plane::Recovery::Opened(o)) => {
+                            let _streaming = sink.started(BuildReply::Started { build_id: o.build_id.to_string(), attempt: o.attempt, disposition: Disposition::Created }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
+                            Ok(BuildReply::Complete { build_id: o.build_id.to_string(), attempt: o.attempt })
+                        }
+                        Ok(other) => panic!("expected Opened on send {sends}, got {other:?}"),
+                        Err(r) => {
+                            assert_eq!(sends, 1, "only the first send before NodeDeleted is refused: {r:?}");
+                            let operation = format!("node.delete:{node}");
+                            let op = rdm_core::LifecycleOp { build_id: before_id.to_string(), attempt: before_attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: node.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+                            fp_builds
+                                .append_step_receipt(&crate::build_state::BuildStepReceipt { mesh: None, build_id: before_id, attempt: before_attempt, operation, step: "NodeDeleted".into(), outcome: crate::build_state::StepOutcome::Complete, output: serde_json::to_value(&op).ok(), executor: None })
+                                .await
+                                .unwrap();
+                            Ok(crate::build_op::refusal_reply(r))
+                        }
+                    }
+                }
+            })
+            .build(rdm_transport::ServedBirth { node_id: fp.node_id.to_string(), incarnation: fp.incarnation_id.as_ref().unwrap().as_str().to_string() })
+            .unwrap();
+        let router = iroh::protocol::Router::builder(fp_ep.clone()).accept(rdm_transport::ALPN, server).spawn();
+        let resolver = Arc::new(rdm_transport::StaticResolver::new());
+        resolver.insert(rdm_transport::ResolvedNode { node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(rdm_transport::NodeRpcClient::new(ep.clone(), resolver));
+        let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, Some(client)).await;
+        let (_views, installed) = tokio::sync::watch::channel(0u64);
+        callers.watch_views(installed);
+        let (decision, outcome) = callers.decide(&atlas, "join", &caller.node_id, &caller_inc).await.expect("one decision of the deleted birth");
+        assert_eq!(decision.name(), "delete-deleted-birth", "the caller's own row is deleted (Q217)");
+        assert_eq!(outcome, "terminate-reported", "the termination report stays owed on unknown-node and succeeds once NodeDeleted is held");
+        let (_, spans) = decided(&capture).await;
+        let reported = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-returned-reported").map(|s| s["attributes"].clone()).unwrap_or_else(|| panic!("the deleted birth was reported for node.terminate: {spans:?}"));
+        let sent = terminates.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2, "the Terminate refused unknown-node is sent again and admitted once NodeDeleted is held: {sent:?} {reported}");
+        assert_eq!(
+            (reported["outcome"].as_str(), reported["sends"].as_str(), reported["build_id"].as_str(), reported["attempt"].as_str()),
+            (Some("opened"), Some("2"), Some(before.build_id.as_str()), Some((before.attempt + 1).to_string().as_str())),
+            "the report opens the next attempt of the current Build on the second send: {reported}"
+        );
+        ep.close().await;
+        let _ = router.shutdown().await;
+        fp_ep.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
