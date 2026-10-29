@@ -228,6 +228,7 @@ mod stopped_gc;
 mod store_root_boot;
 mod topology_read;
 mod fabric_create;
+mod fabric_states;
 mod fabric_delete;
 
 #[allow(dead_code)]
