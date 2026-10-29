@@ -983,3 +983,149 @@ fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() 
         let _ = &f.x;
     });
 }
+
+/// CONTRACT (docs/architecture/lifecycles/node-primary-update.md:47-60, 86-120):
+/// "3. For the `node-admin` type, NA1 finishes the writes it has issued before it calls NA2 ...
+/// 4. The primary calls `node.primary.update` on the successor's exact birth ...
+/// The call fails by name, and node investigation on the successor's exact birth decides (Q111):
+/// reached, the call is retried against it ...
+/// The successor is unheard after the update. When node investigation's verdict is anything but
+/// reached, the step fails by name, `the successor is unheard after the update: <verdict>` ...
+/// The commanded arm. When a node.primary.update the fabric-primary commanded ends, the old primary
+/// answers it with the Build carrier's terminal, `Failed { step, reason }` on op `0x21` ...
+/// Indeterminate after the update: the election resolves it. An identical retry of the call replays
+/// the same result before any revision check; a call with a conflicting payload for the same
+/// operation is refused by name."
+#[test]
+fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
+    use rdm_admin::build_drive::SeatMoveEnd;
+
+    let cap = trace_capture("fabric-handover-step-faults");
+    let spans = cap.spans.clone();
+    let _file = SpanFile(spans.clone());
+    cap.run(async {
+        // 1. Cut while finishing issued writes (step 3): while `writes_finish` is held `false`,
+        // a cut cancels `update_own_primaries` before any `0x21` call reaches the successor N.
+        let f = fabric_n_ready_on_probe(FabricPrimary::X).await;
+        f.p.writes_finish.send_replace(false);
+        let op = update_operation(Seat::MeshPrimary, "b-fault", 1, "node.stop:mesh1.admin.1");
+        tokio::select! {
+            res = f.p.door.update_own_primaries(Moving::MeshSeat, "b-fault", 1, &op, None) => {
+                panic!("update must wait on issued writes before calling successor, got {res:?}");
+            }
+            _ = async {
+                until("P enters finish_writes", || f.p.finished() == 1).await;
+            } => {}
+        }
+        assert!(
+            spans.named(UPDATED).is_empty(),
+            "cut at finish_writes must not call or install on successor N"
+        );
+
+        // 2. Release `writes_finish`, and inject a transient `NotReady` fault on N's first `0x21`
+        // call (`fabric_n_ready_on_probe`): P finishes writes, calls N (which fails `NotReady`),
+        // runs node investigation on N (`verdict = reached`), retries `PrimaryUpdate`, and succeeds.
+        f.p.writes_finish.send_replace(true);
+        let p_at_x = node_at(&f.x, "mesh1.admin.1").await;
+        let revisions = f
+            .x
+            .door
+            .command_update_primary(&p_at_x, "b-fault", 1, &op)
+            .await
+            .expect("commanded update recovers via node investigation retry when N is reached");
+        assert_eq!(
+            revisions,
+            vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)]
+        );
+        let looked = spans.named(INVESTIGATION);
+        assert_eq!(
+            looked
+                .iter()
+                .map(|l| (l["verdict"].clone(), l["retry"].clone()))
+                .collect::<Vec<_>>(),
+            vec![("reached".to_string(), "primary-updated".to_string())],
+            "{looked:?}"
+        );
+
+        // 3. Lost reply / indeterminate retry after installation: repeating the identical call to N
+        // replays `PrimaryUpdated` without re-installing, while a conflicting payload for the same
+        // operation is refused `RejectedConflictingPayload`.
+        let replay = send(
+            &f.p,
+            &f.n,
+            Request::PrimaryUpdate {
+                primaries: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)],
+                build_id: "b-fault".into(),
+                run: 1,
+                operation: op.clone(),
+            },
+        )
+        .await;
+        assert_eq!(
+            replay,
+            Reply::PrimaryUpdated {
+                revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)]
+            }
+        );
+        let conflict = send(
+            &f.p,
+            &f.n,
+            Request::PrimaryUpdate {
+                primaries: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 9)],
+                build_id: "b-fault".into(),
+                run: 1,
+                operation: op.clone(),
+            },
+        )
+        .await;
+        assert_eq!(
+            conflict,
+            Reply::RejectedConflictingPayload {
+                operation: op.clone()
+            }
+        );
+
+        // 4. Commanded arm when the successor is killed (`_router.shutdown()`): X commands N (now
+        // mesh1's mesh-primary at revision 4, with M as its only Ready successor once P is marked
+        // Dead in N's view) after M's router is shut down -> N investigates M, finds M unheard, and
+        // answers X with `Failed { step, reason }` on op `0x21`.
+        {
+            let mut tv = f.n.door.topology.write().await;
+            for node in &mut tv.nodes {
+                if node.name.to_string() == "mesh1.admin.1" {
+                    node.status = NodeStatus::Dead;
+                    node.is_primary = false;
+                } else if node.name.to_string() == "mesh1.admin.2" {
+                    node.is_primary = true;
+                }
+            }
+        }
+        let _ = f.m._router.shutdown().await;
+        let n_at_x = node_at(&f.x, "mesh1.admin.2").await;
+        let op2 = update_operation(Seat::MeshPrimary, "b-fault", 2, "node.stop:mesh1.admin.2");
+        let err = f
+            .x
+            .door
+            .command_update_primary(&n_at_x, "b-fault", 2, &op2)
+            .await
+            .expect_err("commanded update must fail when successor M is killed and unheard");
+        assert!(
+            matches!(
+                &err,
+                SeatMoveEnd::Failed { step, reason, .. }
+                    if step == "primary-update"
+                        && reason.contains("the successor is unheard after the update: mesh1.admin.3")
+            ),
+            "unexpected error: {err:?}"
+        );
+        let commands = spans.named(COMMAND);
+        assert!(
+            commands.iter().any(|c| {
+                c["to"] == "mesh1.admin.2"
+                    && c["outcome"] == "ended"
+                    && c["detail"].contains("the successor is unheard after the update: mesh1.admin.3")
+            }),
+            "expected ended command span at X naming the unheard successor: {commands:?}"
+        );
+    });
+}
