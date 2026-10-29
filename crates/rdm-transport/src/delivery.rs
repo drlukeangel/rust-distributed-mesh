@@ -185,6 +185,18 @@ pub(crate) enum AckTo {
     NewStream(Connection),
 }
 
+impl AckTo {
+    /// Whether `other` is the same place an ack goes: the same stream, or a new stream on the same
+    /// connection.
+    fn same(&self, other: &AckTo) -> bool {
+        match (self, other) {
+            (AckTo::Stream(a), AckTo::Stream(b)) => a.same(b),
+            (AckTo::NewStream(a), AckTo::NewStream(b)) => a.stable_id() == b.stable_id(),
+            _ => false,
+        }
+    }
+}
+
 /// A stream frame's ack, written once its owner can recover the frame (node-rpc.md §31, §43): never
 /// on the read alone. Until then the frame is owed: a copy the responder resends after a reconnect
 /// is not handed to the owner again, and moves the ack to the stream that copy arrived on.
@@ -204,21 +216,39 @@ impl AckOnRecovery {
     /// stays owed until its ack is written, so the direction the ack goes on is held open for it
     /// (`unrecovered_on`): a direction finished while the ack was still being written took no ack
     /// (rdm#206: `via-ack-not-written`, `Gone("the direction is closed: it was finished")`).
+    ///
+    /// A copy the responder resent while the ack was being written moved the owed ack to the stream
+    /// that copy arrived on (`Admitted::Duplicate`), and was held for this write: the ack is written
+    /// there too before the frame stops being owed, so the responder's owed frames are acked on the
+    /// stream it resent them on, never only on the one its cut ended.
     pub(crate) async fn write(self) {
-        let held = self.d.inner.st.lock().unwrap().calls.get(&self.invocation).and_then(|s| s.unrecovered.get(&self.delivery_seq).cloned());
-        let Some((ack, to)) = held else {
-            tracing::info_span!("rdm.node_rpc.delivery.reject.via-ack-without-invocation", delivery_id = %self.invocation, seq = self.seq, frame_delivery_seq = self.delivery_seq)
-                .in_scope(|| tracing::warn!("the invocation holds no owed ack for this frame: no ack is written"));
-            return;
-        };
-        match &to {
-            AckTo::Stream(out) => {
-                self.d.write_ack(out, &ack, AckOf::Response).await;
+        let mut first = true;
+        loop {
+            let held = self.d.inner.st.lock().unwrap().calls.get(&self.invocation).and_then(|s| s.unrecovered.get(&self.delivery_seq).cloned());
+            let Some((ack, to)) = held else {
+                if first {
+                    tracing::info_span!("rdm.node_rpc.delivery.reject.via-ack-without-invocation", delivery_id = %self.invocation, seq = self.seq, frame_delivery_seq = self.delivery_seq)
+                        .in_scope(|| tracing::warn!("the invocation holds no owed ack for this frame: no ack is written"));
+                }
+                return;
+            };
+            first = false;
+            match &to {
+                AckTo::Stream(out) => {
+                    self.d.write_ack(out, &ack, AckOf::Response).await;
+                }
+                AckTo::NewStream(conn) => self.d.ack_on_new_stream(conn, &ack, AckOf::Response).await,
             }
-            AckTo::NewStream(conn) => self.d.ack_on_new_stream(conn, &ack, AckOf::Response).await,
-        }
-        if let Some(slot) = self.d.inner.st.lock().unwrap().calls.get_mut(&self.invocation) {
-            slot.unrecovered.remove(&self.delivery_seq);
+            let mut st = self.d.inner.st.lock().unwrap();
+            let Some(slot) = st.calls.get_mut(&self.invocation) else { return };
+            match slot.unrecovered.get(&self.delivery_seq) {
+                // Moved while it was written: written again where the latest copy arrived.
+                Some((_, now)) if !now.same(&to) => continue,
+                _ => {
+                    slot.unrecovered.remove(&self.delivery_seq);
+                    return;
+                }
+            }
         }
     }
 }
