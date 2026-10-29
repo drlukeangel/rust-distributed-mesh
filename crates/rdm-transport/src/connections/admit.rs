@@ -123,7 +123,7 @@ const LOCAL_BOOTSTRAP: &str = "local-bootstrap";
 
 /// The expiry (`cert_expires_at`) of the cert a dialer presented, as its bytes carry it: 0 when the
 /// bytes are no cert (a `no-credential` refusal names no expiry).
-fn presented_expiry(cert: &[u8]) -> u64 {
+pub(crate) fn presented_expiry(cert: &[u8]) -> u64 {
     rdm_core::certs::cert_from_bytes(cert).map_or(0, |signed| signed.cert.expiry_ms)
 }
 

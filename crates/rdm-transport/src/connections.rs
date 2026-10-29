@@ -1185,6 +1185,8 @@ impl AlpnProtocolHandler {
         };
 
         let cert = self.registry.inner.member_cert.lock().unwrap().clone();
+
+        let presented_at = admit::presented_expiry(&cert);
         let dst_present = PresentFrame {
             caller: own_now.clone(),
             cert,
@@ -1196,7 +1198,7 @@ impl AlpnProtocolHandler {
                 "rdm.node.connections.update.via-presented",
                 destination = %destination.name,
                 alpn = %alpn_str,
-                cert_expires_at = 0u64,
+                cert_expires_at = presented_at,
             )
             .in_scope(|| tracing::info!("carrier presented member credential to destination"));
         });
@@ -1602,6 +1604,8 @@ impl Dialer {
         };
 
         let cert = self.registry.inner.member_cert.lock().unwrap().clone();
+
+        let presented_at = admit::presented_expiry(&cert);
         let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
         let present = PresentFrame {
             caller: own.clone(),
@@ -1614,7 +1618,7 @@ impl Dialer {
                 "rdm.node.connections.update.via-presented",
                 destination = %destination.name,
                 alpn = %alpn_str,
-                cert_expires_at = 0u64,
+                cert_expires_at = presented_at,
             )
             .in_scope(|| tracing::info!("presented member credential on the connection's control stream"));
         });
@@ -1787,6 +1791,8 @@ impl Dialer {
             .map_err(|reason| ConnectError::NotSent { reason })?;
 
         let cert = self.registry.inner.member_cert.lock().unwrap().clone();
+
+        let presented_at = admit::presented_expiry(&cert);
         let present = PresentFrame {
             caller: own.clone(),
             cert,
@@ -1798,7 +1804,7 @@ impl Dialer {
                 "rdm.node.connections.update.via-presented",
                 destination = %carrier.name,
                 alpn = %alpn_str,
-                cert_expires_at = 0u64,
+                cert_expires_at = presented_at,
             )
             .in_scope(|| tracing::info!("presented member credential to carrier on tunnel control stream"));
         });

@@ -2811,7 +2811,6 @@ fn an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert() {
 /// first bi-stream, writes the member cert it holds (the one most recently installed: its
 /// JoinNode's or its last node.cert.renew's), and waits."
 #[test]
-#[ignore = "page/code difference: node-connections-admit.md §Operation contract"]
 fn a_presented_dial_is_spanned_on_the_dialer_with_destination_alpn_and_the_presented_certs_expiry() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-admit-presented-fields").expect("the cell's evidence file can be created");
     let expiry = CHAIN_NOW_MS + 60_000;
