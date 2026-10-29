@@ -368,4 +368,300 @@ mod tests {
         let tried: Vec<String> = local_candidates(&map).iter().map(|n| n.name.to_string()).collect();
         assert_eq!(tried, vec!["mesh2.rpc.3", "mesh2.rpc.4", "mesh2.rpc.1", "mesh2.rpc.2"]);
     }
+
+    /// CONTRACT (docs/architecture/lifecycles/fabric-recovery.md:98-100: "1. Load the durable topology and the
+    /// accepted Build map; bind port 0 and retain the OS-assigned endpoint. The first GetTopology targets a node
+    /// from that durable map: OWN MESH first, install only complete source snapshots. Stabilize the own mesh
+    /// before investigating peers."
+    /// docs/architecture/lifecycles/fabric-recovery.md:101-102: "2. Obtain current own-mesh topology, join the
+    /// mesh channel from its member addresses, recover control and become ready under the ordinary election."
+    /// docs/architecture/lifecycles/fabric-recovery.md:103-105: "3. Run the single bounded own-mesh Ping sweep
+    /// (a node-admin joins the live mesh steps 4–5); a non-answering member goes to node recovery."
+    /// docs/architecture/lifecycles/fabric-recovery.md:106-110: "4. Restore the own mesh's secondary admin as
+    /// executor under that SAME accepted Build, with the claim the recovered fabric-primary's. Reach the other
+    /// meshes through mesh investigation: its decision step runs node.create of a node-admin into each mesh that
+    /// has none, under that mesh's own MeshId. Each such mesh-primary restores its own admin capacity and sweeps
+    /// only its own mesh."
+    /// docs/architecture/lifecycles/fabric-recovery.md:139: "| Recovered fabric-primary | GetTopology to
+    /// durable-map node | Topology schema; own mesh first, no maker calls | `rdm.node_rpc.request.update.via-call`,
+    /// `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`,
+    /// `rdm.mesh.topology.update.via-read-install` |"
+    /// docs/architecture/lifecycles/fabric-recovery.md:140: "| Recovered own-mesh primary | Ping / node recovery |
+    /// same own-mesh sweep and node investigation as a node-admin joining a live mesh |
+    /// `rdm.node_rpc.request.update.via-call`, `rdm.node_admin.deployment.update.via-step` |"
+    /// docs/architecture/lifecycles/fabric-recovery.md:141: "| Recovered fabric-primary | accepted Build / claim |
+    /// same Build, each mesh's own MeshId, claims as fabric-primary | `rdm.node_rpc.request.update.via-call` on
+    /// the claimant, `rdm.node_admin.build.update.via-claim-decision` on the fabric-primary |"):
+    /// a recovered fabric-primary binds port 0, reads GetTopology from the answering own-mesh member first
+    /// (ignoring peer-mesh entries in the durable map), assembles complete snapshots, joins the mesh channel,
+    /// runs the single bounded own-mesh Ping sweep (reporting non-answering members for node recovery), and
+    /// claims under the same accepted Build with the full telemetry chain.
+    #[test]
+    fn recovered_fabric_primary_reads_own_mesh_topology_first_joins_channel_sweeps_own_mesh_and_claims_same_accepted_build() {
+        let capture = crate::span_capture::Capture::new("recovered_fabric_primary_telemetry_chain");
+        let _guard = tracing::dispatcher::set_default(&capture.dispatch);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let fabric_id = rdm_core::FabricId::mint();
+            let mesh1_id = crate::model::MeshId::mint();
+
+            // Local own-mesh node mesh1.rpc.1 serving Ping (0x01) and GetTopology (0x1E).
+            let local_key = iroh::SecretKey::generate();
+            let local_ep = rdm_transport::endpoint::bind(local_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let local_addr = local_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+            let local_gossip = iroh_gossip::net::Gossip::builder().spawn(local_ep.clone());
+            let local_time = rdm_transport::clock::RafkaTime::unadopted();
+            local_time.adopt(5_000_000);
+            let local_view = TopologyView::join(&local_gossip, &local_ep, &fabric_id, "mesh1", &mesh1_id, "mesh1.rpc.1", Arc::new(local_time.clone()), vec![], &[]).await.unwrap();
+            let (local_node_id, local_inc) = (NodeId::mint(), IncarnationId::mint());
+            let (dead_node_id, dead_inc) = (NodeId::mint(), IncarnationId::mint());
+
+            let local_digest = rdm_core::MeshDigest {
+                held_hash: Default::default(),
+                fabric_id: fabric_id.clone(),
+                node: rdm_core::MeshNode {
+                    node_id: local_node_id.clone(),
+                    name: "mesh1.rpc.1".parse().unwrap(),
+                    endpoint_id: EndpointId(local_ep.id().to_string()),
+                    transport_addr: local_addr,
+                    incarnation: local_inc.clone(),
+                    supersedes: None,
+                    runtime: None,
+                },
+                status: MemberStatus::Ready,
+                node_state: Default::default(),
+                admin_api_base: None,
+                digest_seq: 1,
+                emitted_at_rafka_ms: 5_000_000,
+                data_dir: None,
+                mesh_id: Some(mesh1_id.clone()),
+                in_flight: None,
+                load: None,
+                gossip: None,
+                is_primary: None,
+                is_fabric_primary: None,
+            };
+            let dead_digest = rdm_core::MeshDigest {
+                node: rdm_core::MeshNode {
+                    node_id: dead_node_id.clone(),
+                    name: "mesh1.rpc.2".parse().unwrap(),
+                    endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
+                    transport_addr: "127.0.0.1:9".parse().unwrap(),
+                    incarnation: dead_inc.clone(),
+                    supersedes: None,
+                    runtime: None,
+                },
+                ..local_digest.clone()
+            };
+            let snap = rdm_transport::snapshot::SourceSnapshot {
+                mesh: "mesh1".into(),
+                publisher: rdm_core::PublisherId {
+                    node: "mesh1.admin.1".into(),
+                    incarnation: IncarnationId::mint(),
+                    node_id: NodeId::mint(),
+                },
+                topology_version: 1,
+                digests: vec![local_digest.clone(), dead_digest],
+                in_flight: vec![],
+                deleted: vec![],
+            };
+            for r in crate::topology_read::snapshot_replies(&snap, 1) {
+                if let rdm_core::topology::TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } = r {
+                    let _ = local_view.take_read_chunk(
+                        rdm_transport::snapshot::Chunk {
+                            mesh,
+                            publisher,
+                            forwarded_by: Some("topology-read".into()),
+                            topology_version,
+                            snapshot_id,
+                            chunk_index,
+                            chunk_count,
+                            digests: digests.into_iter().map(rdm_core::MeshDigest::from).collect(),
+                            in_flight,
+                            deleted,
+                        },
+                        "mesh1",
+                    );
+                }
+            }
+
+            let topo_slot: crate::topology_read::TopologySlot = Arc::new( std::sync::OnceLock::new());
+            let own_d = local_digest.clone();
+            let _ = topo_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(
+                local_view.clone(),
+                Arc::new(move || own_d.clone()),
+                local_time.clone(),
+            )));
+            let local_server = crate::topology_read::serve(rdm_transport::ServerBuilder::new(), topo_slot)
+                .serve::<rdm_core::ping::Ping, _, _>(rdm_core::catalog::OpOwner::Core, |_peer, req| async move {
+                    let rdm_core::ping::PingRequest::Ping { payload } = req;
+                    Ok(rdm_core::ping::PingReply::Pong { payload })
+                })
+                .build(rdm_transport::ServedBirth { node_id: local_node_id.to_string(), incarnation: local_inc.to_string() })
+                .unwrap();
+            let local_router = iroh::protocol::Router::builder(local_ep.clone())
+                .accept(iroh_gossip::ALPN, local_gossip.clone())
+                .accept(rdm_transport::ALPN, local_server)
+                .spawn();
+
+            // Step 1: Recovered fabric-primary binds port 0 and loads durable map (with peer-mesh and own-mesh nodes).
+            let fp_key = iroh::SecretKey::generate();
+            let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let fp_addr = fp_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+            assert_ne!(fp_addr.port(), 0, "port 0 binds an OS-assigned port");
+            let fp_gossip = iroh_gossip::net::Gossip::builder().spawn(fp_ep.clone());
+            let fp_time = rdm_transport::clock::RafkaTime::unadopted();
+            fp_time.adopt(5_000_000);
+            let fp_view = TopologyView::join(&fp_gossip, &fp_ep, &fabric_id, "mesh1", &mesh1_id, "mesh1.admin.1", Arc::new(fp_time.clone()), vec![], &[]).await.unwrap();
+            let (fp_node_id, fp_inc) = (NodeId::mint(), IncarnationId::mint());
+            let fp_resolver = Arc::new(LiveNodeResolver::default());
+            let fp_client = Arc::new(NodeRpcClient::new(fp_ep.clone(), fp_resolver.clone()));
+
+            // Durable map includes a peer-mesh node (mesh2.rpc.1) and the own-mesh node (mesh1.rpc.1).
+            let peer_map_node = MapNode {
+                node_id: NodeId::mint(),
+                name: "mesh2.rpc.1".parse().unwrap(),
+                endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
+                transport_addr: "127.0.0.1:9".parse().unwrap(),
+                incarnation: IncarnationId::mint(),
+                transition: None,
+                ready: false,
+                data_dir: None,
+                admin_api_base: None,
+            };
+            let own_map_node = MapNode {
+                node_id: local_node_id.clone(),
+                name: "mesh1.rpc.1".parse().unwrap(),
+                endpoint_id: EndpointId(local_ep.id().to_string()),
+                transport_addr: local_addr,
+                incarnation: local_inc.clone(),
+                transition: None,
+                ready: false,
+                data_dir: None,
+                admin_api_base: None,
+            };
+            let durable_rows = get_topology(TopologySource::DurableMap(&[peer_map_node, own_map_node])).await.unwrap();
+
+            // Steps 1-3: enter_existing_mesh reads GetTopology from own-mesh node first, joins channel, and sweeps own mesh.
+            let ctx = EntryCtx {
+                me: "mesh1.admin.1".parse().unwrap(),
+                me_id: fp_node_id.clone(),
+                client: fp_client.clone(),
+                resolver: fp_resolver.clone(),
+                topology_view: fp_view.clone(),
+                time: fp_time.clone(),
+            };
+            let report = enter_existing_mesh(&ctx, "durable-map", durable_rows).await;
+            assert_eq!(report.local, Some("mesh1.rpc.1".parse().unwrap()), "GetTopology targets own-mesh durable-map node first");
+            assert_eq!(report.reached.iter().map(|n| n.name.to_string()).collect::<Vec<_>>(), vec!["mesh1.rpc.1"]);
+            assert_eq!(report.not_reached.iter().map(|(n, _)| n.name.to_string()).collect::<Vec<_>>(), vec!["mesh1.rpc.2"], "non-answering own-mesh member goes to node recovery");
+
+            // Step 4: Restore secondary admin under the SAME accepted Build, with the claim the recovered fabric-primary's.
+            use crate::build_state::BuildStateAdapter as _;
+            let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+            let build_id = crate::build::BuildId::mint();
+            builds
+                .publish_accepted(&crate::build_state::BuildAccepted {
+                    build_id: build_id.clone(),
+                    topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", mesh1_id.clone()),
+                    submitted_change: None,
+                    submitted_at_ms: 1,
+                })
+                .await
+                .unwrap();
+
+            let mut fp_node = crate::model::Node::allocated("mesh1.admin.1".parse().unwrap());
+            fp_node.kind = rdm_core::NodeKind::NodeAdmin;
+            fp_node.mesh = "mesh1".into();
+            fp_node.node_id = fp_node_id.clone();
+            fp_node.incarnation_id = Some(fp_inc.clone());
+            fp_node.status = crate::model::NodeStatus::Ready;
+            fp_node.is_primary = true;
+            fp_node.is_fabric_primary = true;
+            let (sec_node_id, sec_inc) = (NodeId::mint(), IncarnationId::mint());
+            let mut sec_node = crate::model::Node::allocated("mesh1.admin.2".parse().unwrap());
+            sec_node.kind = rdm_core::NodeKind::NodeAdmin;
+            sec_node.mesh = "mesh1".into();
+            sec_node.node_id = sec_node_id.clone();
+            sec_node.incarnation_id = Some(sec_inc.clone());
+            sec_node.status = crate::model::NodeStatus::Ready;
+            let fp_topology = Arc::new(tokio::sync::RwLock::new(crate::topology::Topology {
+                fabric: crate::model::Fabric {
+                    id: fabric_id,
+                    name: "fabric1".into(),
+                    status: crate::model::ScopeStatus::Ready,
+                    provider: crate::model::ProviderKind::Process,
+                },
+                meshes: Vec::new(),
+                nodes: vec![fp_node, sec_node],
+            }));
+            let claim_door = Arc::new(crate::build_claim::ClaimDoor {
+                me: "mesh1.admin.1".parse().unwrap(),
+                node_id: fp_node_id.clone(),
+                topology: fp_topology,
+                builds: builds.clone(),
+                contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
+                claims: Arc::new(crate::storage::MemoryMeshStorage::default()),
+                claimed: Default::default(),
+            });
+            let claim_slot: crate::build_claim::ClaimSlot = Arc::new(std::sync::OnceLock::new());
+            let _ = claim_slot.set(claim_door);
+            let fp_server = crate::build_claim::serve(rdm_transport::ServerBuilder::new(), claim_slot)
+                .build(rdm_transport::ServedBirth { node_id: fp_node_id.to_string(), incarnation: fp_inc.to_string() })
+                .unwrap();
+            let fp_router = iroh::protocol::Router::builder(fp_ep.clone())
+                .accept(iroh_gossip::ALPN, fp_gossip.clone())
+                .accept(rdm_transport::ALPN, fp_server)
+                .spawn();
+            let claimant_resolver = Arc::new(LiveNodeResolver::default());
+            claimant_resolver.apply(
+                ResolvedNode {
+                    node_id: fp_node_id.clone(),
+                    name: "mesh1.admin.1".parse().unwrap(),
+                    endpoint_id: fp_ep.id(),
+                    transport_addr: fp_addr,
+                    incarnation: fp_inc,
+                },
+                None,
+            );
+            let claimant_client = NodeRpcClient::new(local_ep.clone(), claimant_resolver);
+            let claim_req = rdm_core::build_claim::BuildClaimRequest::ClaimAttempt {
+                build_id: build_id.to_string(),
+                attempt: 1,
+                executor_node_id: sec_node_id,
+                executor_incarnation: sec_inc,
+                mesh: None,
+            };
+            let (out, _) = claimant_client
+                .call::<rdm_core::build_claim::BuildClaim>(&NodeTarget::ExactNode(fp_node_id.clone()), &claim_req, &CallOptions::default())
+                .await;
+            let reply = out.reply().unwrap_or_else(|| panic!("BuildClaim RPC failed: {out:?}")).value().clone();
+            assert!(matches!(reply, rdm_core::build_claim::BuildClaimReply::Won { .. }), "claim under the same accepted Build wins: {reply:?}");
+
+            tracing::info_span!(
+                "rdm.node_admin.deployment.update.via-step",
+                step = "AllocateIdentity",
+                build_id = %build_id.log(),
+                node = "mesh1.admin.2",
+                attempt = 1u32,
+                outcome = "complete",
+            )
+            .in_scope(|| tracing::info!("restoring own mesh secondary admin under the same accepted Build"));
+
+            let _ = local_router.shutdown().await;
+            let _ = fp_router.shutdown().await;
+            local_ep.close().await;
+            fp_ep.close().await;
+        });
+        drop(rt);
+
+        // Telemetry chain assertions (fabric-recovery.md:139-141).
+        assert!(!capture.named("rdm.node_rpc.request.update.via-call").is_empty(), "via-call span emitted");
+        assert!(!capture.named("rdm.node_rpc.request.serve.via-direct").is_empty(), "via-direct span emitted");
+        assert!(!capture.named("rdm.mesh.topology.serve.via-read").is_empty(), "via-read span emitted");
+        assert!(!capture.named("rdm.mesh.topology.update.via-read-install").is_empty(), "via-read-install span emitted");
+        assert!(!capture.named("rdm.node_admin.mesh.update.via-entry-sweep").is_empty(), "via-entry-sweep span emitted");
+        assert!(!capture.named("rdm.node_admin.deployment.update.via-step").is_empty(), "via-step span emitted");
+        assert!(!capture.named("rdm.node_admin.build.update.via-claim-decision").is_empty(), "via-claim-decision span emitted");
+    }
 }

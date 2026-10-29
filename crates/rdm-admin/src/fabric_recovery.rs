@@ -578,4 +578,167 @@ mod tests {
         assert!(matches!(claim_delete_attempt(&c, &builds, &claims, &contexts, &now, Some(&lost_at), None).await, DeleteClaim::Lost(why) if why.contains("mesh2.admin.1")), "an executor never claims past a live executor's attempt");
         assert_eq!(claims.in_flight("mesh1").await.unwrap().map(|r| (r.attempt, r.claimant)), Some((2, "mesh2.admin.1".to_string())), "the lost executor's row is superseded by the winner's");
     }
+
+    /// CONTRACT (docs/architecture/lifecycles/fabric-recovery.md:45-47: "1. **Unheard past the staleness
+    /// floor.** Every admin marks the fabric-primary `PendingReconnect` at the floor (node recovery step 1).
+    /// Silence is the trigger; no provider verdict stands between the mark and the row."
+    /// docs/architecture/lifecycles/fabric-recovery.md:48-50: "2. **Fabric recovery starts.** The executor
+    /// names itself by the four questions on its own view, opens the attempt and broadcasts it. Any other
+    /// admin that notices tells it; it acts only when its own view agrees; repeats answer `AlreadyApplied`."):
+    /// while the fabric-primary record names a heard Ready holder, `of` returns `None`. Once silence marks
+    /// the fabric-primary `PendingReconnect` (no provider verdict required), `of` names the lowest Ready
+    /// node-admin in its own mesh (`own_mesh = true`), or the lowest Ready mesh-primary on the backbone when
+    /// its own mesh has none (`own_mesh = false`), taking no primary role, and opening the attempt on the
+    /// Build log is idempotent on repeats.
+    #[tokio::test]
+    async fn unheard_fabric_primary_is_marked_pending_reconnect_and_executor_names_itself_by_four_questions() {
+        let mut fp = Node::allocated("mesh1.admin.1".parse().unwrap());
+        fp.kind = NodeKind::NodeAdmin;
+        fp.mesh = "mesh1".into();
+        fp.node_id = NodeId::mint();
+        fp.incarnation_id = Some(crate::model::IncarnationId::mint());
+        fp.status = NodeStatus::Ready;
+        fp.is_primary = true;
+        fp.is_fabric_primary = true;
+
+        let mut own_low = Node::allocated("mesh1.admin.2".parse().unwrap());
+        own_low.kind = NodeKind::NodeAdmin;
+        own_low.mesh = "mesh1".into();
+        own_low.node_id = NodeId::parse("000000000002").unwrap();
+        own_low.incarnation_id = Some(crate::model::IncarnationId::mint());
+        own_low.status = NodeStatus::Ready;
+
+        let mut own_high = Node::allocated("mesh1.admin.3".parse().unwrap());
+        own_high.kind = NodeKind::NodeAdmin;
+        own_high.mesh = "mesh1".into();
+        own_high.node_id = NodeId::parse("000000000003").unwrap();
+        own_high.incarnation_id = Some(crate::model::IncarnationId::mint());
+        own_high.status = NodeStatus::Ready;
+
+        let mut bb_low = Node::allocated("mesh2.admin.1".parse().unwrap());
+        bb_low.kind = NodeKind::NodeAdmin;
+        bb_low.mesh = "mesh2".into();
+        bb_low.node_id = NodeId::parse("000000000010").unwrap();
+        bb_low.incarnation_id = Some(crate::model::IncarnationId::mint());
+        bb_low.status = NodeStatus::Ready;
+        bb_low.is_primary = true;
+
+        let mut bb_high = Node::allocated("mesh3.admin.1".parse().unwrap());
+        bb_high.kind = NodeKind::NodeAdmin;
+        bb_high.mesh = "mesh3".into();
+        bb_high.node_id = NodeId::parse("000000000020").unwrap();
+        bb_high.incarnation_id = Some(crate::model::IncarnationId::mint());
+        bb_high.status = NodeStatus::Ready;
+        bb_high.is_primary = true;
+
+        let target = Primary {
+            mesh: "mesh1".into(),
+            node_id: fp.node_id.clone(),
+            incarnation: fp.incarnation_id.clone().unwrap(),
+            revision: 1,
+        };
+        let mut inc = Incumbency::default();
+        inc.fabric = Some(target.clone());
+        inc.meshes.insert("mesh1".into(), target.clone());
+        let digest_view = DigestView::default();
+
+        // Heard fabric-primary -> no fabric recovery.
+        let heard_view = Topology {
+            fabric: crate::model::Fabric {
+                id: rdm_core::FabricId::mint(),
+                name: "fabric1".into(),
+                status: crate::model::ScopeStatus::Ready,
+                provider: crate::model::ProviderKind::Process,
+            },
+            meshes: Vec::new(),
+            nodes: vec![fp.clone(), own_low.clone(), own_high.clone(), bb_low.clone(), bb_high.clone()],
+        };
+        assert_eq!(of(&heard_view, &inc, &digest_view), None);
+
+        // Step 1: Unheard past the staleness floor -> marked PendingReconnect (silence is the trigger).
+        let mut fp_unheard = fp.clone();
+        fp_unheard.status = NodeStatus::PendingReconnect;
+        fp_unheard.is_primary = false;
+        fp_unheard.is_fabric_primary = false;
+        let own_view = Topology {
+            nodes: vec![fp_unheard.clone(), own_low.clone(), own_high.clone(), bb_low.clone(), bb_high.clone()],
+            ..heard_view.clone()
+        };
+
+        // Step 2 (own-mesh arm): lowest Ready node-admin in mesh1 names itself executor, takes no primary role.
+        let fr_own = of(&own_view, &inc, &digest_view).expect("fabric recovery is active in own mesh");
+        assert!(fr_own.own_mesh);
+        assert_eq!(fr_own.at, Some("mesh1.admin.1".parse().unwrap()));
+        assert_eq!(fr_own.executor, Some("mesh1.admin.2".parse().unwrap()));
+        let read: Reader = Arc::new({
+            let inc = inc.clone();
+            let dv = digest_view.clone();
+            move |t: &Topology| of(t, &inc, &dv)
+        });
+        assert!(executes_for(Some(&read), &own_view, &"mesh1.admin.2".parse().unwrap(), "mesh1"));
+        assert!(!executes_for(Some(&read), &own_view, &"mesh1.admin.3".parse().unwrap(), "mesh1"));
+        assert!(!executes_for(Some(&read), &own_view, &"mesh2.admin.1".parse().unwrap(), "mesh1"));
+
+        // Step 2 (backbone arm): when mesh1 has no Ready node-admin, the lowest Ready mesh-primary on the backbone runs it.
+        let bb_view = Topology {
+            nodes: vec![fp_unheard, bb_high, bb_low],
+            ..heard_view
+        };
+        let fr_bb = of(&bb_view, &inc, &digest_view).expect("fabric recovery is active from backbone");
+        assert!(!fr_bb.own_mesh);
+        assert_eq!(fr_bb.at, Some("mesh1.admin.1".parse().unwrap()));
+        assert_eq!(fr_bb.executor, Some("mesh2.admin.1".parse().unwrap()));
+
+        // Opening the recovery attempt is idempotent on repeats (AlreadyApplied).
+        let builds = MemoryBuildStateAdapter::new();
+        let build_id = crate::build::BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted {
+                build_id: build_id.clone(),
+                topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::mint()),
+                submitted_change: None,
+                submitted_at_ms: 1,
+            })
+            .await
+            .unwrap();
+        builds
+            .claim_attempt(&BuildAttemptClaim {
+                build_id: build_id.clone(),
+                attempt: 1,
+                executor: "mesh1.admin.1".into(),
+                claimant: Some("mesh1.admin.1".into()),
+                mesh: None,
+            })
+            .await
+            .unwrap();
+        builds
+            .append_attempt_receipt(&crate::build_state::BuildAttemptReceipt {
+                mesh: None,
+                build_id: build_id.clone(),
+                attempt: 1,
+                outcome: crate::build_state::AttemptOutcome::Converged,
+            })
+            .await
+            .unwrap();
+        let opened = crate::build_state::AttemptOpened {
+            mesh: None,
+            build_id: build_id.clone(),
+            attempt: 2,
+            reason: crate::build_state::AttemptReason::Recovery,
+            action: None,
+            opened_by: "mesh1.admin.2".into(),
+            opened_at_ms: 2,
+            context: None,
+        };
+        builds.open_attempt(&opened).await.expect("first open succeeds");
+        builds.open_attempt(&opened).await.expect("repeat open is idempotent (AlreadyApplied)");
+        let opened_count = builds
+            .facts()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|f| matches!(f, crate::build_state::BuildFact::Opened(_)))
+            .count();
+        assert_eq!(opened_count, 1, "repeat open records only one Opened fact");
+    }
 }
