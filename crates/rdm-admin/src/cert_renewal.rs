@@ -809,6 +809,8 @@ mod tests {
     /// "| Receipt | On each admin's `IssuerUpdated` its mesh-primary writes its signing cert issue date and expiry on the admin's record (its own at its install); the workflow is complete when every admin in the view holds the new dates |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:33
     /// "4. Each admin's record holds the dates it answered, written by its mesh-primary. The old issuer expires on its own."
+    /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:34
+    /// "4. The admin's mesh-primary writes the signing cert's issue date and expiry on the admin's record: its own at its install, another admin's when its `IssuerUpdated` returns through the mesh-primary as the carrier."
     /// CONTRACT (node-issuer-update.md step 4: a mesh-primary writes its own signing cert dates on its
     /// own record at its install; Q141, Q241: every cert row takes its dates from the cert it installs,
     /// never from a clock): the fabric-primary renews mesh2's issuer, and mesh2's primary, its clock a
@@ -1163,5 +1165,57 @@ mod tests {
         assert_eq!(installed_spans[0].attributes.get("node").map(String::as_str), Some("mesh1.admin.1"));
         let written = nodes_store.node(&me.node_id).await.unwrap().and_then(|row| row.birth(&incarnation).and_then(|b| b.signing_cert.clone())).expect("signing_cert written on record");
         assert!(written.expires_at > old_signing.expires_at);
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:21
+    /// "| Spans | `rdm.node_admin.issuer.create.via-renewal` (mesh, issuer_expires_at, previous_issuer_expires_at, admins, outcome) on the fabric-primary, and each `node.issuer.update`'s spans |"
+    /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:22
+    /// "| Spans | `rdm.node_admin.issuer.update.via-renewal` (node, node_id, incarnation_id, mesh, issuer_expires_at, previous_issuer_expires_at, outcome) on the fabric-primary; `rdm.node_admin.issuer.update.via-installed` (node, node_id, mesh, sender, issuer_expires_at, previous_issuer_expires_at) on the admin, `sender` the node the call reached it from: the fabric-primary, or the mesh-primary carrying it |"
+    #[tokio::test]
+    #[ignore = "page/code difference: node-issuer-update.md §Operation contract"]
+    async fn issuer_renewal_spans_record_admins_count_and_previous_issuer_expires_at() {
+        use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};
+        use crate::span_capture::Capture;
+
+        let capture = Capture::new("renew-issuers-span-fields");
+        let _guard = tracing::dispatcher::set_default(&capture.dispatch);
+
+        let root = rdm_core::certs::mint_key();
+        let ca = rdm_core::certs::CaKey::mint(&root, rdm_core::certs::CA_CERT_TTL_SECS, 1_000);
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(10_000);
+        let issuer = Arc::new(CertIssuer::with_root(root, ca, None, time));
+        let mut me = Node::allocated("mesh1.admin.1".parse().unwrap());
+        let incarnation = IncarnationId::mint();
+        me.incarnation_id = Some(incarnation.clone());
+        me.is_primary = true;
+        me.is_fabric_primary = true;
+        me.status = crate::model::NodeStatus::Ready;
+        let view = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
+            nodes: vec![me.clone()],
+        };
+        let nodes_store = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let mut held = crate::storage::NodeRow::new(me.name.clone(), me.node_id.clone(), me.status);
+        held.birth_mut(&incarnation, &me.name).signing_cert = Some(SigningCertDates { issued_at: 1_000, expires_at: 30_000, renew_at: 8_000 });
+        nodes_store.put_node(&held).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
+        let r = Renewals::new(me.name.clone(), me.node_id.clone(), issuer, nodes_store, Default::default(), client, Arc::new(|_| {}));
+
+        renew_issuers(&r, &view).await;
+        for _ in 0..200 {
+            if r.updating.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let create = &capture.named("rdm.node_admin.issuer.create.via-renewal")[0];
+        assert_eq!(create.attributes.get("admins").map(String::as_str), Some("1"));
+        let update = &capture.named("rdm.node_admin.issuer.update.via-renewal")[0];
+        assert_eq!(update.attributes.get("previous_issuer_expires_at").map(String::as_str), Some("30000"));
+        let installed = &capture.named("rdm.node_admin.issuer.update.via-installed")[0];
+        assert_eq!(installed.attributes.get("previous_issuer_expires_at").map(String::as_str), Some("30000"));
     }
 }

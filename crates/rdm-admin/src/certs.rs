@@ -735,6 +735,16 @@ mod tests {
         assert_eq!(signed.cert.expiry_ms, signed.issuer.cert.expiry_ms, "cut to the issuer's expiry");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:18
+    /// "| Target | One node-admin, by exact `(node.id, incarnation)`, of the mesh the issuing cert names; material for another mesh or another birth is refused by name |"
+    /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:19
+    /// "| Request | `UpdateIssuer { node_id, incarnation, key, cert, ca_key }`: the issuing material and the key of the CA it is minted under (the issuing cert carries that CA's cert), installed together as the launch writes them (`RDM_ISSUING_KEY` beside `RDM_FABRIC_CA_KEY`) on [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm) |"
+    /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:20
+    /// "| Reply | `IssuerUpdated { node_id, incarnation, issuer_expires_at }`, the receipt; an admin that cannot verify the issuing cert to a root it holds (the issuing cert against the CA, the CA against the root) answers a named refusal and keeps what it holds; a CA older than the one it holds is refused `ca-older` and nothing is installed |"
+    /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:31
+    /// "3. The admin checks the material names its own mesh and its own `(node.id, incarnation)` and verifies the issuing cert to a root it holds (the issuing cert against the CA, the CA against the root), installs it, and answers `IssuerUpdated`."
+    /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:45
+    /// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A launched admin that was started with the material in its environment (`RDM_ISSUING_KEY`, `RDM_ISSUING_CERT`) needs no call until the next renewal."
     /// CONTRACT (fabric-certs.md "Where a node-admin's signing material comes from"): the bootstrap
     /// admin takes the root from `RDM_CA_SECRET`, else the `ca-secret` its data dir keeps, else mints
     /// one on day 0 and keeps it; a launched admin takes `RDM_ISSUING_KEY` and `RDM_ISSUING_CERT` beside
@@ -978,6 +988,10 @@ mod tests {
     /// "| Steps | 1 mint a new CA keypair and sign its cert with the root; write the CA row; 2 [mesh.issuer.renew](mesh-issuer-renew.md) for every mesh under the new CA, each `node.issuer.update` carrying the new CA material; members renew under the new issuers at their own points |"
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:96
     /// "A node not reached in a phase is retried every tick; the phase does not advance without it, and nothing expires meanwhile that the overlap does not cover. A successor fabric-primary continues from the roots row and the CA row, and from its own copy of the root secret, which every node-admin holds ([custody](../fabric-certs.md#custody)). A successor that does not hold the CA the CA row names (a renewal whose step 2 had not reached it) never mints under a CA it does not hold: it runs `fabric.ca.renew` again from the root secret, and step 2 reaches every admin under the new CA."
+    /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:19
+    /// "| Request | `UpdateIssuer { node_id, incarnation, key, cert, ca_key }`: the issuing material and the key of the CA it is minted under (the issuing cert carries that CA's cert), installed together as the launch writes them (`RDM_ISSUING_KEY` beside `RDM_FABRIC_CA_KEY`) on [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm) |"
+    /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:20
+    /// "| Reply | `IssuerUpdated { node_id, incarnation, issuer_expires_at }`, the receipt; an admin that cannot verify the issuing cert to a root it holds (the issuing cert against the CA, the CA against the root) answers a named refusal and keeps what it holds; a CA older than the one it holds is refused `ca-older` and nothing is installed |"
     #[test]
     fn an_admin_installs_and_keeps_a_newer_fabric_ca_and_refuses_an_older_one() {
         let root = rdm_core::certs::mint_key();
