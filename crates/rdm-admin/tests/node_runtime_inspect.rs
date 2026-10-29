@@ -70,8 +70,7 @@ fn allocated_birth(name: &str) -> Node {
 /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:28
 /// "Answers | `Running`, `OsStopped`, `Exited { exit_code: i32 }`, `Unavailable { reason }`"
 /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:29
-/// "Proof rule | Only `Exited { exit_code }` with a proven exit code from the provider is death
-///  proof. `Unavailable` (no locator, wrong host, provider error) is never death proof."
+/// "| Not a result | A RuntimeFact's presence says neither running nor gone; a provider that cannot answer for the domain answers `unavailable { reason }`, which is investigation's `unproven` |"
 /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:32
 /// "Spans | `rdm.node_admin.node.resolve.via-provider-inspection` (`node`, `node_id`,
 ///  `incarnation_id`, `inspector`, `handle`, `verdict`, `exit_code`, `reason`)"

@@ -620,6 +620,26 @@ async fn wait_for_renewal(estate: &rdm_test::estate::Estate, moved_at_ns: u64, w
 }
 
 // @feature: node-lifecycle
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:5
+/// "`mesh.issuer.renew` re-mints a mesh's issuing cert before it expires and carries it to that mesh's node-admins. It is run by the fabric-primary on its own tick, once the issuing cert has lived `RDM_CERT_RENEW_AT` (default two thirds) of its TTL (`RDM_ISSUING_CERT_TTL_SECS`, default 30 days). It is not a Build and not a caller op. Member certs issued after it carry the new issuer; the old issuer, and every member cert it signed, stay valid to their own expiry, so nothing is cut and nothing reconnects."
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:15
+/// "| Runner | The fabric-primary, which holds the fabric root |"
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:16
+/// "| Target | One mesh; every node-admin of it, exact births, in the view |"
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:18
+/// "| Order | The mesh-primary first (the fabric-primary's own mesh: installed in-process, with no call, spanned `via-installed`), then the others; a member renewal due in the window is signed with the new key once its own admin holds it |"
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:20
+/// "| Never | A member cert re-issued by this workflow (that is [node.cert.renew](node-cert-renew.md)'s on its own schedule), the root rotated (a fabric re-birth), a status set, a frame published |"
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:21
+/// "| Spans | `rdm.node_admin.issuer.create.via-renewal` (mesh, issuer_expires_at, previous_issuer_expires_at, admins, outcome) on the fabric-primary, and each `node.issuer.update`'s spans |"
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:25
+/// "1. The fabric-primary's tick reads the signing cert dates it holds in its cache, the dates it issued and each admin's `IssuerUpdated` confirmed; a mesh with a row whose `renew_at` has passed, and no newer issuing cert held, is renewed. It mints the issuing cert for that mesh with the root, on rafka-time, and holds it in process."
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:30
+/// "3. Each admin signs member certs with the new key from its install. [node.cert.renew](node-cert-renew.md) runs on its own schedule; a member whose cert would outlive the old issuer is renewed early, cut to the issuer's expiry (`MemberOutlivesIssuer`), which is what forces this workflow to run first."
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:33
+/// "4. Each admin's record holds the dates it answered, written by its mesh-primary. The old issuer expires on its own."
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:61
+/// "Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans)."
 /// CONTRACT (mesh-issuer-renew.md; node-issuer-update.md; node-cert-renew.md "members renewed from then
 /// on carry the new issuer, and members not yet due keep the old one until their own turn";
 /// fabric-certs.md §chain): under a 48 s issuing TTL the fabric-primary re-mints mesh1's issuer at its
@@ -825,6 +845,24 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_throu
 }
 
 // @feature: node-lifecycle
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:15
+/// "| Runner | The fabric-primary, which holds the fabric root |"
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:16
+/// "| Target | One mesh; every node-admin of it, exact births, in the view |"
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:17
+/// "| Steps | Mint the issuing cert, then [node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other admin as a command forwarded through the mesh-primary; the step keys are `mesh.issuer.renew:<mesh>` and `node.issuer.update:<path.name>` |"
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:18
+/// "| Order | The mesh-primary first (the fabric-primary's own mesh: installed in-process, with no call, spanned `via-installed`), then the others; a member renewal due in the window is signed with the new key once its own admin holds it |"
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:19
+/// "| Receipt | On each admin's `IssuerUpdated` its mesh-primary writes its signing cert issue date and expiry on the admin's record (its own at its install); the workflow is complete when every admin in the view holds the new dates |"
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:21
+/// "| Spans | `rdm.node_admin.issuer.create.via-renewal` (mesh, issuer_expires_at, previous_issuer_expires_at, admins, outcome) on the fabric-primary, and each `node.issuer.update`'s spans |"
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:28
+/// "2. [node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other node-admin of the mesh as a command forwarded through the mesh-primary ([Forward 0x1A](../node-rpc-envelope.md#forward-op-0x1a-core), the mesh-primary the carrier). An admin not reached is retried on the next tick until the old issuer expires."
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:33
+/// "4. Each admin's record holds the dates it answered, written by its mesh-primary. The old issuer expires on its own."
+/// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:61
+/// "Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans)."
 /// CONTRACT (fabric-authority.md §1.1: "a command the fabric-primary originates for a mesh's node
 /// reaches it as a forwarded command through its mesh-primary"; node-issuer-update.md; Luke
 /// 2026-10-19): under a 45 s issuing TTL the fabric-primary (mesh1.admin.1) re-mints mesh2's issuer and

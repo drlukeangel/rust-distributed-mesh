@@ -834,6 +834,8 @@ mod tests {
     }
 
     // @feature: node-lifecycle
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:30
+    /// "3. Each admin signs member certs with the new key from its install. [node.cert.renew](node-cert-renew.md) runs on its own schedule; a member whose cert would outlive the old issuer is renewed early, cut to the issuer's expiry (`MemberOutlivesIssuer`), which is what forces this workflow to run first."
     /// CONTRACT (fabric-certs.md §Tracking: "A member cert never outlives its issuer ... whatever the
     /// policy says"; node-cert-renew.md Request: "its expiry cut to the issuer's when the issuer expires
     /// first"; mesh-issuer-renew.md step 3): an admin under a 12 s member TTL issues a member cert that

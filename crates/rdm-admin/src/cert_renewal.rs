@@ -805,6 +805,10 @@ mod tests {
     }
 
     // @feature: node-lifecycle
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:19
+    /// "| Receipt | On each admin's `IssuerUpdated` its mesh-primary writes its signing cert issue date and expiry on the admin's record (its own at its install); the workflow is complete when every admin in the view holds the new dates |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:33
+    /// "4. Each admin's record holds the dates it answered, written by its mesh-primary. The old issuer expires on its own."
     /// CONTRACT (node-issuer-update.md step 4: a mesh-primary writes its own signing cert dates on its
     /// own record at its install; Q141, Q241: every cert row takes its dates from the cert it installs,
     /// never from a clock): the fabric-primary renews mesh2's issuer, and mesh2's primary, its clock a
@@ -1086,5 +1090,78 @@ mod tests {
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[1].attributes.get("reason").map(String::as_str), Some("behind-ca-row"));
         assert_eq!(spans[1].attributes.get("outcome").map(String::as_str), Some("minted"));
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:5
+    /// "`mesh.issuer.renew` re-mints a mesh's issuing cert before it expires and carries it to that mesh's node-admins. It is run by the fabric-primary on its own tick, once the issuing cert has lived `RDM_CERT_RENEW_AT` (default two thirds) of its TTL (`RDM_ISSUING_CERT_TTL_SECS`, default 30 days). It is not a Build and not a caller op. Member certs issued after it carry the new issuer; the old issuer, and every member cert it signed, stay valid to their own expiry, so nothing is cut and nothing reconnects."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:15
+    /// "| Runner | The fabric-primary, which holds the fabric root |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:16
+    /// "| Target | One mesh; every node-admin of it, exact births, in the view |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:18
+    /// "| Order | The mesh-primary first (the fabric-primary's own mesh: installed in-process, with no call, spanned `via-installed`), then the others; a member renewal due in the window is signed with the new key once its own admin holds it |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:19
+    /// "| Receipt | On each admin's `IssuerUpdated` its mesh-primary writes its signing cert issue date and expiry on the admin's record (its own at its install); the workflow is complete when every admin in the view holds the new dates |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:20
+    /// "| Never | A member cert re-issued by this workflow (that is [node.cert.renew](node-cert-renew.md)'s on its own schedule), the root rotated (a fabric re-birth), a status set, a frame published |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:21
+    /// "| Spans | `rdm.node_admin.issuer.create.via-renewal` (mesh, issuer_expires_at, previous_issuer_expires_at, admins, outcome) on the fabric-primary, and each `node.issuer.update`'s spans |"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:25
+    /// "1. The fabric-primary's tick reads the signing cert dates it holds in its cache, the dates it issued and each admin's `IssuerUpdated` confirmed; a mesh with a row whose `renew_at` has passed, and no newer issuing cert held, is renewed. It mints the issuing cert for that mesh with the root, on rafka-time, and holds it in process."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:33
+    /// "4. Each admin's record holds the dates it answered, written by its mesh-primary. The old issuer expires on its own."
+    /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:54
+    /// "An admin that refuses the material by name (another mesh, a CA no root in its set verifies, an issuing cert the CA does not verify) ends the workflow `Failed { step: node.issuer.update:<path.name>, reason }`; the next tick runs it again from the rows. A successor fabric-primary reads the node-admin rows and continues the schedule from them."
+    #[tokio::test]
+    async fn renew_issuers_mints_at_renew_point_and_installs_in_process_for_own_mesh_primary_and_writes_signing_cert_row() {
+        use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};
+        use crate::span_capture::Capture;
+
+        let capture = Capture::new("renew-issuers-unit");
+        let _guard = tracing::dispatcher::set_default(&capture.dispatch);
+
+        let root = rdm_core::certs::mint_key();
+        let ca = rdm_core::certs::CaKey::mint(&root, rdm_core::certs::CA_CERT_TTL_SECS, 1_000);
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(10_000);
+        let issuer = Arc::new(CertIssuer::with_root(root, ca, None, time.clone()));
+        let mut me = Node::allocated("mesh1.admin.1".parse().unwrap());
+        let incarnation = IncarnationId::mint();
+        me.incarnation_id = Some(incarnation.clone());
+        me.is_primary = true;
+        me.is_fabric_primary = true;
+        me.status = crate::model::NodeStatus::Ready;
+        let view = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
+            nodes: vec![me.clone()],
+        };
+        let nodes_store = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let mut held = crate::storage::NodeRow::new(me.name.clone(), me.node_id.clone(), me.status);
+        let old_signing = SigningCertDates { issued_at: 1_000, expires_at: 30_000, renew_at: 8_000 };
+        held.birth_mut(&incarnation, &me.name).signing_cert = Some(old_signing.clone());
+        nodes_store.put_node(&held).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
+        let r = Renewals::new(me.name.clone(), me.node_id.clone(), issuer, nodes_store.clone(), Default::default(), client, Arc::new(|_| {}));
+
+        // A successor fabric-primary reads the node-admin rows (`signing_of`) and sees `renew_at = 8_000 <= now = 10_000`, so `renew_issuers` mints and installs in-process.
+        renew_issuers(&r, &view).await;
+        for _ in 0..200 {
+            if r.updating.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let create_spans = capture.named("rdm.node_admin.issuer.create.via-renewal");
+        assert_eq!(create_spans.len(), 1);
+        assert_eq!(create_spans[0].attributes.get("mesh").map(String::as_str), Some("mesh1"));
+        assert_eq!(create_spans[0].attributes.get("previous_issuer_expires_at").map(String::as_str), Some("30000"));
+        assert_eq!(create_spans[0].attributes.get("outcome").map(String::as_str), Some("minted"));
+        let installed_spans = capture.named("rdm.node_admin.issuer.update.via-installed");
+        assert_eq!(installed_spans.len(), 1);
+        assert_eq!(installed_spans[0].attributes.get("node").map(String::as_str), Some("mesh1.admin.1"));
+        let written = nodes_store.node(&me.node_id).await.unwrap().and_then(|row| row.birth(&incarnation).and_then(|b| b.signing_cert.clone())).expect("signing_cert written on record");
+        assert!(written.expires_at > old_signing.expires_at);
     }
 }
