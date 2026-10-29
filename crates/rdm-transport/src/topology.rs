@@ -5851,6 +5851,12 @@ impl DigestView {
         self.inner.lock().unwrap().values().any(|(d, _, _)| d.node.name.mesh == mesh && d.mesh_id.is_some() && d.mesh_id != *mesh_id)
     }
 
+    /// The births each held digest names as replaced (`supersedes`), read under the view's lock with
+    /// nothing copied: what an election's lost set takes from the digests (Q271).
+    pub fn superseded(&self) -> Vec<rdm_core::IncarnationId> {
+        self.inner.lock().unwrap().values().filter_map(|(d, _, _)| d.node.supersedes.clone()).collect()
+    }
+
     /// Every digest held.
     pub fn all(&self) -> Vec<MeshDigest> {
         let mut ds: Vec<MeshDigest> = self.inner.lock().unwrap().values().map(|(d, _, _)| d.clone()).collect();
@@ -6120,6 +6126,19 @@ mod tests {
             gossip: None,
             data_dir: None, is_primary: None, is_fabric_primary: None
         }
+    }
+
+    /// Q271: the births the held digests name as replaced are read under the view's lock, the same set
+    /// a copy of every digest gives.
+    #[test]
+    fn the_superseded_births_are_the_ones_every_held_digest_names() {
+        let digest_view = DigestView::default();
+        let (replaced, new) = (IncarnationId::mint(), IncarnationId::mint());
+        assert!(digest_view.record(digest(&NodeId::mint(), &new, Some(replaced.clone()), MemberStatus::Ready, 10)));
+        assert!(digest_view.record(digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::Ready, 11)));
+        let copied: Vec<IncarnationId> = digest_view.all().into_iter().filter_map(|d| d.node.supersedes).collect();
+        assert_eq!(digest_view.superseded(), vec![replaced]);
+        assert_eq!(digest_view.superseded(), copied, "the same set as a copy of every digest");
     }
 
     /// CONTRACT: the gossip stats a digest carries never reach the topology view the version

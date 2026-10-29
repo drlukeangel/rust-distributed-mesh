@@ -8,7 +8,7 @@ use super::*;
 /// observer-inferred `Dead` are not.
 pub(crate) fn incumbency_of(digest_view: &DigestView, _records: &Records) -> crate::election::Incumbency {
     let mut lost: std::collections::HashSet<IncarnationId> = digest_view.deleted().into_iter().map(|op| op.incarnation).collect();
-    lost.extend(digest_view.all().into_iter().filter_map(|d| d.node.supersedes));
+    lost.extend(digest_view.superseded());
     lost.extend(digest_view.seats.gone());
     crate::election::Incumbency { fabric: digest_view.seats.fabric(), meshes: digest_view.seats.meshes(), cohorts: digest_view.seats.node_type_primaries(), lost }
 }
