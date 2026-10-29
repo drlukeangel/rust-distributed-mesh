@@ -852,20 +852,11 @@ async fn silent_case(run: &Run) {
     let silent_view = run.estate.until_node(&name, &format!("{name} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.status != NodeStatus::Ready).cloned()).await;
     let silent_view = serde_json::to_value(silent_view).expect("a view serializes");
 
-    // Reads while stopped: process state, CPU use and the typed outcome of a call to the exact node.
-    let mut reads = Vec::new();
-    let mut outcomes = Vec::new();
-    for _ in 0..2 {
-        // A short budget: the hold ends inside the silent window. Past the second unreached tickle ladder
-        // node investigation decides, and a verdict other than reached re-creates the node (Q111).
-        let probe = run.estate.probe(&["get", "--target", &exact, "--budget-ms", "1500", "--key", "77"]);
-        reads.push(json!({"proc_state": proc_state(pid).map(String::from), "cpu_ticks": cpu_ticks(pid), "outcome": probe["outcome"]}).to_string());
-        outcomes.push(probe);
-    }
-    let held_at_last_read = proc_state(pid) == Some('T');
-    ev.fault = Some(FaultAck { held: state_after_stop == 'T', names: Some(json!({"pid": pid, "proc_state": "T", "view_status": silent_view["status"]})), held_at_last_read });
-    ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
-    ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
+    // The hold ends inside the silent window: past the second unreached tickle ladder node investigation
+    // decides, and a verdict other than reached re-creates the node (Q111), so nothing the cell needs only
+    // for its record stands between the silent view and the release. The view and the Build are read while
+    // held, first, and the two calls to the exact node run at once, each its own probe process with a short
+    // budget (two serial probe processes took 6 s under an export batch and held past the decision).
     let nodes_during = run.estate.node_values().await;
     let (seats_during, detail_during) = primaries(&nodes_during);
     let during_node = nodes_during.iter().find(|n| n["name"] == name.as_str()).cloned();
@@ -873,11 +864,20 @@ async fn silent_case(run: &Run) {
     let alive = proc_state(pid).is_some_and(|c| c != 'Z');
     let inc_during = during_node.as_ref().map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let replaced = during_node.as_ref().is_none_or(|n| s(&n["node_id"]) != node_id) || run.fabric_build_id().await != fabric_build;
+    let outcomes: Vec<Value> = std::thread::scope(|scope| {
+        let calls: Vec<_> = (0..2).map(|_| scope.spawn(|| run.estate.probe(&["get", "--target", &exact, "--budget-ms", "1500", "--key", "77"]))).collect();
+        calls.into_iter().map(|c| c.join().expect("a probe call's thread")).collect()
+    });
+    let reads: Vec<String> = outcomes.iter().map(|probe| json!({"proc_state": proc_state(pid).map(String::from), "cpu_ticks": cpu_ticks(pid), "outcome": probe["outcome"]}).to_string()).collect();
+    let held_at_last_read = proc_state(pid) == Some('T');
 
     // Thaw.
     let acked = signal(pid, "-CONT");
     let ended = wait_for(&format!("{name} (pid {pid}) runs again"), Duration::from_secs(10), || async { proc_state(pid).filter(|c| *c != 'T').map(|_| true) }).await;
     ev.release = Some(Release { acked, hold_ended: ended });
+    ev.fault = Some(FaultAck { held: state_after_stop == 'T', names: Some(json!({"pid": pid, "proc_state": "T", "view_status": silent_view["status"]})), held_at_last_read });
+    ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
+    ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
 
     // Recovery: the same birth is ready again and serves the value stored before the freeze.
     let back = run
