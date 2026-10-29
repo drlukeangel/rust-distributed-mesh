@@ -87,12 +87,12 @@ struct Hydrate {
 #[async_trait::async_trait]
 impl PreNodeReady for Hydrate {
     async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
-        let Some(authority) = ctx.authority.accepted() else {
+        let Some(accepting_primary) = ctx.accepting_primary.accepted() else {
             return HookOutcome::Failed { reason: "this consumer's nodes are all launched: each has an accepting admin".into() };
         };
         let (out, _) = ctx
             .client
-            .call::<PreNodeReadyPull>(&authority.target, &PullRequest::Pull, &rdm_transport::CallOptions::default())
+            .call::<PreNodeReadyPull>(&accepting_primary.target, &PullRequest::Pull, &rdm_transport::CallOptions::default())
             .await;
         let Some(reply) = out.reply() else {
             return HookOutcome::Failed { reason: format!("the pull was not answered: {out:?}") };
@@ -106,11 +106,11 @@ impl PreNodeReady for Hydrate {
                         installed += 1;
                     }
                 }
-                tracing::info_span!(target: "rshape", "rafka.mesh.entry.update.via-projection-pulled", node = %ctx.birth.name, authority = %authority.name, entity_rows = rows.len() as u64, raw_applied = installed)
+                tracing::info_span!(target: "rshape", "rafka.mesh.entry.update.via-projection-pulled", node = %ctx.birth.name, accepting_primary = %accepting_primary.name, entity_rows = rows.len() as u64, raw_applied = installed)
                     .in_scope(|| tracing::info!("hydrated from node-admin's cache before ready"));
                 HookOutcome::Ok
             }
-            PullReply::NotReady { reason } => ctx.authority_not_ready(reason.clone()),
+            PullReply::NotReady { reason } => ctx.primary_not_ready(reason.clone()),
             other => HookOutcome::Failed { reason: format!("{other:?}") },
         }
     }

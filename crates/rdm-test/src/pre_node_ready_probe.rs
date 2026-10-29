@@ -324,10 +324,10 @@ impl PreNodeReady for TestPreNodeReady {
         self.member_certs.lock().unwrap().push(ctx.member_cert.clone());
         self.contexts.lock().unwrap().push((
             ctx.attempt,
-            ctx.authority.accepted().map(|a| a.name.to_string()),
-            match &ctx.authority {
-                rdm_node::node_hooks::Authority::None(why) => Some(why.reason().to_string()),
-                rdm_node::node_hooks::Authority::Accepted(_) => None,
+            ctx.accepting_primary.accepted().map(|a| a.name.to_string()),
+            match &ctx.accepting_primary {
+                rdm_node::node_hooks::AcceptingPrimarySource::None(why) => Some(why.reason().to_string()),
+                rdm_node::node_hooks::AcceptingPrimarySource::Accepted(_) => None,
             },
         ));
         let mode = self.mode.lock().unwrap().clone();
@@ -340,12 +340,12 @@ impl PreNodeReady for TestPreNodeReady {
             }
             Mode::Local => HookOutcome::Ok,
             Mode::Pull => {
-                let Some(authority) = ctx.authority.accepted() else {
+                let Some(accepting_primary) = ctx.accepting_primary.accepted() else {
                     return HookOutcome::Failed { reason: "a pull needs an accepting authority and this birth has none".into() };
                 };
                 self.pulls_started.fetch_add(1, Ordering::SeqCst);
                 let mut guard = InFlight(self, false);
-                let (out, _) = ctx.client.call::<PreNodeReadyPull>(&authority.target, &PullRequest::Pull, &CallOptions::default()).await;
+                let (out, _) = ctx.client.call::<PreNodeReadyPull>(&accepting_primary.target, &PullRequest::Pull, &CallOptions::default()).await;
                 guard.1 = true;
                 self.pulls_answered.fetch_add(1, Ordering::SeqCst);
                 match out {
@@ -356,10 +356,10 @@ impl PreNodeReady for TestPreNodeReady {
                             }
                             HookOutcome::Ok
                         }
-                        PullReply::NotReady { reason } => ctx.authority_not_ready(format!("{} answered NotReady: {reason}", authority.name)),
-                        other => HookOutcome::Failed { reason: format!("{} answered the pull with {other:?}", authority.name) },
+                        PullReply::NotReady { reason } => ctx.primary_not_ready(format!("{} answered NotReady: {reason}", accepting_primary.name)),
+                        other => HookOutcome::Failed { reason: format!("{} answered the pull with {other:?}", accepting_primary.name) },
                     },
-                    other => HookOutcome::Blocked { reason: format!("the pull to {} was not answered: {}", authority.name, other.name()), retry_on: RetryOn::PrimaryChanged },
+                    other => HookOutcome::Blocked { reason: format!("the pull to {} was not answered: {}", accepting_primary.name, other.name()), retry_on: RetryOn::PrimaryChanged },
                 }
             }
         }

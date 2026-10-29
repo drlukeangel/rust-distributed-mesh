@@ -10,8 +10,8 @@ use rdm_core::{
     NodeKind, PathName,
 };
 use rdm_node::node_hooks::{
-    Addressed, Authority, Birth, End, Events, HookOutcome, NoAuthority, NodeHooks, NodeReadyCtx,
-    OnNodeReady, PreNodeReady, RetryOn, StartKind, Step,
+    AcceptingPrimarySource, Addressed, Birth, End, Events, HookOutcome, NoAcceptingPrimary,
+    NodeHooks, NodeReadyCtx, OnNodeReady, PreNodeReady, RetryOn, StartKind, Step,
 };
 use rdm_transport::topology::TopologyView;
 use rdm_transport::{
@@ -150,7 +150,7 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
                         mesh_id,
                         kind: NodeKind::RpcNode,
                     },
-                    authority: Authority::None(NoAuthority::Day0Root),
+                    accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                     client: client.clone(),
                     topology_view: topology_view.clone(),
                     cancel: CancelToken::new(),
@@ -451,7 +451,7 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
                         mesh_id,
                         kind: NodeKind::RpcNode,
                     },
-                    authority: Authority::None(NoAuthority::Day0Root),
+                    accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                     client,
                     topology_view: topology_view.clone(),
                     cancel: CancelToken::new(),

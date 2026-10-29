@@ -666,7 +666,7 @@ async fn start_booted(
     // What the start brought up, once it did: handed to the caller, or ended if the hook fails.
     let out: Arc<Mutex<Option<RunningNode>>> = Arc::default();
     let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.clone(), path: launch.name.clone(), node_id: launch.node_id.clone(), client: client.clone(), rafka_time: rafka_time.clone() };
-    let joining = crate::workflows::node_start::Joining::Authority { label: launcher.name.to_string() };
+    let joining = crate::workflows::node_start::Joining::AcceptingPrimary { label: launcher.name.to_string() };
     let join_digest = digest.clone();
     let join_types = app_types.clone();
     let enter: crate::workflows::node_start::EnterSeam<anyhow::Error> = {
@@ -1115,7 +1115,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
     }
 
     fn joining(&self) -> crate::workflows::node_start::Joining {
-        crate::workflows::node_start::Joining::Authority { label: self.commander.borrow().fmt_short().to_string() }
+        crate::workflows::node_start::Joining::AcceptingPrimary { label: self.commander.borrow().fmt_short().to_string() }
     }
 
     async fn resolve_join_to(&mut self) -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> {
@@ -1992,7 +1992,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 }
 
 #[cfg(test)]
-mod authority_tests {
+mod primary_tests {
     use super::*;
     use rdm_core::Primary;
 

@@ -208,8 +208,8 @@ pub enum Probe {
     TopologyRead {
         /// The joining admin.
         node: String,
-        /// The authority the read goes to: the admin that answered the join.
-        authority: String,
+        /// The primary the read goes to: the admin that answered the join.
+        primary: String,
     },
     /// A provider `terminate` about to be made.
     ProviderTerminate {
@@ -284,7 +284,7 @@ impl Probe {
             Probe::Claimed { build_id, attempt, executor } => Hit::Claimed { build_id: build_id.clone(), attempt: *attempt, executor: executor.clone() },
             Probe::ProviderDomain => Hit::ProviderDomain,
             Probe::LeaveAnnouncement { node, announcement, channel } => Hit::LeaveAnnouncement { node: node.clone(), announcement: *announcement, channel: channel.to_string() },
-            Probe::TopologyRead { node, authority } => Hit::TopologyRead { node: node.clone(), reads_from: authority.clone() },
+            Probe::TopologyRead { node, primary } => Hit::TopologyRead { node: node.clone(), reads_from: primary.clone() },
             Probe::Announcement { node, announcement, channel } => Hit::Announcement { node: node.clone(), announcement: announcement.to_string(), channel: channel.to_string() },
             Probe::ProviderTerminate { pid, deployment_id } => Hit::ProviderTerminate { pid: *pid, deployment_id: deployment_id.clone() },
             Probe::Declaration { node, state } => Hit::Declaration { node: node.clone(), state: state.clone() },
@@ -649,8 +649,8 @@ struct FaultedRead(Arc<AdminFaults>);
 
 #[async_trait]
 impl rdm_admin::wiring::ReadSeam for FaultedRead {
-    async fn before_topology_read(&self, node: &str, authority: &str) {
-        self.0.hold(Probe::TopologyRead { node: node.to_string(), authority: authority.to_string() }).await;
+    async fn before_topology_read(&self, node: &str, primary: &str) {
+        self.0.hold(Probe::TopologyRead { node: node.to_string(), primary: primary.to_string() }).await;
     }
 }
 

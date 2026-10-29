@@ -1009,10 +1009,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         data_dir: Some(cfg.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
     });
     let joining = match &joins_through {
-        Some((_, launcher, _)) => crate::workflows::node_start::Joining::Authority { label: launcher.name.to_string() },
-        None if inherited.is_some() => crate::workflows::node_start::Joining::None(crate::node_hooks::NoAuthority::InheritedRoot),
-        None if cfg.mesh_primary || cfg.fabric_primary => crate::workflows::node_start::Joining::None(crate::node_hooks::NoAuthority::Recovery),
-        None => crate::workflows::node_start::Joining::None(crate::node_hooks::NoAuthority::Day0Root),
+        Some((_, launcher, _)) => crate::workflows::node_start::Joining::AcceptingPrimary { label: launcher.name.to_string() },
+        None if inherited.is_some() => crate::workflows::node_start::Joining::None(crate::node_hooks::NoAcceptingPrimary::InheritedRoot),
+        None if cfg.mesh_primary || cfg.fabric_primary => crate::workflows::node_start::Joining::None(crate::node_hooks::NoAcceptingPrimary::Recovery),
+        None => crate::workflows::node_start::Joining::None(crate::node_hooks::NoAcceptingPrimary::Day0Root),
     };
     let resolve: Box<dyn FnOnce() -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> + Send> = {
         let (resolver, through) = (node_rpc_resolver.clone(), joins_through.clone());

@@ -467,7 +467,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
     }
 
     fn joining(&self) -> crate::workflows::node_start::Joining {
-        crate::workflows::node_start::Joining::Authority { label: self.commander.borrow().fmt_short().to_string() }
+        crate::workflows::node_start::Joining::AcceptingPrimary { label: self.commander.borrow().fmt_short().to_string() }
     }
 
     async fn resolve_join_to(&mut self) -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> {
@@ -722,9 +722,9 @@ pub(crate) struct AdminFirstStart {
 
 #[async_trait::async_trait]
 impl crate::workflows::node_start::AfterHook for AdminFirstStart {
-    async fn before_topology_read(&mut self, authority: &PathName) {
+    async fn before_topology_read(&mut self, primary: &PathName) {
         if let Some(seam) = &self.read_seam {
-            seam.before_topology_read(&self.me.to_string(), &authority.to_string()).await;
+            seam.before_topology_read(&self.me.to_string(), &primary.to_string()).await;
         }
     }
 

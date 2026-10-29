@@ -37,7 +37,7 @@
 //! no snapshot is read whole again), and installs nothing: op `0x1E` is the read that carries
 //! rafka-time to a started node (`rafka_time.rs`, the pull when the fabric-primary moved reads it the same way).
 
-use crate::node_hooks::{AcceptingAuthority, Authority, Birth, End, Events, HookDriver, NodeReadyCtx, NodeHooks, PreNodeReadyHandle, NoAuthority, StartKind, Step};
+use crate::node_hooks::{AcceptingPrimary, AcceptingPrimarySource, Birth, End, Events, HookDriver, NodeReadyCtx, NodeHooks, PreNodeReadyHandle, NoAcceptingPrimary, StartKind, Step};
 use crate::model::{NodeId, PathName};
 use crate::node_self::StartFailed;
 use crate::topology_read::TopologyRead;
@@ -76,13 +76,13 @@ pub struct Starting {
 
 /// Whom a start joins.
 pub enum Joining {
-    /// An authority, named in the join and topology steps' `launcher` as `label`.
-    Authority {
-        /// What the step spans name the authority.
+    /// An accepting primary, named in the join and topology steps' `launcher` as `label`.
+    AcceptingPrimary {
+        /// What the step spans name the accepting primary.
         label: String,
     },
-    /// No authority, and why: the start makes no join, reads no topology and refreshes no rafka-time.
-    None(NoAuthority),
+    /// No accepting primary, and why: the start makes no join, reads no topology and refreshes no rafka-time.
+    None(NoAcceptingPrimary),
 }
 
 /// The authority a start joined: the admin that answered its join, and where every later call of
@@ -228,10 +228,10 @@ pub trait AfterHook: Send + 'static {
     /// gossip peers). Runs inside the topology step's span.
     async fn topology_installed(&mut self, topology_view: &TopologyView, read: &TopologyRead);
 
-    /// The topology step is about to make its read of `authority`: the kind may wait here before the read is
+    /// The topology step is about to make its read of `primary`: the kind may wait here before the read is
     /// made. Runs inside the topology step's span. A kind with nothing to wait on makes the read at once.
-    async fn before_topology_read(&mut self, authority: &PathName) {
-        let _ = authority;
+    async fn before_topology_read(&mut self, primary: &PathName) {
+        let _ = primary;
     }
 
     /// The Build floor: resolves once the node holds the Build facts the authority's floor requires,
@@ -295,7 +295,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     // After a stop, the start's reads go to the admin that commanded it last (node-start.md step 2).
     let mut commander: Option<tokio::sync::watch::Receiver<iroh::PublicKey>> = None;
     let (through, joined, topology_view) = match node.joining() {
-        Joining::Authority { label } => {
+        Joining::AcceptingPrimary { label } => {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
             let to = node.resolve_join_to().await?;
             let mesh_id = node.join_digest().mesh_id.as_ref().map(ToString::to_string).unwrap_or_default();
@@ -321,15 +321,15 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     let member_cert = joined.as_ref().map(|a| a.control.member_cert.clone());
     let parts = node.joined(&topology_view, through.as_ref().ok().map(|(t, _)| t), joined.as_ref()).await?;
     // 3. The hook, with no topology read.
-    let authority = match &through {
-        Ok((t, _)) => Authority::Accepted(AcceptingAuthority { name: t.name.clone(), endpoint: t.endpoint, target: t.target.clone() }),
-        Err(why) => Authority::None(*why),
+    let accepting_primary = match &through {
+        Ok((t, _)) => AcceptingPrimarySource::Accepted(AcceptingPrimary { name: t.name.clone(), endpoint: t.endpoint, target: t.target.clone() }),
+        Err(why) => AcceptingPrimarySource::None(*why),
     };
     let HookParts { birth, node_hooks, events, cancel, state, runs, after } = parts;
     let inherited = matches!(kind, StartKind::AfterStop)
-        || matches!(authority, Authority::None(NoAuthority::InheritedRoot | NoAuthority::Recovery))
+        || matches!(accepting_primary, AcceptingPrimarySource::None(NoAcceptingPrimary::InheritedRoot | NoAcceptingPrimary::Recovery))
         || std::env::var("RDM_INHERITED_DATA_DIR").ok().as_deref() == Some("1");
-    let ctx = NodeReadyCtx { start_kind: kind, birth, authority, client: client.clone(), topology_view: topology_view.clone(), cancel, rafka_time: rafka_time.clone(), member_cert, attempt: 0, inherited };
+    let ctx = NodeReadyCtx { start_kind: kind, birth, accepting_primary, client: client.clone(), topology_view: topology_view.clone(), cancel, rafka_time: rafka_time.clone(), member_cert, attempt: 0, inherited };
     let driver = node_hooks.driver(ctx, events, root.clone());
     *state.lock().unwrap() = driver.as_ref().map(|d| d.handle());
     // 4. and 5., once the hook passed.
@@ -557,7 +557,7 @@ impl<E: From<StartFailed> + Send + 'static> StartNode for FirstStart<E> {
 
     fn joining(&self) -> Joining {
         match self.joining.as_ref().expect("a first start is begun once") {
-            Joining::Authority { label } => Joining::Authority { label: label.clone() },
+            Joining::AcceptingPrimary { label } => Joining::AcceptingPrimary { label: label.clone() },
             Joining::None(why) => Joining::None(*why),
         }
     }
@@ -638,7 +638,7 @@ mod tests {
 
     struct TestStartPlug {
         starting: Starting,
-        no_authority: NoAuthority,
+        no_accepting_primary: NoAcceptingPrimary,
         steps: Arc<Mutex<Vec<&'static str>>>,
         observed_ctx: Arc<Mutex<Vec<(StartKind, bool)>>>,
         ready_notified: Arc<tokio::sync::Notify>,
@@ -719,7 +719,7 @@ mod tests {
         }
 
         fn joining(&self) -> Joining {
-            Joining::None(self.no_authority)
+            Joining::None(self.no_accepting_primary)
         }
 
         async fn resolve_join_to(&mut self) -> Result<JoinTo, StartFailed> {
@@ -824,7 +824,7 @@ mod tests {
                     client: client.clone(),
                     rafka_time: rafka_time.clone(),
                 },
-                no_authority: NoAuthority::Day0Root,
+                no_accepting_primary: NoAcceptingPrimary::Day0Root,
                 steps: steps.clone(),
                 observed_ctx: observed.clone(),
                 ready_notified: notify1.clone(),
@@ -846,7 +846,7 @@ mod tests {
                     client,
                     rafka_time,
                 },
-                no_authority: NoAuthority::Day0Root,
+                no_accepting_primary: NoAcceptingPrimary::Day0Root,
                 steps: steps.clone(),
                 observed_ctx: observed.clone(),
                 ready_notified: notify2.clone(),

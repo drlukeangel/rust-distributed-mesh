@@ -69,7 +69,7 @@ fn the_day_zero_root_runs_the_hook_with_no_mesh_primary_and_completes_from_local
         let attempts: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.mesh.node.update.via-pre-node-ready-attempt").map(|(_, _, f)| f.clone()).collect();
         assert_eq!(attempts.len(), 1);
         assert_eq!(attempts[0]["outcome"], "ok");
-        assert!(attempts[0]["authority"].contains("none"), "{:?}", attempts[0]);
+        assert!(attempts[0]["accepting_primary"].contains("none"), "{:?}", attempts[0]);
         let _ = HookOutcome::Ok;
         let _ = Arc::strong_count(&pre_node_ready);
         running.leave().await;

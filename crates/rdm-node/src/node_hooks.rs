@@ -51,7 +51,7 @@ pub struct Birth {
 /// (`lifecycles/node-start.md` step 2): it is known by the name its join answer gave and the endpoint it answered
 /// on, and the hook calls it through `target`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptingAuthority {
+pub struct AcceptingPrimary {
     /// The admin's `path.name`, as the join answer's `served_by` (or, at a first start, the
     /// launcher's record) names it.
     pub name: PathName,
@@ -64,7 +64,7 @@ pub struct AcceptingAuthority {
 
 /// Why a birth has no accepting primary to pull from (`fabric-node-hooks.md` "What the context carries").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoAuthority {
+pub enum NoAcceptingPrimary {
     /// The Day-0 root: no primary exists before it.
     Day0Root,
     /// An admin started on an inherited root (fabric recovery): it has no maker, and its hook reads the
@@ -74,11 +74,11 @@ pub enum NoAuthority {
     Recovery,
 }
 
-impl NoAuthority {
+impl NoAcceptingPrimary {
     /// The reason in words.
     pub fn reason(self) -> &'static str {
         match self {
-            Self::Day0Root => "the Day-0 root: no authority exists before this node",
+            Self::Day0Root => "the Day-0 root: no primary exists before this node",
             Self::InheritedRoot => "an admin started on an inherited root: its hook reads the inherited storage",
             Self::Recovery => "a recovery start: no admin accepted this birth",
         }
@@ -87,16 +87,16 @@ impl NoAuthority {
 
 /// Where the hook pulls from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Authority {
+pub enum AcceptingPrimarySource {
     /// The admin that accepted this birth's join.
-    Accepted(AcceptingAuthority),
+    Accepted(AcceptingPrimary),
     /// There is none, and why: the hook resolves from local state.
-    None(NoAuthority),
+    None(NoAcceptingPrimary),
 }
 
-impl Authority {
+impl AcceptingPrimarySource {
     /// The accepting admin, when there is one.
-    pub fn accepted(&self) -> Option<&AcceptingAuthority> {
+    pub fn accepted(&self) -> Option<&AcceptingPrimary> {
         match self {
             Self::Accepted(a) => Some(a),
             Self::None(_) => None,
@@ -122,7 +122,7 @@ pub struct NodeReadyCtx {
     /// The exact birth.
     pub birth: Birth,
     /// The accepting primary to pull from, or why there is none (`fabric-node-hooks.md` "What the context carries").
-    pub authority: Authority,
+    pub accepting_primary: AcceptingPrimarySource,
     /// The process's one Node RPC client.
     pub client: Arc<NodeRpcClient>,
     /// The topology/gossip handle: the app subscribes its kind topics before it takes its
@@ -146,7 +146,7 @@ pub struct NodeReadyCtx {
 impl NodeReadyCtx {
     /// The outcome for a pull the accepting primary answered with its typed `NotReady`: wait for that
     /// primary to be Ready (`fabric-node-hooks.md` "The server side gates too").
-    pub fn authority_not_ready(&self, reason: impl Into<String>) -> HookOutcome {
+    pub fn primary_not_ready(&self, reason: impl Into<String>) -> HookOutcome {
         HookOutcome::Blocked { reason: reason.into(), retry_on: RetryOn::PrimaryReady }
     }
 }
@@ -277,7 +277,7 @@ impl Addressed {
 pub struct Mark {
     heard: u64,
     addressed: u64,
-    authority_incarnation: Option<IncarnationId>,
+    primary_incarnation: Option<IncarnationId>,
 }
 
 /// How a wait for a retry event ended.
@@ -303,51 +303,51 @@ impl Events {
     }
 
     /// The counts now, for the accepting primary.
-    pub fn mark(&self, authority: &Authority) -> Mark {
+    pub fn mark(&self, accepting_primary: &AcceptingPrimarySource) -> Mark {
         let heard = *self.digest_view.heard_changes().borrow();
-        match authority.accepted() {
-            Some(a) => Mark { heard, addressed: self.addressed.count(&a.endpoint), authority_incarnation: self.birth_of(a).map(|(d, _)| d.node.incarnation) },
-            None => Mark { heard, addressed: 0, authority_incarnation: None },
+        match accepting_primary.accepted() {
+            Some(a) => Mark { heard, addressed: self.addressed.count(&a.endpoint), primary_incarnation: self.birth_of(a).map(|(d, _)| d.node.incarnation) },
+            None => Mark { heard, addressed: 0, primary_incarnation: None },
         }
     }
 
     /// The birth this node's view holds at the authority's endpoint, and how long it has been silent:
     /// the authority is known by its endpoint, which names one process.
-    fn birth_of(&self, authority: &AcceptingAuthority) -> Option<(MeshDigest, Duration)> {
-        let key = authority.endpoint.to_string();
+    fn birth_of(&self, accepting_primary: &AcceptingPrimary) -> Option<(MeshDigest, Duration)> {
+        let key = accepting_primary.endpoint.to_string();
         let held = self.digest_view.all().into_iter().find(|d| d.node.endpoint_id.0 == key)?;
         self.digest_view.get(held.node.node_id.as_str())
     }
 
-    fn holds(&self, on: &RetryOn, authority: Option<&AcceptingAuthority>, mark: &Mark) -> bool {
+    fn holds(&self, on: &RetryOn, accepting_primary: Option<&AcceptingPrimary>, mark: &Mark) -> bool {
         let moved = *self.digest_view.heard_changes().borrow() > mark.heard;
         if let RetryOn::TargetReachable { node_id: id } = on {
             return moved && self.digest_view.current(self.digest_view.staleness_floor()).iter().any(|d| &d.node.node_id == id);
         }
         // An authority event of a birth with no authority never happens; the attempt refuses such a
         // request by name before any wait begins.
-        let Some(authority) = authority else { return false };
-        let birth = self.birth_of(authority);
+        let Some(accepting_primary) = accepting_primary else { return false };
+        let birth = self.birth_of(accepting_primary);
         match on {
             RetryOn::PrimaryChanged => match &birth {
-                Some((d, _)) => self.digest_view.is_deleted(d.node.node_id.as_str()) || Some(&d.node.incarnation) != mark.authority_incarnation.as_ref(),
-                None => mark.authority_incarnation.is_some(),
+                Some((d, _)) => self.digest_view.is_deleted(d.node.node_id.as_str()) || Some(&d.node.incarnation) != mark.primary_incarnation.as_ref(),
+                None => mark.primary_incarnation.is_some(),
             },
             RetryOn::PrimaryReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::Ready && silent <= self.digest_view.staleness_floor()),
             RetryOn::TargetReachable { .. } => unreachable!("answered above"),
-            RetryOn::PrimaryAddressed => self.addressed.count(&authority.endpoint) > mark.addressed,
+            RetryOn::PrimaryAddressed => self.addressed.count(&accepting_primary.endpoint) > mark.addressed,
         }
     }
 
     /// Wait for `on`: arm on the view's and the down ops' change counts, then check the condition
     /// against `mark`, and only then sleep until a count moves or the birth is cancelled.
-    pub async fn wait(&self, on: &RetryOn, authority: Option<&AcceptingAuthority>, mark: &Mark, cancel: &CancelToken) -> Waited {
+    pub async fn wait(&self, on: &RetryOn, accepting_primary: Option<&AcceptingPrimary>, mark: &Mark, cancel: &CancelToken) -> Waited {
         loop {
             let mut heard = self.digest_view.heard_changes();
             let mut addressed = self.addressed.tick.subscribe();
             heard.borrow_and_update();
             addressed.borrow_and_update();
-            if self.holds(on, authority, mark) {
+            if self.holds(on, accepting_primary, mark) {
                 return Waited::Fired(on.name());
             }
             tokio::select! {
@@ -507,7 +507,7 @@ impl HookDriver {
     /// flight with it.
     pub async fn attempt(&self) -> Step {
         let n = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
-        let mark = self.events.mark(&self.ctx.authority);
+        let mark = self.events.mark(&self.ctx.accepting_primary);
         self.state.send_replace(PreNodeReadyState::Running { attempt: n });
         let span = tracing::info_span!(
             parent: &self.boot,
@@ -517,7 +517,7 @@ impl HookDriver {
             incarnation_id = %self.ctx.birth.incarnation.as_str(),
             attempt = n,
             inherited = self.ctx.inherited,
-            authority = %match &self.ctx.authority { Authority::Accepted(a) => a.name.to_string(), Authority::None(why) => format!("none: {}", why.reason()) },
+            accepting_primary = %match &self.ctx.accepting_primary { AcceptingPrimarySource::Accepted(a) => a.name.to_string(), AcceptingPrimarySource::None(why) => format!("none: {}", why.reason()) },
             outcome = tracing::field::Empty,
             retry_on = tracing::field::Empty,
             reason = tracing::field::Empty,
@@ -553,8 +553,8 @@ impl HookDriver {
                     self.state.send_replace(PreNodeReadyState::Failed(why.clone()));
                     return Step::Failed(why);
                 }
-                if self.ctx.authority.accepted().is_none() && !matches!(retry_on, RetryOn::TargetReachable { .. }) {
-                    let why = format!("the hook asked to wait for {} but this birth has no authority ({}): {reason}", retry_on.name(), match &self.ctx.authority { Authority::None(w) => w.reason(), Authority::Accepted(_) => "" });
+                if self.ctx.accepting_primary.accepted().is_none() && !matches!(retry_on, RetryOn::TargetReachable { .. }) {
+                    let why = format!("the hook asked to wait for {} but this birth has no authority ({}): {reason}", retry_on.name(), match &self.ctx.accepting_primary { AcceptingPrimarySource::None(w) => w.reason(), AcceptingPrimarySource::Accepted(_) => "" });
                     span.record("outcome", "failed");
                     span.record("reason", why.as_str());
                     span.in_scope(|| tracing::info!("pre_node_ready asked to wait on an authority this birth does not have"));
@@ -603,7 +603,7 @@ impl HookDriver {
                 Step::Failed(why) => return End::Failed(why),
                 Step::Cancelled => return End::Cancelled,
                 Step::Blocked(pending) => {
-                    match self.events.wait(&pending.retry_on, self.ctx.authority.accepted(), &pending.mark, &self.ctx.cancel).await {
+                    match self.events.wait(&pending.retry_on, self.ctx.accepting_primary.accepted(), &pending.mark, &self.ctx.cancel).await {
                         Waited::Fired(event) => {
                             pending.span.record("cleared_by", event);
                             pending.span.in_scope(|| tracing::info!(event, "the blocker's event happened: pre_node_ready runs again"));
@@ -733,7 +733,7 @@ mod tests {
                 kind: NodeKind::RpcNode,
             };
             let auth_key = iroh::SecretKey::generate().public();
-            let accepting = AcceptingAuthority {
+            let accepting = AcceptingPrimary {
                 name: PathName::new("mesh1", NodeKind::NodeAdmin, 1),
                 endpoint: auth_key,
                 target: rdm_transport::NodeTarget::ExactNode(NodeId::mint()),
@@ -755,7 +755,7 @@ mod tests {
                     NodeReadyCtx {
                         start_kind: StartKind::FirstStart,
                         birth: birth.clone(),
-                        authority: Authority::Accepted(accepting.clone()),
+                        accepting_primary: AcceptingPrimarySource::Accepted(accepting.clone()),
                         client: client.clone(),
                         topology_view: topology_view.clone(),
                         cancel: CancelToken::new(),
@@ -774,7 +774,7 @@ mod tests {
             }
             assert!(!blank_hooks.gate().is_open());
 
-            // 2. Waiting on an authority event when the birth has `Authority::None` is refused by name.
+            // 2. Waiting on an authority event when the birth has `AcceptingPrimarySource::None` is refused by name.
             let no_auth_hook = Arc::new(ScriptedHook {
                 outcomes: Mutex::new(vec![HookOutcome::Blocked {
                     reason: "waiting on primary".into(),
@@ -790,7 +790,7 @@ mod tests {
                     NodeReadyCtx {
                         start_kind: StartKind::FirstStart,
                         birth: birth.clone(),
-                        authority: Authority::None(NoAuthority::Day0Root),
+                        accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                         client: client.clone(),
                         topology_view: topology_view.clone(),
                         cancel: CancelToken::new(),
@@ -830,7 +830,7 @@ mod tests {
                     NodeReadyCtx {
                         start_kind: StartKind::FirstStart,
                         birth: birth.clone(),
-                        authority: Authority::Accepted(accepting.clone()),
+                        accepting_primary: AcceptingPrimarySource::Accepted(accepting.clone()),
                         client: client.clone(),
                         topology_view: topology_view.clone(),
                         cancel: CancelToken::new(),
@@ -866,7 +866,7 @@ mod tests {
                     NodeReadyCtx {
                         start_kind: StartKind::FirstStart,
                         birth,
-                        authority: Authority::Accepted(accepting),
+                        accepting_primary: AcceptingPrimarySource::Accepted(accepting),
                         client,
                         topology_view,
                         cancel: cancel.clone(),
@@ -1025,7 +1025,7 @@ mod tests {
                     NodeReadyCtx {
                         start_kind: StartKind::FirstStart,
                         birth: birth.clone(),
-                        authority: Authority::None(NoAuthority::Day0Root),
+                        accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                         client: client.clone(),
                         topology_view: topology_view.clone(),
                         cancel: CancelToken::new(),
@@ -1055,7 +1055,7 @@ mod tests {
                     NodeReadyCtx {
                         start_kind: StartKind::FirstStart,
                         birth: birth.clone(),
-                        authority: Authority::None(NoAuthority::Day0Root),
+                        accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                         client: client.clone(),
                         topology_view: topology_view.clone(),
                         cancel: CancelToken::new(),
@@ -1088,7 +1088,7 @@ mod tests {
                     NodeReadyCtx {
                         start_kind: StartKind::FirstStart,
                         birth,
-                        authority: Authority::None(NoAuthority::Day0Root),
+                        accepting_primary: AcceptingPrimarySource::None(NoAcceptingPrimary::Day0Root),
                         client,
                         topology_view,
                         cancel: cancel.clone(),

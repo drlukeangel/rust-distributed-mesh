@@ -22,7 +22,7 @@ const WRONG: Duration = Duration::from_secs(60);
 
 struct Birth {
     admin: AdminSide,
-    authority: Arc<PullServer>,
+    primary: Arc<PullServer>,
     launch: Launch,
     dir: std::path::PathBuf,
 }
@@ -34,11 +34,11 @@ fn rows() -> Vec<Row> {
 /// An authority (the rig's admin side) in `status`, its pull gate closed, and the launch of one
 /// rpc node it deployed.
 async fn birth(status: MemberStatus) -> Birth {
-    let authority = PullServer::new(rows());
+    let primary = PullServer::new(rows());
     let fabric = FabricId::mint();
     let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, status, {
-        let authority = authority.clone();
-        move |b| authority.serve(b)
+        let primary = primary.clone();
+        move |b| primary.serve(b)
     })
     .await;
     let dir = std::env::temp_dir().join(format!("pre-node-ready-{}", NodeId::mint()));
@@ -65,7 +65,7 @@ async fn birth(status: MemberStatus) -> Birth {
         declared: Default::default(),
     };
     admin.deployed(&launch, &key);
-    Birth { admin, authority, launch, dir }
+    Birth { admin, primary, launch, dir }
 }
 
 fn start(b: &Birth, pre_node_ready: &Arc<TestPreNodeReady>) -> tokio::task::JoinHandle<anyhow::Result<RunningNode>> {
@@ -189,7 +189,7 @@ fn a_node_blocked_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is()
         assert_eq!(*running.status.lock().unwrap(), MemberStatus::Pending, "a blocked node is Pending");
         until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Pending", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
         assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "Ready was published while the hook was blocked: {:?}", seen.lock().unwrap());
-        assert_eq!(b.authority.answered(), 0, "the authority answered no rows before its own hook passed");
+        assert_eq!(b.primary.answered(), 0, "the authority answered no rows before its own hook passed");
         assert_eq!(spans_named(&spans, "rdm.node_rpc.request.reject.via-pre-node-ready-not-passed").len(), 1, "the authority's gate refused the pull typed NotReady once");
         assert_eq!(attempts(&spans), vec![("blocked".to_string(), "primary-ready".to_string())]);
         let blocker = spans_named(&spans, "rdm.mesh.node.reject.via-pre-node-ready-blocked");
@@ -199,7 +199,7 @@ fn a_node_blocked_on_its_mesh_primary_is_never_ready_until_the_mesh_primary_is()
         let handle = running.pre_node_ready().expect("a registered hook has a handle");
         assert!(matches!(handle.state(), PreNodeReadyState::Blocked { retry_on: RetryOn::PrimaryReady, .. }), "{:?}", handle.state());
 
-        b.authority.gate.open();
+        b.primary.gate.open();
         b.admin.publish_status(MemberStatus::Ready).await;
         let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the hook runs again when the authority is Ready");
         assert_eq!(settled, PreNodeReadyState::Passed);
@@ -238,7 +238,7 @@ fn a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes() {
         let node_view = pre_node_ready.digest_view().expect("the attempt was handed the node's topology view");
 
         // The event: the authority publishes Ready, and the node hears it, while the attempt runs.
-        b.authority.gate.open();
+        b.primary.gate.open();
         b.admin.publish_status(MemberStatus::Ready).await;
         until(&node_view, "the node heard its authority Ready", |digest_view| digest_view.get(b.admin.launcher.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Ready)).await;
         pre_node_ready.set_mode(Mode::Local);
@@ -312,12 +312,12 @@ fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::Ready).await;
-        b.authority.gate.open();
-        b.authority.hold();
+        b.primary.gate.open();
+        b.primary.hold();
         let seen = observe(&b);
         let pre_node_ready = TestPreNodeReady::new(Mode::Pull);
         let starting = start(&b, &pre_node_ready);
-        tokio::time::timeout(WRONG, b.authority.entered(1)).await.expect("the pull is in flight at the authority");
+        tokio::time::timeout(WRONG, b.primary.entered(1)).await.expect("the pull is in flight at the authority");
 
         assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connection.delete {{ All }} is answered while the pull is in flight");
         let running = tokio::time::timeout(WRONG, starting).await.expect("the deletion ends the first attempt").unwrap().expect("the deleted node's start returns");
@@ -328,7 +328,7 @@ fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
         let calls: Vec<_> = spans_named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|f| f.get("op").is_some_and(|o| o == "116")).collect();
         assert_eq!(calls.len(), 1, "one pull call was made");
         assert!(!calls[0].contains_key("outcome"), "the dropped call recorded no outcome: it ended with the hook, not with a reply: {:?}", calls[0]);
-        b.authority.release();
+        b.primary.release();
         assert!(pre_node_ready.held().0.is_empty(), "no row was applied after the deletion");
         assert!(!seen.lock().unwrap().contains(&MemberStatus::Ready), "{:?}", seen.lock().unwrap());
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
@@ -351,14 +351,14 @@ fn rows_gossiped_during_the_pull_change_the_state_once_per_version() {
     let cap = crate::common::capture("rows_gossiped_during_the_pull_change_the_state_once_per_version");
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::Ready).await;
-        b.authority.gate.open();
-        b.authority.hold();
+        b.primary.gate.open();
+        b.primary.hold();
         let pre_node_ready = TestPreNodeReady::new(Mode::Pull);
         let starting = start(&b, &pre_node_ready);
-        tokio::time::timeout(WRONG, b.authority.entered(1)).await.expect("the pull is in flight at the authority");
+        tokio::time::timeout(WRONG, b.primary.entered(1)).await.expect("the pull is in flight at the authority");
 
         pre_node_ready.gossiped(Row { version: 2, value: "b".into() });
-        b.authority.release();
+        b.primary.release();
         let running = starting.await.unwrap().expect("the node comes up");
         let (rows, changes, ignored) = pre_node_ready.held();
         assert_eq!(rows.keys().copied().collect::<Vec<_>>(), vec![1, 2, 3]);
