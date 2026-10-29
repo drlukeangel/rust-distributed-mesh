@@ -34,9 +34,9 @@ async fn main() -> Result<()> {
     peers.learn(&nodes.get(&Filter::new()).await?);
 
     let fabrics = Fabrics::new(carrier.clone());
-    let fabric = fabrics.get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabrics.get answered no fabric"))?;
-    let fabric_primary = fabric.fabric_primary.clone().ok_or_else(|| anyhow!("fabrics.get names no fabric-primary"))?;
-    let build_id = BuildId::parse(fabric.build_id.as_deref().ok_or_else(|| anyhow!("fabrics.get names no current Build"))?).map_err(|e| anyhow!("the current Build id: {e}"))?;
+    let fabric = fabrics.get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabric.get answered no fabric"))?;
+    let fabric_primary = fabric.fabric_primary.clone().ok_or_else(|| anyhow!("fabric.get names no fabric-primary"))?;
+    let build_id = BuildId::parse(fabric.build_id.as_deref().ok_or_else(|| anyhow!("fabric.get names no current Build"))?).map_err(|e| anyhow!("the current Build id: {e}"))?;
     let attempt = carrier.build(&build_id).await?.attempt;
 
     match nodes.fabric_primary_update(&fabric.name, &fabric_primary, &build_id, attempt).await? {
@@ -50,6 +50,6 @@ async fn main() -> Result<()> {
     }
     // The record follows the move: the fabric's own read names the new fabric-primary once it is recorded.
     let after = fabrics.get(&Filter::new()).await?.into_iter().next().and_then(|f| f.fabric_primary);
-    println!("fabrics.get now names {:?}", after.map(|p| p.to_string()));
+    println!("fabric.get now names {:?}", after.map(|p| p.to_string()));
     Ok(())
 }

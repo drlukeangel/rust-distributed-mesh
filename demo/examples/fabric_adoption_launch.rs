@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
         .await?
         .into_iter()
         .next()
-        .ok_or_else(|| anyhow!("fabrics.get answered no fabric"))?;
+        .ok_or_else(|| anyhow!("fabric.get answered no fabric"))?;
     let rows = Nodes::new(carrier).get(&Filter::new()).await?;
     let fp = rows
         .iter()

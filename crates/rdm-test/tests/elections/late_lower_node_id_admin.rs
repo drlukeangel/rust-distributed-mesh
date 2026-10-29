@@ -91,7 +91,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
 
     // A lower NodeId never displaces a living holder: the incumbent keeps every seat, seen from
     // both admins, for several gossip intervals: what each admin holds itself (query.md §2), never
-    // nodes.get, which the late admin, not a primary, forwards to its mesh-primary (Q243).
+    // node.get, which the late admin, not a primary, forwards to its mesh-primary (Q243).
     for _ in 0..12 {
         for admin in [&incumbent_admin, &late_name] {
             let held = estate.held_topology_at(admin).await.unwrap_or_else(|| panic!("{admin} does not answer node.topology.get"));

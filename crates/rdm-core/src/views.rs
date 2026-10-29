@@ -1,6 +1,6 @@
 //! What the reads answer (node-rpc-envelope.md "Typed objects mapped to wire and execution
 //! owners"): `node.get` answers [`NodeView`]s, `mesh.get` [`MeshView`]s, `fabric.get` a
-//! [`FabricView`], each as the answering node-admin's view holds it, and `node.connections.get` a
+//! [`FabricView`], each as the answering node-admin's view holds it, and `node.connection.get` a
 //! node's held connections, a [`ConnectionsView`]. They travel on op `0x1B`
 //! ([`crate::status::StatusReply::Nodes`] and the rest). Postcard is positional: a field's place
 //! and a variant's place are the wire format, pinned by `tests/status_wire.rs`.
@@ -337,7 +337,7 @@ pub struct FabricView {
     pub ca: Option<CaView>,
 }
 
-/// `fabrics.get`'s `roots { phase, expires_at }` (fabric-ca-renew.md "fabric.root.update, the caller
+/// `fabric.get`'s `roots { phase, expires_at }` (fabric-ca-renew.md "fabric.root.update, the caller
 /// op"): a rotation not retired by the old anchor's bound is `stalled`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootsView {
@@ -349,14 +349,14 @@ pub struct RootsView {
     pub stalled: bool,
 }
 
-/// `fabrics.get`'s `ca { expires_at }` (node-rpc-envelope.md, fabric.root.update's row).
+/// `fabric.get`'s `ca { expires_at }` (node-rpc-envelope.md, fabric.root.update's row).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaView {
     /// When the fabric CA expires, rafka-time ms.
     pub expires_at: u64,
 }
 
-/// The fabric-primary's atlas (`fabrics.atlas.get`; docs/plans/proposal/fabric-atlas.md):
+/// The fabric-primary's atlas (`fabric.atlas.get`; docs/plans/proposal/fabric-atlas.md):
 /// one row for every node the current Build's topology names, in `path.name` order. Each row's birth
 /// is the one its node row names current, and its lifecycle is what the ops left it: the
 /// fabric-primary's own (what it accepted and the receipts its attempts returned) and the effects the
@@ -395,7 +395,7 @@ pub struct AtlasNodeView {
     pub observed: Option<NodeStatus>,
 }
 
-/// One connection fact a node holds (`node.connections.get`).
+/// One connection fact a node holds (`node.connection.get`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionView {
     /// The entry's minted id: an open entry's id names its connection to `node.connections.delete`.
@@ -419,7 +419,7 @@ pub struct ConnectionView {
     pub logged_at_ms: u64,
 }
 
-/// The connection facts one node holds (`node.connections.get`).
+/// The connection facts one node holds (`node.connection.get`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionsView {
     /// The answering node's `path.name`, the name it holds.

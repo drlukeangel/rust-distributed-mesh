@@ -1,8 +1,8 @@
 //! The reads over Node RPC (node-rpc-envelope.md "Typed objects mapped to wire and execution
-//! owners"; Q167: one read per entity, the filter a property match): `nodes.get`, `meshes.get` and
-//! `fabrics.get` answered from a node-admin's view (a node's record, its config and tags among it,
+//! owners"; Q167: one read per entity, the filter a property match): `node.get`, `mesh.get` and
+//! `fabric.get` answered from a node-admin's view (a node's record, its config and tags among it,
 //! from its atlas, never the node store, Q203), each the rows that match every pair of the read's
-//! filter ([`rdm_core::filter`]) by a pass over what the admin holds, and `connections.get { node }`
+//! filter ([`rdm_core::filter`]) by a pass over what the admin holds, and `node.connection.get { node }`
 //! answered by any node from the connections it holds as its own (fabric-mesh-node-lifecycles.md:
 //! "Reading or cutting a node's held connections"). A read changes nothing and publishes nothing;
 //! its answer is one Status reply, a filter the entity's schema refuses is `RejectedFilter` naming
@@ -104,7 +104,7 @@ fn mesh_view(m: crate::topology::MeshView) -> MeshView {
     MeshView { renewals: None, id: m.id, name: m.name, status: scope_status(m.status), primary_admin: m.primary_admin, admin_api_base: m.admin_api_base, nodes: m.nodes }
 }
 
-/// The paths the current Build plans in each mesh, by mesh: where `nodes.get` names a birth its view
+/// The paths the current Build plans in each mesh, by mesh: where `node.get` names a birth its view
 /// no longer holds (deleted by its recovery and held unrecovered, its data dir unreadable), one point
 /// read per path no birth of the view holds. `Err` names why they could not be read.
 pub type Planned = Result<BTreeMap<String, Vec<PathName>>, String>;
@@ -226,7 +226,7 @@ pub fn own_row_view(view: &Topology, records: &Atlas, row: &crate::storage::Node
     v
 }
 
-/// `nodes.get` (Q167) answered by the node-admin `me` from its `view`, its nodes' `loads` and the node
+/// `node.get` (Q167) answered by the node-admin `me` from its `view`, its nodes' `loads` and the node
 /// records its atlas holds (`records`; never the node store, Q203): every birth that matches every
 /// pair of `filter`, each with its record's properties, by `path.name`. A filter the node schema
 /// refuses is `RejectedFilter` naming the pair, and nothing is read. Its span names the read, the
@@ -358,7 +358,7 @@ pub fn held_connections(held: &ConnectionsHeld) -> Vec<NodeConnection> {
 
 pub use rdm_node::node_self::{connection_view, connections_answer};
 
-/// `meshes.get` (Q167) answered by the node-admin `me` from its `view`: every mesh it holds that
+/// `mesh.get` (Q167) answered by the node-admin `me` from its `view`: every mesh it holds that
 /// matches every pair of `filter`, by name, the empty list when none does (a mesh it does not hold
 /// included). A filter the mesh schema refuses is `RejectedFilter` naming the pair. The span names
 /// the pairs and how many meshes were answered.
@@ -381,7 +381,7 @@ pub fn meshes_answer(me: &PathName, view: &Topology, filter: &Filter) -> StatusR
     reply
 }
 
-/// `fabrics.get` (Q167) answered by the node-admin `me`: the fabric its `view` holds, with `build_id`,
+/// `fabric.get` (Q167) answered by the node-admin `me`: the fabric its `view` holds, with `build_id`,
 /// its fabric record's `Fabric.build_id`, when it matches every pair of `filter`; else the empty list.
 /// A filter the fabric schema refuses is `RejectedFilter` naming the pair. The span names the pairs,
 /// the meshes and the Build answered.
@@ -446,8 +446,8 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
-    /// fabric-ca-renew.md ("its progress is `fabrics.get`'s `roots { phase, expires_at }`"; "a rotation
-    /// not retired by then is surfaced on `fabrics.get` as `roots: stalled`"): the Fabric row's roots and
+    /// fabric-ca-renew.md ("its progress is `fabric.get`'s `roots { phase, expires_at }`"; "a rotation
+    /// not retired by then is surfaced on `fabric.get` as `roots: stalled`"): the Fabric row's roots and
     /// CA rows are answered; a rotation past its bound and not retired is stalled, a retired one never.
     #[test]
     fn fabrics_get_carries_the_rotation_and_the_ca_and_names_a_rotation_past_its_bound_stalled() {
@@ -472,8 +472,8 @@ mod tests {
 
     #[test]
     fn plural_reads_match_atlas_records_skip_inherited_predecessor_tags_and_emit_serve_and_reject_spans() {
-        // docs/architecture/query.md:11,52 — "A caller outside the node sends `fabrics.get`,
-        // `meshes.get` and `nodes.get` to the fabric-primary, which answers from its atlas:
+        // docs/architecture/query.md:11,52 — "A caller outside the node sends `fabric.get`,
+        // `mesh.get` and `node.get` to the fabric-primary, which answers from its atlas:
         // every mesh's node records, held in memory... Property: any public field of the row
         // by its page name... Refused: an unknown property, a value the field cannot take, an
         // empty values list or a field that is not public is `INVALID_ARGUMENT`, naming the pair."
@@ -581,11 +581,11 @@ mod tests {
                 other => panic!("expected StatusReply::Nodes for predecessor, got {other:?}"),
             }
 
-            // 3. Invalid filter on nodes.get is refused naming the pair.
+            // 3. Invalid filter on node.get is refused naming the pair.
             let bad_node_reply = nodes_answer(&me, &view, &loads, &atlas, &Filter::new().eq("unknown_field", ["x"])).await;
             assert!(matches!(bad_node_reply, StatusReply::RejectedFilter { ref reason } if reason.contains("(unknown_field, [x])")));
 
-            // 4. meshes.get and fabrics.get serve matching views and refuse invalid filters.
+            // 4. mesh.get and fabric.get serve matching views and refuse invalid filters.
             let mesh_reply = meshes_answer(&me, &view, &Filter::new().eq("name", ["mesh1"]).eq("status", ["ready"]));
             match mesh_reply {
                 StatusReply::Meshes { meshes } => {

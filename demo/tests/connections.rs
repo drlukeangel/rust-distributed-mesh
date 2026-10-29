@@ -295,19 +295,19 @@ async fn establish_direct_edge(
     wait_for_row(&path, ConnectionState::Connected).await;
 }
 
-/// What the node's `node.connections.get` answers for a stream Proxy that is still open after its
+/// What the node's `node.connection.get` answers for a stream Proxy that is still open after its
 /// route was replaced by Direct (connections.md §10: the tunnel outlives the Proxy's
 /// `Disconnected(direct-restored)` write).
 const TUNNEL_PAST_ITS_ROUTE: &str = "route: retired";
 
-/// `connections.get { node }` of the exact birth `node`, sent by `root`'s Node RPC client, answered
+/// `node.connection.get { node }` of the exact birth `node`, sent by `root`'s Node RPC client, answered
 /// within `bound`. The node answers once every observation handed to its connections writer has
 /// landed, a Direct Connected's owed `Proxy Disconnected(direct-restored)` write included, so the
 /// answer is the held projection new opens resolve over (connections.md §10: "Only then does
 /// Direct become effective"). Panics naming the read when it is not answered within `bound` or is
 /// answered with anything but the node's connections.
 async fn wait_for_held_connections(root: &Running, node: &Birth, bound: Duration) -> ConnectionsView {
-    let what = format!("connections.get of {} ({})", node.name, node.node_id);
+    let what = format!("node.connection.get of {} ({})", node.name, node.node_id);
     let req = StatusRequest::Get {
         entity: rdm_core::filter::Entity::Connections,
         node: Some((node.node_id.clone(), node.incarnation.clone())),
@@ -332,7 +332,7 @@ async fn wait_for_held_connections(root: &Running, node: &Birth, bound: Duration
     }
 }
 
-/// The entry `id` in `held`, by the id `node.connections.get` names it by.
+/// The entry `id` in `held`, by the id `node.connection.get` names it by.
 fn held_entry<'a>(held: &'a ConnectionsView, id: &rdm_core::ConnectionId) -> Option<&'a ConnectionView> {
     held.connections.iter().find(|c| c.id == id.to_string())
 }
@@ -833,7 +833,7 @@ fn restoring_direct_on_alpn_a_leaves_alpn_bs_proxy_route_and_streams_unchanged()
         );
 
         // The row on disk is the first of the write's files; Direct is effective once the write has
-        // landed in rpc.1's held projection, which its own node.connections.get answers after.
+        // landed in rpc.1's held projection, which its own node.connection.get answers after.
         let held = wait_for_held_connections(&root, &rpc1_birth, BOUND).await;
         let a_tunnel = held_entry(&held, proxy_a_client.id())
             .unwrap_or_else(|| panic!("rpc.1 must still hold ALPN_A's open Proxy tunnel: {held:?}"));
@@ -1190,7 +1190,7 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
         .await;
 
         // The row on disk is the first of the write's files; Direct is effective once the write has
-        // landed in rpc.1's held projection, which its own node.connections.get answers after.
+        // landed in rpc.1's held projection, which its own node.connection.get answers after.
         let held = wait_for_held_connections(&root, &rpc1_birth, BOUND).await;
         let tunnel = held_entry(&held, &tunnel_id)
             .unwrap_or_else(|| panic!("rpc.1 must still hold the open Proxy tunnel: {held:?}"));

@@ -472,7 +472,7 @@ impl NodeSelf {
         }
     }
 
-    /// `connections.get { node }` at this birth (fabric-mesh-node-lifecycles.md: "Reading or cutting a
+    /// `node.connection.get { node }` at this birth (fabric-mesh-node-lifecycles.md: "Reading or cutting a
     /// node's held connections"; Q167 R-RD7): the connections it holds now that match every pair of
     /// `filter`, under the name it holds, answered from what is held: a connection whose row has not
     /// landed is not held yet, and the read never waits for a write (Q169); the ids are those
@@ -1577,7 +1577,7 @@ pub fn connection_view(f: &NodeConnection) -> ConnectionView {
     }
 }
 
-/// `connections.get { node }` answered from `held`, one read of the node's connections writer (Q167
+/// `node.connection.get { node }` answered from `held`, one read of the node's connections writer (Q167
 /// R-RD7): the connections the node holds (its `connected` latest Directs and its active Proxies,
 /// each named by the minted id `node.connections.delete` names it by) that match every pair of
 /// `filter`, under the name it holds; a filter the connection schema refuses is `RejectedFilter`
@@ -1850,7 +1850,7 @@ mod tests {
     /// "The stop this process's own signal runs: node.stop's steps with the node its own subject,
     /// then awaits owed declarations up to `connections_delete_deadline`"
     /// CONTRACT: docs/architecture/query.md:20
-    /// "`connections.get { node }` at this birth: the connections it holds now that match every pair
+    /// "`node.connection.get { node }` at this birth: the connections it holds now that match every pair
     /// of `filter`, under the name it holds"
     /// CONTRACT: docs/architecture/node-rpc-envelope.md:242
     /// "The answer of a Status door that has no handler for `req`: `RequestNotHandled` naming the request"

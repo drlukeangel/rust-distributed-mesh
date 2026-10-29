@@ -212,9 +212,9 @@ fn replies_match_the_frozen_sixty_three_variant_wire_schema() {
         (IssuerUpdated { node_id: node(), incarnation: birth(), issuer_expires_at: 7 }, "350c3031323334353637383961620c39776370726667777674687907"),
         // reason "x"
         (RejectedCert { reason: "x".into() }, "360178"),
-        // nodes (len 0) (fabrics.atlas.get, fabric-atlas.md R-FA4), appended last
+        // nodes (len 0) (fabric.atlas.get, fabric-atlas.md R-FA4), appended last
         (Atlas { atlas: rdm_core::views::AtlasView { nodes: vec![] } }, "3700"),
-        // fabrics (len 0) (fabrics.get, Q167), appended last
+        // fabrics (len 0) (fabric.get, Q167), appended last
         (Fabrics { fabrics: vec![] }, "3800"),
         // reason "x" (a filter refused naming the pair, Q167), appended last
         (RejectedFilter { reason: "x".into() }, "390178"),
@@ -384,7 +384,7 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(rdm_core::filter::Entity::Meshes, "01");
     golden(rdm_core::filter::Entity::Nodes, "02");
     golden(rdm_core::filter::Entity::Connections, "03");
-    // connections.get { node } with no pair: Connections | Some(node, birth) | pairs (len 0)
+    // node.connection.get { node } with no pair: Connections | Some(node, birth) | pairs (len 0)
     golden(StatusRequest::Get { entity: rdm_core::filter::Entity::Connections, node: Some((node(), birth())), filter: rdm_core::filter::Filter::new() }, "2103010c3031323334353637383961620c39776370726667777674687900");
     for (status, expected) in [
         (NodeStatus::Pending, "00"), (NodeStatus::Ready, "01"), (NodeStatus::ConnectionsDeleting, "02"), (NodeStatus::Leaving, "03"),

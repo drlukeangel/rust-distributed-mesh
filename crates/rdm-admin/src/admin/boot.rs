@@ -2062,7 +2062,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                 let hash = rdm_core::app_types::hash(&n.held);
                                                                 if hash == n.held_hash && n.types.is_subset(&n.held) {
                                                                     if topology_view.learn_app_types_from(&d, n.types.clone(), n.held.clone()).await.is_ok() {
-                                                                        tracing::info_span!("rdm.node_admin.node.update.via-held-types", node_id = %birth.0, incarnation = %birth.1, types = n.types.len(), held = n.held.len()).in_scope(|| tracing::info!("peer nodes.get supplied the joined types"));
+                                                                        tracing::info_span!("rdm.node_admin.node.update.via-held-types", node_id = %birth.0, incarnation = %birth.1, types = n.types.len(), held = n.held.len()).in_scope(|| tracing::info!("peer node.get supplied the joined types"));
                                                                         return Some((birth, d.held_hash));
                                                                     }
                                                                 }

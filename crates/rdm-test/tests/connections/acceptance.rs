@@ -193,7 +193,7 @@ fn rows<'a>(history: &'a [Value], to: &str, kind: &str) -> Vec<&'a Value> {
 
 /// `node.connections.delete { Connections(ids) }` of `node`'s exact birth through its mesh-primary.
 async fn connections_delete_ids(estate: &Estate, node: &str, ids: &[String]) -> rdm_core::status::StatusReply {
-    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]");
+    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
     let target = mesh.iter().find(|n| n.name.to_string() == node).cloned().unwrap_or_else(|| panic!("no {node} in mesh1"));
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(target.node_id.clone()), node_id: target.node_id.clone(), incarnation: target.incarnation_id.clone().expect("a live birth") };
@@ -611,7 +611,7 @@ async fn a_dial_presenting_another_fabrics_cert_is_refused_ca_bad_signature_on_t
 /// Return `node.connections.deleted` naming the ids closed, the ids unknown and the ids already closed.
 /// The node's status does not change"; Wire: "`RejectedConnectionScope` for a scope that names nothing
 /// the node can cut"): the source holds two open Direct connections on the app protocol, to the carrier
-/// and to the destination, each listed by `node.connections.get` with its id. A delete naming the
+/// and to the destination, each listed by `node.connection.get` with its id. A delete naming the
 /// carrier's id and an id the node never opened closes that one, names the unknown id not open and
 /// leaves the other open; the drop is written under the source's name; the same id again is not open;
 /// an empty list sent to the mesh-primary is refused by name; the source stays ready.
@@ -638,13 +638,13 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     let rdm_core::status::StatusReply::ConnectionsDeleted { closed, not_open, receipt, .. } = &reply else { panic!("node.connections.deleted: {reply:?}") };
     assert_eq!((closed.iter().map(ToString::to_string).collect::<Vec<_>>(), not_open.iter().map(ToString::to_string).collect::<Vec<_>>()), (vec![to_carrier.clone()], vec![never.clone()]), "{reply:?}");
     assert!(receipt.is_none(), "a scope of ids carries no node-wide receipt: {reply:?}");
-    // The drop lands behind the answer (Q169); `node.connections.get` reads the held projection, which
+    // The drop lands behind the answer (Q169); `node.connection.get` reads the held projection, which
     // takes the drop once it lands.
     let drop = wait_for("the drop is written under the source's name", Duration::from_secs(15), || async {
         rows(&estate.connection_history(SOURCE), CARRIER, "Direct").last().filter(|r| r["state"] == "Disconnected").map(|r| (*r).clone())
     })
     .await;
-    let after = wait_for("the closed connection leaves node.connections.get", Duration::from_secs(15), || async {
+    let after = wait_for("the closed connection leaves node.connection.get", Duration::from_secs(15), || async {
         let v = estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.ok()?;
         (!listed(&v, CARRIER).contains(&to_carrier)).then_some(v)
     })
@@ -659,7 +659,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     let carrier_client = estate.carrier().await;
     let empty = rdm_client::NodeRpc::new(carrier_client.client()).connections_delete(&primary, &rdm_transport::RouteChoice::Direct, &birth, &rdm_core::status::ConnectionScope::Connections(vec![]), &rdm_transport::CallOptions::default()).await.expect("answered");
     assert!(matches!(&empty, rdm_core::status::StatusReply::RejectedConnectionScope { reason } if reason.contains("at least one")), "an empty list is refused by name: {empty:?}");
-    assert!(listed(&estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.expect("connections.get"), DEST).contains(&to_dest), "the refused scope cut nothing");
+    assert!(listed(&estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.expect("node.connection.get"), DEST).contains(&to_dest), "the refused scope cut nothing");
     let source = estate.node_value(SOURCE).await;
     assert_eq!(s(&source["status"]), "ready", "a delete of named connections changes no status: {source}");
     estate.stop().await;
@@ -667,7 +667,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
 
 /// The mesh1 primary's node id.
 async fn mesh_primary(estate: &Estate) -> rdm_core::NodeId {
-    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]");
+    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     mesh.iter().find(|n| n.is_primary).map(|n| n.node_id.clone()).expect("node.get names mesh1's primary")
 }
 
@@ -683,7 +683,7 @@ async fn exact_birth(estate: &Estate, node: &str) -> rdm_client::ExactBirth {
 /// and NodeCommand 0x22 with typed `ConnectionsDeleting`"; connections.md §1.1 "R-CR5"): the source holds
 /// one Direct (to the carrier) and one Proxy (to the destination, through the carrier) on the app
 /// protocol. `node.connections.delete { All }` as a Build completes on `node.connections.deleted`;
-/// afterwards `node.connections.get` (Status 0x1B) still answers and lists no open connection, both
+/// afterwards `node.connection.get` (Status 0x1B) still answers and lists no open connection, both
 /// drops are written under the source's name, and a new call to the source (the testkit door, op
 /// 0x73) is refused `ConnectionsDeleting` by name. Must NOT happen: a connection still open after the
 /// completion, a drop under another name, or a new call served.

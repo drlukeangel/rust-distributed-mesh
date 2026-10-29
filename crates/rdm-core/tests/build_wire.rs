@@ -243,7 +243,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
         (FabricPrimaryMoved { build_id: b(), fabric_primary: Some(s("p")) }, "18 01 62 01 01 70"),
         (FabricPrimaryMoved { build_id: b(), fabric_primary: None }, "18 01 62 00"),
         (NotClaimant { mesh: Some(s("m")), fabric_primary: Some(s("p")), mesh_primary: None }, "19 01 01 6d 01 01 70 00"),
-        // builds.get's frames (Q167 R-RD5), appended after NotClaimant.
+        // build.get's frames (Q167 R-RD5), appended after NotClaimant.
         (Topology { build_id: b(), chunk_index: 0, chunk_count: 1, nodes: vec![] }, "1a 01 62 00 01 00"),
         (BuildReply::Build { build_id: b(), phase: BuildPhase::Failed, attempt: 2, executor: None, reason: s("r"), last_failure: Some(s("x")), current: true, steps: 1, chunks: 1 }, "1b 01 62 03 02 00 01 72 01 01 78 01 01 01"),
         (End { builds: 3 }, "1c 03"),
@@ -290,7 +290,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
             steps: vec![],
         },
         Topology { build_id: "b".into(), chunk_index: 0, chunk_count: 1, nodes: vec![] },
-        // builds.get's Build header closes one Build of several: data, never the read's terminal.
+        // build.get's Build header closes one Build of several: data, never the read's terminal.
         BuildReply::Build { build_id: "b".into(), phase: BuildPhase::Complete, attempt: 1, executor: None, reason: "requested".into(), last_failure: None, current: true, steps: 0, chunks: 1 },
     ] {
         assert_eq!(Build::frame_kind(&data), FrameKind::Data, "{data:?}");
@@ -317,7 +317,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
         AttemptTaken { detail: "d".into() },
         SeatYielded { node: "n".into(), by: "b".into() },
         CannotDelete { build_id: "b".into(), reason: "r".into() },
-        RejectedFilter { reason: "builds.get: the pair (zone, [eu]) names no property of a Build header row".into() },
+        RejectedFilter { reason: "build.get: the pair (zone, [eu]) names no property of a Build header row".into() },
     ] {
         assert!(matches!(Build::frame_kind(&refusal), FrameKind::Refusal(_)), "{refusal:?}");
         crate::outcome_codes::check::<Build>(&refusal);

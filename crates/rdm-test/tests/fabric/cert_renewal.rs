@@ -171,7 +171,7 @@ fn signed(bytes: &[u8]) -> SignedCert {
     certs::cert_from_bytes(bytes).expect("a signed member cert")
 }
 
-/// `nodes.get [id: node]` on `admin`'s Status authority.
+/// `node.get [id: node]` on `admin`'s Status authority.
 async fn node_get(admin: &Running, node: &NodeId) -> Option<NodeView> {
     match admin.status_authority()?.apply(None, &StatusRequest::Get { entity: Entity::Nodes, node: None, filter: Filter::new().eq("id", [node.to_string()]) }).await {
         StatusReply::Nodes { mut nodes } => nodes.pop(),
@@ -179,7 +179,7 @@ async fn node_get(admin: &Running, node: &NodeId) -> Option<NodeView> {
     }
 }
 
-/// `fabrics.get` on `admin`'s Status authority.
+/// `fabric.get` on `admin`'s Status authority.
 async fn fabric_get(admin: &Running) -> Option<FabricView> {
     match admin.status_authority()?.apply(None, &StatusRequest::Get { entity: Entity::Fabrics, node: None, filter: Filter::new() }).await {
         StatusReply::Fabrics { mut fabrics } => fabrics.pop(),
@@ -351,7 +351,7 @@ fn a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admi
 /// CONTRACT, the control (node-cert-renew.md: "nothing is terminated, nothing reconnects, no status
 /// changes and no gossip frame is published. A renewal is invisible to every other node"): a member
 /// holding an open Direct connection is renewed. The connection is the same one after the install
-/// and carries a new stream; what the member holds (`node.connections.get`) is unchanged; no
+/// and carries a new stream; what the member holds (`node.connection.get`) is unchanged; no
 /// connection span is begun between the renewal and the install; the member's view on its admin and
 /// its digest in its peer's view keep their status, incarnation, name and config.
 #[test]
@@ -407,7 +407,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         // The open answers before its row lands (Q169): mesh1.rpc.1 holds the connection once its write
         // lands, and the renewal is compared against that.
         let opened_id = conn.id().to_string();
-        let held_before = until("node.connections.get of mesh1.rpc.1 holds the open connection before the renewal", BOUND, async || {
+        let held_before = until("node.connection.get of mesh1.rpc.1 holds the open connection before the renewal", BOUND, async || {
             let held = call(&root, &a, &StatusRequest::Get { entity: Entity::Connections, node: Some((a.digest.node.node_id.clone(), a.digest.node.incarnation.clone())), filter: Filter::new() }).await;
             matches!(&held, Ok(StatusReply::Connections { connections }) if connections.connections.iter().any(|c| c.id == opened_id)).then_some(held)
         })
@@ -432,7 +432,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         assert_eq!(connection_spans(&spans), before, "no connection was closed, refused or opened by the renewal");
         echo(b"after").await;
         assert_eq!(conn.id(), server.id(), "the same connection carries the stream after the install");
-        let held_after = bounded("connections.get of mesh1.rpc.1 after the renewal", call(&root, &a, &StatusRequest::Get { entity: Entity::Connections, node: Some((a.digest.node.node_id.clone(), a.digest.node.incarnation.clone())), filter: Filter::new() })).await;
+        let held_after = bounded("node.connection.get of mesh1.rpc.1 after the renewal", call(&root, &a, &StatusRequest::Get { entity: Entity::Connections, node: Some((a.digest.node.node_id.clone(), a.digest.node.incarnation.clone())), filter: Filter::new() })).await;
         assert_eq!(held_after, held_before, "what the node holds is unchanged");
         let view_after = bounded("node.get of mesh1.rpc.1 after the renewal", node_get(&root, &a.digest.node.node_id)).await.expect("mesh1.rpc.1 in the view");
         assert_eq!(
@@ -934,10 +934,10 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
         until("the rotation is ca-rotated", BOUND, moved("CaRotated")).await;
         until("the rotation is retired", BOUND * 2, moved("Retired")).await;
 
-        // fabrics.get carries the rotation's progress and the CA under the new root.
-        let shown = until("fabrics.get shows the rotation retired", BOUND, async || fabric_get(&root).await.filter(|f| f.roots.as_ref().is_some_and(|r| r.phase == RootsPhase::Retired))).await;
+        // fabric.get carries the rotation's progress and the CA under the new root.
+        let shown = until("fabric.get shows the rotation retired", BOUND, async || fabric_get(&root).await.filter(|f| f.roots.as_ref().is_some_and(|r| r.phase == RootsPhase::Retired))).await;
         assert!(!shown.roots.as_ref().unwrap().stalled, "a rotation retired is not stalled: {:?}", shown.roots);
-        assert!(shown.ca.is_some(), "fabrics.get carries the CA row: {shown:?}");
+        assert!(shown.ca.is_some(), "fabric.get carries the CA row: {shown:?}");
         let alone = vec![hex(&new.verifying_key())];
         for node in ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"] {
             until(&format!("{node} installs the new root alone"), BOUND, async || {

@@ -65,7 +65,7 @@ with its own commit boundary (node-replace.md, "Data transfer").
 |---|---|
 | `rdm.node_admin.deployment.update.via-step` with `step=PrepareStorage` | the data dir prepared for a create: fresh, or inherited and inspected |
 | `rdm.mesh.node.update.via-pre-node-ready-attempt`, field `inherited` | what the hook was told |
-| `nodes.get` on the birth | `data-dir-lost` or `data-dir-unreadable` when either stands ([provider runbook](provider-runbook.md)) |
+| `node.get` on the birth | `data-dir-lost` or `data-dir-unreadable` when either stands ([provider runbook](provider-runbook.md)) |
 | the birth's row | a new node.id and incarnation at the same path.name after a re-birth; the same ones after a restart |
 
 ## Checking a broker restart

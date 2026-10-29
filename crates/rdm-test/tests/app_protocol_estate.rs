@@ -152,7 +152,7 @@ impl Day0 {
     async fn until_ready(&self, node: &PathName) {
         tokio::time::timeout(WRONG, async {
             loop {
-                let listed = rdm_test::typed::mesh_nodes(&self.nodes, &node.mesh).await.unwrap_or_else(|e| panic!("nodes.get [mesh: {}]: {e}", node.mesh));
+                let listed = rdm_test::typed::mesh_nodes(&self.nodes, &node.mesh).await.unwrap_or_else(|e| panic!("node.get [mesh: {}]: {e}", node.mesh));
                 if listed.iter().any(|n| &n.name == node && n.status == NodeStatus::Ready) {
                     return;
                 }

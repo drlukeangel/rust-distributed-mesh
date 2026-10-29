@@ -20,7 +20,7 @@
 //! ApplyFabricEvent   the fabric-primary -> a mesh primary
 //! ```
 //!
-//! The reads (`node.get`, `mesh.get`, `fabric.get`, `node.connections.get`) ride the same op until
+//! The reads (`node.get`, `mesh.get`, `fabric.get`, `node.connection.get`) ride the same op until
 //! the node, mesh and fabric families have op numbers of their own: a caller asks, the receiver
 //! answers from what it holds, and nothing changes. Their answers are [`crate::views`].
 //!
@@ -496,7 +496,7 @@ pub enum StatusRequest {
     ///
     /// Position 24 on the wire.
     GetFabric,
-    /// `node.connections.get` (fabric-mesh-node-lifecycles.md: "Reading or cutting a node's held
+    /// `node.connection.get` (fabric-mesh-node-lifecycles.md: "Reading or cutting a node's held
     /// connections"): a caller asks the exact birth for the connections it holds as its own, its
     /// latest Direct per destination and its active Proxies, each named by the minted id
     /// `DeleteConnections` names it by, answered [`StatusReply::Connections`]. A read.
@@ -610,18 +610,18 @@ pub enum StatusRequest {
         /// it (`RDM_ISSUING_KEY` beside `RDM_FABRIC_CA_KEY`; fabric.ca.renew step 2, Q275).
         ca_key: CaKeyHex,
     },
-    /// `fabrics.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): a caller asks the
+    /// `fabric.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): a caller asks the
     /// fabric-primary for its atlas, answered [`StatusReply::Atlas`]. A read. Appended last: no
     /// variant before it moves.
     ///
     /// Position 32 on the wire.
     GetAtlas,
-    /// The reads (Q167, R-RD1 to R-RD3): one read per entity, plural, `fabrics.get`, `meshes.get`,
-    /// `nodes.get` and `connections.get { node }`, each a list of the rows the receiver holds that
+    /// The reads (Q167, R-RD1 to R-RD3): one read per entity, plural, `fabric.get`, `mesh.get`,
+    /// `node.get` and `node.connection.get { node }`, each a list of the rows the receiver holds that
     /// match every pair of `filter` ([`crate::filter`]), in a stable order, the empty list when none
     /// matches; a filter the entity's schema refuses is [`StatusReply::RejectedFilter`] naming the
     /// pair. Answered [`StatusReply::Fabrics`], [`StatusReply::Meshes`], [`StatusReply::Nodes`] or
-    /// [`StatusReply::Connections`]. `node` is `connections.get`'s address, the exact birth whose
+    /// [`StatusReply::Connections`]. `node` is `node.connection.get`'s address, the exact birth whose
     /// connections log is read, required for `Connections` and refused for any other entity. A read:
     /// nothing changes. Appended last: no variant before it moves; `GetNodes`, `GetMeshes`,
     /// `GetFabric` and `GetConnections` keep their positions and are read as this request
@@ -631,7 +631,7 @@ pub enum StatusRequest {
     Get {
         /// The entity read.
         entity: crate::filter::Entity,
-        /// The exact birth a `connections.get` reads; `None` for every other entity.
+        /// The exact birth a `node.connection.get` reads; `None` for every other entity.
         node: Option<(NodeId, IncarnationId)>,
         /// The pairs every answered row matches.
         filter: crate::filter::Filter,
@@ -684,12 +684,12 @@ pub enum StatusRequest {
     },
 }
 
-/// A read as one shape (Q167): the entity, the exact birth a `connections.get` reads, and the filter.
+/// A read as one shape (Q167): the entity, the exact birth a `node.connection.get` reads, and the filter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Read {
     /// The entity read.
     pub entity: crate::filter::Entity,
-    /// The exact birth a `connections.get` reads.
+    /// The exact birth a `node.connection.get` reads.
     pub node: Option<(NodeId, IncarnationId)>,
     /// The pairs every answered row matches.
     pub filter: crate::filter::Filter,
@@ -996,7 +996,7 @@ pub enum ConnectionScope {
     ///
     /// Position 0 on the wire.
     All,
-    /// The exact connections named by the minted id of their open entry, as `node.connections.get`
+    /// The exact connections named by the minted id of their open entry, as `node.connection.get`
     /// returns them: only those pooled peer connections are cut. At least one, at most
     /// [`MAX_CONNECTION_IDS`].
     ///
@@ -1109,10 +1109,10 @@ impl StatusRequest {
             Self::UpdateName { .. } => "node.name.update",
             Self::DeleteConnections { .. } => "delete-connections",
             Self::GetNodes { select } => select.read(),
-            Self::GetMeshes { .. } => "meshes.get",
-            Self::GetFabric => "fabrics.get",
-            Self::GetAtlas => "fabrics.atlas.get",
-            Self::GetConnections { .. } => "connections.get",
+            Self::GetMeshes { .. } => "mesh.get",
+            Self::GetFabric => "fabric.get",
+            Self::GetAtlas => "fabric.atlas.get",
+            Self::GetConnections { .. } => "node.connection.get",
             Self::Get { entity, .. } => entity.read(),
             Self::NodeConfigUpdated { .. } => "node-config-updated",
             Self::CreateTags { .. } => "node.tags.create",
@@ -1575,7 +1575,7 @@ pub enum StatusReply {
     ///
     /// Position 38 on the wire.
     ReadOverBound {
-        /// The read (`node.get`, `mesh.get`, `fabric.get`, `node.connections.get`).
+        /// The read (`node.get`, `mesh.get`, `fabric.get`, `node.connection.get`).
         read: String,
         /// The answer's encoded size, in bytes.
         bytes: u64,
@@ -1776,7 +1776,7 @@ pub enum StatusReply {
         /// The atlas.
         atlas: crate::views::AtlasView,
     },
-    /// The answer to a `fabrics.get` ([`StatusRequest::Get`] of `Fabrics`): the fabric the answering
+    /// The answer to a `fabric.get` ([`StatusRequest::Get`] of `Fabrics`): the fabric the answering
     /// admin holds when it matches every pair, else nothing. Appended last: no variant before it moves.
     ///
     /// Position 56 on the wire.
@@ -1785,7 +1785,7 @@ pub enum StatusReply {
         fabrics: Vec<FabricView>,
     },
     /// A read's filter the entity's schema refuses (Q167 R-RD2): an unknown property, a value the
-    /// field cannot take or an empty values list, the pair named; or a `connections.get` without its
+    /// field cannot take or an empty values list, the pair named; or a `node.connection.get` without its
     /// node, or a node on another read. Nothing is read. Appended last: no variant before it moves.
     ///
     /// Position 57 on the wire.
@@ -1814,7 +1814,7 @@ pub enum StatusReply {
         root: String,
     },
     /// `fabric.root.updated`: the rotation is accepted, its roots row `minted`; its progress is
-    /// `fabrics.get`'s roots. Appended last: no variant before it moves.
+    /// `fabric.get`'s roots. Appended last: no variant before it moves.
     ///
     /// Position 60 on the wire.
     RootUpdated {
@@ -2388,7 +2388,7 @@ mod tests {
             (StatusReply::Fabric { fabric: crate::views::FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::Pending, provider: crate::views::ProviderKind::Process, fabric_primary: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()) } }, ReplyKind::Success),
             (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.rpc.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
             (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::new(crate::outcome::Code::NotFound)),
-            (StatusReply::ReadOverBound { read: "nodes.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::new(crate::outcome::Code::ResourceExhausted)),
+            (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::new(crate::outcome::Code::ResourceExhausted)),
             (StatusReply::RejectedStaleWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "mesh.delete:m".into() }, offered: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (StatusReply::RejectedConflictingWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() }, offered: MeshDeleteIdentity { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
@@ -2407,7 +2407,7 @@ mod tests {
             (StatusReply::RejectedCert { reason: "x".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::Atlas { atlas: crate::views::AtlasView::default() }, ReplyKind::Success),
             (StatusReply::Fabrics { fabrics: vec![] }, ReplyKind::Success),
-            (StatusReply::rejected_filter("nodes.get: the pair (zone, [eu-1]) names no property of a node row"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),
+            (StatusReply::rejected_filter("node.get: the pair (zone, [eu-1]) names no property of a node row"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::RootsUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), roots: vec!["ab".into()] }, ReplyKind::Success),
             (StatusReply::RejectedRootStillChained { root: "ab".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::RootUpdated { phase: RootsPhase::Minted }, ReplyKind::Success),
@@ -2637,11 +2637,11 @@ mod tests {
     #[test]
     fn a_read_answer_past_the_reply_bound_is_refused_naming_its_size() {
         let mesh = StatusReply::Nodes { nodes: (0..150).map(|_| node_view()).collect() };
-        assert_eq!(StatusReply::within_reply_bound(mesh.clone(), "nodes.get"), mesh, "150 nodes fit the bound");
+        assert_eq!(StatusReply::within_reply_bound(mesh.clone(), "node.get"), mesh, "150 nodes fit the bound");
         let over = StatusReply::Nodes { nodes: (0..400).map(|_| node_view()).collect() };
         let size = Status::encode_reply(&over).unwrap().len() as u64;
-        let refused = StatusReply::within_reply_bound(over, "nodes.get");
-        assert_eq!(refused, StatusReply::ReadOverBound { read: "nodes.get".into(), bytes: size, max: Status::MAX_REPLY_FRAME_BYTES as u64 });
+        let refused = StatusReply::within_reply_bound(over, "node.get");
+        assert_eq!(refused, StatusReply::ReadOverBound { read: "node.get".into(), bytes: size, max: Status::MAX_REPLY_FRAME_BYTES as u64 });
         assert!(Status::encode_reply(&refused).unwrap().len() <= Status::MAX_REPLY_FRAME_BYTES);
     }
 

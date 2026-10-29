@@ -31,12 +31,12 @@ the linked page before asking: every answer here was already on one.
 
 Every read is a query by property, answered in one of two places ([query.md](../architecture/query.md)):
 
-- **The fabric-primary** answers `fabrics.get`, `meshes.get` and `nodes.get` from its atlas, with no
-  store read: any property of the row, `config.<key>` and `tags` included; `connections.get` is the
+- **The fabric-primary** answers `fabric.get`, `mesh.get` and `node.get` from its atlas, with no
+  store read: any property of the row, `config.<key>` and `tags` included; `node.connection.get` is the
   exact birth's own ([query.md §1](../architecture/query.md#1-external-a-query-to-the-fabric-primary)).
 - **The node itself** answers `topology_view.nodes_get(filter)` from the topology it holds, locally,
   with no call: what gossip carries for every node it hears; a row-only property is refused naming
-  `nodes.get` ([query.md §2](../architecture/query.md#2-internal-the-node-itself)).
+  `node.get` ([query.md §2](../architecture/query.md#2-internal-the-node-itself)).
 
 The read calls follow one rule (Q167): one read per entity; the filter is a list of (property,
 values) pairs, AND across pairs, any-of within, a repeated property AND; a property is any field of
@@ -45,33 +45,33 @@ nothing matches.
 
 | Read | Address | Properties a pair may name | Answers, in order | Served by |
 |---|---|---|---|---|
-| `fabrics.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary`, `admin_api_base`, `build_id`, `meshes`, `topology_storage_provider` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | the fabric-primary |
-| `meshes.get` | — | `id`, `name`, `status`, `primary_admin`, `admin_api_base`, `nodes` | meshes, by name | the fabric-primary |
-| `nodes.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `kind`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path.name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from its atlas |
-| `connections.get` | `node` (id, incarnation), required | `id`, `source`, `destination`, `kind`, `state`, `carrier`, `reason`, `logged_at_ms` | the exact birth's own connections from its connections log | the exact birth |
+| `fabric.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary`, `admin_api_base`, `build_id`, `meshes`, `topology_storage_provider` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | the fabric-primary |
+| `mesh.get` | — | `id`, `name`, `status`, `primary_admin`, `admin_api_base`, `nodes` | meshes, by name | the fabric-primary |
+| `node.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `kind`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path.name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from its atlas |
+| `node.connection.get` | `node` (id, incarnation), required | `id`, `source`, `destination`, `kind`, `state`, `carrier`, `reason`, `logged_at_ms` | the exact birth's own connections from its connections log | the exact birth |
 
 Written as the pair list the wire carries:
 
 ```text
-nodes.get  [["config.zone", ["eu-1"]]]                           a config entry, by its key
-nodes.get  [["tags", ["gold"]], ["tags", ["ssd"]]]               all of; one pair is any of
-nodes.get  [["tags", ["gold", "silver"]]]                         any of
-nodes.get  [["mesh", ["mesh1"]], ["kind", ["gateway"]]]           AND across pairs
-nodes.get  [["kind", ["admin"]], ["is_primary", ["true"]]]        every mesh-primary
-nodes.get  [["id", ["<node id>"]]]                                 "one node"
-nodes.get  [["path", ["mesh1.broker"]], ["name", ["1"]]]         one node by its path.name (mesh1.broker.1): `path` is
+node.get  [["config.zone", ["eu-1"]]]                           a config entry, by its key
+node.get  [["tags", ["gold"]], ["tags", ["ssd"]]]               all of; one pair is any of
+node.get  [["tags", ["gold", "silver"]]]                         any of
+node.get  [["mesh", ["mesh1"]], ["kind", ["gateway"]]]           AND across pairs
+node.get  [["kind", ["admin"]], ["is_primary", ["true"]]]        every mesh-primary
+node.get  [["id", ["<node id>"]]]                                 "one node"
+node.get  [["path", ["mesh1.broker"]], ["name", ["1"]]]         one node by its path.name (mesh1.broker.1): `path` is
                                                                    the part before the last dot, `name` the part after it
-nodes.get  []                                                      the fabric's topology
-meshes.get [["name", ["mesh1"]]]
-connections.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
+node.get  []                                                      the fabric's topology
+mesh.get [["name", ["mesh1"]]]
+node.connection.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
 ```
 
 The same pair list, side by side, from both places:
 
 ```text
-nodes.get                   [["kind", ["broker"]], ["status", ["ready"]]]   the fabric-primary's atlas: the rows
+node.get                   [["kind", ["broker"]], ["status", ["ready"]]]   the fabric-primary's atlas: the rows
 topology_view.nodes_get     [["kind", ["broker"]], ["status", ["ready"]]]   my own topology: the digests I hear
-topology_view.nodes_get     [["config.zone", ["eu-1"]]]                                  refused: config is the row's, read it with nodes.get
+topology_view.nodes_get     [["config.zone", ["eu-1"]]]                                  refused: config is the row's, read it with node.get
 ```
 
 A pair naming a property the row has not (`zone` without `config.`), a value the field cannot take
@@ -89,7 +89,7 @@ The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/n
 
 | What | Where |
 |---|---|
-| small per-node settings | the node's `config` map: mine, RDM never reads it; replaced whole by `node.config.update`, a node's own (`config_update`) going up through its mesh-primary and a caller's down from the fabric-primary; a Build's `config` supersedes the node's current map, whoever set it, so read the node's current config (`nodes.get`) before composing a Build: every write is a PUT (Q236); at most 32 keys and 2048 bytes ([node-config-update.md](../architecture/lifecycles/node-config-update.md), [gossip.md §3.1](../architecture/gossip.md#31-frame-catalog)) |
+| small per-node settings | the node's `config` map: mine, RDM never reads it; replaced whole by `node.config.update`, a node's own (`config_update`) going up through its mesh-primary and a caller's down from the fabric-primary; a Build's `config` supersedes the node's current map, whoever set it, so read the node's current config (`node.get`) before composing a Build: every write is a PUT (Q236); at most 32 keys and 2048 bytes ([node-config-update.md](../architecture/lifecycles/node-config-update.md), [gossip.md §3.1](../architecture/gossip.md#31-frame-catalog)) |
 | labels to select nodes by | `tags`: see [Tags](#tags) below |
 | a node's durable data | under its `RDM_DATA_DIR`; carried across stop and start, recovery and replacement by its path's storage policy ([node-storage-runbook.md](node-storage-runbook.md)) |
 | my rows and events | my own storage, and my events on gossip ([gossip.md §8](../architecture/gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); RDM orders nothing of mine |
@@ -110,8 +110,8 @@ and the `tags` row of [Node properties](../architecture/node-rpc-envelope.md#nod
 | tag a node when it is created | put the labels on its path in the Build; a change of a path's tags alone is no resize, and the fabric stays ready |
 | add labels | `node.tags.create { label \| [labels] }`: one label or a list; a blind put per label, so a label the node already carries is reported `ALREADY_EXISTS` for that label and nothing is duplicated |
 | remove labels | `node.tags.delete { All \| [labels] }`: every label or the named ones; a label the node does not carry is reported `NOT_FOUND` for that label |
-| read a node's labels | the `tags` field of its node row (`nodes.get`) |
-| select nodes by label | `nodes.get [tags: a, b]` for any of the labels, `[tags: a][tags: b]` for all of them, with `[mesh: m]` for one mesh's |
+| read a node's labels | the `tags` field of its node row (`node.get`) |
+| select nodes by label | `node.get [tags: a, b]` for any of the labels, `[tags: a][tags: b]` for all of them, with `[mesh: m]` for one mesh's |
 | keep labels across a re-birth | nothing to do: tags are inherited with the config at the same path.name on recovery and on replacement |
 
 A label is 1–64 characters of `a-z 0-9 - _ . ~`, with no leading `.`, and a node carries at most 32.

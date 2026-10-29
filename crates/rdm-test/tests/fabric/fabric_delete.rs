@@ -154,7 +154,7 @@ fn nothing_recreated_under_the_delete(spans: &[Value], accepted_ns: u64, fp: &st
 
 /// The receipts of Build `id` as the fabric-primary `admin` holds them.
 async fn receipts_at(estate: &Estate, admin: &str, id: &str) -> rdm_client::Build {
-    estate.carrier_at(&path(admin)).await.build(&BuildId::parse(id).unwrap()).await.unwrap_or_else(|e| panic!("builds.get [id: {id}] at {admin}: {e}"))
+    estate.carrier_at(&path(admin)).await.build(&BuildId::parse(id).unwrap()).await.unwrap_or_else(|e| panic!("build.get [id: {id}] at {admin}: {e}"))
 }
 
 fn count(receipts: &rdm_client::Build, operation: impl Fn(&str) -> bool, step: &str) -> usize {

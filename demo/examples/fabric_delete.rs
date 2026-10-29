@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
         .await?
         .into_iter()
         .next()
-        .ok_or_else(|| anyhow!("fabrics.get returned no fabric"))?;
+        .ok_or_else(|| anyhow!("fabric.get returned no fabric"))?;
     println!(
         "before fabric.delete: fabric={} ({}) status={:?} fabric_primary={:?} meshes={}",
         fabric.name,

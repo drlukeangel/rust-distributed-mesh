@@ -154,7 +154,7 @@ pub struct CaRow {
 
 /// The root rotation's row (fabric-ca-renew.md "fabric.root.update"): its phase, the roots of the
 /// rotation as public keys in hex (the old first, then the new), and the bound it must retire by,
-/// the old anchor's own expiry (the expiry of the last CA it signed), past which `fabrics.get` surfaces
+/// the old anchor's own expiry (the expiry of the last CA it signed), past which `fabric.get` surfaces
 /// `roots: stalled`. The root secret is never in a row (fabric-certs.md §Custody).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootsRow {

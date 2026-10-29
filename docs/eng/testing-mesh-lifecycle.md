@@ -31,7 +31,7 @@ when the run has one, the entry admin and the executable bindings (`Estate::writ
    fabric ([fabric-create.md](../architecture/lifecycles/fabric-create.md));
 3. waits up to 30 s for the admin to print its birth (`RDM_NODE_BIRTH=`) and its control base
    (`RDM_NODE_ADMIN_API_BASE=`);
-4. waits until `fabrics.get` at that admin names the fabric-primary, the Fabric's id and the current
+4. waits until `fabric.get` at that admin names the fabric-primary, the Fabric's id and the current
    Build, the Day-0 Build it accepted at its start;
 5. follows that Day-0 Build's stream to its `Complete`, so a cell's first `build.create` is never
    refused for a Build in progress it did not start. A `Failed` frame, or the fabric-primary moving

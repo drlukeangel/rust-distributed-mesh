@@ -1,6 +1,6 @@
 //! The reads' one filter (Q167, R-RD1 to R-RD3; node-rpc-envelope.md "Typed objects mapped to wire
-//! and execution owners"): one read per entity, plural (`fabrics.get`, `meshes.get`, `nodes.get`,
-//! `connections.get`), each taking one [`Filter`] and answering a list in a stable order.
+//! and execution owners"): one read per entity, plural (`fabric.get`, `mesh.get`, `node.get`,
+//! `node.connection.get`), each taking one [`Filter`] and answering a list in a stable order.
 //!
 //! A filter is a list of `(property, values)` pairs. Pairs are AND-combined, a repeated property is
 //! AND (all of these tags), and the values within one pair are any-of. The property is a public field
@@ -20,19 +20,19 @@ use serde::{Deserialize, Serialize};
 /// The entity a read reads (R-RD1). Positional order is part of the wire schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Entity {
-    /// `fabrics.get`: the fabric the answering admin holds.
+    /// `fabric.get`: the fabric the answering admin holds.
     ///
     /// Position 0 on the wire.
     Fabrics,
-    /// `meshes.get`: the meshes the answering admin holds.
+    /// `mesh.get`: the meshes the answering admin holds.
     ///
     /// Position 1 on the wire.
     Meshes,
-    /// `nodes.get`: the node rows the answering admin holds.
+    /// `node.get`: the node rows the answering admin holds.
     ///
     /// Position 2 on the wire.
     Nodes,
-    /// `connections.get { node }`: the exact birth's own connections.
+    /// `node.connection.get { node }`: the exact birth's own connections.
     ///
     /// Position 3 on the wire.
     Connections,
@@ -42,10 +42,10 @@ impl Entity {
     /// The read, by its name in node-rpc-envelope.md.
     pub fn read(self) -> &'static str {
         match self {
-            Self::Fabrics => "fabrics.get",
-            Self::Meshes => "meshes.get",
-            Self::Nodes => "nodes.get",
-            Self::Connections => "connections.get",
+            Self::Fabrics => "fabric.get",
+            Self::Meshes => "mesh.get",
+            Self::Nodes => "node.get",
+            Self::Connections => "node.connection.get",
         }
     }
 
@@ -186,7 +186,7 @@ const CONNECTION: &[Property] = &[
 /// A Build's phases, by their page names (`BuildPhase`, lowercase).
 pub const BUILD_PHASES: &[&str] = &["pending", "running", "complete", "failed"];
 
-/// The Build header's properties (Q167 R-RD5): what `builds.get` filters on. Its topology and receipts
+/// The Build header's properties (Q167 R-RD5): what `build.get` filters on. Its topology and receipts
 /// are the Build's content, never a property.
 const BUILD_HEADER: &[Property] = &[
     p("id", Takes::Id),
@@ -198,7 +198,7 @@ const BUILD_HEADER: &[Property] = &[
 
 /// The node properties the topology a node holds carries for every node it hears, the gossiped digest
 /// (query.md §2; Q203: gossip carries what routing needs and nothing else): what a node's local
-/// `nodes_get` may name. Every other node property is the row's, read with `nodes.get`.
+/// `nodes_get` may name. Every other node property is the row's, read with `node.get`.
 pub const GOSSIPED: &[&str] = &["id", "incarnation", "endpoint", "transport_addr", "status", "path", "mesh", "kind", "node_type", "name", "is_primary", "is_fabric_primary"];
 
 /// A row's value of one property: one string, a set (matched when it carries a value), or absent
@@ -392,7 +392,7 @@ impl Filter {
         self.refusal_in(&entity.of())
     }
 
-    /// Why this filter is refused for `builds.get` (Q167 R-RD5), naming the pair, or `None` when every
+    /// Why this filter is refused for `build.get` (Q167 R-RD5), naming the pair, or `None` when every
     /// pair names a property of the Build header (`BUILD_HEADER`: `id`, `current`, `phase`,
     /// `attempt`, `executor`) and values it can take. Read against the schema, never a Build.
     pub fn builds_refusal(&self) -> Option<String> {
@@ -406,7 +406,7 @@ impl Filter {
     /// Why this filter is refused for a node's local query of the topology it holds (query.md §2,
     /// Q232), naming the pair: a pair the node schema refuses ([`Self::refusal`]), or one naming a
     /// property of the node's row that gossip does not carry ([`GOSSIPED`]: `tags`, `config.<key>`,
-    /// `executable`, ...), named with `nodes.get`, the read that answers it. Read against the schema,
+    /// `executable`, ...), named with `node.get`, the read that answers it. Read against the schema,
     /// never a row: a row-only property is refused whatever rows would have matched.
     pub fn local_refusal(&self) -> Option<String> {
         self.refusal(Entity::Nodes).or_else(|| {
@@ -451,8 +451,8 @@ impl Entity {
     }
 }
 
-/// The Build header's schema (Q167 R-RD5): what a `builds.get` pair (Build 0x20 `GetBuilds`) may name.
-const BUILDS: Schema = Schema { read: "builds.get", row: "Build header", properties: BUILD_HEADER, map: None };
+/// The Build header's schema (Q167 R-RD5): what a `build.get` pair (Build 0x20 `GetBuilds`) may name.
+const BUILDS: Schema = Schema { read: "build.get", row: "Build header", properties: BUILD_HEADER, map: None };
 
 fn pair_refusal(schema: &Schema, property: &str, values: &[String]) -> Option<String> {
     if values.is_empty() {
@@ -594,8 +594,8 @@ mod tests {
     /// matcher and the node schema's names: `[kind: broker] [status: ready]` the ready
     /// broker alone, `[mesh: mesh1] [is_primary: true]` the mesh's primary, `[id: x]` that node; the
     /// gossiped properties pass the local check. A pair naming a row-only property (`tags`,
-    /// `config.<key>`, `executable`) is refused naming the pair and `nodes.get`, whatever digests would
-    /// have matched; a pair the node schema refuses is refused as `nodes.get` refuses it. Must NOT
+    /// `config.<key>`, `executable`) is refused naming the pair and `node.get`, whatever digests would
+    /// have matched; a pair the node schema refuses is refused as `node.get` refuses it. Must NOT
     /// happen: a row-only property answered as no match, or a refusal that does not say where to read it.
     #[test]
     fn a_local_query_matches_the_digests_held_and_refuses_a_row_only_property_naming_nodes_get() {
@@ -620,18 +620,18 @@ mod tests {
             (Filter::new().eq("executable", ["/bin/rpc"]), "the pair (executable, [/bin/rpc]) names executable"),
         ] {
             let why = f.local_refusal().unwrap_or_else(|| panic!("{f:?} is refused locally"));
-            assert!(why.contains(pair) && why.contains("read it with nodes.get"), "{why:?} names {pair:?} and nodes.get");
-            assert_eq!(f.refusal(Entity::Nodes), None, "nodes.get takes {f:?}");
+            assert!(why.contains(pair) && why.contains("read it with node.get"), "{why:?} names {pair:?} and node.get");
+            assert_eq!(f.refusal(Entity::Nodes), None, "node.get takes {f:?}");
         }
         let why = Filter::new().eq("kind", ["gatway"]).local_refusal().expect("a value the field cannot take");
-        assert!(why.starts_with("nodes.get: the pair (kind, [gatway])"), "{why:?}");
+        assert!(why.starts_with("node.get: the pair (kind, [gatway])"), "{why:?}");
     }
 
-    /// CONTRACT (Q167 R-RD5): `builds.get` filters on the Build header (`id`, `current`, `phase`,
+    /// CONTRACT (Q167 R-RD5): `build.get` filters on the Build header (`id`, `current`, `phase`,
     /// `attempt`, `executor`): a phase by its lowercase page name, `current` a boolean, `attempt` its
     /// digits, an executor absent from a Build no executor holds; a pair naming anything else (a
     /// topology or receipt field, a node property) or a value the field cannot take is refused naming
-    /// the pair and `builds.get`. Must NOT happen: a phase spelt `Failed` accepted, or `tags` read as
+    /// the pair and `build.get`. Must NOT happen: a phase spelt `Failed` accepted, or `tags` read as
     /// matching nothing.
     #[test]
     fn a_builds_get_filter_matches_the_build_header_and_refuses_anything_else_naming_the_pair() {
@@ -649,8 +649,8 @@ mod tests {
         assert_eq!(ids(Filter::new().eq("id", [a.clone()]).eq("attempt", ["2"])), [a.clone()]);
         assert_eq!(ids(Filter::new().eq("executor", ["mesh1.admin.1"])), [b.clone()], "a Build no executor holds lacks the property");
         for (f, wanted) in [
-            (Filter::new().eq("phase", ["Failed"]), "builds.get: the pair (phase, [Failed])"),
-            (Filter::new().eq("tags", ["gold"]), "builds.get: the pair (tags, [gold]) names no property of a Build header row"),
+            (Filter::new().eq("phase", ["Failed"]), "build.get: the pair (phase, [Failed])"),
+            (Filter::new().eq("tags", ["gold"]), "build.get: the pair (tags, [gold]) names no property of a Build header row"),
             (Filter::new().eq("current", ["yes"]), "a boolean is true or false"),
             (Filter::new().eq("attempt", ["two"]), "a number is decimal digits"),
             (Filter::new().eq("id", Vec::<String>::new()), "names no value"),

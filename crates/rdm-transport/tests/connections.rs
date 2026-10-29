@@ -2175,7 +2175,7 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
 }
 
 /// CONTRACT (connections.md §10: "A stream Proxy (i148, a tunnel) outlives its retirement ...
-/// `node.connections.get` lists it by its row id with `route: retired`, and `node.connections.delete
+/// `node.connection.get` lists it by its row id with `route: retired`, and `node.connections.delete
 /// { All | [ids] }` closes it by that id like any other. Its end writes no second row; it is spanned
 /// `rdm.node.connections.delete.via-tunnel-ended`"): a tunnel opened through the carrier, its route
 /// then retired by a Direct Connected (`Disconnected(direct-restored)` held), is closed by

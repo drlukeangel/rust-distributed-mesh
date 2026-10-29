@@ -1,14 +1,14 @@
 //! The fabric-primary's atlas (docs/plans/proposal/fabric-atlas.md, Q194, Q224): one view that
 //! combines command admission, execution progress and gossip observations, read by Build acceptance
-//! and exposed through `fabrics.atlas.get`.
+//! and exposed through `fabric.atlas.get`.
 
 use rdm_core::PathName;
 use rdm_test::estate::{named, Estate, Owner};
 use rdm_client::{AtlasNodeView, AtlasView};
 use serde_json::{json, Value};
 
-/// What the cells read of the atlas: `fabrics.atlas.get` through the client's own call,
-/// `Fabrics::atlas_get()` (Q167's read naming; `fabrics.get` is unchanged), one row per node the
+/// What the cells read of the atlas: `fabric.atlas.get` through the client's own call,
+/// `Fabrics::atlas_get()` (Q167's read naming; `fabric.get` is unchanged), one row per node the
 /// fabric-primary holds, with its birth, its status and whether it is stopped, as the node view names
 /// them, and the operation of the command accepted on it that has not yet completed (none once its
 /// attempt's receipts are in).
@@ -138,11 +138,11 @@ async fn a_stop_of_another_meshs_node_sent_the_moment_its_start_completes_is_adm
     assert!(refused_stops.is_empty() && refused.is_empty(), "R-FA2: the fabric-primary refused a stop sent on its node.start's Complete: {refused_stops:#?}; node-not-live spans: {refused:#?}");
 }
 
-/// CONTRACT (fabric-atlas.md R-FA4: "`fabrics.atlas.get` returns it (Q167's read naming); `fabrics.get`
-/// is unchanged"): on a ready fabric of two meshes, `fabrics.atlas.get` at the fabric-primary answers
+/// CONTRACT (fabric-atlas.md R-FA4: "`fabric.atlas.get` returns it (Q167's read naming); `fabric.get`
+/// is unchanged"): on a ready fabric of two meshes, `fabric.atlas.get` at the fabric-primary answers
 /// the atlas, one row for every node the fabric-primary's node view holds, each the same birth (node
-/// id and incarnation) and status; `fabrics.get` still answers the Fabric as before. Must NOT happen:
-/// the read refused or absent, a node of either mesh missing from it, or `fabrics.get` changed by it.
+/// id and incarnation) and status; `fabric.get` still answers the Fabric as before. Must NOT happen:
+/// the read refused or absent, a node of either mesh missing from it, or `fabric.get` changed by it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fabrics_atlas_get_answers_every_node_the_fabric_primary_holds() {
     let test = "fabrics_atlas_get_answers_every_node_the_fabric_primary_holds";
@@ -150,7 +150,7 @@ async fn fabrics_atlas_get_answers_every_node_the_fabric_primary_holds() {
     let _ = two_meshes(&mut estate).await;
     let fabric = estate.fabric_view().await;
     let views = estate.node_values().await;
-    let read = atlas(&estate, "R-FA4: fabrics.atlas.get at the fabric-primary").await;
+    let read = atlas(&estate, "R-FA4: fabric.atlas.get at the fabric-primary").await;
     for v in &views {
         let name = v["name"].as_str().unwrap_or_default();
         let row = read.node(name).unwrap_or_else(|| panic!("R-FA4: the atlas holds no row of {name}: {read:#?}"));
@@ -158,7 +158,7 @@ async fn fabrics_atlas_get_answers_every_node_the_fabric_primary_holds() {
     }
     assert_eq!(read.nodes.len(), views.len(), "R-FA4: the atlas holds exactly the nodes the node view holds: {read:#?}");
     let again = estate.fabric_view().await;
-    assert_eq!((&again.id, &again.name, &again.fabric_primary, &again.build_id), (&fabric.id, &fabric.name, &fabric.fabric_primary, &fabric.build_id), "fabrics.get answers the Fabric as before the atlas read");
+    assert_eq!((&again.id, &again.name, &again.fabric_primary, &again.build_id), (&fabric.id, &fabric.name, &fabric.fabric_primary, &fabric.build_id), "fabric.get answers the Fabric as before the atlas read");
     estate.stop().await;
 }
 
@@ -190,13 +190,13 @@ async fn the_atlas_names_a_stop_at_its_admission_and_its_receipts_before_complet
     fp_door.arm("atlas:claimed", json!({"kind": "claimed-attempt"})).await;
     let mut stop = estate.nodes_obj().await.stop(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {node}: {e}"));
     fp_door.wait_held("atlas:claimed").await;
-    let at_acceptance = atlas(&estate, "R-FA2: fabrics.atlas.get while the accepted stop's attempt is held before its dispatch").await;
+    let at_acceptance = atlas(&estate, "R-FA2: fabric.atlas.get while the accepted stop's attempt is held before its dispatch").await;
     let row = at_acceptance.node(&node.to_string()).unwrap_or_else(|| panic!("R-FA2: the atlas holds no row of {node}: {at_acceptance:#?}"));
     assert_eq!(row.accepted.as_deref(), Some(format!("node.stop:{node}").as_str()), "R-FA2: the atlas names the accepted stop on {node} before its attempt runs: {row:#?}");
     assert!(!row.stopped, "R-FA2: an accepted stop whose attempt has not run does not stop the node in the atlas: {row:#?}");
     fp_door.release("atlas:claimed").await;
     Estate::complete(&mut stop).await;
-    let at_complete = atlas(&estate, "R-FA2: fabrics.atlas.get on the stop's Complete").await;
+    let at_complete = atlas(&estate, "R-FA2: fabric.atlas.get on the stop's Complete").await;
     let row = at_complete.node(&node.to_string()).unwrap_or_else(|| panic!("R-FA2: the atlas holds no row of {node}: {at_complete:#?}"));
     assert!(row.stopped && row.accepted.is_none(), "R-FA2: on the stop's Complete the atlas holds {node} stopped from its receipts, nothing accepted on it: {row:#?}");
     for d in &mesh2_doors {
@@ -283,8 +283,8 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
     }
     Estate::workflow(&format!("the predecessor's half of the replace of {node}"), estate.nodes_obj().await.steps(rdm_test::steps::predecessor_steps(&node)).await).await;
     // No wait: the read goes out on the Build's Complete.
-    let listed = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [&node.mesh])).await.expect("nodes.get [mesh] at the fabric-primary");
-    let read = atlas(&estate, "R-FA2: fabrics.atlas.get on the Build's Complete").await;
+    let listed = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [&node.mesh])).await.expect("node.get [mesh] at the fabric-primary");
+    let read = atlas(&estate, "R-FA2: fabric.atlas.get on the Build's Complete").await;
     for d in &mesh2_doors {
         d.release("atlas:no-gossip").await;
     }
@@ -294,7 +294,7 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
         "mesh.nodes.get at the fabric-primary lists {node}'s birth stopped at {renamed} on the Build's Complete: {listed:#?}"
     );
     assert!(!listed.iter().any(|n| n.name == node && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()), "the renamed birth is not answered at {node} too: {listed:#?}");
-    // `fabrics.atlas.get` answers the paths the current Build names (R-FA4): the birth the rename moved
+    // `fabric.atlas.get` answers the paths the current Build names (R-FA4): the birth the rename moved
     // off `<path>` is not at it.
     assert!(read.node(&node.to_string()).is_none_or(|row| row.node_id.to_string() != before["node_id"].as_str().unwrap_or_default()), "R-FA2: on the Build's Complete the atlas holds no birth of {node} at {node}: {read:#?}");
     estate.stop().await;

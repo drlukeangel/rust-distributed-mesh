@@ -812,7 +812,7 @@ declared type, `rafka.entity.<kind>`: the role declares its types once at boot, 
 `pre_node_ready` hook, and its birth carries them in its [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm)
 (`types`: at most 256 types and 8 KiB encoded, refused by name as `TypesOverCap`; a different
 declaration is a restart). No type list rides a digest: 158 kinds today are 4.4 KB of names, more
-than a gossip message. Two sets, both answered by `nodes.get`: `types`, what the birth declared, immutable
+than a gossip message. Two sets, both answered by `node.get`: `types`, what the birth declared, immutable
 for its life (a node-admin's through `Wiring`: its embedded app's own kinds); and `held`, the types
 the node has joined, equal to `types` for an ordinary node and, for a node-admin, its own `types`,
 its members' declarations and what it learned from other node-admins, growing as members join and
@@ -822,7 +822,7 @@ writes no rows yet, the Day-0 admin before it is Ready, holds the declaration an
 first write after it becomes the primary; the join is answered on the held declaration),
 joins every type it does not already hold before it answers the join, and writes its own row's
 `held_hash` (blake3 of the sorted `held`), the one hash that rides a digest. Another node-admin
-that sees a new `held_hash` on the backbone reads that admin's `nodes.get` and holds what it
+that sees a new `held_hash` on the backbone reads that admin's `node.get` and holds what it
 learns, so every projected kind reaches every node-admin (§10: gossip says changed, the call is
 the certainty). A
 node joins the channel of every type it declared through `TopologyView::join_channel`

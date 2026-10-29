@@ -299,9 +299,9 @@ fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handl
             RpcOutcome::Reply(r) => r.into_value(),
             other => panic!("the admin side's Status door did not answer: {other:?}"),
         };
-        assert_eq!(reply, StatusReply::RequestNotHandled { request: "fabrics.get".into() }, "the rig's admin side answers a request it has no handler for not handled here");
+        assert_eq!(reply, StatusReply::RequestNotHandled { request: "fabric.get".into() }, "the rig's admin side answers a request it has no handler for not handled here");
         let rejected = fields_of(&spans, "rdm.node.status.reject.via-request-not-handled");
-        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("fabrics.get".to_string()), Some(admin.launcher.name.to_string()))], "the admin side's reject span names the request and itself: {rejected:?}");
+        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("fabric.get".to_string()), Some(admin.launcher.name.to_string()))], "the admin side's reject span names the request and itself: {rejected:?}");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

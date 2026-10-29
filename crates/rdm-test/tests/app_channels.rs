@@ -214,7 +214,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
         let expected = BTreeSet::from([BASE.into(), LATE.into()]);
         until_held(&joiner, &expected).await;
         let first = own_view(&root).await;
-        // What the joiner holds itself (query.md §2): it is not a primary, so nodes.get sent to it is
+        // What the joiner holds itself (query.md §2): it is not a primary, so node.get sent to it is
         // forwarded to its mesh-primary (query.md §1; Q243) and answers that primary's record of it.
         let second = &joiner.topology_view;
         assert_eq!(first.types, BTreeSet::from([BASE.into()]));

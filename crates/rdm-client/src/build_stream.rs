@@ -1,7 +1,7 @@
 //! The typed client of the Build family on op `0x20` (node-rpc-envelope.md "Build, op `0x20`").
 //!
 //! A [`BuildCarrier`] opens one call to the fabric-primary: `build.create` (a change, or a re-submit
-//! by build id), `builds.get` and `build.delete`. A call that changes something is a stream
+//! by build id), `build.get` and `build.delete`. A call that changes something is a stream
 //! ([`BuildStream`]): `Started`, then a frame per step as its `Complete` receipt becomes durable on
 //! the executor that wrote it, then `Complete` or `Failed { step, reason }`. The caller waits on the
 //! stream and reads no Build and no gossip.
@@ -254,10 +254,10 @@ pub struct Followed {
 }
 
 /// What one reattachment read and opened (node-rpc-envelope.md "Frames, durable receipts and
-/// reattachment": "`builds.get [id: build_id]` for the receipts, then the outer stream again, resuming from the
+/// reattachment": "`build.get [id: build_id]` for the receipts, then the outer stream again, resuming from the
 /// receipts").
 pub struct Reattached {
-    /// The receipts `builds.get` read, every attempt's, in order.
+    /// The receipts `build.get` read, every attempt's, in order.
     pub receipts: Vec<StepReceipt>,
     /// The outer stream, opened again from the current attempt the receipts name.
     pub stream: BuildStream,
@@ -318,7 +318,7 @@ impl BuildCarrier {
     }
 
     /// One reattachment by `build_id` (node-rpc-envelope.md "Frames, durable receipts and
-    /// reattachment"): `builds.get [id: build_id]` for the receipts, then the outer stream again, a
+    /// reattachment"): `build.get [id: build_id]` for the receipts, then the outer stream again, a
     /// re-submit from the current attempt the receipts name. Never a new execution: the re-submit of a
     /// Build already held carries its frames.
     pub async fn reattach(&self, build_id: &BuildId) -> Result<Reattached, CallEnd> {
@@ -412,21 +412,21 @@ impl BuildCarrier {
         self.open(BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: build_id.to_string(), from_attempt } }).await
     }
 
-    /// `builds.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
+    /// `build.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
     /// of `filter` (`id`, `current`, `phase`, `attempt`, `executor`), newest first, each whole: its
     /// header, its topology and its receipts, the current one marked. Only `End` completes the read: a
     /// stream that ends before it, or whose chunks do not add up to the headers that close them, is an
     /// incomplete read (`Indeterminate`), never a list.
     pub async fn builds(&self, filter: &Filter) -> Result<Vec<Build>, CallEnd> {
         let (mut stream, _current, _attempt, _disposition) = self.open_started(BuildRequest::GetBuilds { filter: filter.clone() }).await?;
-        let incomplete = |reason: String| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("an incomplete builds.get read: {reason}") };
+        let incomplete = |reason: String| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("an incomplete build.get read: {reason}") };
         let mut out: Vec<Build> = Vec::new();
         // The Build whose chunks are arriving: its id, its topology chunks and nodes, its receipt chunks and receipts.
         let mut open: Option<(String, u32, Vec<NodeSpec>, u32, Vec<StepReceipt>)> = None;
         loop {
             let reply = match stream.next().await {
                 Some(StreamItem::Frame(_, r)) => r,
-                Some(StreamItem::Failed(f)) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the builds.get stream broke before its End: {f:?}") }),
+                Some(StreamItem::Failed(f)) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the build.get stream broke before its End: {f:?}") }),
                 None => return Err(incomplete("the stream ended before its End".into())),
             };
             match reply {
@@ -451,7 +451,7 @@ impl BuildCarrier {
                     if id != build_id || receipt_chunks != chunks || receipts.len() != steps as usize {
                         return Err(incomplete(format!("Build {build_id}'s header counts {steps} receipts in {chunks} chunks, and {} in {receipt_chunks} chunks of Build {id} arrived", receipts.len())));
                     }
-                    let build_id = BuildId::parse(&build_id).map_err(|e| CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("builds.get answered a Build id that is not a Crockford id: {e}") })?;
+                    let build_id = BuildId::parse(&build_id).map_err(|e| CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("build.get answered a Build id that is not a Crockford id: {e}") })?;
                     out.push(Build { build_id, phase, attempt, executor, reason, last_failure, current, nodes, steps: receipts });
                 }
                 BuildReply::End { builds } => {
@@ -464,12 +464,12 @@ impl BuildCarrier {
                     return Ok(out);
                 }
                 other if matches!(BuildFamily::frame_kind(&other), rdm_core::streaming::FrameKind::Refusal(_)) => return Err(refusal(other)),
-                other => return Err(CallEnd::Rejected { reason: "unexpected-frame".into(), detail: format!("a builds.get stream carried {other:?}") }),
+                other => return Err(CallEnd::Rejected { reason: "unexpected-frame".into(), detail: format!("a build.get stream carried {other:?}") }),
             }
         }
     }
 
-    /// `builds.get [id: build_id]`: the one Build named, whole; refused `unknown-build` when the
+    /// `build.get [id: build_id]`: the one Build named, whole; refused `unknown-build` when the
     /// fabric-primary holds none of that id.
     pub async fn build(&self, build_id: &BuildId) -> Result<Build, CallEnd> {
         self.builds(&Filter::new().eq("id", [build_id.to_string()])).await?.into_iter().next().ok_or_else(|| refusal(rdm_core::reply::build::unknown_build(build_id.to_string())))
@@ -487,7 +487,7 @@ impl BuildCarrier {
     }
 }
 
-/// One Build as `builds.get` reads it whole (Q167 R-RD5): its header, its topology and its receipts.
+/// One Build as `build.get` reads it whole (Q167 R-RD5): its header, its topology and its receipts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Build {
     /// The Build.

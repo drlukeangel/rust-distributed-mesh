@@ -117,7 +117,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier
     assert_eq!(mesh2.id.as_ref().map(|i| i.to_string()), Some(mesh2_id.clone()), "mesh2 keeps its MeshId: {mesh2:#?}");
     // ...in mesh2's created admins too: they carry its identity.
     for admin in after.iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin) {
-        let own = rdm_test::typed::one_mesh(&Meshes::new(estate.carrier_at(&admin.name).await), "mesh2").await.unwrap_or_else(|e| panic!("meshes.get [name: mesh2] at {}: {e}", admin.name)).unwrap_or_else(|| panic!("{} holds mesh2", admin.name));
+        let own = rdm_test::typed::one_mesh(&Meshes::new(estate.carrier_at(&admin.name).await), "mesh2").await.unwrap_or_else(|e| panic!("mesh.get [name: mesh2] at {}: {e}", admin.name)).unwrap_or_else(|| panic!("{} holds mesh2", admin.name));
         assert_eq!(own.id.as_ref().map(|i| i.to_string()), Some(mesh2_id.clone()), "{} serves mesh2 under its own identity: {own:#?}", admin.name);
     }
     let (old, new) = (births(&before), births(&after));

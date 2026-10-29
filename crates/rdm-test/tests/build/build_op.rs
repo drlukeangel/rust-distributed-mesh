@@ -229,7 +229,7 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
     assert_eq!(second.last(), Some(&Frame::Complete), "the terminal frame follows AlreadyApplied");
     assert_eq!(events(&second), STOP_EVENTS, "the receipts held are replayed as frames: {second:?}");
 
-    let receipts = carrier.clone().build(&accepted.build_id).await.expect("builds.get [id]");
+    let receipts = carrier.clone().build(&accepted.build_id).await.expect("build.get [id]");
     let mut keys: Vec<(u32, String, String)> = receipts.steps.iter().filter(|r| r.attempt >= accepted.attempt).map(|r| (r.attempt, r.operation.clone(), r.step.clone())).collect();
     let before = keys.len();
     keys.sort();
@@ -253,9 +253,9 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
 /// What a `build.attempt.run` sent to `to` for `attempt` answers, whole: the refusal, or the first frame.
 /// CONTRACT (i146; build.md: "a live run is reattached, never re-claimed"; Q22: the reattach after a
 /// `Budget::Stream` connection closes is the owner's; node-rpc-envelope.md "Frames, durable receipts and
-/// reattachment": "`builds.get [id: build_id]` for the receipts, then the outer stream again, resuming from the
+/// reattachment": "`build.get [id: build_id]` for the receipts, then the outer stream again, resuming from the
 /// receipts"): a watched Build whose connection closes mid-stream is reattached by its build id, each
-/// reattachment a `builds.get [id]` and then the outer stream again, and ends `Complete`, the run it watched
+/// reattachment a `build.get [id]` and then the outer stream again, and ends `Complete`, the run it watched
 /// left running: no second attempt, no step receipted twice. The Build grows mesh2 by an rpc node; its
 /// watcher reads the first frame, then every connection of the watching client is closed, the stream's
 /// with them. Must NOT happen: the watcher ending on the break, a reattachment that reads no receipts,
@@ -278,7 +278,7 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     assert!(followed.reattached >= 1, "the watcher reattached after the close: {followed:?}");
     assert!(matches!(followed.frames.last(), Some(BuildFrame::Complete { .. })), "the Build ends Complete: {followed:?}");
 
-    let receipts = carrier.clone().build(&build_id).await.expect("builds.get [id]");
+    let receipts = carrier.clone().build(&build_id).await.expect("build.get [id]");
     // The Build put the fabric back to pending, so it is Complete only once its ready state is set (Q154): when the
     // fabric is ready before the run ends the run completes it in the watched attempt; otherwise it hands back
     // and the one attempt after it, claimed once the fabric is ready, completes it and runs no step. The close
@@ -295,8 +295,8 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     let spans = estate.spans();
     let build = build_id.to_string();
     // Each reattachment read the Build's receipts before its stream again; the cell's own read is one more.
-    let gets = spans_named(&spans, "rdm.node_admin.build.serve.via-node-rpc").into_iter().filter(|sp| s(&sp["attributes"]["call"]) == "builds.get").count();
-    assert!(gets as u32 > followed.reattached, "each reattachment read builds.get [id] ({} reattachment(s), {gets} builds.get read(s) with the cell's own)", followed.reattached);
+    let gets = spans_named(&spans, "rdm.node_admin.build.serve.via-node-rpc").into_iter().filter(|sp| s(&sp["attributes"]["call"]) == "build.get").count();
+    assert!(gets as u32 > followed.reattached, "each reattachment read build.get [id] ({} reattachment(s), {gets} build.get read(s) with the cell's own)", followed.reattached);
     let reconcile = spans_named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == build)
@@ -812,7 +812,7 @@ async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_an
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
     assert_eq!(events(&frames), STOP_EVENTS, "{frames:?}");
 
-    let receipts = carrier.clone().build(&accepted.build_id).await.expect("builds.get [id]");
+    let receipts = carrier.clone().build(&accepted.build_id).await.expect("build.get [id]");
     let mut keys: Vec<(u32, String, String)> = receipts.steps.iter().filter(|r| r.attempt >= accepted.attempt).map(|r| (r.attempt, r.operation.clone(), r.step.clone())).collect();
     let before = keys.len();
     keys.sort();
@@ -1123,7 +1123,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
 
 /// `create-mesh:mesh2`'s receipts in `lost`'s Build, as the restored fabric-primary reads them: `(attempt, step, complete)`.
 async fn create_mesh_receipts(lost: &Lost) -> Vec<(u32, String, bool)> {
-    let receipts = lost.carrier.clone().build(&lost.build_id).await.expect("builds.get [id] at the restored fabric-primary");
+    let receipts = lost.carrier.clone().build(&lost.build_id).await.expect("build.get [id] at the restored fabric-primary");
     receipts.steps.iter().filter(|r| r.operation == "create-mesh:mesh2").map(|r| (r.attempt, r.step.clone(), matches!(r.result, StepResult::Complete))).collect()
 }
 

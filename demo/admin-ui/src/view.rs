@@ -86,7 +86,7 @@ fn brief(v: &Value) -> Value {
 }
 
 /// The nodes with their seat labels, and every connection fact each node answers for its own exact
-/// birth (node.connections.get, served by every node): the data plane's Direct and Proxy rows live on
+/// birth (node.connection.get, served by every node): the data plane's Direct and Proxy rows live on
 /// the role nodes that hold them, not only on the node-admins.
 pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
     let views = admin.nodes().await?;

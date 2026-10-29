@@ -134,7 +134,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         let estate = &estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births.clone());
         async move {
-            let b = estate.carrier().await.build(&rdm_client::BuildId::parse(&accepted).unwrap()).await.expect("builds.get [id] of the accepted Build");
+            let b = estate.carrier().await.build(&rdm_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get [id] of the accepted Build");
             let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let re_born = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() == lost_births.len();
             (later && re_born).then_some(b)

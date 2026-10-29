@@ -84,7 +84,7 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   same through stop and start (the process never exits) and ends at delete; recover and replace create
   a new node with its own. The process reads it once at boot (`RDM_INCARNATION_ID`, written by node-admin at launch). A reader
   compares incarnations for EQUALITY only: it is not a counter, and it is not the writer incarnation that refuses stale writes
-  a writer's rows. `nodes.get` returns it per node.
+  a writer's rows. `node.get` returns it per node.
 - **A node has a `node_type`.** `node_type` is a field of the node record, a string the caller sets in
   node.create's spec. An omitted or empty value is stored as `node`. Its grammar is the tag-label grammar,
   1-64 characters of `a-z 0-9 - _ . ~` with no leading `.`; a value outside it, or with leading or trailing
@@ -264,7 +264,7 @@ reader actually reads — one flat list, one row per thing, typed `node`, `mesh`
 
 Node rows come from the nodes store (this projection); a mesh's status is its mesh-primary's `MeshStatus` frame
 (§2.7); the fabric row is the fabric's identity, carried by gossip (§2.8).
-`nodes.get` returns the node rows.
+`node.get` returns the node rows.
 
 An application's reset of its own copies of these records (Rafka's WAL reset) is the application's
 operation, outside the RDM lifecycle and its name rules.
@@ -375,7 +375,7 @@ node in one mesh is a fabric of one mesh.
   no node hydrates it from the broker. node-admin's spawn records (`spawned_meta`) carry the fabric each spawned node
   belongs to, as they carry its mesh.
 - **Its status** is the fabric's, set by the fabric-primary as [States](lifecycles/states.md#states) defines.
-- **`fabrics.get` answers from memory.** Any node-admin answers it from the fabric row and mesh rows it holds in
+- **`fabric.get` answers from memory.** Any node-admin answers it from the fabric row and mesh rows it holds in
   `topology-nodes`, plus the fabric-primary's observed-down overlay (§2.7), with no store read: the fabric's id, its status, every mesh with its status, the meshes below
   ready, and the fabric-primary node-admin.
 
@@ -449,7 +449,7 @@ absence, or set from its mesh-primary's lifecycle overlay (`NodeStopped`).
 |---|---|---|
 | `Joining` | self-published until published-once ∧ self-ready | the traffic/topology filters — routed no traffic |
 | `Alive` | self-published, default | the rebind path; every traffic and topology filter |
-| `Overloaded` | self-published, over CPU or RAM budget | `nodes.get`; the span reason |
+| `Overloaded` | self-published, over CPU or RAM budget | `node.get`; the span reason |
 | `Degraded` | self-published while the node reaches a peer only through a forward (§8) | routing's peer choice, which prefers a source that is not `Degraded`; the span reason naming each such broker |
 | `Leaving` | set by the mesh-primary on `node.stopped` (overlay `NodeStopped`) | the routing rule: routed no traffic |
 | `Dead` | never sent; receiver-side vocabulary | the traffic/topology filters |

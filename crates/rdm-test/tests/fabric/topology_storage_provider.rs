@@ -139,8 +139,8 @@ fn nodes_write(views: &[NodeView], provider: &str) {
 
 /// CONTRACT (storage.md §2 "The property": "`topology_storage_provider` is one value for the fabric,
 /// on the Fabric row, beside `previous_topology_storage_providers` ... The same name on a node's row
-/// is the provider that node writes"; "A caller reads the fabric's with `fabrics.get` and each node's
-/// with `nodes.get`"; §1: `storage_persistence` "is a typed property of the node's create spec, carried
+/// is the provider that node writes"; "A caller reads the fabric's with `fabric.get` and each node's
+/// with `node.get`"; §1: `storage_persistence` "is a typed property of the node's create spec, carried
 /// on the accepted Build's `NodeSpec` and the node's row"; Day 0: "`RDM_TOPOLOGY_STORAGE_PROVIDER`,
 /// `file` when unset"; i149 R1): on a two-mesh fabric started with no provider named, `fabric.get`
 /// answers `file` with no previous provider, and every node's row, as `mesh.nodes.get` answers it,
@@ -1107,14 +1107,14 @@ fn grown() -> FabricDesired {
     fabric
 }
 
-/// `nodes.get [id: x]` of every node of `views` by its minted id, at the fabric-primary: `path.name` →
+/// `node.get [id: x]` of every node of `views` by its minted id, at the fabric-primary: `path.name` →
 /// (node id, incarnation, status).
 async fn node_gets(estate: &Estate, views: &[NodeView]) -> BTreeMap<String, (String, Option<String>, NodeStatus)> {
     let nodes = estate.nodes_obj().await;
     let mut out = BTreeMap::new();
     for v in views {
-        let mut got = nodes.get(&rdm_client::Filter::new().eq("id", [v.node_id.to_string()])).await.unwrap_or_else(|e| panic!("nodes.get [id: {}] ({}) is answered: {e}", v.node_id, v.name));
-        assert_eq!(got.len(), 1, "nodes.get [id: {}] ({}) answers the one node: {got:?}", v.node_id, v.name);
+        let mut got = nodes.get(&rdm_client::Filter::new().eq("id", [v.node_id.to_string()])).await.unwrap_or_else(|e| panic!("node.get [id: {}] ({}) is answered: {e}", v.node_id, v.name));
+        assert_eq!(got.len(), 1, "node.get [id: {}] ({}) answers the one node: {got:?}", v.node_id, v.name);
         let got = got.remove(0);
         out.insert(got.name.to_string(), (got.node_id.to_string(), got.incarnation_id.as_ref().map(|i| i.as_str().to_string()), got.status));
     }

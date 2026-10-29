@@ -44,7 +44,7 @@ pub async fn read_request(estate: &Estate) -> (rdm_core::BuildId, Vec<NodeSpec>)
     let carrier = estate.carrier().await;
     let facts = build_log::log_read(&carrier, &based_on).await.unwrap_or_else(|e| panic!("the Build log of the fabric-primary holds no Build {based_on}: {e}"));
     let build = build_log::projection(&facts, &based_on).unwrap_or_else(|| panic!("the fabric-primary's log holds no acceptance of {based_on}"));
-    let nodes = estate.nodes_obj().await.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("nodes.get: {e}"));
+    let nodes = estate.nodes_obj().await.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("node.get: {e}"));
     let mut out = Vec::new();
     for m in build.topology.meshes.values() {
         for p in &m.nodes {
@@ -104,7 +104,7 @@ fn record_of(estate: &Estate, node_id: &str) -> Value {
 
 /// Every node `fabric.nodes.get` answers, by `path.name`.
 async fn fabric_nodes(estate: &Estate) -> BTreeMap<String, NodeView> {
-    estate.nodes_obj().await.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("nodes.get: {e}")).into_iter().map(|n| (n.name.to_string(), n)).collect()
+    estate.nodes_obj().await.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("node.get: {e}")).into_iter().map(|n| (n.name.to_string(), n)).collect()
 }
 
 /// A Build stream followed to its `Complete` (across a fabric-primary move), bounded: a Build that does not
@@ -128,13 +128,13 @@ fn receipts_of<'a>(receipts: &'a [rdm_core::build::StepReceipt], operation: &str
 }
 
 async fn receipts(estate: &Estate, build: &str) -> Vec<rdm_core::build::StepReceipt> {
-    estate.carrier().await.build(&rdm_client::BuildId::parse(build).unwrap()).await.unwrap_or_else(|e| panic!("builds.get [id: {build}]: {e}")).steps
+    estate.carrier().await.build(&rdm_client::BuildId::parse(build).unwrap()).await.unwrap_or_else(|e| panic!("build.get [id: {build}]: {e}")).steps
 }
 
 /// The fabric-primary now, the fabric's status as it holds it, and the Build whose topology it accepted.
 async fn fabric_at_its_primary(estate: &Estate) -> (String, ScopeStatus, Option<String>) {
     let fp = estate.node_views().await.into_iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("a fabric-primary");
-    let view = rdm_test::typed::the_fabric(&rdm_client::Fabrics::new(estate.carrier_at(&Estate::path(&fp)).await)).await.unwrap_or_else(|e| panic!("fabrics.get at {fp}: {e}"));
+    let view = rdm_test::typed::the_fabric(&rdm_client::Fabrics::new(estate.carrier_at(&Estate::path(&fp)).await)).await.unwrap_or_else(|e| panic!("fabric.get at {fp}: {e}"));
     (fp, view.status, view.build_id)
 }
 

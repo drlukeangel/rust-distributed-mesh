@@ -1,7 +1,7 @@
 //! A node-admin's atlas, `Atlas` (docs/plans/proposal/fabric-atlas.md, Q194, Q197, Q207, Q224): the
 //! union of the ops currently executing and the current topology state over the meshes the node-admin is
 //! primary for (every mesh at the fabric-primary), read by Build acceptance and answered by
-//! `fabrics.atlas.get` (the fabric's read, the fabric-primary's atlas).
+//! `fabric.atlas.get` (the fabric's read, the fabric-primary's atlas).
 //!
 //! Its sources are ops, never a gossip frame (Q197: "nothing starts or stops or does any action through
 //! gossip"):
@@ -148,7 +148,7 @@ impl CallerDecision {
         }
     }
 
-    /// The decision once the fabric-primary answered `fabrics.atlas.get` from its atlas (Q207: a
+    /// The decision once the fabric-primary answered `fabric.atlas.get` from its atlas (Q207: a
     /// node-admin that is not the fabric-primary verifies at the root, and the root's answer wins: it
     /// may have missed an op). `root` lists the current birth of every path the current Build's
     /// topology names, a deleted one omitted: another birth at the caller's path there is held; the
@@ -449,7 +449,7 @@ impl Atlas {
     }
 
     /// The records the atlas holds of `mesh`'s nodes, a mesh this admin is primary for (Q224; none
-    /// otherwise): what `fabrics.get`'s cert summary folds (fabric-certs.md §Tracking), never a store read.
+    /// otherwise): what `fabric.get`'s cert summary folds (fabric-certs.md §Tracking), never a store read.
     pub fn records_of(&self, mesh: &str) -> Vec<NodeRow> {
         let held = self.held.lock().unwrap();
         if !held.meshes.contains(mesh) {
@@ -753,7 +753,7 @@ impl Atlas {
         true
     }
 
-    /// `n`, a birth `nodes.get` answers, as this atlas holds it (query.md §1; Q233, states.md "Who sets
+    /// `n`, a birth `node.get` answers, as this atlas holds it (query.md §1; Q233, states.md "Who sets
     /// each state": "A query answers the state the row last took from the node's frame or the
     /// mesh-primary's receipt"): the name its record holds, and, where the record is of this birth (its
     /// newest, or a record with no birth yet) in a mesh this admin is primary for (only a primary's
@@ -856,7 +856,7 @@ impl Atlas {
         Ok(Some(AtlasRow { name: path.clone(), node_id: row.node_id.clone(), incarnation: birth, status, stopped, live, accepted, observed: observed_status, birth_source: "node-row" }))
     }
 
-    /// `fabrics.atlas.get`: one row for every node `paths` names (the current Build's topology), in
+    /// `fabric.atlas.get`: one row for every node `paths` names (the current Build's topology), in
     /// `path.name` order.
     pub(crate) async fn view(&self, paths: impl IntoIterator<Item = PathName>, rows: &dyn NodesStorage, builds: &dyn BuildStateAdapter, observed: &Topology) -> Result<rdm_core::views::AtlasView, String> {
         let mut paths: Vec<PathName> = paths.into_iter().collect();
@@ -1062,7 +1062,7 @@ mod tests {
         assert_eq!(atlas.refused_caller(&NodeId::mint(), &IncarnationId::mint(), &planned(&[])), CallerDecision::NoRecord);
     }
 
-    /// CONTRACT (Q207, "call home and verify at the root"): the fabric-primary's `fabrics.atlas.get`
+    /// CONTRACT (Q207, "call home and verify at the root"): the fabric-primary's `fabric.atlas.get`
     /// wins over the mesh-primary's own decision: another birth at the path there deletes the caller;
     /// the caller current there is re-admitted, unless this admin holds its record deleted (Q217: never
     /// re-admitted); no row at a needed path is the caller's record deleted there, deleted and never
@@ -1113,8 +1113,8 @@ mod tests {
     // @feature: fabric-atlas-read
     #[test]
     fn atlas_view_answers_every_planned_path_in_order_carries_in_flight_accepted_ops_stop_and_start_effects_and_omits_deleted_births() {
-        // docs/architecture/query.md:11 — "A caller outside the node sends `fabrics.get`,
-        // `meshes.get` and `nodes.get` to the fabric-primary, which answers from its atlas: every
+        // docs/architecture/query.md:11 — "A caller outside the node sends `fabric.get`,
+        // `mesh.get` and `node.get` to the fabric-primary, which answers from its atlas: every
         // mesh's node records, held in memory, filled from the node records once at its start or
         // hand-over and written by each op after that"
         use crate::accepted::FabricTopology;

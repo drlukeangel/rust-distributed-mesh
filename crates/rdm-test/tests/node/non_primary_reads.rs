@@ -77,11 +77,11 @@ async fn two_meshes_tagged(test: &str) -> (Estate, NodeView, NodeView, NodeView,
 
 // @feature: node-lifecycle
 /// CONTRACT (query.md §1: "a node that is not a primary forwards a get to its own mesh-primary and
-/// nowhere else"; Q243): mesh2's node-admin that is not a primary keeps no atlas. `nodes.get [mesh2,
+/// nowhere else"; Q243): mesh2's node-admin that is not a primary keeps no atlas. `node.get [mesh2,
 /// blue]` sent to it answers the rpc node's record with its tag and its config, row-only properties no
 /// gossip view holds: forwarded to mesh2's mesh-primary (`rdm.node_admin.node.serve.via-forward` at the
 /// node-admin, naming mesh2's mesh-primary, the fabric-primary not named), which answers from its atlas.
-/// `nodes.get [red]`, naming no mesh, answers the fabric-primary by its tag: forwarded to mesh2's
+/// `node.get [red]`, naming no mesh, answers the fabric-primary by its tag: forwarded to mesh2's
 /// mesh-primary, which carries it up to the fabric-primary. Must NOT happen: the node-admin answering
 /// from its own view (rows without their tags, `[]`) or a not-ready refusal of an atlas it lacks; the
 /// node-admin sending a read to the fabric-primary itself.
@@ -91,10 +91,10 @@ async fn a_node_admin_that_is_not_a_primary_forwards_nodes_get_to_its_mesh_prima
     let (mut estate, fp, mp, other, rpc, config) = two_meshes_tagged(test).await;
 
     let at_other = Nodes::new(estate.carrier_at(&other.name).await);
-    let own_mesh = at_other.get(&Filter::new().eq("mesh", ["mesh2"]).eq("tags", ["blue"])).await.unwrap_or_else(|e| panic!("nodes.get [mesh2, blue] at {}: {e:?}", other.name));
+    let own_mesh = at_other.get(&Filter::new().eq("mesh", ["mesh2"]).eq("tags", ["blue"])).await.unwrap_or_else(|e| panic!("node.get [mesh2, blue] at {}: {e:?}", other.name));
     assert_eq!(names(&own_mesh), [rpc.name.to_string()], "the record mesh2's mesh-primary's atlas holds, its tag present");
     assert_eq!(own_mesh[0].config, config, "the record's config present: {:?}", own_mesh[0]);
-    let no_mesh = at_other.get(&Filter::new().eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("nodes.get [red] at {}: {e:?}", other.name));
+    let no_mesh = at_other.get(&Filter::new().eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("node.get [red] at {}: {e:?}", other.name));
     assert_eq!(names(&no_mesh), [fp.name.to_string()], "a read naming no mesh reaches the fabric-primary's atlas through mesh2's mesh-primary");
 
     estate.stop().await;
@@ -120,11 +120,11 @@ async fn a_node_admin_that_is_not_a_primary_forwards_nodes_get_to_its_mesh_prima
 
 // @feature: node-lifecycle
 /// CONTRACT (query.md §1: "a node that is not a primary forwards a get to its own mesh-primary and
-/// nowhere else"; Q243): mesh2's rpc node keeps no atlas. `nodes.get [mesh2, blue]` sent to it answers
+/// nowhere else"; Q243): mesh2's rpc node keeps no atlas. `node.get [mesh2, blue]` sent to it answers
 /// its own record with its tag and its config: forwarded to mesh2's mesh-primary
 /// (`rdm.node.node.serve.via-forward` at the rpc node naming mesh2's mesh-primary), which answers from
-/// its atlas. `nodes.get [red]`, naming no mesh, answers the fabric-primary by its tag through mesh2's
-/// mesh-primary. Its own `connections.get` stays its own. Must NOT happen: the rpc node refusing the get
+/// its atlas. `node.get [red]`, naming no mesh, answers the fabric-primary by its tag through mesh2's
+/// mesh-primary. Its own `node.connection.get` stays its own. Must NOT happen: the rpc node refusing the get
 /// (`RequestNotHandled`) or sending it to the fabric-primary itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_rpc_node_forwards_nodes_get_to_its_mesh_primary() {
@@ -132,13 +132,13 @@ async fn an_rpc_node_forwards_nodes_get_to_its_mesh_primary() {
     let (mut estate, fp, mp, _other, rpc, config) = two_meshes_tagged(test).await;
 
     let at_rpc = Nodes::new(estate.carrier_at(&rpc.name).await);
-    let own_mesh = at_rpc.get(&Filter::new().eq("mesh", ["mesh2"]).eq("tags", ["blue"])).await.unwrap_or_else(|e| panic!("nodes.get [mesh2, blue] at {}: {e:?}", rpc.name));
+    let own_mesh = at_rpc.get(&Filter::new().eq("mesh", ["mesh2"]).eq("tags", ["blue"])).await.unwrap_or_else(|e| panic!("node.get [mesh2, blue] at {}: {e:?}", rpc.name));
     assert_eq!(names(&own_mesh), [rpc.name.to_string()], "the record mesh2's mesh-primary's atlas holds, its tag present");
     assert_eq!(own_mesh[0].config, config, "the record's config present: {:?}", own_mesh[0]);
-    let no_mesh = at_rpc.get(&Filter::new().eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("nodes.get [red] at {}: {e:?}", rpc.name));
+    let no_mesh = at_rpc.get(&Filter::new().eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("node.get [red] at {}: {e:?}", rpc.name));
     assert_eq!(names(&no_mesh), [fp.name.to_string()], "a read naming no mesh reaches the fabric-primary's atlas through mesh2's mesh-primary");
     let connections = rdm_client::Connections::new(estate.carrier_at(&rpc.name).await).get(&birth_of(&rpc), &Filter::new()).await;
-    assert!(connections.is_ok(), "connections.get of the rpc node is its own: {connections:?}");
+    assert!(connections.is_ok(), "node.connection.get of the rpc node is its own: {connections:?}");
 
     estate.stop().await;
     let spans = estate.spans();

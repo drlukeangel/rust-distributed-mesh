@@ -150,7 +150,7 @@ directory, `EIO`, `EACCES`, or decode failure) is **broken**:
 - **Gone (arm A).** When the `data_dir` of a birth whose verdict was `exited` is absent across
   `RDM_DATA_DIR_GONE_FLOORS` staleness floors (default 2 = 60 s at the 30 s floor, to ride out a
   remount), the mesh-primary records `data-dir-lost { path, since }` durably on that birth
-  (`rdm.node_admin.node.update.via-data-dir-lost`, surfaced on `nodes.get` and never as a gossip
+  (`rdm.node_admin.node.update.via-data-dir-lost`, surfaced on `node.get` and never as a gossip
   `MemberStatus`), and the recovery Build creates the node at the same `path.name` over a newly
   allocated `data_dir` beside the old path with a newly minted endpoint key (the old key is never
   re-minted) and `pre_node_ready` with `inherited = false`. On any verdict but `exited` the data dir is
@@ -158,7 +158,7 @@ directory, `EIO`, `EACCES`, or decode failure) is **broken**:
   node-admin, the fabric-primary runs this arm ([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)).
 - **Broken (arm B).** On the first `PrepareStorage` failure over an existing but unreadable `data_dir`,
   the executor records `data-dir-unreadable { path, cause }` durably on that birth
-  (`rdm.node_admin.node.reject.via-data-dir-unreadable`, surfaced on `nodes.get` and never as a gossip
+  (`rdm.node_admin.node.reject.via-data-dir-unreadable`, surfaced on `node.get` and never as a gossip
   `MemberStatus`), and the mesh-primary's due rule holds that recovery (not due while the fact stands)
   instead of resubmitting every tick. RDM deletes nothing on disk. When `<data_dir>/node-key` is
   repaired and reads again, the next tick clears `data-dir-unreadable`

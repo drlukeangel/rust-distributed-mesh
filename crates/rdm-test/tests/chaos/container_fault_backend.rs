@@ -842,7 +842,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
             named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().any(|c| c["attributes"]["build_id"] == fabric_build.as_str() && attr(c, "attempt").parse::<u64>().ok() == Some(next) && attr(c, "executor") == to && attr(c, "outcome") == "won").then_some(next)
         })
         .collect();
-    // Like with like: the spans cover the whole run, the builds.get read (`attempt_after`) one moment of
+    // Like with like: the spans cover the whole run, the build.get read (`attempt_after`) one moment of
     // it, so only the attempts that read saw are counted; an attempt opened or claimed after it is the
     // next read's. Every attempt the Build gained after the cut, up to that read, is a hand-back's or
     // the returning holder's continuation of one.

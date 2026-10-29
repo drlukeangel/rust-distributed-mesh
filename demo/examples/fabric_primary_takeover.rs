@@ -4,7 +4,7 @@
 //! the Fabric lifecycle state, without minting a new Build.
 //!
 //! When the fabric-primary changes, the successor reads `expected` from the accepted topology Build
-//! (`FabricView::build_id`), combines its own Mesh state with peer Mesh statuses (`meshes.get`), and
+//! (`FabricView::build_id`), combines its own Mesh state with peer Mesh statuses (`mesh.get`), and
 //! holds publication if any required Mesh is missing (§8.3). Once `expected == observed`, it publishes
 //! the Fabric status under its own identity (`FabricView::fabric_primary`), keeping `FabricView::id`
 //! and `FabricView::build_id` unchanged (§9, §11).
@@ -41,16 +41,16 @@ async fn main() -> Result<()> {
         .await?
         .into_iter()
         .next()
-        .ok_or_else(|| anyhow!("fabrics.get answered no fabric"))?;
+        .ok_or_else(|| anyhow!("fabric.get answered no fabric"))?;
     let before_fp = before
         .fabric_primary
         .clone()
-        .ok_or_else(|| anyhow!("fabrics.get names no fabric-primary"))?;
+        .ok_or_else(|| anyhow!("fabric.get names no fabric-primary"))?;
     let build_id = BuildId::parse(
         before
             .build_id
             .as_deref()
-            .ok_or_else(|| anyhow!("fabrics.get names no current Build"))?,
+            .ok_or_else(|| anyhow!("fabric.get names no current Build"))?,
     )
     .map_err(|e| anyhow!("current Build id: {e}"))?;
     let attempt = carrier.build(&build_id).await?.attempt;

@@ -4,9 +4,9 @@
 //! `build.create`) and answered with a reply stream ([`WorkflowStream`]) read from the call itself.
 //! The `build` objects are that family's calls. The reads are Status calls (op `0x1B`), one rule
 //! (Q167): one read per entity, plural, each taking one [`Filter`] (`(property, values)` pairs, AND
-//! across pairs, any-of within) and answering a list, empty when nothing matches. `fabrics.get`,
-//! `meshes.get` and `nodes.get` go to the fabric-primary the carrier starts at, which answers from
-//! what it holds, and `connections.get { node }` to the exact birth whose connections it reads. A
+//! across pairs, any-of within) and answering a list, empty when nothing matches. `fabric.get`,
+//! `mesh.get` and `node.get` go to the fabric-primary the carrier starts at, which answers from
+//! what it holds, and `node.connection.get { node }` to the exact birth whose connections it reads. A
 //! read the node refuses ends `Rejected`, naming the refusal (`rejected-filter` naming the pair). Calls whose request is valid but that no op carries
 //! yet end `NotBackedToday`, naming why; no request is invented for them.
 
@@ -148,7 +148,7 @@ impl Nodes {
         }
     }
 
-    /// `nodes.get` (`query.md` §1): every node row the fabric-primary holds that matches every pair of
+    /// `node.get` (`query.md` §1): every node row the fabric-primary holds that matches every pair of
     /// `filter`, by `path.name`; the empty filter is the fabric's topology, and nothing matching is the
     /// empty list (`[id: x]` is one node or none).
     ///
@@ -227,7 +227,7 @@ impl Nodes {
     /// `node.config.get`: no request of its own (Q167 R-RD4: a property's read is its row's field);
     /// [`Self::get`] answers the whole node, its config included.
     pub fn config_get(&self) -> CallEnd {
-        CallEnd::NotBackedToday { op: NodeOp::ConfigGet, why: "node.config.get has no request of its own; nodes.get answers the node's config" }
+        CallEnd::NotBackedToday { op: NodeOp::ConfigGet, why: "node.config.get has no request of its own; node.get answers the node's config" }
     }
 
     /// `node.create` of the paths `nodes` adds to the topology Build `based_on` accepted, each named by
@@ -327,8 +327,8 @@ impl Meshes {
         Self { carrier }
     }
 
-    /// `meshes.get` (Q167): every mesh the fabric-primary holds that matches every pair of `filter`, by
-    /// name; a mesh's nodes are `nodes.get [mesh: name]`.
+    /// `mesh.get` (Q167): every mesh the fabric-primary holds that matches every pair of `filter`, by
+    /// name; a mesh's nodes are `node.get [mesh: name]`.
     pub async fn get(&self, filter: &Filter) -> Result<Vec<MeshView>, CallEnd> {
         let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
         read_list(&self.carrier, &target, MeshOp::Get.span(), MeshOp::Get.name(), Entity::Meshes, None, filter, |r| match r {
@@ -351,8 +351,8 @@ impl Fabrics {
         Self { carrier }
     }
 
-    /// `fabrics.get` (Q167): the fabric the fabric-primary holds, when it matches every pair of
-    /// `filter`: its id, name, state, provider, fabric-primary and meshes; its nodes are `nodes.get`.
+    /// `fabric.get` (Q167): the fabric the fabric-primary holds, when it matches every pair of
+    /// `filter`: its id, name, state, provider, fabric-primary and meshes; its nodes are `node.get`.
     pub async fn get(&self, filter: &Filter) -> Result<Vec<FabricView>, CallEnd> {
         let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
         read_list(&self.carrier, &target, FabricOp::Get.span(), FabricOp::Get.name(), Entity::Fabrics, None, filter, |r| match r {
@@ -362,16 +362,16 @@ impl Fabrics {
         .await
     }
 
-    /// The fabric the fabric-primary holds (`fabrics.get` with no pair): the one row it answers.
+    /// The fabric the fabric-primary holds (`fabric.get` with no pair): the one row it answers.
     async fn the_fabric(&self) -> Result<FabricView, CallEnd> {
         let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
-        self.get(&Filter::new()).await?.into_iter().next().ok_or_else(|| CallEnd::NotFound { read: FabricOp::Get.name(), detail: format!("{target:?} answered fabrics.get with no fabric") })
+        self.get(&Filter::new()).await?.into_iter().next().ok_or_else(|| CallEnd::NotFound { read: FabricOp::Get.name(), detail: format!("{target:?} answered fabric.get with no fabric") })
     }
 
-    /// `fabrics.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): the fabric-primary's
+    /// `fabric.atlas.get` (docs/plans/proposal/fabric-atlas.md R-FA4): the fabric-primary's
     /// atlas, one row per node of the current Build's topology: the birth its node row names
     /// current, its lifecycle as the ops left it, and the operation accepted on it whose attempt has
-    /// not completed. `fabrics.get` is unchanged by it.
+    /// not completed. `fabric.get` is unchanged by it.
     pub async fn atlas_get(&self) -> Result<AtlasView, CallEnd> {
         let span = FabricOp::AtlasGet.span();
         let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
@@ -405,7 +405,7 @@ impl Fabrics {
     }
 
     /// Await the typed fact `holds` of the fabric as the admin the carrier starts at reports it
-    /// (`fabrics.get`), read at half the gossip interval so a fact that spreads by gossip is read as it
+    /// (`fabric.get`), read at half the gossip interval so a fact that spreads by gossip is read as it
     /// lands. `fact` names it. An admin that does not report it within `within` ends the call
     /// `Indeterminate`, naming the fact, the admin and the last thing it reported or how its last read
     /// ended.
@@ -415,7 +415,7 @@ impl Fabrics {
     }
 }
 
-/// The `connections` objects: `connections.get { node }` (Q167 R-RD7), a Status call to the exact
+/// The `connections` objects: `node.connection.get { node }` (Q167 R-RD7), a Status call to the exact
 /// birth whose connections log holds the connections, the node the read's address.
 #[derive(Debug, Clone)]
 pub struct Connections {
@@ -428,7 +428,7 @@ impl Connections {
         Self { carrier }
     }
 
-    /// `connections.get { node }`: the connections the exact birth `birth` holds as its own that match
+    /// `node.connection.get { node }`: the connections the exact birth `birth` holds as its own that match
     /// every pair of `filter` (`id`, `destination`, `kind`, `state`, …), under the name it holds, each
     /// named by the minted id `node.connections.delete` names it by.
     pub async fn get(&self, birth: &ExactBirth, filter: &Filter) -> Result<ConnectionsView, CallEnd> {
@@ -464,7 +464,7 @@ impl Builds {
         r
     }
 
-    /// `builds.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
+    /// `build.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
     /// of `filter` (`id`, `current`, `phase`, `attempt`, `executor`), newest first, each whole: header,
     /// topology (`nodes`) and receipts (`steps`), the current one marked. `[id: x]` is one Build, the
     /// empty list when the fabric-primary holds none of that id; `[current: true]` the current Build.

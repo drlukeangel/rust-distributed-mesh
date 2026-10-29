@@ -1,4 +1,4 @@
-//! `builds.get` (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`": `GetBuilds`), over real Node RPC:
+//! `build.get` (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`": `GetBuilds`), over real Node RPC:
 //! the fabric-primary's Build log answers every Build whose header matches the filter, newest first,
 //! each whole (its header, its topology, its receipts), the current one selected once and marked, and
 //! only `End` completes the read.
@@ -48,7 +48,7 @@ async fn build(log: &MemoryBuildStateAdapter, id: &BuildId, at: u64, t: FabricTo
     log.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: verdict }).await.unwrap();
 }
 
-/// The fabric-primary on the wire: `builds.get` served from `log`, at `mesh1.admin.1`.
+/// The fabric-primary on the wire: `build.get` served from `log`, at `mesh1.admin.1`.
 async fn fabric_primary(log: Arc<dyn BuildStateAdapter>) -> (iroh::Endpoint, ResolvedNode, Router) {
     let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
@@ -60,7 +60,7 @@ async fn fabric_primary(log: Arc<dyn BuildStateAdapter>) -> (iroh::Endpoint, Res
             async move {
                 match req {
                     BuildRequest::GetBuilds { filter } => rdm_admin::build_op::serve_builds(&me, &*log, filter, sink).await,
-                    other => Ok(rdm_core::reply::build::rejected("unserved".into(), format!("this cell serves builds.get only, asked {}", other.op()))),
+                    other => Ok(rdm_core::reply::build::rejected("unserved".into(), format!("this cell serves build.get only, asked {}", other.op()))),
                 }
             }
         })
@@ -83,10 +83,10 @@ fn ids(builds: &[rdm_client::Build]) -> Vec<String> {
 }
 
 // @feature: fabric-build
-/// CONTRACT (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`", `builds.get`): a fabric-primary
+/// CONTRACT (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`", `build.get`): a fabric-primary
 /// whose Build log holds three Builds, b1 (complete), b2 (complete, accepted after b1, so the
 /// current Build) and b3 (accepted last, failed part-way: one step Complete, the next Failed), answers
-/// `builds.get []` with all three, newest first (b3, b2, b1), each whole: its header (phase, attempt,
+/// `build.get []` with all three, newest first (b3, b2, b1), each whole: its header (phase, attempt,
 /// executor, reason, last failure) as its log folds it, its topology (every node's create spec,
 /// a topology of 301 nodes taking several Topology chunks), and its receipts; only b2 is marked
 /// current. `[current: true]` streams b2 alone, `[phase: failed]` b3 alone, `[id: b1]` b1 alone, an
@@ -111,11 +111,11 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
         let carrier = BuildCarrier::new(client.clone(), fp.name.clone());
         let read = |f: Filter| {
             let carrier = carrier.clone();
-            async move { tokio::time::timeout(Duration::from_secs(30), carrier.builds(&f)).await.unwrap_or_else(|_| panic!("builds.get {f:?} answered nothing in 30 s")) }
+            async move { tokio::time::timeout(Duration::from_secs(30), carrier.builds(&f)).await.unwrap_or_else(|_| panic!("build.get {f:?} answered nothing in 30 s")) }
         };
 
         // No pair: every Build, newest first, each whole, only the current one marked.
-        let every = read(Filter::new()).await.unwrap_or_else(|e| panic!("builds.get []: {e}"));
+        let every = read(Filter::new()).await.unwrap_or_else(|e| panic!("build.get []: {e}"));
         assert_eq!(ids(&every), vec![b3.to_string(), b2.to_string(), b1.to_string()], "every Build, newest first");
         assert_eq!(every.iter().map(|b| b.current).collect::<Vec<_>>(), vec![false, true, false], "only b2, the current Build, is marked");
         for got in &every {
@@ -159,7 +159,7 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
             },
         };
         match first {
-            BuildReply::RejectedFilter { reason } => assert!(reason.contains("builds.get: the pair (zone, [eu])"), "{reason}"),
+            BuildReply::RejectedFilter { reason } => assert!(reason.contains("build.get: the pair (zone, [eu])"), "{reason}"),
             other => panic!("RejectedFilter, not {other:?}"),
         }
         assert_eq!(<Build as rdm_core::protocol::NodeProtocol>::classify_reply(&BuildReply::RejectedFilter { reason: String::new() }).code(), rdm_core::outcome::Code::InvalidArgument);

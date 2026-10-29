@@ -75,7 +75,7 @@ impl Capture {
 ///  `connections-deleting` once the node reports it on the command's stream, then
 ///  `connections-deleted` from its `Established` completion.
 ///  `Connections([id, …])`: Close exactly the named connections, each by the minted id of its open
-///  entry as `connections.get` returns it. Sets no node-wide status and does not make the node
+///  entry as `node.connection.get` returns it. Sets no node-wide status and does not make the node
 ///  non-routable. An empty list is refused by name. An id the node does not know, or finds already
 ///  closed, is named in the completion, never ignored."
 #[test]

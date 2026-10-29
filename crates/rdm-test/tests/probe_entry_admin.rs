@@ -18,7 +18,7 @@ use rdm_test::proof_store::{self, FileProofStore};
 use std::sync::Arc;
 
 /// CONTRACT: a probe given `--admin-birth` of a node-admin that serves Node RPC only asks that admin
-/// `fabrics.get`, then `nodes.get [mesh: m]` for the one mesh the fabric lists, resolves its `exact:` target from
+/// `fabric.get`, then `node.get [mesh: m]` for the one mesh the fabric lists, resolves its `exact:` target from
 /// the nodes it read and makes its proof call: one `Reply` executed by the target node. A node the view
 /// holds unborn (no endpoint, address or incarnation yet) is left out and refuses nothing. The probe's
 /// span file holds the `via-probe` root and, in its trace, the `rdm.node_admin.fabric.resolve.via-call` and
@@ -94,7 +94,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
         let s = spans.iter().find(|s| s["name"] == read).unwrap_or_else(|| panic!("the probe left no {read} span: {spans:?}"));
         assert_eq!((s["trace_id"].as_str(), s["attributes"]["outcome"].as_str()), (Some(trace), Some("read")), "{read} is a read of the probe's own trace: {s}");
     }
-    std::fs::write(evidence.join("trace.txt"), format!("probe_entry_admin trace_id={trace} reads=fabrics.get,nodes.get[mesh:mesh1] outcome={} executing_node={target}\n", v["outcome"])).unwrap();
+    std::fs::write(evidence.join("trace.txt"), format!("probe_entry_admin trace_id={trace} reads=fabric.get,node.get[mesh:mesh1] outcome={} executing_node={target}\n", v["outcome"])).unwrap();
     rt.block_on(async {
         admin.shutdown().await;
         let _ = router.shutdown().await;

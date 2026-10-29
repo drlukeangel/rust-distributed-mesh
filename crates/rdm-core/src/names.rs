@@ -9,13 +9,13 @@
 /// A call on the `node` op family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeOp {
-    /// `nodes.get`: the node rows matching a filter (Q167).
+    /// `node.get`: the node rows matching a filter (Q167).
     Get,
     /// `node.name.update`: the node's rename, the name only (proposal node-properties-own-commands.md §2).
     NameUpdate,
     /// `node.topology.get`: the node's held topology.
     TopologyGet,
-    /// `connections.get { node }`: the exact birth's own connections (Q167).
+    /// `node.connection.get { node }`: the exact birth's own connections (Q167).
     ConnectionsGet,
     /// `node.connections.delete`: a hard cut.
     ConnectionsDelete,
@@ -47,10 +47,10 @@ impl NodeOp {
     /// The canonical name of the call.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Get => "nodes.get",
+            Self::Get => "node.get",
             Self::NameUpdate => "node.name.update",
             Self::TopologyGet => "node.topology.get",
-            Self::ConnectionsGet => "connections.get",
+            Self::ConnectionsGet => "node.connection.get",
             Self::ConnectionsDelete => "node.connections.delete",
             Self::ConfigGet => "node.config.get",
             Self::ConfigUpdate => "node.config.update",
@@ -75,10 +75,10 @@ impl NodeOp {
     /// the two that change a node's status). Every op is spelled out so the name stays a literal.
     pub fn span(self) -> tracing::Span {
         match self {
-            Self::Get => tracing::info_span!("rdm.node_admin.node.resolve.via-call", op = "nodes.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.node.resolve.via-call", op = "node.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
             Self::NameUpdate => tracing::info_span!("rdm.node_admin.name.update.via-call", op = "node.name.update", outcome = tracing::field::Empty),
             Self::TopologyGet => tracing::info_span!("rdm.node_admin.topology.resolve.via-call", op = "node.topology.get", outcome = tracing::field::Empty),
-            Self::ConnectionsGet => tracing::info_span!("rdm.node_admin.connection.resolve.via-call", op = "connections.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
+            Self::ConnectionsGet => tracing::info_span!("rdm.node_admin.connection.resolve.via-call", op = "node.connection.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
             Self::ConnectionsDelete => tracing::info_span!("rdm.node_admin.connection.delete.via-call", op = "node.connections.delete", outcome = tracing::field::Empty),
             Self::ConfigGet => tracing::info_span!("rdm.node_admin.config.resolve.via-call", op = "node.config.get", outcome = tracing::field::Empty),
             Self::ConfigUpdate => tracing::info_span!("rdm.node_admin.config.update.via-call", op = "node.config.update", outcome = tracing::field::Empty),
@@ -97,7 +97,7 @@ impl NodeOp {
 /// A call on the `mesh` op family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MeshOp {
-    /// `meshes.get`: the meshes matching a filter (Q167).
+    /// `mesh.get`: the meshes matching a filter (Q167).
     Get,
 }
 
@@ -105,14 +105,14 @@ impl MeshOp {
     /// The canonical name of the call.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Get => "meshes.get",
+            Self::Get => "mesh.get",
         }
     }
 
     /// The span of one call: `rdm.node_admin.mesh.resolve.via-…call`.
     pub fn span(self) -> tracing::Span {
         match self {
-            Self::Get => tracing::info_span!("rdm.node_admin.mesh.resolve.via-call", op = "meshes.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.mesh.resolve.via-call", op = "mesh.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
         }
     }
 }
@@ -120,9 +120,9 @@ impl MeshOp {
 /// A call on the `fabric` op family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FabricOp {
-    /// `fabrics.get`: the fabric the answering admin holds, when it matches a filter (Q167).
+    /// `fabric.get`: the fabric the answering admin holds, when it matches a filter (Q167).
     Get,
-    /// `fabrics.atlas.get`: the fabric-primary's atlas (fabric-atlas.md R-FA4).
+    /// `fabric.atlas.get`: the fabric-primary's atlas (fabric-atlas.md R-FA4).
     AtlasGet,
     /// `fabric.root.update`: a new root's secret to the fabric-primary (fabric-ca-renew.md).
     RootUpdate,
@@ -132,8 +132,8 @@ impl FabricOp {
     /// The canonical name of the call.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Get => "fabrics.get",
-            Self::AtlasGet => "fabrics.atlas.get",
+            Self::Get => "fabric.get",
+            Self::AtlasGet => "fabric.atlas.get",
             Self::RootUpdate => "fabric.root.update",
         }
     }
@@ -141,8 +141,8 @@ impl FabricOp {
     /// The span of one call: `rdm.node_admin.fabric.resolve.via-…call`.
     pub fn span(self) -> tracing::Span {
         match self {
-            Self::Get => tracing::info_span!("rdm.node_admin.fabric.resolve.via-call", op = "fabrics.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
-            Self::AtlasGet => tracing::info_span!("rdm.node_admin.fabric.resolve.via-atlas-call", op = "fabrics.atlas.get", outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.fabric.resolve.via-call", op = "fabric.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
+            Self::AtlasGet => tracing::info_span!("rdm.node_admin.fabric.resolve.via-atlas-call", op = "fabric.atlas.get", outcome = tracing::field::Empty),
             Self::RootUpdate => tracing::info_span!("rdm.node_admin.root.update.via-call", op = "fabric.root.update", outcome = tracing::field::Empty),
         }
     }
@@ -153,7 +153,7 @@ impl FabricOp {
 pub enum BuildOp {
     /// `build.create`, including a preset.
     Create,
-    /// `builds.get` (Q167 R-RD5).
+    /// `build.get` (Q167 R-RD5).
     Get,
     /// `build.delete`.
     Delete,
@@ -164,7 +164,7 @@ impl BuildOp {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Create => "build.create",
-            Self::Get => "builds.get",
+            Self::Get => "build.get",
             Self::Delete => "build.delete",
         }
     }
@@ -173,7 +173,7 @@ impl BuildOp {
     pub fn span(self) -> tracing::Span {
         match self {
             Self::Create => tracing::info_span!("rdm.node_admin.build.create.via-call", op = "build.create", outcome = tracing::field::Empty),
-            Self::Get => tracing::info_span!("rdm.node_admin.build.resolve.via-call", op = "builds.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
+            Self::Get => tracing::info_span!("rdm.node_admin.build.resolve.via-call", op = "build.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
             Self::Delete => tracing::info_span!("rdm.node_admin.build.delete.via-call", op = "build.delete", outcome = tracing::field::Empty),
         }
     }

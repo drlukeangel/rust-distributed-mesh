@@ -1,7 +1,7 @@
 //! The reads over Node RPC (node-rpc-envelope.md "Typed objects mapped to wire and execution
-//! owners", Q167: one read per entity, the filter a property match): `nodes.get`, `meshes.get` and
-//! `fabrics.get` answer the rows the answering node-admin holds that match every `(property, values)`
-//! pair, and `connections.get { node }` a node's held connections (fabric-mesh-node-lifecycles.md:
+//! owners", Q167: one read per entity, the filter a property match): `node.get`, `mesh.get` and
+//! `fabric.get` answer the rows the answering node-admin holds that match every `(property, values)`
+//! pair, and `node.connection.get { node }` a node's held connections (fabric-mesh-node-lifecycles.md:
 //! "Reading or cutting a node's held connections"). The typed objects read them from the node
 //! itself over Node RPC; they hold no control API client.
 
@@ -58,7 +58,7 @@ fn ids(view: &ConnectionsView) -> BTreeSet<String> {
     view.connections.iter().map(|c| c.id.clone()).collect()
 }
 
-/// The node rows' `path.name`s of a `nodes.get`.
+/// The node rows' `path.name`s of a `node.get`.
 fn names_of(nodes: &[rdm_client::NodeView]) -> Vec<String> {
     nodes.iter().map(|n| n.name.to_string()).collect()
 }
@@ -66,18 +66,18 @@ fn names_of(nodes: &[rdm_client::NodeView]) -> Vec<String> {
 /// CONTRACT (Q167 R-RD1 to R-RD3: one read per entity, plural, the filter a list of `(property,
 /// values)` pairs, AND across pairs, any-of within, nothing matching the empty list): a Day-0
 /// node-admin answers the reads over Node RPC from what it holds, and the caller reaches nothing but
-/// the admin's Node RPC endpoint. `nodes.get []` is the fabric's topology, the admin alone, as its
+/// the admin's Node RPC endpoint. `node.get []` is the fabric's topology, the admin alone, as its
 /// view holds it, with its row's status as its atlas holds it (Q233, query.md §1: Ready
 /// once its row took it; primary of its mesh and of the fabric, its birth, its load and gossip stats
 /// when its view carries them); `[id: the admin]` is that one node and `[id: another]` the empty list;
 /// `[mesh: mesh1] [kind: admin]` the admin and `[mesh: mesh1] [kind: gateway]` nothing (AND across
-/// pairs); `[mesh: mesh9]`, a mesh the admin does not hold, the empty list. `meshes.get []` lists
+/// pairs); `[mesh: mesh9]`, a mesh the admin does not hold, the empty list. `mesh.get []` lists
 /// every mesh the view holds, by name; `[name: mesh1]` and `[id: mesh1's id]` the one mesh with the
-/// admin its primary and only node; `[name: mesh9]` the empty list (no `unknown-mesh`). `fabrics.get
+/// admin its primary and only node; `[name: mesh9]` the empty list (no `unknown-mesh`). `fabric.get
 /// []` is `fabric1` with the admin as its fabric-primary, and `[name: fabric9]` the empty list. A
 /// pair naming a property no node row has (`zone`, not `config.zone`) is refused INVALID_ARGUMENT
-/// naming the pair, on the wire and through the typed object. `connections.get { node }` of the
-/// admin's exact birth names the admin and exactly the connections it holds, and `connections.get`
+/// naming the pair, on the wire and through the typed object. `node.connection.get { node }` of the
+/// admin's exact birth names the admin and exactly the connections it holds, and `node.connection.get`
 /// with no node is refused naming its address. Each read is served by the admin: its serve span
 /// names the read, the pairs' properties and how much it answered. What must NOT happen: a read that
 /// needs a control API, a read answered from anything but the admin's own view, a mesh the admin
@@ -120,10 +120,10 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         let fabrics = Fabrics::new(carrier.clone());
         let nodes_get = |f: Filter| {
             let nodes = nodes.clone();
-            async move { nodes.get(&f).await.unwrap_or_else(|e| panic!("nodes.get {f:?}: {e}")) }
+            async move { nodes.get(&f).await.unwrap_or_else(|e| panic!("node.get {f:?}: {e}")) }
         };
 
-        // nodes.get: no pair is the fabric's topology, the admin alone, as its view holds it.
+        // node.get: no pair is the fabric's topology, the admin alone, as its view holds it.
         let every_node = nodes_get(Filter::new()).await;
         let view = running.control.topology.read().await.clone();
         let loads = (running.control.loads.get().expect("the admin reads its members' loads"))();
@@ -158,27 +158,27 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
             other => panic!("an unknown property is refused by name, not {other:?}"),
         }
 
-        // meshes.get: every mesh by name, one by name or by id, and the empty list for a mesh not held.
+        // mesh.get: every mesh by name, one by name or by id, and the empty list for a mesh not held.
         let mesh_id = me.mesh_id.clone().expect("the Day-0 admin holds its mesh id");
         for f in [Filter::new().eq("name", ["mesh1"]), Filter::new().eq("id", [mesh_id.to_string()])] {
-            let one = meshes.get(&f).await.unwrap_or_else(|e| panic!("meshes.get {f:?}: {e}"));
+            let one = meshes.get(&f).await.unwrap_or_else(|e| panic!("mesh.get {f:?}: {e}"));
             assert_eq!(one.iter().map(|m| (m.name.as_str(), m.primary_admin.clone(), m.nodes.clone())).collect::<Vec<_>>(), vec![("mesh1", Some(me.node.name.clone()), vec![me.node.name.clone()])], "{f:?}");
         }
-        let every = meshes.get(&Filter::new()).await.unwrap_or_else(|e| panic!("meshes.get: {e}"));
+        let every = meshes.get(&Filter::new()).await.unwrap_or_else(|e| panic!("mesh.get: {e}"));
         let mut held_meshes: Vec<String> = view.fabric_view().meshes.iter().map(|m| m.name.clone()).collect();
         held_meshes.sort();
         assert_eq!(every.iter().map(|m| m.name.clone()).collect::<Vec<_>>(), held_meshes, "every mesh the view holds, by name");
-        assert!(meshes.get(&Filter::new().eq("name", ["mesh9"])).await.unwrap_or_else(|e| panic!("meshes.get [name: mesh9]: {e}")).is_empty(), "a mesh the admin does not hold is the empty list");
+        assert!(meshes.get(&Filter::new().eq("name", ["mesh9"])).await.unwrap_or_else(|e| panic!("mesh.get [name: mesh9]: {e}")).is_empty(), "a mesh the admin does not hold is the empty list");
 
-        // fabrics.get.
-        let fabric = fabrics.get(&Filter::new()).await.unwrap_or_else(|e| panic!("fabrics.get: {e}"));
+        // fabric.get.
+        let fabric = fabrics.get(&Filter::new()).await.unwrap_or_else(|e| panic!("fabric.get: {e}"));
         assert_eq!(fabric.iter().map(|f| (f.name.as_str(), f.fabric_primary.clone())).collect::<Vec<_>>(), vec![("fabric1", Some(me.node.name.clone()))]);
         assert_eq!(fabric[0].meshes.iter().map(|m| m.name.clone()).collect::<BTreeSet<_>>(), held_meshes.iter().cloned().collect::<BTreeSet<_>>());
-        assert!(fabrics.get(&Filter::new().eq("name", ["fabric9"])).await.unwrap_or_else(|e| panic!("fabrics.get [name: fabric9]: {e}")).is_empty(), "a fabric that does not match is the empty list");
+        assert!(fabrics.get(&Filter::new().eq("name", ["fabric9"])).await.unwrap_or_else(|e| panic!("fabric.get [name: fabric9]: {e}")).is_empty(), "a fabric that does not match is the empty list");
 
-        // fabrics.get awaited: a fact the admin's view holds is the read that held it; a fact it never
+        // fabric.get awaited: a fact the admin's view holds is the read that held it; a fact it never
         // reports ends the call Indeterminate, naming the fact, the admin and its last report.
-        let awaited = fabrics.fact("the admin is the fabric-primary", WRONG, |f| f.fabric_primary.as_ref() == Some(&me.node.name)).await.unwrap_or_else(|e| panic!("fabrics.get awaited: {e}"));
+        let awaited = fabrics.fact("the admin is the fabric-primary", WRONG, |f| f.fabric_primary.as_ref() == Some(&me.node.name)).await.unwrap_or_else(|e| panic!("fabric.get awaited: {e}"));
         assert_eq!(awaited.fabric_primary, Some(me.node.name.clone()));
         match fabrics.fact("a fabric-primary other than the admin", Duration::from_secs(1), |f| f.fabric_primary.as_ref().is_some_and(|p| *p != me.node.name)).await {
             Err(CallEnd::Indeterminate { reason, .. }) => assert!(
@@ -188,9 +188,9 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
             other => panic!("a fact the admin never reports ends Indeterminate, not {other:?}"),
         }
 
-        // connections.get { node } of the admin: exactly what it holds; without its node, refused.
+        // node.connection.get { node } of the admin: exactly what it holds; without its node, refused.
         let birth = ExactBirth { target: NodeTarget::ExactNode(me.node.node_id.clone()), node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone() };
-        let connections = Connections::new(carrier.clone()).get(&birth, &Filter::new()).await.unwrap_or_else(|e| panic!("connections.get of the admin: {e}"));
+        let connections = Connections::new(carrier.clone()).get(&birth, &Filter::new()).await.unwrap_or_else(|e| panic!("node.connection.get of the admin: {e}"));
         let (complete, own) = {
             let held = running.control.connections.get().expect("the admin holds its connections").lock().unwrap();
             (held.is_complete(), own_ids(&held))
@@ -200,8 +200,8 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         let addressless = rdm_core::status::StatusRequest::Get { entity: rdm_client::Entity::Connections, node: None, filter: Filter::new() };
         let (out, _) = client.call::<rdm_core::status::Status>(&birth.target, &addressless, &rdm_transport::CallOptions::default()).await;
         match out.reply().map(|r| r.value().clone()) {
-            Some(StatusReply::RejectedFilter { reason }) => assert!(reason.contains("connections.get names no node"), "refused naming the read's address: {reason}"),
-            other => panic!("connections.get without its node is RejectedFilter, not {other:?}"),
+            Some(StatusReply::RejectedFilter { reason }) => assert!(reason.contains("node.connection.get names no node"), "refused naming the read's address: {reason}"),
+            other => panic!("node.connection.get without its node is RejectedFilter, not {other:?}"),
         }
 
         running.leave().await;
@@ -210,15 +210,15 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
     // The trace: every read served by the admin, naming what was read, its pairs and how much.
     let served = |name: &str, wanted: &dyn Fn(&std::collections::BTreeMap<String, String>) -> bool| spans.0.lock().unwrap().values().any(|(n, _, f)| n == name && wanted(f));
     let at = |f: &std::collections::BTreeMap<String, String>, k: &str, v: &str| f.get(k).map(String::as_str) == Some(v);
-    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "read", "nodes.get") && at(f, "properties", "") && at(f, "nodes", "1")), "nodes.get [] served");
-    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "id") && at(f, "nodes", "0")), "nodes.get [id: unheld] served, matching nothing");
-    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "mesh,kind") && at(f, "pairs", "(mesh, [mesh1]) (kind, [gateway])") && at(f, "nodes", "0")), "nodes.get [mesh: mesh1] [kind: gateway] served, matching nothing");
-    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "mesh") && at(f, "pairs", "(mesh, [mesh9])") && at(f, "nodes", "0")), "nodes.get [mesh: mesh9] served, matching nothing");
-    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "outcome", "rejected-filter") && f.get("detail").is_some_and(|d| d.contains("(zone, [eu-1])"))), "nodes.get [zone: eu-1] refused naming the pair");
-    assert!(served("rdm.node_admin.mesh.serve.via-get", &|f| at(f, "properties", "name") && at(f, "meshes", "1")), "meshes.get [name: mesh1] served");
-    assert!(served("rdm.node_admin.mesh.serve.via-get", &|f| at(f, "pairs", "(name, [mesh9])") && at(f, "meshes", "0")), "meshes.get [name: mesh9] served, empty");
-    assert!(served("rdm.node_admin.fabric.serve.via-get", &|f| at(f, "read", "fabrics.get") && at(f, "fabrics", "1")), "fabrics.get served");
-    assert!(served("rdm.node_admin.node.serve.via-connections-get", &|f| at(f, "node", "mesh1.admin.1")), "connections.get served by the admin");
+    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "read", "node.get") && at(f, "properties", "") && at(f, "nodes", "1")), "node.get [] served");
+    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "id") && at(f, "nodes", "0")), "node.get [id: unheld] served, matching nothing");
+    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "mesh,kind") && at(f, "pairs", "(mesh, [mesh1]) (kind, [gateway])") && at(f, "nodes", "0")), "node.get [mesh: mesh1] [kind: gateway] served, matching nothing");
+    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "properties", "mesh") && at(f, "pairs", "(mesh, [mesh9])") && at(f, "nodes", "0")), "node.get [mesh: mesh9] served, matching nothing");
+    assert!(served("rdm.node_admin.node.serve.via-get", &|f| at(f, "outcome", "rejected-filter") && f.get("detail").is_some_and(|d| d.contains("(zone, [eu-1])"))), "node.get [zone: eu-1] refused naming the pair");
+    assert!(served("rdm.node_admin.mesh.serve.via-get", &|f| at(f, "properties", "name") && at(f, "meshes", "1")), "mesh.get [name: mesh1] served");
+    assert!(served("rdm.node_admin.mesh.serve.via-get", &|f| at(f, "pairs", "(name, [mesh9])") && at(f, "meshes", "0")), "mesh.get [name: mesh9] served, empty");
+    assert!(served("rdm.node_admin.fabric.serve.via-get", &|f| at(f, "read", "fabric.get") && at(f, "fabrics", "1")), "fabric.get served");
+    assert!(served("rdm.node_admin.node.serve.via-connections-get", &|f| at(f, "node", "mesh1.admin.1")), "node.connection.get served by the admin");
 }
 
 fn labels(l: &[&str]) -> BTreeSet<String> {
@@ -231,7 +231,7 @@ fn labels(l: &[&str]) -> BTreeSet<String> {
 /// All | [labels] }` removes every label or the named ones ... Create is a blind put of that key, so
 /// creating a label the node already carries is ignored and writes no duplicate"): a caller's
 /// `node.tags.create {gold, ssd}` of the Day-0 admin ends `TagsCreated` carrying nothing already, and
-/// its `node.config.update {zone: eu-1, rack.row: 7}` ends `ConfigUpdated`; then `nodes.get
+/// its `node.config.update {zone: eu-1, rack.row: 7}` ends `ConfigUpdated`; then `node.get
 /// [config.zone: eu-1]` and `[config.rack.row: 7]` answer the admin and `[config.zone: us-2]` nothing;
 /// `[tags: gold] [tags: ssd]` (all of) answers the admin and `[tags: gold] [tags: blue]` nothing;
 /// `[tags: gold, silver]` (any of) answers the admin and `[tags: blue, silver]` nothing; each with
@@ -275,7 +275,7 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
         let carrier = BuildCarrier::new(client.clone(), me.node.name.clone());
         let nodes = Nodes::new(carrier);
         let one = || async {
-            let mut got = nodes.get(&Filter::new().eq("id", [me.node.node_id.to_string()])).await.unwrap_or_else(|e| panic!("nodes.get [id: the admin]: {e}"));
+            let mut got = nodes.get(&Filter::new().eq("id", [me.node.node_id.to_string()])).await.unwrap_or_else(|e| panic!("node.get [id: the admin]: {e}"));
             assert_eq!(got.len(), 1, "[id: the admin] is the admin: {got:#?}");
             got.remove(0)
         };
@@ -288,9 +288,9 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
                 in_mesh1.pairs.extend(f.pairs.clone());
                 let mut in_mesh2 = Filter::new().eq("mesh", ["mesh2"]);
                 in_mesh2.pairs.extend(f.pairs.clone());
-                let fabric = ids(nodes.get(&f).await.unwrap_or_else(|e| panic!("nodes.get {f:?}: {e}")));
-                let mesh1 = ids(nodes.get(&in_mesh1).await.unwrap_or_else(|e| panic!("nodes.get {in_mesh1:?}: {e}")));
-                let mesh2 = ids(nodes.get(&in_mesh2).await.unwrap_or_else(|e| panic!("nodes.get {in_mesh2:?}: {e}")));
+                let fabric = ids(nodes.get(&f).await.unwrap_or_else(|e| panic!("node.get {f:?}: {e}")));
+                let mesh1 = ids(nodes.get(&in_mesh1).await.unwrap_or_else(|e| panic!("node.get {in_mesh1:?}: {e}")));
+                let mesh2 = ids(nodes.get(&in_mesh2).await.unwrap_or_else(|e| panic!("node.get {in_mesh2:?}: {e}")));
                 assert_eq!(mesh1, fabric, "{f:?}: mesh1 holds every node the fabric answers");
                 assert!(mesh2.is_empty(), "{f:?}: mesh2 holds none of them: {mesh2:?}");
                 fabric
@@ -376,12 +376,12 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
         ("(tags, [gold, silver])", "1"),
         ("(tags, [blue, silver])", "0"),
     ] {
-        assert!(reads.contains(&(pairs.to_string(), count.to_string())), "nodes.get {pairs} answered {count}: {reads:?}");
+        assert!(reads.contains(&(pairs.to_string(), count.to_string())), "node.get {pairs} answered {count}: {reads:?}");
     }
 }
 
-/// CONTRACT (Q167 R-RD7: the node is `connections.get`'s address, the filter matches the connection
-/// rows): an rpc node answers `connections.get { node }` of its exact birth itself, with exactly the
+/// CONTRACT (Q167 R-RD7: the node is `node.connection.get`'s address, the filter matches the connection
+/// rows): an rpc node answers `node.connection.get { node }` of its exact birth itself, with exactly the
 /// connections it holds (its latest Direct per destination that is connected and its active
 /// Proxies), named by the minted ids `node.connections.delete` names, its route to its admin among
 /// them; the answer names the node by the name it holds. `[destination: mesh1.admin.1] [kind:
@@ -449,7 +449,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         let (client, _endpoint) = caller(&[rpc]).await;
         let reads = Connections::new(BuildCarrier::new(client.clone(), "mesh1.admin.1".parse().unwrap()));
         let birth = ExactBirth { target: NodeTarget::ExactNode(launch.node_id.clone()), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() };
-        let connections = reads.get(&birth, &Filter::new()).await.unwrap_or_else(|e| panic!("connections.get of {name}: {e}"));
+        let connections = reads.get(&birth, &Filter::new()).await.unwrap_or_else(|e| panic!("node.connection.get of {name}: {e}"));
         let (complete, own) = {
             let held = seams.connections.held();
             let held = held.lock().unwrap();
@@ -459,16 +459,16 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         assert_eq!(ids(&connections), own, "exactly the connections the node holds: {connections:#?}");
         let to_admin = connections.connections.iter().find(|c| c.destination == "mesh1.admin.1").unwrap_or_else(|| panic!("the node's route to its admin is listed: {connections:#?}"));
         assert_eq!((to_admin.source.as_str(), to_admin.kind.as_str(), to_admin.state.as_str()), ("mesh1.rpc.1", "direct", "connected"));
-        let direct = reads.get(&birth, &Filter::new().eq("destination", ["mesh1.admin.1"]).eq("kind", ["direct"])).await.unwrap_or_else(|e| panic!("connections.get [destination] [kind] of {name}: {e}"));
+        let direct = reads.get(&birth, &Filter::new().eq("destination", ["mesh1.admin.1"]).eq("kind", ["direct"])).await.unwrap_or_else(|e| panic!("node.connection.get [destination] [kind] of {name}: {e}"));
         assert_eq!(ids(&direct), [to_admin.id.clone()].into(), "[destination: mesh1.admin.1] [kind: direct] is the route to its admin: {direct:#?}");
-        assert!(reads.get(&birth, &Filter::new().eq("kind", ["proxy"])).await.unwrap_or_else(|e| panic!("connections.get [kind: proxy]: {e}")).connections.is_empty(), "the node holds no proxy");
+        assert!(reads.get(&birth, &Filter::new().eq("kind", ["proxy"])).await.unwrap_or_else(|e| panic!("node.connection.get [kind: proxy]: {e}")).connections.is_empty(), "the node holds no proxy");
         match reads.get(&birth, &Filter::new().eq("state", ["open"])).await {
             Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains("(state, [open])"), "refused naming the pair: {reason}: {detail}"),
             other => panic!("a state no connection takes is refused by name, not {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&root);
     });
-    assert!(spans.0.lock().unwrap().values().any(|(n, _, f)| n == "rdm.node_admin.node.serve.via-connections-get" && f.get("node").map(String::as_str) == Some("mesh1.rpc.1")), "connections.get served by the rpc node");
+    assert!(spans.0.lock().unwrap().values().any(|(n, _, f)| n == "rdm.node_admin.node.serve.via-connections-get" && f.get("node").map(String::as_str) == Some("mesh1.rpc.1")), "node.connection.get served by the rpc node");
 }
 
 /// The fields of every span named `name` that `node` opened, as the cell's capture holds them.
@@ -477,17 +477,17 @@ fn spans_of(spans: &crate::common::Spans, name: &str) -> Vec<std::collections::B
 }
 
 // @feature: fabric-build
-/// CONTRACT (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`": `builds.get` caller → fabric-primary;
+/// CONTRACT (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`": `build.get` caller → fabric-primary;
 /// Luke: "only FP reads the builds"): a Day-0 node-admin, mesh1.admin.1 (the fabric-primary), and
-/// mesh1.admin.2, launched by it, both ready. A caller that enters at mesh1.admin.2 reads `builds.get`:
+/// mesh1.admin.2, launched by it, both ready. A caller that enters at mesh1.admin.2 reads `build.get`:
 /// mesh1.admin.2 serves no Build read, refusing it NotFabricPrimary naming mesh1.admin.1, and the
 /// carrier follows to it. The fabric-primary answers from its own Build log: every Build it holds,
 /// newest first, each whole, its current Build marked, header, topology (mesh1.admin.1's create spec)
 /// and receipts as its log folds them. `[current: true]` is that Build alone, `[phase: failed]` and
 /// `[id: another]` the empty list, and a pair naming no property of the Build header is refused
 /// INVALID_ARGUMENT naming the pair. Each read is served by mesh1.admin.1 alone: its serve span names
-/// `builds.get` and ends `end`, and mesh1.admin.2's only Build spans are its refusals naming
-/// mesh1.admin.1. Must NOT happen: a builds.get served by an admin that is not the fabric-primary, the
+/// `build.get` and ends `end`, and mesh1.admin.2's only Build spans are its refusals naming
+/// mesh1.admin.1. Must NOT happen: a build.get served by an admin that is not the fabric-primary, the
 /// current Build unmarked, or a Build answered without its topology or receipts.
 #[test]
 fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current_one_marked() {
@@ -519,11 +519,11 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
         let builds = rdm_client::Builds::new(BuildCarrier::new(client.clone(), other.name.clone()));
         let get = |f: Filter| {
             let builds = builds.clone();
-            async move { tokio::time::timeout(WRONG, builds.get(&f)).await.unwrap_or_else(|_| panic!("builds.get {f:?} answered nothing")) }
+            async move { tokio::time::timeout(WRONG, builds.get(&f)).await.unwrap_or_else(|_| panic!("build.get {f:?} answered nothing")) }
         };
 
         let held = root.control.builds.current().await.expect("the fabric-primary's Build log reads").expect("a current Build");
-        let every = get(Filter::new()).await.unwrap_or_else(|e| panic!("builds.get []: {e}"));
+        let every = get(Filter::new()).await.unwrap_or_else(|e| panic!("build.get []: {e}"));
         let newest_first = root.control.builds.accepted_newest_first().await.expect("the acceptance order reads");
         assert_eq!(every.iter().map(|b| b.build_id.clone()).collect::<Vec<_>>(), newest_first, "every Build the fabric-primary holds, newest first");
         let current: Vec<&rdm_client::Build> = every.iter().filter(|b| b.current).collect();
@@ -534,7 +534,7 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
         assert_eq!(got.nodes, specs, "the topology is every node's create spec");
         assert!(got.nodes.iter().any(|s| s.path == fp.name), "the Day-0 Build names mesh1.admin.1: {:?}", got.nodes);
 
-        let one = get(Filter::new().eq("current", ["true"])).await.unwrap_or_else(|e| panic!("builds.get [current: true]: {e}"));
+        let one = get(Filter::new().eq("current", ["true"])).await.unwrap_or_else(|e| panic!("build.get [current: true]: {e}"));
         assert_eq!(one.iter().map(|b| (b.build_id.clone(), b.current)).collect::<Vec<_>>(), vec![(held.build_id.clone(), true)], "[current: true] is the current Build alone");
         assert!(get(Filter::new().eq("phase", ["failed"])).await.unwrap().is_empty(), "[phase: failed]: no Build failed");
         assert!(get(Filter::new().eq("id", [rdm_core::BuildId::mint().to_string()])).await.unwrap().is_empty(), "[id: another] is the empty list");
@@ -544,19 +544,19 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
         }
 
         // Served by the fabric-primary alone; mesh1.admin.2 only refused, naming it.
-        let serves: Vec<_> = spans_of(&spans, "rdm.node_admin.build.serve.via-node-rpc").into_iter().filter(|f| f.get("call").map(String::as_str) == Some("builds.get")).collect();
-        assert!(!serves.is_empty(), "builds.get was served");
+        let serves: Vec<_> = spans_of(&spans, "rdm.node_admin.build.serve.via-node-rpc").into_iter().filter(|f| f.get("call").map(String::as_str) == Some("build.get")).collect();
+        assert!(!serves.is_empty(), "build.get was served");
         for s in &serves {
             let outcome = s.get("outcome").map(String::as_str).unwrap_or_default();
             match s.get("node").map(String::as_str) {
                 Some("mesh1.admin.1") => assert!(outcome == "end" || outcome == "rejected-filter", "the fabric-primary's serve ends the read: {s:?}"),
                 Some("mesh1.admin.2") => assert_eq!(outcome, "not-fabric-primary", "mesh1.admin.2 serves no Build read: {s:?}"),
-                other => panic!("a builds.get served by {other:?}: {s:?}"),
+                other => panic!("a build.get served by {other:?}: {s:?}"),
             }
         }
         assert_eq!(serves.iter().filter(|s| s.get("node").map(String::as_str) == Some("mesh1.admin.1")).count(), 5, "the fabric-primary served each of the five reads: {serves:#?}");
         let refused = spans_of(&spans, "rdm.node_admin.build.reject.via-not-fabric-primary");
-        assert!(refused.iter().filter(|f| f.get("route").map(String::as_str) == Some("builds.get")).all(|f| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("fabric_primary").map(String::as_str) == Some("mesh1.admin.1")), "each refusal is mesh1.admin.2's, naming mesh1.admin.1: {refused:#?}");
+        assert!(refused.iter().filter(|f| f.get("route").map(String::as_str) == Some("build.get")).all(|f| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("fabric_primary").map(String::as_str) == Some("mesh1.admin.1")), "each refusal is mesh1.admin.2's, naming mesh1.admin.1: {refused:#?}");
 
         admin.leave().await;
         root.leave().await;

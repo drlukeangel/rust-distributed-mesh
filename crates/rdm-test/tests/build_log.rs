@@ -1,9 +1,9 @@
 //! The Build log as a caller reads it: the one shared read of every cell that asks "the Build as the
 //! fabric holds it".
 //!
-//! The Build family (`builds.get`) is the fabric-primary's alone, and so are the Build records: only
+//! The Build family (`build.get`) is the fabric-primary's alone, and so are the Build records: only
 //! the fabric-primary reads them (Q227; build.md §5.3), and every other node-admin holds only what
-//! reached it. So the read is at the fabric-primary the carrier's admin names (`fabrics.get`), over
+//! reached it. So the read is at the fabric-primary the carrier's admin names (`fabric.get`), over
 //! `FetchBuildFacts` (op `0x1F`; `BuildFactsDoor::serve`): [`log_read`] is the one read, [`log_fact`]
 //! awaits a typed fact of it through the client's `await_fact`, and [`build_fact`] awaits a fact of
 //! the Build the log folds to (`build_state::fold` over the same log).

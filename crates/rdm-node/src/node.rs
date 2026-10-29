@@ -1733,7 +1733,7 @@ pub(crate) struct Kicked {
 
 type KickSlot = Arc<std::sync::OnceLock<Arc<Kicked>>>;
 
-/// A `fabrics.get`, `meshes.get` or `nodes.get` sent to this node, which is not a primary and keeps no
+/// A `fabric.get`, `mesh.get` or `node.get` sent to this node, which is not a primary and keeps no
 /// atlas, forwarded to its own mesh-primary and nowhere else, never to the fabric-primary (query.md §1;
 /// Q243): the mesh-primary answers it from its atlas or carries it up to the fabric-primary, and its
 /// answer is handed back as it is. One call with the caller's default budget, never owed (the read's
@@ -1810,10 +1810,10 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 
 /// Serve `Status` on an rpc node: the downward exact-node operations, answered once this node
 /// has joined (until then `NotReady`). An rpc node is never a primary: every upward declaration and
-/// every mesh or fabric operation is refused by name, and a `nodes.get`, `meshes.get` or `fabrics.get`
+/// every mesh or fabric operation is refused by name, and a `node.get`, `mesh.get` or `fabric.get`
 /// it receives is forwarded to its own mesh-primary ([`forward_read`]; query.md §1, Q243). A `NodeLeft`, never
 /// sent, is refused as every receiver refuses it ([`crate::node_self::refuse_node_left`]).
-/// `node.connections.get` of this exact birth is answered with the connections it holds.
+/// `node.connection.get` of this exact birth is answered with the connections it holds.
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// re-publishes its presence on the channel it is on (the check-in it owes, states.md "The check-in
@@ -1856,7 +1856,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 let name = me.topology_view.digest_view.all().into_iter().find(|d| d.node.node_id == *node_id).map(|d| d.node.name.to_string()).unwrap_or_default();
                 return Ok(crate::node_self::refuse_node_left(&me.topology_view.held_name(&me.digest.node.name).to_string(), &name, &sender_name, &req));
             }
-            // A read (Q167): `connections.get { node }` is this birth's; every other read is forwarded to
+            // A read (Q167): `node.connection.get { node }` is this birth's; every other read is forwarded to
             // its own mesh-primary and nowhere else: this node is not a primary and keeps no atlas
             // (query.md §1; Q243).
             let read = req.as_read();
@@ -1865,7 +1865,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     return Ok(forward_read(&me, r, &req).await);
                 }
                 if r.node.is_none() {
-                    return Ok(rdm_core::reply::status::bounded_rejected_filter("connections.get names no node: the exact birth (id, incarnation) is the read's address"));
+                    return Ok(rdm_core::reply::status::bounded_rejected_filter("node.connection.get names no node: the exact birth (id, incarnation) is the read's address"));
                 }
             }
             let incarnation = match (&req, &read) {
@@ -1881,7 +1881,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 return Ok(rdm_core::reply::stale(me.digest.node.incarnation.clone()));
             }
             if let Some(r) = read {
-                // connections.get { node }: what this birth holds, under the name it holds; a read.
+                // node.connection.get { node }: what this birth holds, under the name it holds; a read.
                 return Ok(me.own.connections_get(&r.filter).await);
             }
             match req {

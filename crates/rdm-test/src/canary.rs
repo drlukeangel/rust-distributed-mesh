@@ -62,8 +62,8 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let mut stream = nodes.stop(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop {node_name}: {e}"));
     let restart_build = stream.accepted().build_id.to_string();
     assert_eq!(restart_build, birth_build, "a stop changes no topology: it is an attempt of the accepted Build");
-    // The attempt is opened by the fabric-primary, the one admin the Build family answers at: builds.get reads it there at once.
-    let submitted = estate.carrier().await.build(&stream.accepted().build_id).await.unwrap_or_else(|e| panic!("builds.get [id: {restart_build}]: {e}"));
+    // The attempt is opened by the fabric-primary, the one admin the Build family answers at: build.get reads it there at once.
+    let submitted = estate.carrier().await.build(&stream.accepted().build_id).await.unwrap_or_else(|e| panic!("build.get [id: {restart_build}]: {e}"));
     assert_eq!(submitted.build_id.to_string(), restart_build, "the Build is visible by id: {submitted:?}");
     assert_eq!(submitted.reason, "stop", "{submitted:?}");
     let stop = Estate::complete(&mut stream).await;
@@ -71,7 +71,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let mut stream = nodes.start(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.start {node_name}: {e}"));
     assert_eq!(stream.accepted().build_id.to_string(), birth_build, "a start changes no topology: it is an attempt of the accepted Build");
     let start = Estate::complete(&mut stream).await;
-    let status_after = estate.carrier().await.build(&start.build_id).await.unwrap_or_else(|e| panic!("builds.get [id: {restart_build}]: {e}"));
+    let status_after = estate.carrier().await.build(&start.build_id).await.unwrap_or_else(|e| panic!("build.get [id: {restart_build}]: {e}"));
     estate.artifact("build-status.json", &json!({"birth": birth_build, "restart": format!("{status_after:?}")}));
 
     // The node is ready again (observed, not slept on), and no longer stopped.

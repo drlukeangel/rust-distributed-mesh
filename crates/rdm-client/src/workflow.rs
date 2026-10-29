@@ -16,7 +16,7 @@
 //! one streams from where it is.
 //!
 //! [`fold`] is the one place a Build's receipt step keys meet the canonical names; the keys
-//! themselves are untouched. It maps the receipts `builds.get` reads to the frames they justify,
+//! themselves are untouched. It maps the receipts `build.get` reads to the frames they justify,
 //! for a caller that reattaches by reading rather than by re-submitting.
 
 use rdm_core::names::{NodeEvent, NodeOp, NodeStep};
@@ -335,7 +335,7 @@ pub fn fold(kind: &WorkflowKind, view: &BuildView, from_attempt: u32) -> Result<
     fold_steps(kind, &view.steps, from_attempt)
 }
 
-/// [`fold`] over the receipts `builds.get` read.
+/// [`fold`] over the receipts `build.get` read.
 pub fn fold_receipts(kind: &WorkflowKind, receipts: &Build, from_attempt: u32) -> Result<Folded, CallEnd> {
     let steps: Vec<StepView> = receipts
         .steps
@@ -428,12 +428,12 @@ pub struct Resume {
 }
 
 impl Resume {
-    /// What `builds.get`'s `view` says of `kind` for the call that opened `from_attempt`.
+    /// What `build.get`'s `view` says of `kind` for the call that opened `from_attempt`.
     pub fn from_view(kind: &WorkflowKind, view: &BuildView, from_attempt: u32) -> Result<Self, CallEnd> {
         Self::of(fold(kind, view, from_attempt)?)
     }
 
-    /// What `builds.get`'s `receipts` say of `kind` for the call that opened `from_attempt`.
+    /// What `build.get`'s `receipts` say of `kind` for the call that opened `from_attempt`.
     pub fn from_receipts(kind: &WorkflowKind, receipts: &Build, from_attempt: u32) -> Result<Self, CallEnd> {
         Self::of(fold_receipts(kind, receipts, from_attempt)?)
     }

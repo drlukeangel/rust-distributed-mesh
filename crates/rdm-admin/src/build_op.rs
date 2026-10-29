@@ -221,7 +221,7 @@ impl BuildDoor {
                         let route = match call {
                             "create" => "build.create",
                             "get" => "build.get",
-                            "builds.get" => "builds.get",
+                            "build.get" => "build.get",
                             _ => "build.delete",
                         };
                         let named = match &refusal {
@@ -666,7 +666,7 @@ fn topology_chunks(p: &crate::build_state::BuildProjection) -> Vec<Vec<rdm_core:
 /// What one chunk of a Build read carries at most: half the 64 KiB reply frame.
 const CHUNK_BYTES: usize = 32 * 1024;
 
-/// `builds.get` (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`"), served by the fabric-primary from
+/// `build.get` (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`"), served by the fabric-primary from
 /// its own Build log (its builds journal, which holds the Builds in flight and their history): every
 /// Build whose header matches every pair of `filter`, newest first by acceptance, each whole. The
 /// current Build is selected once for the read and every Build is read before `Started`, so a log that
@@ -688,7 +688,7 @@ pub async fn serve_builds(me: &PathName, builds: &dyn crate::build_state::BuildS
         if let Some(why) = filter.builds_refusal() {
             return Ok(rdm_core::reply::build::rejected_filter(bounded_reason(why)));
         }
-        let unreadable = |what: String, e: BuildStateError| rdm_core::reply::build::not_ready(format!("{me}: {what} could not be read for builds.get: {e}"));
+        let unreadable = |what: String, e: BuildStateError| rdm_core::reply::build::not_ready(format!("{me}: {what} could not be read for build.get: {e}"));
         let current = match builds.current_build().await {
             Ok(c) => c.into_build_id(),
             Err(e) => return Ok(unreadable("the current Build".into(), e)),
@@ -745,7 +745,7 @@ pub async fn serve_builds(me: &PathName, builds: &dyn crate::build_state::BuildS
         Ok(r) => r.name(),
         Err(_) => "fault",
     });
-    span.in_scope(|| tracing::info!("a builds.get read ended"));
+    span.in_scope(|| tracing::info!("a build.get read ended"));
     reply
 }
 

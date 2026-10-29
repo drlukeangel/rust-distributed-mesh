@@ -20,7 +20,7 @@
 //!   `node.issuer.update` to that mesh's primary directly; once it confirms, to each other admin of the
 //!   mesh as a command forwarded through the mesh-primary (Forward 0x1A, the mesh-primary the exact
 //!   carrier). Its own mesh's admins it calls directly, itself in process.
-//! - `fabrics.get`'s next expiry and a mesh's stalled renewals are folded from the node records the
+//! - `fabric.get`'s next expiry and a mesh's stalled renewals are folded from the node records the
 //!   answering admin's atlas holds ([`fabric_watch`]), never read from the store.
 
 use crate::certs::{BirthIdentity, CertIssuer, IssueFailure, IssuerMint, MemberIssue};
@@ -81,7 +81,7 @@ fn births_of<'a>(view: &'a Topology, mesh: &str) -> HashMap<(NodeId, Incarnation
     view.births().filter(|n| n.mesh == mesh).filter_map(|n| Some(((n.node_id.clone(), n.incarnation_id.clone()?), n))).collect()
 }
 
-/// What `fabrics.get` shows of the cert dates (fabric-certs.md §Tracking), folded from the node records
+/// What `fabric.get` shows of the cert dates (fabric-certs.md §Tracking), folded from the node records
 /// `records` (this admin's atlas) holds, never a store read: the next expiry across the births the view
 /// holds, and each mesh's births whose renewal stalls at `now_ms`.
 pub fn fabric_watch(view: &Topology, records: &crate::atlas::Atlas, now_ms: Option<u64>) -> (Option<u64>, BTreeMap<String, Vec<PathName>>) {

@@ -114,7 +114,7 @@ pub(crate) enum Hop<'a> {
     /// Up to the fabric-primary, owed by this admin while it is `mesh`'s primary (the push of a node's
     /// row, Q235): withdrawn once it is not.
     Push(&'a str),
-    /// Up to the fabric-primary for its atlas (`fabrics.atlas.get`), a refused caller's verification at
+    /// Up to the fabric-primary for its atlas (`fabric.atlas.get`), a refused caller's verification at
     /// the root (Q207, node-investigation.md): a fabric-primary holding no atlas yet answers it once it
     /// holds one.
     Root,
@@ -429,9 +429,9 @@ fn primary_route(view: &Topology, mesh: &str, primary: &rdm_core::NodeId, me_id:
 impl NodeConfigs {
     /// A read `req` (query.md §1) this admin does not answer from an atlas, sent on to the primary `to`
     /// names in `view`: at a mesh-primary that is not the fabric-primary, a read its atlas does not hold
-    /// (a read of another mesh, a read naming no mesh, `fabrics.get`; Q224) is carried up to the
+    /// (a read of another mesh, a read naming no mesh, `fabric.get`; Q224) is carried up to the
     /// fabric-primary, whose atlas holds every mesh; at a node-admin that is not a primary, which keeps
-    /// no atlas, every read but its own `connections.get` is forwarded to its own mesh-primary and never
+    /// no atlas, every read but its own `node.connection.get` is forwarded to its own mesh-primary and never
     /// to the fabric-primary (Q243). The answer is handed back as it is. One call with the caller's
     /// default budget, never owed (node-rpc.md, Owed: "A command with an owner's bound keeps a finite
     /// budget"; the read's owner is the caller's call): direct first, then through each other live

@@ -1,4 +1,4 @@
-//! `nodes.get`'s reads (i144, Q203; Q167): answered from the node records the admin's atlas holds,
+//! `node.get`'s reads (i144, Q203; Q167): answered from the node records the admin's atlas holds,
 //! never the node store, each the rows matching every `(property, values)` pair. A birth's facts are
 //! read on its node's record, by its id, or on the record its `predecessor` names, or on the record
 //! held at its `path.name`; a birth the view no longer holds is named at a path the current Build
@@ -29,11 +29,11 @@ fn path(name: &str) -> PathName {
 async fn answer(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin::views::Planned, filter: Filter) -> Vec<rdm_core::views::NodeView> {
     match reply(view, status, planned, &filter).await {
         StatusReply::Nodes { nodes } => nodes,
-        other => panic!("nodes.get {filter:?} answered {other:?}"),
+        other => panic!("node.get {filter:?} answered {other:?}"),
     }
 }
 
-/// The reply of `nodes.get` with `filter` over `view`, its records as an atlas filled from `status`
+/// The reply of `node.get` with `filter` over `view`, its records as an atlas filled from `status`
 /// holds them.
 async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin::views::Planned, filter: &Filter) -> StatusReply {
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
@@ -56,7 +56,7 @@ async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin
 /// storage-whole-records.md: "A birth recovered over a fresh data dir reads its predecessor's
 /// `data-dir-lost` through the `predecessor` reference on its own record"): a birth recovered over a
 /// fresh data dir at the path.name of a birth whose data dir was lost answers that loss on
-/// `nodes.get`, read on the record its own record names as its predecessor; a birth the view no longer
+/// `node.get`, read on the record its own record names as its predecessor; a birth the view no longer
 /// holds (deleted by its recovery, held with its data dir unreadable) is answered, by mesh and by its
 /// id, at the path the current Build plans, read on the record held at that `path.name`; a
 /// birth with neither fact answers neither. A Build that cannot be read names no path: the births the
@@ -137,8 +137,8 @@ async fn node_get_answers_data_dir_facts_from_the_atlas_at_their_path_name() {
     assert!(cleared.iter().all(|n| n.name != path("mesh1.rpc.3")), "a cleared unreadable fact is answered no more: {cleared:#?}");
 }
 
-/// CONTRACT (Q167 R-RD2, R-RD3; node-rpc-envelope.md nodes.get): over a fabric of two meshes holding
-/// an admin, two gateways and a broker, their records carrying config and tags, `nodes.get` answers
+/// CONTRACT (Q167 R-RD2, R-RD3; node-rpc-envelope.md node.get): over a fabric of two meshes holding
+/// an admin, two gateways and a broker, their records carrying config and tags, `node.get` answers
 /// the rows matching every pair, by `path.name`: `[config.zone: eu-1]` the two nodes whose config
 /// holds that zone, never the one whose config lacks the key; `[tags: gold] [tags: ssd]` (all of) the
 /// one carrying both; `[tags: gold, silver]` (any of) the three carrying either; `[mesh: mesh1]
@@ -209,10 +209,10 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
 /// predecessor's "tag-index entries restored under its" id; query.md §1: a set field (`tags`) matches
 /// when it contains the value): the successor at `mesh1.rpc.1` and the retained predecessor at
 /// `mesh1.rpc.1.old`, marked `inherited_by` the successor, both carry `rabbit` on their rows.
-/// `nodes.get [tags: rabbit]` names the successor alone, while `nodes.get [mesh: mesh1]` answers the
+/// `node.get [tags: rabbit]` names the successor alone, while `node.get [mesh: mesh1]` answers the
 /// retained row with its `rabbit` kept. Once the mark is cleared (the predecessor takes its name back at a
 /// rollback), `[tags: rabbit]` names it again. Must NOT happen: the retained predecessor named under its
-/// label, or its row's labels erased from what `nodes.get` answers.
+/// label, or its row's labels erased from what `node.get` answers.
 #[tokio::test]
 async fn a_retained_predecessors_labels_leave_the_tags_match_and_stay_on_its_row() {
     let (admin, successor, predecessor) = (node("mesh1.admin.1"), node("mesh1.rpc.1"), node("mesh1.rpc.1.old"));
@@ -359,11 +359,11 @@ fn get(entity: rdm_core::filter::Entity, filter: Filter) -> rdm_core::status::St
     rdm_core::status::StatusRequest::Get { entity, node: None, filter }
 }
 
-/// CONTRACT (query.md §1; node-rpc-envelope.md nodes.get: "answered by the fabric-primary from its
+/// CONTRACT (query.md §1; node-rpc-envelope.md node.get: "answered by the fabric-primary from its
 /// atlas, never from the node store"; fabric-certs.md §Tracking): at a fabric-primary whose atlas was
-/// filled from its node records, with its nodes store failing every call from then on, `nodes.get`
+/// filled from its node records, with its nodes store failing every call from then on, `node.get`
 /// answers every node matching the filter, config and tags and cert included, from the atlas, and
-/// `fabrics.get` answers the fabric with its `next_expiry`, the soonest member cert expiry the atlas's
+/// `fabric.get` answers the fabric with its `next_expiry`, the soonest member cert expiry the atlas's
 /// records hold; neither makes one call to the nodes store. Must NOT happen: a read refused or answered
 /// short because the store failed, the cert summary read from the store (and silently dropped when the
 /// store fails), or any call to the store at all.
@@ -397,14 +397,14 @@ async fn nodes_get_and_fabrics_get_answer_from_the_atlas_while_the_nodes_store_f
             assert_eq!(nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>(), ["mesh1.admin.1", "mesh1.gateway.1"], "{nodes:#?}");
             assert_eq!(nodes[1].cert.as_ref().map(|c| c.expires_at), Some(7_000_000), "the cert is the atlas record's");
         }
-        other => panic!("nodes.get answers from the atlas while the store fails every read, not {other:?}"),
+        other => panic!("node.get answers from the atlas while the store fails every read, not {other:?}"),
     }
     match fp.apply(None, &get(rdm_core::filter::Entity::Fabrics, Filter::new())).await {
         StatusReply::Fabrics { fabrics } => {
             assert_eq!(fabrics.len(), 1, "{fabrics:#?}");
             assert_eq!(fabrics[0].next_expiry, Some(7_000_000), "the soonest cert expiry the atlas's records hold: {fabrics:#?}");
         }
-        other => panic!("fabrics.get answers from the atlas while the nodes store fails every read, not {other:?}"),
+        other => panic!("fabric.get answers from the atlas while the nodes store fails every read, not {other:?}"),
     }
     assert_eq!(store.calls.load(std::sync::atomic::Ordering::SeqCst), 0, "neither read called the nodes store");
 }
@@ -412,7 +412,7 @@ async fn nodes_get_and_fabrics_get_answer_from_the_atlas_while_the_nodes_store_f
 /// CONTRACT (Q233, states.md "Who sets each state": "A query answers the state the row last took from
 /// the node's frame or the mesh-primary's receipt; a command the node has not acknowledged moves the
 /// row nowhere"): a stop the mesh-primary admitted and the node has not acknowledged leaves its row
-/// ready, and `nodes.get` answers ready, not stopped, though the admitting
+/// ready, and `node.get` answers ready, not stopped, though the admitting
 /// mesh-primary's view already holds the birth leaving; the node's acknowledgement, written on the row
 /// as stopping, answers stopping; the stopped frame, written as stopped, answers stopped. Silence is the
 /// observer's: a birth the view holds pending-reconnect reads so, and a silence mark the row still
@@ -486,7 +486,7 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
 /// holding the same births, answer the same nodes for the same gossiped pairs: `[kind: rpc] [status:
 /// ready]`, `[mesh: mesh1]`, `[is_primary: true]`, `[mesh: mesh2] [kind: broker]` and no
 /// pair; the local query makes no call. A row-only pair (`[tags: gold]`, `[config.zone: eu-1]`) is
-/// answered by `nodes.get` and refused locally naming the pair and `nodes.get`. Must NOT happen: the
+/// answered by `node.get` and refused locally naming the pair and `node.get`. Must NOT happen: the
 /// two sources disagreeing on a gossiped pair, or a row-only pair answered locally as no match.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_same_pairs_answer_the_same_nodes_from_the_atlas_and_from_the_topology_a_node_holds() {
@@ -558,13 +558,13 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_atlas_and_from_the_topolo
     }
     assert_eq!(local(&Filter::new().eq("kind", ["rpc"]).eq("status", ["ready"])), Ok(vec!["mesh1.rpc.1".to_string()]), "the local query filters kind and status");
     for (f, pair) in [(Filter::new().eq("tags", ["gold"]), "(tags, [gold])"), (Filter::new().eq("config.zone", ["eu-1"]), "(config.zone, [eu-1])")] {
-        assert_eq!(answer(&view, &records, &planned, f.clone()).await.len(), 4, "nodes.get answers the row-only pair {f:?}");
+        assert_eq!(answer(&view, &records, &planned, f.clone()).await.len(), 4, "node.get answers the row-only pair {f:?}");
         let why = local(&f).expect_err("a row-only pair is refused locally");
-        assert!(why.contains(pair) && why.contains("read it with nodes.get"), "{why:?} names {pair} and nodes.get");
+        assert!(why.contains(pair) && why.contains("read it with node.get"), "{why:?} names {pair} and node.get");
     }
 }
 
-/// The status and `stopped` of the birth `id`, as `nodes.get [id: id]` over `view` and `atlas` answers it.
+/// The status and `stopped` of the birth `id`, as `node.get [id: id]` over `view` and `atlas` answers it.
 async fn status_of(view: &Topology, atlas: &rdm_admin::atlas::Atlas, id: &NodeId) -> (rdm_core::views::NodeStatus, bool) {
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
     match rdm_admin::views::nodes_answer(&path("mesh1.admin.1"), view, &loads, atlas, &Filter::new().eq("id", [id.to_string()])).await {
@@ -572,6 +572,6 @@ async fn status_of(view: &Topology, atlas: &rdm_admin::atlas::Atlas, id: &NodeId
             let n = nodes.into_iter().next().expect("the birth is answered");
             (n.status, n.stopped)
         }
-        other => panic!("nodes.get answers the birth, not {other:?}"),
+        other => panic!("node.get answers the birth, not {other:?}"),
     }
 }

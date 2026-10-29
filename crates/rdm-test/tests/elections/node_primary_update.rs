@@ -76,7 +76,7 @@ impl Caller {
     /// The Build followed to its terminal after `first`, the stream that ended `FabricPrimaryMoved`: the same
     /// `build_id` is resubmitted at the admin each `FabricPrimaryMoved` names the moment it is named, never a
     /// second Build, until a stream ends with a terminal frame. Returns the frames of each resubmitted
-    /// stream and the Build's receipts (`builds.get`) read at the admin that ended it.
+    /// stream and the Build's receipts (`build.get`) read at the admin that ended it.
     async fn follow(&self, first: &[rdm_client::Frame]) -> Result<(Vec<Vec<rdm_client::Frame>>, rdm_client::Build), String> {
         use rdm_client::{Frame, Nodes};
         let mut moved = fabric_primary_moved_to(first);
@@ -106,7 +106,7 @@ impl Caller {
             at = Some(carrier);
         }
         let carrier = at.ok_or_else(|| format!("the first stream did not end FabricPrimaryMoved: {first:?}"))?;
-        let receipts = carrier.build(&self.accepted.build_id).await.map_err(|e| format!("builds.get [id: {}] failed: {e}", self.accepted.build_id))?;
+        let receipts = carrier.build(&self.accepted.build_id).await.map_err(|e| format!("build.get [id: {}] failed: {e}", self.accepted.build_id))?;
         Ok((streams, receipts))
     }
 }
@@ -308,7 +308,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default()).await.expect("node.config.update answered");
     assert!(matches!(&reply, rdm_core::status::StatusReply::ConfigUpdated { node_id: n, incarnation: i, config, revision } if *n == node_id && *i == incarnation && *config == told && *revision > 0), "the fabric-primary sent it down and the node applied it, the row as written carried back: {reply:?}");
     let read = |views: Vec<rdm_client::NodeView>| views.into_iter().find(|v| v.name.to_string() == subject_name).unwrap_or_else(|| panic!("{subject_name} is answered"));
-    let at_once = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("nodes.get [mesh] at the fabric-primary"));
+    let at_once = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("node.get [mesh] at the fabric-primary"));
     assert_eq!(at_once.config, told, "the fabric-primary answers the config at once, from its atlas");
     // The fabric-primary's process is killed below: its evidence is read once its span reached it
     // (the exporter writes in batches), so the kill never decides what the cell can read.
@@ -335,7 +335,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
             (fabric_primary(&ns).as_deref() == Some(successor.as_str())).then_some(())
         })
         .await;
-    let after = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("nodes.get [mesh] at the new fabric-primary"));
+    let after = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("node.get [mesh] at the new fabric-primary"));
     estate.stop().await;
     assert_eq!(after.config, told, "the new fabric-primary answers the config from the atlas it filled at the hand-over");
 
@@ -532,7 +532,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     // The fabric is ready once its planned births are all ready, set by the new
     // fabric-primary.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    // The Build is complete when the caller's last stream ends `Complete` and `builds.get` says no step
+    // The Build is complete when the caller's last stream ends `Complete` and `build.get` says no step
     // is left, never when a span says so; the fabric is stopped only after.
     let Followed { first, broke, onward, kind, accepted } = tokio::time::timeout(Duration::from_secs(120), outer).await.expect("the caller read the Build to its terminal within 120 s").expect("the caller's stream task");
     // Step 5: H, the mesh's writer from its answer on, records both primaries on its own row.
@@ -610,14 +610,14 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     // The Build runs as attempts of the accepted Build and completes once.
     let (followed, receipts) = onward.unwrap_or_else(|why| panic!("the caller could not follow the Build past FabricPrimaryMoved: {why}"));
     assert!(matches!(followed.last().and_then(|frames| frames.last()), Some(rdm_client::Frame::Complete)), "the caller's resubmitted stream ends Complete: {followed:?}");
-    assert_eq!(receipts.phase, rdm_core::build::BuildPhase::Complete, "builds.get: the steps' Build is complete: {receipts:?}");
+    assert_eq!(receipts.phase, rdm_core::build::BuildPhase::Complete, "build.get: the steps' Build is complete: {receipts:?}");
     let resume = rdm_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the Build's steps");
     let step_keys: Vec<String> = {
         let p = p.parse::<rdm_core::PathName>().unwrap();
         vec![format!("node.connections.delete:{p}"), format!("node.mesh.leave:{p}"), format!("node.update:{p}"), format!("node.stop:{p_old}"), format!("node.create:{p}"), format!("node.delete:{p_old}")]
     };
     for key in &step_keys {
-        assert!(resume.completed.iter().any(|(op, step)| op == key && step == "Complete"), "builds.get holds the Complete receipt of {key}: {resume:?}");
+        assert!(resume.completed.iter().any(|(op, step)| op == key && step == "Complete"), "build.get holds the Complete receipt of {key}: {resume:?}");
     }
     // Step 3: P issues no write once it finished its issued writes: it decides no claim after.
     let late: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "node") == p && at_ns(sp) > sp_end(&finished) && matches!(attr(sp, "outcome").as_str(), "won" | "lost" | "not-open")).collect();

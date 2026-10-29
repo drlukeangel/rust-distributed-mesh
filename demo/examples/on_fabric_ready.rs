@@ -66,7 +66,7 @@ async fn verify_against_live_estate(raw_birth: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .into_iter()
         .next()
-        .ok_or("builds.get [current: true] returned no current Build")?;
+        .ok_or("build.get [current: true] returned no current Build")?;
 
     let told = Arc::new(AtomicU64::new(0));
     let hooks = FabricHooks {

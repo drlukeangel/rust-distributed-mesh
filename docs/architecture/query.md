@@ -8,7 +8,7 @@ itself from the topology it holds. Both take the same filter and match it with t
 
 ## 1. External: a query to the fabric-primary
 
-A caller outside the node sends `fabrics.get`, `meshes.get` and `nodes.get` to the fabric-primary,
+A caller outside the node sends `fabric.get`, `mesh.get` and `node.get` to the fabric-primary,
 which answers from its atlas: every
 mesh's node records, held in memory, filled from the node records once at its start or hand-over and
 written by each op after that (Q203, Q204, Q224). Only a primary keeps an atlas (Q224): a mesh-primary's
@@ -25,20 +25,20 @@ record: the mesh-primary writes it and its atlas in one step, so the store is ne
 and the read sees a node's own update as soon as its mesh-primary has written it. A scan of the store
 is never a node's. The store's reader must not meet a line still being written (#3222).
 
-One read per entity, each answering a list in a stable order: `fabrics.get`, `meshes.get`,
-`nodes.get`, `connections.get`. A filter is a list of `[property, [values…]]` pairs.
+One read per entity, each answering a list in a stable order: `fabric.get`, `mesh.get`,
+`node.get`, `node.connection.get`. A filter is a list of `[property, [values…]]` pairs.
 
 ```text
-nodes.get  [["kind", ["gateway", "broker"]]]                       any of the values in one pair
-nodes.get  [["mesh", ["mesh1"]], ["kind", ["gateway"]]]            pairs are AND
-nodes.get  [["kind", ["admin"]], ["is_primary", ["true"]]]         every mesh-primary
-nodes.get  [["is_fabric_primary", ["true"]]]
-nodes.get  [["tags", ["red"]], ["tags", ["eu"]]]                   a repeated property is AND (all of)
-nodes.get  [["config.region", ["eu-west"]], ["status", ["ready"]]]
-nodes.get  [["id", ["<node id>"]]]                                 one node
-nodes.get  []                                                      no filter: the fabric's topology
-meshes.get [["name", ["mesh1"]]]
-connections.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
+node.get  [["kind", ["gateway", "broker"]]]                       any of the values in one pair
+node.get  [["mesh", ["mesh1"]], ["kind", ["gateway"]]]            pairs are AND
+node.get  [["kind", ["admin"]], ["is_primary", ["true"]]]         every mesh-primary
+node.get  [["is_fabric_primary", ["true"]]]
+node.get  [["tags", ["red"]], ["tags", ["eu"]]]                   a repeated property is AND (all of)
+node.get  [["config.region", ["eu-west"]], ["status", ["ready"]]]
+node.get  [["id", ["<node id>"]]]                                 one node
+node.get  []                                                      no filter: the fabric's topology
+mesh.get [["name", ["mesh1"]]]
+node.connection.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
 ```
 
 From a node:
@@ -70,7 +70,7 @@ The matching rules:
   another mesh's node answers the topology's status for its create-time progress (starting, pending,
   ready). Silence (`pending-reconnect`, `dead`) is observer-inferred
   ([node identity and state](node-identity-and-state.md)), answered while the row holds the node live.
-- **`connections.get`:** answered by the exact birth from its own connections log, not from the atlas:
+- **`node.connection.get`:** answered by the exact birth from its own connections log, not from the atlas:
   the node (id and incarnation) is the read's address, outside the filter; the filter matches that
   node's connection rows (`id`, `destination`, `kind`, `state`).
 
@@ -89,7 +89,7 @@ topology_view.nodes_get([["mesh", [my mesh]]])                                  
   `kind`, `mesh`, `status`, the endpoint (`endpoint`, `transport_addr`) and the primaries
   (`is_primary`, `is_fabric_primary`). Gossip carries what routing needs and nothing else (Q203).
 - **Refused:** a row-only property (`tags`, `config.<key>`, `executable`, …) is `INVALID_ARGUMENT` by
-  name, naming `nodes.get`, whatever rows would have matched; the local view never answers a row-only
+  name, naming `node.get`, whatever rows would have matched; the local view never answers a row-only
   property as no match. A pair the node schema refuses is refused as in §1.
 - **Freshness:** best effort, as of the last digest heard; a node silent past the staleness floor
   (`RDM_STALENESS_MS`) leaves the view. The record is the external query (§1).

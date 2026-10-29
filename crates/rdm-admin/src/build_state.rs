@@ -1149,7 +1149,7 @@ pub trait BuildStateAdapter: Send + Sync {
     /// Builds that are neither complete nor failed.
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
     /// Every Build accepted, newest first: the acceptance-order index (R-BI3) read whole, each Build by
-    /// its own acceptance stamp `(submitted_at_ms, build_id)`. What `builds.get` streams in order (Q167
+    /// its own acceptance stamp `(submitted_at_ms, build_id)`. What `build.get` streams in order (Q167
     /// R-RD5). RDM's adapters answer it from their index (or delegate to the adapter they decorate); an
     /// adapter that keeps none answers it from its facts' acceptances.
     async fn accepted_newest_first(&self) -> Result<Vec<BuildId>, BuildStateError> {

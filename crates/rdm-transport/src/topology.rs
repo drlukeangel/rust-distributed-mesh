@@ -2890,10 +2890,10 @@ impl TopologyView {
 
     /// A node's local query of the topology it holds (query.md §2; Q232): every digest it heard within
     /// the staleness floor that matches every pair of `filter`, by `path.name`, with no call. The pairs
-    /// name only what gossip carries ([`rdm_core::filter::GOSSIPED`]), matched as `nodes.get` matches a
+    /// name only what gossip carries ([`rdm_core::filter::GOSSIPED`]), matched as `node.get` matches a
     /// row ([`rdm_core::filter::Filter::matches`]); a pair naming a row-only property (`tags`,
     /// `config.<key>`, `executable`, ...) or one the node schema refuses is `Err` naming the pair, the
-    /// row-only one naming `nodes.get`, whatever digests would have matched. A refusal is the one
+    /// row-only one naming `node.get`, whatever digests would have matched. A refusal is the one
     /// `rdm.mesh.node.serve.via-topology-view` span, naming the pairs and why; an answer is a local
     /// read of what this node holds, on every routing decision, and emits nothing, as
     /// [`DigestView::get_by_path_name`] does.

@@ -62,7 +62,7 @@ impl Capture {
     }
 }
 
-/// CONTRACT: docs/architecture/node-rpc-envelope.md:1330 "Every progress frame (Step, Blocked) carries the receipt key `(build_id, attempt, operation, step)` and receivers drop duplicates by that key. A caller watching a Build whose connection closes (`Budget::Stream`'s one end) reattaches by `build_id`: `builds.get [id: build_id]` for the receipts, then the outer stream again, resuming from the receipts; the break is never a defect and never a new execution (Node RPC §34, §43)."
+/// CONTRACT: docs/architecture/node-rpc-envelope.md:1330 "Every progress frame (Step, Blocked) carries the receipt key `(build_id, attempt, operation, step)` and receivers drop duplicates by that key. A caller watching a Build whose connection closes (`Budget::Stream`'s one end) reattaches by `build_id`: `build.get [id: build_id]` for the receipts, then the outer stream again, resuming from the receipts; the break is never a defect and never a new execution (Node RPC §34, §43)."
 /// docs/architecture/node-rpc-envelope.md:1345 "`FabricPrimaryMoved { build_id, fabric_primary }`, the typed frame naming the new fabric-primary | deliberate outer-stream end naming the new fabric-primary; caller resubmits the same build_id there"
 #[test]
 fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating_step_receipts() {
@@ -176,7 +176,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                                     })
                                     .await
                                     .map_err(gone)?;
-                                // Replay WaitForMeshJoin (already read via builds.get) and then emit Complete.
+                                // Replay WaitForMeshJoin (already read via build.get) and then emit Complete.
                                 sink.data(BuildReply::Step {
                                     build_id: bid.clone(),
                                     attempt: 1,
@@ -246,7 +246,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
         let followed = carrier
             .follow(initial_stream)
             .await
-            .expect("follow reattaches through builds.get and resubmit to completion");
+            .expect("follow reattaches through build.get and resubmit to completion");
 
         assert_eq!(followed.reattached, 1);
         let op = "node.create:mesh1.rpc.1".to_string();
@@ -285,7 +285,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
     assert_eq!(
         calls.len(),
         3,
-        "initial create, builds.get reattach read, and resubmit stream call"
+        "initial create, build.get reattach read, and resubmit stream call"
     );
     let dial = capture.named("rdm.node_rpc.connection.create.via-dial");
     assert!(!dial.is_empty());

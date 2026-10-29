@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
 
     let held_before = connections.get(&birth_target, &Filter::new()).await?;
     println!(
-        "connections.get on {target} ({}): {} held entries",
+        "node.connection.get on {target} ({}): {} held entries",
         row.node_id,
         held_before.connections.len()
     );

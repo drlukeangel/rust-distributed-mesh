@@ -100,7 +100,7 @@ fn estate_owner(test: &str) -> rdm_test::estate::Owner {
     }
 }
 
-/// The config `nodes.get` at `admin` answers for `node`, from that admin's atlas.
+/// The config `node.get` at `admin` answers for `node`, from that admin's atlas.
 async fn config_at(estate: &rdm_test::estate::Estate, admin: &str, node: &str) -> Option<BTreeMap<String, String>> {
     let views = estate.node_views_at(&admin.parse().unwrap()).await?;
     views.into_iter().find(|v| v.name.to_string() == node).map(|v| v.config)
@@ -110,8 +110,8 @@ async fn config_at(estate: &rdm_test::estate::Estate, admin: &str, node: &str) -
 /// CONTRACT (node-config-update.md, a node's own update, steps 1-3; Q235 P1-P3), on real node processes:
 /// mesh2.rpc.1 puts its own config (`RunningNode::config_update`, through the testkit originate door).
 /// Its mesh-primary, mesh2.admin.1, which is not the fabric-primary (mesh1.admin.1), writes the row and
-/// its atlas and answers `config-updated` with the row's revision: `nodes.get` at mesh2.admin.1 answers
-/// the map at once. It owes the row up; the fabric-primary's atlas takes it and `nodes.get` there
+/// its atlas and answers `config-updated` with the row's revision: `node.get` at mesh2.admin.1 answers
+/// the map at once. It owes the row up; the fabric-primary's atlas takes it and `node.get` there
 /// answers it. Spans: mesh2.admin.1's `via-config` (apply=own, push=owed) ends before mesh1.admin.1's
 /// `via-config-pushed` (atlas installed) begins; mesh2.admin.1's `via-config-push` is `applied`;
 /// mesh2.rpc.1 is sent no `ApplyNodeConfig` (no `via-apply-node-config` span of it). Must NOT happen:

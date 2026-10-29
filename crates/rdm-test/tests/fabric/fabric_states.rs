@@ -265,7 +265,7 @@ async fn followed(estate: &Estate, stream: BuildStream, what: &str, within: Dura
 /// that put the fabric back to pending completes when its ready state is set, not with its
 /// last step"; fabric-node-hooks.md: "A node never reaches Ready while its hook has not returned
 /// `Ok`"): a resize whose mesh2.rpc.1 is held at its `pre_node_ready` reports Blocked waiting for that
-/// node, and while `fabric.get` says pending under it neither its stream nor `builds.get` says Complete;
+/// node, and while `fabric.get` says pending under it neither its stream nor `build.get` says Complete;
 /// released, it is Complete only after the fabric entered ready under it. Must NOT happen: a
 /// Build Complete while the fabric it put back to pending has not changed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -280,15 +280,15 @@ async fn a_resize_is_complete_only_after_its_own_ready_state_is_set() {
     let blocked = until_blocked_on(&mut stream, "mesh2.rpc.1", Duration::from_secs(90)).await;
     estate.artifact("blocked-on-the-held-node.json", &json!(format!("{blocked:?}")));
     // The node is held: through the window fabric.get says pending under the Build, and neither the
-    // Build's stream nor builds.get says Complete.
+    // Build's stream nor build.get says Complete.
     let id = rdm_client::BuildId::parse(&build).unwrap();
     let carrier = estate.carrier().await;
     let held_until = tokio::time::Instant::now() + Duration::from_secs(8);
     while tokio::time::Instant::now() < held_until {
         let fabric = estate.fabric_view().await;
         assert_eq!((fabric.status, fabric.build_id.as_deref()), (ScopeStatus::Pending, Some(build.as_str())), "the fabric is held pending under {build}");
-        let got = carrier.build(&id).await.unwrap_or_else(|e| panic!("builds.get [id: {build}]: {e}"));
-        assert_ne!(got.phase, rdm_core::build::BuildPhase::Complete, "builds.get says {build} Complete at attempt {} while fabric.get says pending under it", got.attempt);
+        let got = carrier.build(&id).await.unwrap_or_else(|e| panic!("build.get [id: {build}]: {e}"));
+        assert_ne!(got.phase, rdm_core::build::BuildPhase::Complete, "build.get says {build} Complete at attempt {} while fabric.get says pending under it", got.attempt);
         if let Ok(Some(frame)) = tokio::time::timeout(Duration::from_millis(250), stream.next()).await {
             let frame = frame.unwrap_or_else(|e| panic!("the stream of Build {build} broke while the fabric was held pending: {e}"));
             assert!(!matches!(frame, BuildFrame::Complete { .. } | BuildFrame::Failed { .. }), "Build {build} ended {frame:?} while fabric.get says pending under it");
@@ -296,7 +296,7 @@ async fn a_resize_is_complete_only_after_its_own_ready_state_is_set() {
     }
     rdm_test::write_pre_node_ready_knob(&estate.root, "mesh2.rpc.1", "pass").unwrap();
     let done = followed(&estate, stream, &format!("Build {build} after mesh2.rpc.1's pre_node_ready was released"), Duration::from_secs(90)).await;
-    assert_eq!(carrier.build(&id).await.unwrap_or_else(|e| panic!("builds.get [id: {build}]: {e}")).phase, rdm_core::build::BuildPhase::Complete, "builds.get says {build} Complete once its stream did");
+    assert_eq!(carrier.build(&id).await.unwrap_or_else(|e| panic!("build.get [id: {build}]: {e}")).phase, rdm_core::build::BuildPhase::Complete, "build.get says {build} Complete once its stream did");
     ready_under(&estate, &build).await;
     estate.stop().await;
 

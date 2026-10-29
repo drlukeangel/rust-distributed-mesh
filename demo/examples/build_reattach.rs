@@ -4,7 +4,7 @@
 //! A Build call answers `Started { build_id, attempt }` and then streams its step frames to the
 //! terminal. The frames are the executor's receipts, recorded before they are sent, so a caller that
 //! loses the stream (its connection closed, its process restarted, the fabric-primary moved) loses
-//! nothing: holding the Build id, it reads the receipts with `builds.get [id]` and opens the stream
+//! nothing: holding the Build id, it reads the receipts with `build.get [id]` and opens the stream
 //! again by re-submitting that id, which never starts a second Build. `BuildCarrier::reattach` is that
 //! pair; `BuildCarrier::follow` follows a stream to its terminal and reattaches on its own whenever the
 //! stream breaks or ends `FabricPrimaryMoved`, keeping each completed step once.

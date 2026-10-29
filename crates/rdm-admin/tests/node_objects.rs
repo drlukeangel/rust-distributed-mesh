@@ -671,7 +671,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
 /// CONTRACT (ops-naming acceptance 2, "A broken stream is not a failure"): the transport between
 /// the caller and the fabric-primary is cut while the create waits for its birth's report (the
 /// `JoinNode` that completes `WaitForBind` and `WaitForMeshJoin`, node-create.md step 5). The
-/// caller's stream ends `Indeterminate`, never `Failed`. The cut cancels nothing: `builds.get [id]` over a
+/// caller's stream ends `Indeterminate`, never `Failed`. The cut cancels nothing: `build.get [id]` over a
 /// new transport returns the receipts of exactly the steps that completed, `Resume` names the bind
 /// wait as the first step without a `Complete` receipt, and the re-submit by the Build id streams
 /// the same Build (never a second one) to its end once the birth is heard: no completed step runs
@@ -730,7 +730,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     let completed_steps = |r: &rdm_client::Build, attempt: u32| -> Vec<String> {
         r.steps.iter().filter(|s| s.attempt == attempt && s.result == rdm_core::build::StepResult::Complete).map(|s| s.step.clone()).collect()
     };
-    assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "builds.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
+    assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "build.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
     assert_eq!(completed_steps(&receipts_after_cut, 1), ATTEMPT_ONE_STEPS);
     assert_eq!(resume.from, Some(("node.create".to_string(), "WaitForBind".to_string())), "the resume starts at the first step without a Complete receipt");
     assert_eq!(resume.completed.len(), ATTEMPT_ONE_STEPS.len());
@@ -1188,12 +1188,12 @@ fn calls_no_op_carries_today_say_so_by_name() {
         let filter = rdm_client::Filter::new;
         for (filter, says) in [(filter().eq("tags", Vec::<String>::new()), "(tags, []) names no value"), (filter().eq("tags", ["a/b"]), "(tags, [a/b])"), (filter().eq("zone", ["eu-1"]), "(zone, [eu-1]) names no property")] {
             match rdm_client::Nodes::new(served.carrier.clone()).get(&filter).await {
-                Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains(says), "nodes.get {filter:?}: {reason}: {detail}"),
+                Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains(says), "node.get {filter:?}: {reason}: {detail}"),
                 other => panic!("{filter:?} is refused by name before anything is sent, not {other:?}"),
             }
         }
         match rdm_client::Meshes::new(served.carrier.clone()).get(&filter().eq("tags", ["red"])).await {
-            Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains("(tags, [red]) names no property of a mesh row"), "meshes.get: {reason}: {detail}"),
+            Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains("(tags, [red]) names no property of a mesh row"), "mesh.get: {reason}: {detail}"),
             other => panic!("a mesh pair on a node property is refused by name before anything is sent, not {other:?}"),
         }
         // node.connections.delete naming no connection is refused by name, and nothing is sent.

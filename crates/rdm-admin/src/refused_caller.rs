@@ -6,7 +6,7 @@
 //! status declaration refused `SubjectUnknown`, a deleted birth's Digest heard again, a join report
 //! refused `JoinMismatch` because the row at its path.name holds another node): decided from
 //! this admin's own atlas ([`crate::atlas::Atlas::refused_caller`]), and, at an admin that
-//! is not the fabric-primary, verified at the root through `fabrics.atlas.get` before anything acts (the
+//! is not the fabric-primary, verified at the root through `fabric.atlas.get` before anything acts (the
 //! root's answer wins: this admin may have missed an op). The read is owed to the root (node-rpc.md §43,
 //! rdm#177): sent to the fabric-primary this admin's view names, and sent again when a view is
 //! installed or after the resend schedule's next delay, a view naming no fabric-primary included, so a
@@ -169,7 +169,7 @@ impl RefusedCallers {
         Ok((own, path, planned))
     }
 
-    /// The root's atlas to verify a decision against: `fabrics.atlas.get` owed to the fabric-primary this
+    /// The root's atlas to verify a decision against: `fabric.atlas.get` owed to the fabric-primary this
     /// admin's view names until it answers (node-rpc.md §43; `crate::node_config::owed`): sent again to
     /// the fabric-primary the view names when a view is installed or after the resend schedule's next
     /// delay, a view naming none, a refusal that the receiver is not the fabric-primary and a
@@ -188,8 +188,8 @@ impl RefusedCallers {
         match crate::node_config::owed(&client, self.views.get().cloned(), &me, &self.node_id, &first, &self.recovery.topology, &rdm_core::status::StatusRequest::GetAtlas, crate::node_config::Hop::Root).await {
             crate::node_config::Owed::InProcess(_) => Ok(None),
             crate::node_config::Owed::Answered(rdm_core::status::StatusReply::Atlas { atlas }) => Ok(Some(atlas)),
-            crate::node_config::Owed::Answered(other) => Err(format!("fabrics.atlas.get at the fabric-primary answered {}: nothing acts until the root answers its atlas", other.name())),
-            crate::node_config::Owed::Gone(_) => Err("fabrics.atlas.get was withdrawn".into()),
+            crate::node_config::Owed::Answered(other) => Err(format!("fabric.atlas.get at the fabric-primary answered {}: nothing acts until the root answers its atlas", other.name())),
+            crate::node_config::Owed::Gone(_) => Err("fabric.atlas.get was withdrawn".into()),
         }
     }
 }
@@ -592,7 +592,7 @@ mod tests {
 
     /// CONTRACT (node-rpc-envelope.md:726: a primary that refuses a status declaration's caller birth
     /// `SubjectUnknown` then decides that birth; node-investigation.md: a node-admin that is not the
-    /// fabric-primary verifies its decision at the root with `fabrics.atlas.get` before it acts; Q207;
+    /// fabric-primary verifies its decision at the root with `fabric.atlas.get` before it acts; Q207;
     /// rdm#177, the 1a6d0af25 release red): mesh2's primary,
     /// mesh2.admin.2, is cut from the fabric-primary, so its view names none, and a new birth of
     /// mesh2.admin.1 the fabric-primary created declares Ready to it. The declaration is refused
@@ -633,7 +633,7 @@ mod tests {
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
             rows.put_node(&r).await.unwrap();
         }
-        // The fabric-primary: its door answers fabrics.atlas.get from its atlas, which holds the caller's
+        // The fabric-primary: its door answers fabric.atlas.get from its atlas, which holds the caller's
         // birth at mesh2.admin.1, and counts the reads.
         let fp_key = iroh::SecretKey::generate();
         let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -650,7 +650,7 @@ mod tests {
                             counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             StatusReply::Atlas { atlas: root }
                         }
-                        other => StatusReply::NotReady { reason: format!("the cell's fabric-primary answers fabrics.atlas.get only, not {}", other.op()) },
+                        other => StatusReply::NotReady { reason: format!("the cell's fabric-primary answers fabric.atlas.get only, not {}", other.op()) },
                     })
                 }
             })
@@ -753,7 +753,7 @@ mod tests {
                 async move {
                     Ok(match req {
                         StatusRequest::GetAtlas => StatusReply::Atlas { atlas: root },
-                        other => StatusReply::NotReady { reason: format!("the cell's fabric-primary answers fabrics.atlas.get only, not {}", other.op()) },
+                        other => StatusReply::NotReady { reason: format!("the cell's fabric-primary answers fabric.atlas.get only, not {}", other.op()) },
                     })
                 }
             })
@@ -859,7 +859,7 @@ mod tests {
             .serve::<rdm_core::status::Status, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| async move {
                 Ok(match req {
                     StatusRequest::GetAtlas => StatusReply::Atlas { atlas: AtlasView { nodes: Vec::new() } },
-                    other => StatusReply::NotReady { reason: format!("the cell's fabric-primary answers fabrics.atlas.get only, not {}", other.op()) },
+                    other => StatusReply::NotReady { reason: format!("the cell's fabric-primary answers fabric.atlas.get only, not {}", other.op()) },
                 })
             })
             .serve_stream::<Build, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer, req: BuildRequest, sink| {

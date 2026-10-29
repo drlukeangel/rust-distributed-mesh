@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
 
     let (peers, entry) = enter().await?;
     let carrier = peers.carrier_at(entry);
-    let fabric = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabrics.get answered no fabric"))?;
+    let fabric = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabric.get answered no fabric"))?;
     let rows = Nodes::new(carrier.clone()).get(&Filter::new()).await?;
     peers.learn(&rows);
     let row = rows.iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds {node}"))?;

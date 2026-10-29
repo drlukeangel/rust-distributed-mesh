@@ -8,7 +8,7 @@
 //! AttemptRun fabric-primary -> executor one claimed attempt, start-or-reattach on (build_id, attempt)
 //! Get        caller -> fabric-primary   the Build and its receipts, for reattachment after a cut
 //! Delete     caller -> fabric-primary   a finished Build leaves history
-//! GetBuilds  caller -> fabric-primary   builds.get: every Build the filter matches, each whole
+//! GetBuilds  caller -> fabric-primary   build.get: every Build the filter matches, each whole
 //! ```
 //!
 //! A stream is one refusal, or `Started`, then `Step`/`Blocked`/`Steps` frames, then one terminal:
@@ -387,7 +387,7 @@ pub enum BuildRequest {
         /// The Build.
         build_id: String,
     },
-    /// `builds.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
+    /// `build.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
     /// of `filter` (`id`, `current`, `phase`, `attempt`, `executor`), newest first, each whole: its
     /// topology in `Topology` chunks, its receipts in `Steps` chunks, then its `Build` header; then
     /// `End`. The current Build is selected once per read and its header marked. Appended last: the
@@ -408,7 +408,7 @@ impl BuildRequest {
             Self::AttemptRun { .. } => "attempt.run",
             Self::Get { .. } => "get",
             Self::Delete { .. } => "delete",
-            Self::GetBuilds { .. } => "builds.get",
+            Self::GetBuilds { .. } => "build.get",
         }
     }
 }
@@ -495,7 +495,7 @@ pub enum BuildPhase {
 }
 
 impl BuildPhase {
-    /// The phase's page name, what a `builds.get` pair names it by (`running`).
+    /// The phase's page name, what a `build.get` pair names it by (`running`).
     pub fn page_name(self) -> &'static str {
         match self {
             Self::Pending => "pending",
@@ -506,7 +506,7 @@ impl BuildPhase {
     }
 }
 
-/// A Build's header as `builds.get` matches and streams it (Q167 R-RD5): `Got`'s fields with the
+/// A Build's header as `build.get` matches and streams it (Q167 R-RD5): `Got`'s fields with the
 /// `current` mark.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildHeader {

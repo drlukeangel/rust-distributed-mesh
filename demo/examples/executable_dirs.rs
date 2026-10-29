@@ -71,8 +71,8 @@ async fn main() -> Result<()> {
 
     let (peers, entry) = enter().await?;
     let carrier = peers.carrier_at(entry);
-    let fabric = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabrics.get answered no fabric"))?;
-    let based_on = BuildId::parse(fabric.build_id.as_deref().ok_or_else(|| anyhow!("fabrics.get names no current Build"))?).map_err(|e| anyhow!("the current Build id: {e}"))?;
+    let fabric = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabric.get answered no fabric"))?;
+    let based_on = BuildId::parse(fabric.build_id.as_deref().ok_or_else(|| anyhow!("fabric.get names no current Build"))?).map_err(|e| anyhow!("the current Build id: {e}"))?;
 
     // The current topology, each path with the tags and config its row holds (a Build applies every
     // property of a spec that differs from the row), and this one path on the new executable.

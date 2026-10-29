@@ -645,7 +645,7 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
 /// How the driver reads Build `id` as the fabric-primary's Build log holds it, as the JSON the Build projection
 /// serializes to (`attempt`, `state`, `last_failure`, `steps` with each receipt's `output`). The read is the test
 /// binary's: the receipts' outputs travel on `FetchBuildFacts` (op `0x1F`, `build_state::fold`), a read the
-/// scenario crate's shipped code cannot link (`tools/mesh-audit/src/deps.rs`, rule 4), and `builds.get` carries no
+/// scenario crate's shipped code cannot link (`tools/mesh-audit/src/deps.rs`, rule 4), and `build.get` carries no
 /// output.
 pub type BuildRead = for<'a> fn(&'a Estate, &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send + 'a>>;
 
@@ -1421,7 +1421,7 @@ impl Driver {
                 // The fabric-primary admits a primary's delete only when its own view holds a successor
                 // (build.md §4.4: "A primary's stop, connections delete or delete has a successor | the
                 // fabric-primary's view"), and its view learns a peer mesh's births from that mesh's
-                // primary's topology, after the atlas `nodes.get` answers from: the hand-off waits for a ready
+                // primary's topology, after the atlas `node.get` answers from: the hand-off waits for a ready
                 // node-admin of the mesh other than its primary in what the fabric-primary holds itself.
                 let primary_name = s(&n["name"]);
                 if let Some(fp) = nodes.iter().find(|x| x["is_fabric_primary"] == true).and_then(|x| x["name"].as_str()).and_then(|x| x.parse::<PathName>().ok()) {

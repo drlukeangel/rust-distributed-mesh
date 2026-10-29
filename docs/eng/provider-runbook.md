@@ -10,10 +10,10 @@ durable facts on the member's birth:
 - `data-dir-lost`
 - `data-dir-unreadable`
 
-Each fact is listed on `nodes.get`. None is ever sent as a gossip `MemberStatus`.
+Each fact is listed on `node.get`. None is ever sent as a gossip `MemberStatus`.
 
 This page says, for each fact:
-- what `nodes.get` shows;
+- what `node.get` shows;
 - which spans show it in Jaeger;
 - what RDM does about it on its own;
 - what a person does about it.
@@ -24,7 +24,7 @@ The contract is in these pages; this runbook only reads them for the person on c
 
 ## Before you start
 
-- **Ask the admin.** `nodes.get` of the member's mesh answers from the admin you ask. Ask the
+- **Ask the admin.** `node.get` of the member's mesh answers from the admin you ask. Ask the
   mesh's primary (`is_primary` on its `node_admin`): the primary writes and removes these rows. Another
   admin of the mesh lists the same rows but acts on none of them.
 - **Expect a dead status.** A member with one of these facts is silent. Its `status` is usually
@@ -56,7 +56,7 @@ The contract is in these pages; this runbook only reads them for the person on c
 absent: `NotFound` on the directory itself. A gone directory is decided from that filesystem error,
 never guessed.
 
-**`nodes.get`.** The birth carries `data_dir_lost: { path, since }`. The fact is indexed by `path.name`:
+**`node.get`.** The birth carries `data_dir_lost: { path, since }`. The fact is indexed by `path.name`:
 a member recovered over a fresh dir still lists the loss it was recovered over.
 
 **Jaeger.**
@@ -88,7 +88,7 @@ For a lost mesh's node-admin, the fabric-primary runs this arm itself, without t
 - `EACCES`;
 - a key that does not decode.
 
-**`nodes.get`.** The birth carries `data_dir_unreadable: { path, cause }`.
+**`node.get`.** The birth carries `data_dir_unreadable: { path, cause }`.
 
 **Jaeger.**
 - `rdm.node_admin.node.reject.via-data-dir-unreadable`, with `path` and `cause`, on the first

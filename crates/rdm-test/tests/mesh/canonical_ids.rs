@@ -76,8 +76,8 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_ne!(mesh_ids["mesh1"], mesh_ids["mesh2"]);
     for (mesh, id) in &mesh_ids {
         let meshes = estate.meshes_obj().await;
-        let by_name = meshes.get(&rdm_client::Filter::new().eq("name", [mesh])).await.unwrap_or_else(|e| panic!("meshes.get [name: {mesh}]: {e}"));
-        let by_id = meshes.get(&rdm_client::Filter::new().eq("id", [id])).await.unwrap_or_else(|e| panic!("meshes.get [id: {id}]: {e}"));
+        let by_name = meshes.get(&rdm_client::Filter::new().eq("name", [mesh])).await.unwrap_or_else(|e| panic!("mesh.get [name: {mesh}]: {e}"));
+        let by_id = meshes.get(&rdm_client::Filter::new().eq("id", [id])).await.unwrap_or_else(|e| panic!("mesh.get [id: {id}]: {e}"));
         assert_eq!(by_name.len(), 1, "one mesh by name: {by_name:?}");
         assert_eq!(by_name, by_id, "a mesh resolves by name or by id");
     }
@@ -163,7 +163,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // id. No admin's view states the new mesh2 Dead.
     for n in recreated.iter().filter(|n| n["kind"] == "node_admin") {
         let carrier = estate.carrier_at(&s(&n["name"]).parse().unwrap()).await;
-        let m = json_of(&rdm_test::typed::one_mesh(&Meshes::new(carrier), "mesh2").await.unwrap_or_else(|e| panic!("meshes.get [name: mesh2] at {}: {e}", n["name"])).unwrap_or_else(|| panic!("{} holds mesh2", n["name"])));
+        let m = json_of(&rdm_test::typed::one_mesh(&Meshes::new(carrier), "mesh2").await.unwrap_or_else(|e| panic!("mesh.get [name: mesh2] at {}: {e}", n["name"])).unwrap_or_else(|| panic!("{} holds mesh2", n["name"])));
         assert_ne!(s(&m["status"]), "dead", "{} states the recreated mesh2 Dead: {m}", s(&n["name"]));
     }
     let fabric_after = json_of(&estate.fabric_view().await);

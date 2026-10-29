@@ -96,7 +96,7 @@ fn spans_in(dir: &Path) -> Vec<Value> {
 async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
     tokio::time::timeout(WRONG, async {
         loop {
-            let listed = rdm_test::typed::mesh_nodes(nodes, &node.mesh).await.unwrap_or_else(|e| panic!("nodes.get [mesh: {}]: {e}", node.mesh));
+            let listed = rdm_test::typed::mesh_nodes(nodes, &node.mesh).await.unwrap_or_else(|e| panic!("node.get [mesh: {}]: {e}", node.mesh));
             if listed.iter().any(|n| &n.name == node && n.status == want) {
                 return;
             }
@@ -115,7 +115,7 @@ async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
 async fn until_fabric_ready(fabrics: &Fabrics) {
     tokio::time::timeout(WRONG, async {
         loop {
-            if rdm_test::typed::the_fabric(fabrics).await.unwrap_or_else(|e| panic!("fabrics.get: {e}")).status == ScopeStatus::Ready {
+            if rdm_test::typed::the_fabric(fabrics).await.unwrap_or_else(|e| panic!("fabric.get: {e}")).status == ScopeStatus::Ready {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -134,7 +134,7 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 /// first stops it (its cohort seat moving to the second) and `node.start` brings it back; before
 /// that, a Reconcile changing mesh1.rpc.1's config alone completes and the node carries the config
 /// (build.md §1, "The Build applies the diff": `config` in place, as `node.config.update` applies a
-/// map; the executor reads the entry in the accepted Build the memory log holds); `builds.get [id]` of the
+/// map; the executor reads the entry in the accepted Build the memory log holds); `build.get [id]` of the
 /// first create's Build answers it Complete with its step receipts. Through all of it the admin
 /// writes nothing of its own to disk:
 /// its data dir holds no store (no `nodes/`, no `attempt-context/`), and every file under the fabric's
@@ -175,7 +175,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         let node: PathName = NODE.parse().unwrap();
         // The admin started its Day-0 Build by starting: it is followed to its end before anything is
         // submitted, as an estate's is.
-        let day_zero = rdm_test::typed::the_fabric(&fabrics).await.unwrap_or_else(|e| panic!("fabrics.get: {e}")).build_id.expect("the Day-0 admin holds its Day-0 Build as the current one");
+        let day_zero = rdm_test::typed::the_fabric(&fabrics).await.unwrap_or_else(|e| panic!("fabric.get: {e}")).build_id.expect("the Day-0 admin holds its Day-0 Build as the current one");
         let day_zero = BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names {day_zero}, not a Build id: {e}"));
         Estate::until_complete(&mut carrier.resubmit(&day_zero, 1).await.unwrap_or_else(|e| panic!("the admin does not stream its Day-0 Build {day_zero}: {e}"))).await;
 
@@ -208,7 +208,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         let mut stream = carrier.create(rdm_core::build::BuildChange::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes: request.collect() }).await.unwrap_or_else(|e| panic!("build.create of the config-only Reconcile: {e}"));
         Estate::until_complete(&mut stream).await;
         tokio::time::timeout(WRONG, async {
-            while !rdm_test::typed::mesh_nodes(&nodes, &node.mesh).await.unwrap_or_else(|e| panic!("nodes.get [mesh]: {e}")).iter().any(|n| n.name == node && n.config == zone) {
+            while !rdm_test::typed::mesh_nodes(&nodes, &node.mesh).await.unwrap_or_else(|e| panic!("node.get [mesh]: {e}")).iter().any(|n| n.name == node && n.config == zone) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
@@ -217,9 +217,9 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;
         Estate::workflow("node.start of mesh1.rpc.1", nodes.start(&node).await).await;
         until_status(&nodes, &node, NodeStatus::Ready).await;
-        let receipts = carrier.build(&created.build_id).await.unwrap_or_else(|e| panic!("builds.get [id] of the create's Build {}: {e}", created.build_id));
+        let receipts = carrier.build(&created.build_id).await.unwrap_or_else(|e| panic!("build.get [id] of the create's Build {}: {e}", created.build_id));
         assert_eq!(receipts.phase, BuildPhase::Complete, "the create's Build is Complete: {receipts:#?}");
-        assert!(!receipts.steps.is_empty(), "builds.get answers the create's step receipts: {receipts:#?}");
+        assert!(!receipts.steps.is_empty(), "build.get answers the create's step receipts: {receipts:#?}");
         running.leave().await;
     });
     eprintln!("memory estate: boot to leave in {} ms", started.elapsed().as_millis());

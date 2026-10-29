@@ -280,7 +280,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
         let estate = &f.estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births_w.clone());
         async move {
-            let b = estate.carrier().await.build(&rdm_client::BuildId::parse(&accepted).unwrap()).await.expect("builds.get [id] of the accepted Build");
+            let b = estate.carrier().await.build(&rdm_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get [id] of the accepted Build");
             let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let created = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() >= 1;
             (later && created).then_some(b)

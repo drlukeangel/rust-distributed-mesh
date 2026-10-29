@@ -49,14 +49,14 @@ Rules:
 - **A change of `storage_persistence` alone is a property Build**: the fabric stays ready
   ([states.md](lifecycles/states.md), "Resize and executable replacement").
 
-A caller reads it as a field of the node's row, `nodes.get [storage_persistence: persistent]`.
+A caller reads it as a field of the node's row, `node.get [storage_persistence: persistent]`.
 
 ## 2. `topology_storage_provider`: where RDM's records go
 
 RDM's records are five stores, one per entity: `fabric.storage`, `mesh.storage`, `nodes.storage`,
 `connections.storage` and `builds.storage` ([build.md §5.3](build.md#53-node-admin-storage-boundaries)).
-They hold the fabric's topology and its history, what `fabrics.get`, `meshes.get`, `nodes.get`,
-`connections.get` and `builds.get` read: every record whole, every write appended, nothing ever
+They hold the fabric's topology and its history, what `fabric.get`, `mesh.get`, `node.get`,
+`node.connection.get` and `build.get` read: every record whole, every write appended, nothing ever
 removed, one writer per key ([node-identity-and-state.md §2.5](node-identity-and-state.md), R14). A
 node never names where a record goes: it hands the record to the store's trait, and the backend
 behind the trait knows where. Storage is persistence only; it stores and returns what it is given
@@ -127,8 +127,8 @@ sends `mesh.unblock` on the old provider, the new provider closed and the Fabric
 the Fabric row, written no more and never deleted by RDM. A later Build naming it again copies into
 it only the lines it lacks.
 
-A caller reads the fabric's with `fabrics.get` and each node's with
-`nodes.get [topology_storage_provider: file]`.
+A caller reads the fabric's with `fabric.get` and each node's with
+`node.get [topology_storage_provider: file]`.
 
 ## 3. What is not storage
 

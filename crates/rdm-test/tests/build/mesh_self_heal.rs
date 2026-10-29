@@ -59,7 +59,7 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
     assert_ne!(born.node_id, victim.1);
 
     let carrier = estate.carrier().await;
-    let current = carrier.build(&accepted).await.expect("builds.get [id]");
+    let current = carrier.build(&accepted).await.expect("build.get [id]");
     assert_eq!(current.build_id, accepted, "no new Build was minted for drift recovery");
     assert_eq!(current.phase, BuildPhase::Complete, "the Build stays completed");
     assert!(current.current, "the accepted Build remains the current Build");

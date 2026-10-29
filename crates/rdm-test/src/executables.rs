@@ -101,14 +101,14 @@ pub struct Current {
 }
 
 impl Current {
-    /// Read it through `carrier`: `fabrics.get` at the admin it starts at names the fabric-primary,
-    /// whose current Build is read with its facts (`FetchCurrentBuild`), and `nodes.get` with no pair.
+    /// Read it through `carrier`: `fabric.get` at the admin it starts at names the fabric-primary,
+    /// whose current Build is read with its facts (`FetchCurrentBuild`), and `node.get` with no pair.
     pub async fn read(carrier: &BuildCarrier) -> Result<Self, String> {
-        let view = crate::typed::the_fabric(&Fabrics::new(carrier.clone())).await.map_err(|e| format!("fabrics.get at {}: {e}", carrier.fabric_primary()))?;
+        let view = crate::typed::the_fabric(&Fabrics::new(carrier.clone())).await.map_err(|e| format!("fabric.get at {}: {e}", carrier.fabric_primary()))?;
         let at = view.fabric_primary.clone().unwrap_or_else(|| carrier.fabric_primary().clone());
         let fetched = rdm_admin::build_facts_read::fetch_current_build(carrier.client(), &NodeTarget::CurrentPath(at.clone())).await.map_err(|e| format!("the current Build at the fabric-primary {at}: {e}"))?;
         let topology = rdm_admin::build_state::fold(&fetched.facts).remove(&fetched.build_id).map(|p| p.topology).ok_or_else(|| format!("the fabric-primary {at}'s facts of its current Build {} hold no acceptance of it", fetched.build_id))?;
-        let rows = rdm_client::Nodes::new(carrier.clone()).get(&rdm_client::Filter::new()).await.map_err(|e| format!("nodes.get at {}: {e}", carrier.fabric_primary()))?;
+        let rows = rdm_client::Nodes::new(carrier.clone()).get(&rdm_client::Filter::new()).await.map_err(|e| format!("node.get at {}: {e}", carrier.fabric_primary()))?;
         Ok(Self { based_on: fetched.build_id, topology, rows })
     }
 

@@ -125,7 +125,7 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
     // The door of whichever admin executes the create reports the held call.
     let holder = futures_lite::future::or(doors[0].wait_held(id), doors[1].wait_held(id)).await;
     eprintln!("poc: a door holds {holder}");
-    let during = estate.carrier().await.build(stream.build_id()).await.unwrap_or_else(|e| panic!("builds.get [id] of {build}: {e}"));
+    let during = estate.carrier().await.build(stream.build_id()).await.unwrap_or_else(|e| panic!("build.get [id] of {build}: {e}"));
     assert_ne!(during.phase, BuildPhase::Complete, "the Build cannot complete while its step is held: {during:?}");
     for d in &doors {
         d.release(id).await;

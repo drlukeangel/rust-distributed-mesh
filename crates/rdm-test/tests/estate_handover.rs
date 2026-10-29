@@ -96,7 +96,7 @@ async fn a_started_admin_is_reached_by_the_birth_it_printed() {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(ResolvedNode { node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: birth.endpoint_id.0.parse().expect("the birth's endpoint is an iroh key"), transport_addr: birth.transport_addr, incarnation: birth.incarnation.clone() });
     let fabrics = Fabrics::new(BuildCarrier::new(Arc::new(NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm")), birth.name.clone()));
-    let fabric = wait_for(&format!("{} answers fabrics.get naming itself the fabric-primary", birth.name), Duration::from_secs(30), || async { rdm_test::typed::the_fabric(&fabrics).await.ok().filter(|f| f.fabric_primary.as_ref() == Some(&birth.name)) }).await;
+    let fabric = wait_for(&format!("{} answers fabric.get naming itself the fabric-primary", birth.name), Duration::from_secs(30), || async { rdm_test::typed::the_fabric(&fabrics).await.ok().filter(|f| f.fabric_primary.as_ref() == Some(&birth.name)) }).await;
     std::fs::write(artifacts.join("fabric.json"), serde_json::to_vec_pretty(&fabric).unwrap()).unwrap();
     endpoint.close().await;
     drop(admin);

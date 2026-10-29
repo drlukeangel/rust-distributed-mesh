@@ -1092,15 +1092,15 @@ async fn fabric_primary_door(rig: &Rig, births: &[&Birth], resolves: &[ResolvedN
     atlas
 }
 
-/// `nodes.get [id: b]` at the rig's fabric-primary: the config its answer carries.
+/// `node.get [id: b]` at the rig's fabric-primary: the config its answer carries.
 async fn config_read_from_the_fabric_primary(rig: &Rig, b: &Birth) -> BTreeMap<String, String> {
     let read = StatusRequest::Get { entity: rdm_core::filter::Entity::Nodes, node: None, filter: rdm_core::filter::Filter::new().eq("id", [b.node.node_id.to_string()]) };
     match rig.authority.apply(None, &read).await {
         StatusReply::Nodes { nodes } => {
-            assert_eq!(nodes.len(), 1, "nodes.get [id] answers the one node: {nodes:?}");
+            assert_eq!(nodes.len(), 1, "node.get [id] answers the one node: {nodes:?}");
             nodes[0].config.clone()
         }
-        other => panic!("nodes.get at the fabric-primary answered {other:?}"),
+        other => panic!("node.get at the fabric-primary answered {other:?}"),
     }
 }
 
@@ -1126,7 +1126,7 @@ async fn until(what: &str, done: impl Fn() -> bool) {
 /// own config with one call to its mesh-primary, mesh1.admin.2, which is not the fabric-primary.
 /// mesh1.admin.2 writes the row, stepping its revision, and its atlas; it answers `ConfigUpdated`
 /// carrying the row as written (the map and its revision) and tells the node nothing; it owes the row
-/// up to the fabric-primary mesh1.admin.1, whose atlas takes it at that revision and whose `nodes.get`
+/// up to the fabric-primary mesh1.admin.1, whose atlas takes it at that revision and whose `node.get`
 /// answers it. Spans: `via-own-config` at mesh1.admin.2 (route in-process, config-updated);
 /// `via-config` apply=own push=owed; `via-config-push` at mesh1.admin.2 (applied); `via-config-pushed`
 /// at mesh1.admin.1 (atlas installed). Must NOT happen: the update carried up to the fabric-primary
@@ -2447,7 +2447,7 @@ fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
 /// CONTRACT (build.md §4: the current Build is the first in progress or completed, read last in,
 /// first out; R-BI3, docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md: "Each accepted Build is its
 /// own entity in the builds store, written once" and "The Fabric row carries no pointer to the newest
-/// Build"; node-rpc-envelope.md typed objects: `fabrics.get` answers the fabric): `fabrics.get` (op 0x1B
+/// Build"; node-rpc-envelope.md typed objects: `fabric.get` answers the fabric): `fabric.get` (op 0x1B
 /// `Get { Fabrics }`) at a node-admin answers the fabric's `build_id`, the current Build its own builds store
 /// returns, skipping a failed Build, and an admin whose builds store holds no Build in progress or
 /// completed answers none. Must NOT happen: a caller that needs the current Build reading it from
@@ -2506,7 +2506,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
             let read = StatusRequest::Get { entity: rdm_core::filter::Entity::Fabrics, node: None, filter: rdm_core::filter::Filter::new() };
             match authority.apply(None, &read).await {
                 StatusReply::Fabrics { mut fabrics } if fabrics.len() == 1 => fabrics.remove(0),
-                other => panic!("fabrics.get answered {other:?}"),
+                other => panic!("fabric.get answered {other:?}"),
             }
         }
     };

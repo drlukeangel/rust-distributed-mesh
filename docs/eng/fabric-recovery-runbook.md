@@ -96,7 +96,7 @@ Nothing more is commanded. In order:
 | `rdm.mesh.entry.update.via-rafka-time-adopted` with `source=pull` | rafka-time adopted from a live node |
 | `rdm.node_rpc.status.update.via-declare-own` from the mesh's other nodes | each serving node stays ready |
 
-`nodes.get` on the new node-admin then shows `is_fabric_primary` and `is_primary`.
+`node.get` on the new node-admin then shows `is_fabric_primary` and `is_primary`.
 
 ## What refuses the launch
 

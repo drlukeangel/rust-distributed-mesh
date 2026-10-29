@@ -158,7 +158,7 @@ fn an_open_returns_before_its_row_lands_on_a_store_reached_over_that_connection(
         assert!(own_directs(&source).is_empty(), "the held projection takes the Connected only once its write lands");
         let read = tokio::time::timeout(Duration::from_secs(1), source.writer.held_connections())
             .await
-            .expect("node.connections.get answers from what is held, never waiting for a write");
+            .expect("node.connection.get answers from what is held, never waiting for a write");
         assert!(read.routes.is_empty(), "nothing has landed, so nothing is held: {:?}", read.routes);
         let edge = tokio::time::timeout(Duration::from_secs(1), source.writer.edge_not_active(&dest.birth.node_id))
             .await
@@ -173,7 +173,7 @@ fn an_open_returns_before_its_row_lands_on_a_store_reached_over_that_connection(
         assert_eq!(directs[0].id, *conn.id(), "the held row is the open's own entry");
         assert_eq!(directs[0].state, ConnectionState::Connected);
         let routes = source.writer.held_routes().await;
-        assert_eq!(routes.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), vec![conn.id().clone()], "node.connections.get lists the landed connection");
+        assert_eq!(routes.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), vec![conn.id().clone()], "node.connection.get lists the landed connection");
         let stored = store.rows.connections().await.unwrap();
         assert!(stored.iter().any(|r| r.id == *conn.id() && r.state == ConnectionState::Connected), "the index keeps the Connected row");
         drop(conn);

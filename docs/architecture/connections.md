@@ -57,7 +57,7 @@ Proxy
 Two planes, two words (R-CR5):
 
 - **The data plane is the connections log.** Every entry is a connection a node originated for
-  traffic, Direct or Proxy, with its own minted id. It is what `connections.get` lists, what
+  traffic, Direct or Proxy, with its own minted id. It is what `node.connection.get` lists, what
   `node.connections.delete { All | [ids] }` closes by name, and what a rename waits on. In Rafka the
   application originates them (a gateway opening its path to a broker); in RDM standalone the
   testkit's originate door (op `0x73`) does.
@@ -603,7 +603,7 @@ Direct becomes effective for new invocations
 
 A stream Proxy (i148, a tunnel) outlives its retirement. `Proxy Disconnected(reason=direct-restored)` retires
 the route, so the next `open` goes Direct; the tunnel that is already open and its streams run to their own
-end. Until then it is a held connection (§4.2): `connections.get` lists it by its row id with
+end. Until then it is a held connection (§4.2): `node.connection.get` lists it by its row id with
 `route: retired`, and `node.connections.delete { All | [ids] }` closes it by that id like any other. Its end
 writes no second row; it is spanned `rdm.node.connections.delete.via-tunnel-ended`.
 

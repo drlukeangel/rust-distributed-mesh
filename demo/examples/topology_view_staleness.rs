@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
                 .into_iter()
                 .find(|n| n.name == target)
                 .ok_or_else(|| rdm_client::CallEnd::NotFound {
-                    read: "nodes.get",
+                    read: "node.get",
                     detail: format!("no row for {target}"),
                 })
         },
@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
                 .into_iter()
                 .find(|n| n.name == target)
                 .ok_or_else(|| rdm_client::CallEnd::NotFound {
-                    read: "nodes.get",
+                    read: "node.get",
                     detail: format!("no row for {target}"),
                 })
         },

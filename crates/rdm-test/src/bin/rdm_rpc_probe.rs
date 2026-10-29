@@ -216,16 +216,16 @@ async fn enter(admin: &MeshNode) -> Result<(Arc<NodeRpcClient>, Arc<StaticResolv
     }
 }
 
-/// Every node the node-admin `admin` holds in its view: `fabrics.get`, then `nodes.get [mesh: m]` for each mesh the
+/// Every node the node-admin `admin` holds in its view: `fabric.get`, then `node.get [mesh: m]` for each mesh the
 /// fabric lists with nodes, read from that admin. A read that does not answer is refused naming the
 /// admin, the read and how it ended.
 async fn views_of(client: &Arc<NodeRpcClient>, admin: &PathName) -> Result<Vec<NodeView>, String> {
     let carrier = BuildCarrier::new(client.clone(), admin.clone());
-    let fabric = rdm_test::typed::the_fabric(&Fabrics::new(carrier.clone())).await.map_err(|e| format!("fabrics.get at the entry admin {admin}: {e}"))?;
+    let fabric = rdm_test::typed::the_fabric(&Fabrics::new(carrier.clone())).await.map_err(|e| format!("fabric.get at the entry admin {admin}: {e}"))?;
     let nodes = Nodes::new(carrier);
     let mut all = Vec::new();
     for mesh in fabric.meshes.iter().filter(|m| !m.nodes.is_empty()) {
-        all.extend(rdm_test::typed::mesh_nodes(&nodes, &mesh.name).await.map_err(|e| format!("nodes.get [mesh: {}] at the entry admin {admin}: {e}", mesh.name))?);
+        all.extend(rdm_test::typed::mesh_nodes(&nodes, &mesh.name).await.map_err(|e| format!("node.get [mesh: {}] at the entry admin {admin}: {e}", mesh.name))?);
     }
     Ok(all)
 }

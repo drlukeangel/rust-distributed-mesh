@@ -37,10 +37,10 @@ async fn main() -> Result<()> {
     let nodes = Nodes::new(carrier.clone());
     peers.learn(&nodes.get(&Filter::new()).await?);
 
-    let fabric = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabrics.get answered no fabric"))?;
+    let fabric = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabric.get answered no fabric"))?;
     let primary = fabric.meshes.iter().find(|m| m.name == mesh).ok_or_else(|| anyhow!("{} holds no mesh {mesh}", fabric.name))?.primary_admin.clone().ok_or_else(|| anyhow!("{mesh} names no mesh-primary"))?;
     // The Build and attempt the move runs under: the fabric's current Build.
-    let build_id = BuildId::parse(fabric.build_id.as_deref().ok_or_else(|| anyhow!("fabrics.get names no current Build"))?).map_err(|e| anyhow!("the current Build id: {e}"))?;
+    let build_id = BuildId::parse(fabric.build_id.as_deref().ok_or_else(|| anyhow!("fabric.get names no current Build"))?).map_err(|e| anyhow!("the current Build id: {e}"))?;
     let attempt = carrier.build(&build_id).await?.attempt;
 
     match nodes.primary_update(&fabric.name, &primary, &build_id, attempt).await? {

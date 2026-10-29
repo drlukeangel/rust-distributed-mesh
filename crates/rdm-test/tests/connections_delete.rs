@@ -1,6 +1,6 @@
 //! `node.connections.delete { scope: Connections([id, …]) }` at the birth (R-CR3; rulings
 //! 2026-10-11): it names exact connections by the minted id of their open entry, as
-//! `node.connections.get` returns them, and cuts only those; an id that is unknown or already
+//! `node.connection.get` returns them, and cuts only those; an id that is unknown or already
 //! closed is named, never ignored; each drop is written under the name the node holds; an empty
 //! list is refused by name and cuts nothing.
 //!
@@ -127,7 +127,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
             assert!(before.iter().any(|e| e.source.name == born && e.destination.name.to_string() == dest), "the node holds a route to {dest}: {before:#?}");
         }
 
-        // The open entries, as the node holds them (what node.connections.get returns).
+        // The open entries, as the node holds them (what node.connection.get returns).
         let open = |dest: &str| -> NodeConnection {
             let held = cut_seams.connections.held();
             let held = held.lock().unwrap();

@@ -180,7 +180,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // Peers hold the deleted mesh with its last admin while it lives (R-NS1 item 1, R-MD1 item 3):
     // an admin of each surviving mesh, in what it holds itself (query.md §2), holds mesh1 deleted with
     // that one node: the mesh status it took from the gossiped MeshStatus, and the mesh1 births its
-    // topology holds (`node.topology.get`). fabrics.get at it answers a primary's atlas, never its own
+    // topology holds (`node.topology.get`). fabric.get at it answers a primary's atlas, never its own
     // view (query.md §1; Q243). The admin lives on here until its node.delete, so this interval is held,
     // not raced.
     let survivors = ["mesh2", "mesh3"];

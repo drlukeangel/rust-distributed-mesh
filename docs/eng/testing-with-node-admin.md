@@ -94,7 +94,7 @@ names:
 | `nodes.tags_create(…)`, `tags_delete(…)` | the node's tag rows |
 | `nodes.primary_update(…)`, `fabric_primary_update(…)` | [node.primary.update, node.fabric-primary.update](../architecture/lifecycles/node-primary-update.md) |
 | `nodes.steps(steps)` | Rafka's replace steps ([node-replace.md](../architecture/lifecycles/node-replace.md); `rdm_test::steps`) |
-| `nodes.get(&filter)`, `Connections::get(birth, &filter)` | nodes.get, connections.get { node } |
+| `nodes.get(&filter)`, `Connections::get(birth, &filter)` | node.get, node.connection.get { node } |
 
 Each answers a `WorkflowStream` (or a typed reply); the cell awaits it to its terminal and asserts
 the typed outcome, never a string.
@@ -103,7 +103,7 @@ the typed outcome, never a string.
 
 A node's tags come from its create spec (node-create.md "Spec"; build.md, the `tags` property).
 `Nodes::get(&Filter::new().eq("tags", [label]))`, with `.eq("mesh", [mesh])` for one mesh's, reads
-only the nodes carrying them (`nodes.get [tags: a]`, Q167;
+only the nodes carrying them (`node.get [tags: a]`, Q167;
 [build-deployment.md](../architecture/build-deployment.md)): a cell reads its own nodes, never
 another run's.
 

@@ -43,7 +43,7 @@ fn main() -> Result<()> {
             let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
             let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
             let rows = Nodes::new(peers.carrier_at(birth.name)).get(&Filter::new()).await?;
-            let first = rows.first().ok_or_else(|| anyhow!("nodes.get returned no rows"))?;
+            let first = rows.first().ok_or_else(|| anyhow!("node.get returned no rows"))?;
             println!(
                 "live estate node {}: types={:?} held={:?} held_hash={:?}",
                 first.name, first.types, first.held, first.held_hash

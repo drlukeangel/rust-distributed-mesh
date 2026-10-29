@@ -197,7 +197,7 @@ pub fn connections_deleting(reason: String) -> BuildReply { BuildReply::Connecti
 pub fn malformed(kind: MalformedKind) -> BuildReply { BuildReply::Malformed { kind } }
 /// Construct the typed not-claimant outcome.
 pub fn not_claimant(mesh: Option<String>, fabric_primary: Option<String>, mesh_primary: Option<String>) -> BuildReply { BuildReply::NotClaimant { mesh, fabric_primary, mesh_primary } }
-/// Construct the typed rejected-filter outcome: a `builds.get` pair the Build header's schema refuses.
+/// Construct the typed rejected-filter outcome: a `build.get` pair the Build header's schema refuses.
 pub fn rejected_filter(reason: String) -> BuildReply { BuildReply::RejectedFilter { reason } }
 }
 

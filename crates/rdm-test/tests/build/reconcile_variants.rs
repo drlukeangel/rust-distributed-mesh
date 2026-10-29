@@ -97,14 +97,14 @@ fn another_build(estate: &Estate, b: &Binding, tag: &str) -> Binding {
 
 /// The record of the live node at `path` on the fabric's store root, and its view (`fabric.nodes.get`).
 async fn node_row(estate: &Estate, path: &str) -> (Value, NodeView) {
-    let node = estate.nodes_obj().await.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("nodes.get: {e}")).into_iter().find(|n| n.name.to_string() == path).unwrap_or_else(|| panic!("fabric.nodes.get answers {path}"));
+    let node = estate.nodes_obj().await.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("node.get: {e}")).into_iter().find(|n| n.name.to_string() == path).unwrap_or_else(|| panic!("fabric.nodes.get answers {path}"));
     let stored: Value = estate.node_record(node.node_id.as_str()).unwrap_or_else(|| panic!("the record of {path} is not in nodes.jsonl"));
     (stored["record"].clone(), node)
 }
 
 /// One Build of the matrix: `request` submitted on `based_on`, Complete within [`BOUND`], and the fabric
 /// ready after it. A Build with no terminal frame within the bound is the defect, named with
-/// what `builds.get` and `fabric.get` say of it then.
+/// what `build.get` and `fabric.get` say of it then.
 async fn row(estate: &Estate, what: &str, based_on: rdm_client::BuildId, request: Vec<NodeSpec>, back: Back, rows: &mut Vec<(String, String, Back)>) {
     let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: request }).await;
     let id = stream.build_id().clone();
@@ -113,7 +113,7 @@ async fn row(estate: &Estate, what: &str, based_on: rdm_client::BuildId, request
         Err(_) => {
             let got = estate.carrier().await.build(&id).await;
             let fabric = estate.try_fabric_view().await;
-            panic!("{what}: Build {id} is not Complete within {BOUND:?}: builds.get [id] {got:?}; fabric.get {fabric:?}");
+            panic!("{what}: Build {id} is not Complete within {BOUND:?}: build.get [id] {got:?}; fabric.get {fabric:?}");
         }
     };
     assert!(matches!(done.frames.last(), Some(BuildFrame::Complete { .. })), "{what}: Build {id} ends Complete: {:?}", done.frames.last());

@@ -568,7 +568,7 @@ pub struct StatusAuthority {
     /// This admin's fabric states; filled once the admin holds the handles they act through.
     pub fabric_states: Arc<OnceLock<Arc<crate::fabric_status::FabricStates>>>,
     /// This admin's atlas (fabric-atlas.md, Q224), the one its control plane's Build acceptance reads:
-    /// what `fabrics.atlas.get` answers.
+    /// what `fabric.atlas.get` answers.
     pub atlas: Arc<OnceLock<Arc<crate::atlas::Atlas>>>,
     /// Fabric recovery in a view (Q122): while this admin runs it and the target mesh has no mesh-primary,
     /// it takes the declarations of the node re-created at the target's path.name, which its own node.create
@@ -1240,7 +1240,7 @@ impl StatusAuthority {
             // The reads (Q167): answered from what this admin holds, changing nothing.
             // A mesh-primary that is not the fabric-primary answers a read of its own mesh from its atlas
             // and carries any other read up to the fabric-primary (query.md §1; Q224); a node-admin that
-            // is not a primary keeps no atlas and forwards every read but its own connections.get to its
+            // is not a primary keeps no atlas and forwards every read but its own node.connection.get to its
             // own mesh-primary, never to the fabric-primary (query.md §1; Q243).
             StatusRequest::Get { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
                 let read = req.as_read().expect("a read request is a read");
@@ -1510,9 +1510,9 @@ impl StatusAuthority {
         }
     }
 
-    /// A read (Q167, R-RD1 to R-RD3) answered from what this admin holds: `nodes.get` from its atlas,
-    /// `meshes.get` from its view, `fabrics.get` from its view and its fabric and builds records, and
-    /// `connections.get { node }` of its own exact birth. The node is `connections.get`'s address and
+    /// A read (Q167, R-RD1 to R-RD3) answered from what this admin holds: `node.get` from its atlas,
+    /// `mesh.get` from its view, `fabric.get` from its view and its fabric and builds records, and
+    /// `node.connection.get { node }` of its own exact birth. The node is `node.connection.get`'s address and
     /// no other read's: a read without it, or another read with it, is `RejectedFilter`.
     async fn read(&self, me_name: &crate::model::PathName, view: &Topology, read: &rdm_core::status::Read) -> StatusReply {
         use rdm_core::filter::Entity;
@@ -1520,7 +1520,7 @@ impl StatusAuthority {
         match (read.entity, &read.node) {
             (Entity::Connections, None) => return rdm_core::reply::status::bounded_rejected_filter(&format!("{op} names no node: the exact birth (id, incarnation) is the read's address")),
             (Entity::Connections, Some(_)) => {}
-            (_, Some((node_id, _))) => return rdm_core::reply::status::bounded_rejected_filter(&format!("{op} names the node {node_id}: only connections.get takes a node; a {op} pair names one (id)")),
+            (_, Some((node_id, _))) => return rdm_core::reply::status::bounded_rejected_filter(&format!("{op} names the node {node_id}: only node.connection.get takes a node; a {op} pair names one (id)")),
             (_, None) => {}
         }
         match read.entity {
@@ -1584,7 +1584,7 @@ impl StatusAuthority {
         }
     }
 
-    /// `connections.get { node }` of this admin's exact birth: the connections it holds that match
+    /// `node.connection.get { node }` of this admin's exact birth: the connections it holds that match
     /// `filter`, under the name it holds. The birth the call reached answers it (R-RX5: no receiver
     /// refuses a call for the node id it names); another incarnation is refused naming the one held.
     async fn read_connections(&self, view: &Topology, incarnation: &IncarnationId, filter: &rdm_core::filter::Filter) -> StatusReply {
@@ -1598,7 +1598,7 @@ impl StatusAuthority {
         }
         match self.own.get() {
             Some(own) => own.connections_get(filter).await,
-            None => rdm_core::reply::status::not_ready(format!("{} is still starting: it holds no connections writer yet, so connections.get is refused", me.name)),
+            None => rdm_core::reply::status::not_ready(format!("{} is still starting: it holds no connections writer yet, so node.connection.get is refused", me.name)),
         }
     }
 }
@@ -1607,21 +1607,21 @@ impl StatusAuthority {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReadAt {
     /// Here: the fabric-primary (its atlas holds every mesh), a mesh-primary's read of its own mesh, and
-    /// an exact birth's `connections.get`.
+    /// an exact birth's `node.connection.get`.
     Here,
     /// Carried up to the fabric-primary: at a mesh-primary that is not it, a read its atlas does not
     /// hold.
     FabricPrimary,
-    /// Forwarded to its own mesh-primary: every read but `connections.get` at a node-admin that is not a
+    /// Forwarded to its own mesh-primary: every read but `node.connection.get` at a node-admin that is not a
     /// primary, which keeps no atlas (query.md §1; Q243).
     MeshPrimary,
 }
 
 /// [`ReadAt`] of `read` at the admin born `me_id` in `view`, whose atlas holds the meshes `held` (a
-/// mesh-primary's: its own mesh). At a node-admin that is not a primary every read but `connections.get`
-/// is its mesh-primary's (Q243). At a mesh-primary, a `nodes.get` is of its own mesh when one of its
-/// `mesh` pairs names only meshes its atlas holds, a `meshes.get` when one of its `name` (or `id`) pairs
-/// does; any other read, `fabrics.get` included, is the fabric-primary's.
+/// mesh-primary's: its own mesh). At a node-admin that is not a primary every read but `node.connection.get`
+/// is its mesh-primary's (Q243). At a mesh-primary, a `node.get` is of its own mesh when one of its
+/// `mesh` pairs names only meshes its atlas holds, a `mesh.get` when one of its `name` (or `id`) pairs
+/// does; any other read, `fabric.get` included, is the fabric-primary's.
 pub(crate) fn read_answered_at(view: &Topology, me_id: &rdm_core::NodeId, held: &std::collections::BTreeSet<String>, read: &rdm_core::status::Read) -> ReadAt {
     use rdm_core::filter::Entity;
     let Some(me) = view.own(me_id) else { return ReadAt::Here };
@@ -3621,7 +3621,7 @@ mod tests {
 
     /// CONTRACT (R24, Luke Q11: "the same variant at every Status door that can lack a handler for a
     /// request it receives"): the node-admin's declaration decision has no handler for a request its
-    /// door answers before the decision (here `fabrics.get`). It answers `RequestNotHandled` naming the
+    /// door answers before the decision (here `fabric.get`). It answers `RequestNotHandled` naming the
     /// request, decided by dispatch alone, on the reject span `rdm.node.status.reject.via-request-not-handled`
     /// naming the request and the admin, and changes nothing. Must NOT happen: an authority refusal or
     /// `NotReady` for a request it has no handler for.
@@ -3640,10 +3640,10 @@ mod tests {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             decide(&mesh_primary_of(&me, view.clone()), &view, &Declared::default(), &StatusRequest::GetFabric)
         };
-        assert_eq!(reply, R::RequestNotHandled { request: "fabrics.get".into() });
+        assert_eq!(reply, R::RequestNotHandled { request: "fabric.get".into() });
         assert!(effect.is_none(), "{effect:?}");
         let rejected: Vec<(String, String)> = capture.named("rdm.node.status.reject.via-request-not-handled").into_iter().map(|s| (s.attributes["request"].clone(), s.attributes["node"].clone())).collect();
-        assert_eq!(rejected, vec![("fabrics.get".to_string(), "mesh1.admin.1".to_string())], "the reject span names the request and the admin");
+        assert_eq!(rejected, vec![("fabric.get".to_string(), "mesh1.admin.1".to_string())], "the reject span names the request and the admin");
     }
 
     /// CONTRACT (node-identity-and-state.md 4.3: "Once a node-admin is created in a mesh it is that
@@ -4139,9 +4139,9 @@ mod tests {
 
     /// CONTRACT (query.md §1: "a mesh-primary answers a read of its own mesh from its atlas and carries
     /// any other read up to the fabric-primary"; Q224): the fabric-primary answers every read; mesh2's
-    /// mesh-primary, its atlas holding mesh2, answers `nodes.get` whose `mesh` pair names only mesh2 and
-    /// `meshes.get` of mesh2 by name or id, and carries up a read of mesh1, a read naming mesh1 and mesh2,
-    /// a read naming no mesh and `fabrics.get`; `connections.get` is the exact birth's; a node-admin that is
+    /// mesh-primary, its atlas holding mesh2, answers `node.get` whose `mesh` pair names only mesh2 and
+    /// `mesh.get` of mesh2 by name or id, and carries up a read of mesh1, a read naming mesh1 and mesh2,
+    /// a read naming no mesh and `fabric.get`; `node.connection.get` is the exact birth's; a node-admin that is
     /// not a primary forwards every other read to its own mesh-primary (Q243). Must NOT happen: a
     /// mesh-primary answering another mesh from its own view; its own mesh's read carried up; a node-admin
     /// that is not a primary answering a read from its own view, or sending it to the fabric-primary.
@@ -4172,15 +4172,15 @@ mod tests {
         let mesh2: std::collections::BTreeSet<String> = ["mesh2".to_string()].into();
         let every: std::collections::BTreeSet<String> = ["mesh1".to_string(), "mesh2".to_string()].into();
         let reads = [
-            ("nodes.get [mesh: mesh2]", read(Entity::Nodes, Filter::new().eq("mesh", ["mesh2"]).eq("kind", ["rpc_node"])), ReadAt::Here),
-            ("nodes.get [mesh: mesh1]", read(Entity::Nodes, Filter::new().eq("mesh", ["mesh1"])), ReadAt::FabricPrimary),
-            ("nodes.get [mesh: mesh1, mesh2]", read(Entity::Nodes, Filter::new().eq("mesh", ["mesh1", "mesh2"])), ReadAt::FabricPrimary),
-            ("nodes.get [tags: red]", read(Entity::Nodes, Filter::new().eq("tags", ["red"])), ReadAt::FabricPrimary),
-            ("nodes.get []", read(Entity::Nodes, Filter::new()), ReadAt::FabricPrimary),
-            ("meshes.get [name: mesh2]", read(Entity::Meshes, Filter::new().eq("name", ["mesh2"])), ReadAt::Here),
-            ("meshes.get [id: mesh2's]", read(Entity::Meshes, Filter::new().eq("id", [mesh2_id.to_string()])), ReadAt::Here),
-            ("meshes.get []", read(Entity::Meshes, Filter::new()), ReadAt::FabricPrimary),
-            ("fabrics.get []", read(Entity::Fabrics, Filter::new()), ReadAt::FabricPrimary),
+            ("node.get [mesh: mesh2]", read(Entity::Nodes, Filter::new().eq("mesh", ["mesh2"]).eq("kind", ["rpc_node"])), ReadAt::Here),
+            ("node.get [mesh: mesh1]", read(Entity::Nodes, Filter::new().eq("mesh", ["mesh1"])), ReadAt::FabricPrimary),
+            ("node.get [mesh: mesh1, mesh2]", read(Entity::Nodes, Filter::new().eq("mesh", ["mesh1", "mesh2"])), ReadAt::FabricPrimary),
+            ("node.get [tags: red]", read(Entity::Nodes, Filter::new().eq("tags", ["red"])), ReadAt::FabricPrimary),
+            ("node.get []", read(Entity::Nodes, Filter::new()), ReadAt::FabricPrimary),
+            ("mesh.get [name: mesh2]", read(Entity::Meshes, Filter::new().eq("name", ["mesh2"])), ReadAt::Here),
+            ("mesh.get [id: mesh2's]", read(Entity::Meshes, Filter::new().eq("id", [mesh2_id.to_string()])), ReadAt::Here),
+            ("mesh.get []", read(Entity::Meshes, Filter::new()), ReadAt::FabricPrimary),
+            ("fabric.get []", read(Entity::Fabrics, Filter::new()), ReadAt::FabricPrimary),
         ];
         for (what, r, at) in &reads {
             assert_eq!(read_answered_at(&view, &mp.node_id, &mesh2, r), *at, "{what} at mesh2's mesh-primary");
@@ -4188,9 +4188,9 @@ mod tests {
             assert_eq!(read_answered_at(&view, &other.node_id, &Default::default(), r), ReadAt::MeshPrimary, "{what} at a node-admin that is not a primary: forwarded to its mesh-primary");
         }
         let connections = Read { entity: Entity::Connections, node: Some((mp.node_id.clone(), mp.incarnation_id.clone().unwrap())), filter: Filter::new() };
-        assert_eq!(read_answered_at(&view, &mp.node_id, &mesh2, &connections), ReadAt::Here, "connections.get is the exact birth's");
+        assert_eq!(read_answered_at(&view, &mp.node_id, &mesh2, &connections), ReadAt::Here, "node.connection.get is the exact birth's");
         let own_connections = Read { entity: Entity::Connections, node: Some((other.node_id.clone(), other.incarnation_id.clone().unwrap())), filter: Filter::new() };
-        assert_eq!(read_answered_at(&view, &other.node_id, &Default::default(), &own_connections), ReadAt::Here, "connections.get at a node-admin that is not a primary is its own");
+        assert_eq!(read_answered_at(&view, &other.node_id, &Default::default(), &own_connections), ReadAt::Here, "node.connection.get at a node-admin that is not a primary is its own");
         assert_eq!(read_answered_at(&view, &mp.node_id, &Default::default(), &read(Entity::Nodes, Filter::new().eq("mesh", ["mesh2"]))), ReadAt::FabricPrimary, "a mesh-primary whose atlas does not hold its mesh yet carries the read up");
     }
 }

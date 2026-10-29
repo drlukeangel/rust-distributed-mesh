@@ -70,7 +70,7 @@ is a request naming that path's executable, the ordinary replacement.
 
 ## 5. Reads
 
-The node's row is the source. `nodes.get` returns every node row that matches its pairs, each with
+The node's row is the source. `node.get` returns every node row that matches its pairs, each with
 its executable beside its status, config and tags (`NodeView.executable`): one node by `id`, a mesh's
 nodes by `mesh`, the fabric's by no pair. The digest, the `MeshTopology` projection and `node.topology.get` carry no executable.
 

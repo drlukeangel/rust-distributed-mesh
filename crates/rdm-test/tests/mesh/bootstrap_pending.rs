@@ -77,7 +77,7 @@ async fn pending_contract(cell: &str) {
     // {mesh1} -> {mesh1, mesh2}, through the rectifier.
     let created = estate.reconcile_shape("fabric1", &[mesh("mesh1"), mesh("mesh2")]).await;
     let create = created.build_id.to_string();
-    let build = estate.carrier().await.build(&created.build_id).await.expect("builds.get [id] of the creation Build");
+    let build = estate.carrier().await.build(&created.build_id).await.expect("build.get [id] of the creation Build");
     let nodes = estate.settled_views(&[mesh("mesh1"), mesh("mesh2")]).await;
     let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).expect("mesh2 elects a primary");
     let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("one fabric primary");
@@ -285,7 +285,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     let lost = lost_admin.split('.').next().unwrap().to_string();
     let mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let admin_before = before.iter().find(|n| n.name.to_string() == lost_admin).cloned().unwrap();
-    let attempt_before = u64::from(estate.carrier().await.build(&built.build_id).await.expect("builds.get [id] of the accepted Build").attempt);
+    let attempt_before = u64::from(estate.carrier().await.build(&built.build_id).await.expect("build.get [id] of the accepted Build").attempt);
     estate.enter(&Estate::path(&fabric_holder)).await;
 
     // The fault: the lost mesh's only admin runtime, exactly.

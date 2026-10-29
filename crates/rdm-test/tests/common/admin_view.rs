@@ -1,6 +1,6 @@
 //! A node-admin's view, served over Node RPC from a fixed set of nodes: the entry the probe's cells
-//! give `rdm-rpc-probe` (`--admin-birth`). It answers `fabrics.get` (Status `Get { Fabrics }`) and
-//! `nodes.get [mesh: m]` (Status `Get { Nodes }`) from that set, as an admin answers both from its
+//! give `rdm-rpc-probe` (`--admin-birth`). It answers `fabric.get` (Status `Get { Fabrics }`) and
+//! `node.get [mesh: m]` (Status `Get { Nodes }`) from that set, as an admin answers both from its
 //! own view (`rafka-node-admin-core` views.rs), and records every Status request it decodes. It
 //! serves no HTTP: the probe reads nothing but Node RPC.
 
@@ -97,7 +97,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
                 Ok(match req {
                     StatusRequest::Get { entity: Entity::Fabrics, filter, .. } if filter.pairs.is_empty() => StatusReply::Fabrics { fabrics: vec![fabric] },
                     StatusRequest::Get { entity: Entity::Nodes, filter, .. } => StatusReply::Nodes { nodes: held.into_iter().filter(|n| filter.matches(n)).collect() },
-                    other => StatusReply::NotReady { reason: format!("the stub admin {ADMIN} answers fabrics.get and nodes.get only, not {}", other.op()) },
+                    other => StatusReply::NotReady { reason: format!("the stub admin {ADMIN} answers fabric.get and node.get only, not {}", other.op()) },
                 })
             }
         })

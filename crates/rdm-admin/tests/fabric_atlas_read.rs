@@ -68,7 +68,7 @@ impl Capture {
 
 // @feature: fabric-atlas-read
 /// CONTRACT: docs/architecture/query.md:11
-/// "A caller outside the node sends `fabrics.get`, `meshes.get` and `nodes.get` to the
+/// "A caller outside the node sends `fabric.get`, `mesh.get` and `node.get` to the
 ///  fabric-primary, which answers from its atlas: every mesh's node records, held in memory, filled
 ///  from the node records once at its start or hand-over and written by each op after that"
 #[test]

@@ -98,8 +98,8 @@ Callers use the [typed node and Build objects](node-rpc-envelope.md#typed-object
 | [node.topology.get](lifecycles/node-topology-get.md) | Reading a node's held topology; a [running node's reconnect](lifecycles/node-topology-get.md#running-node-reconnect) |
 | [node.name.update](lifecycles/node-name-update.md) | Renaming a node |
 | node.tags.get/create/delete | A node's tag labels ([typed-object table](node-rpc-envelope.md#typed-object-contract)) |
-| [nodes.get](node-rpc-envelope.md#typed-object-contract) | Reading nodes |
-| [connections.get](node-rpc-envelope.md#typed-object-contract) | Reading a node's held connections |
+| [node.get](node-rpc-envelope.md#typed-object-contract) | Reading nodes |
+| [node.connection.get](node-rpc-envelope.md#typed-object-contract) | Reading a node's held connections |
 | [node.config.get/update](lifecycles/node-config-update.md) | Reading or putting a node's application config |
 | [node.cert.renew](lifecycles/node-cert-renew.md) (primitive) | The mesh-primary, as issuer, installing a fresh member cert on a running node before the old one expires; presented on new connections, terminates nothing |
 | [node.issuer.update](lifecycles/node-issuer-update.md) (primitive) | The fabric-primary installing a mesh's re-minted issuing material on a running node-admin |

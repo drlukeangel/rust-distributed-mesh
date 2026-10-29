@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     println!("node.tags.create {label} on {node}: {created:?}");
 
     let tagged = nodes.get(&Filter::new().eq("tags", [label.clone()])).await?;
-    println!("nodes.get [tags: {label}]: {:?}", tagged.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
+    println!("node.get [tags: {label}]: {:?}", tagged.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
 
     let deleted = nodes.tags_delete(&exact(row)?, &primary.node_id, &RouteChoice::Direct, &TagScope::Labels(labels)).await?;
     println!("node.tags.delete {label} on {node}: {deleted:?}");

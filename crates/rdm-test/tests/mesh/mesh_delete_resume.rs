@@ -231,7 +231,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let last = last.unwrap_or_else(|| panic!("mesh.deleted leaves mesh2's final primary alive, the one mesh2 node the view holds after build {b}"));
     assert_eq!(deleted["state"], "complete", "the node.delete of mesh2's final primary {last} completes: {deleted}");
     assert!(view.iter().all(|n| n.starts_with("mesh1.")), "the view holds no mesh2 birth after mesh-left: {view:?}");
-    assert!(mesh2_gone, "mesh2 is no longer a mesh of the fabric: meshes.get [name: mesh2] answers the empty list");
+    assert!(mesh2_gone, "mesh2 is no longer a mesh of the fabric: mesh.get [name: mesh2] answers the empty list");
     Run { build, spans, mesh2_id, lost, b, last }
 }
 

@@ -61,7 +61,7 @@ fn alive(pid: u64) -> bool {
 }
 
 async fn view_of(nodes: &Nodes, node: &PathName) -> NodeView {
-    rdm_test::typed::mesh_nodes(nodes, &node.mesh).await.expect("nodes.get [mesh]").into_iter().find(|n| &n.name == node).unwrap_or_else(|| panic!("nodes.get [mesh: {}] lists no {node}", node.mesh))
+    rdm_test::typed::mesh_nodes(nodes, &node.mesh).await.expect("node.get [mesh]").into_iter().find(|n| &n.name == node).unwrap_or_else(|| panic!("node.get [mesh: {}] lists no {node}", node.mesh))
 }
 
 /// CONTRACT: `node.stop` of a live node answers, on its reply stream, the connections delete, the hard cut of its
@@ -99,7 +99,7 @@ async fn stop_then_start(test: &str, node: &str) {
     let nodes = estate.nodes_obj().await;
     let path: PathName = node.parse().unwrap();
 
-    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]");
+    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     peers.learn(&mesh);
     let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
     let others: Vec<&NodeView> = mesh.iter().filter(|n| n.name != path).collect();
@@ -387,7 +387,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
     let path: PathName = NODE.parse().unwrap();
     let renamed: PathName = path.renamed();
 
-    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]");
+    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     peers.learn(&mesh);
     let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
     let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
@@ -405,7 +405,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
     assert_eq!(reply, StatusReply::RejectedAdmittingConnections { status: NodeStatus::Leaving, held_connections: vec![] }, "a stopped node is never renamed");
     let listed = view_of(&estate.nodes_obj().await, &path).await;
     assert!(listed.stopped && listed.node_id == before.node_id && listed.incarnation_id == before.incarnation_id, "node.get lists the stopped birth at {path}: {listed:?}");
-    assert_eq!(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]").into_iter().filter(|n| n.name == renamed).count(), 0, "node.get lists nothing at {renamed}");
+    assert_eq!(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]").into_iter().filter(|n| n.name == renamed).count(), 0, "node.get lists nothing at {renamed}");
 
     // The start by its own name rejoins the same process.
     let started = frames(nodes.start(&path).await.expect("the start was accepted")).await;
@@ -457,7 +457,7 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let nodes = estate.nodes_obj().await;
     let path: PathName = NODE.parse().unwrap();
-    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]");
+    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
     let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
     let pid = estate.pid_of(NODE).await;
@@ -535,7 +535,7 @@ async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_
     let path: PathName = "mesh1.admin.3".parse().unwrap();
     let renamed: PathName = path.renamed();
 
-    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]");
+    let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     peers.learn(&mesh);
     let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
     let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
@@ -755,7 +755,7 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
     let peers = estate.peers().await;
     let nodes = estate.nodes_obj().await;
     let path: PathName = NODE.parse().unwrap();
-    peers.learn(&estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("nodes.get [mesh]"));
+    peers.learn(&estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]"));
     let pid = estate.pid_of(NODE).await;
 
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
@@ -822,7 +822,7 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     assert!(before.stopped && before.status == NodeStatus::Stopped, "node.get lists {STOPPED} stopped: {before:?}");
 
     // The other path: an rpc node of mesh2 that is not its node-type primary, so its delete moves no primary.
-    let mesh2 = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("nodes.get [mesh]");
+    let mesh2 = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("node.get [mesh]");
     let other = mesh2
         .iter()
         .filter(|n| n.name.to_string().starts_with("mesh2.rpc.") && n.name != stopped_path && !n.is_primary)
@@ -897,7 +897,7 @@ async fn a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_
     estate.until_fabric_ready(SETTLE).await;
     let fabric_primary = estate.fabric_view().await.fabric_primary.expect("the ready fabric names its fabric-primary");
     let nodes = estate.nodes_obj().await;
-    let mesh2 = nodes.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("nodes.get [mesh]");
+    let mesh2 = nodes.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("node.get [mesh]");
     // The rpc node that is not mesh2's rpc node-type primary, so its stop moves no primary.
     let stopped_path = mesh2
         .iter()
@@ -928,7 +928,7 @@ async fn a_resize_after_a_stop_reaches_ready_with_the_stopped_birth_at_rest_and_
     }
     assert!(matches!(built.last(), Some(rdm_client::BuildFrame::Complete { .. })), "the resize Build {build_id} ends Complete with {stopped_name} stopped, never Blocked on the fabric's change: {built:?}");
     estate.until_fabric_ready_at(&fabric_primary, SETTLE).await;
-    let grown = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("nodes.get [mesh]");
+    let grown = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.expect("node.get [mesh]");
     let rpc: Vec<&NodeView> = grown.iter().filter(|n| n.name.kind == NodeKind::RpcNode).collect();
     assert_eq!(rpc.len(), 3, "mesh2 holds three rpc nodes: {grown:?}");
     assert!(rpc.iter().filter(|n| n.name != stopped_path).all(|n| n.status == NodeStatus::Ready), "every rpc node of mesh2 that is not stopped is ready: {grown:?}");

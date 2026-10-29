@@ -3,7 +3,7 @@
 //!
 //! A mesh-primary answers a read of its own mesh from its atlas, the fabric-primary not asked, and
 //! carries any other read up to the fabric-primary, whose atlas holds every mesh: a read of another
-//! mesh, a read naming no mesh, and `fabrics.get`.
+//! mesh, a read naming no mesh, and `fabric.get`.
 
 use rdm_client::{ExactBirth, Filter, NodeView, Nodes};
 use rdm_core::NodeKind;
@@ -43,10 +43,10 @@ fn birth_of(n: &NodeView) -> ExactBirth {
 /// CONTRACT (query.md §1: "a mesh-primary answers a read of its own mesh from its atlas and carries any
 /// other read up to the fabric-primary"; Q224): two meshes, the fabric-primary mesh1.admin.1 and
 /// mesh2's mesh-primary with one rpc node, each of mesh1.admin.1 and mesh2's rpc node carrying a tag on
-/// its row. `nodes.get` sent to mesh2's mesh-primary naming mesh1, and one naming no mesh, answer
+/// its row. `node.get` sent to mesh2's mesh-primary naming mesh1, and one naming no mesh, answer
 /// mesh1.admin.1 by its tag: carried up to the fabric-primary, whose atlas holds mesh1's rows
 /// (`rdm.node_admin.node.serve.via-forward` at mesh2's mesh-primary naming the fabric-primary). With
-/// the fabric-primary's runtime held (SIGSTOP), `nodes.get` of mesh2 sent to mesh2's mesh-primary still
+/// the fabric-primary's runtime held (SIGSTOP), `node.get` of mesh2 sent to mesh2's mesh-primary still
 /// answers mesh2's rpc node by its tag, from its own atlas, with no store read
 /// (`rdm.node_admin.node.serve.via-get` at mesh2's mesh-primary, `io_calls` 0). Must NOT happen:
 /// another mesh's read answered by mesh2's mesh-primary from its own view (rows without their tags,
@@ -80,9 +80,9 @@ async fn a_mesh_primary_answers_its_own_meshs_read_with_the_fabric_primary_held_
 
     // Reads sent to mesh2's mesh-primary.
     let at_mp = Nodes::new(estate.carrier_at(&mp.name).await);
-    let other_mesh = at_mp.get(&Filter::new().eq("mesh", ["mesh1"]).eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("nodes.get [mesh1, red] at {}: {e:?}", mp.name));
+    let other_mesh = at_mp.get(&Filter::new().eq("mesh", ["mesh1"]).eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("node.get [mesh1, red] at {}: {e:?}", mp.name));
     assert_eq!(names(&other_mesh), [fp.name.to_string()], "another mesh's read is carried up to the fabric-primary, whose atlas holds mesh1's rows");
-    let no_mesh = at_mp.get(&Filter::new().eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("nodes.get [red] at {}: {e:?}", mp.name));
+    let no_mesh = at_mp.get(&Filter::new().eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("node.get [red] at {}: {e:?}", mp.name));
     assert_eq!(names(&no_mesh), [fp.name.to_string()], "a read naming no mesh is carried up to the fabric-primary");
 
     // The fabric-primary's runtime held: mesh2's mesh-primary answers its own mesh from its atlas.
@@ -92,7 +92,7 @@ async fn a_mesh_primary_answers_its_own_meshs_read_with_the_fabric_primary_held_
     assert_eq!(held.state_after, Some('T'), "the OS holds the fabric-primary: {held:?}");
     let own = at_mp.get(&Filter::new().eq("mesh", ["mesh2"]).eq("tags", ["blue"])).await;
     fp_rt.apply(Fault::Continue).expect("the fabric-primary's runtime is released");
-    let own = own.unwrap_or_else(|e| panic!("nodes.get [mesh2, blue] at {} with the fabric-primary held: {e:?}", mp.name));
+    let own = own.unwrap_or_else(|e| panic!("node.get [mesh2, blue] at {} with the fabric-primary held: {e:?}", mp.name));
     assert_eq!(names(&own), [rpc.name.to_string()], "mesh2's mesh-primary answers its own mesh from its atlas, the fabric-primary not asked");
 
     estate.stop().await;

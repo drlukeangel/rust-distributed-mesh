@@ -321,7 +321,7 @@ impl ConnectionsWriter {
     }
 
     /// [`Self::held_routes`] with the name the node holds them under and whether its held set is
-    /// complete: what `node.connections.get` answers.
+    /// complete: what `node.connection.get` answers.
     pub async fn held_connections(&self) -> HeldConnections {
         let own = self.own_now();
         let held = self.inner.held.lock().unwrap();
