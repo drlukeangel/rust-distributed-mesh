@@ -139,7 +139,7 @@ separate step.
   10 meshes is the first size, on this box, then multi-host; the targets above stand as targets, not
   measured capacity. arch-1's five points, each kept and applied above except where the page decides
   otherwise: (1) M4 is measured from the kill, with the kill to the mark and the mark to Ready reported on
-  their own; arch-1's 60 s is not from the kill: node-recovery.md's timeline (the mark at the floor, the
+  their own; arch-1's 40 s from the kill is under node-recovery.md's timeline, which (the mark at the floor, the
   investigation half a floor later) puts the kill to Ready at about 50 s at the defaults, so the target is
   60 s from the kill and 25 s from the mark; (2) M6 loads one node-admin at a time, counts completions and
   reports errors and timeouts, the all-at-once run reported with no target; (3) a 20-sample target is on
