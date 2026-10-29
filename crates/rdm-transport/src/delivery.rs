@@ -203,7 +203,11 @@ impl AckOnRecovery {
     /// The owner can recover the frame: ack it on the stream its latest copy arrived on.
     pub(crate) async fn write(self) {
         let held = self.d.inner.st.lock().unwrap().calls.get_mut(&self.invocation).and_then(|s| s.unrecovered.remove(&self.delivery_seq));
-        let Some((ack, to)) = held else { return };
+        let Some((ack, to)) = held else {
+            tracing::info_span!("rdm.node_rpc.delivery.reject.via-ack-without-invocation", delivery_id = %self.invocation, seq = self.seq, frame_delivery_seq = self.delivery_seq)
+                .in_scope(|| tracing::warn!("the invocation holds no owed ack for this frame: no ack is written"));
+            return;
+        };
         match &to {
             AckTo::Stream(out) => {
                 self.d.write_ack(out, &ack, AckOf::Response).await;
@@ -658,6 +662,9 @@ impl Delivery {
         let ok = written == Written::Ok;
         if ok {
             self.inner.stats.acks_sent.fetch_add(1, Ordering::SeqCst);
+        } else {
+            tracing::info_span!("rdm.node_rpc.delivery.reject.via-ack-not-written", delivery_id = %h.delivery_id(), of = kind.name(), written = ?written)
+                .in_scope(|| tracing::info!("the ack's stream took no write"));
         }
         ok
     }
