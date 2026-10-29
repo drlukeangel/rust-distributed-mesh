@@ -1355,7 +1355,7 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
     // The decision ends once its terminate report is answered: owed while an attempt holds the mesh
     // (the recovery that re-created the birth), so it is waited for, never cut by the estate's stop.
     wait_for("the refused caller's decision is reported to the fabric-primary", crate::node_recovery_due() * 2, || async {
-        spans_named(&estate.spans(), "rdm.node_admin.node.update.via-refused-caller").into_iter().find(|d| attr(d, "node_id") == node_id && attr(d, "decision") == "delete-deleted-birth" && attr(d, "outcome") == "terminate-reported").map(|_| ())
+        spans_named(&estate.spans(), "rdm.node_admin.node.update.via-refused-caller").into_iter().find(|d| attr(d, "node_id") == node_id && ["delete-deleted-birth", "delete-path-held"].contains(&attr(d, "decision").as_str()) && attr(d, "outcome") == "terminate-reported").map(|_| ())
     })
     .await;
 
@@ -1370,9 +1370,11 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
     assert!(decisions.iter().all(|d| attr(d, "decision") != "re-admit"), "a deleted birth is never re-admitted: {decisions:#?}");
     let refused_decided = decisions
         .iter()
-        .find(|d| ["digest", "declaration", "join"].contains(&attr(d, "door").as_str()) && attr(d, "decision") == "delete-deleted-birth" && attr(d, "outcome") == "terminate-reported")
-        .unwrap_or_else(|| panic!("expected a digest, declaration or join door decision delete-deleted-birth with terminate-reported: {decisions:#?}"));
-    assert_eq!(attr(refused_decided, "own"), "delete-deleted-birth", "{refused_decided}");
+        .find(|d| ["digest", "declaration", "join"].contains(&attr(d, "door").as_str()) && ["delete-deleted-birth", "delete-path-held"].contains(&attr(d, "decision").as_str()) && attr(d, "outcome") == "terminate-reported")
+        .unwrap_or_else(|| panic!("expected a digest, declaration or join door decision that deletes the caller, with terminate-reported: {decisions:#?}"));
+    // Deleted either way (Q207, Q217): its record deleted, or its path already held by the re-created
+    // birth when the caller was decided, whichever the decision met first; never re-admitted.
+    assert!(["delete-deleted-birth", "delete-path-held"].contains(&attr(refused_decided, "own").as_str()), "{refused_decided}");
 
     let reported = spans_named(&spans, "rdm.node_admin.node.update.via-returned-reported")
         .into_iter()
