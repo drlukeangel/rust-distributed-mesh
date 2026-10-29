@@ -382,3 +382,133 @@ impl crate::control_plane::ControlPlane {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::build::PinnedBirth;
+    use crate::build_state::{AttemptOpened, AttemptReason, BuildStepReceipt};
+
+    // CONTRACT (`docs/architecture/node-identity-and-state.md:570` — "Setting: `stopped_node_ttl`
+    // (`RDM_STOPPED_NODE_TTL`), read by the fabric-primary only. Blank means forever: no sweep, a
+    // stopped node stays until its own start or delete. RDM's shipped config sets 30 minutes" and
+    // `docs/architecture/node-identity-and-state.md:573` — "Age: The current stopped period's own stop
+    // receipt in the Build log, never an earlier stop before a later start. A birth whose receipt cannot
+    // be read is skipped by name, never treated as expired"): `ttl_from_env` parses `ms`, `s`, `m`, `h`,
+    // treats unset as 30 minutes and blank as `None`, and refuses zero or unknown units; `stop_age`
+    // returns the current stop receipt's timestamp, resets when a later start of the same birth completes,
+    // and reports `Unreadable` when a targeted stop receipt lacks a valid `LifecycleOp`.
+    // @feature: stopped-node-collection
+    #[test]
+    fn ttl_from_env_and_stop_age_follow_current_stopped_period_and_flag_unreadable_receipts() {
+        assert_eq!(ttl_from_env(None), Ok(Some(SHIPPED_TTL)));
+        assert_eq!(ttl_from_env(Some("")), Ok(None));
+        assert_eq!(ttl_from_env(Some("5m")), Ok(Some(Duration::from_secs(300))));
+        assert!(ttl_from_env(Some("0ms")).is_err());
+        assert!(ttl_from_env(Some("10d")).is_err());
+
+        let path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let node_id = NodeId::mint();
+        let inc = IncarnationId::mint();
+        let build_id = BuildId::mint();
+
+        let stop_action = AttemptAction::Stop {
+            path: path.clone(),
+            node_id: node_id.clone(),
+            from_incarnation: inc.clone(),
+        };
+        let start_action = AttemptAction::Start {
+            path: path.clone(),
+            node_id: node_id.clone(),
+            from_incarnation: inc.clone(),
+        };
+        let steps_action = AttemptAction::Steps {
+            steps: vec![],
+            pinned: vec![(path.clone(), PinnedBirth { node_id: node_id.clone(), incarnation: inc.clone() })],
+        };
+        assert!(acts_on(&stop_action, &inc));
+        assert!(acts_on(&steps_action, &inc));
+        assert!(!acts_on(&stop_action, &IncarnationId::mint()));
+
+        let op1 = LifecycleOp {
+            build_id: build_id.to_string(),
+            attempt: 1,
+            operation: format!("node.stop:{path}"),
+            node_id: node_id.clone(),
+            incarnation: inc.clone(),
+            name: path.clone(),
+            event_at_rafka_ms: 1_000,
+            traceparent: None,
+            tracestate: None,
+        };
+        let mut facts = vec![
+            BuildFact::Opened(AttemptOpened {
+                mesh: None,
+                build_id: build_id.clone(),
+                attempt: 1,
+                reason: AttemptReason::Stop,
+                action: Some(stop_action.clone()),
+                opened_by: "mesh1.admin.1".into(),
+                opened_at_ms: 900,
+                context: None,
+            }),
+            BuildFact::Step(BuildStepReceipt {
+                mesh: None,
+                build_id: build_id.clone(),
+                attempt: 1,
+                operation: format!("node.stop:{path}"),
+                step: "Complete".into(),
+                outcome: StepOutcome::Complete,
+                output: Some(serde_json::to_value(&op1).unwrap()),
+                executor: Some("mesh1.admin.1".into()),
+            }),
+        ];
+        assert_eq!(stop_age(&facts, &node_id, &inc), Age::StoppedAt(1_000));
+
+        // A later start of the same birth ends the stopped period.
+        facts.push(BuildFact::Opened(AttemptOpened {
+            mesh: None,
+            build_id: build_id.clone(),
+            attempt: 2,
+            reason: AttemptReason::Start,
+            action: Some(start_action),
+            opened_by: "mesh1.admin.1".into(),
+            opened_at_ms: 2_000,
+            context: None,
+        }));
+        facts.push(BuildFact::Step(BuildStepReceipt {
+            mesh: None,
+            build_id: build_id.clone(),
+            attempt: 2,
+            operation: format!("node.start:{path}"),
+            step: "Complete".into(),
+            outcome: StepOutcome::Complete,
+            output: None,
+            executor: Some("mesh1.admin.1".into()),
+        }));
+        assert!(matches!(stop_age(&facts, &node_id, &inc), Age::NoCurrentReceipt(ref r) if r.contains("precedes its node.start:mesh1.rpc.1")));
+
+        // A targeted stop receipt with missing output is reported as Unreadable, never expired.
+        facts.push(BuildFact::Opened(AttemptOpened {
+            mesh: None,
+            build_id: build_id.clone(),
+            attempt: 3,
+            reason: AttemptReason::Stop,
+            action: Some(stop_action),
+            opened_by: "mesh1.admin.1".into(),
+            opened_at_ms: 3_000,
+            context: None,
+        }));
+        facts.push(BuildFact::Step(BuildStepReceipt {
+            mesh: None,
+            build_id,
+            attempt: 3,
+            operation: format!("node.stop:{path}"),
+            step: "Complete".into(),
+            outcome: StepOutcome::Complete,
+            output: None,
+            executor: Some("mesh1.admin.1".into()),
+        }));
+        assert!(matches!(stop_age(&facts, &node_id, &inc), Age::Unreadable(ref r) if r.contains("commits no stop time")));
+    }
+}

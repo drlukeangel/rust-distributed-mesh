@@ -731,7 +731,10 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
     estate.record_trace_url(&trace);
 }
 
-/// CONTRACT (node-identity-and-state.md §6.9, R-GC1; node-stop.md step 6): on a fabric whose
+/// CONTRACT (`docs/architecture/node-identity-and-state.md:570` — "Setting: `stopped_node_ttl`
+/// (`RDM_STOPPED_NODE_TTL`), read by the fabric-primary only" and
+/// `docs/architecture/node-identity-and-state.md:575` — "Action: One ordinary node.delete Build per
+/// selected node, one at a time"; node-identity-and-state.md §6.9, R-GC1; node-stop.md step 6): on a fabric whose
 /// `RDM_STOPPED_NODE_TTL` is 3 s, `mesh1.rpc.1` is stopped and left alone. The fabric-primary's sweep
 /// ages it from its stop receipt and submits one ordinary node.delete Build
 /// (`rdm.node_admin.node.delete.via-stopped-ttl` with the node, the receipt's time, the ttl and the
@@ -740,6 +743,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
 /// period never started: nothing else is deleted. Must NOT happen: a delete before one ttl, a second
 /// delete Build, a collection the sweep made itself without a Build, or a seat transfer, connections delete or stop
 /// sent again to the stopped birth.
+// @feature: stopped-node-collection
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
     let test = "a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep";
