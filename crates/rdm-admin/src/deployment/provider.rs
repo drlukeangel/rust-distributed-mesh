@@ -333,7 +333,21 @@ pub enum Inspected {
 /// `fabric-primary`'s drift pass, the create's read of the path's previous birth. A fact the provider
 /// refuses to adopt, an unreadable exit record and the provider's `Unknown` are each `Unavailable`,
 /// named why.
+///
+/// The inspect answers within [`INSPECT_BOUND`] over both providers (Q273): past it, `Unavailable` with
+/// the reason `deadline`, never a proof of exit, and the investigation's tickles follow.
 pub async fn inspect_runtime(provider: &dyn DeploymentProvider, fact: &RuntimeFact, data_dir: Option<&str>, incarnation: &str) -> Inspected {
+    match tokio::time::timeout(INSPECT_BOUND, inspect_unbounded(provider, fact, data_dir, incarnation)).await {
+        Ok(inspected) => inspected,
+        Err(_) => Inspected::Unavailable(format!("deadline: the provider did not answer within {INSPECT_BOUND:?}")),
+    }
+}
+
+/// How long node.runtime.inspect waits for its provider's answer (Q273): a provider constant, no
+/// setting.
+pub const INSPECT_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
+
+async fn inspect_unbounded(provider: &dyn DeploymentProvider, fact: &RuntimeFact, data_dir: Option<&str>, incarnation: &str) -> Inspected {
     use DeploymentStatus as S;
     let handle = match adopt(provider, fact) {
         Ok(handle) => handle,

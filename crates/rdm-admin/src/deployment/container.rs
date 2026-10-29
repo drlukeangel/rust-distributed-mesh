@@ -82,10 +82,12 @@ async fn docker(args: &[&str]) -> Result<String, String> {
 
 /// [`docker`], the client run with `env` in its own environment as well (each secret a `-e K` names).
 async fn docker_with_env(args: &[&str], env: &std::collections::BTreeMap<String, String>) -> Result<String, String> {
+    // Killed on drop: a caller's bound (node.runtime.inspect's, Q273) that expires ends the client too.
     let out = Command::new("docker")
         .args(args)
         .envs(env)
         .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(|e| format!("docker {}: {e}", args.first().unwrap_or(&"")))?;

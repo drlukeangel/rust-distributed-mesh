@@ -151,4 +151,52 @@ mod tests {
             other => panic!("expected Unavailable for inexact locator, got {other:?}"),
         }
     }
+
+    /// A provider whose inspect never answers.
+    struct Stalled(StubProvider);
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for Stalled {
+        fn kind(&self) -> ProviderKind {
+            self.0.kind()
+        }
+        fn control_domain(&self) -> String {
+            self.0.control_domain()
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+            self.0.spawn(spec).await
+        }
+        async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
+            self.0.terminate(handle, mode).await
+        }
+        async fn inspect(&self, _handle: &DeploymentHandle) -> DeploymentStatus {
+            std::future::pending().await
+        }
+        async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
+            self.0.signal_stop(handle).await
+        }
+        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+            self.0.find(spec).await
+        }
+    }
+
+    // @feature: node-runtime-inspect
+    /// CONTRACT (Q273): node.runtime.inspect answers within its bound over every provider: a provider
+    /// that does not answer within [`INSPECT_BOUND`] is `unavailable` with the reason deadline, never
+    /// a proof of exit. Must NOT happen: an investigation waiting on its provider without end.
+    #[tokio::test(start_paused = true)]
+    async fn an_inspect_its_provider_does_not_answer_is_unavailable_at_its_bound() {
+        use crate::deployment::provider::INSPECT_BOUND;
+        let p = Stalled(StubProvider { domain: "process:boot-a:ns-1".into(), status: DeploymentStatus::Running, terminated: Mutex::default() });
+        let fact = RuntimeFact {
+            deployment_id: rdm_core::fixture_crockford60("dep-inspect-2"),
+            provider: RuntimeProvider::Process,
+            control_domain: "process:boot-a:ns-1".into(),
+            locator: RuntimeLocator::Process { pid: 48214, start: 1718289901 },
+        };
+        let started = tokio::time::Instant::now();
+        let got = inspect_runtime(&p, &fact, None, rdm_core::IncarnationId::mint().as_str()).await;
+        assert!(matches!(&got, Inspected::Unavailable(why) if why.starts_with("deadline")), "{got:?}");
+        assert_eq!(started.elapsed(), INSPECT_BOUND, "it answers at its bound");
+    }
 }

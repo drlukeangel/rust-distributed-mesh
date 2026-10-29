@@ -2670,10 +2670,19 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             let (client, node, view) = (client.clone(), watched.get(&id).cloned(), ladder_view.clone());
                                                             let (me_id, me, connections) = (me_id.clone(), me.to_string(), Some(ladder_connections.clone()));
                                                             let commands = Some(ladder_commands.clone());
+                                                            let inspector = runner.clone();
                                                             async move {
-                                                                let Some(node) = node else { return Err(format!("{id} is not in the topology")) };
-                                                                let Some(client) = client else { return Err("this admin has no Node RPC client".to_string()) };
-                                                                crate::offline::tickle(&node, &view, &crate::offline::TickleClient { client, me_id, me, connections, commands }).await
+                                                                use crate::offline::Ladder;
+                                                                let Some(node) = node else { return Ladder::Tickled(Err(format!("{id} is not in the topology"))) };
+                                                                // node.runtime.inspect first (Q273): exited or os-stopped is the verdict, and no
+                                                                // tickle is sent.
+                                                                let (inspected, handle) = crate::node_investigation::inspect_birth_with_handle(&*inspector.provider, &inspector.digest_view, inspector.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), &node).await;
+                                                                crate::node_investigation::span_inspection(&me, &node, &inspected, handle.as_ref(), "the recovery tick's investigation asked the provider first");
+                                                                if matches!(inspected, crate::deployment::provider::Inspected::Exited(_) | crate::deployment::provider::Inspected::OsStopped) {
+                                                                    return Ladder::Gone(crate::node_investigation::Finding::from(inspected).name().to_string());
+                                                                }
+                                                                let Some(client) = client else { return Ladder::Tickled(Err("this admin has no Node RPC client".to_string())) };
+                                                                Ladder::Tickled(crate::offline::tickle(&node, &view, &crate::offline::TickleClient { client, me_id, me, connections, commands }).await)
                                                             }
                                                         },
                                                         |id| {

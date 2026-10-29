@@ -1326,8 +1326,8 @@ impl AdminRunner {
 #[async_trait::async_trait]
 impl crate::seat_revision::PathProbe for AdminRunner {
     /// Node investigation (the one primitive, Q107 item 1) on `node` from this admin's view: the leads,
-    /// the direct tickle and the same kick through peers, then node.runtime.inspect over the one runtime
-    /// resolution.
+    /// node.runtime.inspect over the one runtime resolution, then, unless it proved the runtime exited or
+    /// os-stopped, the direct tickle and the same kick through peers (Q273).
     async fn investigate(&self, node: &Node) -> crate::node_investigation::Finding {
         let view = self.topology.read().await.clone();
         let calls = crate::offline::TickleClient { client: self.node_rpc.client.clone(), me_id: self.node_id.clone(), me: self.held_name().to_string(), connections: self.connections.clone(), commands: None };

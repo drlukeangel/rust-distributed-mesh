@@ -524,7 +524,7 @@ pub async fn complete(c: &Claimed, me_id: &NodeId, builds: &dyn BuildStateAdapte
 }
 
 /// [`Answers`] over this process's Node RPC client: node investigation of the lost birth direct (no view
-/// holds carriers yet) and then the provider's inspection of its recorded runtime; the probe of every
+/// holds carriers yet), the provider's inspection of its recorded runtime first (Q273); the probe of every
 /// node-admin birth the store's live rows record, at once.
 pub struct ProbeAnswers {
     /// This launch's path.name.

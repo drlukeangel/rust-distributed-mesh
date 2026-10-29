@@ -96,25 +96,33 @@ impl From<crate::deployment::provider::Inspected> for Finding {
 }
 
 /// Investigate `node`'s exact birth from `view` over `calls`, the caller's own Node RPC client, call
-/// deadline, carriers and leads read (`docs/architecture/lifecycles/node-investigation.md`): the
-/// leads, the direct tickle and the same kick through peers, the leads first
-/// ([`crate::offline::tickle`]); then, only when nobody reached the
-/// birth, `inspect`, the caller's node.runtime.inspect of the birth's exact runtime, awaited at that
-/// point and never before. An answer from the exact birth is `reached` and the provider is not asked;
-/// a node the view holds no birth of runs no ladder and is unproven by name, the provider not asked
-/// either. Every other verdict is the provider's.
+/// deadline, carriers and leads read (`docs/architecture/lifecycles/node-investigation.md`; Q273): the
+/// index read ([`crate::offline::leads_of`]); then `inspect`, the caller's node.runtime.inspect of the
+/// birth's exact runtime, whose `exited` or `os-stopped` is the verdict with no tickle sent; otherwise
+/// the direct tickle and the same kick through peers, the leads first ([`crate::offline::tickle_with`]).
+/// An answer from the exact birth is `reached`; nobody reaching it, the verdict is the inspect's
+/// (`running` stays `running`, `unavailable` is `unproven`). A node the view holds no birth of runs no
+/// ladder and is unproven by name, the provider not asked.
 pub async fn investigate<C, V>(node: &Node, view: &Topology, calls: &C, inspect: V) -> Finding
 where
     C: TickleCalls + ?Sized,
     V: std::future::Future<Output = Finding>,
 {
-    match crate::offline::tickle(node, view, calls).await {
+    if node.incarnation_id.is_none() {
+        return Finding::Unproven { reason: format!("{} ({}) holds no recorded birth: there is no exact birth to tickle", node.name, node.node_id) };
+    }
+    let leads = crate::offline::leads_of(node, view, calls).await;
+    let inspected = inspect.await;
+    if matches!(inspected, Finding::Exited { .. } | Finding::OsStopped) {
+        return inspected;
+    }
+    match crate::offline::tickle_with(node, view, calls, leads).await {
         Err(reason) => Finding::Unproven { reason },
         Ok(Tickle::Reached { answer, carrier }) => Finding::Reached { answer, carrier },
         Ok(Tickle::Unreached(unreached)) => {
-            unreached.next("inspect");
+            unreached.next("verdict");
             drop(unreached);
-            inspect.await
+            inspected
         }
     }
 }
@@ -420,19 +428,26 @@ mod tests {
     async fn only_the_exact_births_answer_is_reached_and_only_the_provider_proves_an_exit() {
         let (node, view) = world();
         let rig = |direct: Option<StatusReply>, carried: Option<(&'static str, StatusReply)>| Rig { direct, carried, asked: Mutex::default() };
-        let asked = AtomicBool::new(false);
-        let found = investigate(&node, &view, &rig(Some(current(&node)), None), provider_says(Finding::Exited { code: Some(137) }, &asked)).await;
-        assert_eq!(found, Finding::Reached { answer: current(&node), carrier: None });
-        let found = investigate(&node, &view, &rig(None, Some(("mesh1.rpc.3", current(&node)))), provider_says(Finding::Exited { code: Some(137) }, &asked)).await;
-        assert_eq!(found, Finding::Reached { answer: current(&node), carrier: Some("mesh1.rpc.3".into()) });
-        assert_eq!((found.name(), found.detail()), ("reached", "mesh1.rpc.3".to_string()));
-        assert!(!asked.load(Ordering::SeqCst), "an answer settles it: the provider is not asked");
-        for said in [Finding::Running, Finding::OsStopped, Finding::Exited { code: Some(137) }, Finding::Unproven { reason: "Unknown".into() }] {
+        // The inspect first (Q273): exited or os-stopped is the verdict, and no tickle is sent.
+        for said in [Finding::Exited { code: Some(137) }, Finding::OsStopped] {
             let asked = AtomicBool::new(false);
+            let r = rig(Some(current(&node)), Some(("mesh1.rpc.3", current(&node))));
+            assert_eq!(investigate(&node, &view, &r, provider_says(said.clone(), &asked)).await, said, "the provider proved the runtime gone: its verdict");
+            assert!(asked.load(Ordering::SeqCst), "the provider is asked first");
+            assert!(r.asked.lock().unwrap().is_empty(), "no tickle is sent once the inspect proved it gone: {:?}", r.asked.lock().unwrap());
+        }
+        // Running or unavailable: the ladder runs, and only the exact birth's answer is reached; nobody
+        // reaching it, the verdict is the inspect's.
+        for said in [Finding::Running, Finding::Unproven { reason: "Unknown".into() }] {
+            let asked = AtomicBool::new(false);
+            let found = investigate(&node, &view, &rig(Some(current(&node)), None), provider_says(said.clone(), &asked)).await;
+            assert_eq!(found, Finding::Reached { answer: current(&node), carrier: None });
+            let found = investigate(&node, &view, &rig(None, Some(("mesh1.rpc.3", current(&node)))), provider_says(said.clone(), &asked)).await;
+            assert_eq!(found, Finding::Reached { answer: current(&node), carrier: Some("mesh1.rpc.3".into()) });
+            assert_eq!((found.name(), found.detail()), ("reached", "mesh1.rpc.3".to_string()));
             let another_birth = Node { incarnation_id: Some(IncarnationId::mint()), ..node.clone() };
             let r = rig(Some(current(&another_birth)), Some(("mesh1.rpc.2", current(&another_birth))));
-            assert_eq!(investigate(&node, &view, &r, provider_says(said.clone(), &asked)).await, said, "nobody reached the exact birth: the provider's verdict");
-            assert!(asked.load(Ordering::SeqCst), "the provider is asked once nobody reached it");
+            assert_eq!(investigate(&node, &view, &r, provider_says(said.clone(), &asked)).await, said, "nobody reached the exact birth: the inspect's answer");
             assert_eq!(r.asked.lock().unwrap().first().map(String::as_str), Some("direct"), "the direct probe first");
         }
         let asked = AtomicBool::new(false);
@@ -491,7 +506,7 @@ mod tests {
             let asked = AtomicBool::new(false);
             let found = investigate(&node, &view, &silent(false, direct, carried), provider_says(Finding::Running, &asked)).await;
             assert!(matches!(found, Finding::Reached { .. }), "a birth with no command unanswered is reached by its answer: {found:?}");
-            assert!(!asked.load(Ordering::SeqCst), "reached: the provider is not asked");
+            assert!(asked.load(Ordering::SeqCst), "the provider is asked first (Q273)");
         }
     }
 
@@ -568,7 +583,7 @@ mod tests {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             let node_for_inspect = node.clone();
             investigate(&node, &view, &rig, async move {
-                let outcome = crate::deployment::provider::Inspected::Exited(Some(0));
+                let outcome = crate::deployment::provider::Inspected::Running;
                 span_inspection(
                     "mesh1.admin.1",
                     &node_for_inspect,
@@ -581,8 +596,7 @@ mod tests {
             .await
         };
 
-        assert_eq!(found, Finding::Exited { code: Some(0) });
-        assert_eq!((found.name(), found.detail()), ("exited", "0".to_string()));
+        assert_eq!(found, Finding::Running, "nobody reached it: the inspect's answer");
         assert_eq!(
             *rig.asked.lock().unwrap(),
             vec![
@@ -613,7 +627,7 @@ mod tests {
                 .attributes
                 .get("next")
                 .map(String::as_str),
-            Some("inspect")
+            Some("verdict")
         );
 
         let inspect_spans = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
@@ -623,14 +637,7 @@ mod tests {
                 .attributes
                 .get("verdict")
                 .map(String::as_str),
-            Some("exited")
-        );
-        assert_eq!(
-            inspect_spans[0]
-                .attributes
-                .get("exit_code")
-                .map(String::as_str),
-            Some("0")
+            Some("running")
         );
     }
 }

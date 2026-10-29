@@ -418,25 +418,42 @@ impl TickleCalls for TickleClient {
 /// investigation, the primary watch and the successor ladder of node.primary.update, over `calls`,
 /// the caller's own client, deadline and eligible carriers.
 pub async fn tickle<C: TickleCalls + ?Sized>(node: &crate::model::Node, view: &crate::topology::Topology, calls: &C) -> Result<Tickle, String> {
-    use futures_util::StreamExt as _;
-    use tracing::Instrument as _;
-    let Some(incarnation) = node.incarnation_id.clone() else {
-        return Err(format!("{} ({}) holds no recorded birth: there is no exact birth to tickle", node.name, node.node_id));
-    };
-    let caller = calls.caller();
-    let deadline_ms = calls.deadline().as_millis() as i64;
-    // Every probe names the same exact birth (node-tickle.md "Target").
-    let probe = rdm_core::status::StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-    // The leads (Q107 item 1, step a): who holds a connection to the birth, the peers the kick goes
-    // through first; never reachability. An index that cannot be read leaves the caller's carriers
-    // alone, named on the spans.
-    let (leads, leads_named) = match calls.leads(view, node).await {
+    if node.incarnation_id.is_none() {
+        return Err(no_birth(node));
+    }
+    let leads = leads_of(node, view, calls).await;
+    tickle_with(node, view, calls, leads).await
+}
+
+fn no_birth(node: &crate::model::Node) -> String {
+    format!("{} ({}) holds no recorded birth: there is no exact birth to tickle", node.name, node.node_id)
+}
+
+/// The leads (Q107 item 1, step a; node-investigation.md's index read): who holds a connection to the
+/// birth, the peers the kick goes through first; never reachability. An index that cannot be read
+/// leaves the caller's carriers alone, named on the spans.
+pub async fn leads_of<C: TickleCalls + ?Sized>(node: &crate::model::Node, view: &crate::topology::Topology, calls: &C) -> (Vec<crate::model::Node>, String) {
+    match calls.leads(view, node).await {
         Ok(leads) => {
             let named = leads.iter().map(|l| l.name.to_string()).collect::<Vec<_>>().join(",");
             (leads, named)
         }
         Err(e) => (Vec::new(), format!("unreadable: {e}")),
+    }
+}
+
+/// [`tickle`] over leads already read ([`leads_of`]): the direct probe, then the same probe through
+/// the leads and the caller's carriers.
+pub async fn tickle_with<C: TickleCalls + ?Sized>(node: &crate::model::Node, view: &crate::topology::Topology, calls: &C, (leads, leads_named): (Vec<crate::model::Node>, String)) -> Result<Tickle, String> {
+    use futures_util::StreamExt as _;
+    use tracing::Instrument as _;
+    let Some(incarnation) = node.incarnation_id.clone() else {
+        return Err(no_birth(node));
     };
+    let caller = calls.caller();
+    let deadline_ms = calls.deadline().as_millis() as i64;
+    // Every probe names the same exact birth (node-tickle.md "Target").
+    let probe = rdm_core::status::StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
     // The probe's span carries its answer or its failure (node-tickle.md "Observability contract").
     let said = |span: &tracing::Span, end: &ProbeEnd| {
         match end {
@@ -530,6 +547,16 @@ enum LadderEnd {
     Unreached { direct: String, asked: String, verdict_at_ms: u64 },
     /// No ladder ran: the birth could not be probed, by name (no incarnation, no client).
     NotRun(String),
+}
+
+/// What one birth's investigation in the fold returned (Q273): the provider's proof that its runtime is
+/// gone, the inspect's verdict named, with no tickle sent; or the ladder's result.
+#[derive(Debug)]
+pub enum Ladder {
+    /// The inspect proved the runtime exited or os-stopped: its verdict's name.
+    Gone(String),
+    /// The ladder ran: its result.
+    Tickled(Result<Tickle, String>),
 }
 
 /// One ladder of the ladder, running beside the loop: started by one tick, folded by a later one.
@@ -632,7 +659,7 @@ impl OfflineTickle {
     where
         P: Fn(&str) -> bool,
         T: Fn(String) -> TF,
-        TF: std::future::Future<Output = Result<Tickle, String>> + Send + 'static,
+        TF: std::future::Future<Output = Ladder> + Send + 'static,
         O: Fn(String) -> OF,
         OF: std::future::Future<Output = rdm_transport::iroh_obs::IrohObservation>,
     {
@@ -765,9 +792,9 @@ impl OfflineTickle {
                 continue;
             }
             report.tickled.push(id.clone());
-            // What this ladder's `unreached` is followed by (node-tickle.md "What follows": "recovery runs
-            // the inspect on `unreached`").
-            let next = "inspect";
+            // What this ladder's `unreached` is followed by (Q273): the verdict, the inspect having run
+            // before the tickles.
+            let next = "verdict";
             // The ladder: the one ladder over the birth (`tickle`). It takes no lock and waits on
             // nothing of this admin's; a stop cancels it where it stands
             // (`StopGate::until_stopped`), and it never resumes.
@@ -777,13 +804,16 @@ impl OfflineTickle {
             let (cancelled_id, cancelled_path, cancelled_by) = (id.clone(), path.clone(), self.observer.clone());
             let run = self.gate.until_stopped(async move {
                 match ladder.await {
-                    Ok(Tickle::Reached { answer, carrier }) => LadderEnd::Reached { answer: answer.name(), current: matches!(answer, rdm_core::status::StatusReply::Current { .. }), carrier },
-                    Ok(Tickle::Unreached(unreached)) => {
+                    // The inspect proved the runtime gone: no tickle was sent, and the birth is held offline
+                    // as an unreached one is, its recovery following at once.
+                    Ladder::Gone(verdict) => LadderEnd::Unreached { direct: format!("not probed: node.runtime.inspect answered {verdict}"), asked: String::new(), verdict_at_ms: tick_ms + tick_began.elapsed().as_millis() as u64 },
+                    Ladder::Tickled(Ok(Tickle::Reached { answer, carrier })) => LadderEnd::Reached { answer: answer.name(), current: matches!(answer, rdm_core::status::StatusReply::Current { .. }), carrier },
+                    Ladder::Tickled(Ok(Tickle::Unreached(unreached))) => {
                         unreached.next(next);
                         let verdict_at_ms = tick_ms + tick_began.elapsed().as_millis() as u64;
                         LadderEnd::Unreached { direct: unreached.direct.name(), asked: unreached.carriers(), verdict_at_ms }
                     }
-                    Err(reason) => LadderEnd::NotRun(reason),
+                    Ladder::Tickled(Err(reason)) => LadderEnd::NotRun(reason),
                 }
             });
             let task = tokio::spawn(async move {
@@ -945,7 +975,7 @@ pub(crate) mod tests {
                 |_| true,
                 PROBE_DELAY,
                 |_| {
-                    let end = ladder_end(direct, &via);
+                    let end = crate::offline::Ladder::Tickled(ladder_end(direct, &via));
                     async move { end }
                 },
                 |_| {
@@ -1100,7 +1130,7 @@ pub(crate) mod tests {
                         async move {
                             connects.lock().unwrap().push((id, start.elapsed()));
                             sleep(DIAL).await;
-                            Ok(unreached(&["mesh1.rpc.2"]))
+                            crate::offline::Ladder::Tickled(Ok(unreached(&["mesh1.rpc.2"])))
                         }
                     },
                     |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
@@ -1148,7 +1178,7 @@ pub(crate) mod tests {
                         async move {
                             sleep(DIAL).await;
                             ended.fetch_add(1, Ordering::SeqCst);
-                            Ok(unreached(&["mesh1.rpc.2"]))
+                            crate::offline::Ladder::Tickled(Ok(unreached(&["mesh1.rpc.2"])))
                         }
                     },
                     |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
@@ -1212,7 +1242,7 @@ pub(crate) mod tests {
                         async move {
                             sleep(DIAL).await;
                             ended.fetch_add(1, Ordering::SeqCst);
-                            Ok(unreached(&["mesh1.rpc.2"]))
+                            crate::offline::Ladder::Tickled(Ok(unreached(&["mesh1.rpc.2"])))
                         }
                     },
                     |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
@@ -1501,7 +1531,7 @@ pub(crate) mod tests {
             // Nobody reaches the birth: the caller says the inspection follows (node-tickle.md "What follows").
             let rig = Rig::new(probe(Duration::ZERO, None), vec![("mesh1.rpc.2", probe(Duration::from_secs(1), None)), ("mesh1.rpc.3", probe(Duration::from_secs(1), Some(StatusReply::NotReady { reason: "carrier not ready".into() })))]);
             let Tickle::Unreached(u) = tickle(&node, &view, &rig).await.unwrap() else { panic!("unreached") };
-            u.next("inspect");
+            u.next("verdict");
             drop(u);
             let direct = capture.named("rdm.node.tickle.resolve.via-direct");
             assert_eq!(direct.len(), 1, "one direct probe span: {direct:?}");
@@ -1517,7 +1547,7 @@ pub(crate) mod tests {
             let unreached = capture.named("rdm.node.tickle.returns-unknown.via-unreached");
             assert_eq!(unreached.len(), 1, "one unreached span: {unreached:?}");
             let a = &unreached[0].attributes;
-            assert_eq!((a.get("node_id").map(String::as_str), a.get("carriers").map(String::as_str), a.get("next").map(String::as_str)), (Some(b.0.as_str()), Some("mesh1.rpc.2,mesh1.rpc.3"), Some("inspect")), "{a:?}");
+            assert_eq!((a.get("node_id").map(String::as_str), a.get("carriers").map(String::as_str), a.get("next").map(String::as_str)), (Some(b.0.as_str()), Some("mesh1.rpc.2,mesh1.rpc.3"), Some("verdict")), "{a:?}");
             for sp in direct.iter().chain(&peers).chain(&unreached) {
                 eprintln!("span {} trace_id={} {:?}", sp.name, sp.trace_id, sp.attributes);
             }
@@ -1562,7 +1592,7 @@ pub(crate) mod tests {
                         async move {
                             let end = tickle(&node, &view, &*rig).await;
                             verdict_at.lock().unwrap().push(Instant::now());
-                            end
+                            crate::offline::Ladder::Tickled(end)
                         }
                     },
                     |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
@@ -1730,7 +1760,7 @@ pub(crate) mod tests {
                 |_| async {
                     // The direct probe spends its budget, then both carried probes spend one at once.
                     tokio::time::sleep(std::time::Duration::from_millis(2 * BUDGET)).await;
-                    Ok(unreached(&["mesh1.rpc.2"]))
+                    crate::offline::Ladder::Tickled(Ok(unreached(&["mesh1.rpc.2"])))
                 },
                 |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
             )
@@ -1806,7 +1836,7 @@ pub(crate) mod tests {
                 vec![],
                 |id: &str| id != "a",
                 PROBE_DELAY,
-                |_| async { Ok(unreached(&["mesh1.rpc.2"])) },
+                |_| async { crate::offline::Ladder::Tickled(Ok(unreached(&["mesh1.rpc.2"]))) },
                 |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
             )
             .await

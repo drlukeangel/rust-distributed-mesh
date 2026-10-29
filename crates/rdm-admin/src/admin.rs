@@ -2533,7 +2533,7 @@ mod tests {
                     set,
                     |i: &str| heard.contains(i),
                     floor / 2,
-                    |_| async { Ok(crate::offline::Tickle::Unreached(crate::offline::Unreached::of(crate::offline::ProbeEnd::Other { end: "NotSent", detail: "no answer".into() }, vec![crate::offline::PeerProbe { carrier: "mesh2.rpc.2".into(), end: crate::offline::ProbeEnd::Other { end: "NotSent", detail: "deadline".into() } }]))) },
+                    |_| async { crate::offline::Ladder::Tickled(Ok(crate::offline::Tickle::Unreached(crate::offline::Unreached::of(crate::offline::ProbeEnd::Other { end: "NotSent", detail: "no answer".into() }, vec![crate::offline::PeerProbe { carrier: "mesh2.rpc.2".into(), end: crate::offline::ProbeEnd::Other { end: "NotSent", detail: "deadline".into() } }])))) },
                     |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
                 )
                 .await;
