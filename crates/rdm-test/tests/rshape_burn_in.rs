@@ -6212,17 +6212,22 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     // who was cut, on which ports, at which instant, and who held each primary then.
     eprintln!("{}", json!({"event": "fault.udp-drop", "cut_at_ns": cut_at, "victims": victims.iter().map(|v| json!({"name": v["name"], "node_id": v["node_id"], "incarnation_id": v["incarnation_id"], "udp_ports": udp_ports(&st.nodes, &[s(&v["name"])])})).collect::<Vec<_>>(), "fabric_primary": st.fp["name"], "mesh_primaries": [st.primary_of("mesh1")["name"].clone(), st.primary_of("mesh2")["name"].clone()]}));
     let bound = window * 6 + Duration::from_secs(40);
-    // Every node-admin that is not a victim marks every victim silent in its own view: its own silence mark
-    // (node-recovery.md step 1, `rdm.mesh.topology.update.via-member-stale`) after the cut. Its view's
-    // status is not read: an unheard mesh-primary is investigated at once by the fabric-primary once the
-    // election names its successor (node-recovery.md step 2, "without the half-floor wait"), so a victim
-    // may be recovered, a new birth at its path, within moments of its mark.
+    // Every node-admin of a victim's mesh that is not a victim marks it silent in its own view: its own
+    // silence mark (node-recovery.md step 1, `rdm.mesh.topology.update.via-member-stale`) after the cut; an
+    // admin of the other mesh records a victim's silence as its backbone held-member repair, the re-feed
+    // below (gossip.md §6). The view's status is not read: an unheard mesh-primary is investigated at once by
+    // the fabric-primary once the election names its successor (node-recovery.md step 2, "without the
+    // half-floor wait"), so a victim may be recovered, a new birth at its path, within moments of its mark.
     for o in &observers {
         let name = s(&o["name"]);
-        wait_for(&format!("{name} holds every victim unheard"), bound, || async {
+        let own_victims: Vec<String> = victims.iter().filter(|v| v["mesh"] == o["mesh"]).map(|v| s(&v["name"])).collect();
+        if own_victims.is_empty() {
+            continue;
+        }
+        wait_for(&format!("{name} holds every victim of its mesh unheard"), bound, || async {
             let spans = f.estate.spans();
             let marked: BTreeSet<String> = named(&spans, "rdm.mesh.topology.update.via-member-stale").into_iter().filter(|sp| sp["attributes"]["node"] == name.as_str() && start_ns(sp) >= cut_at).map(|sp| s(&sp["attributes"]["member"])).collect();
-            vnames.iter().all(|v| marked.contains(v)).then_some(())
+            own_victims.iter().all(|v| marked.contains(v)).then_some(())
         })
         .await;
     }
