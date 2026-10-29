@@ -136,7 +136,7 @@ async fn a_successor_manages_births_it_never_launched() {
     for r in &recoveries {
         assert_eq!(r["attributes"]["scope"], "mesh1.node_admin: 1 present of 2 desired (exited: mesh1.admin.1)");
     }
-    // A restart, node.stop then node.start, relaunches nothing (node-start.md: the same process rejoins):
+    // A restart, node.stop then node.start, deploys nothing (node-start.md: the same process rejoins):
     // its start's WaitForNodeReady follows StartNode and none of the launch steps. Every other wait is a
     // launch.
     let steps_before = |wait: &Value| -> Vec<Value> {
@@ -153,7 +153,7 @@ async fn a_successor_manages_births_it_never_launched() {
     for wait in &restarts {
         let node = wait["attributes"]["node"].as_str().unwrap();
         let before = steps_before(wait);
-        assert!(!before.iter().any(|sp| PREREQUISITES.contains(&sp["attributes"]["step"].as_str().unwrap()) || sp["attributes"]["step"] == "DeployRuntime"), "{node}: a restart relaunches nothing: {before:?}");
+        assert!(!before.iter().any(|sp| PREREQUISITES.contains(&sp["attributes"]["step"].as_str().unwrap()) || sp["attributes"]["step"] == "DeployRuntime"), "{node}: a restart deploys nothing: {before:?}");
     }
     for wait in launches {
         let node = wait["attributes"]["node"].as_str().unwrap();

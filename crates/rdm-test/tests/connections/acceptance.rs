@@ -27,7 +27,7 @@
 //! | E Failed/Dead stay with their source | `c:connections::a_disconnected_or_failed_direct_never_stays_resident_and_an_older_connect_never_revives_it`; `c:connections::another_nodes_proxy_is_never_held` | none | `a_peer_holds_none_of_a_sources_failed_history_or_its_proxy` |
 //! | F reconnect success returns to Direct in order | `a:connections_writer::a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_cuts_back`; `t:connections::a_direct_connected_disconnects_the_proxy`; `t:connections_integration::a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_back_only_after_it_is_durable`; `c:reconnect::cutback_to_direct_happens_only_after_the_proxy_disconnected_write_is_applied_and_a_failed_write_is_owed_again` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` (its dial is woken by an accept, not by the series' due time) | `a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direct` |
 //! | G an inbound accept is a recovery trigger | `a:connections_writer::an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_source_dial_whose_connected_disconnects_the_proxy`; `a:connections_writer::repeated_accepts_coalesce_into_one_attempt_that_waits_for_the_series_backoff`; `t:connection_observer::an_accepted_connection_is_handed_to_the_accept_trigger_once` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
-//! | H Proxy retirement write failure is safe and retried | `a:connections_writer::a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands`; `n:connection_writes::a_refused_connection_write_is_retried_with_backoff_until_it_lands` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
+//! | H Proxy deletion write failure is safe and retried | `a:connections_writer::a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands`; `n:connection_writes::a_refused_connection_write_is_retried_with_backoff_until_it_lands` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
 //! | I destination/carrier incarnation | `c:connections::a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call_dials` (added with its fix); `c:connections::a_stale_destination_incarnation_is_superseded`; `c:connections::a_stale_carrier_incarnation_is_superseded`; `c:connections::a_direct_fact_naming_a_superseded_destination_is_not_current`; `t:connections_integration::a_fact_naming_a_superseded_birth_still_dials_the_current_one`; `t:connections::an_open_against_another_incarnation_is_wrong_incarnation_and_never_served`; `a:connections_writer::a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming_that_birth` | none | `a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and_never_carries`; `a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_never_carries` |
 //! | J carrier edge loss invalidates Proxy | `t:forward::a_carrier_whose_own_edge_to_the_target_is_not_active_refuses_carrier_edge_lost`; `t:forward::a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_to_be_disconnected`; `a:connections_writer::a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connected` | none | `a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects_the_proxy` |
 //! | K sent request is never rerouted | `t:connections_integration::an_indeterminate_alone_never_invalidates_a_proxy`; `t:routing::certainty_stays_downstream_an_indeterminate_is_never_replayed_through_another_route`; `t:certainty::reply_loss_after_a_complete_send_is_indeterminate` | none | not writable here: no process door forces a post-commit answer timeout on a carried call (Decisions) |
@@ -46,14 +46,14 @@
 //! | 7 a node holds its own facts only, read from no store | as E | none | E |
 //! | 8 active Proxy is source-owned | `c:connections::another_nodes_proxy_is_never_held` | none | E |
 //! | 9 Failed/Dead durable, read by the node investigation, held by no other node | `c:connections::a_disconnected_or_failed_direct_never_stays_resident_and_an_older_connect_never_revives_it` | none | E |
-//! | 10 a valid Proxy overrides Direct until durably retired | `c:connections::the_route_prefers_a_valid_proxy_then_an_active_direct_then_none`; as F, H | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | F |
+//! | 10 a valid Proxy overrides Direct until durably deleted | `c:connections::the_route_prefers_a_valid_proxy_then_an_active_direct_then_none`; as F, H | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | F |
 //! | 11 every node repairs its own direct connections | `n:connection_reconnect::one_reconnect_attempt_at_a_time_per_node`; `a:connections_writer::a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts` | none | C, F (the dial is the source process's own span) |
 //! | 12 node-admin schedules no reconnect | none (an absence) | none | C, F (no node-admin process emits a recovery dial) |
 //! | 13 not a platform Job | n/a: a structure, not a behaviour | - | - |
 //! | 14 the latest Failed row held computes the series | `c:reconnect::the_backoff_is_computed_from_the_latest_failed_row_held_not_reset`; `c:reconnect::a_new_incident_starts_a_new_round_at_ordinal_one` | none | C |
 //! | 15 a restart starts backoff fresh | as C | none | C |
-//! | 16 a Direct Connected creates the retirement obligation | as F, G | `p:rpc/proxy_cutback` | F |
-//! | 17 failed retirement writes are retried | as H | `p:rpc/proxy_cutback` | - |
+//! | 16 a Direct Connected creates the deletion obligation | as F, G | `p:rpc/proxy_cutback` | F |
+//! | 17 failed deletion writes are retried | as H | `p:rpc/proxy_cutback` | - |
 //! | 18 incarnations make stale evidence refusable | as I | none | I |
 //! | 19 a failed attempt is not node-death proof | `c:reconnect::route_resolution_never_creates_or_moves_a_reconnect` | none | A (the destination stays ready in node.get) |
 //! | 20 traffic does not probe Direct while a Proxy is active | as A | none | A |
@@ -78,7 +78,7 @@
 //! | §8 validity and named invalidation | as I, J | none | I, J |
 //! | §9.4 one scheduler, one pending item | `n:connection_reconnect::one_reconnect_attempt_at_a_time_per_node` | none | - |
 //! | §9.5 one attempt: verify birth, verify not superseded, dial, Failed or Connected | `a:connections_writer::an_accept_from_another_birth_arms_nothing_and_an_attempt_for_a_gone_birth_is_dropped_undialled`; `a:connections_writer::a_failed_dial_after_an_accept_keeps_the_proxy_and_reschedules_from_its_own_failed_row` | none | C, F |
-//! | §10 a stream Proxy outlives its retirement | `t:connections::an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_open_goes_direct` | none | - |
+//! | §10 a stream Proxy outlives its deletion | `t:connections::an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_open_goes_direct` | none | - |
 //! | §12 transition and admission spans | `a:connections_writer::every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason_carrier_and_series_position`; `a:connections_writer::a_pending_reconnect_attempt_never_dialled_ends_on_a_span_naming_its_superseded_birth_or_the_direct_connected_that_satisfied_it`; `t:connections::a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned`; `t:connections::an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert`; `t:connections::a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_was_judged_on` | none | every cell asserts its spans by name |
 //! | §12 `effective_route_cold_discovery_ms` | none | none | A (the cold tunnel names it; the tunnel over the held Proxy does not) |
 //!
@@ -345,10 +345,10 @@ async fn a_peer_holds_none_of_a_sources_failed_history_or_its_proxy() {
 /// series' first due attempt fails under the block (ordinal 2). The block is released and nothing
 /// else happens: no accept, no traffic. At the Failed row's due time the
 /// source's own reconciler dials (`via-recovery-dial`, never earlier than `next_due`), and that dial's
-/// Direct Connected is written. Its write passes; the Proxy's retirement write is refused, and an open
+/// Direct Connected is written. Its write passes; the Proxy's deletion write is refused, and an open
 /// meanwhile still goes through the carrier. Released, `Proxy Disconnected(direct-restored)` lands, and
 /// only then does an open go Direct. The dial is the source process's own (§15.11-12): no node-admin
-/// emits a recovery dial. Must NOT happen: a Direct open before the retirement landed, a recovery
+/// emits a recovery dial. Must NOT happen: a Direct open before the deletion landed, a recovery
 /// dial before the due time, or a Proxy Disconnected with another reason.
 // @feature: connections-reconnect
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -369,14 +369,14 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
     let failed: rdm_core::connections::NodeConnection = serde_json::from_value(failed_row.clone()).expect("a connections row decodes");
     let due_ms = rdm_core::reconnect::next_due(&failed).expect("a Failed row carries its due time");
 
-    // 1. The retirement will be refused: the dial's Direct Connected append passes, every later one
+    // 1. The deletion will be refused: the dial's Direct Connected append passes, every later one
     // is refused until released. Then the block is released.
     let armed = estate.probe(&["fault", "--target", &format!("path:{SOURCE}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
     assert_eq!(armed["fault"], "armed", "{armed}");
     block_direct(&estate, SOURCE, DEST, false);
 
-    // 2. The series' own dial connects at its due time; the retirement is owed and refused.
-    let owed = wait_for("the source's due dial connected and its retirement is owed", Duration::from_secs(30), || async {
+    // 2. The series' own dial connects at its due time; the deletion is owed and refused.
+    let owed = wait_for("the source's due dial connected and its deletion is owed", Duration::from_secs(30), || async {
         let snap = snapshot(&estate, SOURCE);
         let connected = snap["own_latest_directs"].as_array().into_iter().flatten().any(|d| d["destination"]["name"] == DEST && d["state"] == "Connected" && d["alpn"] == failed_row["alpn"]);
         (connected && snap["owed"].as_array().map(Vec::len) == Some(1) && snap["fault_refused"].as_u64().unwrap_or(0) >= 1).then_some(snap)
@@ -384,12 +384,12 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
     .await;
     assert_eq!(owed["own_active_proxies"].as_array().map(Vec::len), Some(1), "the Proxy stays held: {owed}");
     let during = stream(&estate, SOURCE, DEST, "while-owed");
-    assert_eq!(during["kind"].as_str(), Some(format!("proxy via {CARRIER}").as_str()), "the Proxy stays effective until its retirement lands: {during}");
+    assert_eq!(during["kind"].as_str(), Some(format!("proxy via {CARRIER}").as_str()), "the Proxy stays effective until its deletion lands: {during}");
 
-    // 3. Released: the retirement lands, then an open goes Direct.
+    // 3. Released: the deletion lands, then an open goes Direct.
     let released = estate.probe(&["fault", "--target", &format!("path:{SOURCE}"), "--release", "--key", "x"]);
     assert_eq!(released["fault"], "released", "{released}");
-    wait_for("the retirement landed", Duration::from_secs(15), || async {
+    wait_for("the deletion landed", Duration::from_secs(15), || async {
         let snap = snapshot(&estate, SOURCE);
         (snap["owed"].as_array().map(Vec::len) == Some(0) && snap["own_active_proxies"].as_array().map(Vec::len) == Some(0)).then_some(())
     })
@@ -403,7 +403,7 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
     let at = |pred: &dyn Fn(&Value) -> bool| app.iter().position(|r| pred(r));
     let connected = at(&|r| r["kind"] == "Direct" && r["state"] == "Connected").expect("Direct Connected written");
     let disconnected = at(&|r| r["kind"] == "Proxy" && r["state"] == "Disconnected").expect("Proxy Disconnected written");
-    assert!(connected < disconnected, "Direct Connected precedes the Proxy's retirement: {app:?}");
+    assert!(connected < disconnected, "Direct Connected precedes the Proxy's deletion: {app:?}");
     assert_eq!(app[disconnected]["reason"], "direct-restored", "{app:?}");
     estate.stop().await;
 

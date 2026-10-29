@@ -115,16 +115,16 @@ fn route_span<'a>(spans: &'a [Value], own: &str, from: u64, to: u64) -> Option<&
 /// CONN-G: with a Proxy active, the destination dials the source. The source's accept writes
 /// nothing and wakes the source's own reconciler; once the series' reconnect backoff ends the
 /// source dials its own data-plane connection, and only that dial's Direct Connected
-/// (`via-observed origin=dial`) owes the Proxy's retirement. While the retirement write is refused
+/// (`via-observed origin=dial`) owes the Proxy's deletion. While the deletion write is refused
 /// the source's calls stay on the Proxy; only after `Proxy Disconnected(direct-restored)` lands
 /// durably do new calls go Direct.
 ///
 /// CONTRACT: an inbound accept is a recovery trigger for the source's own direct dial, never
-/// Direct evidence (R-CN1); cutback follows durable retirement (connections.md section 10). The
+/// Direct evidence (R-CN1); cutback follows durable deletion (connections.md section 10). The
 /// spans show the accept, the reconciler's wake under it, the source's dial no earlier than the
-/// series' `next_due`, that dial's entry, the refused and landed retirements, then the first Direct
+/// series' `next_due`, that dial's entry, the refused and landed deletions, then the first Direct
 /// route. What must NOT happen: a Direct entry observed on the accept, a dial before the backoff
-/// ends, or a Direct route chosen before the retirement landed.
+/// ends, or a Direct route chosen before the deletion landed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback() {
     let cell = "source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback";
@@ -145,7 +145,7 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     let (healthy, ..) = originate(&estate, SOURCE, DEST, "before-inbound");
     assert_eq!((healthy["call_outcome"].as_str(), healthy["route"].as_str(), healthy["carrier"].as_str()), (Some("reply"), Some("via-peer"), Some(CARRIER)), "{healthy}");
 
-    // 2. The source's retirement write is refused: its own dial's Direct Connected append passes (a
+    // 2. The source's deletion write is refused: its own dial's Direct Connected append passes (a
     // fact is held only once its write lands), every later one is refused until released.
     let (armed, ..) = probe(&estate, &["fault", "--target", &format!("path:{SOURCE}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
     assert_eq!(armed["fault"], "armed", "{armed}");
@@ -154,9 +154,9 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     let (inbound, t_inbound0, t_inbound1) = probe(&estate, &["dial", "--target", &format!("path:{DEST}"), "--destination", &format!("path:{SOURCE}"), "--key", "x"]);
     assert_eq!((inbound["dialed"].as_str(), inbound["destination_node_id"].as_str()), (Some("Reply"), source["node_id"].as_str()), "the destination reached the source: {inbound}");
 
-    // 4. The source's own dial connected and its retirement is owed and refused by name; the Proxy
+    // 4. The source's own dial connected and its deletion is owed and refused by name; the Proxy
     // stays effective.
-    let owed_refused = wait_for("the source's dial connected, it owes the retirement and its write was refused", Duration::from_secs(15), || async {
+    let owed_refused = wait_for("the source's dial connected, it owes the deletion and its write was refused", Duration::from_secs(15), || async {
         let snap = snapshot(&estate, SOURCE);
         let owed = snap["owed"].as_array().map(Vec::len).unwrap_or(0);
         (owed == 1 && snap["fault_refused"].as_u64().unwrap_or(0) >= 2).then_some(snap)
@@ -170,32 +170,32 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     let (during, d0, d1) = originate(&estate, SOURCE, DEST, "while-refused");
     assert_eq!((during["call_outcome"].as_str(), during["route"].as_str(), during["carrier"].as_str()), (Some("reply"), Some("via-peer"), Some(CARRIER)), "new calls stay on the Proxy: {during}");
     let durable_during = history(&estate, SOURCE).await;
-    assert!(!durable_during.iter().any(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected"), "nothing durable says the Proxy retired: {durable_during:?}");
+    assert!(!durable_during.iter().any(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected"), "nothing durable says the Proxy deleted: {durable_during:?}");
     let connected_rows: Vec<&Value> = durable_during[seeded_rows.len()..].iter().filter(|r| r["kind"] == "Direct" && r["destination"]["name"] == DEST).collect();
     assert_eq!(connected_rows.len(), 1, "one Direct entry toward the destination after the accept, the source's own dial's: {connected_rows:?}");
     assert_eq!(connected_rows[0]["state"], "Connected", "{connected_rows:?}");
 
-    // 5. The write can land: released, the owed retirement lands by the bounded reconciler.
+    // 5. The write can land: released, the owed deletion lands by the bounded reconciler.
     let (released, ..) = probe(&estate, &["fault", "--target", &format!("path:{SOURCE}"), "--release", "--key", "x"]);
     assert_eq!(released["fault"], "released", "{released}");
-    let landed = wait_for("the owed retirement landed", Duration::from_secs(15), || async {
+    let landed = wait_for("the owed deletion landed", Duration::from_secs(15), || async {
         let snap = snapshot(&estate, SOURCE);
         (snap["owed"].as_array().map(Vec::len) == Some(0) && snap["own_active_proxies"].as_array().map(Vec::len) == Some(0)).then_some(snap)
     })
     .await;
     let durable_after = history(&estate, SOURCE).await;
-    let retirement: Vec<&Value> = durable_after.iter().filter(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected").collect();
-    assert_eq!(retirement.len(), 1, "exactly one durable retirement: {durable_after:?}");
-    assert_eq!(retirement[0]["reason"], "direct-restored");
+    let deleted: Vec<&Value> = durable_after.iter().filter(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected").collect();
+    assert_eq!(deleted.len(), 1, "exactly one durable delete: {durable_after:?}");
+    assert_eq!(deleted[0]["reason"], "direct-restored");
 
     // 6. Only now is Direct effective.
-    let (cut, c0, c1) = originate(&estate, SOURCE, DEST, "after-retirement");
+    let (cut, c0, c1) = originate(&estate, SOURCE, DEST, "after-delete");
     assert_eq!((cut["call_outcome"].as_str(), cut["route"].as_str()), (Some("reply"), Some("direct")), "{cut}");
     assert_eq!(cut["reply"]["incarnation_id"], dest["incarnation_id"], "{cut}");
 
     // 7. Spans: the accept and the wake under it, the source's dial and its entry, the refusals by
     // name, the landing, then the Direct route.
-    let spans = wait_for("the retirement and route spans exported", Duration::from_secs(30), || async {
+    let spans = wait_for("the delete and route spans exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
         let landed = named(&spans, "rdm.node_admin.connection.update.via-retirement").into_iter().any(|sp| sp["attributes"]["source"] == SOURCE && sp["attributes"]["outcome"] == "landed");
         (landed && route_span(&spans, SOURCE, c0, c1).is_some() && route_span(&spans, SOURCE, d0, d1).is_some()).then_some(spans)
@@ -229,21 +229,21 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     assert_eq!(entry["attributes"]["outcome"], "landed", "{entry}");
     assert!(start(entry) >= start(dial), "the entry is the dial's");
     assert_eq!((s(&dial["attributes"]["fact"]), s(&dial["attributes"]["entry"])), ("connected".to_string(), s(&entry["attributes"]["entry"])), "the entry is the dial's own observation: {dial} {entry}");
-    let mut retirements: Vec<&Value> = named(&spans, "rdm.node_admin.connection.update.via-retirement").into_iter().filter(|sp| sp["attributes"]["source"] == SOURCE).collect();
-    retirements.sort_by_key(|sp| start(sp));
-    let (refused, lands): (Vec<&Value>, Vec<&Value>) = retirements.iter().partition(|sp| sp["attributes"]["outcome"] == "refused");
-    assert!(!refused.is_empty(), "the refused write is named on a span: {retirements:?}");
+    let mut deletes: Vec<&Value> = named(&spans, "rdm.node_admin.connection.update.via-retirement").into_iter().filter(|sp| sp["attributes"]["source"] == SOURCE).collect();
+    deletes.sort_by_key(|sp| start(sp));
+    let (refused, lands): (Vec<&Value>, Vec<&Value>) = deletes.iter().partition(|sp| sp["attributes"]["outcome"] == "refused");
+    assert!(!refused.is_empty(), "the refused write is named on a span: {deletes:?}");
     assert!(refused.iter().all(|sp| s(&sp["attributes"]["detail"]).contains("testkit fault armed")), "{refused:?}");
-    assert!(refused.iter().all(|sp| start(sp) >= start(entry)), "every retirement attempt follows the dial's entry");
-    assert_eq!((&refused[0]["trace_id"], &refused[0]["parent_span_id"]), (&entry["trace_id"], &entry["span_id"]), "the first retirement attempt is the entry's own settlement: {:?}", refused[0]);
-    assert_eq!(lands.len(), 1, "one landing: {retirements:?}");
+    assert!(refused.iter().all(|sp| start(sp) >= start(entry)), "every delete attempt follows the dial's entry");
+    assert_eq!((&refused[0]["trace_id"], &refused[0]["parent_span_id"]), (&entry["trace_id"], &entry["span_id"]), "the first delete attempt is the entry's own settlement: {:?}", refused[0]);
+    assert_eq!(lands.len(), 1, "one landing: {deletes:?}");
     assert!(refused.iter().all(|sp| end(sp) <= start(lands[0])), "every refusal precedes the landing");
     let during_route = route_span(&spans, SOURCE, d0, d1).unwrap();
     let cut_route = route_span(&spans, SOURCE, c0, c1).unwrap();
     assert_eq!(during_route["attributes"]["route"], "via-peer");
     assert_eq!(cut_route["attributes"]["route"], "direct");
     assert!(start(during_route) < start(lands[0]), "the call during the refusal chose its route before the landing");
-    assert!(start(cut_route) >= end(lands[0]), "the first Direct route is chosen after the retirement landed");
+    assert!(start(cut_route) >= end(lands[0]), "the first Direct route is chosen after the delete landed");
     estate.record_trace_url(&s(&wake["trace_id"]));
 
     let result = json!({
@@ -259,17 +259,17 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
         "durable_rows_while_refused": durable_during.len(),
         "fault_released": released,
         "landed_snapshot": landed,
-        "durable_retirement": retirement[0],
-        "call_after_retirement": cut,
+        "durable_delete": deleted[0],
+        "call_after_delete": cut,
         "spans": {
             "accept": { "span_id": accept["span_id"], "trace_id": accept["trace_id"], "peer": accept["attributes"]["peer"] },
             "wake": { "span_id": wake["span_id"], "trace_id": wake["trace_id"], "outcome": wake["attributes"]["outcome"], "start_unix_nano": start(wake) },
             "dial": { "span_id": dial["span_id"], "trace_id": dial["trace_id"], "outcome": dial["attributes"]["outcome"], "start_unix_nano": start(dial) },
             "entry": { "span_id": entry["span_id"], "trace_id": entry["trace_id"], "origin": entry["attributes"]["origin"], "start_unix_nano": start(entry) },
-            "refused_retirements": refused.iter().map(|sp| json!({"span_id": sp["span_id"], "start_unix_nano": start(sp), "reason": sp["attributes"]["reason"]})).collect::<Vec<_>>(),
-            "landed_retirement": { "span_id": lands[0]["span_id"], "start_unix_nano": start(lands[0]), "end_unix_nano": end(lands[0]) },
+            "refused_deletes": refused.iter().map(|sp| json!({"span_id": sp["span_id"], "start_unix_nano": start(sp), "reason": sp["attributes"]["reason"]})).collect::<Vec<_>>(),
+            "landed_delete": { "span_id": lands[0]["span_id"], "start_unix_nano": start(lands[0]), "end_unix_nano": end(lands[0]) },
             "route_while_refused": { "span_id": during_route["span_id"], "trace_id": during_route["trace_id"], "route": during_route["attributes"]["route"] },
-            "route_after_retirement": { "span_id": cut_route["span_id"], "trace_id": cut_route["trace_id"], "route": cut_route["attributes"]["route"], "start_unix_nano": start(cut_route) },
+            "route_after_delete": { "span_id": cut_route["span_id"], "trace_id": cut_route["trace_id"], "route": cut_route["attributes"]["route"], "start_unix_nano": start(cut_route) },
         },
         "spans_read": spans.len(),
     });

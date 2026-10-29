@@ -175,7 +175,7 @@ pub enum OriginateReply {
         /// The carrier the route used, when it used one.
         carrier: Option<String>,
         /// The own Proxy the resolution found invalid, and why, if any.
-        retired: Option<String>,
+        deleted: Option<String>,
         /// The call's outcome name.
         outcome: String,
         /// The proof-store reply, when the call replied.
@@ -218,7 +218,7 @@ pub enum OriginateReply {
         /// Every active Direct fact held, whatever its source (connections.md §4.1: the fleet-wide
         /// Direct graph a source discovers carriers from).
         active_directs: Vec<NodeConnection>,
-        /// The Proxy retirements the node owes now.
+        /// The Proxy deletions the node owes now.
         owed: Vec<NodeConnection>,
         /// The number of writes the fault has refused.
         fault_refused: u32,
@@ -492,7 +492,7 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str,
         Ok(n) => n,
         Err(f) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination} does not resolve on this node: {f:?}") },
     };
-    // Any owed retirement is settled before a new call resolves its route (connections.md §10):
+    // Any owed deletion is settled before a new call resolves its route (connections.md §10):
     // a refused write leaves the Proxy effective, by name.
     let _ = seams.connections.settle_owed().await;
     let resolution = {
@@ -505,8 +505,8 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str,
         ProofOp::Put { key, value } => ProofRequest::Put { key, value },
     };
     let call = seams.client.call_resolved::<ProofStore>(resolution, own, &path, &target.node_id, &req, &CallOptions::default()).await;
-    // A Proxy the resolution found invalid is retired by this source, as the caller of the seam.
-    let retired = match call.retire {
+    // A Proxy the resolution found invalid is deleted by this source, as the caller of the seam.
+    let deleted = match call.delete {
         Some((proxy, why)) => {
             let row = NodeConnection { id: rdm_core::ConnectionId::mint(), state: ConnectionState::Disconnected, reason: Some(why.to_string()), recovery: None, logged_at_ms: now_ms().max(proxy.logged_at_ms + 1), ..proxy };
             let _ = seams.connections.record(row).await;
@@ -527,7 +527,7 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str,
         destination_node_id: target.node_id.to_string(),
         route,
         carrier,
-        retired,
+        deleted,
         outcome,
         reply,
         pooled: seams.client.pooled().into_iter().map(|k| format!("{k:?}")).collect(),
@@ -719,7 +719,7 @@ mod tests {
             (OriginateRequest::UpdateOwnConfig { config: [("a".to_string(), "b".to_string())].into() }, "090101610162"),
         ];
         let replies = [
-            (OriginateReply::Called { by: by(), destination_node_id: "d".into(), route: "direct".into(), carrier: None, retired: Some("x".into()), outcome: "reply".into(), reply: None, pooled: vec!["p".into()] }, "000169016e016301640664697265637400010178057265706c7900010170", "called", Code::Ok),
+            (OriginateReply::Called { by: by(), destination_node_id: "d".into(), route: "direct".into(), carrier: None, deleted: Some("x".into()), outcome: "reply".into(), reply: None, pooled: vec!["p".into()] }, "000169016e016301640664697265637400010178057265706c7900010170", "called", Code::Ok),
             (OriginateReply::FaultArmed { by: by(), refuse_index: 1, refuse_history: 2 }, "010169016e01630102", "fault-armed", Code::Ok),
             (OriginateReply::FaultReleased { by: by(), refused: 4 }, "020169016e016304", "fault-released", Code::Ok),
             (OriginateReply::Snapshot { by: by(), own_active_proxies: vec![], own_latest_directs: vec![], active_len: 5, active_directs: vec![], owed: vec![], fault_refused: 6 }, "030169016e0163000005000006", "snapshot", Code::Ok),
@@ -759,7 +759,7 @@ mod tests {
 
     /// CONTRACT: the door resolves a held Proxy under the carrier policy it is served with. A
     /// Proxy through a gateway is the effective route under a gateway policy, and is skipped (the
-    /// route stays Direct, the Proxy is not retired) under the default rpc_node policy.
+    /// route stays Direct, the Proxy is not deleted) under the default rpc_node policy.
     #[test]
     fn door_resolves_a_gateway_carried_proxy_only_under_a_gateway_policy() {
         let (own, carrier, dest) = (end(NodeKind::Compute, 1, "o1"), end(NodeKind::Gateway, 1, "c1"), end(NodeKind::Broker, 1, "d1"));
@@ -772,9 +772,9 @@ mod tests {
         let gateway = CarrierPolicy::Proxy { carrier_kind: NodeKind::Gateway };
         let r = resolve(&held, &own.name, &dest.name, gateway);
         assert_eq!(r.route, EffectiveRoute::ViaPeer { carrier: carrier.name.clone(), proxy: p });
-        assert_eq!(r.retire, None);
+        assert_eq!(r.delete, None);
         let d = resolve(&held, &own.name, &dest.name, POLICY);
         assert_eq!(d.route, EffectiveRoute::Direct { known: false }, "the gateway-carried Proxy is not the route under the rpc_node policy: with no Direct fact the pair dials directly");
-        assert_eq!(d.retire, None, "a Proxy through a kind the policy does not name is skipped, never retired");
+        assert_eq!(d.delete, None, "a Proxy through a kind the policy does not name is skipped, never deleted");
     }
 }

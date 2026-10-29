@@ -1204,7 +1204,7 @@ async fn container_primary_mesh_deleted_hands_over_fabric_primary_before_its_con
         })
     };
 
-    // THE HAND-OFF AND LOSS, through the rectifier: one Build retiring the holder's mesh.
+    // THE HAND-OFF AND LOSS, through the rectifier: one Build deleting the holder's mesh.
     let started = now_nanos();
     let build_id = estate.reconcile_shape("fabric1", &[(survivor_mesh.as_str(), 2, 3)]).await.build_id.to_string();
     let build_complete = now_nanos();

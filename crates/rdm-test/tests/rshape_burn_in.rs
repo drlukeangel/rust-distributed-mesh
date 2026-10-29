@@ -1330,7 +1330,7 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
     inv.holds(
         "no operation was applied twice: every put the brokers applied is a key that is in the final state exactly once",
         all_stored_on_targets == present_keys,
-        json!({"stored_handler_runs": all_stored_on_targets, "keys_present": present_keys, "operations_on_retired_targets_not_verifiable": unverifiable}),
+        json!({"stored_handler_runs": all_stored_on_targets, "keys_present": present_keys, "operations_on_deleted_targets_not_verifiable": unverifiable}),
     );
     inv.holds("every stored put holds its value, every protocol-refused or not-dispatched put is absent, every Indeterminate put is reported applied or not and was issued once (no automatic replay)", true, json!({"indeterminate": indeterminate, "probe_invocations_per_operation": 1}));
     inv.holds("the Indeterminate arm is reached or its absence recorded: the outcome classes seen are listed", true, json!({"classes_seen": summary}));
@@ -2151,7 +2151,7 @@ async fn prove_path(f: &mut Formed, a: &mut Run, want: &BTreeMap<String, usize>,
 /// keeps the node.id and the incarnation). The call opens the next attempt of the accepted Build: the
 /// Build id is the fabric's own.
 async fn restart_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
-    assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a retiring Build");
+    assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a deleting Build");
     let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not a ready admin")).clone();
     let fabric_build = s(&st.fabric["build_id"]);
     point_entry_away(f, st, node).await;
@@ -2216,7 +2216,7 @@ async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
     ev
 }
 
-/// The fabric-primary leaves through a retiring Build it executes itself: its seats move to another
+/// The fabric-primary leaves through a deleting Build it executes itself: its seats move to another
 /// admin (SeatTransfer), then it stops, its stop declaring it Leaving (not an election candidate). The seat's
 /// move is read from the election spans afterwards; here the host's observation of the process
 /// exit is taken so the order has a clock that does not depend on the dying process's own spans.
@@ -2237,7 +2237,7 @@ async fn hand_off(f: &mut Formed, a: &mut Run, st: &Stable, scenario: &str, inv:
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: fabric-primary.delete"), Write::Delete(old_name.to_string())).await;
     let fin = a.finish(f, &build_id, Until::Gone { node: old_name.clone() }, "during-handoff").await;
-    let exit_ns = tokio::time::timeout(Duration::from_secs(30), watcher).await.unwrap_or_else(|_| panic!("{old_name} (pid {old_pid}) still runs 30 s after its retiring Build completed")).unwrap();
+    let exit_ns = tokio::time::timeout(Duration::from_secs(30), watcher).await.unwrap_or_else(|_| panic!("{old_name} (pid {old_pid}) still runs 30 s after its deleting Build completed")).unwrap();
     let mut want = both(2);
     want.insert(mesh.clone(), 1);
     let after = a.stable(f, &format!("{scenario}: after the fabric-primary deleted"), &want, inv).await;
@@ -3200,7 +3200,7 @@ fn originate_op(f: &Formed, a: &mut Run, holder: &str, dest: &Value, window: &'s
 /// going until the Build is complete and the node is ready again as the same birth (node-stop.md, Kept).
 /// Any role.
 async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
-    assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a retiring Build");
+    assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a deleting Build");
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
     let fabric_build = s(&st.fabric["build_id"]);
     if n["kind"] == "node_admin" {
@@ -3230,7 +3230,7 @@ async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scen
 /// settled views). A role node only: a node-admin's death is `kill_and_recover`'s, and the fabric-primary is
 /// never killed.
 async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
-    assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never killed; it leaves only through a retiring Build");
+    assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never killed; it leaves only through a deleting Build");
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
     assert_ne!(n["kind"], "node_admin", "REFUSED: {node} is a node-admin; a node recovery cell kills a broker, gateway, compute or rpc node");
     let (old_id, old_inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
@@ -3673,7 +3673,7 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
     }
     let st2 = a.stable(f, &format!("{label}: {node} deleted"), &both(2), inv).await;
     assert!(st2.nodes.iter().all(|x| x["node_id"] != n["node_id"]), "{node}: the deleted NodeId is in the settled view");
-    assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node}: the current build_id names the retiring Build (a replace leaves it as it was)");
+    assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node}: the current build_id names the deleting Build (a replace leaves it as it was)");
     let terminal = terminal_proof(node, &rt_before);
     // Terminal delete + held removal, then absence: a full staleness window with the removal held.
     let window = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
@@ -3735,7 +3735,7 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
         .find(|sp| sp["attributes"]["build_id"] == bid.as_str() && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == op)))
         .cloned()
         .unwrap_or_else(|| panic!("{node}: no reconcile executed {op}"));
-    assert!(descends_from(spans, &reconcile, &create), "{node}: the retiring reconcile descends from its request");
+    assert!(descends_from(spans, &reconcile, &create), "{node}: the deleting reconcile descends from its request");
     let operation_span = "rdm.node_admin.node.delete.via-build";
     let del = named(spans, operation_span).into_iter().find(|sp| sp["attributes"]["node"] == target.as_str() && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no {operation_span} of {target} under the reconcile"));
     let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == del["span_id"]).cloned().unwrap_or_else(|| panic!("{node}: no deployment pipeline under its {operation_span}"));
@@ -3837,7 +3837,7 @@ fn a_stopped_declaration_answered_already_applied_after_the_all_is_decided() {
     assert!(stopped_decided_after(&before, t_apply).is_empty(), "a declaration before the All began does not count");
 }
 
-/// The stop the retiring node ran, read from its own spans and the executor's (node-stop.md steps 2-3):
+/// The stop the deleting node ran, read from its own spans and the executor's (node-stop.md steps 2-3):
 /// the node's `via-stop-node` handling and its receipt (`established`: the eligible work in flight
 /// reached zero; `deadline`: the bound ended it), the node's own `node.connection.delete { All }` inside
 /// it, the stop's own transport cut, the `stop-node` the executor sent and its `stopped` reply (the
@@ -4496,7 +4496,7 @@ async fn delete_run(cell: &str, shape: Shape) {
         // The stop the executor commanded and the node's handling of it: its whole node.connection.delete
         // { All } let the eligible work in flight reach zero (an `established` receipt, never a deadline).
         let served = stop["stop_node"].as_array().unwrap();
-        assert!(!served.is_empty(), "{node}: no stop-node served by the retiring node: {stop}");
+        assert!(!served.is_empty(), "{node}: no stop-node served by the deleting node: {stop}");
         assert!(served.iter().all(|x| x["receipt"] == "established"), "{node}: the node's stop ended its in-flight work at the deadline, not at zero: {stop}");
         let all = stop["connections_delete_all"].as_array().unwrap();
         assert_eq!(all.len(), 1, "{node}: the stop ran its node.connection.delete {{ All }} once: {stop}");
@@ -4601,7 +4601,7 @@ async fn delete_run(cell: &str, shape: Shape) {
 
 /// CONTRACT: the stop, delete and a held runtime are proven against the exact runtime the provider holds.
 /// A broker and a gateway (the routable work shapes) are deleted by the fabric-primary's Build under
-/// seeded traffic aimed at them: each retiring node runs its stop (its whole node.connection.delete
+/// seeded traffic aimed at them: each deleting node runs its stop (its whole node.connection.delete
 /// { All } until its in-flight work reaches zero, its Leaving, its own transport cut) and answers
 /// `stopped`, and the delete steps run in their documented order (NodeDeleting, StopNode, AwaitNodeLeft,
 /// TerminateRuntime, NodeDeleted); ordinary work that reaches a node whose connections are being deleted
@@ -5005,7 +5005,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
     // C13: the destination dials the source while the Proxy is proven: the accept wakes the source's own dial
     // (R-CN1), unless the due time its Failed row sets came first (connections.md §9.4: either arms the one
     // attempt), and only that dial's Direct Connected owes the deletion. The deletion write is refused (the dial's own
-    // history append goes through): the Proxy stays the route; the retirement lands once the write can, and only
+    // history append goes through): the Proxy stays the route; the deletion lands once the write can, and only
     // then is Direct effective.
     let armed = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
     assert_eq!(armed.out["fault"], "armed", "{}", armed.out);
@@ -5025,14 +5025,14 @@ async fn proxy_run(cell: &str, shape: Shape) {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert!(!owed_refused.is_null(), "the source owes the deletion and its write was refused within 15 s");
-    assert_eq!(owed_refused["own_active_proxies"].as_array().map(Vec::len), Some(1), "the Proxy is still held while the retirement is owed: {owed_refused}");
+    assert_eq!(owed_refused["own_active_proxies"].as_array().map(Vec::len), Some(1), "the Proxy is still held while the deletion is owed: {owed_refused}");
     let t_dur0 = now_ns();
     let during = orig_get(&f, &src, &dst, "while-refused");
     let t_dur1 = now_ns();
     f.actions.push(action_row(&during));
-    assert_eq!((during.out["route"].as_str(), during.out["carrier"].as_str(), during.out["call_outcome"].as_str()), (Some("via-peer"), Some(car.as_str()), Some("reply")), "the Proxy is still the route while the retirement is refused: {}", during.out);
+    assert_eq!((during.out["route"].as_str(), during.out["carrier"].as_str(), during.out["call_outcome"].as_str()), (Some("via-peer"), Some(car.as_str()), Some("reply")), "the Proxy is still the route while the deletion is refused: {}", during.out);
     let durable_during = durable_history(&f, &src).await;
-    assert!(!durable_during.iter().any(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected"), "nothing durable says the Proxy retired: {} rows", durable_during.len());
+    assert!(!durable_during.iter().any(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected"), "nothing durable says the Proxy deleted: {} rows", durable_during.len());
     let released = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--release", "--key", "x"]);
     assert_eq!(released.out["fault"], "released", "{}", released.out);
     f.actions.push(action_row(&released));
@@ -5046,16 +5046,16 @@ async fn proxy_run(cell: &str, shape: Shape) {
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
     let durable_after = durable_history(&f, &src).await;
-    let retirement: Vec<&Value> = durable_after.iter().filter(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected").collect();
-    assert_eq!(retirement.len(), 1, "exactly one durable retirement");
-    assert_eq!(retirement[0]["reason"], "direct-restored");
+    let deleted: Vec<&Value> = durable_after.iter().filter(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected").collect();
+    assert_eq!(deleted.len(), 1, "exactly one durable delete");
+    assert_eq!(deleted[0]["reason"], "direct-restored");
     let t_cut0 = now_ns();
     let cut = orig_get(&f, &src, &dst, "after-deletion");
     let t_cut1 = now_ns();
     f.actions.push(action_row(&cut));
     assert_eq!((cut.out["route"].as_str(), cut.out["call_outcome"].as_str()), (Some("direct"), Some("reply")), "{}", cut.out);
     assert_eq!(cut.out["reply"]["incarnation_id"], dn["incarnation_id"], "{}", cut.out);
-    events.push(json!({"event": "cutback", "armed": armed.out, "inbound": inbound.out, "owed_refused": owed_refused, "call_while_refused": during.out, "released": released.out, "landed": landed, "durable_retirement": retirement[0], "call_after": cut.out, "t_inbound_ns": [t_in0, t_in1]}));
+    events.push(json!({"event": "cutback", "armed": armed.out, "inbound": inbound.out, "owed_refused": owed_refused, "call_while_refused": during.out, "released": released.out, "landed": landed, "durable_delete": deleted[0], "call_after": cut.out, "t_inbound_ns": [t_in0, t_in1]}));
     a.events.extend(events.iter().cloned());
     let (s0, d0, c0) = (src.clone(), dst.clone(), car.clone());
     let w = (t_car0, t_car1, t_dur0, t_dur1, t_cut0, t_cut1, t_in0);
@@ -5078,7 +5078,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
         assert_eq!(lands.len(), 1, "one landed deletion");
         assert!(refused.iter().all(|sp| start_ns(sp) <= start_ns(lands[0])), "every refusal precedes the landing");
         assert!(start_ns(&during_route) < start_ns(lands[0]), "the call during the refusal chose its route before the landing");
-        assert!(start_ns(&cut_route) >= lands[0]["end_unix_nano"].as_u64().unwrap_or(u64::MAX), "the first Direct route is chosen after the retirement landed");
+        assert!(start_ns(&cut_route) >= lands[0]["end_unix_nano"].as_u64().unwrap_or(u64::MAX), "the first Direct route is chosen after the deletion landed");
         let observed: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-observed").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && start_ns(sp) >= w.6).collect();
         assert!(!observed.iter().any(|sp| sp["attributes"]["origin"] == "accept"), "the accept is no fact (R-CN1): {observed:?}");
         let mut wakes: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-accept-trigger").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && start_ns(sp) >= w.6).collect();
@@ -5100,8 +5100,8 @@ async fn proxy_run(cell: &str, shape: Shape) {
         }
         assert!(wakes.iter().filter(|sp| matches!(sp["attributes"]["outcome"].as_str(), Some("pending" | "coalesced"))).count() <= 1, "the accept armed at most one attempt: {wakes:?}");
         assert!(refused.iter().all(|sp| start_ns(sp) >= start_ns(entry)), "every deletion attempt follows the dial's entry");
-        inv.holds("C12/C13: a call is carried by the gateway in one hop to the destination's exact birth; the destination's accept wakes the source's own dial, whose Direct does not cut back while the retirement write is refused; the retirement lands durably before the first Direct route", true, json!({"carried_route": carried_route["span_id"], "inner_calls": inner, "refused_retirements": refused.len()}));
-        json!({"carried_route_span": carried_route["span_id"], "route_while_refused": during_route["span_id"], "route_after_deletement": cut_route["span_id"], "landed_retirement": lands[0]["span_id"], "refused": refused.len()})
+        inv.holds("C12/C13: a call is carried by the gateway in one hop to the destination's exact birth; the destination's accept wakes the source's own dial, whose Direct does not cut back while the deletion write is refused; the deletion lands durably before the first Direct route", true, json!({"carried_route": carried_route["span_id"], "inner_calls": inner, "refused_deletes": refused.len()}));
+        json!({"carried_route_span": carried_route["span_id"], "route_while_refused": during_route["span_id"], "route_after_delete": cut_route["span_id"], "landed_delete": lands[0]["span_id"], "refused": refused.len()})
     })
     .await;
 }
@@ -5112,10 +5112,10 @@ async fn proxy_run(cell: &str, shape: Shape) {
 /// forwards again), the other mesh's gateway executes it as its exact birth, and the compute holds no
 /// connection to it. The destination then dials the compute while the compute's deletion write is refused
 /// (the accept wakes the compute's own dial once its backoff ends, R-CN1, and that dial's Direct Connected append
-/// goes through): the retirement is owed, refused by name, the Proxy
+/// goes through): the deletion is owed, refused by name, the Proxy
 /// stays the route, nothing durable says it deleted; released, the deletion lands durably once, and only
 /// then does a call go Direct. What must NOT happen: a Direct leg while the Proxy is owed, a second
-/// forward, a Direct route chosen before the durable retirement, a retirement without a durable row.
+/// forward, a Direct route chosen before the durable deletion, a deletion without a durable row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_proxy_cutback_requires_a_durable_disconnected_write() {
     proxy_run("mock_proxy_cutback_requires_a_durable_disconnected_write", any_tier()).await;
@@ -6475,7 +6475,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     let _ = (&formation, window_ms);
     // Leg B, the carrier's own edge to the destination is lost: a compute holds Direct Failed and Proxy Connected
     // via its mesh's gateway toward the other mesh's gateway; the carrier's edge is cut and its next inner call
-    // finds the edge not Active. The carrier refuses the carried call by name, the source retires that Proxy
+    // finds the edge not Active. The carrier refuses the carried call by name, the source deletes that Proxy
     // durably with the same reason and does not send the call through any other connection.
     let (src, car, dst) = ("mesh1.compute.1".to_string(), "mesh1.gateway.1".to_string(), "mesh2.gateway.1".to_string());
     let cn = node(&car);
@@ -6512,17 +6512,17 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     f.actions.push(action_row(&refused));
     assert_eq!(refused.out["outcome"], "Reply", "the source answers its own probe: {}", refused.out);
     assert_eq!(refused.out["call_outcome"], "NotSent", "a carried call whose carrier's edge is not Active sends nothing: {}", refused.out);
-    assert!(refused.out["retired"].to_string().contains("carrier-edge-lost"), "the source retires the Proxy it travelled with the carrier's refusal as the reason: {}", refused.out);
+    assert!(refused.out["deleted"].to_string().contains("carrier-edge-lost"), "the source deletes the Proxy it travelled with the carrier's refusal as the reason: {}", refused.out);
     let rows1 = proxy_disconnected_rows(&durable_history(&f, &src).await);
     assert_eq!(rows1.len(), rows0 + 1, "exactly one durable Proxy Disconnected: {rows1:?}");
     assert_eq!(rows1.last().unwrap()["reason"], "carrier-edge-lost", "{rows1:?}");
     let next = orig_get(&f, &src, &dst, "after-deletion");
     f.actions.push(action_row(&next));
-    assert_ne!(next.out["carrier"].as_str(), Some(car.as_str()), "the retired Proxy is not selected again: {}", next.out);
-    assert_eq!(proxy_disconnected_rows(&durable_history(&f, &src).await).len(), rows0 + 1, "no second retirement row");
+    assert_ne!(next.out["carrier"].as_str(), Some(car.as_str()), "the deleted Proxy is not selected again: {}", next.out);
+    assert_eq!(proxy_disconnected_rows(&durable_history(&f, &src).await).len(), rows0 + 1, "no second delete row");
     drop(cut_b);
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
-    events.push(json!({"event": "carrier-edge-lost", "carrier": car, "destination": dst, "source": src, "ack": ack_b, "t_cut_ns": t_cut_b, "carrier_edge_after_cut": edge_down, "healthy_control": healthy.out, "refused": refused.out, "durable_retirement": rows1.last().unwrap(), "next_call": next.out, "call_window_ns": [t_call_b0, t_call_b1]}));
+    events.push(json!({"event": "carrier-edge-lost", "carrier": car, "destination": dst, "source": src, "ack": ack_b, "t_cut_ns": t_cut_b, "carrier_edge_after_cut": edge_down, "healthy_control": healthy.out, "refused": refused.out, "durable_delete": rows1.last().unwrap(), "next_call": next.out, "call_window_ns": [t_call_b0, t_call_b1]}));
 
     a.events.extend(events.iter().cloned());
     let t_call = (t_call_b0, t_call_b1, t_cut_b);
@@ -6532,7 +6532,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
         assert_eq!(lost.len(), 1, "the carrier refused exactly one carried call by name: {lost:?}");
         let inner = named(spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| start_ns(sp) >= t_call.0 && start_ns(sp) <= t_call.1).count();
         assert!(inner <= 1, "the carried call was tried once, never again: {inner} inner calls");
-        inv.holds("C12: a carrier whose own edge to the destination was cut refused the carried call by name once; the source retired the Proxy durably with that reason and did not select it again", true, json!({"refusals": lost.len()}));
+        inv.holds("C12: a carrier whose own edge to the destination was cut refused the carried call by name once; the source deleted the Proxy durably with that reason and did not select it again", true, json!({"refusals": lost.len()}));
         json!({"carrier_edge_lost_spans": lost.len(), "inner_calls": inner})
     })
     .await;
@@ -6549,7 +6549,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     await_direct(&f.estate, &car, &dst, "Connected", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == dn["incarnation_id"]).await;
     let _ = window_ms;
     // Leg C, a carrier restart while a cutback is owed. The carrier's edge is back; the Proxy is recorded
-    // again; the retirement write is refused when Direct returns, so the retirement is owed; the carrier is
+    // again; the deletion write is refused when Direct returns, so the deletion is owed; the carrier is
     // restarted by the rectifier while calls keep coming. Each call ends typed; none is answered by a birth other
     // than the destination's exact one; none is sent twice; the owed deletion lands once, durably, with a
     // structural reason; then the route is Direct to the same destination birth.
@@ -6628,7 +6628,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     })
     .await;
     let rows_c = proxy_disconnected_rows(&durable_history(&f, &src).await);
-    assert_eq!(rows_c.len(), rows_c0 + 1, "the Proxy retired exactly once: {rows_c:?}");
+    assert_eq!(rows_c.len(), rows_c0 + 1, "the Proxy deleted exactly once: {rows_c:?}");
     let reason = s(&rows_c.last().unwrap()["reason"]);
     assert!(matches!(reason.as_str(), "direct-restored" | "carrier-incarnation-superseded" | "carrier-edge-lost"), "a structural reason: {reason}");
     let st2 = a.stable(&mut f, "C12: carrier restarted", &both(2), &mut inv).await;
@@ -6638,9 +6638,9 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     f.actions.push(action_row(&d));
     let after = orig_get(&f, &src, &dst, "after-cutback");
     f.actions.push(action_row(&after));
-    assert_eq!((after.out["route"].as_str(), after.out["call_outcome"].as_str()), (Some("direct"), Some("reply")), "the route is Direct once the retirement landed: {}", after.out);
+    assert_eq!((after.out["route"].as_str(), after.out["call_outcome"].as_str()), (Some("direct"), Some("reply")), "the route is Direct once the deletion landed: {}", after.out);
     assert_eq!(after.out["reply"]["incarnation_id"], dn["incarnation_id"], "{}", after.out);
-    events.push(json!({"event": "restart-while-cutback-owed", "carrier": car, "owed": owed, "attempt": attempt_c, "calls": calls, "kinds": kinds, "retirement": rows_c.last().unwrap(), "landed": landed, "after": after.out, "restart_ns": [t_restart, t_restart_done]}));
+    events.push(json!({"event": "restart-while-cutback-owed", "carrier": car, "owed": owed, "attempt": attempt_c, "calls": calls, "kinds": kinds, "deleted": rows_c.last().unwrap(), "landed": landed, "after": after.out, "restart_ns": [t_restart, t_restart_done]}));
     a.events.extend(events.iter().cloned());
     let srcn = src.clone();
     let marks = (t_restart, t_restart_done);
@@ -6649,7 +6649,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
         // No call was resolved twice: every originate of the stream is one route resolution at the source.
         let routes = named(spans, "rdm.node_rpc.route.resolve.via-held-projection").into_iter().filter(|sp| sp["attributes"]["own"] == srcn.as_str() && start_ns(sp) >= marks.0 && start_ns(sp) <= marks.1).count();
         assert!(routes >= n_calls && routes <= n_calls + 1, "every call across the restart resolved its route once ({routes} resolutions for {n_calls} calls)");
-        inv.holds("C12/C13: a carrier restart with a cutback owed ended every call typed, none answered by another birth, none resolved twice; the Proxy retired once and the route is Direct to the destination's exact birth", true, json!({"calls_across_restart": n_calls}));
+        inv.holds("C12/C13: a carrier restart with a cutback owed ended every call typed, none answered by another birth, none resolved twice; the Proxy deleted once and the route is Direct to the destination's exact birth", true, json!({"calls_across_restart": n_calls}));
         json!({"calls_across_restart": n_calls, "route_resolutions": routes})
     })
     .await;
@@ -6668,14 +6668,14 @@ async fn mock_direct_edge_loss_to_a_mesh_primary_declares_no_death() {
 }
 
 /// CONTRACT: in the formed estate the source's Proxy through its mesh's gateway to the other mesh's gateway
-/// is recorded, its retirement write is refused when Direct returns (the retirement is owed), and the carrier is
+/// is recorded, its deletion write is refused when Direct returns (the deletion is owed), and the carrier is
 /// restarted by the Build rectifier while calls keep coming: each call ends typed, none is answered by a birth
 /// other than the destination's exact one, none is resolved twice; the restart keeps the carrier's NodeId; the
-/// owed retirement, released, lands exactly once and durably with a structural reason, and the route is Direct
+/// owed deletion, released, lands exactly once and durably with a structural reason, and the route is Direct
 /// to the destination's exact birth. Canon: connections.md section 8 (a carrier incarnation change invalidates a
-/// Proxy that names the old carrier) and section 9 H, I, K (a retirement write failure is safe and retried; a
+/// Proxy that names the old carrier) and section 9 H, I, K (a deletion write failure is safe and retried; a
 /// sent request is never rerouted). What must NOT happen: a second durable deletion, a call sent twice, a
-/// Direct route chosen while the retirement is owed, an answer from a superseded birth. Each mesh holds a
+/// Direct route chosen while the deletion is owed, an answer from a superseded birth. Each mesh holds a
 /// second gateway: the restarted carrier may hold its type's seat, and a restart of a seat holder with no
 /// successor is refused by name (node-stop.md, Primary), so its seat moves to the second gateway first.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

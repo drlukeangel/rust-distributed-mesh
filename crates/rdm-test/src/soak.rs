@@ -270,7 +270,7 @@ pub struct LedgerReport {
     pub stores_reconciled: usize,
     /// Operations on a store no live node holds: counted by the count algebra, their store is gone
     /// with the last birth over it.
-    pub ops_on_retired_births: usize,
+    pub ops_on_deleted_births: usize,
     /// `(node id, key)` pairs a delete touched: the ledger holds no delete intent, so the state
     /// algebra does not judge those keys.
     pub keys_excluded_from_state: usize,
@@ -2179,7 +2179,7 @@ impl Driver {
                 }
             }
         }
-        report.ops_on_retired_births = meta.iter().filter(|m| !reconciled.contains(&m.target_id)).count();
+        report.ops_on_deleted_births = meta.iter().filter(|m| !reconciled.contains(&m.target_id)).count();
         (report, found)
     }
 }

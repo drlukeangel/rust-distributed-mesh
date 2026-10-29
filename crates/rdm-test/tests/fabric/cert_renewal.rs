@@ -1145,7 +1145,7 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
         }
         // `retired` moves only once every member's cert row names an issuer under the new CA
         // (`every_cert_under_new_ca`): the member was renewed and installed it on the way.
-        assert!(!renewals_of(&spans, "mesh1.rpc.1").into_iter().filter(|f| f.get("outcome").map(String::as_str) == Some("installed")).collect::<Vec<_>>().is_empty(), "the member was renewed under the new issuer before the old root retired");
+        assert!(!renewals_of(&spans, "mesh1.rpc.1").into_iter().filter(|f| f.get("outcome").map(String::as_str) == Some("installed")).collect::<Vec<_>>().is_empty(), "the member was renewed under the new issuer before the old root was replaced");
         stop_all(vec![a], vec![root, second]).await;
         let _ = std::fs::remove_dir_all(&dir);
     })

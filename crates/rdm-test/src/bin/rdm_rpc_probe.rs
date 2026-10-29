@@ -515,9 +515,9 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     client.endpoint().close().await;
     Ok(match &out {
         RpcOutcome::Reply(r) => match r.value() {
-            OriginateReply::Called { by, destination_node_id, route, carrier, retired, outcome, reply, pooled } => json!({
+            OriginateReply::Called { by, destination_node_id, route, carrier, deleted, outcome, reply, pooled } => json!({
                 "outcome": "Reply", "by": by.node, "destination_node_id": destination_node_id, "route": route, "carrier": carrier,
-                "retired": retired, "call_outcome": outcome, "reply": reply.as_ref().map(self::reply), "pooled": pooled,
+                "deleted": deleted, "call_outcome": outcome, "reply": reply.as_ref().map(self::reply), "pooled": pooled,
             }),
             OriginateReply::FaultArmed { by, refuse_index, refuse_history } => json!({"outcome": "Reply", "by": by.node, "fault": "armed", "refuse_index": refuse_index, "refuse_history": refuse_history}),
             OriginateReply::FaultReleased { by, refused } => json!({"outcome": "Reply", "by": by.node, "fault": "released", "refused": refused}),

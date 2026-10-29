@@ -30,9 +30,9 @@ fn kept_log(store: &std::path::Path, fabric: &FabricId, name: &PathName) -> Vec<
 ///  `(destination, destination_incarnation, alpn)` and executes at most one reconnect dial attempt at
 ///  a time on the node."
 #[test]
-fn source_node_reconciler_redials_failed_destination_at_due_time_and_retires_active_proxy() {
+fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_active_proxy() {
     let cap = crate::common::capture(
-        "source_node_reconciler_redials_failed_destination_at_due_time_and_retires_active_proxy",
+        "source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_active_proxy",
     );
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {

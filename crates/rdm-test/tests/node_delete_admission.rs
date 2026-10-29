@@ -212,7 +212,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         assert_ne!(b.node.incarnation_id, a.node.incarnation_id, "a new birth");
         assert_eq!(b.node.name, a.node.name, "at the same path");
 
-        // Retiring B: B ignores its stop and keeps running, every departure is lost.
+        // Deleting B: B ignores its stop and keeps running, every departure is lost.
         let build = publish_build(
             &builds,
             FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),

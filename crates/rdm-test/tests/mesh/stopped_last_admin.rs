@@ -191,7 +191,7 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     let result = json!({
         "cell": cell,
         "builds": builds,
-        "retiring_admin": last,
+        "deleting_admin": last,
         "stop_cut": { "start_unix_nano": cut_at, "trace_id": cut[0]["trace_id"], "span_id": cut[0]["span_id"] },
         "announcements_after_stop": announced.len(),
         "shutdown": { "start_unix_nano": start(shutdown[0]), "elapsed_ms": shutdown[0]["attributes"]["elapsed_ms"], "outcome": shutdown[0]["attributes"]["outcome"], "span_id": shutdown[0]["span_id"] },
