@@ -189,27 +189,28 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let silent_view = estate
         .until_node(&hold, &format!("{hold} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |n| n.filter(|n| n.status != NodeStatus::Ready).map(|n| serde_json::to_value(n).expect("a view serializes")))
         .await;
-    let mut reads = Vec::new();
-    let mut outcomes = Vec::new();
-    for _ in 0..2 {
-        // A short budget: the hold ends inside the silent window. Past the second unreached tickle ladder
-        // node investigation decides, and a verdict other than reached re-creates the node (Q111).
-        let probe = estate.probe(&["get", "--target", &hold_exact, "--budget-ms", "1500", "--key", "83"]);
-        reads.push(json!({"proc_state": proc_state(hold_rt.pid).map(String::from), "cpu_ticks": cpu_ticks(hold_rt.pid), "outcome": probe["outcome"]}).to_string());
-        outcomes.push(probe);
-    }
-    let held_at_last_read = proc_state(hold_rt.pid) == Some('T');
-    ev.fault = Some(FaultAck { held: true, names: Some(json!({"pid": hold_rt.pid, "start": hold_rt.start, "control_domain": hold_rt.control_domain, "view_status": silent_view["status"]})), held_at_last_read });
-    ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
-    ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
+    // The hold ends inside the silent window: past the second unreached tickle ladder node investigation
+    // decides, and a verdict other than reached re-creates the node (Q111), so nothing the cell needs only
+    // for its record stands between the silent view and the release. The view and the Build are read while
+    // held, first, and the two calls run at once, each its own probe process with a short budget: a probe
+    // process's start under a loaded box (an export batch) took 3 s, which held the runtime past the decision.
     let nodes_during = estate.node_values().await;
     let (seats_during, detail_during) = primaries(&nodes_during);
     let during = nodes_during.iter().find(|n| n["name"] == hold.as_str()).cloned();
     let attempt_during = attempt_of(&estate, &build_id).await;
+    let outcomes: Vec<Value> = std::thread::scope(|scope| {
+        let calls: Vec<_> = (0..2).map(|_| scope.spawn(|| estate.probe(&["get", "--target", &hold_exact, "--budget-ms", "1500", "--key", "83"]))).collect();
+        calls.into_iter().map(|c| c.join().expect("a probe call's thread")).collect()
+    });
+    let reads: Vec<String> = outcomes.iter().map(|probe| json!({"proc_state": proc_state(hold_rt.pid).map(String::from), "cpu_ticks": cpu_ticks(hold_rt.pid), "outcome": probe["outcome"]}).to_string()).collect();
+    let held_at_last_read = proc_state(hold_rt.pid) == Some('T');
     let alive = hold_rt.check().is_ok();
     let replaced = during.as_ref().is_none_or(|n| n["node_id"] != hold_n["node_id"]);
     let thawed = hold_rt.apply(Fault::Continue).expect("the hold is released");
     ev.release = Some(Release { acked: true, hold_ended: thawed.state_after != Some('T') });
+    ev.fault = Some(FaultAck { held: true, names: Some(json!({"pid": hold_rt.pid, "start": hold_rt.start, "control_domain": hold_rt.control_domain, "view_status": silent_view["status"]})), held_at_last_read });
+    ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
+    ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
     let back = estate
         .until_node(&hold, &format!("{hold} back as its own birth"), floor * 2 + Duration::from_secs(30), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
