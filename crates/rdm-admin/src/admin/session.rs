@@ -899,4 +899,52 @@ mod carried_tests {
         let (a, _) = carried_admission(CarryEnd::RefusedByNode(rdm_core::node_command::NodeCommandReply::RejectedConnectionScope { reason: "empty".into() }));
         assert!(matches!(&a, CommandAdmission::Refused { reply , .. } if reply.contains("refused-by-node")), "{a:?}");
     }
+
+    /// CONTRACT: docs/architecture/lifecycles/fabric-create.md:14 "Caller / executor | A person starts the first node-admin with no mesh and no durable topology"
+    /// docs/architecture/lifecycles/fabric-create.md:15 "Entry | No fabric exists; Day 0 is the first node-admin and its own mesh, nothing else."
+    #[test]
+    fn day0_entry_accepts_only_clean_unseeded_start_and_self_applies_pending_gate() {
+        let store_dir = crate::test_support::tempdir("day0-entry-store");
+        let data_dir = crate::test_support::tempdir("day0-entry-data");
+        let cfg = AdminConfig::from_env(|k| match k {
+            "RDM_STORE_DIR" => Some(store_dir.display().to_string()),
+            "RDM_DATA_DIR" => Some(data_dir.display().to_string()),
+            _ => None,
+        })
+        .expect("clean Day-0 environment parses");
+
+        assert_eq!(cfg.fabric, "fabric1");
+        assert_eq!(cfg.mesh, "mesh1");
+        assert!(!cfg.fabric_id_named);
+        assert!(cfg.adopt.is_none());
+        assert!(cfg.mesh_id.is_none());
+        assert!(cfg.seeds.is_empty());
+        assert!(!cfg.mesh_primary && !cfg.fabric_primary);
+        assert_eq!(refuse_contradictory_start(&cfg, None), Ok(()));
+
+        for held in [HOLDS_FABRIC, "a mesh record", "a durable topology"] {
+            let err = refuse_contradictory_start(&cfg, Some(held)).expect_err("existing store state must refuse Day 0");
+            assert!(err.contains(held), "refusal must name {held}: {err}");
+        }
+
+        let mut named_fabric = cfg.clone();
+        named_fabric.fabric_id_named = true;
+        let err = refuse_contradictory_start(&named_fabric, Some(HOLDS_FABRIC)).expect_err("named existing fabric must refuse Day 0");
+        assert!(err.contains("Day 0 creates a fabric and never adopts one"), "{err}");
+
+        let mut with_seed = cfg.clone();
+        with_seed.seeds = vec![("n".into(), "127.0.0.1:9000".parse().unwrap())];
+        let err = refuse_contradictory_start(&with_seed, None).expect_err("Day 0 with seed must be refused");
+        assert!(err.contains("Day 0 names no mesh and no seed"), "{err}");
+
+        let mut mesh_only_recovery = cfg.clone();
+        mesh_only_recovery.mesh_primary = true;
+        let err = refuse_contradictory_start(&mesh_only_recovery, None).expect_err("mesh_primary without fabric_primary must be refused");
+        assert!(err.contains("RDM_MESH_PRIMARY without RDM_FABRIC_PRIMARY"), "{err}");
+
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        assert_eq!(pending_gate(&me, "mesh1", true, false, false), PendingGate::SelfApply);
+        assert_eq!(pending_gate(&me, "mesh1", true, true, false), PendingGate::Clear);
+        assert!(matches!(pending_gate(&me, "mesh1", false, false, false), PendingGate::Blocked(_)));
+    }
 }
