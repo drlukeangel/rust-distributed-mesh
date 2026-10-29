@@ -216,6 +216,14 @@ impl StopGate {
         self.state.subscribe()
     }
 
+    /// A turn of `task` begun at once, whether the gate is stopped or not: for work that ends at the stop
+    /// ([`Self::until_stopped`]) and whatever it writes after it ends (its span, its outcome), so a stop's
+    /// quiesce resolves only once that work has ended, never while it is still ending.
+    pub fn begun(&self, task: &'static str) -> Turn {
+        self.state.send_modify(|s| *s.turns.entry(task).or_default() += 1);
+        Turn { state: self.state.clone(), task, build: None }
+    }
+
     /// Begin a turn of `task`: at once while the gate is open; while it is stopped, when it opens. A
     /// task that takes a lock other code needs is not spawned behind the gate (it would be held
     /// wherever it stands, a lock it was queued on included): it begins each turn here, at a point
@@ -279,7 +287,8 @@ impl StopGate {
     /// `work`, ended the moment the gate stops: `None` when the stop came first (or the gate was
     /// already stopped). For work a stop deletes with the birth instead of holding it (a tickle ladder, a
     /// recovery follower): it is dropped where it stands, a lock it held or was queued on included, and
-    /// never resumes; the next turn after a start decides again. The stop is looked at first, so work
+    /// never resumes; the next turn after a start decides again. It is a turn while it runs, so a stop's
+    /// quiesce resolves only once it has ended. The stop is looked at first, so work
     /// woken by its own progress and by the stop at once is never polled past the stop.
     pub fn until_stopped<F>(&self, work: F) -> impl Future<Output = Option<F::Output>> + Send + 'static
     where
@@ -287,7 +296,10 @@ impl StopGate {
         F::Output: Send + 'static,
     {
         let mut rx = self.state.subscribe();
+        let gate = self.clone();
         async move {
+            // A turn for the work's whole life: a stop's quiesce resolves once it has ended.
+            let _turn = gate.begun("until-stopped");
             tokio::select! {
                 biased;
                 _ = rx.wait_for(|s| s.stopped) => None,

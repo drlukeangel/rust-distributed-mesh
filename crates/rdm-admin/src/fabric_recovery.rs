@@ -309,6 +309,9 @@ impl FabricRecoveryDoor {
     /// again whether it runs here.
     async fn run(self: &Arc<Self>, target: Primary) {
         let me = self.held_name();
+        // A turn across the arm and its span: a stop's quiesce resolves once the arm has ended and
+        // written its end (stop_gate.rs: work a stop deletes with the birth ends at the stop).
+        let _turn = self.gate.begun("fabric-recovery");
         let span = tracing::info_span!(
             "rdm.node_admin.fabric.update.via-fabric-recovery",
             node = %me,
