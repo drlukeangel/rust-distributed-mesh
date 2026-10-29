@@ -892,3 +892,312 @@ async fn not_ready_in(me: &PathName, builds: &dyn Holdings, floor: Option<(crate
         Err(e) => Some(B::BuildStoreUnreadable { me: me.clone(), error: e.to_string() }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::accepted::{FabricTopology, MeshTopology};
+    use crate::build::BuildId;
+    use crate::build_state::{
+        AttemptOpened, AttemptReason, BuildAccepted, BuildStepReceipt,
+        MemoryBuildStateAdapter, StepOutcome,
+    };
+    use crate::fabric_storage::{FabricIdentity, MemoryFabricStorage};
+    use crate::fetch_build::NodeAdminNotReady;
+    use crate::storage::{MemoryNodesStorage, NodesStorage, RuntimeRow};
+    use crate::wire::{BuildFloor, JoinAnswer, JoinControl};
+    use rdm_core::handover::HandoverBirth;
+    use rdm_core::meta::{NodeSpec, PlacementMeta, StorageMeta};
+    use rdm_core::status::MeshState;
+    use rdm_core::{DeploymentId, RuntimeFact};
+
+    fn sample_digest(fabric_id: FabricId, mesh_id: MeshId, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> MeshDigest {
+        MeshDigest {
+            held_hash: [0u8; 32],
+            fabric_id,
+            node: MeshNode {
+                node_id: node_id.clone(),
+                name: name.clone(),
+                endpoint_id: EndpointId("e".repeat(64)),
+                transport_addr: "127.0.0.1:41001".parse().unwrap(),
+                incarnation: incarnation.clone(),
+                supersedes: None,
+                runtime: None,
+            },
+            status: MemberStatus::Ready,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 1_000,
+            data_dir: None,
+            mesh_id: Some(mesh_id),
+            in_flight: None,
+            load: None,
+            gossip: None,
+            is_primary: None,
+            is_fabric_primary: None,
+        }
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/fabric-recovery.md:62
+    /// "Any other verdict, node recovery re-creates it at the same path.name with a new node.id"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:52
+    /// "the fabric-primary creates mesh-x's node-admin in process ... on the same accepted Build and
+    /// mesh-x's own MeshId"
+    #[tokio::test]
+    async fn lost_birth_name_unanswered_peer_mesh_and_drift_inputs_resolve_recovery_targets() {
+        let fabric_id = FabricId::mint();
+        let mesh1_id = MeshId::mint();
+        let mesh2_id = MeshId::mint();
+        let dv = DigestView::default();
+
+        let lost_id = NodeId::mint();
+        let lost_inc = IncarnationId::mint();
+        let lost_path: PathName = "mesh1.admin.1".parse().unwrap();
+        let hb = HandoverBirth {
+            mesh: "mesh1".to_string(),
+            node_id: lost_id.clone(),
+            incarnation: lost_inc.clone(),
+        };
+
+        // 1. `lost_birth_name` returns None when unknown, and resolves the birth's `path.name` once present in `DigestView`.
+        assert_eq!(lost_birth_name(&dv, &hb), None);
+        dv.record(sample_digest(fabric_id.clone(), mesh1_id.clone(), &lost_path, &lost_id, &lost_inc));
+        assert_eq!(lost_birth_name(&dv, &hb), Some(lost_path.clone()));
+
+        // 2. `unanswered_peer_mesh` selects the first node-admin of an unreachable peer mesh.
+        let m1_admin: PathName = "mesh1.admin.1".parse().unwrap();
+        let m2_admin1: PathName = "mesh2.admin.1".parse().unwrap();
+        let m2_admin2: PathName = "mesh2.admin.2".parse().unwrap();
+        let spec_for = |p: &PathName| NodeSpec {
+            path: p.clone(),
+            storage_persistence: StorageMeta::Ephemeral,
+            placement: PlacementMeta::default(),
+            executable: None,
+            tags: BTreeSet::new(),
+            config: BTreeMap::new(),
+        };
+        let mut meshes = BTreeMap::new();
+        meshes.insert(
+            "mesh1".to_string(),
+            MeshTopology {
+                name: "mesh1".to_string(),
+                mesh_id: mesh1_id.clone(),
+                nodes: [m1_admin.clone()].into_iter().collect(),
+                spec_by_path: [(m1_admin.clone(), spec_for(&m1_admin))].into_iter().collect(),
+            },
+        );
+        meshes.insert(
+            "mesh2".to_string(),
+            MeshTopology {
+                name: "mesh2".to_string(),
+                mesh_id: mesh2_id,
+                nodes: [m2_admin1.clone(), m2_admin2.clone()].into_iter().collect(),
+                spec_by_path: [
+                    (m2_admin1.clone(), spec_for(&m2_admin1)),
+                    (m2_admin2.clone(), spec_for(&m2_admin2)),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        );
+        let build_id = BuildId::mint();
+        let adapter = MemoryBuildStateAdapter::new();
+        let mut root_topo = FabricTopology::root("fab", "mesh1", mesh1_id);
+        root_topo.meshes = meshes;
+        adapter
+            .publish_accepted(&BuildAccepted {
+                build_id: build_id.clone(),
+                topology: root_topo,
+                submitted_change: None,
+                submitted_at_ms: 1_000,
+            })
+            .await
+            .unwrap();
+        let proj = adapter.read_build(&build_id).await.unwrap();
+        assert_eq!(unanswered_peer_mesh(&m1_admin, &proj, &|_| false), None);
+        assert_eq!(
+            unanswered_peer_mesh(&m1_admin, &proj, &|m| m == "mesh2"),
+            Some(("mesh2".to_string(), m2_admin1.clone()))
+        );
+
+        // 3. `drift_inputs` formats verdict, repair, and surplus deterministically and counts only `Complete` steps.
+        let mut n2 = Node::allocated(m2_admin1.clone());
+        n2.incarnation_id = Some(IncarnationId::mint());
+        n2.status = NodeStatus::Ready;
+        let topo = Topology {
+            fabric: Fabric {
+                id: fabric_id,
+                name: "fab".to_string(),
+                status: ScopeStatus::Ready,
+                provider: ProviderKind::Process,
+            },
+            meshes: Vec::new(),
+            nodes: vec![n2.clone()],
+        };
+
+        let step_complete = BuildStepReceipt {
+            build_id: build_id.clone(),
+            attempt: 1,
+            operation: format!("node.create:{m2_admin1}"),
+            step: "Complete".to_string(),
+            outcome: StepOutcome::Complete,
+            output: None,
+            executor: None,
+            mesh: None,
+        };
+        let verdict_str = drift_inputs(
+            &topo,
+            std::slice::from_ref(&step_complete),
+            None,
+            Some(("unreachable", &m2_admin1)),
+            &[],
+        );
+        assert!(verdict_str.contains("unreachable mesh2 create mesh2.admin.1"), "{verdict_str}");
+        assert!(verdict_str.contains("receipts=1"), "{verdict_str}");
+
+        let repair_inc = n2.incarnation_id.clone().unwrap();
+        let repair_str = drift_inputs(
+            &topo,
+            std::slice::from_ref(&step_complete),
+            Some((&m2_admin1, &repair_inc)),
+            None,
+            &[],
+        );
+        assert_eq!(
+            repair_str,
+            format!("repair {m2_admin1}:{} receipts=1", repair_inc.as_str())
+        );
+
+        let surplus_str = drift_inputs(&topo, &[], None, None, &[m2_admin1.to_string()]);
+        assert_eq!(
+            surplus_str,
+            format!("{m2_admin1}:{}", repair_inc.as_str())
+        );
+    }
+
+    /// CONTRACT: docs/architecture/build.md:308
+    /// "first connection / JoinNode (op `0x1D`) -> Fabric identity + the Build to hold"
+    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:69
+    /// "The joined node-admin, as mesh-x's successor primary, adopts the mesh's held state"
+    #[tokio::test]
+    async fn for_pass_take_entry_control_and_node_admin_not_ready_held_track_tenure_and_entry_floor() {
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let mesh_id = MeshId::mint();
+        let fabric_id = FabricId::mint();
+
+        // 1. `FabricTenureRows::for_pass` reads runtime rows once when `fabric_primary` is true and clears them when false.
+        let nodes = MemoryNodesStorage::default();
+        let dep_id = DeploymentId::mint();
+        let row = RuntimeRow {
+            name: me.clone(),
+            node_id: NodeId::mint(),
+            incarnation_id: IncarnationId::mint(),
+            runtime: RuntimeFact::of_this_process(dep_id.as_str()).unwrap(),
+            data_dir: None,
+        };
+        nodes.put_runtime(&row).await.unwrap();
+
+        let mut tenure = FabricTenureRows::default();
+        assert!(tenure.for_pass(false, &nodes, &me).await.is_empty());
+        let loaded = tenure.for_pass(true, &nodes, &me).await;
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].node_id, row.node_id);
+        assert!(tenure.for_pass(false, &nodes, &me).await.is_empty());
+
+        // 2. `take_entry_control` learns Fabric identity, records the Build floor, and adopts the mesh's held MeshState.
+        let fab_store = Arc::new(MemoryFabricStorage::default());
+        let accepted = AcceptedStore::new(fab_store, me.to_string());
+        let entry_floor = Mutex::new(None);
+        let records = Records::default();
+        let build_id = BuildId::mint();
+        let identity = FabricIdentity {
+            fabric_id: fabric_id.clone(),
+            name: "fab".to_string(),
+        };
+        let answer = JoinAnswer {
+            served_by: "mesh1.admin.2".to_string(),
+            control: JoinControl {
+                provider: ProviderKind::Process,
+                fabric: Some(identity.clone()),
+                build: Some(BuildFloor {
+                    build_id: build_id.clone(),
+                    attempt: 2,
+                }),
+                rafka_time_ms: 5_000,
+                member_cert: Vec::new(),
+                name: Some(me.clone()),
+                config: None,
+                cert_policy: None,
+            },
+            statuses: vec![rdm_transport::topology::Frame::MeshStatus {
+                mesh: "mesh1".to_string(),
+                status: "ready".to_string(),
+                publisher: "mesh1.admin.2".to_string(),
+                forwarded_by: None,
+                changed_at_rafka_ms: 4_000,
+            }],
+        };
+        take_entry_control(&answer, &accepted, &entry_floor, &records, "mesh1", &mesh_id).await;
+        assert_eq!(accepted.record().await.unwrap(), Some(identity));
+        assert_eq!(*entry_floor.lock().unwrap(), Some((build_id.clone(), 2)));
+        assert_eq!(
+            records.declared.lock().unwrap().meshes.get(&mesh_id).copied(),
+            Some(MeshState::Ready)
+        );
+
+        // 3. `node_admin_not_ready_held` checks the in-memory `LocalBuildLog` against the entry floor.
+        let log = MemoryBuildStateAdapter::new();
+        assert_eq!(
+            node_admin_not_ready_held(&me, &log, Some((build_id.clone(), 2))).await,
+            Some(NodeAdminNotReady::NoCurrentBuild {
+                me: me.clone(),
+                wanted: Some(build_id.clone()),
+            })
+        );
+
+        log.publish_accepted(&BuildAccepted {
+            build_id: build_id.clone(),
+            topology: FabricTopology::root("fab", "mesh1", mesh_id),
+            submitted_change: None,
+            submitted_at_ms: 1_000,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            node_admin_not_ready_held(&me, &log, Some((build_id.clone(), 1))).await,
+            Some(NodeAdminNotReady::BehindFloor {
+                me: me.clone(),
+                build_id: build_id.clone(),
+                held: 0,
+                floor: 1,
+            })
+        );
+
+        log.open_attempt(&AttemptOpened {
+            build_id: build_id.clone(),
+            attempt: 1,
+            reason: AttemptReason::Requested,
+            action: None,
+            opened_by: me.to_string(),
+            opened_at_ms: 2_000,
+            mesh: None,
+            context: None,
+        })
+        .await
+        .unwrap();
+        log.claim_attempt(&crate::build_state::BuildAttemptClaim {
+            build_id: build_id.clone(),
+            attempt: 1,
+            executor: me.to_string(),
+            claimant: Some(me.to_string()),
+            mesh: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            node_admin_not_ready_held(&me, &log, Some((build_id, 1))).await,
+            None
+        );
+    }
+}
