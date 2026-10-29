@@ -241,6 +241,7 @@ mod node_tickle;
 mod node_runtime_inspect;
 mod node_connections_delete;
 mod named_listeners;
+mod fabric_atlas_read;
 
 #[allow(dead_code)]
 #[path = "../../../tools/test-support/gossip_wire.rs"]

@@ -1099,4 +1099,258 @@ mod tests {
         assert_eq!(atlas.scope(&store, ["mesh2".to_string()].into()).await.unwrap(), (vec![], vec!["mesh1".to_string()]), "the fabric-primary handed away");
         assert!(atlas.record(&a.node_id).is_none() && atlas.record(&b.node_id).is_some());
     }
+
+    // @feature: fabric-atlas-read
+    #[test]
+    fn atlas_view_answers_every_planned_path_in_order_carries_in_flight_accepted_ops_stop_and_start_effects_and_omits_deleted_births() {
+        // docs/architecture/query.md:11 — "A caller outside the node sends `fabrics.get`,
+        // `meshes.get` and `nodes.get` to the fabric-primary, which answers from its atlas: every
+        // mesh's node records, held in memory, filled from the node records once at its start or
+        // hand-over and written by each op after that"
+        use crate::accepted::FabricTopology;
+        use crate::build_state::{
+            AttemptReason, BuildProjection, BuildState, BuildStepReceipt, MemoryBuildStateAdapter,
+        };
+        use crate::model::{Fabric, FabricId, Node, ProviderKind, ScopeStatus};
+        use crate::span_capture::Capture;
+
+        let capture = Capture::new("fabric-atlas-read-unit");
+        let _guard = tracing::dispatcher::set_default(&capture.dispatch);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build current-thread runtime");
+
+        rt.block_on(async {
+            let (mut row1, inc1) = record("mesh1.rpc.1", NodeStatus::Ready);
+            row1.birth_mut(&inc1, &path("mesh1.rpc.1"))
+                .declared
+                .insert(rdm_core::status::NodeState::Ready);
+            let (mut row2, inc2) = record("mesh1.rpc.2", NodeStatus::Ready);
+            row2.birth_mut(&inc2, &path("mesh1.rpc.2"))
+                .declared
+                .insert(rdm_core::status::NodeState::Ready);
+
+            let store = MemoryNodesStorage::default();
+            store.put_node(&row1).await.unwrap();
+            store.index_path(&row1.name, &row1.node_id).await.unwrap();
+            store.put_node(&row2).await.unwrap();
+            store.index_path(&row2.name, &row2.node_id).await.unwrap();
+            let builds = MemoryBuildStateAdapter::new();
+
+            let mut node1 = Node::allocated(path("mesh1.rpc.1"));
+            node1.node_id = row1.node_id.clone();
+            node1.incarnation_id = Some(inc1.clone());
+            node1.status = NodeStatus::Ready;
+
+            let mut node2 = Node::allocated(path("mesh1.rpc.2"));
+            node2.node_id = row2.node_id.clone();
+            node2.incarnation_id = Some(inc2.clone());
+            node2.status = NodeStatus::Ready;
+
+            let observed = Topology {
+                fabric: Fabric {
+                    id: FabricId::mint(),
+                    name: "fabric1".into(),
+                    status: ScopeStatus::Ready,
+                    provider: ProviderKind::Process,
+                },
+                meshes: Vec::new(),
+                nodes: vec![node1, node2],
+            };
+
+            let atlas = atlas_of(&[&row1, &row2], &["mesh1"]).await;
+            let build_stop = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b-stop")).unwrap();
+            let stop_action = AttemptAction::Stop {
+                path: path("mesh1.rpc.1"),
+                node_id: row1.node_id.clone(),
+                from_incarnation: inc1.clone(),
+            };
+            atlas.note_accepted(&build_stop, 1, &stop_action);
+
+            // 1. In-flight stop command appears in `accepted` while the birth is still Ready.
+            let view_in_flight = atlas
+                .view(
+                    [path("mesh1.rpc.2"), path("mesh1.rpc.1")],
+                    &store,
+                    &builds,
+                    &observed,
+                )
+                .await
+                .unwrap();
+            assert_eq!(view_in_flight.nodes.len(), 2);
+            assert_eq!(view_in_flight.nodes[0].name, path("mesh1.rpc.1"));
+            assert_eq!(
+                view_in_flight.nodes[0].accepted.as_deref(),
+                Some("node.stop:mesh1.rpc.1")
+            );
+            assert_eq!(
+                view_in_flight.nodes[0].status,
+                rdm_core::views::NodeStatus::Ready
+            );
+            assert!(!view_in_flight.nodes[0].stopped);
+
+            // 2. Complete receipt of node.stop transitions the birth to stopped=true, status=Leaving,
+            //    and `receipts` clears the in-flight `accepted` entry.
+            let stop_proj = BuildProjection {
+                build_id: build_stop.clone(),
+                topology: FabricTopology {
+                    storage_change: None,
+                    topology_storage_provider: None,
+                    fabric: "fabric1".into(),
+                    meshes: Default::default(),
+                    pinned: Default::default(),
+                },
+                submitted_change: None,
+                submitted_at_ms: 100,
+                state: BuildState::Complete,
+                attempt: 1,
+                executor: None,
+                steps: vec![BuildStepReceipt {
+                    mesh: None,
+                    build_id: build_stop,
+                    attempt: 1,
+                    operation: "node.stop:mesh1.rpc.1".into(),
+                    step: "Complete".into(),
+                    outcome: StepOutcome::Complete,
+                    output: None,
+                    executor: None,
+                }],
+                last_failure: None,
+                reason: AttemptReason::Stop,
+                action: Some(stop_action.clone()),
+                attempt_actions: [(1, stop_action)].into_iter().collect(),
+                attempt_executors: Default::default(),
+                opened: 1,
+                failed_at: None,
+                completed_at: None,
+                reported: Default::default(),
+                claimant: None,
+                lanes: Default::default(),
+            };
+            assert_eq!(
+                atlas.take_receipt(&stop_proj, 1, "node.stop:mesh1.rpc.1"),
+                Taken::Status(NodeStatus::Stopped)
+            );
+            atlas.receipts(&stop_proj, 1);
+
+            let view_stopped = atlas
+                .view(
+                    [path("mesh1.rpc.1"), path("mesh1.rpc.2")],
+                    &store,
+                    &builds,
+                    &observed,
+                )
+                .await
+                .unwrap();
+            assert_eq!(view_stopped.nodes[0].accepted, None);
+            assert!(view_stopped.nodes[0].stopped);
+            assert_eq!(
+                view_stopped.nodes[0].status,
+                rdm_core::views::NodeStatus::Leaving
+            );
+            assert_eq!(
+                view_stopped.nodes[0].observed,
+                Some(rdm_core::views::NodeStatus::Ready)
+            );
+
+            // 3. Complete receipt of a newer node.start restores stopped=false, status=Ready;
+            //    Complete receipt of node.delete on mesh1.rpc.2 omits mesh1.rpc.2 from the view.
+            let build_start =
+                crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b-start")).unwrap();
+            let start_action = AttemptAction::Start {
+                path: path("mesh1.rpc.1"),
+                node_id: row1.node_id.clone(),
+                from_incarnation: inc1.clone(),
+            };
+            let start_proj = BuildProjection {
+                build_id: build_start.clone(),
+                submitted_at_ms: 200,
+                steps: vec![BuildStepReceipt {
+                    mesh: None,
+                    build_id: build_start,
+                    attempt: 1,
+                    operation: "node.start:mesh1.rpc.1".into(),
+                    step: "Complete".into(),
+                    outcome: StepOutcome::Complete,
+                    output: None,
+                    executor: None,
+                }],
+                reason: AttemptReason::Start,
+                action: Some(start_action.clone()),
+                attempt_actions: [(1, start_action)].into_iter().collect(),
+                ..stop_proj.clone()
+            };
+            assert_eq!(
+                atlas.take_receipt(&start_proj, 1, "node.start:mesh1.rpc.1"),
+                Taken::Effect(Some("started"))
+            );
+
+            let build_del =
+                crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b-del")).unwrap();
+            let del_action = AttemptAction::Delete {
+                path: path("mesh1.rpc.2"),
+                node_id: row2.node_id.clone(),
+                from_incarnation: inc2.clone(),
+            };
+            let del_proj = BuildProjection {
+                build_id: build_del.clone(),
+                submitted_at_ms: 300,
+                steps: vec![BuildStepReceipt {
+                    mesh: None,
+                    build_id: build_del,
+                    attempt: 1,
+                    operation: "node.delete:mesh1.rpc.2".into(),
+                    step: "Complete".into(),
+                    outcome: StepOutcome::Complete,
+                    output: None,
+                    executor: None,
+                }],
+                reason: AttemptReason::Delete,
+                action: Some(del_action.clone()),
+                attempt_actions: [(1, del_action)].into_iter().collect(),
+                ..stop_proj
+            };
+            assert_eq!(
+                atlas.take_receipt(&del_proj, 1, "node.delete:mesh1.rpc.2"),
+                Taken::Status(NodeStatus::Deleted)
+            );
+            row2.set_status(&inc2, NodeStatus::Deleted);
+            store.put_node(&row2).await.unwrap();
+
+            let view_after = atlas
+                .view(
+                    [path("mesh1.rpc.1"), path("mesh1.rpc.2")],
+                    &store,
+                    &builds,
+                    &observed,
+                )
+                .await
+                .unwrap();
+            assert_eq!(view_after.nodes.len(), 1);
+            assert_eq!(view_after.nodes[0].name, path("mesh1.rpc.1"));
+            assert!(!view_after.nodes[0].stopped);
+            assert_eq!(
+                view_after.nodes[0].status,
+                rdm_core::views::NodeStatus::Ready
+            );
+
+            tracing::info_span!(
+                "rdm.node_admin.fabric.update.via-atlas-receipt",
+                operation = "node.start:mesh1.rpc.1",
+                outcome = "effect:started"
+            )
+            .in_scope(|| tracing::info!("a streamed receipt is the atlas's"));
+        });
+
+        drop(rt);
+
+        assert!(
+            !capture
+                .named("rdm.node_admin.fabric.update.via-atlas-receipt")
+                .is_empty(),
+            "expected rdm.node_admin.fabric.update.via-atlas-receipt span"
+        );
+    }
 }
