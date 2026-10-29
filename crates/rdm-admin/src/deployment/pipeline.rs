@@ -3279,4 +3279,66 @@ mod tests {
         assert!(steps.iter().any(|(s, o)| s == CreateStep::WaitForMeshJoin.name() && *o == StepOutcome::Complete), "WaitForMeshJoin's receipt is Complete: {steps:?}");
         let _ = std::fs::remove_dir_all(&template.data_root);
     }
+
+    // @feature: data-dir-lost-recovery
+    /// CONTRACT: docs/architecture/lifecycles/node-recovery.md:147
+    /// "Gone versus broken is decided from the filesystem error on the inherited `data_dir`, never
+    ///  guessed. An absent directory path (`NotFound` on the directory itself) is gone; an existing
+    ///  directory on disk whose `node-key` is missing, unreadable, or corrupt (`NotFound` on
+    ///  `node-key` inside an existing directory, `EIO`, `EACCES`, or decode failure) is broken"
+    #[test]
+    fn inspect_transport_key_distinguishes_absent_data_dir_gone_from_existing_dir_broken_and_loads_valid_key(
+    ) {
+        assert_eq!(crate::admin::DEFAULT_DATA_DIR_GONE_FLOORS, 2);
+        assert!(crate::admin::data_dir_gone_floors() >= 1);
+        assert!(crate::admin::data_dir_gone_hold_ms() >= 1);
+
+        let dir = std::env::temp_dir().join(format!(
+            "rdm-data-dir-lost-unit-{}",
+            rdm_core::IncarnationId::mint()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 1. Absent directory -> InheritedDirError::Gone
+        match inspect_transport_key(&dir) {
+            Err(InheritedDirError::Gone(msg)) => {
+                assert!(msg.contains("does not exist"), "unexpected message: {msg}");
+            }
+            other => panic!("expected Gone for absent directory, got {other:?}"),
+        }
+
+        // 2. Existing directory with missing `node-key` -> InheritedDirError::Broken
+        std::fs::create_dir_all(&dir).unwrap();
+        match inspect_transport_key(&dir) {
+            Err(InheritedDirError::Broken(msg)) => {
+                assert!(
+                    msg.contains("node-key is missing"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected Broken for missing node-key, got {other:?}"),
+        }
+
+        // 3. Existing directory with corrupt `node-key` -> InheritedDirError::Broken
+        let key_path = dir.join("node-key");
+        std::fs::write(&key_path, "not-valid-hex").unwrap();
+        assert!(matches!(
+            inspect_transport_key(&dir),
+            Err(InheritedDirError::Broken(_))
+        ));
+
+        std::fs::write(&key_path, "deadbeef").unwrap();
+        assert!(matches!(
+            inspect_transport_key(&dir),
+            Err(InheritedDirError::Broken(_))
+        ));
+
+        // 4. Repaired 32-byte hex `node-key` -> Ok(EndpointId)
+        let secret = iroh::SecretKey::from_bytes(&[0x42u8; 32]);
+        let expected_ep = EndpointId(secret.public().to_string());
+        std::fs::write(&key_path, hex::encode(secret.to_bytes())).unwrap();
+        assert_eq!(inspect_transport_key(&dir), Ok(expected_ep));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

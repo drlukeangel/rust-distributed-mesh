@@ -43,7 +43,16 @@ async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin
     rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin.1"), view, &loads, &atlas, planned, filter, &|_| {}).await
 }
 
-/// CONTRACT (i144, Q203: a node read answers from the atlas, never the node store;
+/// CONTRACT (`docs/architecture/lifecycles/node-recovery.md:152` — "It writes the birth's durable
+/// `data-dir-lost` fact to the mesh's `nodes.storage` at `<mesh>/<node.id>/<incarnation.id>/data-dir-lost`,
+/// then deletes the unreached birth (`node.delete` with `skip_stop`)" and
+/// `docs/architecture/lifecycles/node-recovery.md:161` — "It writes the birth's durable
+/// `data-dir-unreadable` fact to `<mesh>/<node.id>/<incarnation.id>/data-dir-unreadable` (the path and
+/// the failure cause), deletes the unreached birth (`node.delete` with `skip_stop`), and **does not**
+/// run `node.create`."; `docs/architecture/lifecycles/node-recovery.md:107` — "On recovery (`node.delete`
+/// + `node.create` at the same `path.name`), the `Deleted` row written by `node.delete` retains the
+/// exited node's `config` and `tags`; the subsequent `node.create`'s name claim reads that `Deleted`
+/// row and copies its `config` and `tags` into the new node's row before writing.";
 /// storage-whole-records.md: "A birth recovered over a fresh data dir reads its predecessor's
 /// `data-dir-lost` through the `predecessor` reference on its own record"): a birth recovered over a
 /// fresh data dir at the path.name of a birth whose data dir was lost answers that loss on
@@ -53,26 +62,50 @@ async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin
 /// birth with neither fact answers neither. A Build that cannot be read names no path: the births the
 /// view holds are still answered. A cleared unreadable fact is answered no more. Must NOT happen: the
 /// loss answered only on the exited birth, or the held birth missing while the Build plans its path.
+// @feature: data-dir-lost-recovery
 #[tokio::test]
 async fn node_get_answers_data_dir_facts_from_the_atlas_at_their_path_name() {
-    let (admin, plain, recovered) = (node("mesh1.admin.1"), node("mesh1.rpc.1"), node("mesh1.rpc.2"));
+    let mut admin = node("mesh1.admin.1");
+    admin.is_primary = true;
+    admin.is_fabric_primary = true;
+    let (plain, recovered) = (node("mesh1.rpc.1"), node("mesh1.rpc.2"));
     let view = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
         nodes: vec![admin.clone(), plain.clone(), recovered.clone()],
     };
-    let storage = MemoryNodesStorage::default();
-    let status = &storage;
-    // mesh1.rpc.2's predecessor lost its data dir; mesh1.rpc.3 was deleted by its recovery and is held
-    // with its data dir unreadable.
+    let storage = Arc::new(MemoryNodesStorage::default());
+    let status: &MemoryNodesStorage = &storage;
+    let rows = rdm_admin::node_rows::NodeRows::new(
+        admin.name.clone(),
+        admin.node_id.clone(),
+        Arc::new(tokio::sync::RwLock::new(view.clone())),
+        storage.clone(),
+    );
+    // mesh1.rpc.2's predecessor lost its data dir, was deleted by recovery, and recovery's claim over
+    // the Deleted row links predecessor and inherits config and tags; mesh1.rpc.3 was deleted by its
+    // recovery and is held with its data dir unreadable.
     let lost = DataDirLost { path: "/data/mesh1.rpc.2".into(), since: 1_700 };
     let (exited_id, exited_birth) = (NodeId::mint(), IncarnationId::mint());
-    let mut exited = NodeRow::new(path("mesh1.rpc.2"), exited_id.clone(), NodeStatus::Deleted);
+    let mut exited_node = Node::allocated(path("mesh1.rpc.2"));
+    exited_node.node_id = exited_id.clone();
+    exited_node.incarnation_id = Some(exited_birth.clone());
+    let mut exited = NodeRow::new(path("mesh1.rpc.2"), exited_id.clone(), NodeStatus::Ready);
+    exited.config = BTreeMap::from([("region".into(), "eu-west".into())]);
+    exited.tags = std::collections::BTreeSet::from(["tier-a".to_string()]);
     exited.birth_mut(&exited_birth, &path("mesh1.rpc.2")).data_dir_lost = Some(lost.clone());
     status.write_record(&exited).await.unwrap();
-    let mut successor = NodeRow::new(path("mesh1.rpc.2"), recovered.node_id.clone(), NodeStatus::Ready);
-    successor.predecessor = Some(BirthRef { node_id: exited_id, incarnation_id: exited_birth });
-    status.write_record(&successor).await.unwrap();
+    rows.deleted_unreached(&exited_node, "node.delete#recovery").await.unwrap();
+    let claimed = rows.claim(&path("mesh1.rpc.2"), &recovered.node_id, "node.create#recovery", None, None, rdm_admin::node_rows::ClaimFor::Recovery).await.unwrap();
+    match claimed {
+        rdm_admin::node_rows::Claimed::Written { row, seeded_from } => {
+            assert_eq!(seeded_from, Some(exited_id.clone()));
+            assert_eq!(row.predecessor, Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }));
+            assert_eq!(row.config.get("region").map(String::as_str), Some("eu-west"));
+            assert!(row.tags.contains("tier-a"));
+        }
+        other => panic!("expected Written claim for recovery, got {other:?}"),
+    }
     let held = DataDirUnreadable { path: "/data/mesh1.rpc.3".into(), cause: "node-key: not hex".into() };
     let (held_id, held_birth) = (NodeId::mint(), IncarnationId::mint());
     let mut unreadable = NodeRow::new(path("mesh1.rpc.3"), held_id.clone(), NodeStatus::Deleted);
@@ -85,6 +118,8 @@ async fn node_get_answers_data_dir_facts_from_the_atlas_at_their_path_name() {
     assert_eq!(nodes.len(), 4, "the three births the view holds and the held one: {nodes:#?}");
     let r2 = at("mesh1.rpc.2");
     assert_eq!((r2.node_id.clone(), r2.data_dir_lost.as_ref().map(|l| (l.path.clone(), l.since))), (recovered.node_id.clone(), Some((lost.path.clone(), lost.since))), "the recovered birth answers the loss it was recovered over");
+    assert_eq!(r2.config.get("region").map(String::as_str), Some("eu-west"), "the recovered birth inherits its predecessor's config");
+    assert!(r2.tags.iter().any(|t| t == "tier-a"), "the recovered birth inherits its predecessor's tags");
     assert!(at("mesh1.rpc.1").data_dir_lost.is_none() && at("mesh1.rpc.1").data_dir_unreadable.is_none(), "a birth with neither fact answers neither");
     let r3 = at("mesh1.rpc.3");
     assert_eq!((r3.node_id.clone(), r3.status, r3.data_dir_unreadable.as_ref().map(|u| (u.path.clone(), u.cause.clone()))), (held_id.clone(), rdm_core::views::NodeStatus::Dead, Some((held.path.clone(), held.cause.clone()))), "the held birth is answered at its planned path");
