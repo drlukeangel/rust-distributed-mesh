@@ -56,8 +56,9 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    step.
 8. The mesh-primary creates `mesh2`'s other nodes as attempts of the same Build, at once: a
    create that fails stops none of the others (Q245). When every
-   planned birth is ready it reports to the fabric-primary, which applies
-   `ApplyMeshState(Ready)`; the mesh-primary records it on the mesh's record, publishes
+   planned birth is ready it declares `Ready` to the fabric-primary (`DeclareMeshState`, owed until
+   answered), which decides it and answers `Applied`; answered, the mesh-primary records it on the
+   mesh's record (Q144), publishes
    `MeshStatus` ready, and the mesh is in traffic. Once that state is newly on the mesh's
    record the mesh-primary calls [on_mesh_ready](../fabric-node-hooks.md#on_mesh_ready) once, a
    notice that gates nothing (`rdm.node_admin.mesh.update.via-on-mesh-ready`).
@@ -99,8 +100,8 @@ The unary reply, the body alone:
 
 A repeat of the same apply answers `AlreadyApplied`; an apply that names a mesh the receiver does
 not hold answers `RejectedStaleMesh { held }`; a state the mesh cannot move to answers
-`RejectedInvalidMeshTransition { current }`. At step 8 the same request carries
-`"state": "Ready"`.
+`RejectedInvalidMeshTransition { current }`. At step 8 the mesh-primary declares
+`Ready` upward instead (`DeclareMeshState`), and the fabric-primary's `Applied` answers it (Q144).
 
 ## Gossip messages
 
@@ -188,4 +189,4 @@ stream certainty follow the [caller execution contract](../node-rpc-envelope.md#
 | Join | node-admin, fabric-primary | [node.mesh.join](node-mesh-join.md#observability-contract) | same operation |
 | Mesh Pending | fabric-primary | the Ping, then `ApplyMeshState(Pending)`'s call span | mesh id, mesh name |
 | Seat and name | node-admin | `rdm.mesh.election.resolve.via-recompute`; the name claim; the mesh row write | mesh id, revision |
-| Mesh Ready | fabric-primary, node-admin | `ApplyMeshState(Ready)`; `MeshStatus` publish | mesh id |
+| Mesh Ready | node-admin, fabric-primary | `DeclareMeshState(Ready)` answered `Applied`; `MeshStatus` publish | mesh id |
