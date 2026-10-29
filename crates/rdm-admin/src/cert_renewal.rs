@@ -418,7 +418,7 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
             };
         let for_ca = r.ca_due.lock().unwrap().contains(&m.name);
         let current = match (due, held) {
-            (true, held) => match mint_next(r, &m.name, held.map(|h| h.expires_at).unwrap_or(newest_row)) {
+            (true, held) => match mint_next(r, &m.name, held.map(|h| h.expires_at).unwrap_or(newest_row), admins.len()) {
                 Some(mint) => {
                     // The mesh's issuer under the renewed CA: its receipt on the CA row.
                     if for_ca {
@@ -452,7 +452,15 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
         } else {
             vec![(primary, None)]
         };
-        let sends: Vec<(Node, Option<NodeId>)> = sends.into_iter().filter(|(a, _)| a.incarnation_id.as_ref().is_some_and(|i| !holds(a, i))).collect();
+        // Each admin's previous issuer, the one this replaces there: its row's expiry, 0 with no row.
+        let sends: Vec<(Node, Option<NodeId>, u64)> = sends
+            .into_iter()
+            .filter(|(a, _)| a.incarnation_id.as_ref().is_some_and(|i| !holds(a, i)))
+            .map(|(a, c)| {
+                let previous = a.incarnation_id.as_ref().and_then(|i| row_of_admin(&a, i)).map_or(0, |row| row.expires_at);
+                (a, c, previous)
+            })
+            .collect();
         update_admins(r, &m.name, sends, &current, own_mesh).await;
     }
 }
@@ -635,8 +643,8 @@ async fn write_ca_row(r: &Renewals, change: impl FnOnce(&mut crate::fabric_stora
 }
 
 /// Mint the next issuing key of `mesh` after the one expiring at `previous_expiry`, held here.
-fn mint_next(r: &Renewals, mesh: &str, previous_expiry: u64) -> Option<IssuerMint> {
-    let span = tracing::info_span!("rdm.node_admin.issuer.create.via-renewal", mesh, issuer_expires_at = tracing::field::Empty, previous_issuer_expires_at = previous_expiry, admins = tracing::field::Empty, reason = tracing::field::Empty, outcome = tracing::field::Empty);
+fn mint_next(r: &Renewals, mesh: &str, previous_expiry: u64, admins: usize) -> Option<IssuerMint> {
+    let span = tracing::info_span!("rdm.node_admin.issuer.create.via-renewal", mesh, issuer_expires_at = tracing::field::Empty, previous_issuer_expires_at = previous_expiry, admins = admins as u64, reason = tracing::field::Empty, outcome = tracing::field::Empty);
     match r.issuer.renew_issuer(mesh) {
         Ok((_, mint)) => {
             r.ca_due.lock().unwrap().remove(mesh);
@@ -656,23 +664,23 @@ fn mint_next(r: &Renewals, mesh: &str, previous_expiry: u64) -> Option<IssuerMin
 
 /// `node.issuer.update` of the key `current` minted to each of `admins`, each on its own task: through
 /// its carrier when one is named, else directly; this admin itself in process.
-async fn update_admins(r: &Arc<Renewals>, mesh: &str, admins: Vec<(Node, Option<NodeId>)>, current: &IssuerMint, own_mesh: bool) {
+async fn update_admins(r: &Arc<Renewals>, mesh: &str, admins: Vec<(Node, Option<NodeId>, u64)>, current: &IssuerMint, own_mesh: bool) {
     let Some(key) = r.issuer.held_issuer(mesh).filter(|k| k.expiry_ms() == current.expires_at) else { return };
-    for (admin, carrier) in admins {
+    for (admin, carrier, previous) in admins {
         let Some(incarnation) = admin.incarnation_id.clone() else { continue };
         if !r.updating.lock().unwrap().insert((admin.node_id.clone(), incarnation.clone())) {
             continue;
         }
         let (r2, current, key, mesh) = (r.clone(), current.clone(), key.clone(), mesh.to_string());
         tokio::spawn(async move {
-            update_one(&r2, &mesh, &admin, carrier.as_ref(), &incarnation, &current, &key, own_mesh).await;
+            update_one(&r2, &mesh, &admin, carrier.as_ref(), &incarnation, &current, &key, own_mesh, previous).await;
             r2.updating.lock().unwrap().remove(&(admin.node_id.clone(), incarnation));
         });
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn update_one(r: &Renewals, mesh: &str, admin: &Node, carrier: Option<&NodeId>, incarnation: &IncarnationId, current: &IssuerMint, key: &rdm_core::certs::IssuingKey, own_mesh: bool) {
+async fn update_one(r: &Renewals, mesh: &str, admin: &Node, carrier: Option<&NodeId>, incarnation: &IncarnationId, current: &IssuerMint, key: &rdm_core::certs::IssuingKey, own_mesh: bool, previous: u64) {
     let span = tracing::info_span!(
         "rdm.node_admin.issuer.update.via-renewal",
         node = %admin.name,
@@ -682,12 +690,13 @@ async fn update_one(r: &Renewals, mesh: &str, admin: &Node, carrier: Option<&Nod
         carrier = %carrier.map(|c| c.to_string()).unwrap_or_default(),
         mesh,
         issuer_expires_at = current.expires_at,
+        previous_issuer_expires_at = previous,
         reason = tracing::field::Empty,
         outcome = tracing::field::Empty,
     );
     let outcome = if admin.node_id == r.node_id {
         // This admin holds it already: installed in process, with no call.
-        tracing::info_span!("rdm.node_admin.issuer.update.via-installed", node = %r.me, node_id = %r.node_id, mesh, sender = %r.me, issuer_expires_at = current.expires_at)
+        tracing::info_span!("rdm.node_admin.issuer.update.via-installed", node = %r.me, node_id = %r.node_id, mesh, sender = %r.me, issuer_expires_at = current.expires_at, previous_issuer_expires_at = previous)
             .in_scope(|| tracing::info!("the mesh's new issuer is installed in process"));
         Outcome::Installed
     } else {
@@ -1192,7 +1201,6 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/node-issuer-update.md:22
     /// "| Spans | `rdm.node_admin.issuer.update.via-renewal` (node, node_id, incarnation_id, mesh, issuer_expires_at, previous_issuer_expires_at, outcome) on the fabric-primary; `rdm.node_admin.issuer.update.via-installed` (node, node_id, mesh, sender, issuer_expires_at, previous_issuer_expires_at) on the admin, `sender` the node the call reached it from: the fabric-primary, or the mesh-primary carrying it |"
     #[tokio::test]
-    #[ignore = "page/code difference: node-issuer-update.md §Operation contract"]
     async fn issuer_renewal_spans_record_admins_count_and_previous_issuer_expires_at() {
         use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};
         use crate::span_capture::Capture;
