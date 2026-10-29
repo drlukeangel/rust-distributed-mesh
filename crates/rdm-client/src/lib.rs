@@ -61,7 +61,7 @@ pub use rdm_core::views::{AtlasNodeView, AtlasView, ConnectionView, ConnectionsV
 /// Executable bindings: what each created path's config names (build-deployment.md), and a
 /// consumer's per-kind set a caller expands into per-path entries before the typed call.
 pub use rdm_core::binding;
-/// The node kind a `path.name` carries (`admin`, `gateway`, `broker`, `compute`).
+/// The node kind a `path.name` carries (`admin`, `rpc`, `broker`, `gateway` or `compute`).
 pub use rdm_core::NodeKind as LaunchKind;
 /// A node's `path.name`, as the typed objects name nodes.
 pub use rdm_core::PathName;
