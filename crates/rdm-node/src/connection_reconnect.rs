@@ -681,3 +681,225 @@ pub(crate) fn accepted_resolved(writer: &ConnectionsWriter, node: &ResolvedNode)
         accepted_on_alpn(writer, &birth, &alpn, &peer_short);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::MemoryConnectionsStorage;
+    use rdm_core::NodeKind;
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct FieldVisitor(BTreeMap<String, String>);
+
+    impl tracing::field::Visit for FieldVisitor {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .insert(field.name().to_string(), format!("{value:?}").trim_matches('"').to_string());
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct SpanRecorder {
+        next_id: Arc<AtomicUsize>,
+        spans: Arc<Mutex<BTreeMap<u64, (String, BTreeMap<String, String>)>>>,
+    }
+
+    impl tracing::Subscriber for SpanRecorder {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed) as u64 + 1;
+            let mut v = FieldVisitor::default();
+            attrs.record(&mut v);
+            self.spans
+                .lock()
+                .unwrap()
+                .insert(id, (attrs.metadata().name().to_string(), v.0));
+            tracing::span::Id::from_u64(id)
+        }
+        fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+            let mut v = FieldVisitor::default();
+            values.record(&mut v);
+            if let Some((_, fields)) = self.spans.lock().unwrap().get_mut(&span.into_u64()) {
+                fields.extend(v.0);
+            }
+        }
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, _event: &tracing::Event<'_>) {}
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    // @feature: connections-reconnect
+    #[test]
+    fn reconciler_reconstructs_due_obligation_coalesces_accept_triggers_and_spends_on_connected_dial() {
+        // docs/architecture/connections.md:332,358 — "A reconnect series exists when the latest
+        // Direct record for `(source, destination, alpn)` is `Failed` for the current destination
+        // incarnation and no newer `Direct Connected` on that ALPN supersedes it... Each node runs
+        // one scheduler/reconciler with at most one pending item per
+        // `(destination, destination_incarnation, alpn)` and executes at most one reconnect dial
+        // attempt at a time on the node."
+        let recorder = SpanRecorder::default();
+        let dispatch = tracing::Dispatch::new(recorder.clone());
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build current-thread runtime");
+
+        rt.block_on(async {
+            let src = ConnectionEnd {
+                name: PathName::new("mesh1", NodeKind::Gateway, 1),
+                node_id: NodeId::mint(),
+                incarnation: Some(IncarnationId::mint()),
+            };
+            let carrier = ConnectionEnd {
+                name: PathName::new("mesh1", NodeKind::Gateway, 2),
+                node_id: NodeId::mint(),
+                incarnation: Some(IncarnationId::mint()),
+            };
+            let dst_inc = IncarnationId::mint();
+            let dst = ConnectionEnd {
+                name: PathName::new("mesh1", NodeKind::Broker, 1),
+                node_id: NodeId::mint(),
+                incarnation: Some(dst_inc.clone()),
+            };
+            let alpn = b"app-reconnect/1".to_vec();
+
+            let storage = Arc::new(MemoryConnectionsStorage::default());
+            let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+            let writer = Arc::new(ConnectionsWriter::new(src.clone(), storage, held));
+
+            let base_ms = local_now_ms() + 60_000;
+            let failed_id = ConnectionId::mint();
+            let failed_row = NodeConnection {
+                id: failed_id.clone(),
+                source: src.clone(),
+                destination: dst.clone(),
+                kind: ConnectionKind::Direct,
+                alpn: alpn.clone(),
+                state: ConnectionState::Failed,
+                carrier: None,
+                recovery: Some(DirectRecovery {
+                    recovery_round: 1,
+                    attempt_ordinal: 1,
+                }),
+                reason: Some("NotSent".into()),
+                logged_at_ms: base_ms,
+            };
+            writer.record(failed_row.clone()).await.expect("record failed");
+            writer
+                .record(NodeConnection {
+                    id: ConnectionId::mint(),
+                    source: src.clone(),
+                    destination: dst.clone(),
+                    kind: ConnectionKind::Proxy,
+                    alpn: alpn.clone(),
+                    state: ConnectionState::Connected,
+                    carrier: Some(carrier),
+                    recovery: None,
+                    reason: None,
+                    logged_at_ms: base_ms + 1,
+                })
+                .await
+                .expect("record proxy");
+
+            let obs = obligations(&writer);
+            assert_eq!(obs.len(), 1);
+            let due_ms = next_due(&failed_row).expect("due_ms");
+            assert_eq!(obs[0].destination, dst);
+            assert_eq!(obs[0].destination_incarnation, dst_inc);
+            assert_eq!(obs[0].alpn, alpn);
+            assert_eq!(obs[0].due_ms, due_ms);
+            assert_eq!(obs[0].row_id, failed_id);
+
+            // Accept from the exact destination birth coalesces into the existing pending item;
+            // accept from another birth is ignored with outcome="another-birth".
+            accepted_on_alpn(
+                &writer,
+                &Birth {
+                    name: dst.name.clone(),
+                    node_id: dst.node_id.clone(),
+                    incarnation: dst_inc.clone(),
+                },
+                &alpn,
+                "peer-cur",
+            );
+            accepted_on_alpn(
+                &writer,
+                &Birth {
+                    name: dst.name.clone(),
+                    node_id: dst.node_id.clone(),
+                    incarnation: IncarnationId::mint(),
+                },
+                &alpn,
+                "peer-stale",
+            );
+            assert_eq!(obligations(&writer).len(), 1);
+
+            let dial_calls = Arc::new(AtomicUsize::new(0));
+            let dial_calls_cl = dial_calls.clone();
+            let dial: AlpnRecoveryDial = Arc::new(move |_dest, _alpn| {
+                let calls = dial_calls_cl.clone();
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    "Reply".to_string()
+                })
+            });
+
+            // Before due_ms, run_due_at waits and performs no dial.
+            run_due_at(&writer, &dial, due_ms - 1).await;
+            assert_eq!(dial_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(obligations(&writer).len(), 1);
+
+            // At due_ms, run_due_at dials once, records max_concurrent_attempts == 1, and spends the obligation.
+            let reconciler = Reconciler::new(writer.clone());
+            run_due_at(&writer, &dial, due_ms).await;
+            assert_eq!(dial_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(reconciler.in_flight_attempts(), 0);
+            assert_eq!(reconciler.max_concurrent_attempts(), 1);
+            assert!(obligations(&writer).is_empty());
+        });
+
+        drop(rt);
+
+        let recorded: Vec<(String, BTreeMap<String, String>)> =
+            recorder.spans.lock().unwrap().values().cloned().collect();
+        assert!(
+            recorded.iter().any(|(name, attrs)| {
+                name == "rdm.node_admin.connection.update.via-accept-trigger"
+                    && attrs.get("outcome").map(String::as_str) == Some("coalesced")
+            }),
+            "expected via-accept-trigger span with outcome=coalesced"
+        );
+        assert!(
+            recorded.iter().any(|(name, attrs)| {
+                name == "rdm.node_admin.connection.update.via-accept-trigger"
+                    && attrs.get("outcome").map(String::as_str) == Some("another-birth")
+            }),
+            "expected via-accept-trigger span with outcome=another-birth"
+        );
+        assert!(
+            recorded.iter().any(|(name, attrs)| {
+                name == "rdm.node_admin.connection.create.via-recovery-dial"
+                    && attrs.get("outcome").map(String::as_str) == Some("Reply")
+                    && attrs.get("fact").map(String::as_str) == Some("connected")
+            }),
+            "expected via-recovery-dial span with outcome=Reply and fact=connected"
+        );
+        assert!(
+            recorded.iter().any(|(name, attrs)| {
+                name == "rdm.node_admin.connection.remove.via-recovery-attempt"
+                    && attrs.get("reason").map(String::as_str) == Some("direct-connected")
+            }),
+            "expected via-recovery-attempt span with reason=direct-connected"
+        );
+    }
+}
+

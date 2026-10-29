@@ -216,6 +216,8 @@ mod node_connections_delete;
 mod connections_acceptance;
 #[path = "connections/restart.rs"]
 mod connections_restart;
+#[path = "connections/reconnect.rs"]
+mod connections_reconnect_e2e;
 #[path = "node/node_replace.rs"]
 mod node_replace;
 #[path = "node/node_restart.rs"]

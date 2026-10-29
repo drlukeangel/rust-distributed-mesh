@@ -350,6 +350,7 @@ async fn a_peer_holds_none_of_a_sources_failed_history_or_its_proxy() {
 /// only then does an open go Direct. The dial is the source process's own (§15.11-12): no node-admin
 /// emits a recovery dial. Must NOT happen: a Direct open before the retirement landed, a recovery
 /// dial before the due time, or a Proxy Disconnected with another reason.
+// @feature: connections-reconnect
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direct() {
     let cell = "a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direct";
