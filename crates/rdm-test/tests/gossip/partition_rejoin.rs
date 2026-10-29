@@ -243,7 +243,9 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         assert!(*m != mesh_of(obs), "{obs} lost its own mesh {m}: {silent:?}");
     }
     for (name, base) in &bases {
-        let view = estate.node_values_at(base).await;
+        // What this admin holds itself (query.md §2): a cut-off mesh-primary carries an atlas read of the
+        // fabric up to the fabric-primary, which cannot answer during the cut (query.md §1).
+        let view = estate.held_values_at(&Estate::path(base)).await;
         let own: Vec<String> = side(&mesh_of(name));
         assert!(holds_all(&view, &own), "{name} still holds its own mesh ready during the cut: {view:#?}");
     }

@@ -5888,9 +5888,12 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "between": [near_mesh, far_mesh], "acknowledged": true}));
     for (name, mesh) in &sides {
         let (own, other) = if *mesh == near_mesh { (&near, &far) } else { (&far, &near) };
+        // What this admin holds itself (query.md §2; never the atlas read, which a cut-off mesh-primary
+        // carries up to the fabric-primary and cannot answer during the cut, query.md §1): its own mesh
+        // ready, and the other mesh no longer heard (silent past the floor, it has left the admin's topology).
         wait_for(&format!("{name} holds its own mesh ready and the other mesh unheard"), window * 6 + Duration::from_secs(40), || async {
-            let v = f.estate.node_values_at(name).await;
-            (holds_all_ready(&v, own) && holds_all_unheard(&v, other)).then_some(())
+            let v = f.estate.held_values_at(&Estate::path(name)).await;
+            (!v.is_empty() && holds_all_ready(&v, own) && other.iter().all(|o| !v.iter().any(|n| n["name"] == o.as_str() && n["status"] == "ready"))).then_some(())
         })
         .await;
     }
@@ -6017,9 +6020,12 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "between": [near_mesh, far_mesh], "acknowledged": true}));
     for (name, mesh) in &sides {
         let (own, other) = if *mesh == near_mesh { (&near, &far) } else { (&far, &near) };
+        // What this admin holds itself (query.md §2; never the atlas read, which a cut-off mesh-primary
+        // carries up to the fabric-primary and cannot answer during the cut, query.md §1): its own mesh
+        // ready, and the other mesh no longer heard (silent past the floor, it has left the admin's topology).
         wait_for(&format!("{name} holds its own mesh ready and the other mesh unheard"), window * 6 + Duration::from_secs(40), || async {
-            let v = f.estate.node_values_at(name).await;
-            (holds_all_ready(&v, own) && holds_all_unheard(&v, other)).then_some(())
+            let v = f.estate.held_values_at(&Estate::path(name)).await;
+            (!v.is_empty() && holds_all_ready(&v, own) && other.iter().all(|o| !v.iter().any(|n| n["name"] == o.as_str() && n["status"] == "ready"))).then_some(())
         })
         .await;
     }

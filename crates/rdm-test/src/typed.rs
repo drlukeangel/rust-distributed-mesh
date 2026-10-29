@@ -154,6 +154,15 @@ impl Estate {
         self.views_at(admin).await.ok()
     }
 
+    /// [`Self::held_topology_at`] as values a cell reads like a view: one `{name, node_id, status}` per birth
+    /// the node holds, its status as the node holds it; a birth silent past the staleness floor has left the
+    /// node's topology and is not listed (query.md §2: "a node silent past the staleness floor leaves the
+    /// view"). Empty when the node does not answer within 2 s.
+    pub async fn held_values_at(&self, node: &PathName) -> Vec<serde_json::Value> {
+        let Some(held) = self.held_topology_at(node).await else { return Vec::new() };
+        held.members.iter().map(|d| serde_json::json!({"name": d.node.name.to_string(), "node_id": d.node.node_id.to_string(), "status": serde_json::to_value(d.status).unwrap_or_default()})).collect()
+    }
+
     /// What the node `node` holds itself, never a primary's atlas (query.md §2: a node queries its own
     /// topology): every birth it holds of every mesh, with the status it holds for each, and the
     /// primaries it records, read over `node.topology.get` (op `0x1E`) of every mesh. A cell asking what
