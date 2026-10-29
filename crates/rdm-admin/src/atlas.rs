@@ -162,6 +162,10 @@ impl CallerDecision {
         }
         let (node_id, incarnation) = caller;
         match root.node(&path.to_string()) {
+            // A caller whose record this admin holds deleted is deleted, never re-admitted (Q217:
+            // "Re-admission is for a caller whose record is live"): a root that still names it at its
+            // path has not heard the delete its mesh-primary wrote, and cannot undo it.
+            Some(r) if r.node_id == *node_id && matches!(self, CallerDecision::DeleteDeletedBirth { .. }) => self,
             Some(r) if r.node_id == *node_id && r.incarnation_id.as_ref().is_none_or(|i| i == incarnation) => CallerDecision::ReAdmit { path },
             Some(r) => CallerDecision::DeleteHeld { path, by: format!("{}@{}", r.node_id, r.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("")) },
             None if needed => CallerDecision::DeleteDeletedBirth { path, needed },
@@ -1050,8 +1054,9 @@ mod tests {
 
     /// CONTRACT (Q207, "call home and verify at the root"): the fabric-primary's `fabrics.atlas.get`
     /// wins over the mesh-primary's own decision: another birth at the path there deletes the caller;
-    /// the caller current there is re-admitted; no row at a needed path is the caller's record deleted
-    /// there, deleted and never re-admitted (Q217); no row at an unneeded path is unneeded.
+    /// the caller current there is re-admitted, unless this admin holds its record deleted (Q217: never
+    /// re-admitted); no row at a needed path is the caller's record deleted there, deleted and never
+    /// re-admitted (Q217); no row at an unneeded path is unneeded.
     #[test]
     fn the_root_answer_wins() {
         let (caller, inc) = (NodeId::mint(), IncarnationId::mint());
@@ -1068,6 +1073,11 @@ mod tests {
         assert_eq!(mine.verified((&caller, &inc), &empty, true), CallerDecision::DeleteDeletedBirth { path: at.clone(), needed: true }, "a caller this admin holds live is deleted when the root holds no live record of it");
         assert_eq!(held.clone().verified((&caller, &inc), &empty, true), CallerDecision::DeleteDeletedBirth { path: at.clone(), needed: true });
         assert_eq!(held.verified((&caller, &inc), &empty, false), CallerDecision::DeleteUnneeded { path: at.clone() });
+        // Q217: a caller whose record this admin holds deleted stays deleted, whatever the root still
+        // names at its path (the root has not yet heard the delete).
+        let deleted = CallerDecision::DeleteDeletedBirth { path: at.clone(), needed: true };
+        assert_eq!(deleted.clone().verified((&caller, &inc), &row(&caller, &inc), true), deleted, "a deleted record is never re-admitted by a root that has not heard its delete");
+        assert_eq!(deleted.verified((&caller, &inc), &row(&other, &other_inc), true), CallerDecision::DeleteHeld { path: at.clone(), by: format!("{other}@{}", other_inc.as_str()) });
     }
 
     /// CONTRACT (Q207, 0004/0005): an admin that takes a mesh's primary fills that mesh once from its
