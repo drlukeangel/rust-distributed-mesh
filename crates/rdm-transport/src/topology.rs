@@ -7170,7 +7170,8 @@ mod tests {
         assert!(digest_view.current_at(floor, t0 + floor + Duration::from_millis(1)).is_empty(), "silent past the staleness floor it is no longer current, as any member");
     }
 
-    /// The documented defaults: a 30 s staleness floor and 2 s gossip intervals.
+    /// The documented defaults: a 30 s staleness floor, a 2 s gossip interval and a 5 s backbone interval
+    /// (gossip.md §3.2; Q267).
     #[test]
     fn the_windows_default_to_the_documented_values() {
         if std::env::var("RDM_STALENESS_MS").is_err() {
@@ -7180,7 +7181,7 @@ mod tests {
             assert_eq!(gossip_interval(), Duration::from_secs(2));
         }
         if std::env::var("RDM_BACKBONE_INTERVAL_MS").is_err() {
-            assert_eq!(backbone_gossip_interval(), Duration::from_secs(2));
+            assert_eq!(backbone_gossip_interval(), Duration::from_secs(5));
         }
     }
 
