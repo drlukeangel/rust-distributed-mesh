@@ -23,6 +23,7 @@ box. Only the driver runs them (`--ignored`).
 ```bash
 scripts/rdm-load.sh L1            # the 20-node baseline
 scripts/rdm-load.sh L1 --debug    # the same on the gate's debug build, for comparison
+scripts/rdm-load.sh L1 --no-evidence   # no node writes span evidence: the pass M6 and M8 are read from
 ```
 
 The driver:
@@ -55,11 +56,15 @@ A profile runs only once the one before it passes. L2 to L4 are added as the har
 
 ```json
 {"measure":"M5","what":"one node.create Build","unit":"ms","n":20,"p50":1840,"p99":2310,"max":2310,
- "target":5000,"pass":true,"sha":"…","profile":"L1","build":"release",
+ "target":5000,"pass":true,"sha":"…","profile":"L1","build":"release","evidence":true,
  "box_start":{"loadavg":"3.10 2.80 2.40","busy_lanes":["2","7"]},"box_end":{…}}
 ```
 
 - `pass` is `true` or `false` against the target, or `null` for a measure reported with no target.
+- `evidence` says whether the nodes wrote span evidence. With it off (`--no-evidence`, the cell
+  `load_profile_<profile>_no_evidence`, the estate started with `RDM_EVIDENCE_DIR` unset) M2, counted from
+  the spans, is not reported; M6 and M8 are read from this pass. A row is compared only with one taken
+  the same way.
 - A timed measure carries `p50`, `p99` and `max` over its `n` samples. With 20 samples the target is
   on the max; a p99 is a target only at 100 samples (Q265).
 - A run that misses a target fails, naming every missed measure. The slowest sample's trace is the

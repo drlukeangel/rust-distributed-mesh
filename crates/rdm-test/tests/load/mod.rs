@@ -35,16 +35,19 @@ struct Rows {
     sha: String,
     profile: &'static str,
     build: String,
+    /// Whether the nodes wrote span evidence (`RDM_EVIDENCE_DIR`): a row is compared only with one
+    /// taken the same way (load-testing.md "Conditions").
+    evidence: bool,
     context: Value,
     rows: Vec<Value>,
     missed: Vec<String>,
 }
 
 impl Rows {
-    fn new(profile: &'static str) -> Self {
+    fn new(profile: &'static str, evidence: bool) -> Self {
         let sha = rdm_test::faults::candidate_sha();
         let build = if rdm_test::estate::bin_dir().to_string_lossy().contains("/release") { "release" } else { "debug" }.to_string();
-        Self { sha, profile, build, context: box_context(), rows: Vec::new(), missed: Vec::new() }
+        Self { sha, profile, build, evidence, context: box_context(), rows: Vec::new(), missed: Vec::new() }
     }
 
     /// A measure of `samples` (milliseconds), with an optional target on its max.
@@ -79,11 +82,12 @@ impl Rows {
             r["sha"] = json!(self.sha);
             r["profile"] = json!(self.profile);
             r["build"] = json!(self.build);
+            r["evidence"] = json!(self.evidence);
             r["box_start"] = self.context.clone();
             r["box_end"] = end.clone();
             out.push_str(&r.to_string());
             out.push('\n');
-            println!("[load] {} {} {:<4} {:<28} {}", self.profile, self.build, s(&r["measure"]), s(&r["what"]), summary(r));
+            println!("[load] {} {} {} {:<4} {:<28} {}", self.profile, self.build, if self.evidence { "evidence" } else { "no-evidence" }, s(&r["measure"]), s(&r["what"]), summary(r));
         }
         use std::io::Write as _;
         std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap().write_all(out.as_bytes()).unwrap();
@@ -167,26 +171,37 @@ async fn idle_cost(estate: &Estate, window: Duration) -> Vec<(&'static str, f64,
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "load: run by scripts/rdm-load.sh"]
 async fn load_profile_l1_baseline() {
-    run_profile(&L1, "load_profile_l1_baseline").await;
+    run_profile(&L1, "load_profile_l1_baseline", true).await;
 }
 
-async fn run_profile(p: &Profile, test: &str) {
-    let mut rows = Rows::new(p.name);
+/// L1 with no span evidence written: the pass M8 (and M6, as it is added) is read from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh --no-evidence"]
+async fn load_profile_l1_no_evidence() {
+    run_profile(&L1, "load_profile_l1_no_evidence", false).await;
+}
+
+/// Run profile `p`. With `evidence` off no node writes span evidence (load-testing.md "Conditions": the
+/// pass M6 and M8 are read from); M2, the one measure counted from the spans, is then not reported.
+async fn run_profile(p: &Profile, test: &str, evidence: bool) {
+    let mut rows = Rows::new(p.name, evidence);
     let meshes: Vec<String> = (1..=p.meshes).map(|i| format!("mesh{i}")).collect();
     let shape: Vec<(&str, u32, u32)> = meshes.iter().map(|m| (m.as_str(), p.admins, p.rpcs)).collect();
 
     // M1, M2: the Day-0 Build of the whole shape, submitted to the bootstrap admin, to the fabric's ready.
     let t0 = Instant::now();
-    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", if evidence { &[] } else { &[("RDM_EVIDENCE_DIR", "")] }).await;
     let mut stream = estate.submit_shape("fabric1", &shape).await;
     let _ = Estate::until_complete(&mut stream).await;
     estate.settles_to(&shape, Duration::from_secs(300)).await;
     estate.until_fabric_ready(Duration::from_secs(300)).await;
     let bring_up = t0.elapsed();
     rows.time("M1", "bring-up, launch to ready", vec![bring_up.as_millis() as f64], Some(p.bring_up.as_millis() as f64), None);
-    let spans = estate.spans();
-    let creates = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "Complete" && sp["attributes"]["outcome"] == "complete").count();
-    rows.value("M2", "node creates per second", "creates/s", creates as f64 / bring_up.as_secs_f64(), None);
+    if evidence {
+        let spans = estate.spans();
+        let creates = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "Complete" && sp["attributes"]["outcome"] == "complete").count();
+        rows.value("M2", "node creates per second", "creates/s", creates as f64 / bring_up.as_secs_f64(), None);
+    }
 
     // M8: idle cost once settled.
     tokio::time::sleep(Duration::from_secs(10)).await;

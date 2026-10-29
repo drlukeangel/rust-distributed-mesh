@@ -692,7 +692,9 @@ impl Estate {
     }
 
     /// [`Estate::bootstrap`], the first node-admin also given `extra_env` (a setting the fabric's
-    /// admins read, such as `RDM_STOPPED_NODE_TTL`, handed on to every admin it launches).
+    /// admins read, such as `RDM_STOPPED_NODE_TTL`, handed on to every admin it launches). An entry
+    /// replaces the estate's own value of its name, and an empty value leaves the name unset
+    /// (`RDM_EVIDENCE_DIR` empty: no node writes span evidence, the load harness's evidence-off pass).
     pub async fn bootstrap_with_env(owner: Owner, fabric: &str, mesh: &str, extra_env: &[(&str, &str)]) -> Self {
         refuse_built_ins_in_consumer_mode("Estate::bootstrap_with_env");
         Self::born(owner, fabric, mesh, None, extra_env).await
@@ -756,7 +758,12 @@ impl Estate {
             // The fabric's root the bootstrap admin is started with (fabric-certs.md): the testkit's.
             ("RDM_CA_SECRET", crate::test_certs::test_root_hex()),
         ];
-        env.extend(extra_env.iter().map(|(k, v)| (*k, v.to_string())));
+        for (k, v) in extra_env {
+            env.retain(|(name, _)| name != k);
+            if !v.is_empty() {
+                env.push((*k, v.to_string()));
+            }
+        }
         let admin_exe = match &external {
             Some(x) => {
                 env.retain(|(k, _)| *k != "RDM_BIN_DIR");

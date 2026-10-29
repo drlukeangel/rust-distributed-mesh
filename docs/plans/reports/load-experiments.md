@@ -45,3 +45,42 @@ quiet-box baseline.
 
 **Next.** E2: the same profile with evidence off for M6 and M8, then M3, M4, M6 and M7 at L1 (step 2), M6
 first and short to read its order of magnitude.
+
+---
+
+## E2: L1 with no span evidence (2026-10-28)
+
+**What.** Profile L1 again, the same shape and build as E1 but at `549cd1a3b`, with no node writing span
+evidence (`RDM_EVIDENCE_DIR` unset: `scripts/rdm-load.sh L1 --no-evidence`, the cell
+`load_profile_l1_no_evidence`). Measures M1, M5 and M8; M2 is counted from the spans and so is not
+reported on this pass.
+
+**Why.** Load-testing.md "Conditions": M8 (and M6) are read from a pass with evidence off, since the JSONL
+writer's own CPU and I/O inflate them. E1's idle node-admin (0.052 cores) was 2.5 times the release
+baseline CLAUDE.md names, and E1 named this pass as the check before calling it a finding.
+
+**Conditions.** A shared box: lanes 2 and 7 (Gemini) and lane 5 (37 orphaned processes of an interrupted
+landing's estate, still running) held processes; load average 4.96 / 15.53 / 20.64 at the start, on 20
+cores. Release build, defaults.
+
+**Outcome.** Every target passed.
+
+| measure | E2 (no evidence) | E1 (evidence) | target |
+|---|---|---|---|
+| M1 bring-up, launch to ready | 1.7 s | 1.8 s | 15 s |
+| M5 one node.create Build | p50 226 ms, max 247 ms | p50 264 ms, max 369 ms | 5 s |
+| M5 one node.delete Build | p50 68 ms, max 86 ms | p50 80 ms, max 218 ms | 5 s |
+| M8 node-admin idle | 0.044 cores, 0.056 GB | 0.052 cores, 0.060 GB | 0.10 cores, 0.5 GB |
+| M8 rpc node idle | 0.022 cores, 0.030 GB | 0.027 cores, 0.028 GB | 0.10 cores, 0.5 GB |
+
+**Read.**
+- Evidence costs an idle node-admin about 0.008 cores (15 %) and an rpc node about 0.005; the Build
+  latencies drop 10-60 % without it, the max most. E1 and E2 ran on different box loads, so the
+  differences are an order of magnitude, not a measurement.
+- With evidence off an idle node-admin still costs 0.044 cores, about twice CLAUDE.md's release baseline
+  (about 0.02, measured on an empty shell, not a 20-node fabric's admin). It is inside the target. Per
+  load-testing.md it is a finding to read as a flame before any number moves: which of an idle admin's
+  tasks (gossip ticks, backbone publishes, the topology rebuild, the ladders) take its CPU, read from a
+  CPU profile of one idle admin at L1, owed before L2.
+
+**Next.** The idle node-admin's CPU profile (above); then M3, M4, M6 and M7 at L1 (step 2), M6 first.
