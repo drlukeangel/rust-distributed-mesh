@@ -837,7 +837,7 @@ mod tests {
         let builds = Arc::new(CountedReads { inner: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()), reads: Default::default() });
         let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
         let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])));
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
         claim(&builds.inner, &id, 1).await;
         // The fabric-primary alone in its one-mesh fabric, its mesh ready; pending went out.
         let (fp, _) = fabric_primary_and_mesh2();
@@ -967,7 +967,7 @@ mod tests {
             let mut c = m.spec(&rpc).cloned().unwrap();
             c.executable = sha.map(exe);
             m.set_spec(c).unwrap();
-            FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
+            FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
         };
         let a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
         builds.publish_accepted(&BuildAccepted { build_id: a.clone(), topology: topology(Some("aa")), submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
@@ -1019,7 +1019,7 @@ mod tests {
             let mut c = m.spec(&admin).cloned().unwrap();
             c.executable = sha.map(exe);
             m.set_spec(c).unwrap();
-            FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
+            FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
         };
         let (fp, _) = fabric_primary_and_mesh2();
         // The Day-0 admin's row records the executable it runs.
@@ -1345,7 +1345,7 @@ mod tests {
             let mut c = m.spec(&rpc).cloned().unwrap();
             c.executable = Some(exe("rpc_node", "rr"));
             m.set_spec(c).unwrap();
-            FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
+            FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m)].into() }
         };
         fn at<'a>(r: &'a mut [NodeSpec], p: &str) -> &'a mut NodeSpec {
             r.iter_mut().find(|s| s.path.to_string() == p).expect("the request lists the path")
@@ -1550,6 +1550,7 @@ mod tests {
                 .publish_accepted(&BuildAccepted {
                     build_id: build_a.clone(),
                     topology: FabricTopology {
+                        section_of: None,
                         pinned: Vec::new(),
                         storage_change: None,
                         topology_storage_provider: None,
@@ -1668,6 +1669,7 @@ mod tests {
                 .publish_accepted(&BuildAccepted {
                     build_id: build_b.clone(),
                     topology: FabricTopology {
+                        section_of: None,
                         pinned: Vec::new(),
                         storage_change: None,
                         topology_storage_provider: None,

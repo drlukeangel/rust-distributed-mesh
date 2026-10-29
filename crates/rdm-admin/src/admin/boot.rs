@@ -274,7 +274,7 @@ pub(crate) fn overlays_from_facts(facts: &[crate::build_state::BuildFact], diges
         })
         .find(|p| p.lane_open() || !matches!(p.state, crate::build_state::BuildState::Failed) || p.completed_at.is_some())
     {
-        digest_view.set_accepted_meshes(b.topology.meshes.keys().cloned().collect());
+        digest_view.set_accepted_meshes(b.topology.mesh_names());
     }
     let in_flight = crate::build_state::in_flight_ops(facts, &builds);
     for op in in_flight.ops {
@@ -2975,7 +2975,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let claim_door = claim_slot.clone();
                                         // A mesh-primary taking its role reads the accepted Build from the fabric-primary before it
                                         // counts its fresh checklist (states.md "The check-in checklist", Q276): node start's Build floor
-                                        // read again, `FetchCurrentBuild` to the fabric-primary the view names, owed until answered.
+                                        // read again, its own mesh's section of the current Build (`FetchBuildSection`, Q284) from the fabric-primary the view names, owed until answered.
                                         let fabric_primary_only: crate::fetch_build::Responders = {
                                             let topology = control.topology.clone();
                                             Arc::new(move || {
@@ -3027,7 +3027,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if let Some(Some(b)) = current {
                                                     records.set_planned(&b.topology);
                                                 }
-                                                records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| topology_view.mesh_status(m).is_some_and(|h| h.status == rdm_transport::topology::MESH_READY)).cloned().collect());
+                                                // Every mesh the Build names, its section held here or not (Q284).
+                                                let named = current.and_then(|c| c.as_ref()).map(|b| b.topology.mesh_names()).unwrap_or_default();
+                                                records.set_heard_ready(records.planned().keys().chain(named.iter()).chain(std::iter::once(&mesh)).filter(|m| topology_view.mesh_status(m).is_some_and(|h| h.status == rdm_transport::topology::MESH_READY)).cloned().collect());
                                                 // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
                                                 records.set_heard_dead(topology_view.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
                                                     topology_view.digest_view.all().into_iter().find(|d| d.node.name.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
@@ -3049,11 +3051,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // takes no old mesh topology of a mesh it does not name, and a mesh it does not name
                                                 // that has no member left keeps no recorded id (a name added again is a new mesh).
                                                 if let Some(Some(b)) = current {
-                                                    topology_view.digest_view.set_accepted_meshes(b.topology.meshes.keys().cloned().collect());
+                                                    topology_view.digest_view.set_accepted_meshes(b.topology.mesh_names());
                                                     let forgot = {
                                                         let mut meshes = records.meshes.lock().unwrap();
                                                         let before = meshes.len();
-                                                        meshes.retain(|name, _| b.topology.meshes.contains_key(name) || t.members().any(|n| &n.mesh == name));
+                                                        meshes.retain(|name, _| b.topology.names_mesh(name) || t.members().any(|n| &n.mesh == name));
                                                         meshes.len() < before
                                                     };
                                                     if forgot {
@@ -3103,7 +3105,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // hand-over) is filled once from its node records (Q204); a mesh handed away is narrowed off.
                                                 atlas.writing(written.clone());
                                                 let scope: std::collections::BTreeSet<String> = if fabric_primary {
-                                                    t.members().map(|n| n.mesh.clone()).chain(current.and_then(|c| c.as_ref()).map(|b| b.topology.meshes.keys().cloned().collect::<Vec<_>>()).unwrap_or_default()).collect()
+                                                    t.members().map(|n| n.mesh.clone()).chain(current.and_then(|c| c.as_ref()).map(|b| b.topology.mesh_names().into_iter().collect::<Vec<_>>()).unwrap_or_default()).collect()
                                                 } else if mesh_primary {
                                                     std::iter::once(mesh.clone()).collect()
                                                 } else {

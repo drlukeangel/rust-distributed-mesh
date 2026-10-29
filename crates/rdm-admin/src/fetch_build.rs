@@ -7,15 +7,15 @@
 //! names:
 //!
 //! - [`NodeAdminNotReady::NoCurrentBuild`] with a `wanted` BuildId (the entry reply named the
-//!   answering admin's current Build and it is not held): `FetchBuildFacts` (op `0x1F`) for that
-//!   Build.
+//!   answering admin's current Build and it is not held): `FetchBuildSection` (op `0x1F`, Q284) for
+//!   that Build and this admin's own mesh.
 //! - [`NodeAdminNotReady::UnreadableBuild`] (the entry's Build cannot be read locally) and
 //!   [`NodeAdminNotReady::BehindFloor`] (the local Build is behind the entry's attempt floor):
-//!   `FetchBuildFacts` for the entry's Build.
+//!   `FetchBuildSection` for the entry's Build and this admin's own mesh.
 //! - [`NodeAdminNotReady::NoCurrentBuild`] with nothing wanted (no-pointer: nothing names the Build):
-//!   `FetchCurrentBuild` (op `0x1F`). The responder selects its current accepted Build once for the
-//!   request and streams that Build's facts, every chunk and `End` naming its id, or answers
-//!   `NoCurrentBuild` and the blocker stays. No blocker is read by a second `JoinNode`.
+//!   `FetchBuildSection` naming no Build (op `0x1F`). The responder selects its current accepted Build
+//!   once for the request and streams that Build's facts, its acceptance as this admin's mesh's
+//!   section, every chunk and `End` naming its id, or answers `NoCurrentBuild` and the blocker stays. No blocker is read by a second `JoinNode`.
 //!
 //! One request is outstanding at a time. Responders are asked in order: the current fabric-primary
 //! (resolved through the canonical leadership projection, `Topology::fabric_primary`), then every
@@ -23,7 +23,7 @@
 //! the blocker, is not asked again until its backoff has passed.
 
 use crate::build::BuildId;
-use crate::build_facts_read::{fetch_build_facts, fetch_current_build};
+use crate::build_facts_read::fetch_build_section;
 use crate::build_state::LocalBuildLog;
 use crate::model::{NodeId, PathName};
 use rdm_transport::{NodeRpcClient, NodeTarget};
@@ -270,8 +270,8 @@ impl FetchBuild {
     }
 
     /// One read of the blocker's Build from the first responder whose backoff has passed: the facts
-    /// of `id` (`FetchBuildFacts`), or with no Build named the responder's current accepted Build
-    /// (`FetchCurrentBuild`), whose id the read's `End` names.
+    /// of `id`, or with no Build named the responder's current accepted Build, whose id the read's `End`
+    /// names, each with its acceptance as this admin's own mesh's section (`FetchBuildSection`, Q284).
     async fn fetch(&mut self, blocker: &NodeAdminNotReady, id: Option<BuildId>, now: Instant) {
         let candidates = (self.responders)().await;
         let Some(target) = candidates.into_iter().filter(|r| r.name != self.me).find(|r| self.backoff.get(&r.node_id).is_none_or(|b| b.open(now))) else {
@@ -293,13 +293,12 @@ impl FetchBuild {
                     outcome = tracing::field::Empty,
                 );
                 let to = NodeTarget::ExactNode(target.node_id.clone());
-                let fetched = match &id {
-                    Some(id) => {
-                        span.record("build_id", tracing::field::display(id.log()));
-                        fetch_build_facts(&client, &to, id).instrument(span.clone()).await
-                    }
-                    None => fetch_current_build(&client, &to).instrument(span.clone()).await,
-                };
+                if let Some(id) = &id {
+                    span.record("build_id", tracing::field::display(id.log()));
+                }
+                // This admin's own mesh's section of the Build (Q284): of the one named, or of the
+                // responder's current accepted Build.
+                let fetched = fetch_build_section(&client, &to, id.as_ref(), &me.mesh).instrument(span.clone()).await;
                 // The Build read: the one named, or the one the current Build read's End named.
                 let read = match (&fetched, id) {
                     (Ok(f), None) => {
@@ -345,7 +344,7 @@ impl FetchBuild {
 mod tests {
     use super::*;
 
-    /// CONTRACT: docs/architecture/node-rpc-envelope.md:1290 "The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer, unreadable-build, behind-floor. no-pointer, which names no Build, reads `FetchCurrentBuild`: the responder selects its current accepted Build once for the request and streams that Build's facts, every chunk and End naming its id, or answers `NoCurrentBuild` and the blocker stays; every other blocker reads `FetchBuildFacts` of the Build it names. No blocker is read by a second JoinNode. It asks the fabric-primary first, then other node-admins, then the launcher. Read-only recovery is authorized and uses bounded backoff, 250 ms doubling to 4 s."
+    /// CONTRACT: docs/architecture/node-rpc-envelope.md:1300 "The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer, unreadable-build, behind-floor. Every blocker reads `FetchBuildSection` of the admin's own mesh. no-pointer, which names no Build, reads it naming none: the responder selects its current accepted Build once for the request and streams that Build's facts, every chunk and End naming its id, or answers `NoCurrentBuild` and the blocker stays; every other blocker reads it of the Build it names. No blocker is read by a second JoinNode. It asks the fabric-primary first, then other node-admins, then the launcher. Read-only recovery is authorized and uses bounded backoff, 250 ms doubling to 4 s."
     #[test]
     fn ready_blockers_select_typed_fetch_need_and_double_backoff_from_250ms_to_4s_cap() {
         let me: PathName = "mesh1.admin.2".parse().unwrap();

@@ -1074,7 +1074,7 @@ impl Prepared {
             let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &self.dir.join("fixture"), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
             let delete = rdm_admin::build_state::BuildAccepted {
                 build_id: rdm_admin::build::BuildId::mint(),
-                topology: rdm_admin::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },
+                topology: rdm_admin::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },
                 submitted_change: Some(rdm_admin::accepted::TopologyChange::DeleteFabric),
                 submitted_at_ms: now_ms(),
             };

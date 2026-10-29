@@ -211,7 +211,7 @@ sees only the catalog.
 | `0x1C` | build-claim | rdm | live | canonical | `ClaimAttempt` |
 | `0x1D` | join | rdm | live | canonical | `JoinNode` |
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
-| `0x1F` | build-facts | rdm | live | canonical | `FetchBuildFacts`, `FetchCurrentBuild` |
+| `0x1F` | build-facts | rdm | live | canonical | `FetchBuildFacts`, `FetchCurrentBuild`, `FetchBuildSection` |
 | `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete |
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`, `AlreadyApplied` |
 | `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `LeaveMesh`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the rustdoc of [`NodeCommand`](../../api/rdm_core/node_command/struct.NodeCommand.html) |
@@ -1255,12 +1255,13 @@ and `crates/rdm-core/src/build_facts.rs::BuildFactsReply`;
 ledger: `crates/rdm-core/src/catalog.rs::core_ledger`.
 Direction: peer read between node-admins. RDM owns this server stream; it is not
 forwardable. A non-node-admin answers 421 UNSERVED_OP. Request ceiling 1024 bytes;
-reply ceiling 8 KiB. There is no cursor. REQUEST_VARIANTS is 2; REPLY_VARIANTS is 11. Positions are fixed in the shown order (FetchBuildFacts=0, FetchCurrentBuild=1; Facts=0 through NoCurrentBuild=10), the two last appended, none reordered.
+reply ceiling 8 KiB. There is no cursor. REQUEST_VARIANTS is 3; REPLY_VARIANTS is 11. Positions are fixed in the shown order (FetchBuildFacts=0, FetchCurrentBuild=1, FetchBuildSection=2; Facts=0 through NoCurrentBuild=10), the two last appended, none reordered.
 
 ```rust
 pub enum BuildFactsRequest {
     FetchBuildFacts { build_id: String },
     FetchCurrentBuild,
+    FetchBuildSection { build_id: Option<String>, mesh: String }, // none: the responder's current accepted Build
 }
 
 pub enum BuildFactsReply {
@@ -1284,9 +1285,19 @@ is present exactly once, and the fact count equals End.facts. complete=true only
 the responder holds the Build fully. End.complete must be true for the Build to count as fetched. Missing, duplicated or incomplete evidence never
 counts. Facts are absorbed through the existing Build log.
 
+The accepted Build never travels whole: the fabric-primary records it whole (the store has no
+frame), and every read carries it as its sections, one per mesh (Q284). A mesh's section is the
+Build's id, fabric, `topology_storage_provider` and acceptance time, whether the Build deletes the
+fabric, every mesh the Build names by name and id, and that mesh's topology and pinned births; a
+Build naming no mesh travels as one section with none. FetchBuildFacts and FetchCurrentBuild carry
+every mesh's section; FetchBuildSection carries the named mesh's only, of the Build named or, naming
+none, of the responder's current accepted Build, selected once for the request, and its End is
+complete only with that section. A mesh's section fits one chunk. An admin folds the sections it
+holds into one topology that names every mesh of the Build; the whole acceptance replaces them.
+
 The [node start workflow](lifecycles/node-start.md) drives the read.
 The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer,
-unreadable-build, behind-floor. no-pointer, which names no Build, reads `FetchCurrentBuild`: the responder selects its current accepted Build once for the request and streams that Build's facts, every chunk and End naming its id, or answers `NoCurrentBuild` and the blocker stays; every other blocker reads `FetchBuildFacts` of the Build it names. No blocker is read by a second JoinNode. It asks the fabric-primary first, then other node-admins,
+unreadable-build, behind-floor. Every blocker reads `FetchBuildSection` of the admin's own mesh. no-pointer, which names no Build, reads it naming none: the responder selects its current accepted Build once for the request and streams that Build's facts, every chunk and End naming its id, or answers `NoCurrentBuild` and the blocker stays; every other blocker reads it of the Build it names. No blocker is read by a second JoinNode. It asks the fabric-primary first, then other node-admins,
 then the launcher. Read-only recovery is authorized and uses bounded backoff, 250 ms
 doubling to 4 s. Source: `crates/rdm-admin/src/fetch_build.rs::NodeAdminNotReady`,
 `crates/rdm-admin/src/fetch_build.rs::BACKOFF_BASE` and
@@ -1439,7 +1450,7 @@ pub enum BuildRequest {
         attempt: u32,
         executor: String,
         context: CallContext,
-        intent: Vec<Vec<u8>>,
+        intent: Vec<Vec<u8>>, // the Build's facts as Build-channel frames, its acceptance as the sections of the meshes the run's operations act in (Q284)
         operations: Vec<Vec<u8>>,
         hand_off_to: Option<String>,
         mesh: Option<String>, // the attempt's mesh for a drift attempt, numbered (build_id, mesh, attempt); none for a topology attempt (Q118)

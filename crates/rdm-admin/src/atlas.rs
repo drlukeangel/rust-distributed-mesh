@@ -1216,6 +1216,7 @@ mod tests {
             let stop_proj = BuildProjection {
                 build_id: build_stop.clone(),
                 topology: FabricTopology {
+                    section_of: None,
                     storage_change: None,
                     topology_storage_provider: None,
                     fabric: "fabric1".into(),

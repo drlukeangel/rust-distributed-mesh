@@ -317,6 +317,15 @@ impl BuildOperation {
         }
     }
 
+    /// The mesh the operation acts in: its node's, or the mesh a mesh operation names; `None` for a
+    /// fabric operation.
+    pub fn mesh(&self) -> Option<&str> {
+        match self {
+            Self::CreateMesh { mesh, .. } | Self::ShutdownMesh { mesh, .. } | Self::BlockStorage { mesh, .. } | Self::UnblockStorage { mesh, .. } => Some(mesh),
+            _ => self.node().map(|n| n.mesh.as_str()),
+        }
+    }
+
     /// The node a create operation makes (`create-node`, or a Build's Create step); `None` for any
     /// other operation.
     pub fn created_node(&self) -> Option<&PathName> {

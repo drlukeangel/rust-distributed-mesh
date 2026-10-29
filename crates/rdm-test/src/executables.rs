@@ -264,7 +264,7 @@ mod tests {
             mesh.nodes.insert(p.clone());
             mesh.spec_by_path.insert(p.clone(), created_spec(p, binding("rpc_node", "r0")));
         }
-        let topology = FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), mesh)].into_iter().collect() };
+        let topology = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), mesh)].into_iter().collect() };
         Current { based_on: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), topology, rows: vec![row("mesh1.admin.1", true, "a0"), row("mesh1.rpc.3", true, "r0")] }
     }
 

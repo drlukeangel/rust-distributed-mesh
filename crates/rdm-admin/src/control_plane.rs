@@ -1749,7 +1749,7 @@ mod tests {
         let operation = format!("node.start:{started}");
         let p = BuildProjection {
             build_id: build_id.clone(),
-            topology: FabricTopology { storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default(), pinned: Default::default() },
+            topology: FabricTopology { section_of: None, storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default(), pinned: Default::default() },
             submitted_change: None,
             submitted_at_ms: 0,
             state: BuildState::Pending,
@@ -1809,7 +1809,7 @@ mod tests {
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
             rdm_core::binding::Binding { launch_id: id.into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
         };
-        let current = crate::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
+        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
         let with = |path: &str, b: rdm_core::binding::Binding| {
             let mut next = current.clone();
             let p: PathName = path.parse().unwrap();
@@ -1844,7 +1844,7 @@ mod tests {
 
     /// A topology of mesh1 holding one node-admin, and that topology with each `(path, binding)` created.
     fn creating(created: &[(&str, rdm_core::binding::Binding)]) -> (crate::accepted::FabricTopology, crate::accepted::FabricTopology) {
-        let current = crate::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])))].into() };
+        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])))].into() };
         let mut next = current.clone();
         let m = next.meshes.get_mut("mesh1").unwrap();
         for (path, b) in created {
@@ -1967,7 +1967,7 @@ mod tests {
             rdm_core::binding::Binding { launch_id: "rpc_node".into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: image.map(str::to_string) }
         };
         let image = Some(crate::deployment::container::RUNTIME_IMAGE);
-        let current = crate::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 0)])))].into() };
+        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 0)])))].into() };
         let with = |b: rdm_core::binding::Binding| {
             let mut next = current.clone();
             let p: PathName = "mesh1.rpc.1".parse().unwrap();
@@ -2007,7 +2007,7 @@ mod tests {
     /// Must NOT happen: a create accepted with nothing naming what it runs.
     #[test]
     fn a_path_created_naming_no_executable_is_refused_by_name_whatever_the_change() {
-        let current = crate::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
+        let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
         let observed = crate::topology::Topology { fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![] };
         let grown = crate::accepted::compile(&current, &crate::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, &observed).unwrap();
         assert_eq!(created_without_executable(&current, &grown), Some(BuildReject::ExecutableMissing { node: "mesh1.rpc.2".into() }));

@@ -53,6 +53,25 @@ pub(crate) enum WireFact {
     Step(WireStep),
     Attempt(WireAttempt),
     Forget { build_id: BuildId },
+    /// One mesh's section of an accepted Build (Q284), appended last: what travels in place of the
+    /// whole acceptance, which only the fabric-primary records.
+    Section(WireSection),
+}
+
+/// A section of an accepted Build (Q284): the Build's id, fabric, `topology_storage_provider` and
+/// acceptance time, whether it deletes the fabric (the one use of its change outside the
+/// fabric-primary), every mesh it names by name and id, and the meshes the section holds (one, or none
+/// for a Build with no mesh or none touched), with their pinned births.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WireSection {
+    build_id: BuildId,
+    fabric: String,
+    topology_storage_provider: Option<String>,
+    submitted_at_ms: u64,
+    deletes_fabric: bool,
+    named: BTreeMap<String, MeshId>,
+    meshes: Vec<WireMesh>,
+    pinned: Vec<(PathName, crate::build::PinnedBirth)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -298,20 +317,22 @@ impl WireSpec {
         NodeSpec { path, storage_persistence, placement: self.placement, executable: None, tags: Default::default(), config: Default::default() }
     }
 }
+impl From<&MeshTopology> for WireMesh {
+    fn from(m: &MeshTopology) -> Self {
+        Self { name: m.name.clone(), mesh_id: m.mesh_id.clone(), nodes: m.nodes.clone(), spec_by_path: m.spec_by_path.iter().map(|(p, meta)| (p.clone(), meta.into())).collect() }
+    }
+}
+impl From<WireMesh> for MeshTopology {
+    fn from(m: WireMesh) -> Self {
+        Self { name: m.name, mesh_id: m.mesh_id, nodes: m.nodes, spec_by_path: m.spec_by_path.into_iter().map(|(p, w)| (p.clone(), w.at(p))).collect() }
+    }
+}
 impl From<&FabricTopology> for WireTopology {
     fn from(t: &FabricTopology) -> Self {
         let meshes = t
             .meshes
             .iter()
-            .map(|(k, m)| {
-                let mesh = WireMesh {
-                    name: m.name.clone(),
-                    mesh_id: m.mesh_id.clone(),
-                    nodes: m.nodes.clone(),
-                    spec_by_path: m.spec_by_path.iter().map(|(p, meta)| (p.clone(), meta.into())).collect(),
-                };
-                (k.clone(), mesh)
-            })
+            .map(|(k, m)| (k.clone(), m.into()))
             .collect();
         Self { fabric: t.fabric.clone(), meshes, pinned: t.pinned.clone() }
     }
@@ -321,14 +342,11 @@ impl From<WireTopology> for FabricTopology {
         let meshes = t
             .meshes
             .into_iter()
-            .map(|(k, m)| {
-                let mesh = MeshTopology { name: m.name, mesh_id: m.mesh_id, nodes: m.nodes, spec_by_path: m.spec_by_path.into_iter().map(|(p, w)| (p.clone(), w.at(p))).collect() };
-                (k, mesh)
-            })
+            .map(|(k, m)| (k, m.into()))
             .collect();
         // The Build topic carries no topology_storage_provider: the journal's record of the accepted
         // Build is the one that does.
-        Self { fabric: t.fabric, meshes, topology_storage_provider: None, storage_change: None, pinned: t.pinned }
+        Self { fabric: t.fabric, meshes, topology_storage_provider: None, storage_change: None, pinned: t.pinned, section_of: None }
     }
 }
 
@@ -649,6 +667,16 @@ fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
 /// `fact` as its wire shape, or the refusal naming the step whose output has none.
 pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
     Ok(match fact {
+        BuildFact::Accepted(a) if a.topology.section_of.is_some() => WireFact::Section(WireSection {
+            build_id: a.build_id.clone(),
+            fabric: a.topology.fabric.clone(),
+            topology_storage_provider: a.topology.topology_storage_provider.clone(),
+            submitted_at_ms: a.submitted_at_ms,
+            deletes_fabric: matches!(a.submitted_change, Some(TopologyChange::DeleteFabric)),
+            named: a.topology.section_of.clone().unwrap_or_default(),
+            meshes: a.topology.meshes.values().map(WireMesh::from).collect(),
+            pinned: a.topology.pinned.clone(),
+        }),
         BuildFact::Accepted(a) => WireFact::Accepted(WireAccepted {
             build_id: a.build_id.clone(),
             topology: (&a.topology).into(),
@@ -723,6 +751,19 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
         }
         WireFact::Attempt(a) => BuildFact::Attempt(BuildAttemptReceipt { build_id: a.build_id, attempt: a.attempt, outcome: a.outcome, mesh: a.mesh }),
         WireFact::Forget { build_id } => BuildFact::Forget { build_id },
+        WireFact::Section(c) => BuildFact::Accepted(BuildAccepted {
+            build_id: c.build_id,
+            topology: FabricTopology {
+                fabric: c.fabric,
+                meshes: c.meshes.into_iter().map(|m| (m.name.clone(), m.into())).collect(),
+                topology_storage_provider: c.topology_storage_provider,
+                storage_change: None,
+                pinned: c.pinned,
+                section_of: Some(c.named),
+            },
+            submitted_change: c.deletes_fabric.then_some(TopologyChange::DeleteFabric),
+            submitted_at_ms: c.submitted_at_ms,
+        }),
     })
 }
 

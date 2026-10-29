@@ -2481,15 +2481,17 @@ impl DriveEnv {
 }
 
 /// The Build's intent as the executor absorbs it before it plans (`build.attempt.run`'s `intent`):
-/// postcard frames of a Build message, every fact of `id` the fabric-primary holds, its step receipts
-/// with them: the executor reads no Build record (Q227), so an earlier attempt's receipts a step reads
+/// postcard frames of a Build message, every fact of `id` the fabric-primary holds, its acceptance as
+/// the sections of the meshes the run acts in (Q284), its step receipts with them: the executor reads no Build record (Q227), so an earlier attempt's receipts a step reads
 /// (a successor's create reads its delete's `TerminateRuntime`) reach it here.
 pub(crate) async fn intent_frames(builds: &dyn BuildStateAdapter, id: &BuildId, run: &[BuildOperation]) -> Vec<Vec<u8>> {
     let facts = match builds.facts().await {
         Ok(f) => intent_facts(f, id, run),
         Err(_) => return Vec::new(),
     };
-    let (frames, refused) = crate::fabric_builds::encode_chunks(facts);
+    // The acceptance travels as the sections of the meshes the run acts in (Q284), never whole.
+    let touched: std::collections::BTreeSet<String> = run.iter().filter_map(|op| op.mesh().map(str::to_string)).collect();
+    let (frames, refused) = crate::fabric_builds::encode_chunks(crate::fabric_builds::sectioned(facts, Some(&touched)));
     for e in refused {
         tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id.log(), detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor does not hold it"));
     }

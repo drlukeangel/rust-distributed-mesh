@@ -114,7 +114,7 @@ impl MeshTopology {
     }
 
     /// The mesh `mesh_id` from its counts: every path minted with its kind's migration default create spec.
-    fn with_id(desired: &MeshDesired, mesh_id: MeshId) -> Self {
+    pub(crate) fn with_id(desired: &MeshDesired, mesh_id: MeshId) -> Self {
         let mut nodes = BTreeSet::new();
         let mut spec_by_path = BTreeMap::new();
         for (kind, want) in desired.counts() {
@@ -180,6 +180,12 @@ pub struct FabricTopology {
     /// acts on its path's pinned birth and on no other. Set at acceptance, never compiled forward.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned: Vec<(PathName, crate::build::PinnedBirth)>,
+    /// Every mesh the Build names, by name and id, when this topology holds sections of it, not the
+    /// whole (Q284): `meshes` then holds only the sections that reached this admin (a build.attempt.run's,
+    /// a `FetchBuildSection`'s), and `pinned` only theirs. `None`: the whole accepted Build, as the
+    /// fabric-primary records it. Never journaled: only the fabric-primary writes the record, whole.
+    #[serde(skip)]
+    pub section_of: Option<BTreeMap<String, MeshId>>,
 }
 
 /// A [`FabricTopology`] as the journal holds it: a record written before the executable was each
@@ -219,7 +225,7 @@ impl From<StoredTopology> for FabricTopology {
                 }
             }
         }
-        Self { fabric: t.fabric, meshes, topology_storage_provider: t.topology_storage_provider, storage_change: t.storage_change, pinned: t.pinned }
+        Self { fabric: t.fabric, meshes, topology_storage_provider: t.topology_storage_provider, storage_change: t.storage_change, pinned: t.pinned, section_of: None }
     }
 }
 
@@ -235,12 +241,67 @@ impl FabricTopology {
     pub fn root_on(fabric: &str, mesh: &str, mesh_id: MeshId, topology_storage_provider: &str) -> Self {
         let mut meshes = BTreeMap::new();
         meshes.insert(mesh.to_string(), MeshTopology::with_id(&MeshDesired::of(mesh, [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 0)]), mesh_id));
-        Self { fabric: fabric.into(), meshes, topology_storage_provider: Some(topology_storage_provider.into()), storage_change: None, pinned: Vec::new() }
+        Self { fabric: fabric.into(), meshes, topology_storage_provider: Some(topology_storage_provider.into()), storage_change: None, pinned: Vec::new(), section_of: None }
     }
 
     /// The accepted mesh named `name`.
     pub fn mesh(&self, name: &str) -> Option<&MeshTopology> {
         self.meshes.get(name)
+    }
+
+    /// Every mesh the Build names: the whole topology's, or, for sections, the Build's list they carry.
+    pub fn mesh_names(&self) -> BTreeSet<String> {
+        match &self.section_of {
+            Some(named) => named.keys().cloned().collect(),
+            None => self.meshes.keys().cloned().collect(),
+        }
+    }
+
+    /// Whether the Build names mesh `name` (its section held here or not).
+    pub fn names_mesh(&self, name: &str) -> bool {
+        match &self.section_of {
+            Some(named) => named.contains_key(name),
+            None => self.meshes.contains_key(name),
+        }
+    }
+
+    /// The sections of this topology for `meshes` (Q284): one per mesh named there that the topology
+    /// holds, each with that mesh's pinned births and every mesh the Build names; one with no mesh when
+    /// none is held (a Build with no mesh, or none touched), so the Build itself still travels. A
+    /// section is never cut again: it is returned as it is when it holds a mesh asked for.
+    pub fn sections(&self, meshes: Option<&BTreeSet<String>>) -> Vec<FabricTopology> {
+        let wanted = |m: &String| meshes.is_none_or(|w| w.contains(m));
+        if self.section_of.is_some() {
+            return if self.meshes.keys().any(wanted) || (self.meshes.is_empty() && meshes.is_none()) { vec![self.clone()] } else { Vec::new() };
+        }
+        let named: BTreeMap<String, MeshId> = self.meshes.iter().map(|(n, m)| (n.clone(), m.mesh_id.clone())).collect();
+        let of = |held: BTreeMap<String, MeshTopology>| FabricTopology {
+            pinned: self.pinned.iter().filter(|(p, _)| held.contains_key(&p.mesh)).cloned().collect(),
+            fabric: self.fabric.clone(),
+            meshes: held,
+            topology_storage_provider: self.topology_storage_provider.clone(),
+            storage_change: self.storage_change.clone(),
+            section_of: Some(named.clone()),
+        };
+        let cut: Vec<FabricTopology> = self.meshes.iter().filter(|(n, _)| wanted(n)).map(|(n, m)| of(BTreeMap::from([(n.clone(), m.clone())]))).collect();
+        if cut.is_empty() { vec![of(BTreeMap::new())] } else { cut }
+    }
+
+    /// Fold `other`, a topology of the same Build, into this one: the whole replaces sections, a
+    /// section adds its mesh to sections, and nothing changes the whole.
+    pub fn absorb(&mut self, other: &FabricTopology) {
+        match (&self.section_of, &other.section_of) {
+            (None, _) => {}
+            (Some(_), None) => *self = other.clone(),
+            (Some(_), Some(_)) => {
+                for (n, m) in &other.meshes {
+                    if !self.meshes.contains_key(n) {
+                        self.meshes.insert(n.clone(), m.clone());
+                        self.pinned.extend(other.pinned.iter().filter(|(p, _)| &p.mesh == n).cloned());
+                    }
+                }
+            }
+        }
     }
 
     /// Whether the topology names `node`.
@@ -287,7 +348,7 @@ impl FabricTopology {
             mesh.spec_by_path.insert(n.name.clone(), NodeSpec::default_for(n.name.clone()));
             mesh.nodes.insert(n.name.clone());
         }
-        Self { fabric: observed.fabric.name.clone(), meshes, topology_storage_provider: None, storage_change: None, pinned: Vec::new() }
+        Self { fabric: observed.fabric.name.clone(), meshes, topology_storage_provider: None, storage_change: None, pinned: Vec::new(), section_of: None }
     }
 
     /// The topology as per-mesh counts (the view's convenience shape).
@@ -1623,7 +1684,7 @@ mod tests {
     }
 
     fn t(meshes: &[(&str, u32, u32)]) -> FabricTopology {
-        FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() }
+        FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() }
     }
 
     fn paths(m: &MeshTopology) -> Vec<String> {
@@ -2536,7 +2597,7 @@ mod tests {
         assert_eq!(m.spec(&"mesh1.admin.1".parse().unwrap()).unwrap().storage_persistence, preserve);
         assert_eq!(m.spec(&"mesh1.gateway.1".parse().unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
         assert_eq!(m.spec(&"mesh1.rpc.1".parse().unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
-        let mut topology = FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
+        let mut topology = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
         assert_eq!(topology.validate(), Ok(()));
         // Grow and shrink keep the create specs in step with the paths.
         let observed = Topology {
@@ -3008,7 +3069,7 @@ mod tests {
     fn a_replacements_delete_carries_the_birth_its_acceptance_pinned() {
         use NodeStatus::Ready as R;
         let desired = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Gateway, 1)]);
-        let cur = FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&desired))].into() };
+        let cur = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&desired))].into() };
         let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.gateway.1", R, true)], &["mesh1"]);
         let rows = rows_on(&o, "a");
         let request: Vec<NodeSpec> = o.nodes.iter().map(|x| entry(&x.name.to_string(), Some(if x.name.kind == NodeKind::Gateway { "b" } else { "a" }))).collect();
@@ -3070,7 +3131,7 @@ mod tests {
     fn only_the_paths_whose_entry_differs_from_their_row_are_replaced_and_a_resume_finishes_the_rest() {
         use NodeStatus::Ready as R;
         let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 2), (NodeKind::Compute, 1)]);
-        let cur = FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: ["mesh1", "mesh2"].iter().map(|m| (m.to_string(), MeshTopology::of(&mesh(m)))).collect() };
+        let cur = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: ["mesh1", "mesh2"].iter().map(|m| (m.to_string(), MeshTopology::of(&mesh(m)))).collect() };
         let mut nodes = Vec::new();
         for m in ["mesh1", "mesh2"] {
             nodes.extend([n(&format!("{m}.admin.1"), R, true), n(&format!("{m}.admin.2"), R, false), n(&format!("{m}.broker.1"), R, true), n(&format!("{m}.gateway.1"), R, true), n(&format!("{m}.gateway.2"), R, false), n(&format!("{m}.compute.1"), R, true)]);

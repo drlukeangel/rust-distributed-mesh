@@ -1,4 +1,4 @@
-//! `FetchBuildFacts` and `FetchCurrentBuild` (op `0x1F`) and the Ready check's recovery of missing
+//! `FetchBuildFacts`, `FetchCurrentBuild` and `FetchBuildSection` (op `0x1F`) and the Ready check's recovery of missing
 //! control facts (i143 R-G6), over real Node RPC between in-process node-admins: what a responder
 //! serves from its own Build log, what a caller counts as a fetched Build, and how the FetchBuild
 //! rotates, backs off and repeats.
@@ -424,6 +424,74 @@ fn a_primary_taking_its_role_reads_the_fabric_primarys_current_build_once() {
     let spans = cap.spans(story);
     assert_eq!(spans.children(FETCH).len(), 1, "one read, under the role-taking turn;\n{}", spans.render());
     let _ = id;
+}
+
+/// `a` holds Build `id` accepted over L4's shape (ten meshes of three node-admins and seventeen rpc
+/// nodes: larger than one message whole), attempt 1 converged.
+async fn holds_l4(a: &Admin, id: &BuildId) -> FabricTopology {
+    use rdm_admin::accepted::MeshTopology;
+    use rdm_admin::build::MeshDesired;
+    let mut topology = FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap());
+    topology.meshes = (1..=10).map(|i| (format!("mesh{i}"), MeshTopology::of(&MeshDesired::of(format!("mesh{i}"), [(rdm_core::NodeKind::NodeAdmin, 3), (rdm_core::NodeKind::RpcNode, 17)])))).collect();
+    a.log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+    a.log.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    a.log.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+    topology
+}
+
+/// The meshes each acceptance a read carried holds a section of.
+fn sections_read(facts: &[rdm_admin::build_state::BuildFact]) -> Vec<Vec<String>> {
+    facts.iter().filter_map(|f| match f {
+        rdm_admin::build_state::BuildFact::Accepted(a) => Some(a.topology.meshes.keys().cloned().collect()),
+        _ => None,
+    }).collect()
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (INDEX Q284: "An admin starting, or a mesh-primary taking its role (Q276), pulls its own
+/// mesh's section from the fabric-primary (`FetchBuildSection { build_id, mesh }` on 0x1F, chunked as
+/// any fact). Only the fabric-primary, or a successor reading the journal, holds the whole Build"): a
+/// responder holding an acceptance larger than one message serves a section read that mesh's section
+/// only, of the Build named or of its current one, whole; a facts read every mesh's section; and a
+/// responder holding only another mesh's section says its answer is not whole.
+#[test]
+fn a_section_read_streams_one_meshs_section_of_an_acceptance_too_large_for_one_message() {
+    use rdm_admin::build_facts_read::fetch_build_section;
+    let cap = capture();
+    let (_story, ()) = story!(cap, "rdm.test.build.serve.via-streamed-section", async {
+        let fabric = FabricId::mint();
+        let id = BuildId::mint();
+        let primary = admin("mesh1.admin.1", &fabric).await;
+        let whole = holds_l4(&primary, &id).await;
+        let responder = node_of(&primary).await;
+        let c = caller("mesh2.admin.2", &fabric, &[&responder]).await;
+        let t = NodeTarget::ExactNode(responder.resolved.node_id.clone());
+
+        for named in [Some(&id), None] {
+            let got = fetch_build_section(&c.1.client, &t, named, "mesh2").await.expect("the section read completes");
+            assert!(got.complete, "the section asked for is held: the answer is whole");
+            assert_eq!(got.build_id, id, "the End names the Build read");
+            assert_eq!(sections_read(&got.facts), vec![vec!["mesh2".to_string()]], "mesh2's section only");
+            let rdm_admin::build_state::BuildFact::Accepted(a) = &got.facts[0] else { panic!("the acceptance first") };
+            assert_eq!(a.topology.meshes["mesh2"], whole.meshes["mesh2"], "the mesh's topology whole");
+            assert_eq!(a.topology.mesh_names(), whole.meshes.keys().cloned().collect(), "naming every mesh of the Build");
+            assert_eq!(got.facts.len(), 3, "the section, the claim and the receipt");
+        }
+        let all = fetch_build_facts(&c.1.client, &t, &id).await.expect("the facts read completes");
+        assert!(all.complete);
+        assert_eq!(sections_read(&all.facts).len(), 10, "every mesh's section, never the whole");
+
+        // An admin holding only mesh1's section is asked for mesh2's.
+        let other = admin("mesh1.admin.2", &fabric).await;
+        other.log.absorb_facts(&fetch_build_section(&c.1.client, &t, Some(&id), "mesh1").await.unwrap().facts).await;
+        let partial = node_of(&other).await;
+        c.1.resolver.insert(partial.resolved.clone());
+        let got = fetch_build_section(&c.1.client, &NodeTarget::ExactNode(partial.resolved.node_id.clone()), Some(&id), "mesh2").await;
+        assert!(got.as_ref().map_or(true, |g| !g.complete && sections_read(&g.facts).is_empty()), "no section of mesh2 held: not whole");
+        for n in [&responder, &partial, &c.1] {
+            n.ep.close().await;
+        }
+    });
 }
 
 // @feature: node-lifecycle

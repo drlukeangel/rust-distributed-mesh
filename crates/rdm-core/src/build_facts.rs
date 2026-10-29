@@ -11,7 +11,9 @@
 //!
 //! `FetchBuildFacts` names the Build. `FetchCurrentBuild` names none: the target streams the facts of
 //! its current accepted Build (its builds store read last in, first out, R-BI3), whose id `End`
-//! carries, or answers `NoCurrentBuild` when it holds none.
+//! carries, or answers `NoCurrentBuild` when it holds none. `FetchBuildSection` names the Build and a
+//! mesh: the Build's facts with its acceptance as that mesh's section only (Q284). The acceptance never
+//! travels whole: the first two carry it as every mesh's section.
 //!
 //! A `Facts` chunk carries `facts`: one postcard frame of the Build topic's message
 //! (`rafka-node-admin-core` `fabric_builds::BuildMessage`, the Build facts in their wire shape),
@@ -51,6 +53,18 @@ pub enum BuildFactsRequest {
     ///
     /// Position 1 on the wire.
     FetchCurrentBuild,
+    /// One mesh's section of a Build (Q284): the facts the target holds for the Build, its acceptance
+    /// as `mesh`'s section only. What an admin starting, or a mesh-primary taking its role, reads of
+    /// the Build; only the fabric-primary holds the acceptance whole.
+    ///
+    /// Position 2 on the wire.
+    FetchBuildSection {
+        /// The Build whose section is fetched; `None` the target's current accepted Build, whose id the
+        /// stream's `End` carries (`NoCurrentBuild` when it holds none).
+        build_id: Option<String>,
+        /// The mesh whose section is fetched.
+        mesh: String,
+    },
 }
 
 impl BuildFactsRequest {
@@ -59,6 +73,7 @@ impl BuildFactsRequest {
         match self {
             Self::FetchBuildFacts { .. } => "fetch-build-facts",
             Self::FetchCurrentBuild => "fetch-current-build",
+            Self::FetchBuildSection { .. } => "fetch-build-section",
         }
     }
 }
@@ -184,7 +199,7 @@ impl NodeProtocol for BuildFacts {
     /// One chunk: the Build topic's message bound (`rafka-mesh-transport` chunking) plus the frame's own fields.
     const MAX_REPLY_FRAME_BYTES: usize = 8 * 1024;
     const FORWARDABLE: bool = false;
-    const REQUEST_VARIANTS: u32 = 2;
+    const REQUEST_VARIANTS: u32 = 3;
     const REPLY_VARIANTS: u32 = 11;
 
     type Request = BuildFactsRequest;

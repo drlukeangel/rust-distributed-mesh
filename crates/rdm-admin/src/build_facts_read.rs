@@ -48,6 +48,7 @@ impl BuildFactsDoor {
             node = %me,
             request = req.op(),
             build_id = tracing::field::Empty,
+            mesh = tracing::field::Empty,
             facts = tracing::field::Empty,
             chunks = tracing::field::Empty,
             complete = tracing::field::Empty,
@@ -55,8 +56,17 @@ impl BuildFactsDoor {
         );
         async move {
             let span = tracing::Span::current();
+            // The meshes whose sections the acceptance travels as (Q284): every mesh it names, or the
+            // one a section read names.
+            let mesh = match &req {
+                BuildFactsRequest::FetchBuildSection { mesh, .. } => {
+                    span.record("mesh", mesh.as_str());
+                    Some(mesh.clone())
+                }
+                _ => None,
+            };
             let (id, build_id) = match req {
-                BuildFactsRequest::FetchBuildFacts { build_id } => {
+                BuildFactsRequest::FetchBuildFacts { build_id } | BuildFactsRequest::FetchBuildSection { build_id: Some(build_id), .. } => {
                     span.record("build_id", build_id.as_str());
                     match BuildId::parse(&build_id) {
                         Ok(id) => (id, build_id),
@@ -69,7 +79,7 @@ impl BuildFactsDoor {
                     }
                 }
                 // The current accepted Build: this admin's builds store read last in, first out (R-BI3).
-                BuildFactsRequest::FetchCurrentBuild => match self.builds.current_build().await {
+                BuildFactsRequest::FetchCurrentBuild | BuildFactsRequest::FetchBuildSection { build_id: None, .. } => match self.builds.current_build().await {
                     Ok(current) => match current.into_build_id() {
                         Some(id) => {
                             let build_id = id.to_string();
@@ -99,10 +109,15 @@ impl BuildFactsDoor {
                 span.record("outcome", "unknown-build");
                 return rdm_core::reply::build_facts::unknown_build(build_id);
             }
+            let wanted = mesh.map(|m| std::collections::BTreeSet::from([m]));
+            let held = crate::fabric_builds::sectioned(held, wanted.as_ref());
+            // A section read is whole only with the acceptance it asked for: a section of its mesh, or,
+            // for a Build that names no such mesh, the Build's section with none.
+            let sectioned = wanted.as_ref().is_none_or(|w| held.iter().any(|f| matches!(f, BuildFact::Accepted(a) if a.topology.meshes.keys().any(|m| w.contains(m)) || (a.topology.meshes.is_empty() && !w.iter().any(|m| a.topology.names_mesh(m))))));
             let facts = held.len() as u32;
             let (messages, refused) = encode_chunks(held);
             let floor = self.floor.lock().unwrap().clone();
-            let whole = refused.is_empty() && crate::admin::node_admin_not_ready(&me, &*self.builds, floor).await.is_none();
+            let whole = sectioned && refused.is_empty() && crate::admin::node_admin_not_ready(&me, &*self.builds, floor).await.is_none();
             for e in &refused {
                 tracing::info_span!("rdm.node_admin.build.reject.via-unservable-fact", node = %me, build_id = %build_id, detail = %e)
                     .in_scope(|| tracing::info!("a held Build fact fits no chunk: this answer is not complete"));
@@ -214,6 +229,13 @@ impl FetchFailure {
 /// names what was missing, and the caller absorbs nothing from it.
 pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, build_id: &BuildId) -> Result<Fetched, FetchFailure> {
     read_facts(client, target, &BuildFactsRequest::FetchBuildFacts { build_id: build_id.to_string() }, Some(build_id)).await
+}
+
+/// `FetchBuildSection` (Q284) to `target`: the facts of `build_id` with its acceptance as `mesh`'s
+/// section only, counted as [`fetch_build_facts`] counts them.
+/// With no Build named, the target's current accepted Build, whose id the stream's `End` carries.
+pub async fn fetch_build_section(client: &NodeRpcClient, target: &NodeTarget, build_id: Option<&BuildId>, mesh: &str) -> Result<Fetched, FetchFailure> {
+    read_facts(client, target, &BuildFactsRequest::FetchBuildSection { build_id: build_id.map(ToString::to_string), mesh: mesh.to_string() }, build_id).await
 }
 
 /// `FetchCurrentBuild` to `target`: the facts of its current accepted Build, whose id the stream's

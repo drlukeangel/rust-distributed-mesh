@@ -60,6 +60,18 @@ fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
     Ok(bytes.into())
 }
 
+/// `facts` as they travel (Q284): each whole acceptance replaced by its sections of `meshes` (every
+/// mesh it names when `None`), in place; every other fact, and a section already cut, as it is.
+pub fn sectioned(facts: Vec<BuildFact>, meshes: Option<&std::collections::BTreeSet<String>>) -> Vec<BuildFact> {
+    facts
+        .into_iter()
+        .flat_map(|f| match f {
+            BuildFact::Accepted(a) => a.topology.sections(meshes).into_iter().map(|topology| BuildFact::Accepted(BuildAccepted { topology, submitted_change: a.submitted_change.clone().filter(|c| matches!(c, crate::accepted::TopologyChange::DeleteFabric)), ..a.clone() })).collect(),
+            other => vec![other],
+        })
+        .collect()
+}
+
 /// `facts` packed, in order, into messages that each fit the message limit.
 /// A fact that fits no message on its own is left out and named.
 pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStateError>) {
@@ -199,9 +211,11 @@ impl FabricBuildStateAdapter {
 }
 
 /// A fact is encoded before it commits: one with no wire shape is refused by name and lands in no
-/// log, since `FetchBuildFacts` (0x1F) and a build.attempt.run's intent could not carry it.
+/// log, since `FetchBuildFacts` (0x1F) and a build.attempt.run's intent could not carry it. Its size is
+/// not bounded here: the record is whole on the store, which has no frame, and an acceptance travels as
+/// its sections ([`sectioned`], Q284), each bounded where it is packed.
 fn wire_shaped(fact: &BuildFact) -> Result<(), BuildStateError> {
-    encode(vec![fact.clone()]).map(|_| ())
+    BuildMessage { nonce: 0, facts: vec![fact.clone()] }.to_bytes().map(|_| ())
 }
 
 #[async_trait::async_trait]
@@ -301,6 +315,115 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
 mod tests {
     use super::*;
     use crate::build_state::BuildAttemptClaim;
+
+    /// L4's shape (load-testing.md "Profiles"): ten meshes of three node-admins and seventeen rpc
+    /// nodes, a pin on `mesh2.rpc.1`.
+    fn l4_acceptance() -> BuildAccepted {
+        use rdm_core::NodeKind;
+        let meshes = (1..=10)
+            .map(|i| {
+                let name = format!("mesh{i}");
+                let m = crate::accepted::MeshTopology::with_id(&crate::build::MeshDesired::of(name.clone(), [(NodeKind::NodeAdmin, 3), (NodeKind::RpcNode, 17)]), crate::model::MeshId::mint());
+                (name, m)
+            })
+            .collect();
+        let pin = crate::build::PinnedBirth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+        let topology = crate::accepted::FabricTopology {
+            section_of: None,
+            pinned: vec![("mesh2.rpc.1".parse().unwrap(), pin)],
+            storage_change: None,
+            topology_storage_provider: Some("file".into()),
+            fabric: "fabric1".into(),
+            meshes,
+        };
+        BuildAccepted { build_id: BuildId::mint(), topology, submitted_change: None, submitted_at_ms: 7 }
+    }
+
+    /// CONTRACT (INDEX Q284: "The fabric-primary records the accepted Build whole in the journal, and
+    /// the gossip-sized check at commit goes"; "build.attempt.run carries the BuildSections"): an
+    /// acceptance larger than one message (L3's ten meshes) has a wire shape and commits; it travels as
+    /// one section per mesh, each fitting a message, each naming every mesh of the Build, each mesh's
+    /// pinned births in its own section only.
+    #[test]
+    fn an_acceptance_larger_than_a_message_commits_and_travels_as_its_sections() {
+        let whole = l4_acceptance();
+        let fact = BuildFact::Accepted(whole.clone());
+        let bytes = BuildMessage { nonce: 0, facts: vec![fact.clone()] }.to_bytes().unwrap().len();
+        assert!(bytes > MAX_MESSAGE_BYTES, "the acceptance does not fit one message whole: {bytes} bytes");
+        wire_shaped(&fact).expect("the whole acceptance commits: the store has no frame");
+        let sections = sectioned(vec![fact], None);
+        assert_eq!(sections.len(), 10, "one section per mesh");
+        let (messages, refused) = encode_chunks(sections.clone());
+        assert!(refused.is_empty(), "every section fits a message: {refused:?}");
+        assert!(messages.iter().all(|m| m.len() <= MAX_MESSAGE_BYTES));
+        let heard: Vec<BuildFact> = messages.iter().flat_map(|m| BuildMessage::from_bytes(m).unwrap().facts).collect();
+        assert_eq!(heard.len(), 10, "no section lost");
+        let names: std::collections::BTreeSet<String> = whole.topology.meshes.keys().cloned().collect();
+        for f in &heard {
+            let BuildFact::Accepted(a) = f else { panic!("a section is an acceptance: {f:?}") };
+            assert_eq!((a.build_id.clone(), a.submitted_at_ms, a.topology.fabric.as_str(), a.topology.topology_storage_provider.as_deref()), (whole.build_id.clone(), 7, "fabric1", Some("file")));
+            assert_eq!(a.topology.meshes.len(), 1, "one mesh's section");
+            assert_eq!(a.topology.mesh_names(), names, "every section names every mesh of the Build");
+            let (mesh, m) = a.topology.meshes.iter().next().unwrap();
+            assert_eq!(m.nodes, whole.topology.meshes[mesh].nodes, "the mesh's nodes, whole");
+            assert_eq!(a.topology.pinned.len(), usize::from(mesh == "mesh2"), "a pin travels in its own mesh's section only");
+        }
+    }
+
+    /// CONTRACT (INDEX Q284 "the BuildSections of the meshes its operations touch"; the lead's
+    /// mechanics, Q284 lines 2-3): a run's sections are the meshes it acts in; a Build that names no
+    /// mesh (a fabric delete) still travels, as one section with none, and says it deletes the fabric.
+    #[test]
+    fn a_run_carries_its_meshes_sections_and_a_build_with_no_mesh_carries_one_with_none() {
+        let whole = l4_acceptance();
+        let touched = std::collections::BTreeSet::from(["mesh3".to_string()]);
+        let cut = sectioned(vec![BuildFact::Accepted(whole.clone())], Some(&touched));
+        let [BuildFact::Accepted(a)] = cut.as_slice() else { panic!("one section: {cut:?}") };
+        assert_eq!(a.topology.meshes.keys().collect::<Vec<_>>(), vec!["mesh3"]);
+        assert!(a.topology.names_mesh("mesh7") && !a.topology.meshes.contains_key("mesh7"), "mesh7 is the Build's, its section not here");
+        let delete = BuildAccepted {
+            topology: crate::accepted::FabricTopology { meshes: Default::default(), pinned: Vec::new(), ..whole.topology.clone() },
+            submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric),
+            ..whole
+        };
+        for wanted in [None, Some(&touched)] {
+            let cut = sectioned(vec![BuildFact::Accepted(delete.clone())], wanted);
+            let (messages, refused) = encode_chunks(cut);
+            assert!(refused.is_empty());
+            let heard = BuildMessage::from_bytes(&messages[0]).unwrap().facts;
+            let [BuildFact::Accepted(a)] = heard.as_slice() else { panic!("the Build's one section: {heard:?}") };
+            assert!(a.topology.meshes.is_empty() && a.topology.mesh_names().is_empty());
+            assert_eq!(a.submitted_change, Some(crate::accepted::TopologyChange::DeleteFabric), "it says it deletes the fabric");
+        }
+    }
+
+    /// CONTRACT (INDEX Q284: "Only the fabric-primary, or a successor reading the journal, holds the
+    /// whole Build"; the lead's mechanics, Q284 line 4): an admin's sections of one Build fold into one
+    /// topology holding the meshes it was sent and naming every mesh of the Build; a section heard
+    /// again is held once; the whole acceptance replaces the sections, and no section is new beside it.
+    #[tokio::test]
+    async fn sections_fold_into_one_topology_and_the_whole_replaces_them() {
+        use crate::build_state::{BuildStateAdapter as _, MemoryBuildStateAdapter};
+        let whole = l4_acceptance();
+        let section = |mesh: &str| {
+            let wanted = std::collections::BTreeSet::from([mesh.to_string()]);
+            sectioned(vec![BuildFact::Accepted(whole.clone())], Some(&wanted)).remove(0)
+        };
+        let log = MemoryBuildStateAdapter::new();
+        log.absorb(&[section("mesh1"), section("mesh2")]).await;
+        log.absorb(&[section("mesh1")]).await;
+        assert_eq!(log.facts().await.unwrap().len(), 2, "a section heard again is held once");
+        let p = log.read_build(&whole.build_id).await.unwrap();
+        assert_eq!(p.topology.meshes.keys().cloned().collect::<Vec<_>>(), vec!["mesh1".to_string(), "mesh2".to_string()]);
+        assert_eq!(p.topology.mesh_names(), whole.topology.meshes.keys().cloned().collect(), "the Build's every mesh is named");
+        assert_eq!(p.topology.pinned.len(), 1, "mesh2's pin, from its section");
+        log.absorb(&[BuildFact::Accepted(whole.clone())]).await;
+        let p = log.read_build(&whole.build_id).await.unwrap();
+        assert_eq!(p.topology, whole.topology, "the whole replaces the sections");
+        let held = log.facts().await.unwrap().len();
+        log.absorb(&[section("mesh5")]).await;
+        assert_eq!(log.facts().await.unwrap().len(), held, "the whole holds every section");
+    }
 
     /// CONTRACT (node-identity-and-state.md §6.9 Age and Wire: "the age lives in the receipt", "No frame
     /// gains a field"): a standalone stop's `Complete` receipt commits the stop's lifecycle op (the

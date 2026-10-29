@@ -821,6 +821,14 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
     let mut decided: std::collections::BTreeSet<(BuildId, Option<String>, u32)> = std::collections::BTreeSet::new();
     for f in ordered {
         match f {
+            // A Build's sections (Q284) fold into one topology; its whole acceptance replaces them.
+            BuildFact::Accepted(i) if out.contains_key(&i.build_id) => {
+                let p = out.get_mut(&i.build_id).expect("held");
+                if p.topology.section_of.is_some() && i.topology.section_of.is_none() {
+                    p.submitted_change = i.submitted_change.clone();
+                }
+                p.topology.absorb(&i.topology);
+            }
             BuildFact::Accepted(i) => {
                 out.entry(i.build_id.clone()).or_insert_with(|| BuildProjection {
                     build_id: i.build_id.clone(),
@@ -1910,7 +1918,9 @@ fn not_open(facts: &[BuildFact], claim: &BuildAttemptClaim) -> Option<ClaimOutco
 /// their key, everything else deduplicates.
 fn is_new(facts: &[BuildFact], f: &BuildFact) -> bool {
     match f {
-        BuildFact::Accepted(i) => !known(facts, &i.build_id),
+        // The whole acceptance is insert-and-fail on its Build; a section (Q284) on its Build and
+        // meshes, and the whole holds every section.
+        BuildFact::Accepted(i) => !facts.iter().any(|f| matches!(f, BuildFact::Accepted(h) if h.build_id == i.build_id && (h.topology.section_of.is_none() || (i.topology.section_of.is_some() && h.topology.meshes.keys().eq(i.topology.meshes.keys()))))),
         BuildFact::Opened(o) => opened(facts, &o.build_id, o.mesh.as_deref(), o.attempt).is_none(),
         BuildFact::Claim(c) => claim_holder(facts, &c.build_id, c.mesh.as_deref(), c.attempt).is_none(),
         _ => !facts.contains(f),

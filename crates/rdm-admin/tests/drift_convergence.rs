@@ -196,7 +196,7 @@ async fn secondary_rpc(e: &Estate, mesh: &str) -> String {
 async fn estate() -> Estate {
     let world = Arc::new(World::default());
     let fabric_id = FabricId::mint();
-    let topology = FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() };
+    let topology = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() };
     let mut nodes = Vec::new();
     let digest_view = DigestView::default();
     for m in topology.meshes.values() {

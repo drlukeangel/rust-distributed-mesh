@@ -1377,7 +1377,7 @@ mod tests {
     #[tokio::test]
     async fn a_returning_fabric_primarys_writes_before_it_learns_the_transfer_are_ignored_and_its_call_refused_stale() {
         let (door, memory) = door("mesh2.admin.1").await;
-        memory.publish_accepted(&BuildAccepted { build_id: id(), topology: crate::accepted::FabricTopology { pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric), submitted_at_ms: 0 }).await.unwrap();
+        memory.publish_accepted(&BuildAccepted { build_id: id(), topology: crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, submitted_change: Some(crate::accepted::TopologyChange::DeleteFabric), submitted_at_ms: 0 }).await.unwrap();
         let step = |attempt: u32, operation: &str, step: &str, executor: &str, output: Option<serde_json::Value>| BuildStepReceipt { mesh: None, build_id: id(), attempt, operation: operation.into(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor.into()) };
         let (lost, lost_inc, exec, exec_inc) = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
         memory.claim_attempt(&BuildAttemptClaim { claimant: Some("mesh1.admin.1".into()), mesh: None, build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();

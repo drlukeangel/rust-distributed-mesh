@@ -18,13 +18,15 @@ fn requests_match_the_frozen_wire_schema() {
         (BuildFactsRequest::FetchBuildFacts { build_id: "b".into() }, "00 01 62"),
         (BuildFactsRequest::FetchBuildFacts { build_id: "3qcfk1kq47m9".into() }, "00 0c 337163666b316b7134376d39"),
         (BuildFactsRequest::FetchCurrentBuild, "01"),
+        (BuildFactsRequest::FetchBuildSection { build_id: Some("b".into()), mesh: "m".into() }, "02 01 01 62 01 6d"),
+        (BuildFactsRequest::FetchBuildSection { build_id: None, mesh: "m".into() }, "02 00 01 6d"),
     ];
     for (q, hex) in fixtures {
         assert_eq!(BuildFacts::encode_request(&q).unwrap(), bytes(hex), "{q:?}");
         assert_eq!(BuildFacts::decode_request(&bytes(hex)).unwrap(), q);
     }
-    assert_eq!(BuildFacts::REQUEST_VARIANTS, 2);
-    assert_eq!(BuildFacts::decode_request(&[2]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(BuildFacts::REQUEST_VARIANTS, 3);
+    assert_eq!(BuildFacts::decode_request(&[3]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]

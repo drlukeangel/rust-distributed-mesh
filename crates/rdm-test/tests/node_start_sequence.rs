@@ -319,11 +319,12 @@ const FETCH_FACTS: &str = "rdm.node_admin.build.update.via-fetch-facts";
 
 // @feature: node-lifecycle
 /// CONTRACT (node-start.md step 4; node-rpc-envelope.md "Build-facts, op `0x1F`": "no-pointer, which
-/// names no Build, reads `FetchCurrentBuild`: the responder streams the facts of its current accepted
-/// Build, whose id End carries, or answers `NoCurrentBuild` and the blocker stays [...] No blocker is
-/// read by a second JoinNode."): a launched node-admin whose join was answered with no Build (its
-/// authority holds no current Build, and the Build topic's catch-up does not reach it) reports the
-/// no-pointer blocker at its Build floor and reads it with `FetchCurrentBuild`, answered
+/// names no Build, reads it naming none: the responder selects its current accepted Build once for
+/// the request and streams that Build's facts, every chunk and End naming its id, or answers
+/// `NoCurrentBuild` and the blocker stays [...] No blocker is read by a second JoinNode."): a launched
+/// node-admin whose join was answered with no Build (its fabric-primary holds no current Build, and the
+/// Build topic's catch-up does not reach it) reports the no-pointer blocker at its Build floor and
+/// reads it with `FetchBuildSection` of its own mesh naming no Build, answered
 /// `NoCurrentBuild` while the authority holds none; once the authority's current Build is readable
 /// again the read, on its backoff, streams that Build's facts and the start completes. Its join is
 /// made once: the authority serves exactly one `JoinNode` for the birth. Must NOT happen: the
