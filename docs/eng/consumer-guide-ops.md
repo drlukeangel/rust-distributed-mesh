@@ -1,6 +1,6 @@
 # Consumer guide: my own ops on Node RPC
 
-How an application adds its own calls to RDM's Node RPC: declare a protocol, take an op code, reserve
+How an application adds its own calls to RDM's Node RPC: declare a protocol, take an opcode, reserve
 it in the op ledger, serve it, and call it. The contract this follows is the
 [Node RPC envelope](../architecture/node-rpc-envelope.md) (Section 2, the body; the op ledger; the
 ledger row) and [node-rpc.md §9](../architecture/node-rpc.md). This page is the how-to; the pages
@@ -33,7 +33,7 @@ invocation to its committed connection; a new invocation is not automatic applic
 or enable automatic fallback. The owning workflow supplies the route policy; the runtime executes
 it. Streams cannot be carried through Forward. Data-plane Proxy registration is separate.
 
-## 1. Pick an op code
+## 1. Pick an opcode
 
 An op is one family: its request enum's variants are the calls. Take a code no ledger row holds.
 

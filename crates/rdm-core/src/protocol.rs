@@ -7,7 +7,7 @@
 //!
 //! # The ops
 //!
-//! Every Node RPC op RDM declares, by op code. Each request and reply body is an enum whose variants
+//! Every Node RPC op RDM declares, by opcode. Each request and reply body is an enum whose variants
 //! are in declaration order, which is their postcard position: each variant's documentation names its
 //! position, and the fields of a variant or a carried struct travel in declaration order. The
 //! testkit's own ops (`0x40`, `0x70`–`0x75`) are listed on `rdm_test`'s front page.
@@ -71,7 +71,7 @@ pub fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>, EncodeFailure> {
 
 /// One protocol family.
 pub trait NodeProtocol: 'static + Send + Sync {
-    /// The protocol's op tag.
+    /// The protocol's opcode.
     const OP: u8;
     /// The protocol's catalog name.
     const NAME: &'static str;

@@ -41,7 +41,7 @@ pub enum CallEnd {
     },
     /// The receiver does not serve the op; nothing was dispatched.
     Unserved {
-        /// The op tag.
+        /// The opcode.
         op: u8,
     },
     /// The request named a node the receiver is not; nothing was dispatched.

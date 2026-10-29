@@ -51,7 +51,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The op code of the proof store on Node RPC.
+/// The opcode of the proof store on Node RPC.
 const PROOF_STORE_OP: u8 = 0x70;
 /// The keys the traffic stream writes: disjoint from the model's own proof keys (`0..PROOF_KEYS`).
 const TRAFFIC_KEYS: std::ops::Range<u64> = 100..108;

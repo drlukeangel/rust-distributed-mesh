@@ -177,7 +177,7 @@ are never reassigned.
 
 ## The op ledger
 
-The ledger is the registry of op codes: one row per op, naming its family, its owner and
+The ledger is the registry of opcodes: one row per op, naming its family, its owner and
 whether it is live or reserved. An op is a family: its request enum's variants are the calls. A
 reserved op is never served and never reissued.
 
@@ -225,6 +225,34 @@ sees only the catalog.
 | `0x17` | forward-write | rafka | live | transitional | write through a peer |
 | `0x18` | forward-read | rafka | live | transitional | read through a peer |
 | `0x19` | peer-tickle | rafka | live | transitional | tickle exact path |
+| `0x24` | projection.get | rafka | live | canonical | Rafka's product op |
+| `0x25` | group.shuffle.create | rafka | live | canonical | Rafka's product op |
+| `0x26` | otel-debug | rafka | reserved | | |
+| `0x27` | chaos-arm | rafka | reserved | | |
+| `0x28` | upgrade-framework | rafka | live | canonical | Rafka's product op |
+| `0x29` | platform-bootstrap | rafka | live | canonical | Rafka's product op |
+| `0x2A` | broker-resync-step | rafka | live | canonical | Rafka's product op |
+| `0x2B` | broker.writer.fence | rafka | live | canonical | Rafka's product op |
+| `0x2C` | broker.wal.capture | rafka | live | canonical | Rafka's product op |
+| `0x2D` | system.create | rafka | live | canonical | Rafka's product op |
+| `0x2E` | mesh-image | rafka | live | canonical | Rafka's product op |
+| `0x2F` | job.create | rafka | live | canonical | Rafka's product op |
+| `0x30` | job.get | rafka | live | canonical | Rafka's product op |
+| `0x31` | broker.data.get | rafka | live | canonical | Rafka's product op |
+| `0x32` | topic.traffic.close | rafka | live | canonical | Rafka's product op |
+| `0x33` | topic.delete | rafka | live | canonical | Rafka's product op |
+| `0x34` | topic.replica.update | rafka | live | canonical | Rafka's product op |
+| `0x35` | topic.partition.update | rafka | live | canonical | Rafka's product op |
+| `0x36` | job.target.update | rafka | live | canonical | Rafka's product op |
+| `0x37` | projection.delete | rafka | live | canonical | Rafka's product op |
+| `0x38` | topic.create | rafka | live | canonical | Rafka's product op |
+| `0x39` | topic.traffic.open | rafka | live | canonical | Rafka's product op |
+| `0x3A` | broker.sync.complete | rafka | live | canonical | Rafka's product op |
+| `0x3B` | secret.get | rafka | live | canonical | Rafka's product op |
+| `0x3C` | broker.data.update | rafka | live | canonical | Rafka's product op |
+| `0x3D` | topic.traffic.get | rafka | live | canonical | Rafka's product op |
+| `0x3E` | topic.slot.delete | rafka | live | canonical | Rafka's product op |
+| `0x3F` | system.framework.update | rafka | live | canonical | Rafka's product op (moved off 0x23) |
 | `0x70` | proof-store | testkit | live | canonical | `Get`, `Put`, `Delete`, `CompareAndSwap` |
 | `0x71` | resolve-probe | testkit | live | canonical | `Resolve` |
 | `0x72` | declare-probe | testkit | live | canonical | `Declare` |
@@ -232,7 +260,7 @@ sees only the catalog.
 | `0x74` | pre-node-ready-pull | testkit | live | canonical | `Pull` |
 | `0x75` | fault-door | testkit | live | canonical | `Arm`, `Release`, `State` |
 
-The ledger state says whether an op may be served at all: `live` or `reserved`. The serving
+Every opcode is allocated in this table, a product's included: a product family takes the next free opcode here, as a row its product owns, before it is served, so no two families ever hold one opcode. The ledger state says whether an op may be served at all: `live` or `reserved`. The serving
 mode is the catalog entry's, not the ledger's: `canonical`, or `transitional` naming the
 canonical family that replaces it. A rafka adapter is live in the ledger and transitional in
 this process's catalog.

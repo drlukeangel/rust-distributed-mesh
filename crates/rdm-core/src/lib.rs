@@ -8,7 +8,7 @@
 //! node runtime built on both, `rdm-admin` is node-admin built on `rdm-node`, and `rdm-client` is the
 //! typed client a caller outside the fabric uses. `rdm-test` is the test kit an application's cells use.
 //!
-//! An application's own Node RPC op is a [`protocol::NodeProtocol`]: its op code, its request and reply
+//! An application's own Node RPC op is a [`protocol::NodeProtocol`]: its opcode, its request and reply
 //! enums and their frame ceilings, with [`protocol_variants!`] listing every variant (see its example).
 //! A read of the fabric names its rows by property with a [`filter::Filter`].
 //!

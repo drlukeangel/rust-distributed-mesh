@@ -34,7 +34,7 @@
 //!
 //! # Testkit ops
 //!
-//! The testkit's own Node RPC ops, by op code (RDM's own are on `rdm_core::protocol`). Each body
+//! The testkit's own Node RPC ops, by opcode (RDM's own are on `rdm_core::protocol`). Each body
 //! variant's documentation names its postcard position.
 //!
 //! | op | name | protocol | request | reply |

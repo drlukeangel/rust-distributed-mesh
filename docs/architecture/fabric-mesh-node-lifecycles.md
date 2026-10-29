@@ -145,7 +145,7 @@ A typed call has one canonical name, noun.verb, and a command completes as noun.
 
 A new node is node.created. Birth and re-birth are the application's names for its own workflows, never RDM operations. Rafka names its own recover/replace steps without creating an RDM opcode.
 
-**Node RPC op code.** A row of the [op ledger](node-rpc-envelope.md#the-op-ledger). A code is
+**Node RPC opcode.** A row of the [op ledger](node-rpc-envelope.md#the-op-ledger). An opcode is
 not a Build operation identity: only `build_id + attempt + operation` names a Build operation.
 A stop step sends StopNode for [node.stop](lifecycles/node-stop.md#command-and-completion-messages) on op
 `0x22` (NodeCommand).
