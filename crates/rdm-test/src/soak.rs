@@ -1418,6 +1418,21 @@ impl Driver {
                     .cloned()
                     .ok_or_else(|| broken("model-matches-view", format!("{mesh} has no ready mesh primary")))?;
                 entry["handed_off_from"] = json!({"node": n["name"], "node_id": n["node_id"], "fabric_primary": n["is_fabric_primary"]});
+                // The fabric-primary admits a primary's delete only when its own view holds a successor
+                // (build.md §4.4: "A primary's stop, connections delete or delete has a successor | the
+                // fabric-primary's view"), and its view learns a peer mesh's births from that mesh's
+                // primary's topology, after the atlas `nodes.get` answers from: the hand-off waits for a ready
+                // node-admin of the mesh other than its primary in what the fabric-primary holds itself.
+                let primary_name = s(&n["name"]);
+                if let Some(fp) = nodes.iter().find(|x| x["is_fabric_primary"] == true).and_then(|x| x["name"].as_str()).and_then(|x| x.parse::<PathName>().ok()) {
+                    let admin_of = format!("{mesh}.admin.");
+                    let est = &self.estate;
+                    let successor = wait_for_opt(&format!("{fp} holds a ready node-admin of {mesh} besides {primary_name}"), CONVERGE, || async {
+                        est.held_values_at(&fp).await.into_iter().find(|x| s(&x["name"]).starts_with(&admin_of) && s(&x["name"]) != primary_name && x["status"] == "ready").map(|x| s(&x["name"]))
+                    })
+                    .await;
+                    entry["successor_in_fabric_primary_view"] = json!(successor);
+                }
                 let (b2, old) = self.replace(&n, entry).await?;
                 removed = Some((s(&n["name"]), old));
                 watch = Some((b2, 0));
