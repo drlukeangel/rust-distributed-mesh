@@ -439,3 +439,144 @@ fn mesh_primary_fires_on_mesh_ready_once_after_mesh_record_commits_ready_and_wit
         Some("true")
     );
 }
+
+// @feature: on-fabric-ready
+/// CONTRACT: docs/architecture/fabric-node-hooks.md:131
+/// "After the ready state is set, the fabric-primary sends the application one `on_fabric_ready`
+/// notice (lifecycles/states.md#the-fabrics-ready), with
+/// `FabricReadyCtx { fabric_id, build_id, attempt, context }`: the accepted Build and attempt
+/// whose change made the fabric ready and that attempt's observability context. Rafka opens client
+/// traffic on that notice. The notice gates nothing in RDM."
+#[test]
+fn on_fabric_ready_delivers_accepted_build_and_attempt_context_without_gating_build_completion() {
+    let capture = Capture::new(
+        "on_fabric_ready_delivers_accepted_build_and_attempt_context_without_gating_build_completion",
+    );
+    let dispatch = capture.dispatch.clone();
+    let d = dispatch.clone();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+        .build()
+        .unwrap();
+    let _guard = tracing::dispatcher::set_default(&dispatch);
+
+    let dir = std::env::temp_dir().join(format!("rdm-on-fabric-ready-{}", rdm_core::NodeId::mint()));
+    let data_dir = dir.join("admin");
+    let store_dir = dir.join("store");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(&store_dir).unwrap();
+
+    let cfg = AdminConfig::from_env(|k| match k {
+        "RDM_DATA_DIR" => Some(data_dir.display().to_string()),
+        "RDM_STORE_DIR" => Some(store_dir.display().to_string()),
+        "MESH_SPAWN_TYPE" => Some("process".into()),
+        rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER => Some(MEMORY.into()),
+        _ => None,
+    })
+    .expect("valid Day-0 AdminConfig");
+
+    let (ready_ctx, expected_fabric_id, root_build_id, root_build_log) = rt.block_on(async move {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FabricReadyCtx>();
+        let proceed = Arc::new(tokio::sync::Notify::new());
+        let proceed_for_hook = proceed.clone();
+        let hooks = FabricHooks {
+            on_fabric_ready: Some(Arc::new(move |ctx| {
+                let _ = tx.send(ctx);
+                let proceed = proceed_for_hook.clone();
+                Box::pin(async move {
+                    proceed.notified().await;
+                })
+            })),
+            ..FabricHooks::no_app_work()
+        };
+        let providers = TopologyStorageProviders::new().register(MEMORY, Arc::new(MemoryBackend));
+        let running = start_on(
+            cfg,
+            Wiring {
+                fabric_hooks: hooks,
+                ..Wiring::no_certs()
+            },
+            providers,
+        )
+        .await
+        .expect("Day-0 node-admin starts on memory backend");
+
+        let ready_ctx = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+            .await
+            .expect("on_fabric_ready called within 30s")
+            .expect("on_fabric_ready channel open");
+
+        // While `on_fabric_ready` is still blocked waiting on `proceed`, the fabric's Ready state
+        // is already set and the Day-0 Build settles to `Complete` without waiting on `on_fabric_ready`
+        // ("The notice gates nothing in RDM").
+        let view = running.control.topology.read().await.clone();
+        assert_eq!(
+            view.fabric.status,
+            ScopeStatus::Ready,
+            "fabric is Ready before on_fabric_ready returns"
+        );
+        let root_build = running
+            .control
+            .builds
+            .current()
+            .await
+            .unwrap()
+            .expect("Day-0 Build exists");
+
+        proceed.notify_one();
+        assert!(
+            rx.try_recv().is_err(),
+            "on_fabric_ready is sent once for the accepted Build's entry to Ready"
+        );
+
+        running.leave().await;
+        (
+            ready_ctx,
+            view.fabric.id,
+            root_build.build_id.to_string(),
+            root_build.build_id.log().to_string(),
+        )
+    });
+    drop(rt);
+
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(ready_ctx.fabric_id, expected_fabric_id);
+    assert_eq!(ready_ctx.build_id, root_build_id);
+    assert_eq!(ready_ctx.attempt, 1);
+    assert_eq!(
+        ready_ctx.context.caller_system.as_deref(),
+        Some(rdm_admin::build_claim::CALLER_SYSTEM),
+        "FabricReadyCtx carries the attempt's observability context from AttemptContexts: {:?}",
+        ready_ctx.context
+    );
+
+    let change_spans = capture.named("rdm.node_admin.fabric.update.via-change");
+    assert_eq!(change_spans.len(), 1);
+    let on_ready_spans = capture.named("rdm.node_admin.fabric.update.via-on-fabric-ready");
+    assert_eq!(on_ready_spans.len(), 1);
+    assert_eq!(on_ready_spans[0].trace_id, change_spans[0].trace_id);
+    assert_eq!(
+        on_ready_spans[0]
+            .attributes
+            .get("build_id")
+            .map(String::as_str),
+        Some(root_build_log.as_str())
+    );
+    assert_eq!(
+        on_ready_spans[0]
+            .attributes
+            .get("attempt")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        on_ready_spans[0]
+            .attributes
+            .get("bound")
+            .map(String::as_str),
+        Some("true")
+    );
+}

@@ -1496,4 +1496,270 @@ mod tests {
             "expected bound via-on-mesh-ready span for mesh2: {spans:?}"
         );
     }
+
+    // @feature: on-fabric-ready
+    #[test]
+    fn notify_fabric_ready_delivers_attempt_context_once_skips_when_adopting_ready_and_fires_again_after_resize_re_enters_ready() {
+        // docs/architecture/fabric-node-hooks.md:131 — "After the ready state is set, the
+        // fabric-primary sends the application one `on_fabric_ready` notice
+        // (lifecycles/states.md#the-fabrics-ready), with
+        // `FabricReadyCtx { fabric_id, build_id, attempt, context }`: the accepted Build and
+        // attempt whose change made the fabric ready and that attempt's observability context."
+        // docs/architecture/lifecycles/states.md:187 — "When the fabric-primary changes, the new
+        // fabric-primary adopts the published fabric status; it does not reset to pending and does
+        // not re-send `on_fabric_ready`."
+        use crate::accepted::MeshTopology;
+        use crate::build::MeshDesired;
+        use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
+
+        let capture = crate::span_capture::Capture::new("notify-fabric-ready-unit");
+        let dispatch = capture.dispatch.clone();
+        let d = dispatch.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+            .build()
+            .unwrap();
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+
+        let fabric_id = FabricId::mint();
+        let build_a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
+        let build_b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
+        let build_a_for_assert = build_a.clone();
+        let build_b_for_assert = build_b.clone();
+        let fabric_id_for_assert = fabric_id.clone();
+
+        let (first_ctx, second_ctx) = rt.block_on(async move {
+            let builds = Arc::new(MemoryBuildStateAdapter::new());
+            let contexts = Arc::new(AttemptContexts::in_memory());
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FabricReadyCtx>();
+            let hooks = FabricHooks {
+                on_fabric_ready: Some(Arc::new(move |ctx| {
+                    let _ = tx.send(ctx);
+                    Box::pin(async {})
+                })),
+                ..FabricHooks::no_app_work()
+            };
+
+            let mesh1_a = (
+                "mesh1".to_string(),
+                MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])),
+            );
+            builds
+                .publish_accepted(&BuildAccepted {
+                    build_id: build_a.clone(),
+                    topology: FabricTopology {
+                        pinned: Vec::new(),
+                        storage_change: None,
+                        topology_storage_provider: None,
+                        fabric: "fabric1".into(),
+                        meshes: [mesh1_a].into(),
+                    },
+                    submitted_change: None,
+                    submitted_at_ms: 1_000,
+                })
+                .await
+                .unwrap();
+            claim(&builds, &build_a, 1).await;
+            let ctx_a = rdm_core::context::CallContext {
+                traceparent: Some(
+                    "00-11111111111111111111111111111111-2222222222222222-01".into(),
+                ),
+                tracestate: None,
+                baggage: Some("build=a".into()),
+                caller_system: Some("test".into()),
+            };
+            contexts.put(&build_a, 1, &ctx_a).await.unwrap();
+
+            let (fp, _) = fabric_primary_and_mesh2();
+            let view_a = projected(vec![fp.clone()]);
+            let records = Arc::new(Records::default());
+            every_mesh_ready(&records, None);
+
+            let ep = rdm_transport::endpoint::bind(
+                iroh::SecretKey::generate(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+            let states = FabricStates::new(StatesEnv {
+                me: fp.name.clone(),
+                node_id: fp.node_id.clone(),
+                fabric_id: fabric_id.clone(),
+                topology: Arc::new(RwLock::new(view_a.clone())),
+                client: Arc::new(NodeRpcClient::new(
+                    ep.clone(),
+                    Arc::new(rdm_transport::StaticResolver::new()),
+                )),
+                builds: builds.clone(),
+                contexts: contexts.clone(),
+                records: records.clone(),
+                hooks: hooks.clone(),
+            });
+
+            // 1. Entry from Pending to Ready fires `on_fabric_ready` once with `build_a`'s CallContext.
+            let read_a = builds.current().await;
+            states
+                .change_step(ChangeInputs {
+                    is_fabric_primary: true,
+                    heard: Some("pending"),
+                    view: &view_a,
+                    current: &read_a,
+                })
+                .await;
+            assert_eq!(records.fabric_state(), FabricState::Ready);
+            let first_ctx = rx.recv().await.expect("first on_fabric_ready delivered");
+            records.set_published_fabric_state(Some(FabricState::Ready));
+
+            // 2. Subsequent turns while Ready do not fire `on_fabric_ready` again.
+            states
+                .change_step(ChangeInputs {
+                    is_fabric_primary: true,
+                    heard: Some("ready"),
+                    view: &view_a,
+                    current: &read_a,
+                })
+                .await;
+            assert!(rx.try_recv().is_err(), "no duplicate on_fabric_ready while staying Ready");
+
+            // 3. A successor fabric-primary adopting `heard = Some("ready")` does not re-send `on_fabric_ready`.
+            let successor_records = Arc::new(Records::default());
+            every_mesh_ready(&successor_records, None);
+            successor_records.set_published_fabric_state(Some(FabricState::Ready));
+            let successor_states = FabricStates::new(StatesEnv {
+                me: fp.name.clone(),
+                node_id: fp.node_id.clone(),
+                fabric_id: fabric_id.clone(),
+                topology: Arc::new(RwLock::new(view_a.clone())),
+                client: Arc::new(NodeRpcClient::new(
+                    ep.clone(),
+                    Arc::new(rdm_transport::StaticResolver::new()),
+                )),
+                builds: builds.clone(),
+                contexts: contexts.clone(),
+                records: successor_records.clone(),
+                hooks,
+            });
+            successor_states
+                .change_step(ChangeInputs {
+                    is_fabric_primary: true,
+                    heard: Some("ready"),
+                    view: &view_a,
+                    current: &read_a,
+                })
+                .await;
+            assert_eq!(successor_records.fabric_state(), FabricState::Ready);
+            assert!(
+                rx.try_recv().is_err(),
+                "adopting Ready on takeover does not re-send on_fabric_ready"
+            );
+
+            // 4. Accepting a resize Build `build_b` resets the fabric to Pending, and when the new
+            //    topology becomes Ready, `on_fabric_ready` fires again with `build_b`'s CallContext.
+            let mesh1_b = (
+                "mesh1".to_string(),
+                MeshTopology::of(&MeshDesired::of(
+                    "mesh1",
+                    [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)],
+                )),
+            );
+            builds
+                .publish_accepted(&BuildAccepted {
+                    build_id: build_b.clone(),
+                    topology: FabricTopology {
+                        pinned: Vec::new(),
+                        storage_change: None,
+                        topology_storage_provider: None,
+                        fabric: "fabric1".into(),
+                        meshes: [mesh1_b].into(),
+                    },
+                    submitted_change: None,
+                    submitted_at_ms: 2_000,
+                })
+                .await
+                .unwrap();
+            claim(&builds, &build_b, 1).await;
+            claim(&builds, &build_b, 2).await;
+            let ctx_b = rdm_core::context::CallContext {
+                traceparent: Some(
+                    "00-33333333333333333333333333333333-4444444444444444-01".into(),
+                ),
+                tracestate: None,
+                baggage: Some("build=b".into()),
+                caller_system: Some("resize".into()),
+            };
+            contexts.put(&build_b, 2, &ctx_b).await.unwrap();
+
+            assert!(states.accepted().await, "resize puts fabric back to Pending");
+            assert_eq!(records.fabric_state(), FabricState::Pending);
+            records.set_published_fabric_state(Some(FabricState::Pending));
+
+            let view_b = projected(vec![
+                fp,
+                node("mesh1.rpc.1", NodeStatus::Ready, false),
+            ]);
+            let read_b = builds.current().await;
+            states
+                .change_step(ChangeInputs {
+                    is_fabric_primary: true,
+                    heard: Some("pending"),
+                    view: &view_b,
+                    current: &read_b,
+                })
+                .await;
+            assert_eq!(records.fabric_state(), FabricState::Ready);
+            let second_ctx = rx
+                .recv()
+                .await
+                .expect("second on_fabric_ready delivered after resize re-enters Ready");
+
+            ep.close().await;
+            (first_ctx, second_ctx)
+        });
+        drop(rt);
+
+        assert_eq!(first_ctx.fabric_id, fabric_id_for_assert);
+        assert_eq!(first_ctx.build_id, build_a_for_assert.to_string());
+        assert_eq!(first_ctx.attempt, 1);
+        assert_eq!(
+            first_ctx.context.baggage.as_deref(),
+            Some("build=a")
+        );
+
+        assert_eq!(second_ctx.fabric_id, fabric_id_for_assert);
+        assert_eq!(second_ctx.build_id, build_b_for_assert.to_string());
+        assert_eq!(second_ctx.attempt, 2);
+        assert_eq!(
+            second_ctx.context.baggage.as_deref(),
+            Some("build=b")
+        );
+
+        let on_ready = capture.named("rdm.node_admin.fabric.update.via-on-fabric-ready");
+        assert_eq!(
+            on_ready.len(),
+            2,
+            "via-on-fabric-ready emitted once per entry to Ready (not on adoption): {on_ready:?}"
+        );
+        let build_a_log = build_a_for_assert.log().to_string();
+        let build_b_log = build_b_for_assert.log().to_string();
+        assert!(
+            on_ready.iter().any(|s| {
+                s.attributes.get("build_id").map(String::as_str)
+                    == Some(build_a_log.as_str())
+                    && s.attributes.get("attempt").map(String::as_str) == Some("1")
+                    && s.attributes.get("bound").map(String::as_str) == Some("true")
+            }),
+            "expected via-on-fabric-ready for build_a attempt 1"
+        );
+        assert!(
+            on_ready.iter().any(|s| {
+                s.attributes.get("build_id").map(String::as_str)
+                    == Some(build_b_log.as_str())
+                    && s.attributes.get("attempt").map(String::as_str) == Some("2")
+                    && s.attributes.get("bound").map(String::as_str) == Some("true")
+            }),
+            "expected via-on-fabric-ready for build_b attempt 2"
+        );
+    }
 }
