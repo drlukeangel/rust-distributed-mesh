@@ -342,7 +342,8 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     for r in &restarts {
         let node = r["node"].as_str().unwrap();
         let rest = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().find(|s| s["attributes"]["node"] == node).cloned().unwrap_or_else(|| panic!("{node}: no build.update.via-node-rpc span for the restart call"));
-        let op = format!("node.restart:{node}");
+        // A restart is node.stop then node.start on the stopped process (Q183): the chain is the stop's.
+        let op = format!("node.stop:{node}");
         let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|s| s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == op))).cloned().unwrap_or_else(|| panic!("{node}: no reconcile executed {op}"));
         let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|s| s["attributes"]["node"] == node && descends_from(&spans, s, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.update.via-build under the reconcile"));
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| descends_from(&spans, s, &update)).collect();
@@ -744,7 +745,7 @@ fn acceptance_runner_rejects_invalid_job_execution_receipts() {
         assert!(ok, "the clean {section} job passes:\n{text}");
         let receipt = receipt.expect("the clean job's receipt");
         let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>();
-        assert_eq!(keys(&receipt), ["job", "issue", "layer", "source_sha", "dirty_paths", "started", "finished", "outcome", "cells"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>(), "exactly the canonical receipt: {receipt}");
+        assert_eq!(keys(&receipt), ["job", "issue", "layer", "source_sha", "dirty_paths", "started", "finished", "outcome", "learning", "cells"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>(), "exactly the canonical receipt: {receipt}");
         assert_eq!(keys(&receipt["cells"][0]), ["name", "evidence", "outcome", "refusal", "skip", "artifacts"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>());
         assert_eq!((receipt["outcome"].as_str(), receipt["source_sha"].as_str()), (Some("ok"), Some(head.as_str())));
         assert!(receipt["cells"][0]["refusal"].is_null());
