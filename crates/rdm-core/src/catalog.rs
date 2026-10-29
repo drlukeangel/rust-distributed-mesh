@@ -97,7 +97,7 @@ pub(crate) fn core_ledger() -> Vec<LedgerEntry> {
         rafka(0x28, "upgrade-framework"),
         rafka(0x29, "platform-bootstrap"),
         rafka(0x2A, "broker-resync-step"),
-        rafka(0x2B, "broker.writer.fence"),
+        rafka(0x2B, "broker.writer.target"),
         rafka(0x2C, "broker.wal.capture"),
         rafka(0x2D, "system.create"),
         rafka(0x2E, "mesh-image"),

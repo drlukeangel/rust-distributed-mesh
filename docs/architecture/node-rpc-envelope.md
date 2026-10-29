@@ -232,7 +232,7 @@ sees only the catalog.
 | `0x28` | upgrade-framework | rafka | live | canonical | Rafka's product op |
 | `0x29` | platform-bootstrap | rafka | live | canonical | Rafka's product op |
 | `0x2A` | broker-resync-step | rafka | live | canonical | Rafka's product op |
-| `0x2B` | broker.writer.fence | rafka | live | canonical | Rafka's product op |
+| `0x2B` | broker.writer.target | rafka | live | canonical | Rafka's product op |
 | `0x2C` | broker.wal.capture | rafka | live | canonical | Rafka's product op |
 | `0x2D` | system.create | rafka | live | canonical | Rafka's product op |
 | `0x2E` | mesh-image | rafka | live | canonical | Rafka's product op |
