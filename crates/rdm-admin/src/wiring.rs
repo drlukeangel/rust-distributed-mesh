@@ -5,7 +5,7 @@
 //! provider and the lifecycle events a deletion publishes. A [`Wiring`] lets an executable that IS
 //! a node-admin (a consumer's own, or a testkit's) wrap each of them once before the admin runs. The
 //! product passes [`Wiring::default`]: nothing is wrapped. Application work enters a lifecycle only
-//! through the [Fabric and node hooks](../../../docs/architecture/fabric-node-hooks.md)
+//! through the [Fabric and node hooks](../../../guide/architecture/fabric-node-hooks.html)
 //! (`pre_node_ready`, `on_node_ready`, `on_mesh_ready`, `on_fabric_ready`, `on_build_started`, `on_build_ended`; build.md §9): the
 //! admin's transition pipeline registers no application hook. The core carries no fault code; a
 //! decorator that delays, refuses or records lives in the executable that passes it.
@@ -203,7 +203,7 @@ pub type BuildStartedNotice = Arc<dyn Fn(BuildStartedCtx) -> Pin<Box<dyn Future<
 /// recorded. Fire and forget: it gates nothing.
 pub type BuildEndedNotice = Arc<dyn Fn(BuildEndedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-/// The application's notices a node-admin calls ([fabric and node hooks](../../../docs/architecture/fabric-node-hooks.md)).
+/// The application's notices a node-admin calls ([fabric and node hooks](../../../guide/architecture/fabric-node-hooks.html)).
 #[derive(Default, Clone)]
 pub struct FabricHooks {
     /// `on_mesh_ready`: optional, because it gates nothing.

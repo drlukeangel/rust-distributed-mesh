@@ -1,6 +1,38 @@
 //! RDM core: ids and identity, the Fabric → Mesh → Node model, the topology view and `RuntimeFact` types,
 //! the Node RPC protocol contract (framing, outcomes, reserved codes, body schemas, views, DTOs),
 //! and canonical operation/span names. Depends on no transport and no runtime.
+//!
+//! # Where it sits
+//!
+//! `rdm-core` is the bottom of the stack: `rdm-transport` carries its types on iroh, `rdm-node` is the
+//! node runtime built on both, `rdm-admin` is node-admin built on `rdm-node`, and `rdm-client` is the
+//! typed client a caller outside the fabric uses. `rdm-test` is the test kit an application's cells use.
+//!
+//! An application's own Node RPC op is a [`protocol::NodeProtocol`]: its op code, its request and reply
+//! enums and their frame ceilings, with [`protocol_variants!`] listing every variant (see its example).
+//! A read of the fabric names its rows by property with a [`filter::Filter`].
+//!
+//! # Example
+//!
+//! ```
+//! use rdm_core::filter::{Entity, Filter};
+//! use rdm_core::{NodeKind, PathName};
+//!
+//! // A node's path.name: its mesh, its kind's segment and its ordinal.
+//! let name: PathName = "mesh1.rpc.2".parse().expect("a path.name");
+//! assert_eq!((name.mesh.as_str(), name.kind), ("mesh1", NodeKind::RpcNode));
+//!
+//! // `nodes.get` of mesh1's ready rpc nodes: AND across pairs, any-of within a pair.
+//! let filter = Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["rpc"]).eq("status", ["ready"]);
+//! assert_eq!(filter.refusal(Entity::Nodes), None);
+//! ```
+//!
+//! # Guide
+//!
+//! The architecture pages are the contract this crate's types carry: the
+//! [Node RPC envelope](../../guide/architecture/node-rpc-envelope.html) and the
+//! [lifecycle index](../../guide/architecture/fabric-mesh-node-lifecycles.html), in the docs site
+//! `scripts/docs-site.sh` builds.
 #![deny(missing_docs)]
 
 pub mod binding;

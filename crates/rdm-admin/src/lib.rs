@@ -6,6 +6,40 @@
 //! lifecycle transitions. It is the only lifecycle authority: the Admin UI
 //! and every other front end are clients of its control API
 //! (`rafka-node-admin-client`). Nothing here knows a Rafka role.
+//!
+//! # Where it sits
+//!
+//! On `rdm-node`, `rdm-transport` and `rdm-core`: node-admin is itself a node of its mesh. An
+//! application's node-admin executable is a `main` that calls [`entry::run_with`] (or
+//! [`entry::run_on`] with its own topology storage backend), handing the admin its
+//! [`wiring::Wiring`]: its fabric hooks, its own node kinds, ops and declared secrets, and its cert
+//! material. Everything else is configured from the environment.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use rdm_admin::wiring::{FabricHooks, Wiring};
+//!
+//! const SERVICE: &str = "my-node-admin";
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     rdm_admin::entry::run_with(SERVICE, |cfg| Wiring {
+//!         fabric_hooks: FabricHooks::no_app_work(),
+//!         certs: rdm_admin::entry::material_or_exit(SERVICE, cfg),
+//!         ..Wiring::default()
+//!     })
+//!     .await
+//! }
+//! ```
+//!
+//! # Guide
+//!
+//! [Node-admin lifecycle](../../guide/architecture/node-admin-lifecycle.html),
+//! [Build](../../guide/architecture/build.html),
+//! [Deployment provider](../../guide/architecture/deployment-provider.html) and
+//! [Fabric and node hooks](../../guide/architecture/fabric-node-hooks.html), in the docs site
+//! `scripts/docs-site.sh` builds.
 #![deny(missing_docs)]
 
 

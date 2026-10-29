@@ -1,5 +1,33 @@
 //! The typed objects a caller uses (`node`, `mesh`, `fabric` and `build`), and the node-admin
 //! control API's client.
+//!
+//! # Where it sits
+//!
+//! On `rdm-core` and `rdm-transport`, beside the fabric: a process outside it (a tool, a test, an
+//! application's control plane) reaches a node-admin by its birth and reads and changes the fabric
+//! through the typed objects ([`Nodes`], [`Meshes`], [`Fabrics`], [`BuildCarrier`]).
+//!
+//! # Example
+//!
+//! A node-admin prints its birth on its stdout ([`BIRTH_LINE`]); a caller enters there and reads the
+//! ready nodes of one mesh:
+//!
+//! ```no_run
+//! use rdm_client::{birth_of_line, Filter, NodeView, Nodes, Peers};
+//!
+//! async fn ready_nodes(admin_stdout_line: &str) -> Result<Vec<NodeView>, String> {
+//!     let birth = birth_of_line(admin_stdout_line).ok_or("not a birth line")??;
+//!     let peers = Peers::at(&birth).await?;
+//!     let nodes = Nodes::new(peers.carrier_at(birth.name.clone()));
+//!     nodes.get(&Filter::new().eq("mesh", ["mesh1"]).eq("status", ["ready"])).await.map_err(|e| e.to_string())
+//! }
+//! ```
+//!
+//! # Guide
+//!
+//! [Query](../../guide/architecture/query.html), [Build](../../guide/architecture/build.html) and the
+//! [lifecycle index](../../guide/architecture/fabric-mesh-node-lifecycles.html), in the docs site
+//! `scripts/docs-site.sh` builds.
 #![deny(missing_docs)]
 
 mod build_stream;

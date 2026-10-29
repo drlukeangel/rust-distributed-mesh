@@ -1,5 +1,46 @@
 //! The product node runtime (`rdm-node`): what a product's role process is on the imported Mesh
 //! substrate, composed without depending on `rafka-node-admin-core` or `rafka-node-rpc-testkit`.
+//!
+//! # Where it sits
+//!
+//! Above `rdm-core` and `rdm-transport`; `rdm-admin` builds node-admin on it. An application's own
+//! process kinds (its broker, gateway or compute executable) are a `main` that calls [`run_with`]:
+//! node-admin launches the process with its launch in the environment ([`read_launch`]), and RDM
+//! joins it to its mesh, runs the application's `pre_node_ready` hook ([`node_hooks`]) before Ready
+//! and serves the application's own ops beside the core ones.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use rdm_node::node_hooks::{HookOutcome, NodeHooks, NodeReadyCtx, PreNodeReady};
+//! use rdm_node::{read_launch, Role};
+//! use std::sync::Arc;
+//!
+//! /// The application's work before its node reports Ready.
+//! struct Warm;
+//!
+//! #[async_trait::async_trait]
+//! impl PreNodeReady for Warm {
+//!     async fn pre_node_ready(&self, _ctx: &NodeReadyCtx) -> HookOutcome {
+//!         HookOutcome::Ok
+//!     }
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let launch = read_launch()?;
+//!     let hooks = NodeHooks::new(Arc::new(Warm));
+//!     // `serve_app` adds the application's own ops to the node's server before it is built.
+//!     rdm_node::run_with(Role::of(&launch), &[], hooks, |server| server).await
+//! }
+//! ```
+//!
+//! # Guide
+//!
+//! [Building an application on RDM](../../guide/eng/consumer-guide.html),
+//! [Your own ops on Node RPC](../../guide/eng/consumer-guide-ops.html) and
+//! [Fabric and node hooks](../../guide/architecture/fabric-node-hooks.html), in the docs site
+//! `scripts/docs-site.sh` builds.
 #![deny(missing_docs)]
 
 pub use rdm_core::launch::Launch;

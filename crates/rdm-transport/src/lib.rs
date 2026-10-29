@@ -1,6 +1,42 @@
 //! RDM transport substrate: gossip on iroh (topology digest view, frames, topology snapshots),
 //! the Node RPC runtime (client, server, pool, admission), stream wire framing, and the OTLP span
 //! and log exporter over HTTP.
+//!
+//! # Where it sits
+//!
+//! Above `rdm-core`, whose types it carries, and below `rdm-node` and `rdm-admin`, which build a
+//! node's process on it. A node serves its ops through a [`ServerBuilder`] and calls a peer's through a
+//! [`NodeRpcClient`]; every call ends in one [`rdm_core::RpcOutcome`].
+//!
+//! # Example
+//!
+//! A call of the core `ping` op on an exact node, every outcome handled:
+//!
+//! ```no_run
+//! use rdm_core::ping::{Ping, PingReply, PingRequest};
+//! use rdm_core::{NodeId, RpcOutcome};
+//! use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
+//!
+//! async fn ping(client: &NodeRpcClient, node: NodeId) -> Option<Vec<u8>> {
+//!     let request = PingRequest::Ping { payload: b"hello".to_vec() };
+//!     let (outcome, _evidence) = client.call::<Ping>(&NodeTarget::ExactNode(node), &request, &CallOptions::default()).await;
+//!     match outcome {
+//!         RpcOutcome::Reply(replied) => match replied.into_value() {
+//!             PingReply::Pong { payload } => Some(payload),
+//!             // A named refusal: NotReady, Busy, ConnectionsDeleting, ...
+//!             _ => None,
+//!         },
+//!         // Never dispatched (NotSent, Unserved, RejectedStale), or Indeterminate: never replayed blindly.
+//!         _ => None,
+//!     }
+//! }
+//! ```
+//!
+//! # Guide
+//!
+//! [Node RPC runtime](../../guide/architecture/node-rpc.html),
+//! [Node RPC envelope](../../guide/architecture/node-rpc-envelope.html) and
+//! [Gossip](../../guide/architecture/gossip.html), in the docs site `scripts/docs-site.sh` builds.
 #![deny(missing_docs)]
 
 // gossip & topology modules

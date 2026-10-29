@@ -1,6 +1,43 @@
 //! The generic RPC proof node and its launch contract. An `rpc_node` binds exactly the endpoint node-admin assigned,
 //! serves Node RPC, joins the fabric's topology topic and
 //! publishes its digest. It carries no product semantics.
+//!
+//! # Where it sits
+//!
+//! On every other RDM crate: it is the test kit an application's cells use, and RDM's own. An
+//! [`estate::Estate`] is one fabric of real node processes a cell starts, drives through the typed
+//! objects and reads back; the probes, proof protocols and fault doors beside it are what the cells
+//! assert with.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use rdm_test::estate::{Estate, Owner};
+//! use std::time::Duration;
+//!
+//! #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+//! async fn a_fabric_of_two_meshes_reaches_ready() {
+//!     let owner = Owner {
+//!         product: "mesh".into(),
+//!         feature: "fabric".into(),
+//!         subfeature: "create".into(),
+//!         rung: "MN".into(),
+//!         provider: "process".into(),
+//!         test: "a_fabric_of_two_meshes_reaches_ready".into(),
+//!     };
+//!     let estate = Estate::bootstrap(owner, "fabric1", "mesh1").await;
+//!     // mesh1 with one node-admin, mesh2 with one node-admin and one rpc node.
+//!     estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
+//!     estate.until_fabric_ready(Duration::from_secs(120)).await;
+//! }
+//! ```
+//!
+//! # Guide
+//!
+//! [Test harnesses](../../guide/eng/testing-harnesses.html),
+//! [Testing with node-admin](../../guide/eng/testing-with-node-admin.html) and
+//! [A test's fabric](../../guide/eng/testing-mesh-lifecycle.html), in the docs site
+//! `scripts/docs-site.sh` builds.
 #![deny(missing_docs)]
 
 
