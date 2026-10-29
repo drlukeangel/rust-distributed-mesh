@@ -183,13 +183,15 @@ pub struct FetchBuild {
     backoff: BTreeMap<NodeId, Backoff>,
     /// The responder whose complete stream was absorbed last: still owed a verdict.
     judging: Option<NodeId>,
+    /// Told when a request ends: the floor check waiting on it checks again at once.
+    ended: Arc<tokio::sync::Notify>,
 }
 
 impl FetchBuild {
     /// A fetch_build for the admin `me` over its client, its local Build log and the `responders` it
     /// asks.
     pub fn new(me: PathName, client: Arc<NodeRpcClient>, local: Arc<dyn LocalBuildLog>, responders: Responders) -> Self {
-        Self { me, client, local, responders, in_flight: None, backoff: BTreeMap::new(), judging: None }
+        Self { me, client, local, responders, in_flight: None, backoff: BTreeMap::new(), judging: None, ended: Arc::default() }
     }
 
     /// One floor check's turn. `blocker` is what the check just found, `None` when no control fact
@@ -237,6 +239,15 @@ impl FetchBuild {
         }
     }
 
+    /// Resolves when the request in flight ends; never while none is.
+    pub async fn request_ended(&self) {
+        if self.in_flight.is_some() {
+            self.ended.notified().await
+        } else {
+            std::future::pending().await
+        }
+    }
+
     /// One read of the blocker's Build from the first responder whose backoff has passed: the facts
     /// of `id` (`FetchBuildFacts`), or with no Build named the responder's current accepted Build
     /// (`FetchCurrentBuild`), whose id the read's `End` names.
@@ -245,7 +256,7 @@ impl FetchBuild {
         let Some(target) = candidates.into_iter().filter(|r| r.name != self.me).find(|r| self.backoff.get(&r.node_id).is_none_or(|b| b.open(now))) else {
             return;
         };
-        let (client, local, me, kind) = (self.client.clone(), self.local.clone(), self.me.clone(), blocker.kind());
+        let (client, local, me, kind, ended) = (self.client.clone(), self.local.clone(), self.me.clone(), blocker.kind(), self.ended.clone());
         // The request is a step of the turn that started it: it runs under that turn's span and dispatcher.
         let parent = tracing::Span::current();
         self.in_flight = Some(tokio::spawn(
@@ -276,7 +287,7 @@ impl FetchBuild {
                     }
                     (_, id) => id.map(|b| b.log().to_string()),
                 };
-                match fetched {
+                let end = match fetched {
                     Ok(f) if f.complete => {
                         span.record("facts", f.facts.len() as u64);
                         span.record("chunks", f.chunks);
@@ -299,7 +310,9 @@ impl FetchBuild {
                             .in_scope(|| tracing::info!("the Build-facts read produced nothing to absorb"));
                         End::Failed(target.node_id)
                     }
-                }
+                };
+                ended.notify_one();
+                end
             }
             .instrument(parent)
             .with_current_subscriber(),

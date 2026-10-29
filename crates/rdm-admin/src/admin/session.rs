@@ -622,9 +622,10 @@ pub(crate) fn set_own_status(digest: &Mutex<MeshDigest>, from: Option<MemberStat
     (true, d.clone())
 }
 
-/// How often a start below its Build floor checks the floor again and hands its blocker to the
-/// fetch_build: the cadence the fetch_build's one-request-at-a-time rule and backoff are set against
-/// (`crate::fetch_build`).
+/// How often a start below its Build floor checks the floor again when no request of its own ends
+/// first (facts a Build stream brings, a backoff passing, a responder appearing), and hands its
+/// blocker to the fetch_build: the cadence the fetch_build's one-request-at-a-time rule and backoff are
+/// set against (`crate::fetch_build`). A request's end checks again at once.
 pub(crate) const FLOOR_CHECK: Duration = Duration::from_millis(100);
 
 /// A node-admin's Build floor at a start (node-start.md step 4): "Fetch Build facts only when the node
@@ -667,7 +668,10 @@ impl AdminFloor {
             if let Some(p) = &self.progress {
                 p.at(format!("node.start is at its Build floor: {blocker}"));
             }
-            tokio::time::sleep(FLOOR_CHECK).await;
+            tokio::select! {
+                () = self.fetch_build.request_ended() => {}
+                () = tokio::time::sleep(FLOOR_CHECK) => {}
+            }
         }
         // Nothing is left outstanding at node.started: a read still in flight is let end.
         self.fetch_build.settle().await;
