@@ -233,7 +233,7 @@ async fn a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_d
     let _conn_a = dialer_a_on_a.open(&peer_b.birth).await.unwrap();
     let _conn_b = accept_task.await.unwrap();
 
-    // Direct Connected on ALPN_A must NOT retire the Proxy on ALPN_B:
+    // Direct Connected on ALPN_A must NOT delete the Proxy on ALPN_B:
     {
         let held_guard = peer_a.sink.held();
         let held = held_guard.lock().unwrap();
@@ -257,7 +257,7 @@ async fn a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_d
         );
         assert!(
             owed_direct_restored(&held, 999).is_empty(),
-            "owed_direct_restored must not retire ALPN_B's Proxy when only ALPN_A has Direct Connected"
+            "owed_direct_restored must not delete ALPN_B's Proxy when only ALPN_A has Direct Connected"
         );
     }
 
@@ -2107,7 +2107,7 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
     t_recv_d.read_exact(&mut b14).await.unwrap();
     assert_eq!(&b14, b"before-restore");
 
-    // Restore Direct: source now knows dest and records Direct Connected (which retires the Proxy route):
+    // Restore Direct: source now knows dest and records Direct Connected (which deletes the Proxy route):
     source.know(&dest);
     dest.know(&source);
     let direct_row = NodeConnection {
@@ -2170,7 +2170,7 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
     assert_eq!(
         proxy_disconnects.len(),
         1,
-        "ending a retired tunnel must write no second Disconnected row: {proxy_disconnects:?}"
+        "ending a deleted tunnel must write no second Disconnected row: {proxy_disconnects:?}"
     );
     assert_eq!(proxy_disconnects[0].reason.as_deref(), Some("direct-restored"));
 
@@ -2183,10 +2183,10 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
 /// `node.connection.get` lists it by its row id with `route: retired`, and `node.connection.delete
 /// { All | [ids] }` closes it by that id like any other. Its end writes no second row; it is spanned
 /// `rdm.node.connection.delete.via-tunnel-ended`"): a tunnel opened through the carrier, its route
-/// then retired by a Direct Connected (`Disconnected(direct-restored)` held), is closed by
+/// then deleted by a Direct Connected (`Disconnected(direct-restored)` held), is closed by
 /// `node.connection.delete { [its id] }`: its end is one `via-tunnel-ended` span naming the entry,
 /// the source, the carrier, the destination and the alpn, and the log holds the one Proxy
-/// Disconnected the retirement wrote. Must NOT happen: the end unspanned, spanned twice, or a second
+/// Disconnected the delete wrote. Must NOT happen: the end unspanned, spanned twice, or a second
 /// Proxy Disconnected row.
 #[test]
 fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span_and_writes_no_second_row() {
@@ -2205,7 +2205,7 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
         let tunnel = dialer_s.open(&dest.birth).await.unwrap();
         let _far = accept.await.unwrap();
         assert_eq!(tunnel.kind(), ConnectionKind::Proxy { via: carrier.birth.clone() });
-        // The route is retired: a Direct Connected beside the Proxy owes its Disconnected(direct-restored).
+        // The route is deleted: a Direct Connected beside the Proxy owes its Disconnected(direct-restored).
         source.sink.record(NodeConnection {
             id: ConnectionId::mint(),
             source: source.birth.to_end(),
@@ -2218,7 +2218,7 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
             reason: None,
             logged_at_ms: 100,
         });
-        assert_eq!(source.registry.held_open_tunnels().iter().map(|r| (r.id.clone(), r.reason.clone())).collect::<Vec<_>>(), vec![(tunnel.id().clone(), Some("route: retired".to_string()))], "the open tunnel is listed by its id, its route retired");
+        assert_eq!(source.registry.held_open_tunnels().iter().map(|r| (r.id.clone(), r.reason.clone())).collect::<Vec<_>>(), vec![(tunnel.id().clone(), Some("route: retired".to_string()))], "the open tunnel is listed by its id, its route: retired");
         let deleted = source.registry.delete_connections(&ConnectionScope::Connections(vec![tunnel.id().clone()])).await;
         assert_eq!(deleted, vec![tunnel.id().clone()]);
         assert_eq!(tokio::time::timeout(Duration::from_secs(5), tunnel.closed()).await.unwrap(), Closed::ConnectionsDeleted);
@@ -2230,7 +2230,7 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
         dest.shutdown().await;
         (id, names, proxy_disconnects)
     });
-    assert_eq!(proxy_disconnects, vec![Some("direct-restored".to_string())], "the retirement's row is the only Proxy Disconnected: the tunnel's end writes none");
+    assert_eq!(proxy_disconnects, vec![Some("direct-restored".to_string())], "the route delete's row is the only Proxy Disconnected: the tunnel's end writes none");
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
     let ended: Vec<Vec<String>> = spans
         .iter()
@@ -2594,7 +2594,7 @@ async fn a_direct_connected_disconnects_the_proxy() {
         "Proxy Connected is active before Direct Connected"
     );
 
-    // 2. Direct Connected lands on ALPN_A -> Proxy Disconnected(reason=direct-restored) retires the Proxy:
+    // 2. Direct Connected lands on ALPN_A -> Proxy Disconnected(reason=direct-restored) deletes the Proxy:
     let direct_connected = NodeConnection {
         id: ConnectionId::mint(),
         source: source.birth.to_end(),
@@ -2616,7 +2616,7 @@ async fn a_direct_connected_disconnects_the_proxy() {
             held.own_proxy_for(&dest.birth.name, ALPN_A)
                 .unwrap()
                 .is_none(),
-            "Direct Connected must retire the Proxy on the same ALPN"
+            "Direct Connected must delete the Proxy on the same ALPN"
         );
         assert!(
             held.active_direct_for(&source.birth.name, &dest.birth.name, ALPN_A)

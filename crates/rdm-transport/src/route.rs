@@ -24,7 +24,7 @@ use tracing::Instrument;
 
 /// What connections chose for reaching the exact target: the execution-relevant part of an
 /// [`EffectiveRoute`]. The Proxy record a `ViaPeer` was chosen by stays with the caller, which
-/// retires it; the seam needs only the carrier.
+/// deletes it; the seam needs only the carrier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteChoice {
     /// Dial the target's own endpoint.
@@ -132,7 +132,7 @@ impl NodeRpcClient {
 
 /// What a call over the held connections projection answered, beside what the resolution found
 /// on the way: the route it took, and the own Proxy found invalid and why, which the caller
-/// retires. The seam writes nothing (i143.e6.s5).
+/// deletes. The seam writes nothing (i143.e6.s5).
 #[derive(Debug)]
 pub struct ConnectedCall<R> {
     /// How the call ended.
@@ -143,15 +143,15 @@ pub struct ConnectedCall<R> {
     pub leg: RouteLeg,
     /// The route the call took.
     pub route: EffectiveRoute,
-    /// The caller's own Proxy found invalid, with the reason, for the caller to retire.
-    pub retire: Option<(NodeConnection, &'static str)>,
+    /// The caller's own Proxy found invalid, with the reason, for the caller to delete.
+    pub delete: Option<(NodeConnection, &'static str)>,
 }
 
 impl NodeRpcClient {
     /// Invoke `P` on the exact `target`, whose path is `destination`, over the route the held
     /// connections projection chooses for `own` under `policy` (connections.md §5): a valid own
     /// Proxy is reused with no direct dial, else an active Direct, else nothing is sent. The
-    /// outcome is handed back as is: an `Indeterminate` says nothing about the route and retires
+    /// outcome is handed back as is: an `Indeterminate` says nothing about the route and deletes
     /// no Proxy; only the resolution's own verdict on the Proxy is returned, for the caller.
     pub async fn call_connected<P: NodeProtocol>(
         &self,
@@ -186,19 +186,19 @@ impl NodeRpcClient {
             route = resolution.route.token(),
             retire = tracing::field::Empty,
         );
-        if let Some((_, why)) = &resolution.retire {
+        if let Some((_, why)) = &resolution.delete {
             span.record("retire", *why);
         }
         let choice = RouteChoice::from(&resolution.route);
         let (outcome, evidence, leg) = self.call_routed::<P>(target, &choice, req, opts).instrument(span).await;
-        let mut retire = resolution.retire;
+        let mut delete = resolution.delete;
         // The third Proxy validity condition is the carrier's own fact (connections.md section
-        // 8): the carried call that answers `carrier-edge-lost` retires the Proxy it travelled.
+        // 8): the carried call that answers `carrier-edge-lost` deletes the Proxy it travelled.
         if let (RpcOutcome::NotSent(n), EffectiveRoute::ViaPeer { proxy, .. }) = (&outcome, &resolution.route) {
             if matches!(n.reason(), NotSentReason::CarrierEdgeLost(_)) {
-                retire = Some((proxy.clone(), INVALID_CARRIER_EDGE_LOST));
+                delete = Some((proxy.clone(), INVALID_CARRIER_EDGE_LOST));
             }
         }
-        ConnectedCall { outcome, evidence, leg, route: resolution.route, retire }
+        ConnectedCall { outcome, evidence, leg, route: resolution.route, delete }
     }
 }

@@ -145,7 +145,7 @@ async fn connection_changes_do_not_touch_the_selection_and_selection_changes_fab
     assert_eq!(served_by(&out).map(|s| s.0).as_deref(), Some("mesh1.rpc.2"), "{out:?}");
     assert_eq!(leg, RouteLeg::Direct);
     let after = (resolve(&held, &own, &r.b.resolved.name, policy), held.keys(), held.active_len(), held.own_active_proxies().len());
-    assert_eq!(after, before, "a selection change emits no Direct Failed, Proxy Connected, reconnect or retirement for B");
+    assert_eq!(after, before, "a selection change emits no Direct Failed, Proxy Connected, reconnect or delete for B");
     assert_eq!(after.0.route, EffectiveRoute::Direct { known: true }, "B's route is as the connections left it");
 }
 

@@ -1489,7 +1489,7 @@ impl Dialer {
                 &self.alpn.carriers,
             )
         };
-        if let Some((invalid_proxy, reason)) = res.retire {
+        if let Some((invalid_proxy, reason)) = res.delete {
             self.registry
                 .inner
                 .sink
@@ -2708,7 +2708,7 @@ mod tests {
             logged_at_ms: 0,
         });
 
-        // Direct Connected automatically retired the Proxy entry with a Disconnected row.
+        // Direct Connected automatically deleted the Proxy entry with a Disconnected row.
         let history = sink.history();
         assert_eq!(history.len(), 3);
         assert_eq!(history[2].kind, CoreKind::Proxy);
@@ -2718,7 +2718,7 @@ mod tests {
             None
         );
 
-        // Dropping the already-retired proxy_row writes nothing.
+        // Dropping the already-deleted proxy_row writes nothing.
         sink.record_drops(&[proxy_row], "peer-left");
         assert_eq!(sink.history().len(), 3);
 

@@ -183,8 +183,8 @@ fn proxied_held(r: &Rig) -> (rdm_core::connections::ConnectionsHeld, rdm_core::P
 }
 
 /// A call over a Proxy whose carrier answers `CarrierEdgeLost` hands the Proxy back for
-/// retirement with the structural reason `carrier-edge-lost`, and the seam writes nothing; a
-/// plain `InnerNotSent` retires nothing.
+/// delete with the structural reason `carrier-edge-lost`, and the seam writes nothing; a
+/// plain `InnerNotSent` deletes nothing.
 ///
 /// CONTRACT: the source learns the third Proxy validity condition from the carried call itself
 /// (connections.md section 8) and from nothing else.
@@ -192,13 +192,13 @@ fn proxied_held(r: &Rig) -> (rdm_core::connections::ConnectionsHeld, rdm_core::P
 async fn a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_to_be_disconnected() {
     use rdm_core::connections::{resolve, CarrierPolicy, INVALID_CARRIER_EDGE_LOST};
     let policy = CarrierPolicy::Proxy { carrier_kind: rdm_core::NodeKind::RpcNode };
-    for (edge, retired) in [(Some("Direct Failed".to_string()), true), (None, false)] {
+    for (edge, deleted) in [(Some("Direct Failed".to_string()), true), (None, false)] {
         let r = rig_with(Some(Arc::new(EdgeFact(edge))), true).await;
         let (held, own, proxy) = proxied_held(&r);
         let resolution = resolve(&held, &own, &r.target.resolved.name, policy);
         let call = r.origin.call_resolved::<Probe>(resolution, &own, &r.target.resolved.name, &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
         assert!(matches!(call.outcome, RpcOutcome::NotSent(_)), "{:?}", call.outcome);
-        assert_eq!(call.retire, retired.then_some((proxy, INVALID_CARRIER_EDGE_LOST)));
+        assert_eq!(call.delete, deleted.then_some((proxy, INVALID_CARRIER_EDGE_LOST)));
     }
 }
 
