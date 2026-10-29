@@ -2188,11 +2188,15 @@ fn delete_tags(b: &Birth, scope: rdm_core::status::TagScope) -> StatusRequest {
     StatusRequest::DeleteTags { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), scope }
 }
 
-/// CONTRACT (proposal node-properties-own-commands.md §1: "Each command goes to the node's
-/// mesh-primary as the row writer"; Q166, Q171: each is admitted at any time; node-rpc-envelope.md
-/// node.tags: "Create is a blind put of that key, so creating a label the node already carries is
-/// ignored and writes no duplicate; delete tombstones the named keys ... a node carries at most 32; a
-/// label ... past the 32, is refused by name and nothing is written"): while the initial fabric is
+/// CONTRACT (`docs/architecture/node-rpc-envelope.md:323` — "`node.tags.create { label | [labels] }` adds
+/// one label or a list; `node.tags.delete { All | [labels] }` removes every label or the named ones ...
+/// Each label is its own keyed row (label, node id) in the node store's tags index. Create is a blind put
+/// of that key, so creating a label the node already carries is ignored and writes no duplicate; delete
+/// tombstones the named keys. A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.', and a
+/// node carries at most 32; a label outside that grammar, or one past the 32, is refused by name and
+/// nothing is written" and `docs/architecture/node-rpc-envelope.md:365` — "Additive and removal commands
+/// on keyed label rows, not a replacement of a tags property"; proposal node-properties-own-commands.md §1: "Each command goes to the node's
+/// mesh-primary as the row writer"; Q166, Q171: each is admitted at any time): while the initial fabric is
 /// pending and has never been ready, a caller's `node.config.update` {zone: a} of
 /// `mesh1.rpc.1` at its mesh-primary ends `ConfigUpdated`, the row carries the map (and no tag) and the
 /// birth is sent `ApplyNodeConfig` with it. Then: create {rabbit} ends `TagsCreated` and the tags index
@@ -2202,6 +2206,7 @@ fn delete_tags(b: &Birth, scope: rdm_core::status::TagScope) -> StatusRequest {
 /// index with none of its labels. The node is told nothing by any tags command; each tags command's
 /// `via-writer` span ends with the reply's name. What must NOT happen: a duplicate label row, a label past
 /// the cap, a tags command that calls the node, or a command refused for a fabric not yet ready.
+// @feature: node-tags
 #[test]
 fn node_tags_commands_and_a_config_update_before_the_fabric_first_reaches_ready_write_the_row_and_its_tags_index() {
     use rdm_core::status::TagScope;

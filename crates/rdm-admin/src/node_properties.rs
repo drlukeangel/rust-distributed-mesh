@@ -193,3 +193,151 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeStatus, ProviderKind, ScopeStatus};
+    use crate::node_config::{NodeConfigs, SentBy};
+    use crate::storage::MemoryNodesStorage;
+    use rdm_transport::{NodeRpcClient, StaticResolver};
+    use std::sync::Arc;
+
+    // CONTRACT (`docs/architecture/node-rpc-envelope.md:323` — "`node.tags.create { label | [labels] }`
+    // adds one label or a list; `node.tags.delete { All | [labels] }` removes every label or the named
+    // ones ... Each label is its own keyed row (label, node id) in the node store's tags index. Create is
+    // a blind put of that key, so creating a label the node already carries is ignored and writes no
+    // duplicate; delete tombstones the named keys. A label is 1-64 characters of a-z 0-9 - _ . ~, with no
+    // leading '.', and a node carries at most 32; a label outside that grammar, or one past the 32, is
+    // refused by name and nothing is written"): `tags` writes label index entries, reports
+    // `already_carried` and `not_carried`, skips writing when no label changes, and refuses invalid
+    // grammar, >32 labels, stale incarnations, and non-mesh-primary receivers.
+    // @feature: node-tags
+    #[tokio::test]
+    async fn tags_create_and_delete_maintain_index_report_carried_deltas_and_enforce_label_grammar_and_cap() {
+        let mut admin1 = Node::allocated("mesh1.admin.1".parse().unwrap());
+        admin1.status = NodeStatus::Ready;
+        admin1.is_primary = true;
+        admin1.is_fabric_primary = true;
+        admin1.incarnation_id = Some(IncarnationId::mint());
+
+        let mut admin2 = Node::allocated("mesh1.admin.2".parse().unwrap());
+        admin2.status = NodeStatus::Ready;
+        admin2.incarnation_id = Some(IncarnationId::mint());
+
+        let mut rpc1 = Node::allocated("mesh1.rpc.1".parse().unwrap());
+        rpc1.status = NodeStatus::Ready;
+        let rpc1_inc = IncarnationId::mint();
+        rpc1.incarnation_id = Some(rpc1_inc.clone());
+
+        let view = RwLock::new(Topology {
+            fabric: Fabric {
+                id: FabricId::mint(),
+                name: "fabric1".into(),
+                status: ScopeStatus::Ready,
+                provider: ProviderKind::Process,
+            },
+            meshes: vec![Mesh {
+                id: Some(MeshId::mint()),
+                name: "mesh1".into(),
+                status: ScopeStatus::Ready,
+            }],
+            nodes: vec![admin1.clone(), admin2.clone(), rpc1.clone()],
+        });
+
+        let storage = MemoryNodesStorage::default();
+        let written = Arc::new(crate::node_rows::WrittenRows::default());
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[9u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
+        let door = NodeConfigs::new(client, Default::default(), written.clone());
+
+        let set = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+
+        // 1. Invalid grammar (leading '.') refused before writer check.
+        let bad_req = StatusRequest::CreateTags {
+            node_id: rpc1.node_id.clone(),
+            incarnation: rpc1_inc.clone(),
+            labels: set(&[".hidden"]),
+        };
+        assert!(matches!(
+            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &bad_req).await,
+            StatusReply::RejectedTags { .. }
+        ));
+
+        // 2. Non-mesh-primary refused ReceiverNotPrimary.
+        let create_req = StatusRequest::CreateTags {
+            node_id: rpc1.node_id.clone(),
+            incarnation: rpc1_inc.clone(),
+            labels: set(&["gold", "ssd"]),
+        };
+        assert!(matches!(
+            tags(&admin2.name, &admin2.node_id, &view, &storage, Some(&door), None, SentBy::Other, &create_req).await,
+            StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }
+        ));
+
+        // 3. Create {"gold", "ssd"} writes row at revision 1 and indexes both labels.
+        assert_eq!(
+            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &create_req).await,
+            StatusReply::TagsCreated {
+                node_id: rpc1.node_id.clone(),
+                incarnation: rpc1_inc.clone(),
+                already_carried: BTreeSet::new(),
+            }
+        );
+        assert_eq!(written.row_of(&rpc1.node_id).unwrap().revision, 1);
+        assert_eq!(storage.tagged("gold").await.unwrap(), BTreeSet::from([rpc1.node_id.clone()]));
+        assert_eq!(storage.tagged("ssd").await.unwrap(), BTreeSet::from([rpc1.node_id.clone()]));
+
+        // 4. Repeat create {"gold"} reports already_carried={"gold"} and writes nothing (revision stays 1).
+        let dup_req = StatusRequest::CreateTags {
+            node_id: rpc1.node_id.clone(),
+            incarnation: rpc1_inc.clone(),
+            labels: set(&["gold"]),
+        };
+        assert_eq!(
+            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &dup_req).await,
+            StatusReply::TagsCreated {
+                node_id: rpc1.node_id.clone(),
+                incarnation: rpc1_inc.clone(),
+                already_carried: set(&["gold"]),
+            }
+        );
+        assert_eq!(written.row_of(&rpc1.node_id).unwrap().revision, 1);
+
+        // 5. Delete {"gold", "missing"} tombstones "gold", reports not_carried={"missing"}, steps revision to 2.
+        let del_req = StatusRequest::DeleteTags {
+            node_id: rpc1.node_id.clone(),
+            incarnation: rpc1_inc.clone(),
+            scope: TagScope::Labels(set(&["gold", "missing"])),
+        };
+        assert_eq!(
+            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &del_req).await,
+            StatusReply::TagsDeleted {
+                node_id: rpc1.node_id.clone(),
+                incarnation: rpc1_inc.clone(),
+                not_carried: set(&["missing"]),
+            }
+        );
+        assert!(storage.tagged("gold").await.unwrap().is_empty());
+        assert_eq!(written.row_of(&rpc1.node_id).unwrap().tags, set(&["ssd"]));
+        assert_eq!(written.row_of(&rpc1.node_id).unwrap().revision, 2);
+
+        // 6. Delete All clears remaining tags and tombstones "ssd".
+        let del_all = StatusRequest::DeleteTags {
+            node_id: rpc1.node_id.clone(),
+            incarnation: rpc1_inc,
+            scope: TagScope::All,
+        };
+        assert_eq!(
+            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &del_all).await,
+            StatusReply::TagsDeleted {
+                node_id: rpc1.node_id.clone(),
+                incarnation: rpc1.incarnation_id.unwrap(),
+                not_carried: BTreeSet::new(),
+            }
+        );
+        assert!(storage.tagged("ssd").await.unwrap().is_empty());
+        assert!(written.row_of(&rpc1.node_id).unwrap().tags.is_empty());
+        ep.close().await;
+    }
+}
