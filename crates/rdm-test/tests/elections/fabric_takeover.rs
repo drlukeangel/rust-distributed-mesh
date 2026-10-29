@@ -383,10 +383,11 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
         named(&estate.spans(), "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().find(|sp| at(sp) >= cut_at && attr(sp, "node") == victim && attr(sp, "mesh") == "mesh1" && attr(sp, "outcome") == "unreachable").map(at)
     })
     .await;
-    // And past the backbone arm's node investigation of the fabric-primary: unreached, it goes to the provider.
-    wait_for(&format!("{victim}'s node investigation of {fp} goes to the provider's inspection"), floor * 12 + Duration::from_secs(60), || async {
+    // And past the backbone arm's node investigation of the fabric-primary: its inspection first, then,
+    // unreached, the inspection's answer is the verdict (node-investigation.md, Q273).
+    wait_for(&format!("{victim}'s node investigation of {fp} reaches its verdict, unreached"), floor * 12 + Duration::from_secs(60), || async {
         intact();
-        named(&estate.spans(), "rdm.node.tickle.returns-unknown.via-unreached").into_iter().find(|sp| at(sp) >= decided && attr(sp, "caller") == victim && attr(sp, "node_id") == fp_id && attr(sp, "next") == "inspect").map(|_| ())
+        named(&estate.spans(), "rdm.node.tickle.returns-unknown.via-unreached").into_iter().find(|sp| at(sp) >= decided && attr(sp, "caller") == victim && attr(sp, "node_id") == fp_id && attr(sp, "next") == "verdict").map(|_| ())
     })
     .await;
     // Two gossip intervals more: the inspection's verdict, and whatever the executor does on it (the kept
@@ -557,11 +558,11 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
         Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
     };
     let cut_at = now_ns();
-    // Held past the own-mesh arm's node investigation of the fabric-primary: unreached, through no peer, it
-    // goes to the provider.
-    wait_for(&format!("{victim}'s own-mesh investigation of {fp} goes to the provider's inspection"), floor * 6 + Duration::from_secs(60), || async {
+    // Held past the own-mesh arm's node investigation of the fabric-primary: its inspection first, then,
+    // unreached through no peer, the inspection's answer is the verdict (node-investigation.md, Q273).
+    wait_for(&format!("{victim}'s own-mesh investigation of {fp} reaches its verdict, unreached"), floor * 6 + Duration::from_secs(60), || async {
         intact();
-        named(&estate.spans(), "rdm.node.tickle.returns-unknown.via-unreached").into_iter().find(|sp| at(sp) >= cut_at && attr(sp, "caller") == victim && attr(sp, "node_id") == fp_id && attr(sp, "next") == "inspect").map(|_| ())
+        named(&estate.spans(), "rdm.node.tickle.returns-unknown.via-unreached").into_iter().find(|sp| at(sp) >= cut_at && attr(sp, "caller") == victim && attr(sp, "node_id") == fp_id && attr(sp, "next") == "verdict").map(|_| ())
     })
     .await;
     // Two gossip intervals more: the inspection's verdict and whatever the executor does on it.
@@ -594,13 +595,14 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
     let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| attr(sp, "node_id") == fp_id && attr(sp, "outcome") == "admitted" && at(sp) < stop_at).collect();
     assert!(opened.is_empty(), "no recovery was opened for the running fabric-primary: {opened:#?}");
     // The isolated admin's ladder went to the provider reached through no carrier: `via-unreached` is the
-    // ladder nobody answered, direct or through a peer. Its `carriers` are the peers it asked (offline.rs
+    // ladder nobody answered, direct or through a peer, after the inspection (Q273), whose answer is then
+    // the verdict. Its `carriers` are the peers it asked (offline.rs
     // `carriers`: node-tickle.md step 3's eligible live peers, which its view may still hold ready
     // in the cut's first floor), never ones that reached it. The fabric-primary's process runs, so the
     // provider reads it `running` (the arm's own span, which names the verdict, stays open while it looks
     // again a floor on).
-    let ladders: Vec<&Value> = named(&spans, "rdm.node.tickle.returns-unknown.via-unreached").into_iter().filter(|sp| at(sp) >= cut_at && attr(sp, "caller") == victim && attr(sp, "node_id") == fp_id && attr(sp, "next") == "inspect").collect();
-    assert!(!ladders.is_empty(), "{victim}'s ladder on {fp} reached nobody and went to the provider");
+    let ladders: Vec<&Value> = named(&spans, "rdm.node.tickle.returns-unknown.via-unreached").into_iter().filter(|sp| at(sp) >= cut_at && attr(sp, "caller") == victim && attr(sp, "node_id") == fp_id && attr(sp, "next") == "verdict").collect();
+    assert!(!ladders.is_empty(), "{victim}'s ladder on {fp} reached nobody and its verdict is the inspection's");
     eprintln!("the cut held {held_ms} ms; {victim}'s ladders on {fp}: {}", ladders.len());
     estate.record_trace_url(&s(&ladders[0]["trace_id"]));
 }
