@@ -33,22 +33,7 @@ start's `Pending` and `Ready`.
 
 ## Status apply
 
-| Field | Contract |
-|---|---|
-| Caller / receiver | The node's mesh-primary, downward to the exact accepted node |
-| Kept | node.id, incarnation, endpoint key, port, immutable path and runtime |
-| Mapping | ApplyNodeState on the [Status schema](../node-rpc-envelope.md#status-op-0x1b-rdm); connections-deleting is entered only by [node.connections.delete](node-connections-delete.md) with `{ scope: All }` |
-| Result | a typed reply, or a named typed refusal |
-| Completion | Stream result for the accepted exact subject; no runtime exit inferred |
-
-Workflow actions run the status apply; how a node leaves the stopped status is
-[Stopped nodes](states.md#stopped-nodes).
-
-On the applied status the node adjusts its lifecycle admission. No provider stop,
-endpoint bind, new JoinNode, identity release or replacement is implied.
-
-A refusal is typed and named; the workflow that ran the apply records it as its own
-step's `Failed { step, reason }`.
+No node status is applied downward. A node declares its own `Pending` and `Ready` ([Status report](#status-report)); `connections-deleting` is entered only by [node.connections.delete](node-connections-delete.md) with `{ scope: All }`; a stop is [node.stop](node-stop.md); how a node leaves the stopped status is [Stopped nodes](states.md#stopped-nodes). `ApplyNodeState` is reserved on the [Status schema](../node-rpc-envelope.md#status-op-0x1b-rdm) and refused by name.
 
 ## Observability contract
 
