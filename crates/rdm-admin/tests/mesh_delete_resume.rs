@@ -2044,3 +2044,377 @@ fn a_handoff_held_ends_the_owners_wait_with_its_manifest_even_when_the_final_pri
     });
     assert_eq!(end.ok(), Some(manifest), "the handoff held ends the wait with its manifest");
 }
+
+// @feature: mesh-delete
+/// CONTRACT: docs/architecture/lifecycles/mesh-delete.md:32-58, 63-81
+/// "The mesh-primary runs `node.delete` for every other accepted birth in tier order ...
+/// It may begin the next tier only when every birth in the current tier has an `Exited` receipt."
+/// "Resume after the primary's loss:
+/// 1. When the mesh-primary is lost during the leave, the fabric-primary proves its runtime is
+///    `exited` via the provider and records its `Exited` receipt in the Build state.
+/// 2. If another `node-admin` of the leaving mesh is alive and elected mesh-primary, the
+///    fabric-primary appends a `RosterAmended { predecessor, final_primary }` receipt ...
+/// 3. The new mesh-primary reads the Build's step receipts and runs only the tiers without a
+///    terminal receipt. Completed member receipts stand."
+#[test]
+fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
+    let cap = capture();
+    let data_root = std::env::temp_dir().join(format!("mesh-delete-step-faults-{}", NodeId::mint()));
+    let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let handles: BTreeMap<String, DeploymentHandle> = records
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 47_000 + i as u32)))
+        .collect();
+    let fleet = Fleet {
+        pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(),
+        ..Default::default()
+    };
+    let birth = |name: &str| RosterBirth::of(records.iter().find(|n| n.name.to_string() == name).unwrap()).unwrap();
+    let (lost, survivor) = (birth(FINAL), birth(OTHER_ADMIN));
+    let (lost_runtime, survivor_runtime) = (
+        RuntimeProof::of(&handles[FINAL].fact().unwrap()),
+        RuntimeProof::of(&handles[OTHER_ADMIN].fact().unwrap()),
+    );
+    let view = View::default();
+    let calls: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
+    let amendment = RosterAmended {
+        predecessor: lost.clone(),
+        final_primary: survivor.clone(),
+        final_runtime: survivor_runtime.clone(),
+    };
+
+    let out = run_paused(&cap, async {
+        let builds = WireBuilds(MemoryBuildStateAdapter::new());
+        let build_id = BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted {
+                build_id: build_id.clone(),
+                topology: rdm_admin::accepted::FabricTopology::root(
+                    "fabric1",
+                    "mesh1",
+                    rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
+                ),
+                submitted_change: None,
+                submitted_at_ms: 0,
+            })
+            .await
+            .unwrap();
+        let mesh_id = MeshId::mint();
+        let outer = operation(&mesh_id);
+        let key = |attempt: u32| MeshDeleteKey {
+            mesh_id: mesh_id.clone(),
+            build_id: build_id.clone(),
+            attempt,
+            operation: outer.clone(),
+        };
+        let joins = Joins::default();
+        let template = LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: FabricId::mint(),
+            executable: "/nonexistent/rdm-rpc-node".into(),
+            seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
+            launcher: rdm_core::launch::Launcher {
+                name: FINAL.parse().unwrap(),
+                node_id: NodeId::mint(),
+                incarnation: IncarnationId::mint(),
+            },
+            env: BTreeMap::new(),
+            data_root: data_root.clone(),
+            store_dir: data_root.clone(),
+            issuing: None,
+            roots: Default::default(),
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            declared: Default::default(),
+            binding: None,
+        };
+
+        let root = tracing::info_span!("cell.mesh-delete-step-faults", build_id = %build_id.log(), operation = %outer);
+        let trace_id = trace_id(&root);
+        let _in_root = root.enter();
+
+        // Step 1-2: Admit accepted roster on owner and leaving roster on mesh-primary.
+        let roster = accepted_roster(&builds, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &lost_runtime, || live_roster(&records))
+            .await
+            .unwrap();
+        let mp1 = accepted_roster(&builds, &key(1), STEP_LEAVING_ROSTER, FINAL, &lost, &lost_runtime, || live_roster(&records))
+            .await
+            .unwrap();
+
+        // Fault 1: Cut after TerminateRuntime (before NodeDeleted) on FAILING (`mesh2.rpc.1`), while
+        // EXITING (`mesh2.rpc.2`) completes in the ordinary-nodes tier. The ordinary tier is left
+        // incomplete, the node-admin tier never starts, and an incomplete handoff is refused by name
+        // (`RejectedIncompleteManifest`).
+        let cut = CutBuilds {
+            inner: &builds,
+            cut: Mutex::new(Some(("NodeDeleted", format!("node.delete:{FAILING}")))),
+        };
+        let cut_pipeline = DeploymentPipeline {
+            provider: &fleet,
+            joins: &joins,
+            observer: &NoRpc,
+            sink: &view,
+            lifecycle: &NoLifecycleEvents,
+            builds: &cut,
+            template: &template,
+            timeouts: Timeouts::default(),
+        };
+        let pipeline = DeploymentPipeline {
+            provider: &fleet,
+            joins: &joins,
+            observer: &NoRpc,
+            sink: &view,
+            lifecycle: &NoLifecycleEvents,
+            builds: &builds,
+            template: &template,
+            timeouts: Timeouts::default(),
+        };
+
+        let first = members_exited(&builds, &key(1), FINAL, &mp1, &lost, lost_runtime.clone(), &records, &[], |n: Node| {
+            let (pipeline, handles, calls, build_id) = (&cut_pipeline, &handles, &calls, &build_id);
+            async move {
+                let name = n.name.to_string();
+                calls.lock().unwrap().push((1, name.clone()));
+                pipeline
+                    .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest {
+                        build_id: (*build_id).clone(),
+                        attempt: 1,
+                        node: n,
+                        handle: handles[&name].clone(),
+                        unreached: false,
+                    })
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        })
+        .await;
+        let incomplete_facts = builds.facts().await.unwrap();
+        let initial_admitted = Admitted {
+            roster: roster.clone(),
+            final_primary: lost.clone(),
+            final_runtime: lost_runtime.clone(),
+            amendments: Vec::new(),
+        };
+        let incomplete_verdict = handoff_verdict(
+            &incomplete_facts,
+            &key(1),
+            &initial_admitted,
+            &manifest_reference(build_id.as_str(), 1, &outer, false),
+        );
+
+        // Fault 2: The final primary `mesh2.admin.1` is killed/lost while the fabric-primary awaits
+        // `mesh.deleted`. Silence does not end the wait; once the final primary's runtime is proven
+        // exited, `await_mesh_deleted` ends immediately with `RunEnd::Incomplete` (not waiting for
+        // `MESH_DELETED_WAIT`).
+        let mesh_delete_view = MeshDeleteView::default();
+        let handoff_rx = mesh_delete_view.open(key(1), initial_admitted);
+        let (view_tx, view_rx) = tokio::sync::watch::channel(0u64);
+        let proven: Arc<Mutex<Option<String>>> = Arc::default();
+        let held = proven.clone();
+        let (k1, primary_label) = (key(1), format!("{} {}", lost.node, lost.incarnation_id));
+        let wait_task = tokio::spawn(tracing::Instrument::instrument(
+            async move {
+                await_mesh_deleted(
+                    &k1,
+                    &primary_label,
+                    handoff_rx,
+                    view_rx,
+                    move || std::future::ready(held.lock().unwrap().clone()),
+                    MESH_DELETED_WAIT,
+                )
+                .await
+            },
+            root.clone(),
+        ));
+        view_tx.send_modify(|t| *t += 1);
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        let open_on_silence = !wait_task.is_finished();
+        let began_wait = tokio::time::Instant::now();
+        *proven.lock().unwrap() = Some(format!(
+            "the final primary is unheard; its runtime reads exited: {} {}",
+            lost.node, lost.incarnation_id
+        ));
+        view_tx.send_modify(|t| *t += 1);
+        let wait_end = wait_task.await.unwrap();
+        let wait_elapsed = began_wait.elapsed();
+
+        // Resume on Attempt 2:
+        // 1. Fabric-primary records the lost primary's exact `Exited` receipt (`TerminateRuntime`)
+        //    and appends `RosterAmended { mesh2.admin.1 -> mesh2.admin.2 }` (replaying `AlreadyApplied`
+        //    on duplicate and refusing a conflicting second amendment for the same predecessor).
+        node_delete_receipts(&builds, &key(2), "mesh1.admin.1", &exited(&lost, &lost_runtime)).await;
+        let applied = amend_roster(&builds, &key(2), "mesh1.admin.1", &amendment).await;
+        let replayed = amend_roster(&builds, &key(2), "mesh1.admin.1", &amendment).await;
+        let conflicting = amend_roster(
+            &builds,
+            &key(2),
+            "mesh1.admin.1",
+            &RosterAmended {
+                final_primary: birth(EXITING),
+                ..amendment.clone()
+            },
+        )
+        .await;
+
+        // 2. The surviving mesh-primary `mesh2.admin.2` resumes `members_exited`: it keeps EXITING's
+        //    completed delete and the lost primary's exited receipt, and finishes only FAILING's missing
+        //    `NodeDeleted` + `Complete` (reusing FAILING's `TerminateRuntime` without re-terminating).
+        let steps_before_resume = builds.read_build(&build_id).await.unwrap().steps;
+        let admitted = admitted_of(&steps_before_resume, &outer).unwrap().unwrap();
+        let leaving = accepted_row(&steps_before_resume, &outer, STEP_LEAVING_ROSTER)
+            .unwrap()
+            .unwrap()
+            .roster;
+        let mp2 = amended_roster(&leaving, &steps_before_resume, &outer).unwrap();
+        let records2: Vec<Node> = view.holds(&records);
+        let manifest = members_exited(&builds, &key(2), OTHER_ADMIN, &mp2, &survivor, survivor_runtime.clone(), &records2, &[], |n: Node| {
+            let (pipeline, handles, calls, build_id) = (&pipeline, &handles, &calls, &build_id);
+            async move {
+                let name = n.name.to_string();
+                calls.lock().unwrap().push((2, name.clone()));
+                pipeline
+                    .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest {
+                        build_id: (*build_id).clone(),
+                        attempt: 2,
+                        node: n,
+                        handle: handles[&name].clone(),
+                        unreached: false,
+                    })
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        })
+        .await
+        .expect("attempt 2 finishes the cut member delete and completes OtherMembersExited");
+
+        // 3. Handoff verdict accepts the amended primary's manifest, refuses a stale handoff naming
+        //    the lost predecessor, records `MeshDeleted`, and after `mesh2.admin.2`'s separate
+        //    `node.delete`, completes `MeshLeft` over all 4 births.
+        let facts = builds.facts().await.unwrap();
+        let verdict = handoff_verdict(&facts, &key(2), &admitted, &manifest_reference(build_id.as_str(), 2, &outer, false));
+        let HandoffVerdict::Accept(completed) = verdict.clone() else {
+            panic!("amended handoff must be accepted: {verdict:?}");
+        };
+        record_completion(&builds, &key(2), "mesh1.admin.1", &completed).await.unwrap();
+
+        let delete_build = BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted {
+                build_id: delete_build.clone(),
+                topology: rdm_admin::accepted::FabricTopology::root(
+                    "fabric1",
+                    "mesh1",
+                    rdm_admin::model::MeshId::parse("meshd0000001").unwrap(),
+                ),
+                submitted_change: None,
+                submitted_at_ms: 0,
+            })
+            .await
+            .unwrap();
+        let last = records2.iter().find(|n| n.name.to_string() == OTHER_ADMIN).cloned().unwrap();
+        let terminal = pipeline
+            .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest {
+                build_id: delete_build,
+                attempt: 1,
+                node: last,
+                handle: handles[OTHER_ADMIN].clone(),
+                unreached: false,
+            })
+            .await
+            .unwrap();
+        let steps_final = builds.read_build(&build_id).await.unwrap().steps;
+        let mesh_left = completion_of(&steps_final, &outer)
+            .unwrap()
+            .map_err(|e| e.to_string())
+            .and_then(|c| mesh_left_proof(&c, &terminal));
+        let replay_handoff = replayed_handoff(&steps_final, &key(2), &records[2].node_id, &survivor.incarnation_id);
+        (
+            first,
+            incomplete_verdict,
+            open_on_silence,
+            wait_end,
+            wait_elapsed,
+            applied,
+            replayed,
+            conflicting,
+            manifest,
+            mesh_left,
+            replay_handoff,
+            trace_id,
+        )
+    });
+
+    let (
+        first,
+        incomplete_verdict,
+        open_on_silence,
+        wait_end,
+        wait_elapsed,
+        applied,
+        replayed,
+        conflicting,
+        manifest,
+        mesh_left,
+        replay_handoff,
+        trace_id,
+    ) = out;
+    let spans = cap.spans();
+    let _ = std::fs::remove_dir_all(&data_root);
+
+    let err = first.expect_err("cut before NodeDeleted leaves ordinary-nodes tier incomplete");
+    assert!(err.contains("tier ordinary-nodes is incomplete") && err.contains(FAILING), "{err}");
+    assert!(
+        matches!(
+            incomplete_verdict.refusal(),
+            Some(StatusReply::RejectedIncompleteManifest { missing: 1, .. })
+        ),
+        "incomplete handoff is refused RejectedIncompleteManifest naming the uncompleted admin birth: {incomplete_verdict:?}"
+    );
+    assert!(open_on_silence, "silence alone does not end await_mesh_deleted");
+    assert!(wait_elapsed < MESH_DELETED_WAIT, "await_mesh_deleted ends immediately on proven loss: {wait_elapsed:?}");
+    assert!(
+        matches!(&wait_end, Err(rdm_admin::executor::RunEnd::Incomplete(r)) if r.contains(FINAL) && r.contains("is lost")),
+        "await_mesh_deleted ends Incomplete naming the lost final primary: {wait_end:?}"
+    );
+    assert_eq!(applied, Ok(Amended::Applied));
+    assert_eq!(replayed, Ok(Amended::AlreadyApplied));
+    assert!(conflicting.is_err(), "conflicting second amendment for the same predecessor is refused");
+
+    let calls = calls.into_inner().unwrap();
+    let ran_attempt_2: Vec<String> = calls.iter().filter(|(a, _)| *a == 2).map(|(_, n)| n.clone()).collect();
+    assert_eq!(
+        ran_attempt_2,
+        vec![FAILING.to_string()],
+        "attempt 2 finishes only the cut member delete and does not re-run completed members: {calls:?}"
+    );
+    assert_eq!(
+        fleet.terminated.lock().unwrap().iter().filter(|n| n.as_str() == FAILING).count(),
+        1,
+        "{FAILING}'s runtime is terminated only once across the cut and resume"
+    );
+    assert_eq!(
+        births(&manifest.receipts),
+        BTreeSet::from([FAILING.to_string(), EXITING.to_string(), FINAL.to_string()]),
+        "the amended manifest carries every birth except the surviving final primary"
+    );
+    assert_eq!(replay_handoff, Some(StatusReply::AlreadyApplied));
+    let all = mesh_left.expect("MeshLeft proof completes once the surviving primary's own node.delete finishes");
+    assert_eq!(
+        births(&all.receipts),
+        BTreeSet::from([FAILING.to_string(), EXITING.to_string(), OTHER_ADMIN.to_string(), FINAL.to_string()]),
+        "MeshLeft covers all 4 roster births"
+    );
+
+    let named = |name: &str| {
+        spans
+            .iter()
+            .filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str())
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert!(!named("rdm.node_admin.mesh.update.via-final-primary-lost").is_empty());
+    assert!(!named("rdm.node_admin.mesh.update.via-roster-amended").is_empty());
+    assert!(!named("rdm.node_admin.mesh.update.via-mesh-deleted-receipt").is_empty());
+}
