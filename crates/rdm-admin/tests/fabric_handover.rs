@@ -854,6 +854,10 @@ fn the_fabric_primary_moved_outside_its_mesh_leaves_its_old_primary_mesh_primary
     });
 }
 
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:15
+/// "- the successor ladder of [node.primary.update](node-primary-update.md) after the row."
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:36
+/// "1. The caller holds the node's id and incarnation and a reason to ask: ... a successor that has not answered."
 /// CONTRACT (node-primary-update.md failure contract: "The call fails by name, and node investigation on
 /// the successor's exact birth decides (Q111): reached, the call is retried against it"): N holds no view
 /// at P's first call (its door answers `NotReady`); node investigation reaches N's exact birth, and the

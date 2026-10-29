@@ -225,6 +225,16 @@ mod tests {
         n
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:25
+    /// "Caller: The primary above the node: its mesh-primary for a member, the fabric-primary for a
+    ///  mesh-primary or another mesh's node-admin"
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:31
+    /// "What follows: The caller's: on `unreached` the investigation's verdict is the inspect's answer,
+    ///  read before the tickle; on `reached` for a node that is off its channel it commands
+    ///  [node.mesh.join](node-mesh-join.md); mesh investigation decides at 60 s"
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:46
+    /// "5. The caller acts on the result per its own page. Nothing on this page writes a row, changes a
+    ///  primary or publishes a frame."
     /// CONTRACT (node-mesh-join.md, Commander: "the node's mesh-primary ...; the fabric-primary for a
     /// mesh-primary. Commands go down"; #3211 red 2, gate 19d4afbee release: mesh2.admin.1 stopped
     /// publishing mesh2 at 484.371, held mesh2.admin.2's seat at 484.404, and commanded

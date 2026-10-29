@@ -3449,6 +3449,15 @@ mod tests {
         assert_eq!(rehydrated.node(&rpc.node_id, &birth), held, "a restarted authority folds the record back to the state it held");
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:71
+    /// "`{ \"Current\": { \"node_id\": \"k8pag1qx95gw\", \"incarnation\": \"0000000000000008\", \"state\": \"Ready\" } }`"
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:74
+    /// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node held at its hook answers
+    ///  `Blocked { node_id, incarnation, reason, retry_on }`. All three are `reached`."
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:100
+    /// "The probed node re-publishes its presence on the channel it is on, the check-in it owes its
+    ///  primary, and answers its current state; while its `pre_node_ready` hook is Blocked it answers
+    ///  `Blocked` and re-publishes nothing."
     /// CONTRACT (#2803 detection; node-rpc.md §14): a fabric primary probes ANOTHER mesh's node-admin
     /// through a member of that mesh (Forward carries no origin identity). The subject answers
     /// whoever reaches it: the probe is answered with the node-admin's current state from the
@@ -3457,16 +3466,27 @@ mod tests {
     /// What must NOT happen: a call naming this admin left unanswered because of who sent it.
     #[tokio::test]
     async fn a_probe_or_an_apply_naming_this_admin_is_answered_by_it_whoever_sends_it() {
-        let admin = node("mesh2.admin.1");
+        let mut admin = node("mesh2.admin.1");
+        admin.status = crate::model::NodeStatus::Ready;
         let carrier = node("mesh2.rpc.1");
         let (node_id, incarnation) = (admin.node_id.clone(), admin.incarnation_id.clone().unwrap());
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        let republished = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let republished_cb = republished.clone();
+        let republish: Republish = Arc::new(OnceLock::new());
+        let _ = republish.set(Arc::new(move || {
+            let republished_cb = republished_cb.clone();
+            Box::pin(async move {
+                republished_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+        }));
         for sender in [Some(&carrier), Some(&admin), None] {
-            let answered = self_subject(&admin, sender, None, &probe, &Republish::default(), &Configure::default(), &Rename::default(), &PreNodeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
-            assert!(matches!(answered, Some(R::Current { .. })), "from {:?}: {answered:?}", sender.map(|n| n.name.to_string()));
+            let answered = self_subject(&admin, sender, None, &probe, &republish, &Configure::default(), &Rename::default(), &PreNodeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
+            assert_eq!(answered, Some(R::Current { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Ready }), "from {:?}: {answered:?}", sender.map(|n| n.name.to_string()));
         }
+        assert_eq!(republished.load(std::sync::atomic::Ordering::SeqCst), 3, "each answered Current probe re-publishes presence once");
         let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::ConnectionsDeleting };
-        let answered = self_subject(&admin, Some(&carrier), None, &apply, &Republish::default(), &Configure::default(), &Rename::default(), &PreNodeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
+        let answered = self_subject(&admin, Some(&carrier), None, &apply, &republish, &Configure::default(), &Rename::default(), &PreNodeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::RejectedInvalidNodeTransition { .. })), "the subject answers the apply by its own rule: {answered:?}");
     }
 

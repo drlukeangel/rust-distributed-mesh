@@ -118,6 +118,13 @@ fn after(spans: &[Value], name: &str, node: &str, since: u64) -> Vec<Value> {
     named(spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node && at(sp) >= since).cloned().collect()
 }
 
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:31
+/// "What follows: The caller's: on `unreached` the investigation's verdict is the inspect's answer, read
+///  before the tickle; on `reached` for a node that is off its channel it commands
+///  [node.mesh.join](node-mesh-join.md); mesh investigation decides at 60 s"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:32
+/// "Spans: ... `rdm.node_admin.node.update.via-mesh-join-commanded` when the caller commands the reached
+///  node back through node.mesh.join, with the reply"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_sequence() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;

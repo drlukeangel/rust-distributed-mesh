@@ -1510,6 +1510,9 @@ mod tests {
         lines.iter().map(|l| l.to_string()).collect()
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:12
+    /// "- the fabric-primary in [mesh investigation](mesh-investigation.md), on a mesh's primary and then
+    ///  its other node-admins (probe 1 at 20 s, probe 2 at 40 s);"
     /// CONTRACT (mesh-investigation.md step 1: "probe 1 contacts mesh-x's current exact mesh-primary
     /// first, then mesh-x's other node-admins, with ProbeNodeState. Each target follows the
     /// established direct-then-via-peer policy"; node-tickle.md step 3: "the same probe through up to

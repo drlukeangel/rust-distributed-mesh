@@ -27,14 +27,30 @@ mod tests {
     }
 
     // @feature: node-tickle
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:5
+    /// "A primitive. `node.tickle` asks one node, by node.id and incarnation, whether anyone can reach it:
+    ///  one probe direct, and if that fails the same probe through up to two live peers of the node's mesh,
+    ///  sent at once (R-SW1). It answers `reached`, with what the node said, or `unreached`. It never
+    ///  answers dead: a failure, a deadline included, proves nothing, and only node.runtime.inspect proves
+    ///  a runtime gone."
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:26
+    /// "Target: One node, by `(node.id, incarnation)`; every probe names the same pair, and only that
+    ///  pair's answer counts"
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:27
     /// "Probe: `ProbeNodeState { node_id, incarnation }` on 0x1B, a bounded call with a deadline;
-    ///  the node answers `Current { state }`, `CurrentStopped` or `Blocked { reason, retry_on }`
-    ///  Ladder: Direct first. On failure, the same probe carried by Forward through up to two
+    ///  the node answers `Current { state }`, `CurrentStopped` or `Blocked { reason, retry_on }`"
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:28
+    /// "Ladder: Direct first. On failure, the same probe carried by Forward through up to two
     ///  eligible live peers of the node's mesh, both at once; one failed peer probe does not cancel
-    ///  the other
-    ///  Ends: Any answer from the node, under the probed incarnation, ends the ladder and cancels the
+    ///  the other"
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:29
+    /// "Ends: Any answer from the node, under the probed incarnation, ends the ladder and cancels the
     ///  probes still running"
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:71
+    /// "`{ \"Current\": { \"node_id\": \"k8pag1qx95gw\", \"incarnation\": \"0000000000000008\", \"state\": \"Ready\" } }`"
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:74
+    /// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node held at its hook answers
+    ///  `Blocked { node_id, incarnation, reason, retry_on }`. All three are `reached`."
     #[tokio::test]
     async fn birth_answers_include_current_stopped_and_blocked_and_one_failed_peer_does_not_cancel_the_other()
     {

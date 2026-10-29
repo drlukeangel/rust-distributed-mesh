@@ -387,6 +387,10 @@ mod tests {
         (view(vec![holder.clone(), standby.clone(), outsider.clone()]), holder, standby, outsider)
     }
 
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:14
+    /// "- [node investigation](node-investigation.md) of a silent primary ([elections](../fabric-node-lifecycle-elections.md));"
+    /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:36
+    /// "1. The caller holds the node's id and incarnation and a reason to ask: ... a silent primary"
     /// CONTRACT (Q23): a silent fabric holder is investigated from each admin's own view,
     /// including an admin in another mesh and a standby in the holder's mesh.
     #[test]

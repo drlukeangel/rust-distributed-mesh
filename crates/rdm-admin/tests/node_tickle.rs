@@ -68,13 +68,72 @@ fn ready_node(name: &str) -> Node {
 }
 
 // @feature: node-tickle
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:5
+/// "A primitive. `node.tickle` asks one node, by node.id and incarnation, whether anyone can reach it:
+///  one probe direct, and if that fails the same probe through up to two live peers of the node's mesh,
+///  sent at once (R-SW1). It answers `reached`, with what the node said, or `unreached`. It never
+///  answers dead"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:26
+/// "Target: One node, by `(node.id, incarnation)`; every probe names the same pair, and only that pair's answer counts"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:27
+/// "Probe: `ProbeNodeState { node_id, incarnation }` on 0x1B, a bounded call with a deadline; the node
+///  answers `Current { state }`, `CurrentStopped` or `Blocked { reason, retry_on }`"
 /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:28
 /// "Ladder: Direct first. On failure, the same probe carried by Forward through up to two eligible
-///  live peers of the node's mesh, both at once; one failed peer probe does not cancel the other
-///  Ends: Any answer from the node, under the probed incarnation, ends the ladder and cancels the
-///  probes still running
-///  Result: `reached { answer }`: the node is alive and said what it is; `unreached`: nobody reached
+///  live peers of the node's mesh, both at once; one failed peer probe does not cancel the other"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:29
+/// "Ends: Any answer from the node, under the probed incarnation, ends the ladder and cancels the
+///  probes still running"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:30
+/// "Result: `reached { answer }`: the node is alive and said what it is; `unreached`: nobody reached
 ///  it within the ladder. Unreached is never death"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:31
+/// "What follows: The caller's: on `unreached` the investigation's verdict is the inspect's answer,
+///  read before the tickle; on `reached` for a node that is off its channel it commands node.mesh.join;
+///  mesh investigation decides at 60 s"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:32
+/// "Spans: `rdm.node.tickle.resolve.via-direct` for the direct probe, `via-peer` per carrier, each with
+///  the answer or the failure; `rdm.node.tickle.returns-unknown.via-unreached` when the ladder ends with
+///  no answer"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:36
+/// "1. The caller holds the node's id and incarnation and a reason to ask: silence past the staleness floor"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:40
+/// "2. Direct: `ProbeNodeState { node_id, incarnation }` to the node's held address, with the probe's deadline."
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:41
+/// "3. On no answer, the same probe through up to two eligible live peers of the node's mesh, both
+///  sent at once, each a `Forward` whose inner op is the probe; a peer that cannot carry it is
+///  `InnerNotSent` and counts as no answer."
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:44
+/// "4. The first answer from the node, under the probed incarnation, ends the ladder: `reached { answer }`,
+///  the other probes cancelled. No answer within the ladder: `unreached`."
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:46
+/// "5. The caller acts on the result per its own page. Nothing on this page writes a row, changes a
+///  primary or publishes a frame."
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:51
+/// "The direct probe, op `0x1B` (27): ... `ProbeNodeState { node_id, incarnation }`"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:71
+/// "`{ \"Current\": { \"node_id\": \"k8pag1qx95gw\", \"incarnation\": \"0000000000000008\", \"state\": \"Ready\" } }`"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:74
+/// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node held at its hook answers
+///  `Blocked { node_id, incarnation, reason, retry_on }`. All three are `reached`."
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:77
+/// "The same probe carried through a peer, op `0x1A` (26): the inner bytes are the probe above, the
+///  peer makes one direct inner call and chooses no other target"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:100
+/// "The carrier's reply is `Forwarded { inner }` with the node's answer inside, or `InnerNotSent { reason }`
+///  when the carrier could not reach it. The tickle has no gossip of its own: the caller publishes
+///  nothing for a probe, an answer or a failure. The probed node re-publishes its presence on the
+///  channel it is on, the check-in it owes its primary, and answers its current state; while its
+///  `pre_node_ready` hook is Blocked it answers `Blocked` and re-publishes nothing."
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:138
+/// "The primitive has no failure of its own: `unreached` is a result, not an error, and it is never
+///  recorded as the node's death."
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:146
+/// "Direct probe | caller | `rdm.node.tickle.resolve.via-direct` | node, node_id, incarnation, answer or failure, deadline"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:147
+/// "Peer probe | caller, per carrier | `rdm.node.tickle.resolve.via-peer` | carrier, answer or failure"
+/// CONTRACT: docs/architecture/lifecycles/node-tickle.md:148
+/// "Ladder result | caller | the direct or peer span that carried the answer; `rdm.node.tickle.returns-unknown.via-unreached` when none did | what the caller does next"
 #[test]
 fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_unreached_when_none_answer(
 ) {
