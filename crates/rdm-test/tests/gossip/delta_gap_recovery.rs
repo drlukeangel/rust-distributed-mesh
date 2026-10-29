@@ -261,9 +261,15 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         (!v.is_empty()).then_some(v)
     })
     .await;
-    let baseline_version = member_installed.iter().map(|sp| num(sp, "topology_version")).max().unwrap();
+    let installed_version = member_installed.iter().map(|sp| num(sp, "topology_version")).max().unwrap();
 
     // ---- healthy control: one change in mesh2, one delta, applied by the member at its base
+    // The baseline is the newest version of mesh2 the member holds now: its first install may be of a
+    // mesh still settling, whose next changes it applied as deltas since.
+    let baseline_version = {
+        let spans = estate.spans();
+        spans_of(&spans, "rdm.mesh.topology.update.via-delta", MEMBER, 0).into_iter().filter(|sp| attr(sp, "mesh") == "mesh2").map(|sp| num(sp, "topology_version")).chain(std::iter::once(installed_version)).max().unwrap()
+    };
     let deltas_before = observer.deltas_of("mesh2").len();
     let t_change_a = now_ns();
     hold.signal("-STOP", true);
