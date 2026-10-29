@@ -1385,3 +1385,60 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_has_its_join_refused_on_
         .expect("the fabric-primary opens the resumed birth's termination");
     estate.record_trace_url(&s(&terminated["trace_id"]));
 }
+
+/// CONTRACT (docs/architecture/build.md: "A stop, a start or a recovery opens the next attempt of the
+/// current Build with its action"; crates/rdm-core/src/build.rs `BuildRequest::AttemptRun`: `intent`
+/// carries the Build's acceptance, every attempt opened, claimed and ended, and the step receipts of
+/// the operations this run carries, never the Build's other receipts): a Build that lives through 100
+/// `node.stop` / `node.start` pairs on `mesh2` (200 attempts dispatched across `build.attempt.run` to
+/// `mesh2.admin.1`) dispatches and completes every attempt within the Build op's 256 KiB request
+/// ceiling, with zero `Malformed(TooLarge)` refusals.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_build_that_lives_through_one_hundred_stop_and_start_pairs_dispatches_every_attempt_run() {
+    let test = "a_build_that_lives_through_one_hundred_stop_and_start_pairs_dispatches_every_attempt_run";
+    let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
+    let caller = Caller::of(&estate).await;
+    let carrier = born(&estate, &caller, &SHAPE).await;
+    let node = secondary_node(&estate).await;
+    let nodes = caller.nodes(&carrier);
+
+    let mut build_id = None;
+    let mut last_attempt = 0;
+    for pair in 1..=100 {
+        let mut stop_stream = nodes.stop(&node).await.unwrap_or_else(|e| panic!("pair {pair} stop accepted: {e:?}"));
+        let stop_acc = stop_stream.accepted().clone();
+        if let Some(ref id) = build_id {
+            assert_eq!(&stop_acc.build_id, id, "pair {pair} stop stays on the one Build");
+        } else {
+            build_id = Some(stop_acc.build_id.clone());
+        }
+        assert!(stop_acc.attempt > last_attempt, "pair {pair} stop advances the attempt ({} > {last_attempt})", stop_acc.attempt);
+        last_attempt = stop_acc.attempt;
+        let stop_frames = frames_of(&mut stop_stream).await;
+        assert_eq!(stop_frames.last(), Some(&Frame::Complete), "pair {pair} stop completes: {stop_frames:?}");
+
+        let mut start_stream = nodes.start(&node).await.unwrap_or_else(|e| panic!("pair {pair} start accepted: {e:?}"));
+        let start_acc = start_stream.accepted().clone();
+        assert_eq!(Some(&start_acc.build_id), build_id.as_ref(), "pair {pair} start stays on the one Build");
+        assert!(start_acc.attempt > last_attempt, "pair {pair} start advances the attempt ({} > {last_attempt})", start_acc.attempt);
+        last_attempt = start_acc.attempt;
+        let start_frames = frames_of(&mut start_stream).await;
+        assert_eq!(start_frames.last(), Some(&Frame::Complete), "pair {pair} start completes: {start_frames:?}");
+    }
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let build = build_id.expect("100 pairs ran").to_string();
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let dispatches: Vec<&Value> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch")
+        .into_iter()
+        .filter(|sp| attr(sp, "build_id") == build && attr(sp, "executor") == "mesh2.admin.1" && attr(sp, "outcome") == "complete")
+        .collect();
+    assert!(dispatches.len() >= 200, "every stop and start attempt on mesh2 dispatched and completed at mesh2.admin.1: {}", dispatches.len());
+    let malformed: Vec<&Value> = spans
+        .iter()
+        .filter(|sp| s(&sp["attributes"]["outcome"]).contains("malformed") || s(&sp["attributes"]["reason"]).contains("too-large") || s(&sp["attributes"]["detail"]).contains("TooLarge"))
+        .collect();
+    assert!(malformed.is_empty(), "no AttemptRun was refused Malformed(TooLarge): {malformed:#?}");
+    estate.record_trace_url(&attr(dispatches.last().unwrap(), "trace_id"));
+}
