@@ -53,7 +53,7 @@ pub enum AttemptReason {
     /// node.start). Never opened; kept so every later reason keeps its position.
     Reserved2,
     /// The previous attempt's executor is gone; another admin continues the Build.
-    AuthorityMoved,
+    #[serde(rename = "authority-moved")] PrimaryMoved,
     /// `POST /api/nodes/{name}/connections/delete`: node.connection.delete { All }.
     DeleteConnections,
     /// A standalone stop of an exact birth was requested (`node.stop:<path>`).
@@ -84,7 +84,7 @@ impl AttemptReason {
             Self::Requested => "requested",
             Self::ProvenDrift => "proven-drift",
             Self::Reserved2 => "reserved-2",
-            Self::AuthorityMoved => "authority-moved",
+            Self::PrimaryMoved => "primary-moved",
             Self::DeleteConnections => "node.connection.delete",
             Self::Stop => "stop",
             Self::Start => "start",
@@ -3398,7 +3398,7 @@ mod tests {
             assert_eq!(s.read_build(&id("b0")).await.unwrap().state, BuildState::Failed);
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")), "an attempt of an unchanged topology that failed never makes an older Build current");
             // The failed b1 resubmitted: its next attempt makes it the Build in progress.
-            s.open_attempt(&opened("b1", 2, AttemptReason::AuthorityMoved)).await.unwrap();
+            s.open_attempt(&opened("b1", 2, AttemptReason::PrimaryMoved)).await.unwrap();
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b1")));
             s.claim_attempt(&claim("b1", 2, "a")).await.unwrap();
             s.append_attempt_receipt(&attempt("b1", 2, AttemptOutcome::Converged)).await.unwrap();

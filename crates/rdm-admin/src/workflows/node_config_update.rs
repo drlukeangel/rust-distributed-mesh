@@ -15,7 +15,7 @@ mod tests {
         NodeStatus, PathName, ProviderKind, ScopeStatus,
     };
     use crate::node_config::SentBy;
-    use crate::status_rpc::{ConfigHeld, Declared, StatusAuthority};
+    use crate::status_rpc::{ConfigHeld, Declared, StatusDoor};
     use crate::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshStorage, NodeRow, NodesStorage};
     use crate::topology::Topology;
     use rdm_core::meta::{PlacementMeta, StorageMeta};
@@ -144,7 +144,7 @@ mod tests {
             }));
         }
 
-        let authority = Arc::new(StatusAuthority {
+        let status_door = Arc::new(StatusDoor {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -180,8 +180,8 @@ mod tests {
             digest_view: None,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         });
-        authority.caches.nodes.feeds(atlas.clone());
-        let _ = authority.atlas.set(atlas.clone());
+        status_door.caches.nodes.feeds(atlas.clone());
+        let _ = status_door.atlas.set(atlas.clone());
 
         let ep = rdm_transport::endpoint::bind(
             iroh::SecretKey::from_bytes(&[19u8; 32]),
@@ -190,14 +190,14 @@ mod tests {
         .await
         .unwrap();
         let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
-        let door = Arc::new(NodeConfigs::new(client, configure.clone(), authority.caches.nodes.clone()));
-        let _ = authority.configs.set(door.clone());
+        let door = Arc::new(NodeConfigs::new(client, configure.clone(), status_door.caches.nodes.clone()));
+        let _ = status_door.configs.set(door.clone());
 
         // node-config-update.md:7-9 — First config written to the node's row at claim.
         let initial_config = BTreeMap::from([("initial".to_string(), "v0".to_string())]);
         let mut initial_row = NodeRow::new(rpc_path.clone(), rpc_id.clone(), NodeStatus::Leaving);
         initial_row.config = initial_config.clone();
-        authority.caches.nodes.put(&*nodes_storage, &initial_row).await.unwrap();
+        status_door.caches.nodes.put(&*nodes_storage, &initial_row).await.unwrap();
         assert_eq!(atlas.record(&rpc_id).unwrap().config, initial_config);
         assert_eq!(atlas.record(&rpc_id).unwrap().revision, 1);
 
@@ -209,7 +209,7 @@ mod tests {
             incarnation: rpc_inc.clone(),
             config: caller_map.clone(),
         };
-        let caller_reply = authority.apply(Some(rpc1.clone()), &caller_req).await;
+        let caller_reply = status_door.apply(Some(rpc1.clone()), &caller_req).await;
         assert_eq!(caller_reply.name(), "config-updated");
         assert_eq!(
             caller_reply,
@@ -231,7 +231,7 @@ mod tests {
             incarnation: rpc_inc.clone(),
             config: build_map.clone(),
         };
-        let build_reply = authority
+        let build_reply = status_door
             .update_config_from_spec(&build_req, StorageMeta::Ephemeral, PlacementMeta::default())
             .await;
         assert_eq!(
@@ -249,7 +249,7 @@ mod tests {
         // node-config-update.md:33-42 — A node's own update in-process at the mesh-primary (which is also
         // the fabric-primary) holds Sent at once, writes both row and atlas at step 2, and installs Answered.
         let own_map = BTreeMap::from([("admin_api_base".to_string(), "rdm://mesh1.admin.1".to_string())]);
-        let own_reply = authority.own_config_update(admin_inc.clone(), own_map.clone()).await;
+        let own_reply = status_door.own_config_update(admin_inc.clone(), own_map.clone()).await;
         assert_eq!(
             own_reply,
             StatusReply::ConfigUpdated {
@@ -275,7 +275,7 @@ mod tests {
             config: BTreeMap::from([("stale".to_string(), "1".to_string())]),
             revision: 2,
         };
-        assert_eq!(authority.apply(Some(admin1.clone()), &stale_push).await, StatusReply::AlreadyApplied);
+        assert_eq!(status_door.apply(Some(admin1.clone()), &stale_push).await, StatusReply::AlreadyApplied);
         assert_eq!(atlas.record(&rpc_id).unwrap().config, build_map, "older revision must not overwrite newer revision 3");
         assert_eq!(
             atlas.install_config(&rpc_id, &BTreeMap::from([("newer".to_string(), "1".to_string())]), 4),

@@ -273,7 +273,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         "lost_mesh": lost_mesh,
         "survivor_mesh": survivor_mesh,
         "new_holder": new_holder,
-        "authority_endpoint": new_base,
+        "primary_endpoint": new_base,
         "started_unix_nano": started,
         "build_complete_unix_nano": build_complete,
         "first_handoff_announcement_unix_nano": first_handoff,

@@ -448,8 +448,8 @@ pub async fn reconcile_drift(
     decided: &(dyn Fn(&str) -> bool + Sync),
     unreachable: &(dyn Fn(&str) -> bool + Sync),
 ) -> Option<(crate::build::BuildId, u32)> {
-    let authority = t.fabric_primary().filter(|n| n.node_id == *me_id)?;
-    let me = &authority.name;
+    let primary = t.fabric_primary().filter(|n| n.node_id == *me_id)?;
+    let me = &primary.name;
     let current = match builds.current().await {
         Ok(current) => current?,
         Err(e) => {
@@ -583,7 +583,7 @@ pub async fn reconcile_drift(
                     incarnation_id = %incarnation.as_str(),
                     mesh = %n.mesh,
                     unheard_ms,
-                    authority = %authority.name,
+                    primary = %primary.name,
                     verdict = verdict_name,
                     exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
                 )
@@ -704,8 +704,8 @@ pub async fn reconcile_drift(
             mesh = %mesh,
             node = %admin,
             scope = %scope,
-            authority = %authority.name,
-            authority_node_id = %authority.node_id,
+            primary = %primary.name,
+            primary_node_id = %primary.node_id,
             reason = reason.as_str(),
             action = action_name,
         ),
@@ -714,8 +714,8 @@ pub async fn reconcile_drift(
             build_id = %current.build_id.log(),
             attempt,
             scope = %scope,
-            authority = %authority.name,
-            authority_node_id = %authority.node_id,
+            primary = %primary.name,
+            primary_node_id = %primary.node_id,
             reason = reason.as_str(),
             action = action_name,
             exit_code = first_exited.and_then(|(_, b)| b.code).map(|c| c.to_string()).unwrap_or_default(),

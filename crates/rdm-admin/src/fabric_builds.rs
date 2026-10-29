@@ -73,10 +73,10 @@ pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStat
 /// behind this admin's primary records.
 pub struct FabricBuildStateAdapter {
     local: Arc<dyn LocalBuildLog>,
-    /// The authority gate every fabric-primary mutation passes (ruling R-A2), a mesh's drift attempt's
+    /// The decision gate every fabric-primary mutation passes (ruling R-A2), a mesh's drift attempt's
     /// open and claim among them: the fabric-primary writes every Build record (Q118), so a
     /// mesh-primary that is not the fabric-primary reports its drift up and writes none.
-    authority: Authority,
+    gate: DecisionGate,
     location_view: rdm_transport::topology::LocationView,
 }
 
@@ -121,20 +121,20 @@ impl SeatSource {
 /// record's move, so a decision is either wholly committed before the record moves or refused by it.
 /// The record is the target every decision is judged against (lifecycles/node-primary-update.md
 /// step 4): nothing else is written for the log.
-pub struct Authority {
+pub struct DecisionGate {
     node: String,
     decisions: Arc<tokio::sync::Mutex<()>>,
     /// The primary record this birth's target is read from.
     seat: SeatSource,
 }
 
-impl Authority {
-    /// A gate for `node`'s Build log, its authority read from `seat`.
+impl DecisionGate {
+    /// A gate for `node`'s Build log, its seat read from `seat`.
     pub fn new(node: String, seat: SeatSource) -> Self {
         Self { node, decisions: Arc::default(), seat }
     }
 
-    /// Resolves once the seat record ends this birth's authority (at once when it already has;
+    /// Resolves once the seat record ends this birth's seat (at once when it already has;
     /// never for a log no seat record governs).
     pub async fn target_set(&self) {
         let Some(mut changed) = self.seat.changed.clone() else { return std::future::pending().await };
@@ -174,7 +174,7 @@ impl FabricBuildStateAdapter {
     /// The Build state of the admin named `node` over its Build journal `local`, its fabric-primary
     /// decisions gated by `seat`. `location_view` names this admin's path.name as its view holds it.
     pub fn new(local: Arc<dyn LocalBuildLog>, location_view: &rdm_transport::topology::LocationView, node: String, seat: SeatSource) -> Self {
-        Self { local, authority: Authority::new(node, seat), location_view: location_view.clone() }
+        Self { local, gate: DecisionGate::new(node, seat), location_view: location_view.clone() }
     }
 
     /// Whether this admin's Build log still decides anything: refused by name once the committed
@@ -182,19 +182,19 @@ impl FabricBuildStateAdapter {
     /// fabric-primary's drive passes this before every dispatch; it holds the gate only for the
     /// check, because an attempt lasts as long as its steps and the target is kept.
     pub async fn target_check(&self) -> Result<Option<String>, BuildStateError> {
-        self.authority.enter_naming().await.map(|(_, holder)| holder)
+        self.gate.enter_naming().await.map(|(_, holder)| holder)
     }
 
     /// Resolves once this admin's Build log is targeted: the drive's wait on an executor's run ends
     /// there.
     pub async fn target_set(&self) {
-        self.authority.target_set().await
+        self.gate.target_set().await
     }
 
     /// The lock a seat commit on this admin holds across the record's move: a decision in flight
     /// commits wholly before the record moves, and every decision after it is refused by the record.
     pub fn decisions(&self) -> Arc<tokio::sync::Mutex<()>> {
-        self.authority.decisions()
+        self.gate.decisions()
     }
 }
 
@@ -207,13 +207,13 @@ fn wire_shaped(fact: &BuildFact) -> Result<(), BuildStateError> {
 #[async_trait::async_trait]
 impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
-        let _gate = self.authority.enter().await?;
+        let _gate = self.gate.enter().await?;
         wire_shaped(&BuildFact::Accepted(accepted.clone()))?;
         self.local.publish_accepted(accepted).await
     }
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        let _gate = self.authority.enter().await?;
+        let _gate = self.gate.enter().await?;
         wire_shaped(&BuildFact::Opened(opened.clone()))?;
         self.local.open_attempt(opened).await
     }
@@ -241,14 +241,14 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
 
     /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the seat's own log.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        let _gate = self.authority.enter().await?;
+        let _gate = self.gate.enter().await?;
         wire_shaped(&BuildFact::Claim(claim.clone()))?;
         self.local.claim_attempt(claim).await
     }
 
     /// [`Self::claim_attempt`] with the mesh's in-flight row taken in the local log's own turn.
     async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &dyn crate::storage::MeshStorage, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, BuildStateError> {
-        let _gate = self.authority.enter().await?;
+        let _gate = self.gate.enter().await?;
         wire_shaped(&BuildFact::Claim(claim.clone()))?;
         self.local.claim_in_flight(claim, claims, mesh, row).await
     }
@@ -291,7 +291,7 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
-        let _gate = self.authority.enter().await?;
+        let _gate = self.gate.enter().await?;
         wire_shaped(&BuildFact::Forget { build_id: build_id.clone() })?;
         self.local.forget(build_id).await
     }
@@ -415,22 +415,22 @@ mod tests {
             let read = std::sync::Arc::new(move || crate::seat_watch::fabric_seat_record(seats.fabric().as_ref(), &me, &lost.lock().unwrap(), |id| (id.as_str() == "100000000000").then(|| "mesh2.admin.1".to_string())));
             SeatSource { read, changed }
         };
-        let authority = Authority::new("mesh2.admin.2".into(), source);
+        let gate = DecisionGate::new("mesh2.admin.2".into(), source);
         seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
-        assert!(authority.enter().await.is_ok(), "the record names this birth: it decides");
-        assert!(authority.target_set().now_or_never().is_none(), "no target while the record names this birth");
+        assert!(gate.enter().await.is_ok(), "the record names this birth: it decides");
+        assert!(gate.target_set().now_or_never().is_none(), "no target while the record names this birth");
         seats.take(Seat::FabricPrimary, &next);
         lost.lock().unwrap().insert(next.incarnation.clone());
-        assert!(authority.enter().await.is_ok(), "a record naming a birth proven gone ends nothing");
+        assert!(gate.enter().await.is_ok(), "a record naming a birth proven gone ends nothing");
         lost.lock().unwrap().clear();
-        match authority.enter().await {
+        match gate.enter().await {
             Err(BuildStateError::SeatYielded { to, by, .. }) => {
                 assert_eq!(to.as_deref(), Some("mesh2.admin.1"), "the refusal names the holder the record names");
                 assert!(by.contains("100000000000") && by.contains("revision 2"), "the reason names the record: {by}");
             }
             other => panic!("the moved record must refuse the old seat's decision by name, got {:?}", other.map(|_| ())),
         }
-        assert!(authority.target_set().now_or_never().is_some(), "a wait on the target resolves once the record moved");
+        assert!(gate.target_set().now_or_never().is_some(), "a wait on the target resolves once the record moved");
     }
 
     /// CONTRACT (R-A2 item 2): a seat commit on this admin waits for the decision in flight (it
@@ -447,10 +447,10 @@ mod tests {
             SeatSource { read: std::sync::Arc::new(move || crate::seat_watch::fabric_seat_record(seats.fabric().as_ref(), &me, &Default::default(), |_| None)), changed }
         };
         seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
-        let authority = std::sync::Arc::new(Authority::new("mesh1.admin.1".into(), source));
+        let gate_ref = std::sync::Arc::new(DecisionGate::new("mesh1.admin.1".into(), source));
         let committed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let gate = authority.enter().await.unwrap();
-        let (decisions, c, primary_view) = (authority.decisions(), committed.clone(), seats.clone());
+        let gate = gate_ref.enter().await.unwrap();
+        let (decisions, c, primary_view) = (gate_ref.decisions(), committed.clone(), seats.clone());
         let moving = tokio::spawn(async move {
             let _held = decisions.lock_owned().await;
             primary_view.take(Seat::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 });
@@ -461,7 +461,7 @@ mod tests {
         committed.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(gate);
         assert!(moving.await.unwrap(), "the record moved after the decision committed");
-        let later = authority.enter().await.map(|_| ());
+        let later = gate_ref.enter().await.map(|_| ());
         match later {
             Err(BuildStateError::SeatYielded { node, by, to }) => {
                 assert_eq!(node, "mesh1.admin.1");

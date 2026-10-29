@@ -911,7 +911,7 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
         }
         assert_eq!(reply(&call(&rig2, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "the restarted receiver folded the event");
         assert_eq!(reply(&call(&rig2, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::AlreadyApplied);
-        let spans = finish(&capture, &dir, json!({"cell": cell, "old_authority": format!("{old:?}"), "events_held": store.fabric().await.unwrap().map_or(0, |r| r.events.len())}));
+        let spans = finish(&capture, &dir, json!({"cell": cell, "old_primary": format!("{old:?}"), "events_held": store.fabric().await.unwrap().map_or(0, |r| r.events.len())}));
         assert_eq!(store.fabric().await.unwrap().map_or(0, |r| r.events.len()), 2, "each event is on the Fabric record once");
         assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "applied")]).len(), 2);
         assert!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "rejected-not-primary")]).is_empty(), "no event refused for its caller");

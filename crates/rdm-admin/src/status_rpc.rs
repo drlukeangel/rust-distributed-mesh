@@ -3198,7 +3198,7 @@ mod tests {
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process };
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), rpc.clone()] }));
         let status = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let door = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id.clone(), status.clone()));
+        let status_door = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id.clone(), status.clone()));
         // The join door, its accepted report's Pending recorded by this authority as boot wires it.
         let replies: Arc<Mutex<Vec<R>>> = Arc::default();
         let joins = Arc::new(crate::join::Joins::default());
@@ -3219,11 +3219,11 @@ mod tests {
             install: Arc::new(|_| {}),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new({
-                let (door, replies) = (door.clone(), replies.clone());
+                let (status_door, replies) = (status_door.clone(), replies.clone());
                 move |d: rdm_core::MeshDigest, new_join: bool| {
-                    let (door, replies) = (door.clone(), replies.clone());
+                    let (status_door, replies) = (status_door.clone(), replies.clone());
                     Box::pin(async move {
-                        let reply = door.joined_pending(&d.node.node_id, &d.node.name, &d.node.incarnation, new_join).await;
+                        let reply = status_door.joined_pending(&d.node.node_id, &d.node.name, &d.node.incarnation, new_join).await;
                         replies.lock().unwrap().push(reply);
                     })
                 }
@@ -3274,8 +3274,8 @@ mod tests {
             is_fabric_primary: None,
         };
         // The birth's last cycle's cut, as this mesh-primary holds it: a begun cycle forgets it.
-        let cut = || { door.declared.lock().unwrap().meshes_left.insert((rpc.node_id.clone(), birth.clone())); };
-        let cut_held = || door.declared.lock().unwrap().meshes_left.contains(&(rpc.node_id.clone(), birth.clone()));
+        let cut = || { status_door.declared.lock().unwrap().meshes_left.insert((rpc.node_id.clone(), birth.clone())); };
+        let cut_held = || status_door.declared.lock().unwrap().meshes_left.contains(&(rpc.node_id.clone(), birth.clone()));
         let door = &door;
         let serve = move |what: &'static str| {
             let (report, replies) = (report.clone(), replies.clone());

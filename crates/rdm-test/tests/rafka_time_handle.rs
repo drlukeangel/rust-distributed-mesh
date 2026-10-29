@@ -8,7 +8,7 @@ use rdm_test::node;
 use std::time::Duration;
 
 /// A reference no OS clock reads: 1970-03-23.
-const AUTHORITY_REFERENCE_MS: u64 = 7_000_000_000;
+const PRIMARY_REFERENCE_MS: u64 = 7_000_000_000;
 
 // @feature: node-lifecycle
 /// CONTRACT: the handle `RunningNode::rafka_time` is the one reader the node's gossip stamps read.
@@ -24,7 +24,7 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let fabric = FabricId::mint();
-        let admin = admin_side_on_rafka_time("127.0.0.1".parse().unwrap(), &fabric, AUTHORITY_REFERENCE_MS).await;
+        let admin = admin_side_on_rafka_time("127.0.0.1".parse().unwrap(), &fabric, PRIMARY_REFERENCE_MS).await;
         let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric.clone(),
@@ -49,7 +49,7 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
 
         let handle = running.rafka_time.clone();
         let before = handle.now_ms();
-        assert!((AUTHORITY_REFERENCE_MS..AUTHORITY_REFERENCE_MS + 60_000).contains(&before), "the node reads its authority's lineage, not an OS clock: {before}");
+        assert!((PRIMARY_REFERENCE_MS..PRIMARY_REFERENCE_MS + 60_000).contains(&before), "the node reads its authority's lineage, not an OS clock: {before}");
 
         // A heartbeat the authority hears after the first reading carries a stamp from the same clock.
         let node_id = launch.node_id.to_string();

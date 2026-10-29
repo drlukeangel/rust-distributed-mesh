@@ -22,7 +22,7 @@ mod tests {
         NodeStatus, PathName, ProviderKind, ScopeStatus,
     };
     use crate::node_rows::{ClaimFor, NodeRows};
-    use crate::status_rpc::{Declared, StatusAuthority};
+    use crate::status_rpc::{Declared, StatusDoor};
     use crate::storage::{
         Allocation, MemoryMeshStorage, MemoryNodesStorage, MeshRecord, MeshStorage, NodesStorage,
     };
@@ -595,7 +595,7 @@ mod tests {
 
             let m2_mesh_ids: BTreeMap<String, MeshId> =
                 [("mesh2".to_string(), mesh2_id.clone())].into_iter().collect();
-            let m2_status = Arc::new(StatusAuthority {
+            let m2_status = Arc::new(StatusDoor {
                 certs: None,
                 app_channels: None,
                 declaration_seam: None,
@@ -631,7 +631,7 @@ mod tests {
                 digest_view: None,
                 builds: Arc::new(MemoryBuildStateAdapter::new()),
             });
-            let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
+            let slot: Arc<OnceLock<Arc<StatusDoor>>> = Arc::new(OnceLock::new());
             let _ = slot.set(m2_status.clone());
             let core = ServerBuilder::new().serve::<Ping, _, _>(
                 OpOwner::Core,

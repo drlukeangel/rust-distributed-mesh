@@ -372,12 +372,12 @@ fn a_start_whose_commander_the_resolver_holds_deleted_joins_it_over_its_call() {
 /// learns who answered from the join answer): an rpc node is stopped and started by an admin no
 /// record it holds names, and its hook answers `Blocked { PrimaryAddressed }` after that start. The
 /// commander then addresses the node with a down op (a probe): the hook runs again at once, passes,
-/// and the node is Ready. The authority is known by the endpoint of the call it answered
+/// and the node is Ready. The primary is known by the endpoint of the call it answered
 /// on, so its down op is counted whatever record names it. Must NOT happen: the hook waiting on, and
 /// the node held Pending, because the down op came from an endpoint no record names.
 #[test]
-fn a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_names_addresses_it() {
-    let cell = "a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_names_addresses_it";
+fn a_hook_blocked_on_its_primarys_word_runs_again_when_a_commander_no_record_names_addresses_it() {
+    let cell = "a_hook_blocked_on_its_primarys_word_runs_again_when_a_commander_no_record_names_addresses_it";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {

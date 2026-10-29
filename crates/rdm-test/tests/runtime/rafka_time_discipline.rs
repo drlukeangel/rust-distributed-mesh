@@ -53,15 +53,15 @@ fn skews(spans: &[Value], node: &str) -> Vec<(u64, i64)> {
 }
 
 /// CONTRACT: a node whose rafka-time runs slow is stepped forward to its mesh primary's stamp on
-/// the heartbeats and stays within a fraction of a second of the authority for as long as it runs;
+/// the heartbeats and stays within a fraction of a second of the primary for as long as it runs;
 /// a node whose rafka-time stands 1.5 s ahead is told by a whole window of its mesh primary's
 /// stamps that it is ahead, sheds the excess at the maximum slew rate (its rafka-time minus the
 /// host clock falls, never rises), and does not step back; a mesh primary of the other mesh
 /// decides on its fabric-primary's mesh topology; and a node on an OS clock an hour ahead is moved by
 /// none of it. Every one of these is a span of the node it happened to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_node_off_its_authoritys_time_is_brought_back_by_the_heartbeats() {
-    let mut estate = Estate::bootstrap(owner("a_node_off_its_authoritys_time_is_brought_back_by_the_heartbeats"), "fabric1", "mesh1").await;
+async fn a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats() {
+    let mut estate = Estate::bootstrap(owner("a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats"), "fabric1", "mesh1").await;
     let write = |dir: std::path::PathBuf, node: &str, text: String| {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(node), text).unwrap();
@@ -112,8 +112,8 @@ async fn a_node_off_its_authoritys_time_is_brought_back_by_the_heartbeats() {
     assert!(steps.len() >= 5, "the slow node was stepped forward repeatedly: {}", steps.len());
     assert!(steps.iter().all(|sp| attr(sp, "source") == "mesh-primary-digest"), "a member observes only its mesh primary's digest");
     let slow = skews(&spans, "mesh2.rpc.1");
-    let authority = skews(&spans, &fabric_primary);
-    assert!(slow.len() >= 8 && !authority.is_empty());
+    let primary = skews(&spans, &fabric_primary);
+    assert!(slow.len() >= 8 && !primary.is_empty());
     let lowest = slow.iter().map(|(_, k)| *k).min().unwrap();
     assert!(lowest > -300, "a clock 2 % slow would stand 800 ms behind after 40 s; the lowest offset to the host clock is {lowest} ms");
 

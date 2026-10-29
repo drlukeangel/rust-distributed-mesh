@@ -1079,7 +1079,7 @@ mod tests {
         })));
         let mesh_id = crate::model::MeshId::mint();
         let request = StatusRequest::DeclareMeshState { mesh_id: mesh_id.clone(), state: MeshState::Ready, changed_at_rafka_ms: 0 };
-        let p = Pending { key: Key::Mesh(mesh_id.to_string(), MeshState::Ready), to: Authority::FabricPrimary, request, attempts: 0, last: None, sent: None, trace: None, at: 0 };
+        let p = Pending { key: Key::Mesh(mesh_id.to_string(), MeshState::Ready), to: Receiver::FabricPrimary, request, attempts: 0, last: None, sent: None, trace: None, at: 0 };
         let applied = StatusReply::Applied;
         let (outcome, finished) = d.recorded(&p, &applied, classify(&applied)).await;
         assert!(!finished && outcome.contains("did not land"), "answered, not written: still owed: {outcome}");
@@ -1146,7 +1146,7 @@ mod tests {
         let d = Declarer::new();
         owed_from_view(&d, &me, &re_born.node_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, None, |_| 7, &v, &ids);
         assert_eq!(d.owed(), 0, "the deleted birth's seats owe this admin nothing: {:?}", d.pending.lock().unwrap().keys().collect::<Vec<_>>());
-        d.owe(mesh_key(), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 });
+        d.owe(mesh_key(), Receiver::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 });
         d.withdraw_unowned(&me, &re_born.node_id, &v);
         assert_eq!(d.owed(), 0, "the mesh seat is the deleted birth's, not this admin's: the Mesh key is withdrawn");
     }

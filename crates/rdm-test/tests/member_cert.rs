@@ -15,7 +15,7 @@ use rdm_test::test_certs::{root_choice, test_root_public};
 use std::time::Duration;
 
 /// A reference no OS clock reads: 1970-03-23.
-const AUTHORITY_REFERENCE_MS: u64 = 7_000_000_000;
+const PRIMARY_REFERENCE_MS: u64 = 7_000_000_000;
 
 fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide, incarnation: IncarnationId, supersedes: Option<IncarnationId>, node_id: NodeId) -> Launch {
     Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
@@ -64,7 +64,7 @@ fn a_node_admitted_by_its_mesh_issuer_holds_a_member_cert_for_exactly_its_birth(
     cap.run(crate::common::Threads::Current, async move {
         let dir = birth_dir("member-cert-birth");
         let fabric = FabricId::mint();
-        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(AUTHORITY_REFERENCE_MS), root_choice()).await;
+        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(PRIMARY_REFERENCE_MS), root_choice()).await;
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = launch_in(&dir, &fabric, &admin, IncarnationId::mint(), None, NodeId::mint());
         admin.deployed(&launch, &key);
@@ -81,7 +81,7 @@ fn a_node_admitted_by_its_mesh_issuer_holds_a_member_cert_for_exactly_its_birth(
         assert_eq!(issued.len(), 1, "one issuance for one join: {issued:?}");
         assert_eq!((issued[0]["outcome"].as_str(), issued[0]["cert_len"].as_str()), ("issued", running.member_cert.len().to_string().as_str()), "{issued:?}");
         let issued_at: u64 = issued[0]["issued_at_rafka_ms"].parse().unwrap();
-        assert!((AUTHORITY_REFERENCE_MS..AUTHORITY_REFERENCE_MS + 60_000).contains(&issued_at), "issued on the authority's rafka-time: {issued_at}");
+        assert!((PRIMARY_REFERENCE_MS..PRIMARY_REFERENCE_MS + 60_000).contains(&issued_at), "issued on the authority's rafka-time: {issued_at}");
         assert_eq!(cert.expiry_ms, issued_at + certs::MEMBER_CERT_TTL_SECS * 1000, "a member cert's life from its issue");
         assert_eq!(issued[0]["expires_at_rafka_ms"], cert.expiry_ms.to_string());
         assert_eq!(certs::verify(&signed, &[test_root_public()], issued_at, 0), Ok(()), "verifies to its issuer, the issuer to the CA and the CA to the root");
@@ -101,7 +101,7 @@ fn a_restarted_node_is_issued_a_fresh_member_cert_for_its_new_incarnation() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = birth_dir("member-cert-restart");
         let fabric = FabricId::mint();
-        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(AUTHORITY_REFERENCE_MS), root_choice()).await;
+        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(PRIMARY_REFERENCE_MS), root_choice()).await;
         let key = node::load_or_mint_key(&dir).unwrap();
         let node_id = NodeId::mint();
         let first_launch = launch_in(&dir, &fabric, &admin, IncarnationId::mint(), None, node_id.clone());
@@ -136,7 +136,7 @@ fn the_member_cert_is_in_the_pre_node_ready_context_and_equals_the_handles() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = birth_dir("member-cert-ctx");
         let fabric = FabricId::mint();
-        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(AUTHORITY_REFERENCE_MS), root_choice()).await;
+        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(PRIMARY_REFERENCE_MS), root_choice()).await;
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = launch_in(&dir, &fabric, &admin, IncarnationId::mint(), None, NodeId::mint());
         admin.deployed(&launch, &key);
@@ -168,7 +168,7 @@ fn a_mesh_primary_configured_with_no_certs_admits_the_birth_with_an_empty_cert_a
     cap.run(crate::common::Threads::Current, async move {
         let dir = birth_dir("member-cert-none");
         let fabric = FabricId::mint();
-        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(AUTHORITY_REFERENCE_MS), rdm_admin::certs::CertChoice::NoCerts).await;
+        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(PRIMARY_REFERENCE_MS), rdm_admin::certs::CertChoice::NoCerts).await;
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = launch_in(&dir, &fabric, &admin, IncarnationId::mint(), None, NodeId::mint());
         admin.deployed(&launch, &key);
@@ -213,7 +213,7 @@ fn a_node_admits_on_the_root_set_its_launch_carries() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let alpn = rdm_transport::connections::Alpn { name: b"member-cert-roots/1".to_vec(), proxy: false, carriers: vec![rdm_core::NodeKind::RpcNode] };
         let fabric = FabricId::mint();
-        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(AUTHORITY_REFERENCE_MS), root_choice()).await;
+        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(PRIMARY_REFERENCE_MS), root_choice()).await;
         let (acceptor, a_dir) = alpn_birth(&admin, &fabric, "mesh1.rpc.1", vec![test_root_public()], &alpn).await;
         let (dialer, d_dir) = alpn_birth(&admin, &fabric, "mesh1.rpc.2", vec![test_root_public()], &alpn).await;
         let (no_certs, n_dir) = alpn_birth(&admin, &fabric, "mesh1.rpc.3", vec![], &alpn).await;
@@ -229,10 +229,10 @@ fn a_node_admits_on_the_root_set_its_launch_carries() {
         assert!(dialing.probe_direct(&birth_of(&acceptor), &alpn.name).await.is_ok(), "the join's cert chains to the launch's root: admitted");
 
         let other = rdm_core::certs::mint_key();
-        let issuer = IssuingKey::mint(&CaKey::mint(&other, certs::CA_CERT_TTL_SECS, AUTHORITY_REFERENCE_MS), "mesh1", AUTHORITY_REFERENCE_MS, AUTHORITY_REFERENCE_MS + certs::ISSUING_CERT_TTL_SECS * 1000).expect("within the CA's life");
+        let issuer = IssuingKey::mint(&CaKey::mint(&other, certs::CA_CERT_TTL_SECS, PRIMARY_REFERENCE_MS), "mesh1", PRIMARY_REFERENCE_MS, PRIMARY_REFERENCE_MS + certs::ISSUING_CERT_TTL_SECS * 1000).expect("within the CA's life");
         let own = certs::cert_from_bytes(&dialer.member_cert).unwrap().cert;
         let birth = certs::BirthIdentity { node_id: own.node_id, incarnation: own.incarnation, mesh: own.mesh, name: own.name, endpoint_key: own.endpoint };
-        let foreign = certs::issue(&issuer, &birth, AUTHORITY_REFERENCE_MS, AUTHORITY_REFERENCE_MS + 3_600_000).unwrap();
+        let foreign = certs::issue(&issuer, &birth, PRIMARY_REFERENCE_MS, PRIMARY_REFERENCE_MS + 3_600_000).unwrap();
         dialing.set_member_cert(certs::cert_to_bytes(&foreign));
         match dialing.probe_direct(&birth_of(&acceptor), &alpn.name).await {
             Err(rdm_transport::connections::ConnectError::Refused { reason }) => assert_eq!(reason, "ca-bad-signature"),
