@@ -585,3 +585,45 @@ impl IdOrName {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CONTRACT: docs/architecture/node-identity-and-state.md:149
+    /// "node.delete releases the node's identity and name; its row stays. The node's mesh-primary writes
+    /// the row with status deleted, keeping the record and its config; the deleted row releases..."
+    #[test]
+    fn declared_state_and_tag_moves_compute_cycle_state_and_tag_diffs() {
+        let inc = IncarnationId::mint();
+        let name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let mut birth = BirthFacts::new(inc, name.clone());
+        assert_eq!(birth.declared_state(), None);
+
+        birth.declared.insert(NodeState::Ready);
+        assert_eq!(birth.declared_state(), Some(NodeState::Ready));
+        birth.declared.insert(NodeState::Stopped);
+        assert_eq!(birth.declared_state(), Some(NodeState::Stopped));
+
+        let node_id = NodeId::mint();
+        let mut prev = NodeRow::new(name.clone(), node_id.clone(), crate::model::NodeStatus::Ready);
+        prev.tags = BTreeSet::from(["role-rpc".to_string(), "zone-a".to_string()]);
+
+        let mut next = prev.clone();
+        next.tags = BTreeSet::from(["role-rpc".to_string(), "zone-b".to_string()]);
+        let (leaving, arriving) = next.tag_moves(Some(&prev));
+        assert_eq!(leaving, BTreeSet::from(["zone-a".to_string()]));
+        assert_eq!(arriving, BTreeSet::from(["role-rpc".to_string(), "zone-b".to_string()]));
+
+        // A Deleted record or a record with `inherited_by` removes all tags and arrives none.
+        let mut deleted = next.clone();
+        deleted.status = crate::model::NodeStatus::Deleted;
+        let (del_leaving, del_arriving) = deleted.tag_moves(Some(&prev));
+        assert_eq!(
+            del_leaving,
+            BTreeSet::from(["role-rpc".to_string(), "zone-a".to_string(), "zone-b".to_string()])
+        );
+        assert!(del_arriving.is_empty());
+    }
+}
+
