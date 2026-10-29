@@ -428,3 +428,193 @@ pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Optio
     }
     fabrics_reply(me, vec![f], filter)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeId, NodeKind, NodeStatus as ModelNodeStatus, PathName, ProviderKind as ModelProviderKind, ScopeStatus as ModelScopeStatus};
+    use crate::span_capture::Capture;
+    use crate::storage::{BirthFacts, CertDates, NodeRow};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
+
+    #[test]
+    fn plural_reads_match_atlas_records_skip_inherited_predecessor_tags_and_emit_serve_and_reject_spans() {
+        // docs/architecture/query.md:11,52 — "A caller outside the node sends `fabrics.get`,
+        // `meshes.get` and `nodes.get` to the fabric-primary, which answers from its atlas:
+        // every mesh's node records, held in memory... Property: any public field of the row
+        // by its page name... Refused: an unknown property, a value the field cannot take, an
+        // empty values list or a field that is not public is `INVALID_ARGUMENT`, naming the pair."
+        let capture = Capture::new("views-unit-reads");
+        let _guard = tracing::dispatcher::set_default(&capture.dispatch);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build current-thread runtime");
+
+        rt.block_on(async {
+            let me = PathName::new("mesh1", NodeKind::NodeAdmin, 1);
+            let admin_id = NodeId::mint();
+            let admin_inc = IncarnationId::mint();
+            let rpc_succ_id = NodeId::mint();
+            let rpc_succ_inc = IncarnationId::mint();
+            let rpc_pred_id = NodeId::mint();
+            let rpc_pred_inc = IncarnationId::mint();
+
+            let mut admin_node = Node::allocated(me.clone());
+            admin_node.node_id = admin_id.clone();
+            admin_node.incarnation_id = Some(admin_inc.clone());
+            admin_node.status = ModelNodeStatus::Ready;
+            admin_node.is_primary = true;
+            admin_node.is_fabric_primary = true;
+            admin_node.admin_api_base = Some("http://127.0.0.1:18001".to_string());
+
+            let rpc_path = PathName::new("mesh1", NodeKind::RpcNode, 1);
+            let mut rpc_succ = Node::allocated(rpc_path.clone());
+            rpc_succ.node_id = rpc_succ_id.clone();
+            rpc_succ.incarnation_id = Some(rpc_succ_inc.clone());
+            rpc_succ.status = ModelNodeStatus::Ready;
+            rpc_succ.is_primary = true;
+
+            let mut rpc_pred_path = rpc_path.clone();
+            rpc_pred_path.old = true;
+            let mut rpc_pred = Node::allocated(rpc_pred_path.clone());
+            rpc_pred.node_id = rpc_pred_id.clone();
+            rpc_pred.incarnation_id = Some(rpc_pred_inc.clone());
+            rpc_pred.status = ModelNodeStatus::Ready;
+
+            let view = Topology {
+                fabric: Fabric {
+                    id: FabricId::mint(),
+                    name: "fabric1".to_string(),
+                    status: ModelScopeStatus::Ready,
+                    provider: ModelProviderKind::Process,
+                },
+                meshes: vec![Mesh {
+                    id: Some(MeshId::mint()),
+                    name: "mesh1".to_string(),
+                    status: ModelScopeStatus::Ready,
+                }],
+                nodes: vec![admin_node, rpc_succ, rpc_pred],
+            };
+
+            let atlas = Atlas::default();
+            let mut admin_row = NodeRow::new(me.clone(), admin_id.clone(), ModelNodeStatus::Ready);
+            admin_row.births.push(BirthFacts::new(admin_inc.clone(), me.clone()));
+            atlas.write_record(&admin_row);
+
+            let mut succ_row = NodeRow::new(rpc_path.clone(), rpc_succ_id.clone(), ModelNodeStatus::Ready);
+            succ_row.tags = BTreeSet::from(["tier-a".to_string()]);
+            succ_row.config = BTreeMap::from([("region".to_string(), "eu-west".to_string())]);
+            let mut succ_birth = BirthFacts::new(rpc_succ_inc.clone(), rpc_path.clone());
+            succ_birth.cert = Some(CertDates {
+                issued_at: 1_000,
+                expires_at: 9_000,
+                issuer_expires_at: 20_000,
+                renew_at: 7_000,
+            });
+            succ_row.births.push(succ_birth);
+            atlas.write_record(&succ_row);
+
+            // Retained predecessor row keeps its tags on the row, but `inherited_by` removes them from active tags matching.
+            let mut pred_row = NodeRow::new(rpc_pred_path.clone(), rpc_pred_id.clone(), ModelNodeStatus::Ready);
+            pred_row.tags = BTreeSet::from(["tier-a".to_string()]);
+            pred_row.inherited_by = Some(rpc_succ_id.clone());
+            pred_row.births.push(BirthFacts::new(rpc_pred_inc.clone(), rpc_pred_path.clone()));
+            atlas.write_record(&pred_row);
+
+            let loads: Loads = Arc::new(BTreeMap::new);
+
+            // 1. Tag query matches only the active successor, not the retained predecessor whose tags were inherited.
+            let tag_reply = nodes_answer(&me, &view, &loads, &atlas, &Filter::new().eq("tags", ["tier-a"])).await;
+            match tag_reply {
+                StatusReply::Nodes { nodes } => {
+                    assert_eq!(nodes.len(), 1);
+                    assert_eq!(nodes[0].node_id, rpc_succ_id);
+                    assert_eq!(nodes[0].config.get("region").map(String::as_str), Some("eu-west"));
+                    assert_eq!(nodes[0].cert.as_ref().map(|c| c.expires_at), Some(9_000));
+                }
+                other => panic!("expected StatusReply::Nodes, got {other:?}"),
+            }
+
+            // 2. Querying the predecessor by id returns its row with its retained tags intact.
+            let pred_reply = nodes_answer(&me, &view, &loads, &atlas, &Filter::new().eq("id", [rpc_pred_id.to_string()])).await;
+            match pred_reply {
+                StatusReply::Nodes { nodes } => {
+                    assert_eq!(nodes.len(), 1);
+                    assert_eq!(nodes[0].node_id, rpc_pred_id);
+                    assert_eq!(nodes[0].tags, BTreeSet::from(["tier-a".to_string()]));
+                }
+                other => panic!("expected StatusReply::Nodes for predecessor, got {other:?}"),
+            }
+
+            // 3. Invalid filter on nodes.get is refused naming the pair.
+            let bad_node_reply = nodes_answer(&me, &view, &loads, &atlas, &Filter::new().eq("unknown_field", ["x"])).await;
+            assert!(matches!(bad_node_reply, StatusReply::RejectedFilter { ref reason } if reason.contains("(unknown_field, [x])")));
+
+            // 4. meshes.get and fabrics.get serve matching views and refuse invalid filters.
+            let mesh_reply = meshes_answer(&me, &view, &Filter::new().eq("name", ["mesh1"]).eq("status", ["ready"]));
+            match mesh_reply {
+                StatusReply::Meshes { meshes } => {
+                    assert_eq!(meshes.len(), 1);
+                    assert_eq!(meshes[0].name, "mesh1");
+                }
+                other => panic!("expected StatusReply::Meshes, got {other:?}"),
+            }
+            let bad_mesh_reply = meshes_answer(&me, &view, &Filter::new().eq("status", ["not-a-status"]));
+            assert!(matches!(bad_mesh_reply, StatusReply::RejectedFilter { ref reason } if reason.contains("(status, [not-a-status])")));
+
+            let build_id = rdm_core::BuildId::mint().to_string();
+            let fabric_reply = fabric_answer_with_status(
+                &me,
+                &view,
+                Some(build_id.clone()),
+                Some(&atlas),
+                Some(2_000),
+                Some((Some("file".to_string()), vec!["memory".to_string()])),
+                &Filter::new().eq("name", ["fabric1"]).eq("build_id", [build_id.clone()]),
+            );
+            match fabric_reply {
+                StatusReply::Fabrics { fabrics } => {
+                    assert_eq!(fabrics.len(), 1);
+                    assert_eq!(fabrics[0].build_id.as_deref(), Some(build_id.as_str()));
+                    assert_eq!(fabrics[0].topology_storage_provider.as_deref(), Some("file"));
+                    assert_eq!(fabrics[0].previous_topology_storage_providers, vec!["memory".to_string()]);
+                }
+                other => panic!("expected StatusReply::Fabrics, got {other:?}"),
+            }
+            let bad_fabric_reply = fabric_answer(&me, &view, None, &Filter::new().eq("provider", ["bogus"]));
+            assert!(matches!(bad_fabric_reply, StatusReply::RejectedFilter { ref reason } if reason.contains("(provider, [bogus])")));
+        });
+
+        drop(rt);
+
+        let node_spans = capture.named("rdm.node_admin.node.serve.via-get");
+        assert!(
+            node_spans.iter().any(|s| s.attributes.get("outcome").map(String::as_str) == Some("nodes")),
+            "expected rdm.node_admin.node.serve.via-get with outcome=nodes"
+        );
+        assert!(
+            node_spans.iter().any(|s| s.attributes.get("outcome").map(String::as_str) == Some("rejected-filter")),
+            "expected rdm.node_admin.node.serve.via-get with outcome=rejected-filter"
+        );
+        assert!(
+            !capture.named("rdm.node_admin.mesh.serve.via-get").is_empty(),
+            "expected rdm.node_admin.mesh.serve.via-get"
+        );
+        assert!(
+            !capture.named("rdm.node_admin.mesh.reject.via-filter").is_empty(),
+            "expected rdm.node_admin.mesh.reject.via-filter"
+        );
+        assert!(
+            !capture.named("rdm.node_admin.fabric.serve.via-get").is_empty(),
+            "expected rdm.node_admin.fabric.serve.via-get"
+        );
+        assert!(
+            !capture.named("rdm.node_admin.fabric.reject.via-filter").is_empty(),
+            "expected rdm.node_admin.fabric.reject.via-filter"
+        );
+    }
+}
+
