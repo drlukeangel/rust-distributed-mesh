@@ -1650,3 +1650,420 @@ impl CommandFrames for ChannelFrames {
         self.0.send(frame).map_err(|_| "the mesh-primary's carrier is gone".to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connections_writer::ConnectionsWriter;
+    use crate::node::OwedDeclarations;
+    use crate::storage::MemoryConnectionsStorage;
+    use crate::storage_move::StorageMoves;
+    use rdm_core::certs::{cert_to_bytes, issue, BirthIdentity, CaKey, IssuingKey};
+    use rdm_core::connections::{ConnectionEnd, ConnectionsHeld};
+    use rdm_core::filter::Filter;
+    use rdm_core::{EndpointId, FabricId, MeshId, MeshNode, RuntimeFact};
+    use rdm_transport::connections::ConnectionsRegistry;
+    use rdm_transport::topology::Backbone;
+    use rdm_transport::{BirthCancel, LiveNodeResolver, ServerBuilder, ServedBirth};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:47
+    /// "4. Reply: the node verifies the cert decodes and names its own `(node_id, incarnation)`,
+    /// installs it on its connections registry, and replies `CertRenewed { node_id, incarnation,
+    /// expires_at }`. A cert that does not decode or names another birth is refused `RejectedCert`
+    /// and the held cert is kept."
+    #[test]
+    fn renew_cert_installs_matching_birth_cert_and_refuses_corrupt_or_mismatched_certs() {
+        let dir = std::env::temp_dir().join(format!("node-self-renew-cert-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "node-self-renew-cert").unwrap();
+
+        capture.run(1, async {
+            let endpoint = rdm_transport::endpoint::bind(
+                iroh::SecretKey::generate(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+            let ep_id = EndpointId(endpoint.secret_key().public().to_string());
+            let node_id = NodeId::mint();
+            let incarnation = IncarnationId::mint();
+            let name: PathName = "mesh1.rpc.1".parse().unwrap();
+            let fabric_id = FabricId::mint();
+            let mesh_id = MeshId::mint();
+            let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
+            clock.adopt(1_000_000);
+            let g = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+            let topology_view = TopologyView::join(
+                &g,
+                &endpoint,
+                &fabric_id,
+                "mesh1",
+                &mesh_id,
+                &name.to_string(),
+                clock,
+                Vec::new(),
+                &[],
+            )
+            .await
+            .unwrap();
+            let resolver = Arc::new(LiveNodeResolver::default());
+            let client = Arc::new(NodeRpcClient::new(endpoint.clone(), resolver.clone()).with_caller_system("rdm"));
+            let server = ServerBuilder::new()
+                .serve_core(client.clone(), None)
+                .build(ServedBirth {
+                    node_id: node_id.to_string(),
+                    incarnation: incarnation.to_string(),
+                })
+                .unwrap();
+            let digest = MeshDigest {
+                held_hash: [0u8; 32],
+                fabric_id,
+                node: MeshNode {
+                    node_id: node_id.clone(),
+                    name: name.clone(),
+                    endpoint_id: ep_id.clone(),
+                    transport_addr: "127.0.0.1:41000".parse().unwrap(),
+                    incarnation: incarnation.clone(),
+                    supersedes: None,
+                    runtime: None,
+                },
+                status: MemberStatus::Ready,
+                node_state: Default::default(),
+                admin_api_base: None,
+                digest_seq: 1,
+                emitted_at_rafka_ms: 1_000,
+                data_dir: None,
+                mesh_id: Some(mesh_id),
+                in_flight: None,
+                load: None,
+                gossip: None,
+                is_primary: None,
+                is_fabric_primary: None,
+            };
+            let own = NodeSelf::new(
+                node_id.clone(),
+                incarnation.clone(),
+                name.clone(),
+                server,
+                client,
+                resolver.clone(),
+                topology_view,
+                Arc::new(move |_| digest.clone()),
+                Arc::new(|| MemberStatus::Ready),
+                None,
+                Duration::from_millis(200),
+            );
+
+            assert!(own.storage_moves().is_none());
+            let sm = Arc::new(StorageMoves::new(
+                node_id.clone(),
+                Arc::new(|| "file".to_string()),
+                Arc::new(|_| Box::pin(async { Ok(()) })),
+            ));
+            own.set_storage_moves(sm);
+            assert!(own.storage_moves().is_some());
+
+            // Corrupt bytes are refused `RejectedCert`.
+            assert!(matches!(own.renew_cert(b"not-a-cert"), StatusReply::RejectedCert { .. }));
+
+            let root = rdm_core::certs::mint_key();
+            let ca = CaKey::mint(&root, 3600, 1_000);
+            let issuer = IssuingKey::mint(&ca, "mesh1", 1_000, 2_000_000).unwrap();
+            let valid_cert = issue(
+                &issuer,
+                &BirthIdentity {
+                    node_id: node_id.clone(),
+                    incarnation: incarnation.clone(),
+                    name: name.clone(),
+                    mesh: "mesh1".into(),
+                    endpoint_key: ep_id.clone(),
+                },
+                1_000,
+                900_000,
+            )
+            .unwrap();
+            let valid_bytes = cert_to_bytes(&valid_cert);
+            assert!(
+                matches!(own.renew_cert(&valid_bytes), StatusReply::NotReady { .. }),
+                "before set_data_connections, a valid cert answers NotReady"
+            );
+
+            let conn_store = Arc::new(MemoryConnectionsStorage::default());
+            let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+            let own_end = ConnectionEnd {
+                name: name.clone(),
+                node_id: node_id.clone(),
+                incarnation: Some(incarnation.clone()),
+            };
+            let writer = Arc::new(ConnectionsWriter::new(own_end, conn_store, held));
+            let (registry, _handlers) =
+                ConnectionsRegistry::new(endpoint.clone(), resolver, writer, &[], Vec::new()).unwrap();
+            own.set_data_connections(registry);
+
+            let other_cert = issue(
+                &issuer,
+                &BirthIdentity {
+                    node_id: NodeId::mint(),
+                    incarnation: incarnation.clone(),
+                    name,
+                    mesh: "mesh1".into(),
+                    endpoint_key: ep_id,
+                },
+                1_000,
+                900_000,
+            )
+            .unwrap();
+            assert!(
+                matches!(own.renew_cert(&cert_to_bytes(&other_cert)), StatusReply::RejectedCert { .. }),
+                "a cert naming another birth is refused RejectedCert"
+            );
+            assert_eq!(
+                own.renew_cert(&valid_bytes),
+                StatusReply::CertRenewed {
+                    node_id,
+                    incarnation,
+                    expires_at: 900_000,
+                }
+            );
+            endpoint.close().await;
+        });
+        let spans = capture.spans().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            spans.iter().any(|s| s["name"] == "rdm.node.cert.update.via-installed"),
+            "expected rdm.node.cert.update.via-installed span, got {:?}",
+            spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()
+        );
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/node-connections-delete.md:38-48
+    /// "`All` blocks admission of new application work, lets the eligible work in flight finish ...
+    /// closes every open Direct or Proxy entry of the connections log and answers `ConnectionsDeleted`"
+    /// CONTRACT: docs/architecture/lifecycles/node-stop.md:33-54
+    /// "The stop this process's own signal runs: node.stop's steps with the node its own subject,
+    /// then awaits owed declarations up to `connections_delete_deadline`"
+    /// CONTRACT: docs/architecture/query.md:20
+    /// "`connections.get { node }` at this birth: the connections it holds now that match every pair
+    /// of `filter`, under the name it holds"
+    /// CONTRACT: docs/architecture/node-rpc-envelope.md:242
+    /// "The answer of a Status door that has no handler for `req`: `RequestNotHandled` naming the request"
+    /// CONTRACT: docs/architecture/deployment-provider.md:62
+    /// "`MakeRuntimeFactAvailableToBirth`: the runtime reads the RuntimeFact record the provider wrote
+    /// in its data_dir"
+    #[test]
+    fn connections_get_and_delete_connections_reporting_and_stop_on_signal_and_wait_for_own_record_behave_as_specified() {
+        let dir = std::env::temp_dir().join(format!("node-self-ops-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "node-self-ops").unwrap();
+
+        capture.run(1, async {
+            // 1. `process_stop` tracks stop and start transitions.
+            let ps = process_stop();
+            ps.stop();
+            assert!(ps.is_stopped());
+            ps.start();
+            assert!(!ps.is_stopped());
+
+            // 2. `request_not_handled` emits `rdm.node.status.reject.via-request-not-handled` and
+            //    returns `StatusReply::RequestNotHandled`.
+            let req = StatusRequest::GetFabric;
+            let unhandled = request_not_handled("mesh1.rpc.1", &req);
+            assert!(matches!(unhandled, StatusReply::RequestNotHandled { ref request } if request == req.op()));
+
+            // 3. `wait_for_own_record` reads the RuntimeFact written to `data_dir` or errors on timeout.
+            let empty_dir = std::env::temp_dir().join(format!("wait-own-record-empty-{}", NodeId::mint()));
+            std::fs::create_dir_all(&empty_dir).unwrap();
+            let err = wait_for_own_record(&empty_dir, Duration::from_millis(25)).await.unwrap_err();
+            assert!(err.contains("wrote no runtime record"), "{err}");
+            let dep_id = rdm_core::DeploymentId::mint();
+            let fact = RuntimeFact::of_this_process(dep_id.as_str()).unwrap();
+            fact.write_record(&empty_dir).unwrap();
+            let read_fact = wait_for_own_record(&empty_dir, Duration::from_millis(50)).await.unwrap();
+            assert_eq!(read_fact, fact);
+            let _ = std::fs::remove_dir_all(&empty_dir);
+
+            // 4. `with_backbone`, `with_owed`, `with_cancel`, `connections_get`, `connections_answer`,
+            //    `delete_connections_reporting`, and `stop_on_signal`.
+            let endpoint = rdm_transport::endpoint::bind(
+                iroh::SecretKey::generate(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+            let ep_id = EndpointId(endpoint.secret_key().public().to_string());
+            let node_id = NodeId::mint();
+            let incarnation = IncarnationId::mint();
+            let name: PathName = "mesh1.rpc.1".parse().unwrap();
+            let fabric_id = FabricId::mint();
+            let mesh_id = MeshId::mint();
+            let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
+            clock.adopt(1_000_000);
+            let g = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+            let topology_view = TopologyView::join(
+                &g,
+                &endpoint,
+                &fabric_id,
+                "mesh1",
+                &mesh_id,
+                &name.to_string(),
+                clock,
+                Vec::new(),
+                &[],
+            )
+            .await
+            .unwrap();
+            let backbone = Backbone::join(
+                &g,
+                &endpoint,
+                &topology_view,
+                "mesh1",
+                rdm_core::PublisherId {
+                    node: name.to_string(),
+                    node_id: node_id.clone(),
+                    incarnation: incarnation.clone(),
+                },
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+            let resolver = Arc::new(LiveNodeResolver::default());
+            let client = Arc::new(NodeRpcClient::new(endpoint.clone(), resolver.clone()).with_caller_system("rdm"));
+            let server = ServerBuilder::new()
+                .serve_core(client.clone(), None)
+                .build(ServedBirth {
+                    node_id: node_id.to_string(),
+                    incarnation: incarnation.to_string(),
+                })
+                .unwrap();
+            let digest = MeshDigest {
+                held_hash: [0u8; 32],
+                fabric_id,
+                node: MeshNode {
+                    node_id: node_id.clone(),
+                    name: name.clone(),
+                    endpoint_id: ep_id,
+                    transport_addr: "127.0.0.1:41001".parse().unwrap(),
+                    incarnation: incarnation.clone(),
+                    supersedes: None,
+                    runtime: None,
+                },
+                status: MemberStatus::Ready,
+                node_state: Default::default(),
+                admin_api_base: None,
+                digest_seq: 1,
+                emitted_at_rafka_ms: 1_000,
+                data_dir: None,
+                mesh_id: Some(mesh_id),
+                in_flight: None,
+                load: None,
+                gossip: None,
+                is_primary: None,
+                is_fabric_primary: None,
+            };
+            let cancel = BirthCancel::new();
+            let owed: Arc<OwedDeclarations> = Arc::default();
+            let _ = owed.owe((NodeState::Ready, None));
+            let declare: Declare = Arc::new(|_, _| Box::pin(async {}));
+            let own = NodeSelf::new(
+                node_id.clone(),
+                incarnation.clone(),
+                name.clone(),
+                server,
+                client,
+                resolver,
+                topology_view,
+                Arc::new(move |_| digest.clone()),
+                Arc::new(|| MemberStatus::Ready),
+                Some(declare),
+                Duration::from_millis(50),
+            )
+            .with_backbone(backbone)
+            .with_owed(owed)
+            .with_cancel(cancel.clone());
+
+            // Before `set_connections`, `connections_get` returns `NotReady`.
+            assert!(matches!(own.connections_get(&Filter::default()).await, StatusReply::NotReady { .. }));
+
+            let conn_store = Arc::new(MemoryConnectionsStorage::default());
+            let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+            let own_end = ConnectionEnd {
+                name: name.clone(),
+                node_id: node_id.clone(),
+                incarnation: Some(incarnation.clone()),
+            };
+            let writer = Arc::new(ConnectionsWriter::new(own_end, conn_store, held));
+            own.set_connections(writer);
+
+            // With `set_connections`, `connections_get` and `connections_answer` answer `StatusReply::Connections`
+            // for a valid filter and `RejectedFilter` for an invalid filter property.
+            assert!(matches!(own.connections_get(&Filter::default()).await, StatusReply::Connections { .. }));
+            let bad_filter = Filter {
+                pairs: vec![("nonexistent_prop".to_string(), vec!["x".to_string()])],
+            };
+            assert!(matches!(
+                connections_answer(
+                    &HeldConnections {
+                        name: name.clone(),
+                        complete: true,
+                        routes: Vec::new(),
+                    },
+                    &bad_filter,
+                ),
+                StatusReply::RejectedFilter { .. }
+            ));
+
+            // `delete_connections_reporting`: `Connections` does not invoke `admitted`, while `All`
+            // cancels `BirthCancel` and invokes `admitted`.
+            let admitted_called = Arc::new(AtomicBool::new(false));
+            let c1 = admitted_called.clone();
+            own.delete_connections_reporting(&ConnectionScope::Connections(Vec::new()), move || async move {
+                c1.store(true, Ordering::SeqCst);
+            })
+            .await;
+            assert!(!admitted_called.load(Ordering::SeqCst));
+            assert!(!cancel.token().is_cancelled());
+
+            let c2 = admitted_called.clone();
+            let deleted = own
+                .delete_connections_reporting(&ConnectionScope::All, move || async move {
+                    c2.store(true, Ordering::SeqCst);
+                })
+                .await;
+            assert!(admitted_called.load(Ordering::SeqCst));
+            assert!(cancel.token().is_cancelled());
+            assert_eq!(
+                deleted.receipt,
+                Some(ConnectionsReceipt::Established {
+                    in_flight: 0,
+                    closed: Vec::new(),
+                })
+            );
+
+            // `stop_on_signal` runs stop steps and records `via-stop-declarations`.
+            let sig = own.stop_on_signal().await;
+            assert_eq!(
+                sig.receipt,
+                ConnectionsReceipt::Established {
+                    in_flight: 0,
+                    closed: Vec::new(),
+                }
+            );
+            endpoint.close().await;
+        });
+        let spans = capture.spans().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        for expected in [
+            "rdm.node.status.reject.via-request-not-handled",
+            "rdm.node_admin.node.serve.via-connections-get",
+            "rdm.node_admin.node.reject.via-filter",
+            "rdm.node_admin.node.update.via-stop-declarations",
+        ] {
+            assert!(
+                spans.iter().any(|s| s["name"] == expected),
+                "expected span {expected}, got {:?}",
+                spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()
+            );
+        }
+    }
+}
