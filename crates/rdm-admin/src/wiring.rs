@@ -241,7 +241,7 @@ pub struct Wiring {
     pub types: Vec<String>,
     /// The embedded app's own protocols on this admin's endpoint, registered like every node's
     /// (`rdm_transport::connections::Alpn`): RDM owns their accept loop, every inbound connection on
-    /// one passes `node.connections.admit` before the app takes it from
+    /// one passes `node.connection.create` before the app takes it from
     /// [`crate::admin::Running::connections`], and a registration naming RDM's own Node RPC or gossip
     /// ALPN refuses the admin's start by name (fabric-certs.md §On a connection).
     pub alpns: Vec<rdm_transport::connections::Alpn>,

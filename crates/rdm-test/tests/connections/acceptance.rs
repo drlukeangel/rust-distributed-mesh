@@ -111,7 +111,7 @@
 //!
 //! | step / refusal | any layer | process | this section |
 //! |---|---|---|---|
-//! | step 0 a primary target runs node.primary.update first (`All`) | inside a replace: `p:elections/node_primary_update::a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its_direct_answer`; inside a stop: `p:node/node_stop::a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_stops` | none for a standalone `node.connections.delete` | `a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_all` |
+//! | step 0 a primary target runs node.primary.update first (`All`) | inside a replace: `p:elections/node_primary_update::a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its_direct_answer`; inside a stop: `p:node/node_stop::a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_stops` | none for a standalone `node.connection.delete` | `a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_all` |
 //! | step 1 the exact birth, the scope | `p:node/node_connections_delete::a_standalone_connections_delete_completes_on_connections_deleted_and_leaves_the_process_running` | as any layer | - |
 //! | step 2 `Connections([…])`: exactly those closed, unknown and already-closed named | `p:connections_delete::a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id` | `p:node/node_connections_delete::a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command_path_and_records_from_its_own_frames` (an id never opened) | `a_connections_delete_by_id_closes_that_connection_and_names_the_rest` |
 //! | step 2 an empty list refused by name | `p:connections_delete::a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id`; `rdm-core status.rs` unit | none | `a_connections_delete_by_id_closes_that_connection_and_names_the_rest` |
@@ -191,14 +191,14 @@ fn rows<'a>(history: &'a [Value], to: &str, kind: &str) -> Vec<&'a Value> {
     history.iter().filter(|r| r["destination"]["name"] == to && r["kind"] == kind).collect()
 }
 
-/// `node.connections.delete { Connections(ids) }` of `node`'s exact birth through its mesh-primary.
+/// `node.connection.delete { Connections(ids) }` of `node`'s exact birth through its mesh-primary.
 async fn connections_delete_ids(estate: &Estate, node: &str, ids: &[String]) -> rdm_core::status::StatusReply {
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
     let target = mesh.iter().find(|n| n.name.to_string() == node).cloned().unwrap_or_else(|| panic!("no {node} in mesh1"));
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(target.node_id.clone()), node_id: target.node_id.clone(), incarnation: target.incarnation_id.clone().expect("a live birth") };
     let ids = ids.iter().map(|i| rdm_core::ConnectionId::parse(i).unwrap_or_else(|e| panic!("{i} is not a connection id: {e:?}"))).collect();
-    estate.nodes_obj().await.connections_delete(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &rdm_core::status::ConnectionScope::Connections(ids)).await.expect("node.connections.delete answered")
+    estate.nodes_obj().await.connections_delete(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &rdm_core::status::ConnectionScope::Connections(ids)).await.expect("node.connection.delete answered")
 }
 
 /// The carrier holds its own Direct edge to the destination on the app protocol: a stream it opened,
@@ -427,7 +427,7 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
 /// refuses the next carried call with `carrier-edge-lost`; the source writes Proxy Disconnected with
 /// that reason, stops selecting that Proxy, and either establishes another valid Proxy or exposes no
 /// active route"; §8): the source holds a Proxy through the carrier. The carrier's own edge is lost:
-/// its Direct toward the destination is deleted by id (`node.connections.delete { Connections([id]) }`,
+/// its Direct toward the destination is deleted by id (`node.connection.delete { Connections([id]) }`,
 /// its Disconnected written). The source's next open reaches the carrier,
 /// which refuses the tunnel `carrier-edge-lost`; the source writes `Proxy Disconnected(carrier-edge-lost)`
 /// and holds no Proxy. With no other carrier holding an edge, the next open has no route through a
@@ -682,7 +682,7 @@ async fn exact_birth(estate: &Estate, node: &str) -> rdm_client::ExactBirth {
 /// is connections-deleting the runtime refuses every new call except Status 0x1B, PrimaryUpdate 0x21
 /// and NodeCommand 0x22 with typed `ConnectionsDeleting`"; connections.md §1.1 "R-CR5"): the source holds
 /// one Direct (to the carrier) and one Proxy (to the destination, through the carrier) on the app
-/// protocol. `node.connections.delete { All }` as a Build completes on `node.connections.deleted`;
+/// protocol. `node.connection.delete { All }` as a Build completes on `node.connections.deleted`;
 /// afterwards `node.connection.get` (Status 0x1B) still answers and lists no open connection, both
 /// drops are written under the source's name, and a new call to the source (the testkit door, op
 /// 0x73) is refused `ConnectionsDeleting` by name. Must NOT happen: a connection still open after the
@@ -706,7 +706,7 @@ async fn an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work
     })
     .await;
 
-    let mut deleting = nodes.delete_connections(&SOURCE.parse().unwrap()).await.unwrap_or_else(|e| panic!("node.connections.delete of {SOURCE} refused: {e}"));
+    let mut deleting = nodes.delete_connections(&SOURCE.parse().unwrap()).await.unwrap_or_else(|e| panic!("node.connection.delete of {SOURCE} refused: {e}"));
     let frames = Estate::frames_of(&mut deleting).await;
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "{frames:?}");
     assert!(frames.contains(&rdm_client::Frame::Event(rdm_client::NodeEvent::ConnectionsDeleted)), "{frames:?}");
@@ -729,7 +729,7 @@ async fn an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work
 /// CONTRACT (node-connections-delete.md step 0: "For `All` only: if the target is the fabric-primary or
 /// a mesh-primary, it first runs node.primary.update ..., commanded from above; the Build continues
 /// once node.primary.updated is answered, under the new primary"; Primary row): mesh2's primary P (not
-/// the fabric-primary) is the target of a standalone `node.connections.delete`. The fabric-primary
+/// the fabric-primary) is the target of a standalone `node.connection.delete`. The fabric-primary
 /// commands P's node.primary.update (`primary.update.via-command`), P's election names the other
 /// node-admin NA2 (`via-update-primary`, successor NA2), NA2 answers node.primary.updated; only then
 /// does the `DeleteConnections` step run on P, executed by NA2 as mesh2's primary. The Build completes
@@ -747,7 +747,7 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     assert!(!p.is_fabric_primary, "mesh2's primary is not the fabric-primary");
     let (p_name, na2_name) = (p.name.to_string(), na2.name.to_string());
 
-    let mut deleting = estate.nodes_obj().await.delete_connections(&p.name).await.unwrap_or_else(|e| panic!("node.connections.delete of {p_name} refused: {e}"));
+    let mut deleting = estate.nodes_obj().await.delete_connections(&p.name).await.unwrap_or_else(|e| panic!("node.connection.delete of {p_name} refused: {e}"));
     let frames = Estate::frames_of(&mut deleting).await;
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "{frames:?}");
     for admin in views.iter().filter(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.name != p.name) {

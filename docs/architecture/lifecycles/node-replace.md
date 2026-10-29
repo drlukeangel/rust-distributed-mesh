@@ -27,7 +27,7 @@ A Build provides durable resumable execution, not automatic rollback.
 A node is renamed only while it is live: its connections deleted and its mesh left first, so nothing
 is connected to it and nothing routes to it; it is stopped after. A stopped node is never renamed.
 
-1. node[1]: [node.connections.delete](node-connections-delete.md) `{ scope: All }`, then
+1. node[1]: [node.connection.delete](node-connections-delete.md) `{ scope: All }`, then
    [node.mesh.leave](node-mesh-leave.md).
 2. [node.name.update](node-name-update.md) of node[1] to `<name>.old`; node.name.updated is the
    step's receipt. Then node[1].stop runs the complete [stop](node-stop.md) and leaves it stopped as
@@ -48,11 +48,11 @@ is connected to it and nothing routes to it; it is stopped after. A stopped node
 
 While node[1] is stopped as `<name>.old` and its data remains available:
 
-1. node[2]: node.connections.delete `{ scope: All }`, node.mesh.leave, then node[2].delete releases
+1. node[2]: node.connection.delete `{ scope: All }`, node.mesh.leave, then node[2].delete releases
    `<name>` after its node.delete receipt. Any wanted successor data is Rafka's to copy out first.
 2. node[1].start rejoins the same stopped process with AfterStop under `<name>.old`: same
    incarnation, endpoint key, port and bin. Complete its full hook and readiness gates.
-3. node[1]: node.connections.delete `{ scope: All }`, node.mesh.leave, then
+3. node[1]: node.connection.delete `{ scope: All }`, node.mesh.leave, then
    [node.name.update](node-name-update.md) to `<name>` (its tag-index entries restored under its
    own id), then node[1].stop and node[1].start under `<name>`: its start's
    [node.mesh.join](node-mesh-join.md) rejoins it, and its ready ends the rollback.
@@ -97,7 +97,7 @@ sequenceDiagram
     participant N2 as node[2]
     R->>F: build.create(replace steps)
     F->>M: build.attempt.run
-    M->>N1: node.connections.delete All, then node.mesh.leave
+    M->>N1: node.connection.delete All, then node.mesh.leave
     M-->>F: node.connections.deleted, node.mesh.left
     M->>N1: node.name.update to name.old (row first, then applied)
     M-->>F: node.name.updated

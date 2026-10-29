@@ -39,7 +39,7 @@ pub enum NodePrimaryUpdateRequest {
         /// Every primary that moves: its node type (`fabric` for the fabric-primary), the primary's
         /// exact birth, the successor's exact birth and the revision the successor takes.
         primaries: Vec<(String, Birth, Birth, u64)>,
-        /// The Build whose stop, delete, replace or node.connections.delete the update precedes.
+        /// The Build whose stop, delete, replace or node.connection.delete the update precedes.
         build_id: String,
         /// The run of that Build: the first attempt of the series a submission opened.
         run: u32,
@@ -53,7 +53,7 @@ pub enum NodePrimaryUpdateRequest {
     UpdatePrimary {
         /// The node type whose primary moves.
         node_type: String,
-        /// The Build whose stop, delete, replace or node.connections.delete the update precedes.
+        /// The Build whose stop, delete, replace or node.connection.delete the update precedes.
         build_id: String,
         /// The run of that Build.
         run: u32,
@@ -236,7 +236,7 @@ impl NodeProtocol for NodePrimaryUpdate {
     /// An update is decided by the receiver's own view; a carried call is decided by no one.
     const FORWARDABLE: bool = false;
     /// A successor keeps serving PrimaryUpdate, and a primary UpdatePrimary, while it refuses new
-    /// calls (node.connections.delete): a lost reply's identical retry is answered as the first was.
+    /// calls (node.connection.delete): a lost reply's identical retry is answered as the first was.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
     const REQUEST_VARIANTS: u32 = 2;
     const REPLY_VARIANTS: u32 = 13;

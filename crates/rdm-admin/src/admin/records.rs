@@ -94,7 +94,7 @@ pub struct AdminConfig {
     /// collected by a node.delete Build the fabric-primary submits on a sweep every ttl. Read by the
     /// fabric-primary only, held by every admin (a successor sweeps with it). `None`: blank, forever.
     pub stopped_node_ttl: Option<Duration>,
-    /// The bound of a `node.connections.delete { All }` (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, its
+    /// The bound of a `node.connection.delete { All }` (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, its
     /// launch's when launched): this admin's own, every birth it launches carries it in its launch,
     /// and a command this admin sends that runs one is answered within it.
     pub connections_delete_deadline: Duration,

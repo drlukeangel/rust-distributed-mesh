@@ -476,7 +476,7 @@ impl HandoverDoor {
     // ---- the commander ----
 
     /// The fabric-primary commands the primary `holder` before the Build's stop, delete, restart, replace
-    /// or node.connections.delete of it runs: a mesh-primary directly, another node type's primary through
+    /// or node.connection.delete of it runs: a mesh-primary directly, another node type's primary through
     /// its mesh-primary (commands go down). The answer is the successor's node.primary.updated, installed
     /// here so this admin's view names the successor before it dispatches what the update preceded. A
     /// `Failed` answer fails the step on the variant, never on its text; a command that does not answer

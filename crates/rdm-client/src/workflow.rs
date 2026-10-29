@@ -82,7 +82,7 @@ pub enum WorkflowKind {
     Start(PathName),
     /// `node.delete` of this node: `node.delete:<path.name>`.
     Delete(PathName),
-    /// `node.connections.delete { All }` of this node: `node.connections.delete:<path.name>`. The
+    /// `node.connection.delete { All }` of this node: `node.connection.delete:<path.name>`. The
     /// process keeps running.
     DeleteConnections(PathName),
     /// Steps: one Build of node primitives, each step its own op's operation, in order
@@ -157,7 +157,7 @@ macro_rules! start_rows {
 }
 
 /// The shutdown leg of `target` under `operation`: its stop call, whose one reply carries its
-/// `node.connections.delete { All }` receipt, to its `stopped` (the stop half of a delete under
+/// `node.connection.delete { All }` receipt, to its `stopped` (the stop half of a delete under
 /// `node.delete`). A primary's role moves by
 /// `node.primary.update` before the operation is dispatched, never as a step of it (`lifecycles/node-primary-update.md` §1), so
 /// a node-admin target's rows are any target's.
@@ -179,8 +179,8 @@ fn step_rows(step: &Step) -> Vec<Row> {
         // node.delete's own workflow, whatever the node's name: a stopped birth's runs no stop half.
         Step::Delete { .. } => delete_rows(),
         Step::DeleteConnections { .. } => vec![
-            row("node.connections.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
-            row("node.connections.delete", "Complete", NodeStep::ConnectionsDelete, &[], false),
+            row("node.connection.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
+            row("node.connection.delete", "Complete", NodeStep::ConnectionsDelete, &[], false),
         ],
         Step::LeaveMesh { .. } => vec![row("node.mesh.leave", "LeaveMesh", NodeStep::MeshLeave, &[NodeEvent::MeshLeft], false), row("node.mesh.leave", "Complete", NodeStep::MeshLeave, &[], false)],
     };
@@ -271,11 +271,11 @@ impl WorkflowKind {
             Self::Create => create_rows!("node.create", &[NodeEvent::Created]).into(),
             Self::Stop(_) => stop_rows(),
             Self::Start(_) => start_rows!("node.start", &[], NodeStep::Start).into(),
-            // A standalone node.connections.delete { All }: one call to the exact birth through its
+            // A standalone node.connection.delete { All }: one call to the exact birth through its
             // mesh-primary, and its `Complete`. Nothing stops the process and nothing is deleted.
             Self::DeleteConnections(_) => vec![
-                row("node.connections.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
-                row("node.connections.delete", "Complete", NodeStep::ConnectionsDelete, &[], true),
+                row("node.connection.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
+                row("node.connection.delete", "Complete", NodeStep::ConnectionsDelete, &[], true),
             ],
             // node.delete of a `<path>.old` path acts only on the stopped predecessor a rename left
             // there, or one whose exit is proven (the fabric-primary admits nothing else there): its

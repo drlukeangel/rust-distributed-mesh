@@ -1135,7 +1135,7 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
 }
 
 /// CONTRACT:
-/// - `docs/architecture/lifecycles/node-primary-update.md:45-46` ("1. The primary is commanded from above, as a step of the Build that stops, deletes, replaces or runs `node.connections.delete { scope: All }` on it.")
+/// - `docs/architecture/lifecycles/node-primary-update.md:45-46` ("1. The primary is commanded from above, as a step of the Build that stops, deletes, replaces or runs `node.connection.delete { scope: All }` on it.")
 /// - `docs/architecture/lifecycles/node-primary-update.md:74-75` ("- **Refused before the row** (step 2, or the writer's own pre-check of the call's revision): refused by name, nothing changed, the Build's step fails by name.")
 /// - `docs/architecture/lifecycles/node-primary-update.md:111-114` ("- **The old primary lost after the update:** the successor and every reader take the primary from the election; the successor's digest carries its role, and the mesh-primary (the successor itself for the `node-admin` type) records it. Completion needs neither gossip delivery nor the old primary's survival.")
 /// - `docs/architecture/lifecycles/node-primary-update.md:157-158` ("1. the fabric-primary's own mesh: the lowest Ready node-admin NodeId there, where the fabric-primary stays by preference;")
@@ -1156,7 +1156,7 @@ fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_
             Seat::MeshPrimary,
             "b-conformance",
             1,
-            "node.connections.delete:mesh1.admin.1",
+            "node.connection.delete:mesh1.admin.1",
         );
         let refused = lone_p
             .door

@@ -66,7 +66,7 @@ pub enum NodeStatus {
     ///
     /// Serialized as `starting`.
     Starting,
-    /// Connections-deleted: the node's row once its node.connections.delete { All } completed
+    /// Connections-deleted: the node's row once its node.connection.delete { All } completed
     /// `Established`.
     ///
     /// Serialized as `connections-deleted`.

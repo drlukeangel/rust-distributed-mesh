@@ -3797,7 +3797,7 @@ fn step_ops_of(spans: &[Value], node: &str, build_id: &str) -> Vec<String> {
             }
         }
     }
-    let want = [format!("node.connections.delete:{node}"), format!("node.mesh.leave:{node}"), format!("node.update:{node}"), format!("node.stop:{old}"), format!("node.create:{node}"), format!("node.delete:{old}")];
+    let want = [format!("node.connection.delete:{node}"), format!("node.mesh.leave:{node}"), format!("node.update:{node}"), format!("node.stop:{old}"), format!("node.create:{node}"), format!("node.delete:{old}")];
     assert_eq!(ops, want.to_vec(), "{node}: the Build's operations, in order");
     ops
 }
@@ -3839,7 +3839,7 @@ fn a_stopped_declaration_answered_already_applied_after_the_all_is_decided() {
 
 /// The stop the retiring node ran, read from its own spans and the executor's (node-stop.md steps 2-3):
 /// the node's `via-stop-node` handling and its receipt (`established`: the eligible work in flight
-/// reached zero; `deadline`: the bound ended it), the node's own `node.connections.delete { All }` inside
+/// reached zero; `deadline`: the bound ended it), the node's own `node.connection.delete { All }` inside
 /// it, the stop's own transport cut, the `stop-node` the executor sent and its `stopped` reply (the
 /// reply is the stop's completion: no upward call follows), the status declarations its receiver
 /// decided from the node, and the probes it served.
@@ -4493,13 +4493,13 @@ async fn delete_run(cell: &str, shape: Shape) {
         let chain = check_delete_chain(&spans, r);
         let stop = stop_evidence(&spans, r);
         let node = s(&r["node"]);
-        // The stop the executor commanded and the node's handling of it: its whole node.connections.delete
+        // The stop the executor commanded and the node's handling of it: its whole node.connection.delete
         // { All } let the eligible work in flight reach zero (an `established` receipt, never a deadline).
         let served = stop["stop_node"].as_array().unwrap();
         assert!(!served.is_empty(), "{node}: no stop-node served by the retiring node: {stop}");
         assert!(served.iter().all(|x| x["receipt"] == "established"), "{node}: the node's stop ended its in-flight work at the deadline, not at zero: {stop}");
         let all = stop["connections_delete_all"].as_array().unwrap();
-        assert_eq!(all.len(), 1, "{node}: the stop ran its node.connections.delete {{ All }} once: {stop}");
+        assert_eq!(all.len(), 1, "{node}: the stop ran its node.connection.delete {{ All }} once: {stop}");
         assert!(served.iter().any(|x| x["span"] == all[0]["parent"]), "{node}: the All is the stop's own step, inside its via-node.stop: {stop}");
         let cuts = stop["transport_cut"].as_array().unwrap();
         assert_eq!(cuts.len(), 1, "{node}: the stop cut its own transport once: {stop}");
@@ -4540,7 +4540,7 @@ async fn delete_run(cell: &str, shape: Shape) {
         stops.push(json!({"node": node, "chain": chain, "stop": stop, "ordinary_work_refused_during_the_all": hits.len(), "refusals": hits, "leaving_decided_after_apply": decided.len(), "apply_started_ns": t_apply}));
     }
     inv.holds(
-        "C15/C16: each deleting node ran its stop: its whole node.connections.delete { All } reached zero in-flight work, then its Leaving, then its own transport cut, and the executor received `stopped`; the delete steps ran NodeDeleting, StopNode, AwaitNodeLeft, TerminateRuntime, NodeDeleted in order; the exact old birth is terminal in the provider and its NodeDeleted names it",
+        "C15/C16: each deleting node ran its stop: its whole node.connection.delete { All } reached zero in-flight work, then its Leaving, then its own transport cut, and the executor received `stopped`; the delete steps ran NodeDeleting, StopNode, AwaitNodeLeft, TerminateRuntime, NodeDeleted in order; the exact old birth is terminal in the provider and its NodeDeleted names it",
         true,
         json!({"stops": stops}),
     );
@@ -4601,7 +4601,7 @@ async fn delete_run(cell: &str, shape: Shape) {
 
 /// CONTRACT: the stop, delete and a held runtime are proven against the exact runtime the provider holds.
 /// A broker and a gateway (the routable work shapes) are deleted by the fabric-primary's Build under
-/// seeded traffic aimed at them: each retiring node runs its stop (its whole node.connections.delete
+/// seeded traffic aimed at them: each retiring node runs its stop (its whole node.connection.delete
 /// { All } until its in-flight work reaches zero, its Leaving, its own transport cut) and answers
 /// `stopped`, and the delete steps run in their documented order (NodeDeleting, StopNode, AwaitNodeLeft,
 /// TerminateRuntime, NodeDeleted); ordinary work that reaches a node whose connections are being deleted

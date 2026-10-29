@@ -2,7 +2,7 @@
 
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Typed calls and wire mapping](../node-rpc-envelope.md#typed-object-contract)
 
-`node.connections.delete` closes a node's connections and keeps the process running. It is a node
+`node.connection.delete` closes a node's connections and keeps the process running. It is a node
 primitive: [node.stop](node-stop.md) calls it and streams its acknowledgement and completion on the
 stop's stream, so does [node.delete](node-delete.md) through the stop, a [rename](node-name-update.md) is permitted only once its `All` has completed (connections-deleted)
 or the node is stopped, and a caller can call it on its own. A connection is an open Direct or Proxy
@@ -15,7 +15,7 @@ neither scope touches them: a node that has had its connections deleted is still
 | Field | Contract |
 |---|---|
 | Caller / executor | Typed caller / mesh-primary and exact target node |
-| Request | `node.connections.delete { scope }`, where `scope` is `All` or `Connections([connection id, …])` |
+| Request | `node.connection.delete { scope }`, where `scope` is `All` or `Connections([connection id, …])` |
 | `All` | Graceful node-wide closure: close every open connection of the node. Status connections-deleting once the node reports it on the command's stream, then connections-deleted from its `Established` completion, each set by the node's mesh-primary |
 | `Connections([id, …])` | Close exactly the named connections, each by the minted id of its open entry as `node.connection.get` returns it. Sets no node-wide status and does not make the node non-routable. An empty list is refused by name. An id the node does not know, or finds already closed, is named in the completion, never ignored |
 | Identity | Same node.id, incarnation, endpoint, port, name and data dir |
@@ -26,18 +26,18 @@ neither scope touches them: a node that has had its connections deleted is still
 | Process | Running; no gossip cut, Node RPC pool cut, exit or identity release is implied |
 | Never closed | Control streams stay usable, and the call never closes its own reply path |
 | Drop records | Each closed connection's drop is written under the node's current name |
-| Wire | The typed-object row for `node.connection.get { node }` / `node.connections.delete` in the [envelope](../node-rpc-envelope.md#typed-object-contract). Two hops. The caller to the node's mesh-primary, direct or forwarded: [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm), request `DeleteConnections`, reply `ConnectionsDeleted`, or `RejectedConnectionScope` for a scope that names nothing the node can cut. The mesh-primary to the exact node: NodeCommand 0x22, server-streaming and never forwarded, replies `CommandAccepted`, `ConnectionsDeleting` (`All` only), then `ConnectionsDeleted`; a refusal is one frame. When the mesh-primary is its own subject, the frames and the records are the same |
+| Wire | The typed-object row for `node.connection.get { node }` / `node.connection.delete` in the [envelope](../node-rpc-envelope.md#typed-object-contract). Two hops. The caller to the node's mesh-primary, direct or forwarded: [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm), request `DeleteConnections`, reply `ConnectionsDeleted`, or `RejectedConnectionScope` for a scope that names nothing the node can cut. The mesh-primary to the exact node: NodeCommand 0x22, server-streaming and never forwarded, replies `CommandAccepted`, `ConnectionsDeleting` (`All` only), then `ConnectionsDeleted`; a refusal is one frame. When the mesh-primary is its own subject, the frames and the records are the same |
 | Primary | A target that is a primary first runs node.primary.update (and node.fabric-primary.update when it is the fabric-primary), commanded from above; `All` runs once node.primary.updated is answered, under the new primary (step 0) |
 
 ## Command and completion messages
 
 ```text
-node.connections.delete { scope: All }
+node.connection.delete { scope: All }
   ← CommandAccepted
   ← ConnectionsDeleting
   ← node.connections.deleted ConnectionsReceipt [Established { in_flight, closed } | Deadline { last_in_flight, closed, held }]
 
-node.connections.delete { scope: Connections([id, …]) }
+node.connection.delete { scope: Connections([id, …]) }
   ← CommandAccepted
   ← node.connections.deleted closed ids, unknown ids, already-closed ids
 ```
@@ -61,7 +61,7 @@ not complete this stream or replace its receipt.
    fabric-primary), commanded from above; the Build continues once node.primary.updated is answered, under the new
    primary. The fabric-primary's last admin has its connections deleted only inside a
    [mesh.delete](mesh-delete.md), after its node.fabric-primary.update step.
-1. Resolve the exact `(node.id, incarnation)` and call `node.connections.delete` with its scope.
+1. Resolve the exact `(node.id, incarnation)` and call `node.connection.delete` with its scope.
 2. `Connections([id, …])`: refuse an empty list by name. Close exactly the named connections and
    queue each drop under the node's current name (Q169); the drops land behind the answer. Return
    `node.connections.deleted` naming the ids closed, the ids unknown and the ids already closed. The node's status does not change, and the
@@ -81,7 +81,7 @@ not complete this stream or replace its receipt.
    connection is open.
 5. At `RDM_CONNECTIONS_DELETE_DEADLINE_MS` an `All` that has not reached zero returns incomplete
    closure: `node.connections.deleted` carrying `Deadline`, the remaining in-flight count and the
-   connections still open. The node stays connections-deleting. A new `node.connections.delete`
+   connections still open. The node stays connections-deleting. A new `node.connection.delete`
    attempt, or [node.stop](node-stop.md), leaves that state; a stop may hard-cut, and its receipt
    keeps the deadline evidence.
 6. Record that exact step receipt. Do not infer stop, stopped, exit or node.deleted.
@@ -96,7 +96,7 @@ sequenceDiagram
     participant C as Caller
     participant M as Mesh-primary
     participant N as Node
-    C->>M: node.connections.delete { All } (Status 0x1B)
+    C->>M: node.connection.delete { All } (Status 0x1B)
     M->>N: DeleteConnections { All } (NodeCommand 0x22)
     N-->>M: CommandAccepted
     Note over N: block new application work

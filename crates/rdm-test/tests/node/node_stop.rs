@@ -147,7 +147,7 @@ async fn stop_then_start(test: &str, node: &str) {
     let of_stop = |name: &str| -> Vec<&Value> { of_node(name).into_iter().filter(|sp| sp["attributes"]["operation"] != "signal").collect() };
     let stop_span = of_node("rdm.node_admin.status.update.via-stop-node");
     assert_eq!(stop_span.len(), 1, "{stop_span:?}");
-    assert_eq!(of_stop("rdm.node_admin.connection.delete.via-stop").len(), 1, "the stop runs its node.connections.delete {{ All }} once");
+    assert_eq!(of_stop("rdm.node_admin.connection.delete.via-stop").len(), 1, "the stop runs its node.connection.delete {{ All }} once");
     assert_eq!(of_stop("rdm.node_admin.node.update.via-stop-transport-cut").len(), 1, "then cuts its transport once");
     assert_eq!(of_node("rdm.node_admin.node.update.via-node-stopped").len(), 1, "the mesh primary publishes NodeStopped once");
     // i146 Q36, the control: the stop answered within its bound is recorded in the birth's declared
@@ -271,7 +271,7 @@ fn began(spans: &[Value], operation: &str) -> u64 {
 }
 
 /// CONTRACT (Q205; node-stop.md steps 1-5; node-rpc-envelope.md, the node.stop row; states.md "Who
-/// sets each state"): a commanded stop is a workflow that calls its primitives, node.connections.delete
+/// sets each state"): a commanded stop is a workflow that calls its primitives, node.connection.delete
 /// `{ All }` then node.mesh.leave, and streams each one's acknowledgement and completion on the stop's
 /// own stream: the mesh-primary takes `command-accepted`, `connections-deleting`,
 /// `stop-connections-deleted`, `leaving`, `stop-mesh-left`, `node-stopped`, in that order, and writes
@@ -316,7 +316,7 @@ async fn a_commanded_stop_streams_each_primitives_acknowledgement_and_completion
 }
 
 /// CONTRACT (Q205; node-mesh-leave.md Wire row and steps 1-5; node-replace.md steps 1-3): the
-/// predecessor's half of a replace, node.connections.delete `{ All }`, node.mesh.leave, node.stop. The
+/// predecessor's half of a replace, node.connection.delete `{ All }`, node.mesh.leave, node.stop. The
 /// standalone leave is a node command on 0x22: the mesh-primary takes `command-accepted` (leaving) and
 /// `mesh-left`, and writes leaving then left. The stop of the node already connections-deleted and left
 /// answers each primitive's acknowledgement and completion at once and repeats no work: its stream
@@ -776,7 +776,7 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
         .into_iter()
         .find(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == NODE && sp["attributes"]["outcome"] == "complete" && s(&sp["attributes"]["build_id"]) == build);
     assert!(exit.is_some(), "the delete Build proved the stopped process exited");
-    // The stopped birth's stop already ran: its delete sends no seat transfer, node.connections.delete or stop again
+    // The stopped birth's stop already ran: its delete sends no seat transfer, node.connection.delete or stop again
     // (lifecycles/node-delete.md 1, node-stop.md 6).
     let again: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
@@ -1122,7 +1122,7 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
 /// `last-admin` with exactly `cannot transfer fabric-primary: no other node-admin Ready in mesh
 /// mesh1, no other mesh-primary Ready`, one `rdm.node_admin.build.reject.via-last-admin` per
 /// call. Every node keeps its birth and its primaries (node.get). The stop is not run: no stop-node
-/// served, no node.connections.delete, no node.primary.update commanded or run. Through the whole run,
+/// served, no node.connection.delete, no node.primary.update commanded or run. Through the whole run,
 /// the estate's teardown included, no admin hands its primaries to nobody
 /// (`rdm.node_admin.build.update.via-seat-hand-over` with `to = none`).
 /// Must NOT happen: a stop step of the only admin, a node.primary.update, a hand-over to none.
@@ -1464,7 +1464,7 @@ async fn a_stop_whose_mesh_primary_dies_holding_its_stopped_declaration_is_admit
 
 /// CONTRACT (node-stop.md steps 2-4; node-mesh-leave.md; i146 Q55: "a signal stop is node.stop's own
 /// steps"): a node-admin that is not its mesh's primary is sent SIGTERM. It runs node.stop's steps as
-/// its own subject, as an rpc node does: the whole `node.connections.delete { All }` under
+/// its own subject, as an rpc node does: the whole `node.connection.delete { All }` under
 /// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` (`via-stop`, operation `signal`), its connections-deleting
 /// owed to its mesh-primary; `node.mesh.leave` (`via-leaving`), its own mesh and the backbone each
 /// left (`via-left` own and backbone), its Node RPC pool cut (`via-stop-transport-cut`); its `Stopped`
@@ -1497,7 +1497,7 @@ async fn a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped() {
     // name is another birth.
     let of = |name: &str, node: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "node") == node && start_ns(sp) <= ended).collect() };
     let deleted = of("rdm.node_admin.connection.delete.via-stop", &member);
-    assert_eq!(deleted.len(), 1, "{member}'s signal ran node.connections.delete {{ All }} once as the stop's: {deleted:#?}");
+    assert_eq!(deleted.len(), 1, "{member}'s signal ran node.connection.delete {{ All }} once as the stop's: {deleted:#?}");
     assert_eq!(attr(deleted[0], "operation"), "signal", "{:#?}", deleted[0]);
     let owed = of("rdm.node_rpc.status.update.via-owed-on-signal", &member);
     let owed_state = |state: &str| owed.iter().find(|sp| attr(sp, "state") == state).copied();
@@ -1530,7 +1530,7 @@ async fn a_node_admins_signal_runs_node_stops_steps_and_owes_its_stopped() {
 /// code }`, nothing downstream; node-stop.md steps 2-4; node-mesh-leave.md): a stopped rpc node's
 /// commanded start fails at a step (its `pre_node_ready` hook answers Failed). The birth is stopped again,
 /// as it was, through node.stop's own steps, each naming the start's operation: the whole
-/// `node.connections.delete { All }` (`via-stop`), its tasks held, `node.mesh.leave` (`via-leaving`,
+/// `node.connection.delete { All }` (`via-stop`), its tasks held, `node.mesh.leave` (`via-leaving`,
 /// `via-stop-transport-cut`), and `Stopped` owed to its mesh-primary (`via-owed-on-stop`); the start is
 /// answered `StartFailed` at `node.pre-node-ready`, and the birth is stopped. Must NOT happen: the birth
 /// left with its connections deleted and its mesh left but no `Stopped` owed, a stop step naming no
@@ -1570,7 +1570,7 @@ fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps()
         let served = spans_of(&spans, "rdm.node_admin.status.update.via-start-node", NODE);
         assert!(served.iter().any(|f| f.get("outcome").map(String::as_str) == Some("start-failed") && f.get("failed_step").map(String::as_str) == Some("node.pre-node-ready")), "the start is served once, failed at node.pre-node-ready: {served:#?}");
         let deleted = of("rdm.node_admin.connection.delete.via-stop");
-        assert_eq!(deleted.len(), 1, "the failed start ran node.connections.delete {{ All }} as the stop's, naming the start: {deleted:#?}");
+        assert_eq!(deleted.len(), 1, "the failed start ran node.connection.delete {{ All }} as the stop's, naming the start: {deleted:#?}");
         let leaving = of("rdm.node.mesh.update.via-leaving");
         assert_eq!(leaving.len(), 1, "the failed start left the mesh once, naming the start: {leaving:#?}");
         let cut = of("rdm.node_admin.node.update.via-stop-transport-cut");
@@ -1765,7 +1765,7 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
 }
 
 /// CONTRACT (node-rpc.md §35: "Handlers already running ... may finish ... In-flight work finishes under
-/// node.connections.delete's own rules; its receipt is ... `Deadline { last_in_flight, closed, held }` at its
+/// node.connection.delete's own rules; its receipt is ... `Deadline { last_in_flight, closed, held }` at its
 /// bound (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`)"; CLAUDE.md, that env var: the bound "on a signal stop alike:
 /// how long in-flight handlers may finish before the node leaves"): the fabric-primary serves mesh2's
 /// primary's claim of the drift attempt it opened for a killed mesh2 rpc node, and the testkit's

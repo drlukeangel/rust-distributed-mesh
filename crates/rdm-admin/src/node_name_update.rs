@@ -150,7 +150,7 @@ fn admission_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDele
     if held.stopped {
         return Admission {
             labels: ("Stopped".into(), "stopped", "stopped"),
-            quiet: Err((held.status, vec![], "is stopped, and a stopped node is never renamed: a node is renamed live, after its node.connections.delete { All } and its node.mesh.leave, and stopped after".into())),
+            quiet: Err((held.status, vec![], "is stopped, and a stopped node is never renamed: a node is renamed live, after its node.connection.delete { All } and its node.mesh.leave, and stopped after".into())),
         };
     }
     let on_mesh = if left { "left" } else { "on-mesh" };
@@ -161,11 +161,11 @@ fn admission_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDele
         },
         Some(r) if !r.all => Admission {
             labels: (format!("{:?}", r.status_at_cut), "partial", on_mesh),
-            quiet: Err((r.status_at_cut, vec![], format!("is {:?}, and its last node.connections.delete named exact connections, not All: it holds no node.connections.deleted of every connection", r.status_at_cut))),
+            quiet: Err((r.status_at_cut, vec![], format!("is {:?}, and its last node.connection.delete named exact connections, not All: it holds no node.connections.deleted of every connection", r.status_at_cut))),
         },
         Some(r) if !r.held.is_empty() => Admission {
             labels: (format!("{:?}", r.status_at_cut), "held", on_mesh),
-            quiet: Err((r.status_at_cut, r.held.clone(), format!("is {:?} and still held {} connection(s) after its node.connections.delete: {}", r.status_at_cut, r.held.len(), r.held.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")))),
+            quiet: Err((r.status_at_cut, r.held.clone(), format!("is {:?} and still held {} connection(s) after its node.connection.delete: {}", r.status_at_cut, r.held.len(), r.held.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")))),
         },
         Some(r) if !left => Admission {
             labels: (format!("{:?}", r.status_at_cut), "deleted", on_mesh),
@@ -216,7 +216,7 @@ async fn rename(
     let admission = admission_of(&held, deleted, left);
     span.record("traffic", admission.labels.0.as_str()).record("connections", admission.labels.1).record("mesh", admission.labels.2);
     if let Err((status, held_connections, why)) = admission.quiet {
-        span.record("detail", format!("{me}: {} {why}; a name moves only on a live node off its mesh, its node.connections.delete {{ All }} completed with nothing held and then its node.mesh.leave: nothing is claimed or written", held.name).as_str());
+        span.record("detail", format!("{me}: {} {why}; a name moves only on a live node off its mesh, its node.connection.delete {{ All }} completed with nothing held and then its node.mesh.leave: nothing is claimed or written", held.name).as_str());
         return rdm_core::reply::status::bounded_rejected_admitting_connections(crate::views::node_status(status), &held_connections);
     }
     // 4. The name: within the grammar, and joined at the held record's path into a key this build keys.

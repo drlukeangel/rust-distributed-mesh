@@ -178,10 +178,10 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
     std::fs::write(artifact.join("spans.jsonl"), spans.iter().map(|s| s.to_string() + "\n").collect::<String>()).unwrap();
     let me = "mesh1.admin.1";
     let named = |name: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && s["attributes"]["node"] == me).collect() };
-    // node-stop.md steps 2-3: the whole node.connections.delete { All } first, then the hold, then the
+    // node-stop.md steps 2-3: the whole node.connection.delete { All } first, then the hold, then the
     // stop's own transport cut, whose span wraps the cut (its start is when the cut began).
     let all = named("rdm.node_admin.connection.delete.via-stop");
-    assert_eq!(all.len(), 1, "one node.connections.delete {{ All }} for the stop: {all:?}");
+    assert_eq!(all.len(), 1, "one node.connection.delete {{ All }} for the stop: {all:?}");
     let cut = named("rdm.node_admin.node.update.via-stop-transport-cut");
     assert_eq!(cut.len(), 1, "one transport cut for the stop: {cut:?}");
     assert_eq!(cut[0]["trace_id"], stop_trace.as_str(), "the cut is in the stop's own trace");

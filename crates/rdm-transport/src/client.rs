@@ -374,7 +374,7 @@ impl NodeRpcClient {
     /// call that would dial ends `NotSent` `AdmissionBlocked`, and a dial already running closes the
     /// connection it opens instead of pooling it. A pooled connection is untouched. The admission
     /// block of the client a node originates its logged connections on (node-name-update.md
-    /// Precondition): set when its `node.connections.delete { All }` closes them, lifted when it
+    /// Precondition): set when its `node.connection.delete { All }` closes them, lifted when it
     /// starts or joins its mesh again.
     pub fn block_new_connections(&self, why: impl Into<String>) {
         self.admission.block(why.into());
@@ -456,7 +456,7 @@ impl NodeRpcClient {
 
     /// Close the connections this client holds to `peer` for `reason` and hand back each one closed,
     /// with no span of the pool's own: the caller names why on each connection's span (a
-    /// `node.connections.delete` closing a data-plane connection is no hard cut of a pool).
+    /// `node.connection.delete` closing a data-plane connection is no hard cut of a pool).
     pub fn close_connections_to(&self, peer: &iroh::PublicKey, reason: &'static str) -> Vec<crate::pool::ClosedConnection> {
         self.pool.close_to(peer, reason.as_bytes())
     }
@@ -467,7 +467,7 @@ impl NodeRpcClient {
         self.resolver.resolve(&NodeTarget::ExactNode(node.clone())).ok().map(|n| n.endpoint_id)
     }
 
-    /// Hard-cut every connection this client holds (`node.connections.delete`): dials in flight are
+    /// Hard-cut every connection this client holds (`node.connection.delete`): dials in flight are
     /// cancelled and every pooled connection is closed, so no call rides one and the next call dials
     /// afresh. Returns how many pooled connections were closed.
     pub fn close_pooled(&self, reason: &'static str) -> usize {

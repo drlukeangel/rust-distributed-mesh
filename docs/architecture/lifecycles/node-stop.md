@@ -2,7 +2,7 @@
 
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Typed calls and wire mapping](../node-rpc-envelope.md#typed-object-contract)
 
-`node.stop` is a workflow: it calls [node.connections.delete](node-connections-delete.md) with `{ scope: All }`,
+`node.stop` is a workflow: it calls [node.connection.delete](node-connections-delete.md) with `{ scope: All }`,
 then [node.mesh.leave](node-mesh-leave.md), streaming each one's acknowledgement and completion on the
 stop's own stream, then stops the live process. The mesh-primary writes each frame as the node's
 status and streams it on to the fabric-primary on the attempt's stream as it arrives.
@@ -15,7 +15,7 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
 |---|---|
 | Caller / executor | Mesh-primary through the typed object; exact node executes the stop |
 | Entry | Live exact `(node.id, incarnation)` |
-| Steps | Whole `node.connections.delete { scope: All }` → `node.mesh.leave` → node.stopped; each primitive's acknowledgement and completion is a Data frame on the stop's stream, and the mesh-primary writes each status from its frame |
+| Steps | Whole `node.connection.delete { scope: All }` → `node.mesh.leave` → node.stopped; each primitive's acknowledgement and completion is a Data frame on the stop's stream, and the mesh-primary writes each status from its frame |
 | Primary | A target that is a primary hands over first by [node.primary.update](node-primary-update.md) ([node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) for the fabric-primary) and is stopped by its successor. With no successor the stop is refused by name before anything moves: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, or `cannot transfer fabric-primary: no other node-admin Ready in mesh <mesh>, no other mesh-primary Ready`; the primary stays primary and no row is written. A single-admin single-mesh fabric's primary cannot be stopped until a secondary is Ready. A standalone node.stop never hands over without a successor. This refusal does not apply to [fabric.delete](fabric-delete.md), which keeps every primary until it is deleted ([elections §6](../fabric-node-lifecycle-elections.md#6-fabric-shutdown-does-not-invent-another-election)), or to the final-admin deletion after mesh.delete's confirmed fabric handover ([mesh-delete.md step 7](mesh-delete.md#numbered-end-to-end-sequence)) |
 | Transport cut | [node.mesh.leave](node-mesh-leave.md), called after the connections are deleted: its gossip neighbours and its Node RPC pool, which are not connections; never its own endpoint, the stop call's stream, or the connection to its mesh-primary its owed declarations ride |
 | Reply | `node.stopped` on the stop call's reply stream |
@@ -32,7 +32,7 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
    operation }` to the exact birth. The caller's hop and Build carrier are unchanged. The node
    validates the command and sends `CommandAccepted`; only this admission makes the mesh-primary
    record stopping. A never-sent command writes no state.
-2. Call the entire [node.connections.delete](node-connections-delete.md) with `{ scope: All }`:
+2. Call the entire [node.connection.delete](node-connections-delete.md) with `{ scope: All }`:
    graceful closure of every open connection of the node, each open Direct or Proxy entry of its
    connections log. Its acknowledgement, `ConnectionsDeleting` (Data), goes on the stop stream once
    its block on new application work is in force, and the mesh-primary writes connections-deleting
@@ -74,7 +74,7 @@ owns wire mapping, target and context:
 ```text
 node.stop (mesh-primary → exact node, NodeCommand 0x22)
   ← CommandAccepted (Started; admission: stopping)
-  ← ConnectionsDeleting (Data; node.connections.delete's acknowledgement: connections-deleting)
+  ← ConnectionsDeleting (Data; node.connection.delete's acknowledgement: connections-deleting)
   ← StopConnectionsDeleted { receipt: ConnectionsReceipt } (Data; its completion: connections-deleted)
   ← Leaving (Data; node.mesh.leave's acknowledgement: leaving)
   ← StopMeshLeft { left } (Data; its completion: left)
@@ -101,7 +101,7 @@ sequenceDiagram
     participant N as Node
     M->>N: node.stop
     N-->>M: CommandAccepted (stopping)
-    N-->>M: ConnectionsDeleting (node.connections.delete acknowledged)
+    N-->>M: ConnectionsDeleting (node.connection.delete acknowledged)
     N-->>M: StopConnectionsDeleted with receipt and closed ids (node.connections.deleted)
     N-->>M: Leaving (node.mesh.leave acknowledged)
     Note over N: gossip neighbours and Node RPC pool left

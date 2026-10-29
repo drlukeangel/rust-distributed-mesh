@@ -1,4 +1,4 @@
-//! `node.connections.admit` (node-connections-admit.md): the acceptor's verification of the member
+//! `node.connection.create` (node-connections-admit.md): the acceptor's verification of the member
 //! cert a dialer presents on the first bi-stream of an inbound connection of a registered product
 //! ALPN, before anything is served on it. It runs inside the accept loop RDM owns and on no Node RPC
 //! or gossip connection (RDM never registers it for its own two ALPNs, `validate_alpns`). Not Node
@@ -12,7 +12,7 @@ use rdm_core::connections::{ConnectionKind as CoreKind, ConnectionState, NodeCon
 use rdm_core::ConnectionId;
 use serde::{Deserialize, Serialize};
 
-/// Verification of a dialer's presented member cert during `node.connections.admit`.
+/// Verification of a dialer's presented member cert during `node.connection.create`.
 pub trait Admitter: Send + Sync {
     /// Verify `cert` presented by `caller` on `alpn`.
     ///
@@ -79,7 +79,7 @@ impl RootSet {
     }
 }
 
-/// The verification of `node.connections.admit` (node-connections-admit.md Verification): the
+/// The verification of `node.connection.create` (node-connections-admit.md Verification): the
 /// presented member cert's chain to the [`RootSet`] held at the admission, both expiries judged on
 /// this node's rafka-time (the local clock, `local-bootstrap`, before it holds one) with one staleness
 /// floor of skew on either side. A refusal is named by the chain's own check
@@ -285,7 +285,7 @@ async fn refuse(
     if let Some(tp) = present.and_then(|p| p.traceparent.as_deref()) {
         crate::set_parent(&span, tp);
     }
-    span.in_scope(|| tracing::info!("inbound connection refused at node.connections.admit"));
+    span.in_scope(|| tracing::info!("inbound connection refused at node.connection.create"));
     let answered = ctrl_send.is_some();
     if let Some(send) = ctrl_send {
         let _ = write_control_msg(send, &AdmitVerdict::Refused { reason: reason.to_string() }).await;

@@ -54,7 +54,7 @@ pub enum NodeStatus {
     ///
     /// Position 8 on the wire; serialized as `starting`.
     Starting,
-    /// Connections-deleted: its node.connections.delete { All } completed `Established`.
+    /// Connections-deleted: its node.connection.delete { All } completed `Established`.
     ///
     /// Position 9 on the wire; serialized as `connections-deleted`.
     ConnectionsDeleted,
@@ -398,7 +398,7 @@ pub struct AtlasNodeView {
 /// One connection fact a node holds (`node.connection.get`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionView {
-    /// The entry's minted id: an open entry's id names its connection to `node.connections.delete`.
+    /// The entry's minted id: an open entry's id names its connection to `node.connection.delete`.
     pub id: String,
     /// The source node's `path.name`.
     pub source: String,

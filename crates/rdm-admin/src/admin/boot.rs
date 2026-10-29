@@ -101,7 +101,7 @@ impl Running {
         self.backbone.is_mesh_primary()
     }
 
-    /// This admin as the subject of `node.connections.delete`, `stop-node` and `start-node`: what such a command
+    /// This admin as the subject of `node.connection.delete`, `stop-node` and `start-node`: what such a command
     /// naming it reaches once its Status handler has decided it (`status_rpc`'s `serve_command`).
     pub fn node_self(&self) -> Arc<crate::node_self::NodeSelf> {
         self.node_self.clone()
@@ -174,7 +174,7 @@ impl Running {
     /// one stop sequence an rpc node's signal runs ([`crate::node_self::NodeSelf::stop_on_signal`]). The
     /// Build executor, every Build's drive and every attempt run this admin executes stop first
     /// ([`Self::stop_reconciling`]; an attempt it was running is continued by the Build's next attempt).
-    /// Then the whole `node.connections.delete { All }` under the birth's bound, its connections-deleting
+    /// Then the whole `node.connection.delete { All }` under the birth's bound, its connections-deleting
     /// owed to its mesh-primary; its tasks held; its last mesh topology before the cut carrying itself
     /// Leaving when it is its mesh's primary; `node.mesh.leave`, its own mesh and the backbone left and
     /// its Node RPC pool cut but for the connection to its mesh-primary; its `Stopped` owed to its
@@ -299,7 +299,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
 
 /// The app's protocols ([`crate::wiring::Wiring::alpns`]) on this admin's endpoint, registered like
 /// every node's: a `ConnectionsRegistry` over the admin's connections log and live resolver, and each
-/// protocol's handler routed, so RDM owns its accept loop and `node.connections.admit` runs before
+/// protocol's handler routed, so RDM owns its accept loop and `node.connection.create` runs before
 /// the app sees a connection.
 fn route_app_alpns(
     router: iroh::protocol::RouterBuilder,
@@ -819,7 +819,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let router_builder = IrohRouter::builder(endpoint.clone())
         .accept(iroh_gossip::ALPN, gossip.clone())
         .accept(rdm_transport::ALPN, rpc_server.clone());
-    // The app's protocols on this endpoint: RDM's accept loop and `node.connections.admit` for each,
+    // The app's protocols on this endpoint: RDM's accept loop and `node.connection.create` for each,
     // their rows in this admin's connections log. The member cert it presents is its join's.
     let (router_builder, data_connections) = route_app_alpns(router_builder, &endpoint, node_rpc_resolver.clone(), connections.clone(), &wiring.alpns)
         .map_err(|e| format!("{name}: {e}"))?;
@@ -2417,7 +2417,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             ))
                                         });
                                         // The app protocols this admin opens connections on: what a renewed member cert
-                                        // is installed on, and what node.connections.delete closes, as on every node.
+                                        // is installed on, and what node.connection.delete closes, as on every node.
                                         own.set_data_connections(data_connections.clone());
                                         own.set_session(Arc::new(AdminSession {
                                             data_connections: data_connections.clone(),

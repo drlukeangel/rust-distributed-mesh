@@ -5,7 +5,7 @@
 //! answers `ApplyNodeName { name: mesh1.rpc.1 }` with `BusyHoldingConnections` naming that connection
 //! by the minted id of its open entry (proposal node-properties-own-commands.md §2.2 step 6), and holds nothing:
 //! its digest still says `mesh1.rpc.7`. The cell runs lifecycles/node-name-update.md's order ("Rename precondition": the
-//! node's `node.connections.delete { All }` has completed): `All`, held open by one call in flight
+//! node's `node.connection.delete { All }` has completed): `All`, held open by one call in flight
 //! at the node until the cell releases it, answers `ConnectionsDeleted` with an `Established`
 //! receipt counting that call and closing the route; only then is the name applied: `Applied`, and
 //! the node holds `mesh1.rpc.1`; the same name again is `AlreadyApplied`, and a stale incarnation is
@@ -124,7 +124,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         }
         assert_eq!(digest_view.get(launch.node_id.as_str()).unwrap().0.node.name, born, "a Busy node keeps publishing its birth's name");
 
-        // node.connections.delete { All }, held open by one call in flight at the node: it answers
+        // node.connection.delete { All }, held open by one call in flight at the node: it answers
         // only once that call has its reply, its receipt counting it, and the route is closed.
         pull.hold();
         let held_call = async { client.call::<PreNodeReadyPull>(&target, &PullRequest::Pull, &opts).await.0 };

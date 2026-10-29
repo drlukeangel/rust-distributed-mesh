@@ -216,7 +216,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     // Delete, target, then create: nothing sent to the exited process.
     let log = rig.log.lock().unwrap().clone();
     let (old, new) = (first.node.node_id.to_string(), second.node.node_id.to_string());
-    assert!(!log.iter().any(|l| l.starts_with("node.connections.delete:") || l.starts_with("node.stop:")), "nothing is sent to the exited birth: {log:?}");
+    assert!(!log.iter().any(|l| l.starts_with("node.connection.delete:") || l.starts_with("node.stop:")), "nothing is sent to the exited birth: {log:?}");
     let at = |what: &str| log.iter().position(|l| l.starts_with(what)).unwrap_or_else(|| panic!("{what} not in {log:?}"));
     assert!(at(&format!("NodeDeleting:{old}:{delete}")) < at(&format!("NodeDeleted:{old}:{delete}")), "{log:?}");
     assert!(at(&format!("NodeDeleted:{old}:{delete}")) < at(&format!("targeted:{old}")) && at(&format!("targeted:{old}")) < at(&format!("ready:{new}")), "node.deleted, the target, then the new node: {log:?}");

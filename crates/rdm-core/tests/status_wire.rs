@@ -1,10 +1,10 @@
 //! Fixed bytes for the coordinated 2026-10-07 status wire change (#2923); the four connections delete/stop command
 //! variants (6..=9) are appended after it, their bytes derived from the postcard rules by hand, as are
-//! `node.connections.delete`'s request (21) and its two replies (31, 32), the reads' four
+//! `node.connection.delete`'s request (21) and its two replies (31, 32), the reads' four
 //! requests (22..=25) and six replies (33..=38) with the views they carry, the mesh.delete workflow
 //! and manifest refusals (39, 40, 41), the tag filter `node.get` (22) selects by, the tags and the
-//! config its answer (33) carries, the tag refusal (43), the tags commands `node.tags.create` (26)
-//! and `node.tags.delete` (27) with their replies (45, 46), and `node.name.update` (20) with its
+//! config its answer (33) carries, the tag refusal (43), the tags commands `node.tag.create` (26)
+//! and `node.tag.delete` (27) with their replies (45, 46), and `node.name.update` (20) with its
 //! completion (26), its refusals (27, 47) and the apply's answer naming held connections (48).
 //! These literals lock discriminants and positional fields independently of codec round trips.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.

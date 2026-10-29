@@ -4914,9 +4914,9 @@ impl DigestView {
         true
     }
 
-    /// The mesh-primary admitted the command `op` (`node.connections.delete`, `stop-node`) on the birth of its own
+    /// The mesh-primary admitted the command `op` (`node.connection.delete`, `stop-node`) on the birth of its own
     /// mesh `op` names, and sets that birth `status` (states.md "Who sets each state": node
-    /// connections-deleting at "the admission of `node.connections.delete { scope: All }`; inside
+    /// connections-deleting at "the admission of `node.connection.delete { scope: All }`; inside
     /// node.stop the visible status is stopping", node stopping at "the stop call's admission"): held
     /// for the birth, so its projection carries it from its next publication. No heartbeat says it (gossip.md
     /// §3.1: a Digest "carries no status"). `false` when the birth is not of this view's own mesh or

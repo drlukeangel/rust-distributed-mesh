@@ -138,7 +138,7 @@ async fn command(b: &Birth, req: impl Fn(&MeshDigest) -> StatusRequest) -> Statu
     }
 }
 
-/// `node.connections.delete { All }` of the node, commanded on op 0x22 as its mesh-primary commands it.
+/// `node.connection.delete { All }` of the node, commanded on op 0x22 as its mesh-primary commands it.
 async fn delete_all(b: &Birth) -> rdm_core::node_command::NodeCommandReply {
     let (d, target) = resolved(b).await;
     let all = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
@@ -259,7 +259,7 @@ fn a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes() {
 
 /// CONTRACT: while its hook is blocked the node answers its authority's status probe with Status
 /// `Blocked { node_id, incarnation, reason, retry_on }` (node-start.md step 3): the exact birth, the
-/// hook's own reason and the event it runs again on. It serves `node.connections.delete { All }`
+/// hook's own reason and the event it runs again on. It serves `node.connection.delete { All }`
 /// (`ConnectionsDeleted`); the deletion at its admission cancels the hook: the blocker span closes `deleted`, the hook does not run again, and
 /// the node never publishes Ready. What must NOT happen: `Current` or `NotReady` for a
 /// blocked node's probe (the executor could not name the blocker, or would take its door for it), or
@@ -284,7 +284,7 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
         let probed = command(&b, probe).await;
         let d = running.digest.clone();
         assert_eq!(probed, StatusReply::Blocked { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), reason: hook_reason.clone(), retry_on: RetryOn::PrimaryReady }, "a blocked node answers Blocked: the exact birth, the hook's own reason and its retry event");
-        assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the hook is blocked");
+        assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connection.delete {{ All }} is answered while the hook is blocked");
         let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the deletion ends the hook");
         assert_eq!(settled, PreNodeReadyState::Cancelled);
         assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-pre-node-ready-blocked")[0]["cleared_by"], "cancelled");
@@ -297,7 +297,7 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
 }
 
 /// CONTRACT: a delete during the hook cancels the pull. The authority's gate is open and the pull
-/// is held in flight; `node.connections.delete { All }` reaches the node; the attempt span closes `cancelled`, the pull
+/// is held in flight; `node.connection.delete { All }` reaches the node; the attempt span closes `cancelled`, the pull
 /// is dropped in flight (started = answered + dropped, nothing left running), its call span never
 /// records an outcome, and the node never publishes Ready. What must NOT happen: the
 /// pull answering into a node that was deleted, or the node going Ready afterwards.
@@ -319,7 +319,7 @@ fn a_connections_delete_during_the_pull_cancels_it_and_orphans_no_call() {
         let starting = start(&b, &pre_node_ready);
         tokio::time::timeout(WRONG, b.authority.entered(1)).await.expect("the pull is in flight at the authority");
 
-        assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the pull is in flight");
+        assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connection.delete {{ All }} is answered while the pull is in flight");
         let running = tokio::time::timeout(WRONG, starting).await.expect("the deletion ends the first attempt").unwrap().expect("the deleted node's start returns");
         assert_eq!(running.pre_node_ready().expect("handle").state(), PreNodeReadyState::Cancelled);
         use std::sync::atomic::Ordering::SeqCst;

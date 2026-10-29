@@ -1,4 +1,4 @@
-//! A standalone node.connections.delete or stop of a seat-holding node-admin, run by the
+//! A standalone node.connection.delete or stop of a seat-holding node-admin, run by the
 //! product's pipeline (`DeploymentPipeline`): the pipeline moves no seat (R-MT1: the fabric-primary's
 //! drive moves it by node.primary.update before the operation is dispatched), and a command the birth
 //! never admitted completes nothing. The provider, the observer and the Build state are fixtures.
@@ -29,7 +29,7 @@ impl DeploymentProvider for Running {
         DOMAIN.into()
     }
     async fn spawn(&self, launch: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
-        // A node.connections.delete or a stop launches nothing: refused here so the cell's assertion names it.
+        // A node.connection.delete or a stop launches nothing: refused here so the cell's assertion names it.
         Err(DeployError::Spawn { node: format!("{launch:?}").chars().take(80).collect(), reason: "this cell launches nothing".into() })
     }
     async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
@@ -39,7 +39,7 @@ impl DeploymentProvider for Running {
         DeploymentStatus::Running
     }
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
-        unreachable!("a node.connections.delete stops nothing")
+        unreachable!("a node.connection.delete stops nothing")
     }
     async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
         Ok(rdm_admin::deployment::provider::Found::NeverLaunched)
@@ -83,14 +83,14 @@ fn primary() -> Node {
     n
 }
 
-/// The standalone workflow `workflow` (a node.connections.delete or a stop) of the seat-holding admin:
+/// The standalone workflow `workflow` (a node.connection.delete or a stop) of the seat-holding admin:
 /// the pipeline's result, the commands the observer was asked to send, the Build's step receipts and
 /// the trace id.
 fn run_with(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String) {
     run_workflow(workflow)
 }
 
-/// Run `workflow` on the primary (a node.connections.delete or a stop): the result, the
+/// Run `workflow` on the primary (a node.connection.delete or a stop): the result, the
 /// commands sent, the step receipts and the trace id.
 fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String) {
     let cap = crate::mesh_delete_resume::capture();
@@ -153,7 +153,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
 /// its wait step fails by name with the admission it got, and no `Complete` receipt names the birth.
 #[test]
 fn a_standalone_connections_delete_or_stop_whose_command_was_never_admitted_fails_by_name_and_completes_nothing() {
-    for (workflow, command, wait) in [(NodeCommand::DeleteConnections, "node.connections.delete", DeleteStep::DeleteConnections.name()), (NodeCommand::Stop, "stop-node", DeleteStep::AwaitNodeLeft.name())] {
+    for (workflow, command, wait) in [(NodeCommand::DeleteConnections, "node.connection.delete", DeleteStep::DeleteConnections.name()), (NodeCommand::Stop, "stop-node", DeleteStep::AwaitNodeLeft.name())] {
         let (r, sent, steps, _) = run_with(workflow);
         assert_eq!(sent, vec![workflow], "the {command} was asked for");
         let e = r.expect_err("a command that never reached the birth established nothing");

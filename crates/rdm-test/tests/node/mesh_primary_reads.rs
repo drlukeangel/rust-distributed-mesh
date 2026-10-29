@@ -68,7 +68,7 @@ async fn a_mesh_primary_answers_its_own_meshs_read_with_the_fabric_primary_held_
     // Commands go down: each tag is sent to the fabric-primary, which sends it to the node's mesh-primary.
     let nodes = estate.nodes_obj().await;
     for (n, tag) in [(&fp, "red"), (&rpc, "blue")] {
-        let reply = nodes.tags_create(&birth_of(n), &fp.node_id, &rdm_transport::RouteChoice::Direct, &labels(&[tag])).await.unwrap_or_else(|e| panic!("node.tags.create of {} at the fabric-primary: {e:?}", n.name));
+        let reply = nodes.tags_create(&birth_of(n), &fp.node_id, &rdm_transport::RouteChoice::Direct, &labels(&[tag])).await.unwrap_or_else(|e| panic!("node.tag.create of {} at the fabric-primary: {e:?}", n.name));
         assert_eq!(reply.name(), "tags-created", "{}: {reply:?}", n.name);
     }
     wait_for("the fabric-primary answers both tags", Duration::from_secs(30), || async {

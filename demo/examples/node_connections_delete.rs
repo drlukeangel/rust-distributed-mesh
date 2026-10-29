@@ -1,10 +1,10 @@
-//! `node.connections.delete`: graceful node-wide closure (`ConnectionScope::All`) or selective cut
+//! `node.connection.delete`: graceful node-wide closure (`ConnectionScope::All`) or selective cut
 //! (`ConnectionScope::Connections`) of a live member's data-plane connections while the process
 //! keeps running (`docs/architecture/lifecycles/node-connections-delete.md:1`,
 //! `crates/rdm-admin/src/workflows/node_connections_delete.rs:6`,
 //! `crates/rdm-core/src/node_command.rs:59`).
 //!
-//! `node.connections.delete` is invoked either:
+//! `node.connection.delete` is invoked either:
 //! - directly at the member's mesh-primary (`Nodes::connections_delete` with `ConnectionScope::All`
 //!   or `ConnectionScope::Connections`), which sends `NodeCommandRequest::DeleteConnections` on op
 //!   `0x22` and answers `StatusReply::ConnectionsDeleted { closed, not_open, held, receipt }`; or
@@ -92,7 +92,7 @@ async fn main() -> Result<()> {
             &ConnectionScope::All,
         )
         .await?;
-    println!("node.connections.delete {{ All }} via mesh-primary {}: {cut:?}", primary.name);
+    println!("node.connection.delete {{ All }} via mesh-primary {}: {cut:?}", primary.name);
 
     let mut stream = nodes.delete_connections(&target).await?;
     let mut saw_deleted_event = false;
@@ -114,12 +114,12 @@ async fn main() -> Result<()> {
         .await?
         .into_iter()
         .find(|n| n.name == target)
-        .ok_or_else(|| anyhow!("no row for {target} after node.connections.delete"))?;
+        .ok_or_else(|| anyhow!("no row for {target} after node.connection.delete"))?;
     assert_eq!(after.status, NodeStatus::ConnectionsDeleted);
     assert_eq!(after.node_id, row.node_id);
     assert_eq!(after.incarnation_id, row.incarnation_id);
     println!(
-        "after node.connections.delete: node={} node_id={} incarnation={:?} status={:?}",
+        "after node.connection.delete: node={} node_id={} incarnation={:?} status={:?}",
         after.name, after.node_id, after.incarnation_id, after.status
     );
     Ok(())

@@ -1,7 +1,7 @@
 //! `ApplyNodeName` at its subject (proposal node-properties-own-commands.md §2.2 step 6; R12/R13; R-CR1, R-CR1a):
 //! the node owns its name and publishes only the name its mesh-primary's row holds. It takes a new
 //! name only while it holds no connection: every route it held was closed by
-//! `node.connections.delete`, its drop written under the old name, before the name changes. The
+//! `node.connection.delete`, its drop written under the old name, before the name changes. The
 //! name it already holds is done whatever it holds.
 
 use rdm_core::connections::{ConnectionKind, NodeConnection};

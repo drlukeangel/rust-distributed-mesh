@@ -9,7 +9,7 @@
 //! pair; `BuildCarrier::follow` follows a stream to its terminal and reattaches on its own whenever the
 //! stream breaks or ends `FabricPrimaryMoved`, keeping each completed step once.
 //!
-//! Here the call is one step, `node.connections.delete { All }` of a node (its connections are closed
+//! Here the call is one step, `node.connection.delete { All }` of a node (its connections are closed
 //! and it keeps running on its mesh), run as the next attempt of the fabric's current Build. The caller keeps only its Build id from the first stream and drops
 //! the stream, as a restarted caller would; then it reattaches by id and follows the Build to its end.
 //!

@@ -490,7 +490,7 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
 /// CONTRACT (lifecycles/node-primary-update.md "Both primaries" and its numbered sequence; node-replace.md
 /// steps 1 and 3): the fabric-primary P, its mesh's mesh-primary, is replaced by the replace steps (one
 /// Build of node primitives; never a signal). Before the Build's first step on P, its
-/// node.connections.delete, P runs node.primary.update: its election over its own view with itself
+/// node.connection.delete, P runs node.primary.update: its election over its own view with itself
 /// excluded names H, the other admin of its mesh, and the same-mesh successor becomes both primaries.
 /// 1. The update is a step of the attempt P claimed for itself (`build.update.via-claim-decision` at P,
 ///    won): `primary.update.via-update-primary` at P moves `mesh-primary+fabric-primary` to H, outcome
@@ -621,7 +621,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     let resume = rdm_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the Build's steps");
     let step_keys: Vec<String> = {
         let p = p.parse::<rdm_core::PathName>().unwrap();
-        vec![format!("node.connections.delete:{p}"), format!("node.mesh.leave:{p}"), format!("node.update:{p}"), format!("node.stop:{p_old}"), format!("node.create:{p}"), format!("node.delete:{p_old}")]
+        vec![format!("node.connection.delete:{p}"), format!("node.mesh.leave:{p}"), format!("node.update:{p}"), format!("node.stop:{p_old}"), format!("node.create:{p}"), format!("node.delete:{p_old}")]
     };
     for key in &step_keys {
         assert!(resume.completed.iter().any(|(op, step)| op == key && step == "Complete"), "build.get holds the Complete receipt of {key}: {resume:?}");

@@ -1276,13 +1276,13 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
         let node = secondary_node(&estate).await;
         let before = estate.node_value(&node.to_string()).await;
         let door = Door::at(&estate, "mesh2.admin.1").await;
-        door.arm("closure", json!({"kind": "receipt", "step": cut, "operation": "node.connections.delete", "node": node.to_string()})).await;
+        door.arm("closure", json!({"kind": "receipt", "step": cut, "operation": "node.connection.delete", "node": node.to_string()})).await;
         let mut stream = caller.nodes(&carrier).delete_connections(&node).await.expect("the Build accepts the closure");
         let accepted = stream.accepted().clone();
         let held = door.wait_held("closure").await;
         assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.to_string());
         // The surviving executor has heard all receipts that precede this cut.
-        let operation = format!("node.connections.delete:{node}");
+        let operation = format!("node.connection.delete:{node}");
         if cut == "Complete" {
             crate::build_log::build_fact(&estate.carrier_at(&path("mesh2.admin.2")).await, accepted.build_id.as_str(), "the completed closure is recoverable on the successor before its executor is lost", Duration::from_secs(30), |b| {
                 b.steps.iter().any(|r| r.operation == operation && r.step == "DeleteConnections" && serde_json::to_value(r).unwrap()["outcome"] == "complete")
@@ -1315,7 +1315,7 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
         }
         let trace = executions.last().unwrap()["trace_id"].as_str().unwrap();
         estate.record_trace_url(trace);
-        println!("connections.delete {cut} recovery: http://192.168.68.99:16687/trace/{trace}");
+        println!("node.connection.delete {cut} recovery: http://192.168.68.99:16687/trace/{trace}");
     }
     tokio::join!(at_cut("DeleteConnections"), at_cut("Complete"));
 }

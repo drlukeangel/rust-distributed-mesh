@@ -1,4 +1,4 @@
-//! `node.connections.delete { scope: Connections([id, …]) }` at the birth (R-CR3; rulings
+//! `node.connection.delete { scope: Connections([id, …]) }` at the birth (R-CR3; rulings
 //! 2026-10-11): it names exact connections by the minted id of their open entry, as
 //! `node.connection.get` returns them, and cuts only those; an id that is unknown or already
 //! closed is named, never ignored; each drop is written under the name the node holds; an empty
@@ -173,7 +173,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         let log = kept_log(&store, &fabric, &born);
         let drop = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.node_id == peer.node_id);
         expect(
-            drop.is_some_and(|e| e.state == ConnectionState::Disconnected && e.source.name == born && e.id != to_peer.id && e.reason.as_deref() == Some("node.connections.delete")),
+            drop.is_some_and(|e| e.state == ConnectionState::Disconnected && e.source.name == born && e.id != to_peer.id && e.reason.as_deref() == Some("node.connection.delete")),
             format!("the latest entry for the peer route is its drop, written under {born} with its own id and the cut's reason: {drop:?}"),
         );
         let admin_now = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.name.to_string() == "mesh1.admin.1");
@@ -196,7 +196,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
     );
 }
 
-/// CONTRACT (node-connections-delete.md steps 3.4 to 3.6, "Bound"; Q169): a `node.connections.delete
+/// CONTRACT (node-connections-delete.md steps 3.4 to 3.6, "Bound"; Q169): a `node.connection.delete
 /// { All }` decides what to close from the connections open now, closes them, queues their drops and
 /// answers: it never waits for a row. `mesh1.rpc.1` holds a route to its admin; its connections store
 /// then refuses every write (a store reached over a connection the delete cuts). Its `All` answers

@@ -206,7 +206,7 @@ pub struct NodeRow {
     pub status: crate::model::NodeStatus,
     /// The application's own key/values on the node; RDM never reads it.
     pub config: BTreeMap<String, String>,
-    /// The node's tag labels (R-TG1), set through `node.tags.create` / `node.tags.delete`, each one a
+    /// The node's tag labels (R-TG1), set through `node.tag.create` / `node.tag.delete`, each one a
     /// row of the tags index while the row is live. A `Deleted` row keeps them, as it keeps the config;
     /// a row written before tags existed carries none.
     #[serde(default)]

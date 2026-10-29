@@ -58,7 +58,7 @@ Two planes, two words (R-CR5):
 
 - **The data plane is the connections log.** Every entry is a connection a node originated for
   traffic, Direct or Proxy, with its own minted id. It is what `node.connection.get` lists, what
-  `node.connections.delete { All | [ids] }` closes by name, and what a rename waits on. In Rafka the
+  `node.connection.delete { All | [ids] }` closes by name, and what a rename waits on. In Rafka the
   application originates them (a gateway opening its path to a broker); in RDM standalone the
   testkit's originate door (op `0x73`) does.
 - **The control plane is gossip and the node's control-plane Node RPC pool, and neither is a connection.** Gossip neighbours are
@@ -117,8 +117,8 @@ Refused      -> state=refused
 named direct connection. It is never global proof that the destination node is dead.
 
 `Refused` is written by an acceptor for an inbound connection it dropped at admission
-([fabric-certs.md](fabric-certs.md#on-a-connection), [node.connections.admit](lifecycles/node-connections-admit.md)),
-naming the reason, one of node.connections.admit's `refused` reasons (its Result row). It is the
+([fabric-certs.md](fabric-certs.md#on-a-connection), [node.connection.create](lifecycles/node-connections-admit.md)),
+naming the reason, one of node.connection.create's `refused` reasons (its Result row). It is the
 acceptor's fact about one dial, never proof about the dialer.
 
 ---
@@ -143,7 +143,7 @@ NodeConnection {
 
     kind: Direct | Proxy
     alpn            // the registered ALPN this connection carries; a row is one transport connection on one protocol (i148)
-    state: Connected | Disconnected | Failed
+    state: Connected | Disconnected | Failed | Refused
 
     // Proxy only
     carrier
@@ -337,7 +337,7 @@ else:
 
 A latest Failed Direct is the one state a reconnect series stands on (§9.1), and the series owns its retry.
 Any other non-active Direct has no series: none ever observed, a closed connection (Disconnected, as
-`node.connections.delete` writes at every node.stop), or an acceptor's Refused. A new call
+`node.connection.delete` writes at every node.stop), or an acceptor's Refused. A new call
 dials it (§7), and a failed dial writes the first Failed of a series.
 
 This precedence provides ordered cutback. When a direct connection returns, traffic stays on the proven
@@ -604,7 +604,7 @@ Direct becomes effective for new invocations
 A stream Proxy (i148, a tunnel) outlives its retirement. `Proxy Disconnected(reason=direct-restored)` retires
 the route, so the next `open` goes Direct; the tunnel that is already open and its streams run to their own
 end. Until then it is a held connection (§4.2): `node.connection.get` lists it by its row id with
-`route: retired`, and `node.connections.delete { All | [ids] }` closes it by that id like any other. Its end
+`route: retired`, and `node.connection.delete { All | [ids] }` closes it by that id like any other. Its end
 writes no second row; it is spanned `rdm.node.connections.delete.via-tunnel-ended`.
 
 ---

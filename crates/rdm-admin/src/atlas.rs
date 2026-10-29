@@ -237,7 +237,7 @@ pub struct Atlas {
 /// The births and operation keys an action is accepted on.
 fn accepted_on(action: &AttemptAction) -> Vec<(PathName, String)> {
     match action {
-        AttemptAction::DeleteConnections { path, .. } => vec![(path.clone(), format!("node.connections.delete:{path}"))],
+        AttemptAction::DeleteConnections { path, .. } => vec![(path.clone(), format!("node.connection.delete:{path}"))],
         AttemptAction::Stop { path, .. } => vec![(path.clone(), format!("node.stop:{path}"))],
         AttemptAction::Start { path, .. } => vec![(path.clone(), format!("node.start:{path}"))],
         AttemptAction::Delete { path, .. } => vec![(path.clone(), format!("node.delete:{path}"))],
@@ -686,7 +686,7 @@ impl Atlas {
             // (Q235 P1: the mesh-primary's push up, or its own writer's record): never from the spec, which
             // carries no revision and would put an older map over a newer one.
             "node.config.update" => Taken::Nothing,
-            "node.tags.create" | "node.tags.delete" => {
+            "node.tag.create" | "node.tag.delete" => {
                 // In place, to the create spec the accepted Build names for the path (build.md §1, "The
                 // Build applies the diff"): its tags added (create) or the ones it does not name removed
                 // (delete).
@@ -694,7 +694,7 @@ impl Atlas {
                 let Some(node_id) = node_of(&held) else { return Taken::Nothing };
                 let Some(r) = held.records.get_mut(&node_id) else { return Taken::Nothing };
                 match op {
-                    "node.tags.create" => r.tags.extend(spec.tags),
+                    "node.tag.create" => r.tags.extend(spec.tags),
                     _ => r.tags = r.tags.intersection(&spec.tags).cloned().collect(),
                 }
                 Taken::Property

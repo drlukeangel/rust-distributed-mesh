@@ -59,7 +59,7 @@ async fn two_meshes_tagged(test: &str) -> (Estate, NodeView, NodeView, NodeView,
     // node's mesh-primary.
     let nodes = estate.nodes_obj().await;
     for (n, tag) in [(&fp, "red"), (&rpc, "blue")] {
-        let reply = nodes.tags_create(&birth_of(n), &fp.node_id, &rdm_transport::RouteChoice::Direct, &labels(&[tag])).await.unwrap_or_else(|e| panic!("node.tags.create of {} at the fabric-primary: {e:?}", n.name));
+        let reply = nodes.tags_create(&birth_of(n), &fp.node_id, &rdm_transport::RouteChoice::Direct, &labels(&[tag])).await.unwrap_or_else(|e| panic!("node.tag.create of {} at the fabric-primary: {e:?}", n.name));
         assert_eq!(reply.name(), "tags-created", "{}: {reply:?}", n.name);
     }
     let config: BTreeMap<String, String> = [("zone".to_string(), "eu-1".to_string())].into();

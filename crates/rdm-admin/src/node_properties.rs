@@ -2,7 +2,7 @@
 //! (proposal node-properties-own-commands.md §1, §3; R-OW1, R14, R-TG1): each command is admitted at
 //! any time (Q166, Q171) and runs once through the writer's held record, one change at a time with
 //! every other change to a node record (`crate::node_config::NodeConfigs::one_at_a_time`). Here:
-//! `node.tags.create` / `node.tags.delete` (node-rpc-envelope.md node.tags): each label is
+//! `node.tag.create` / `node.tag.delete` (node-rpc-envelope.md node.tags): each label is
 //! its own key of the node store's tags index, kept with the row by the store adapter (a label the
 //! row stops carrying is tombstoned, one it gains is put); a label the node already carries is ignored
 //! and writes nothing. Neither has a precondition, neither touches the
@@ -98,9 +98,9 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
 
 /// What a tags command changes.
 enum Change<'a> {
-    /// `node.tags.create`: these labels added.
+    /// `node.tag.create`: these labels added.
     Create(&'a BTreeSet<String>),
-    /// `node.tags.delete`: every label, or these.
+    /// `node.tag.delete`: every label, or these.
     Delete(&'a TagScope),
 }
 
@@ -203,8 +203,8 @@ mod tests {
     use rdm_transport::{NodeRpcClient, StaticResolver};
     use std::sync::Arc;
 
-    // CONTRACT (`docs/architecture/node-rpc-envelope.md:323` — "`node.tags.create { label | [labels] }`
-    // adds one label or a list; `node.tags.delete { All | [labels] }` removes every label or the named
+    // CONTRACT (`docs/architecture/node-rpc-envelope.md:323` — "`node.tag.create { label | [labels] }`
+    // adds one label or a list; `node.tag.delete { All | [labels] }` removes every label or the named
     // ones ... Each label is its own keyed row (label, node id) in the node store's tags index. Create is
     // a blind put of that key, so creating a label the node already carries is ignored and writes no
     // duplicate; delete tombstones the named keys. A label is 1-64 characters of a-z 0-9 - _ . ~, with no

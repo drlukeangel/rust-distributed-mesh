@@ -149,7 +149,7 @@ pub struct PrecedingUpdate {
 
 /// The node.primary.updates that may precede `op` of Build `build_id` in the run whose first attempt
 /// is `run` (R-MT1, ruling R-PU2, [`crate::executor::seat_move`]): for a stop, delete, replace
-/// or node.connections.delete of a node-admin, the mesh-primary's update and the fabric-primary's
+/// or node.connection.delete of a node-admin, the mesh-primary's update and the fabric-primary's
 /// alone; of a node of any other type, its type's primary's update; for a mesh delete, the
 /// fabric-primary's under that mesh. None for any other operation.
 pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> Vec<PrecedingUpdate> {

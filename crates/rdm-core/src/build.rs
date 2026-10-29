@@ -85,7 +85,7 @@ pub enum BuildChange {
     ///
     /// Position 6 on the wire.
     Reserved6,
-    /// `node.connections.delete { All }` of the live birth at `node`; it keeps running.
+    /// `node.connection.delete { All }` of the live birth at `node`; it keeps running.
     ///
     /// Position 7 on the wire.
     DeleteConnections {
@@ -247,7 +247,7 @@ pub enum Step {
         /// The node.
         node: PathName,
     },
-    /// node.connections.delete `{ scope: All }` of the live node at `node`
+    /// node.connection.delete `{ scope: All }` of the live node at `node`
     /// (lifecycles/node-connections-delete.md): every connection it holds is closed; it keeps running
     /// on its mesh.
     ///
@@ -1053,7 +1053,7 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/node-replace.md:5
     /// "Replace is Rafka's steps, submitted as one Build. RDM executes its primitives and records their receipts"
     /// CONTRACT: docs/architecture/lifecycles/node-replace.md:30
-    /// "1. node[1]: node.connections.delete `{ scope: All }`, then node.mesh.leave.
+    /// "1. node[1]: node.connection.delete `{ scope: All }`, then node.mesh.leave.
     ///  2. node.name.update of node[1] to `<name>.old` ... Then node[1].stop ... If no rollback is wanted, node[1].delete ...
     ///  3. node.create of node[2] at `<name>` ... The Build fixes the bin on its Create step"
     #[test]

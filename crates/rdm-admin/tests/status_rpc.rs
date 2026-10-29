@@ -1229,7 +1229,7 @@ async fn scripted_member(b: &Birth, script: Script) -> (ResolvedNode, Router) {
 /// CONTRACT (i144 R22; Luke Q6, Q7: the node reports admission and completion on the command's
 /// ordered reply stream, op 0x22; the mesh-primary records only what the node reported; NotSent
 /// changes nothing; a stream broken after the acceptance is incomplete; Deadline keeps
-/// connections-deleting, Established completes it): the mesh-primary carries `node.connections.delete`
+/// connections-deleting, Established completes it): the mesh-primary carries `node.connection.delete`
 /// to five members of its mesh, each answering one way. An `Established` and a `Deadline` completion
 /// end `Deleted` with that receipt, each after the record of the node's `ConnectionsDeleting`, and the
 /// receipt is held for the birth's rename; a break after the acceptance ends `Incomplete`, reported,
@@ -1316,8 +1316,8 @@ async fn carried_connections_delete_ends(capture: &Capture) {
 /// CONTRACT (node-connections-delete.md step 4: "The node's mesh-primary sets connections-deleted from
 /// that completion. Graceful success is never reported after interrupting work"; step 5: "At
 /// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` an `All` that has not reached zero returns incomplete closure
-/// ... The node stays connections-deleting. A new `node.connections.delete` attempt, or node.stop,
-/// leaves that state"; states.md "Who sets each state"): the mesh-primary carries `node.connections.delete
+/// ... The node stays connections-deleting. A new `node.connection.delete` attempt, or node.stop,
+/// leaves that state"; states.md "Who sets each state"): the mesh-primary carries `node.connection.delete
 /// { All }` to a member twice. The first ends `Deadline`: the member's row says connections-deleting
 /// and never connections-deleted. The second, a new attempt, ends `Established`: the row says
 /// connections-deleted. Must NOT happen: connections-deleted on the row from a `Deadline`, or the

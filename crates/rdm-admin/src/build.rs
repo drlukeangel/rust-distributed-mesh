@@ -149,7 +149,7 @@ pub enum BuildOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         entry: Option<EntrySpec>,
     },
-    /// `node.connections.delete { All }` of the exact birth `from_incarnation` of `node`; it keeps
+    /// `node.connection.delete { All }` of the exact birth `from_incarnation` of `node`; it keeps
     /// running (node-connections-delete.md).
     DeleteConnections {
         /// The node.
@@ -208,7 +208,7 @@ pub enum BuildOperation {
     /// One step of a Build (`BuildChange::Steps`; build.md §1, lifecycles/node-replace.md): its op's
     /// own workflow on the node its path names when it runs, `create-node`, `stop-node`,
     /// `update-node` (node.update's own core at the node's mesh-primary), `start-node`,
-    /// `retire-node` (node.delete), node.connections.delete `{ All }` or node.mesh.leave. `birth`
+    /// `retire-node` (node.delete), node.connection.delete `{ All }` or node.mesh.leave. `birth`
     /// targets it to the exact birth its node was when the Build was accepted; `None` for a node an
     /// earlier step of the Build created, which the executor resolves at its path when the step runs.
     Step {
@@ -259,7 +259,7 @@ pub enum BuildOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         entry: Option<EntrySpec>,
     },
-    /// The node's create spec names tag labels its row does not carry: `node.tags.create` of them at
+    /// The node's create spec names tag labels its row does not carry: `node.tag.create` of them at
     /// the node's mesh-primary, the node's tag rows (build.md §1).
     CreateTags {
         /// The node.
@@ -267,7 +267,7 @@ pub enum BuildOperation {
         /// The labels the row gains.
         labels: std::collections::BTreeSet<String>,
     },
-    /// The node's row carries tag labels its create spec does not name: `node.tags.delete` of them at
+    /// The node's row carries tag labels its create spec does not name: `node.tag.delete` of them at
     /// the node's mesh-primary (build.md §1).
     DeleteTags {
         /// The node.
@@ -331,7 +331,7 @@ impl BuildOperation {
         match self {
             Self::CreateMesh { mesh, .. } => format!("create-mesh:{mesh}"),
             Self::CreateNode { node, .. } => format!("node.create:{node}"),
-            Self::DeleteConnections { node, .. } => format!("node.connections.delete:{node}"),
+            Self::DeleteConnections { node, .. } => format!("node.connection.delete:{node}"),
             Self::StopNode { node, .. } => format!("node.stop:{node}"),
             Self::StartNode { node, .. } => format!("node.start:{node}"),
             Self::Step { step, .. } => step_key(step),
@@ -343,8 +343,8 @@ impl BuildOperation {
             // One key per birth: a birth heard again after another termination is a new run of it.
             Self::TerminateNode { node, from_incarnation, .. } => format!("node.terminate:{node}@{}", from_incarnation.as_str()),
             Self::UpdateConfig { node, .. } => format!("node.config.update:{node}"),
-            Self::CreateTags { node, .. } => format!("node.tags.create:{node}"),
-            Self::DeleteTags { node, .. } => format!("node.tags.delete:{node}"),
+            Self::CreateTags { node, .. } => format!("node.tag.create:{node}"),
+            Self::DeleteTags { node, .. } => format!("node.tag.delete:{node}"),
             Self::BlockStorage { mesh, change } => crate::storage_change::block_operation(&change.change_id, mesh),
             Self::SwitchStorage { change } => crate::storage_change::switch_operation(&change.change_id),
             Self::UnblockStorage { mesh, change } => crate::storage_change::unblock_operation(&change.change_id, mesh),
@@ -363,7 +363,7 @@ pub fn step_key(step: &rdm_core::build::Step) -> String {
         S::Update { node, .. } => format!("node.update:{node}"),
         S::Start { node } => format!("node.start:{node}"),
         S::Delete { node } => format!("node.delete:{node}"),
-        S::DeleteConnections { node } => format!("node.connections.delete:{node}"),
+        S::DeleteConnections { node } => format!("node.connection.delete:{node}"),
         S::LeaveMesh { node } => format!("node.mesh.leave:{node}"),
     }
 }
@@ -640,7 +640,7 @@ pub enum BuildReject {
         node: String,
         /// Its mesh.
         mesh: String,
-        /// What the Build would do to it (`node.connections.delete`, `stop`, `delete`).
+        /// What the Build would do to it (`node.connection.delete`, `stop`, `delete`).
         action: String,
         /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, or the
         /// fabric seat's `cannot transfer fabric-primary: ...` naming both searches.
@@ -657,7 +657,7 @@ pub enum BuildReject {
         node: String,
         /// Its mesh.
         mesh: String,
-        /// What the Build would do to it (`node.connections.delete`, `stop`, `delete`,
+        /// What the Build would do to it (`node.connection.delete`, `stop`, `delete`,
         /// `delete`).
         action: String,
         /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`.

@@ -26,7 +26,7 @@ Neither a Build nor the rectifier ever declares the fabric ready.
 | node starting | the node's mesh-primary | a stopped node's `CommandAccepted` admission frame on the `StartNode` command stream (0x22); a create's launch, where no process can acknowledge |
 | node pending | the node's mesh-primary | the node's accepted join report, on the start call or a commanded join, once per join ([node-mesh-join.md](node-mesh-join.md) step 10) |
 | node ready | the node's mesh-primary | the node's node.started report, after every start gate ([`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready) among them); the node then calls [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) |
-| node connections-deleting | the node's mesh-primary | the node's `ConnectionsDeleting` report on the command stream of `node.connections.delete { scope: All }`, its block on new application work in force, standalone or as the acknowledgement on node.stop's stream |
+| node connections-deleting | the node's mesh-primary | the node's `ConnectionsDeleting` report on the command stream of `node.connection.delete { scope: All }`, its block on new application work in force, standalone or as the acknowledgement on node.stop's stream |
 | node connections-deleted | the node's mesh-primary | the node's node.connections.deleted completion carrying `Established`, standalone or `StopConnectionsDeleted` on node.stop's stream; a `Deadline` completion leaves the node connections-deleting |
 | node leaving | the node's mesh-primary | the acknowledgement of node.mesh.leave: `CommandAccepted` on the `LeaveMesh` command stream (0x22), or `Leaving` on node.stop's stream |
 | node left | the node's mesh-primary | node.mesh.leave's completion: `MeshLeft` on the `LeaveMesh` command stream, or `StopMeshLeft` on node.stop's stream |
@@ -87,7 +87,7 @@ stop, applied by a peer on receipt of the fact that says so. A node that is star
 connections-deleting, connections-deleted, stopping, stopped or deleting, a NodeStopped,
 NodeDeleting or NodeDeleted overlay, a mesh deleting or deleted,
 each excludes the exact birth from new application traffic from the moment the peer holds it.
-In-flight work finishes under [node.connections.delete's](node-connections-delete.md) rules. A routing stop is never a barrier: it
+In-flight work finishes under [node.connection.delete's](node-connections-delete.md) rules. A routing stop is never a barrier: it
 orders nothing and waits for nobody. Start clears NodeStopped at node.joined, but
 selection resumes only when the start gates complete, the node and mesh are ready,
 and no active routing-stop overlay remains. A late ready digest or stopped overlay
@@ -121,7 +121,7 @@ traffic, silent on gossip and not advancing. Deleted: not in the system.
 
 connections-deleting is live and not routable; node.connections.deleted carries
 `ConnectionsReceipt`: Established { in_flight, closed } or, at the bound, Deadline { last_in_flight, closed, held }.
-stopped is not live and is still present. node.stop runs `node.connections.delete { scope: All }`,
+stopped is not live and is still present. node.stop runs `node.connection.delete { scope: All }`,
 then cuts its gossip neighbours and its Node RPC pool, which are not connections, but preserves
 the node's endpoint and the stop stream, returns node.stopped,
 and leaves the live process stopped. Its [node.tickle](node-tickle.md) probe answers `Current { stopped }`.
@@ -138,7 +138,7 @@ the sweep; retained storage is not removed by collection.
 
 ## Leadership
 
-Node status alone does not change a primary. Ordinary `node.connections.delete { scope: All }`
+Node status alone does not change a primary. Ordinary `node.connection.delete { scope: All }`
 or node.stop of a primary requires [node.primary.update](node-primary-update.md) first
 (node.fabric-primary.update for the fabric-primary).
 What fabric.delete does with the primaries is [fabric.delete](fabric-delete.md) and [Elections §6](../fabric-node-lifecycle-elections.md#6-fabricdelete-moves-no-primary). Traffic eligibility, the election and the runtime's exit

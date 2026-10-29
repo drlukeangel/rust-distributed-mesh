@@ -2,7 +2,7 @@
 //!
 //! Each name is written once, here: the Rust variant and the event frame a workflow's stream
 //! carries (`node.joined`). Each op and event has one span, a five-segment literal
-//! (telemetry-patterns.md §8): its entity is what the op acts on (`node.connections.delete` spans
+//! (telemetry-patterns.md §8): its entity is what the op acts on (`node.connection.delete` spans
 //! `rdm.node_admin.connection.delete.via-call`), its verb from the whitelist (a `get` is `resolve`).
 //! No caller writes an op name as a string.
 
@@ -17,15 +17,15 @@ pub enum NodeOp {
     TopologyGet,
     /// `node.connection.get { node }`: the exact birth's own connections (Q167).
     ConnectionsGet,
-    /// `node.connections.delete`: a hard cut.
+    /// `node.connection.delete`: a hard cut.
     ConnectionsDelete,
     /// `node.config.get`: the app's own attributes.
     ConfigGet,
     /// `node.config.update`.
     ConfigUpdate,
-    /// `node.tags.create`: labels added, each its own key of the tags index.
+    /// `node.tag.create`: labels added, each its own key of the tags index.
     TagsCreate,
-    /// `node.tags.delete`: every label or the named ones removed.
+    /// `node.tag.delete`: every label or the named ones removed.
     TagsDelete,
     /// `node.create(spec)`.
     Create,
@@ -51,11 +51,11 @@ impl NodeOp {
             Self::NameUpdate => "node.name.update",
             Self::TopologyGet => "node.topology.get",
             Self::ConnectionsGet => "node.connection.get",
-            Self::ConnectionsDelete => "node.connections.delete",
+            Self::ConnectionsDelete => "node.connection.delete",
             Self::ConfigGet => "node.config.get",
             Self::ConfigUpdate => "node.config.update",
-            Self::TagsCreate => "node.tags.create",
-            Self::TagsDelete => "node.tags.delete",
+            Self::TagsCreate => "node.tag.create",
+            Self::TagsDelete => "node.tag.delete",
             Self::Create => "node.create",
             Self::Stop => "node.stop",
             Self::Start => "node.start",
@@ -79,11 +79,11 @@ impl NodeOp {
             Self::NameUpdate => tracing::info_span!("rdm.node_admin.name.update.via-call", op = "node.name.update", outcome = tracing::field::Empty),
             Self::TopologyGet => tracing::info_span!("rdm.node_admin.topology.resolve.via-call", op = "node.topology.get", outcome = tracing::field::Empty),
             Self::ConnectionsGet => tracing::info_span!("rdm.node_admin.connection.resolve.via-call", op = "node.connection.get", properties = tracing::field::Empty, outcome = tracing::field::Empty),
-            Self::ConnectionsDelete => tracing::info_span!("rdm.node_admin.connection.delete.via-call", op = "node.connections.delete", outcome = tracing::field::Empty),
+            Self::ConnectionsDelete => tracing::info_span!("rdm.node_admin.connection.delete.via-call", op = "node.connection.delete", outcome = tracing::field::Empty),
             Self::ConfigGet => tracing::info_span!("rdm.node_admin.config.resolve.via-call", op = "node.config.get", outcome = tracing::field::Empty),
             Self::ConfigUpdate => tracing::info_span!("rdm.node_admin.config.update.via-call", op = "node.config.update", outcome = tracing::field::Empty),
-            Self::TagsCreate => tracing::info_span!("rdm.node_admin.tag.create.via-call", op = "node.tags.create", outcome = tracing::field::Empty),
-            Self::TagsDelete => tracing::info_span!("rdm.node_admin.tag.delete.via-call", op = "node.tags.delete", outcome = tracing::field::Empty),
+            Self::TagsCreate => tracing::info_span!("rdm.node_admin.tag.create.via-call", op = "node.tag.create", outcome = tracing::field::Empty),
+            Self::TagsDelete => tracing::info_span!("rdm.node_admin.tag.delete.via-call", op = "node.tag.delete", outcome = tracing::field::Empty),
             Self::Create => tracing::info_span!("rdm.node_admin.node.create.via-workflow", op = "node.create", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Stop => tracing::info_span!("rdm.node_admin.node.update.via-stop-workflow", op = "node.stop", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Start => tracing::info_span!("rdm.node_admin.node.update.via-start-workflow", op = "node.start", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
@@ -241,7 +241,7 @@ pub enum NodeStep {
     Start,
     /// `node.join`: the node's digest reaching its authority.
     Join,
-    /// `node.connections.delete`.
+    /// `node.connection.delete`.
     ConnectionsDelete,
     /// `node.stop`.
     Stop,
@@ -260,7 +260,7 @@ impl NodeStep {
             Self::Create => "node.create",
             Self::Start => "node.start",
             Self::Join => "node.join",
-            Self::ConnectionsDelete => "node.connections.delete",
+            Self::ConnectionsDelete => "node.connection.delete",
             Self::Stop => "node.stop",
             Self::Delete => "node.delete",
             Self::Update => "node.update",

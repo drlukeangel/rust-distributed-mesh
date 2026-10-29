@@ -1,5 +1,5 @@
 //! i143.e12.s40, s49 functional: one member's end inside a mesh delete is the whole node.delete
-//! (mesh-delete.md step 3), which composes node.connections.delete and the whole node.stop, so the deleting mesh's
+//! (mesh-delete.md step 3), which composes node.connection.delete and the whole node.stop, so the deleting mesh's
 //! primary publishes `NodeStopped` from the member's matching `stopped` reply (node-stop.md step 5,
 //! gossip.md "Node-stopped lifecycle overlay") and then `NodeDeleted` from the provider's exact exit
 //! proof (gossip.md §6.1). Those are what its mesh topology carries in backbone `MeshTopology.in_flight` and

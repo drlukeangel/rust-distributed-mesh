@@ -1,6 +1,6 @@
 //! A node-admin's app protocols are registered `Connections` like every node's (i145 e2;
 //! fabric-certs.md §On a connection; node-connections-admit.md): an inbound connection on an app
-//! ALPN the embedding registered at bind passes `node.connections.admit` before the app sees it,
+//! ALPN the embedding registered at bind passes `node.connection.create` before the app sees it,
 //! and a registration naming RDM's own Node RPC or gossip ALPN is refused at bind.
 
 use rdm_admin::admin::{start_with, AdminConfig, Running};

@@ -44,7 +44,7 @@ async fn caller(nodes: &[ResolvedNode]) -> (Arc<NodeRpcClient>, iroh::Endpoint) 
 }
 
 /// The ids of the connections a node holds: its latest Direct per destination that is `connected`,
-/// and its active Proxies (the open entries `node.connections.delete` names).
+/// and its active Proxies (the open entries `node.connection.delete` names).
 fn own_ids(held: &rdm_core::connections::ConnectionsHeld) -> BTreeSet<String> {
     held.own_latest_directs()
         .into_iter()
@@ -227,19 +227,19 @@ fn labels(l: &[&str]) -> BTreeSet<String> {
 
 /// CONTRACT (Q167 R-RD2: a set field matches when it carries the value, a repeated property is all
 /// of, one pair's values any of, `config.<key>` one dot into the config map; R-TG1, node-rpc-envelope.md
-/// node.tags: "`node.tags.create { label | [labels] }` adds one label or a list; `node.tags.delete {
+/// node.tags: "`node.tag.create { label | [labels] }` adds one label or a list; `node.tag.delete {
 /// All | [labels] }` removes every label or the named ones ... Create is a blind put of that key, so
 /// creating a label the node already carries is ignored and writes no duplicate"): a caller's
-/// `node.tags.create {gold, ssd}` of the Day-0 admin ends `TagsCreated` carrying nothing already, and
+/// `node.tag.create {gold, ssd}` of the Day-0 admin ends `TagsCreated` carrying nothing already, and
 /// its `node.config.update {zone: eu-1, rack.row: 7}` ends `ConfigUpdated`; then `node.get
 /// [config.zone: eu-1]` and `[config.rack.row: 7]` answer the admin and `[config.zone: us-2]` nothing;
 /// `[tags: gold] [tags: ssd]` (all of) answers the admin and `[tags: gold] [tags: blue]` nothing;
 /// `[tags: gold, silver]` (any of) answers the admin and `[tags: blue, silver]` nothing; each with
-/// `[mesh: mesh1]` the same, and with `[mesh: mesh2]` nothing. `node.tags.create {ssd}` again ends
-/// `TagsCreated` naming ssd as already carried. `node.tags.delete {gold, green}` ends `TagsDeleted`
+/// `[mesh: mesh1]` the same, and with `[mesh: mesh2]` nothing. `node.tag.create {ssd}` again ends
+/// `TagsCreated` naming ssd as already carried. `node.tag.delete {gold, green}` ends `TagsDeleted`
 /// naming green as not carried, and gold no longer matches. A create whose label is not a label
 /// (`Gold`) reaching the mesh-primary is refused `RejectedTags` naming it; a read whose tag value is
-/// not a label is refused `RejectedFilter` naming the pair. `node.tags.delete { All }` leaves the
+/// not a label is refused `RejectedFilter` naming the pair. `node.tag.delete { All }` leaves the
 /// admin no label and matched by none. Each read's `via-get` span names its pairs and how many nodes
 /// it answered. What must NOT happen: a label lost, a removed label still matching, all-of read as
 /// any-of, or a config key answered by a node whose config lacks it.
@@ -305,8 +305,8 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
         let deleted = |not: &[&str]| StatusReply::TagsDeleted { node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone(), not_carried: labels(not) };
         let tags = |vals: &[&str]| Filter::new().eq("tags", vals.iter().map(|v| v.to_string()));
 
-        // node.tags.create {gold, ssd} and node.config.update {zone: eu-1, rack.row: 7}.
-        let reply = nodes.tags_create(&birth, &me.node.node_id, &route, &labels(&["gold", "ssd"])).await.expect("node.tags.create answered");
+        // node.tag.create {gold, ssd} and node.config.update {zone: eu-1, rack.row: 7}.
+        let reply = nodes.tags_create(&birth, &me.node.node_id, &route, &labels(&["gold", "ssd"])).await.expect("node.tag.create answered");
         assert_eq!(reply, created(&[]));
         let config: std::collections::BTreeMap<String, String> = [("zone", "eu-1"), ("rack.row", "7")].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let reply = NodeRpc::new(&client).config_update(&me.node.node_id, &route, &birth, config.clone(), &rdm_transport::CallOptions::default()).await.expect("node.config.update answered");
@@ -326,12 +326,12 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
         assert!(matching(tags(&["blue", "silver"])).await.is_empty(), "[tags: blue, silver] answers nothing");
 
         // A label the node already carries is ignored and named.
-        let reply = nodes.tags_create(&birth, &me.node.node_id, &route, &labels(&["ssd"])).await.expect("node.tags.create answered");
+        let reply = nodes.tags_create(&birth, &me.node.node_id, &route, &labels(&["ssd"])).await.expect("node.tag.create answered");
         assert_eq!(reply, created(&["ssd"]), "ssd is already carried");
         assert_eq!(one().await.tags, labels(&["gold", "ssd"]), "nothing changes");
 
-        // node.tags.delete {gold, green}: green is not carried.
-        let reply = nodes.tags_delete(&birth, &me.node.node_id, &route, &TagScope::Labels(labels(&["gold", "green"]))).await.expect("node.tags.delete answered");
+        // node.tag.delete {gold, green}: green is not carried.
+        let reply = nodes.tags_delete(&birth, &me.node.node_id, &route, &TagScope::Labels(labels(&["gold", "green"]))).await.expect("node.tag.delete answered");
         assert_eq!(reply, deleted(&["green"]));
         assert!(matching(tags(&["gold"])).await.is_empty(), "[tags: gold] answers nothing once gold is deleted");
         assert_eq!(matching(tags(&["ssd", "gold"])).await, mine, "[tags: ssd, gold] answers the admin once");
@@ -347,8 +347,8 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
         }
         assert_eq!(one().await.tags, labels(&["ssd"]), "a refused create changes nothing");
 
-        // node.tags.delete { All }.
-        let reply = nodes.tags_delete(&birth, &me.node.node_id, &route, &TagScope::All).await.expect("node.tags.delete answered");
+        // node.tag.delete { All }.
+        let reply = nodes.tags_delete(&birth, &me.node.node_id, &route, &TagScope::All).await.expect("node.tag.delete answered");
         assert_eq!(reply, deleted(&[]));
         assert!(one().await.tags.is_empty(), "the admin carries no label");
         assert!(matching(tags(&["ssd"])).await.is_empty(), "[tags: ssd] answers nothing");
@@ -383,7 +383,7 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
 /// CONTRACT (Q167 R-RD7: the node is `node.connection.get`'s address, the filter matches the connection
 /// rows): an rpc node answers `node.connection.get { node }` of its exact birth itself, with exactly the
 /// connections it holds (its latest Direct per destination that is connected and its active
-/// Proxies), named by the minted ids `node.connections.delete` names, its route to its admin among
+/// Proxies), named by the minted ids `node.connection.delete` names, its route to its admin among
 /// them; the answer names the node by the name it holds. `[destination: mesh1.admin.1] [kind:
 /// direct]` answers the route to its admin alone, `[kind: proxy]` nothing, and `[state: open]` (no
 /// state) is refused naming the pair. What must NOT happen: a control API in the path, or a

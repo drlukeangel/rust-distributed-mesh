@@ -1,5 +1,5 @@
 //! Data-plane `Connections` (`i148`): one endpoint, RDM owns every registered `Alpn` and the
-//! accept loop, with `node.connections.admit` and the intent handshake on the first bi-stream.
+//! accept loop, with `node.connection.create` and the intent handshake on the first bi-stream.
 //!
 //! `iroh` never crosses this surface: [`SendStream`] and [`RecvStream`] wrap QUIC bi-streams and
 //! surface [` finish`](SendStream::finish), [`reset`](SendStream::reset) and [`stop`](RecvStream::stop)
@@ -123,7 +123,7 @@ pub enum ConnectionKind {
 pub enum Closed {
     /// The peer closed the connection or deleted.
     PeerLeft,
-    /// Closed by `node.connections.delete`.
+    /// Closed by `node.connection.delete`.
     ConnectionsDeleted,
     /// The carrier leg of a Proxy tunnel closed.
     CarrierGone,
@@ -211,7 +211,7 @@ pub enum ConnectError {
         /// The acceptor's refusal reason.
         reason: String,
     },
-    /// This birth's connections have been deleted (`node.connections.delete All`).
+    /// This birth's connections have been deleted (`node.connection.delete All`).
     #[error("connections deleted")]
     Deleted,
     /// The destination answered as another incarnation than `open` requested.
@@ -681,7 +681,7 @@ impl ConnectionsRegistry {
         Ok(Connections { dialer, acceptor })
     }
 
-    /// Block new outbound connections (`node.connections.delete All`).
+    /// Block new outbound connections (`node.connection.delete All`).
     pub fn block_new_connections(&self) {
         self.inner.deleted.store(true, Ordering::SeqCst);
     }
@@ -692,7 +692,7 @@ impl ConnectionsRegistry {
     }
 
     /// Still-open Proxy tunnels whose route in `held` was superseded by Direct restoration (§10),
-    /// tagged with `reason: Some("route: retired")` for `node.connection.get` and `node.connections.delete`.
+    /// tagged with `reason: Some("route: retired")` for `node.connection.get` and `node.connection.delete`.
     pub fn held_open_tunnels(&self) -> Vec<NodeConnection> {
         let active = self.inner.active.lock().unwrap();
         let held = self.inner.sink.held();
@@ -744,7 +744,7 @@ impl ConnectionsRegistry {
         self.inner.active.lock().unwrap().values().filter_map(|e| e.row.clone()).collect()
     }
 
-    /// Close an active data-plane connection by its [`ConnectionId`] (`node.connections.delete`),
+    /// Close an active data-plane connection by its [`ConnectionId`] (`node.connection.delete`),
     /// waking its streams and [`Connection::closed`] with `reason`.
     pub fn close_by_id(&self, id: &ConnectionId, reason: Closed) -> bool {
         let entry = self.inner.active.lock().unwrap().remove(id);
@@ -756,7 +756,7 @@ impl ConnectionsRegistry {
         }
         let _ = entry.closed_tx.send(Some(reason.clone()));
         let (code, msg) = match &reason {
-            Closed::ConnectionsDeleted => (CLOSE_CODE_CONNECTIONS_DELETED, "node.connections.delete"),
+            Closed::ConnectionsDeleted => (CLOSE_CODE_CONNECTIONS_DELETED, "node.connection.delete"),
             Closed::CarrierGone => (CLOSE_CODE_CARRIER_GONE, "carrier-gone"),
             Closed::PeerLeft => (CLOSE_CODE_PEER_LEFT, "peer-left"),
             Closed::Refused { reason } => (CLOSE_CODE_REFUSED, reason.as_str()),
@@ -786,7 +786,7 @@ impl ConnectionsRegistry {
                 let _ = entry.closed_tx.send(Some(Closed::ConnectionsDeleted));
                 entry.conn.close(
                     iroh::endpoint::VarInt::from_u32(CLOSE_CODE_CONNECTIONS_DELETED),
-                    b"node.connections.delete",
+                    b"node.connection.delete",
                 );
                 if let Some(row) = entry.row {
                     self.emit_tunnel_ended_if_needed(&row);
@@ -795,7 +795,7 @@ impl ConnectionsRegistry {
             }
         }
         if !rows.is_empty() {
-            self.inner.sink.record_drops(&rows, "node.connections.delete");
+            self.inner.sink.record_drops(&rows, "node.connection.delete");
         }
         ids
     }
@@ -2175,7 +2175,7 @@ impl Connection {
         }
     }
 
-    /// The connection row's id (`node.connection.get` lists it; `node.connections.delete` closes it).
+    /// The connection row's id (`node.connection.get` lists it; `node.connection.delete` closes it).
     pub fn id(&self) -> &ConnectionId {
         &self.inner.id
     }
@@ -2277,7 +2277,7 @@ fn classify_conn_err(inner: &ConnectionInner, err: &iroh::endpoint::ConnectionEr
         iroh::endpoint::ConnectionError::ApplicationClosed(frame) => {
             let code = u32::try_from(frame.error_code.into_inner()).unwrap_or(0);
             let reason_str = String::from_utf8_lossy(&frame.reason).into_owned();
-            if code == CLOSE_CODE_CONNECTIONS_DELETED || reason_str == "node.connections.delete" {
+            if code == CLOSE_CODE_CONNECTIONS_DELETED || reason_str == "node.connection.delete" {
                 Closed::ConnectionsDeleted
             } else if code == CLOSE_CODE_CARRIER_GONE {
                 Closed::CarrierGone

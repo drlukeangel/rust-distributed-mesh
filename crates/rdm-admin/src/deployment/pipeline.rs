@@ -7,7 +7,7 @@
 //!   -> MakeRuntimeFactAvailableToBirth -> WaitForBind
 //!   -> PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata -> WaitForMeshJoin
 //!   -> WaitForNodeReady -> Complete
-//! delete: StopNode (stop-node to the exact birth: its node.connections.delete { All }, then its
+//! delete: StopNode (stop-node to the exact birth: its node.connection.delete { All }, then its
 //!   transport cut; the `Stopped` reply carries the All's ConnectionsReceipt)
 //!   -> AwaitNodeLeft (its `Stopped` reply, bounded; a deadline is an arm, never a failure)
 //!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
@@ -235,7 +235,7 @@ pub enum DeleteStep {
     /// The pre-notice (a removal only): the executor holds the operation; the node is
     /// found and not routable.
     NodeDeleting,
-    /// `node.connections.delete { All }` to the exact birth through its mesh-primary: graceful
+    /// `node.connection.delete { All }` to the exact birth through its mesh-primary: graceful
     /// closure of every open connection; the process keeps running.
     DeleteConnections,
     /// `stop-node` to the exact birth: enter `Leaving` and shut down, with no implicit connections delete.
@@ -483,7 +483,7 @@ pub trait NodeObserver: Send + Sync {
     async fn ready_blocker(&self, _node: &Node) -> Option<String> {
         None
     }
-    /// Send `cmd` (`node.connections.delete` or `stop-node`) to the exact birth over Node RPC, opening the
+    /// Send `cmd` (`node.connection.delete` or `stop-node`) to the exact birth over Node RPC, opening the
     /// command before the send so its completion finds it. Answers what the call established,
     /// never a guess: the birth admitted it, or by name why nothing was established. The reply is
     /// admission, not completion.
@@ -581,7 +581,7 @@ pub enum StorageDisposition {
     PreservedNoMeta {},
 }
 
-/// What one directed command (`node.connections.delete`, `stop-node`, `start-node`) established at
+/// What one directed command (`node.connection.delete`, `stop-node`, `start-node`) established at
 /// the exact birth: its step's receipt. Admission is not completion.
 ///
 /// An arm with no field is written `Arm {}`: an internally tagged enum ignores a field on a unit arm
@@ -593,13 +593,13 @@ pub enum CommandAdmission {
     Admitted {},
     /// The birth answered `AlreadyApplied`: the same operation was admitted before.
     AlreadyAdmitted {},
-    /// The birth answered `stop-node` with `Stopped`: its `node.connections.delete { All }`
+    /// The birth answered `stop-node` with `Stopped`: its `node.connection.delete { All }`
     /// completed, it cut its transport and is stopped, and this is what that `All` established.
     Stopped {
         /// The `All`'s receipt.
         receipt: rdm_core::status::ConnectionsReceipt,
     },
-    /// The birth answered `node.connections.delete { All }` with `node.connections.deleted`.
+    /// The birth answered `node.connection.delete { All }` with `node.connections.deleted`.
     ConnectionsDeleted {
         /// What the closure established.
         receipt: rdm_core::status::ConnectionsReceipt,
@@ -785,7 +785,7 @@ pub struct CommandContext {
     pub build_id: String,
     /// The Build attempt that holds it.
     pub attempt: u32,
-    /// `node.connections.delete:<path>` or `node.stop:<path>`.
+    /// `node.connection.delete:<path>` or `node.stop:<path>`.
     pub operation: String,
 }
 
@@ -882,7 +882,7 @@ pub struct LaunchTemplate {
     /// admissions read: every launch carries the set as it stands at the launch (`RDM_ROOTS`), one
     /// root, or two during a root rotation. Empty for a launcher configured with no certs.
     pub roots: rdm_transport::connections::RootSet,
-    /// The bound of a `node.connections.delete { All }` every launch carries: the launching admin's
+    /// The bound of a `node.connection.delete { All }` every launch carries: the launching admin's
     /// own (`AdminConfig::connections_delete_deadline`).
     pub connections_delete_deadline: Duration,
     /// The app's declared secrets and the values the launching admin holds (Q150): a launch sets the
@@ -2015,18 +2015,18 @@ impl DeploymentPipeline<'_> {
         Ok(Created { node, handle })
     }
 
-    /// A standalone `node.connections.delete { All }` (node-connections-delete.md):
-    /// `node.connections.delete:<path>`. A node-admin target that held a seat had it moved by
+    /// A standalone `node.connection.delete { All }` (node-connections-delete.md):
+    /// `node.connection.delete:<path>`. A node-admin target that held a seat had it moved by
     /// node.primary.update before this runs (the fabric-primary's drive, `crate::executor::seat_move`);
     /// the exact birth's mesh-primary sets connections-deleting at admission and holds the birth's
     /// `node.connections.deleted` with its receipt. The process keeps running; nothing
     /// stops it and nothing is deleted.
     pub fn delete_connections<'a>(&'a self, req: &'a DeleteRequest) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>> {
         use tracing::Instrument;
-        let span = self.pipeline_span("node.connections.delete", &req.build_id, &req.node.name, req.attempt);
+        let span = self.pipeline_span("node.connection.delete", &req.build_id, &req.node.name, req.attempt);
         Box::pin(async move {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.connections.delete:{name}")).await?;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.connection.delete:{name}")).await?;
             let node = req.node.clone();
             let ctx = CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: run.operation.clone() };
             let _: CommandAdmission = self
@@ -2036,7 +2036,7 @@ impl DeploymentPipeline<'_> {
                     self.command_op(&ctx, &node)?;
                     match self.observer.send_command(&node, crate::node_commands::NodeCommand::DeleteConnections, &ctx).await {
                         a @ CommandAdmission::ConnectionsDeleted { .. } => Ok(a),
-                        other => Err(StepFailure::coded(other.code(), format!("{}: node.connections.delete {{ All }} ended {other:?}; no node.connections.deleted is held", node.name))),
+                        other => Err(StepFailure::coded(other.code(), format!("{}: node.connection.delete {{ All }} ended {other:?}; no node.connections.deleted is held", node.name))),
                     }
                 })
                 .await?;
@@ -2278,7 +2278,7 @@ impl DeploymentPipeline<'_> {
             self.terminate_step_when(&mut run, &node, handle, Terminate::Always, TerminationMode::Immediate).await?
         } else {
             // The two halves of the shutdown leg are separate operations (lifecycles/node-connections-delete.md, node-stop.md):
-            // node.connections.delete and its node.connections.deleted, then stop-node, its node-left reply and the provider's
+            // node.connection.delete and its node.connections.deleted, then stop-node, its node-left reply and the provider's
             // terminal proof.
             self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
         };
@@ -2370,10 +2370,10 @@ impl DeploymentPipeline<'_> {
     }
 
     /// The command identity for `cmd` on `node` in this run: the Build, the attempt and the
-    /// operation (`node.connections.delete:<path>` / `node.stop:<path>`).
+    /// operation (`node.connection.delete:<path>` / `node.stop:<path>`).
     fn command_context(&self, run: &Run<'_>, cmd: crate::node_commands::NodeCommand, node: &Node) -> CommandContext {
         let operation = match cmd {
-            crate::node_commands::NodeCommand::DeleteConnections => format!("node.connections.delete:{}", node.name),
+            crate::node_commands::NodeCommand::DeleteConnections => format!("node.connection.delete:{}", node.name),
             crate::node_commands::NodeCommand::Stop => rdm_client::StopContext::new(run.build_id.clone(), run.attempt, node.name.clone()).operation(),
             crate::node_commands::NodeCommand::Start => rdm_client::StartContext::new(run.build_id.clone(), run.attempt, node.name.clone()).operation(),
         };
@@ -2708,8 +2708,8 @@ impl DeploymentPipeline<'_> {
     }
 
     /// A property of `node` a Build applies in place (build.md §1, "The Build applies the diff") as the
-    /// Build operation `operation` (`node.config.update:<path>`, `node.tags.create:<path>`,
-    /// `node.tags.delete:<path>`): its one step `step`, the put at the node's mesh-primary, then
+    /// Build operation `operation` (`node.config.update:<path>`, `node.tag.create:<path>`,
+    /// `node.tag.delete:<path>`): its one step `step`, the put at the node's mesh-primary, then
     /// `Complete`. No runtime is touched.
     pub fn apply_in_place<'a, F>(&'a self, build_id: &'a BuildId, attempt: u32, node: &'a PathName, operation: String, step: &'static str, put: F) -> futures_util::future::BoxFuture<'a, Result<(), PipelineError>>
     where
@@ -2954,7 +2954,7 @@ mod tests {
             match cmd {
                 crate::node_commands::NodeCommand::Stop => self.stop.clone(),
                 crate::node_commands::NodeCommand::Start => CommandAdmission::Started {},
-                crate::node_commands::NodeCommand::DeleteConnections => CommandAdmission::NotSent { reason: "this cell sends no node.connections.delete".into() , code: rdm_core::outcome::Code::FailedPrecondition },
+                crate::node_commands::NodeCommand::DeleteConnections => CommandAdmission::NotSent { reason: "this cell sends no node.connection.delete".into() , code: rdm_core::outcome::Code::FailedPrecondition },
             }
         }
     }
@@ -2971,7 +2971,7 @@ mod tests {
     /// (`caller = delete`, `os-stopped`), the skip is named (`rdm.node_admin.node.delete.via-os-stopped`),
     /// and the run's receipts are NodeDeleting, TerminateRuntime, NodeDeleted,
     /// RemoveTopologyMembership, Complete: one terminate of the exact runtime, whose `Exited` is the
-    /// proof. Must NOT happen: a `stop-node` or `node.connections.delete` sent to the suspended birth, a
+    /// proof. Must NOT happen: a `stop-node` or `node.connection.delete` sent to the suspended birth, a
     /// StopNode or AwaitNodeLeft receipt.
     /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:14
     /// "`node.delete`, step 2: before sending `node.stop`, the executor inspects the birth's runtime.

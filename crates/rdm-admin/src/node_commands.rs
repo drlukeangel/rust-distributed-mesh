@@ -21,7 +21,7 @@ use tokio::sync::watch;
 /// Which of the two commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeCommand {
-    /// `node.connections.delete { All }`; its reply is `node.connections.deleted`.
+    /// `node.connection.delete { All }`; its reply is `node.connections.deleted`.
     DeleteConnections,
     /// `stop-node`; completes with `node-left`, which is the reply of the call.
     Stop,
@@ -33,7 +33,7 @@ impl NodeCommand {
     /// The operation prefix of the command's operation id.
     pub fn operation_prefix(self) -> &'static str {
         match self {
-            Self::DeleteConnections => "node.connections.delete",
+            Self::DeleteConnections => "node.connection.delete",
             Self::Stop => "stop-node",
             Self::Start => "start-node",
         }
@@ -83,7 +83,7 @@ pub enum Accepted {
 }
 
 /// The commands this admin has sent and not forgotten, and the bound of the
-/// `node.connections.delete { All }` a commanded birth runs (this admin's own,
+/// `node.connection.delete { All }` a commanded birth runs (this admin's own,
 /// `AdminConfig::connections_delete_deadline`, which every birth it launches carries).
 pub struct CommandView {
     /// Each open command: what resolves its completion, and the instant it was first sent.
@@ -104,7 +104,7 @@ pub struct CommandView {
     row_writes: tokio::sync::Mutex<()>,
 }
 
-/// A view whose commanded births run their `node.connections.delete { All }` under the launch default.
+/// A view whose commanded births run their `node.connection.delete { All }` under the launch default.
 impl Default for CommandView {
     fn default() -> Self {
         Self::new(rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE)
@@ -112,7 +112,7 @@ impl Default for CommandView {
 }
 
 impl CommandView {
-    /// A view whose commanded births run their `node.connections.delete { All }` under `connections_delete_deadline`.
+    /// A view whose commanded births run their `node.connection.delete { All }` under `connections_delete_deadline`.
     pub fn new(connections_delete_deadline: Duration) -> Self {
         Self { open: Mutex::new(HashMap::new()), unanswered: Mutex::new(HashMap::new()), connections_delete_deadline, blocked: watch::channel(false).0, rows_held: watch::channel(false).0, row_writes: tokio::sync::Mutex::new(()) }
     }
@@ -165,7 +165,7 @@ impl CommandView {
         let _ = self.blocked.subscribe().wait_for(|b| !*b).await;
     }
 
-    /// How long a command whose birth runs a `node.connections.delete { All }` (the command itself,
+    /// How long a command whose birth runs a `node.connection.delete { All }` (the command itself,
     /// or a stop) waits for its reply: the bound the birth runs it under, and 10 s for the rest of the step.
     pub fn connections_delete_reply(&self) -> Duration {
         self.connections_delete_deadline + Duration::from_secs(10)

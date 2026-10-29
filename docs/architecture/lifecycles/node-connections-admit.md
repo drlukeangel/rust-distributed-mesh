@@ -1,8 +1,8 @@
-# node.connections.admit
+# node.connection.create
 
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [Fabric certs](../fabric-certs.md#on-a-connection) · [Connections](../connections.md)
 
-A primitive. `node.connections.admit` is the acceptor's verification of a dialer's member cert on an
+A primitive. `node.connection.create` is the acceptor's verification of a dialer's member cert on an
 inbound connection of a registered product ALPN, before it serves anything on that connection. It
 answers `admitted` or `refused { reason }`, and the answer is a connection fact. It is not a Node RPC
 op: it runs on the connection's first bi-stream, in RDM's framing, inside the accept loop RDM owns. It
@@ -21,7 +21,7 @@ identity. The cert check is the credential R-RX1 assumed, not a sender gate.
 | Target | One inbound connection, identified by the dialer's endpoint key and the connection id |
 | Exchange | The dialer writes its member cert on the connection's first bi-stream and keeps the send half open; the acceptor reads it within one staleness floor (`RDM_STALENESS_MS`, so a slow dial is not refused before QUIC's own idle timer would have reaped a dead one), writes the verdict back on the same stream, then serves or drops. After the verdict the dialer writes its intent on the same stream, `Direct` or `Tunnel { origin, destination }` (i148), and the acceptor answers `Opened { peer }` or `Refused { reason }`; application streams are admissible only after `Opened`, and the control stream stays open for the connection's life: it is never closed after the exchange, and its close is the connection's |
 | Verification | The member's signature against its issuer's key; the issuer's signature against the fabric CA's key and the CA's against a root of the node's set; the issuer's mesh is the first segment of the member's path.name; the three expiries (CA, issuer, member), judged on rafka-time (else `local-bootstrap`) with one staleness floor of skew on either side |
-| Result | `admitted`: the connection is served. `refused { reason }` with `no-credential`, `ca-bad-signature`, `ca-expired`, `issuer-bad-signature`, `issuer-expired`, `issuer-mesh-mismatch`, `bad-signature` or `expired`: the verdict is written, then the connection is closed |
+| Result | `admitted`: the connection is served. `refused { reason }` with `no-credential`, `ca-bad-signature`, `ca-expired`, `issuer-bad-signature`, `issuer-expired`, `issuer-mesh-mismatch`, `member-outlives-issuer`, `issuer-outlives-ca`, `bad-signature` or `expired`: the verdict is written, then the connection is closed |
 | Row | A refusal is written as the connection fact `Refused` with its reason, source the dialer when a topology view names its key, destination the acceptor; a dialer no view names is refused with the span only, no row ([connections.md §1.2](../connections.md#12-connection-state)); an admission is the ordinary `Connected` fact |
 | Never | Anything about the dialer inferred beyond this one connection: `Refused` is the acceptor's fact about one dial, never proof about the dialer; no status set, no frame published, no mark on any node |
 | `NoCerts` | A node-admin started `NoCerts` admits every connection by name, spanned `via-no-certs-configured`; an empty cert presented to a fabric with certs is `no-credential` |

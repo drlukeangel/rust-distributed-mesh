@@ -2137,7 +2137,7 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
     assert_eq!(next_d.kind(), ConnectionKind::Direct);
 
     // 3. Before delete, held_open_tunnels lists the tunnel by its row id with `route: retired`,
-    // and node.connections.delete by that id closes the tunnel without writing a second Disconnected row:
+    // and node.connection.delete by that id closes the tunnel without writing a second Disconnected row:
     let tunnel_id = tunnel_s.id().clone();
     let tunnel_list = source.registry.held_open_tunnels();
     assert_eq!(tunnel_list.len(), 1);
@@ -2175,11 +2175,11 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
 }
 
 /// CONTRACT (connections.md §10: "A stream Proxy (i148, a tunnel) outlives its retirement ...
-/// `node.connection.get` lists it by its row id with `route: retired`, and `node.connections.delete
+/// `node.connection.get` lists it by its row id with `route: retired`, and `node.connection.delete
 /// { All | [ids] }` closes it by that id like any other. Its end writes no second row; it is spanned
 /// `rdm.node.connections.delete.via-tunnel-ended`"): a tunnel opened through the carrier, its route
 /// then retired by a Direct Connected (`Disconnected(direct-restored)` held), is closed by
-/// `node.connections.delete { [its id] }`: its end is one `via-tunnel-ended` span naming the entry,
+/// `node.connection.delete { [its id] }`: its end is one `via-tunnel-ended` span naming the entry,
 /// the source, the carrier, the destination and the alpn, and the log holds the one Proxy
 /// Disconnected the retirement wrote. Must NOT happen: the end unspanned, spanned twice, or a second
 /// Proxy Disconnected row.
@@ -2295,13 +2295,13 @@ fn a_carriers_tunnel_span_is_exported_once_the_tunnel_opens_while_the_tunnel_sti
     assert_eq!(attrs, vec![names.0, names.1, names.2, String::from_utf8_lossy(ALPN_A).to_string(), entry, "opened".to_string()], "the carrier's tunnel span names the tunnel and its outcome: {span}");
 }
 
-/// CONTRACT (connections.md §10: "`node.connections.delete { All | [ids] }` closes it by that id like
+/// CONTRACT (connections.md §10: "`node.connection.delete { All | [ids] }` closes it by that id like
 /// any other"; §1: the carrier carries traffic for as long as the connection stands): a Proxy open
-/// through the carrier is deleted by id on the source (`node.connections.delete { [its id] }`). The
+/// through the carrier is deleted by id on the source (`node.connection.delete { [its id] }`). The
 /// carrier's two legs close: the destination's connection ends within the bound; and the carrier ends
 /// its tunnel on its own span, `rdm.node.connections.delete.via-carrier-tunnel-ended`, naming the
 /// entry, the source, the carrier, the destination and the alpn, and the close the source's leg
-/// carried (`node.connections.delete`), in the opener's trace. Must NOT happen: the destination's leg
+/// carried (`node.connection.delete`), in the opener's trace. Must NOT happen: the destination's leg
 /// left open, or the carrier's tunnel ending unspanned.
 #[test]
 fn a_proxy_deleted_by_id_closes_the_carriers_legs_and_ends_its_tunnel_on_the_carriers_span() {
@@ -2336,7 +2336,7 @@ fn a_proxy_deleted_by_id_closes_the_carriers_legs_and_ends_its_tunnel_on_the_car
     let ended: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node.connections.delete.via-carrier-tunnel-ended").collect();
     assert_eq!(ended.len(), 1, "the carrier's tunnel ends on one span of its own: {ended:#?}");
     let attrs: Vec<String> = ["entry", "source", "carrier", "destination", "alpn", "closed"].iter().map(|k| ended[0]["attributes"][*k].as_str().unwrap_or_default().to_string()).collect();
-    assert_eq!(attrs, vec![entry.clone(), names.0, names.1, names.2, String::from_utf8_lossy(ALPN_A).to_string(), "node.connections.delete".to_string()], "{}", ended[0]);
+    assert_eq!(attrs, vec![entry.clone(), names.0, names.1, names.2, String::from_utf8_lossy(ALPN_A).to_string(), "node.connection.delete".to_string()], "{}", ended[0]);
     let source_tunnel = spans.iter().find(|s| s["name"] == "rdm.node.connections.create.via-tunnel" && s["attributes"]["entry"] == entry.as_str() && s["attributes"]["kind"] == "proxy").expect("the source's tunnel span");
     assert_eq!(ended[0]["trace_id"], source_tunnel["trace_id"], "the carrier's tunnel end is in the opener's trace");
     assert!(far_closed.is_some(), "the carrier closed the destination's leg once the source's leg was deleted");

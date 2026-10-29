@@ -100,7 +100,7 @@ async fn stop(root: &Running, launch: &Launch) -> StatusReply {
 // @feature: node-lifecycle
 /// CONTRACT: an rpc node stopped by its mesh-primary's `StopNode` keeps its process live, and the
 /// termination signal that follows (a delete's `TerminateRuntime`) ends its process without running its stop
-/// again: its `node.connections.delete { All }` ran once, at the command, nothing is owed on the
+/// again: its `node.connection.delete { All }` ran once, at the command, nothing is owed on the
 /// signal, and its mesh-primary holds it `Stopped`.
 /// Must NOT happen: the signal running node-stop.md's steps a second time on the stopped birth and
 /// owing `ConnectionsDeleting` after its `Stopped` (release run b7548453, rshape lifecycle:
@@ -142,7 +142,7 @@ fn a_stopped_births_signal_runs_no_second_stop() {
             spans.0.lock().unwrap().values().filter(|(n, _, f)| n == name && f.get("node").map(String::as_str) == Some("mesh1.rpc.1")).map(|(_, _, f)| f.clone()).collect()
         };
         let alls = of("rdm.node_admin.connection.delete.via-stop");
-        assert_eq!(alls.len(), 1, "its node.connections.delete {{ All }} ran once, at the command: {alls:#?}");
+        assert_eq!(alls.len(), 1, "its node.connection.delete {{ All }} ran once, at the command: {alls:#?}");
         let owed = of("rdm.node_rpc.status.update.via-owed-on-signal");
         assert!(owed.is_empty(), "a stopped birth owes nothing on its signal: {owed:#?}");
         let held = root.status_authority().unwrap().declared.lock().unwrap().node(&launch.node_id, &launch.incarnation);
@@ -173,7 +173,7 @@ fn exported(dir: &std::path::Path) -> Vec<serde_json::Value> {
 /// still open"), over the connection to its mesh-primary its transport cut spares (node-stop.md
 /// "Transport cut", Q206), and ends once each is answered or its receiver is proven gone (Q206): each
 /// declaration is applied by the mesh-primary and its call answered, the last within a second of the
-/// stop's `node.connections.delete { All }`, and the process ends within a second of the signal.
+/// stop's `node.connection.delete { All }`, and the process ends within a second of the signal.
 /// Must NOT happen: a declaration's call ending `CANCELLED` `caller-gone` at the process's end, its
 /// reply's connection cut under it by the stop's own transport cut (Rafka 141, trace
 /// 447b70d402fa6dc7c3f601b684d6d8f4: ConnectionsDeleting applied at 6.4 ms, its reply's write
@@ -219,7 +219,7 @@ fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
     let named = |name: &'static str| spans.iter().filter(move |s| s["name"] == name);
     let attr = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or_default().to_string();
     let (start, end) = (|s: &serde_json::Value| s["start_unix_nano"].as_u64().unwrap_or(0), |s: &serde_json::Value| s["end_unix_nano"].as_u64().unwrap_or(0));
-    let all = named("rdm.node_admin.connection.delete.via-stop").find(|s| attr(s, "node") == "mesh1.rpc.1").expect("the signal stop's node.connections.delete { All }");
+    let all = named("rdm.node_admin.connection.delete.via-stop").find(|s| attr(s, "node") == "mesh1.rpc.1").expect("the signal stop's node.connection.delete { All }");
     let from = start(all);
     // Each declaration the stop owes, applied by the mesh-primary.
     for state in ["ConnectionsDeleting", "Stopped"] {
@@ -236,7 +236,7 @@ fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
     }
     let last = calls.iter().map(|c| end(c)).max().unwrap_or(from);
     let took = Duration::from_nanos(last.saturating_sub(from));
-    assert!(took < BOUND, "the stop's declarations are answered {took:?} after its node.connections.delete {{ All }} began, past {BOUND:?}");
+    assert!(took < BOUND, "the stop's declarations are answered {took:?} after its node.connection.delete {{ All }} began, past {BOUND:?}");
     assert!(stopped_in < BOUND, "the signal stop ended its process {stopped_in:?} after the signal, past {BOUND:?}");
     assert_eq!(held, Some(NodeState::Stopped), "its mesh-primary holds it Stopped from its declaration");
 }

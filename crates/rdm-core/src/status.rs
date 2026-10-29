@@ -454,7 +454,7 @@ pub enum StatusRequest {
         /// The new name, without its path (`2`, `2.old`, `9`).
         name: String,
     },
-    /// `node.connections.delete` (R-CR3; node-stop.md step 3 is its `All`): a caller asks the exact
+    /// `node.connection.delete` (R-CR3; node-stop.md step 3 is its `All`): a caller asks the exact
     /// birth's mesh-primary, which commands the birth with the same request and holds its completion
     /// for the birth's rename precondition (R-CR2); the birth itself hard-cuts the connections the
     /// scope names, writing each drop under the name it holds, and answers
@@ -508,7 +508,7 @@ pub enum StatusRequest {
         /// The incarnation of that birth.
         incarnation: IncarnationId,
     },
-    /// `node.tags.create` (node-rpc-envelope.md node.tags; R-TG1): a caller asks the exact birth's
+    /// `node.tag.create` (node-rpc-envelope.md node.tags; R-TG1): a caller asks the exact birth's
     /// mesh-primary, the only writer of its mesh's rows, through a carrier (Forward `0x1A`) when it
     /// cannot reach it directly, to add `labels` to the node's tags. Each label is its own key of the
     /// node store's tags index, a blind put: a label the node already carries is ignored and named in
@@ -527,7 +527,7 @@ pub enum StatusRequest {
         /// The labels added: one or a list, at most [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]).
         labels: BTreeSet<String>,
     },
-    /// `node.tags.delete` (node-rpc-envelope.md node.tags; R-TG1): as [`StatusRequest::CreateTags`],
+    /// `node.tag.delete` (node-rpc-envelope.md node.tags; R-TG1): as [`StatusRequest::CreateTags`],
     /// removing every label (`All`) or the named ones; each removed label's index key is tombstoned.
     /// Answered [`StatusReply::TagsDeleted`] (`node.tags.deleted`) naming any named label the node
     /// did not carry.
@@ -982,11 +982,11 @@ pub fn tags_refusal(tags: &BTreeSet<String>) -> Option<String> {
     tags.iter().find_map(|t| tag_refusal(t))
 }
 
-/// The most connection ids one `node.connections.delete { scope: Connections }` names: a request at
+/// The most connection ids one `node.connection.delete { scope: Connections }` names: a request at
 /// the cap fits the Status request bound, and more is refused by name.
 pub const MAX_CONNECTION_IDS: usize = 64;
 
-/// Which of a birth's connections `node.connections.delete` cuts (R-CR3). Positional order is part
+/// Which of a birth's connections `node.connection.delete` cuts (R-CR3). Positional order is part
 /// of the wire schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnectionScope {
@@ -1018,15 +1018,15 @@ impl ConnectionScope {
     pub fn refusal(&self) -> Option<String> {
         match self {
             Self::All => None,
-            Self::Connections(ids) if ids.is_empty() => Some("node.connections.delete names no connection: Connections needs at least one connection id (All is its own scope)".into()),
-            Self::Connections(ids) if ids.len() > MAX_CONNECTION_IDS => Some(format!("node.connections.delete names {} connections, over the {MAX_CONNECTION_IDS} one request carries", ids.len())),
+            Self::Connections(ids) if ids.is_empty() => Some("node.connection.delete names no connection: Connections needs at least one connection id (All is its own scope)".into()),
+            Self::Connections(ids) if ids.len() > MAX_CONNECTION_IDS => Some(format!("node.connection.delete names {} connections, over the {MAX_CONNECTION_IDS} one request carries", ids.len())),
             Self::Connections(_) => None,
         }
     }
 }
 
-/// Which of a node's tag labels `node.tags.delete` removes (node-rpc-envelope.md, node.tags: "the
-/// same scope shape as `node.connections.delete`"). Positional order is part of the wire schema.
+/// Which of a node's tag labels `node.tag.delete` removes (node-rpc-envelope.md, node.tags: "the
+/// same scope shape as `node.connection.delete`"). Positional order is part of the wire schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TagScope {
     /// Every label the node carries. A tag of its own, never a value in the list.
@@ -1054,18 +1054,18 @@ impl TagScope {
     pub fn refusal(&self) -> Option<String> {
         match self {
             Self::All => None,
-            Self::Labels(labels) if labels.is_empty() => Some("node.tags.delete names no label: Labels needs at least one label (All is its own scope)".into()),
+            Self::Labels(labels) if labels.is_empty() => Some("node.tag.delete names no label: Labels needs at least one label (All is its own scope)".into()),
             Self::Labels(labels) => tags_refusal(labels),
         }
     }
 }
 
-/// Why a `node.tags.create`'s labels are refused, by name, or `None`: at least one label, at most
+/// Why a `node.tag.create`'s labels are refused, by name, or `None`: at least one label, at most
 /// [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]). Whether the node may carry them all is the
 /// writer's decision, from the labels its row already carries.
 pub fn create_tags_refusal(labels: &BTreeSet<String>) -> Option<String> {
     if labels.is_empty() {
-        return Some("node.tags.create names no label: it needs at least one".into());
+        return Some("node.tag.create names no label: it needs at least one".into());
     }
     tags_refusal(labels)
 }
@@ -1115,8 +1115,8 @@ impl StatusRequest {
             Self::GetConnections { .. } => "node.connection.get",
             Self::Get { entity, .. } => entity.read(),
             Self::NodeConfigUpdated { .. } => "node-config-updated",
-            Self::CreateTags { .. } => "node.tags.create",
-            Self::DeleteTags { .. } => "node.tags.delete",
+            Self::CreateTags { .. } => "node.tag.create",
+            Self::DeleteTags { .. } => "node.tag.delete",
             Self::JoinMesh { .. } => "node.mesh.join",
             Self::LeaveMesh { .. } => "node.mesh.leave",
             Self::RenewCert { .. } => "node.cert.renew",
@@ -1161,7 +1161,7 @@ impl NotPrimary {
     }
 }
 
-/// What a `node.connections.delete { All }` established (node-connections-delete.md, "Receipt"): the
+/// What a `node.connection.delete { All }` established (node-connections-delete.md, "Receipt"): the
 /// in-flight count it measured and the connections it closed. `Deadline` records the last observed
 /// count and the connections still open; it never claims zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1349,12 +1349,12 @@ pub enum StatusReply {
         reported: String,
     },
     /// The reply of a `StopNode` call, sent when the stop is done (`node.stopped`): the birth's
-    /// `node.connections.delete { All }` completed, it cut its transport and is stopped, its process
+    /// `node.connection.delete { All }` completed, it cut its transport and is stopped, its process
     /// alive. The receipt is what that `All` established.
     ///
     /// Position 17 on the wire.
     Stopped {
-        /// What the stop's `node.connections.delete { All }` established.
+        /// What the stop's `node.connection.delete { All }` established.
         receipt: ConnectionsReceipt,
     },
     /// The reply of a `StartNode` call: the stopped birth rejoined as itself.
@@ -1471,7 +1471,7 @@ pub enum StatusReply {
     RejectedAdmittingConnections {
         /// The node's status as its mesh-primary holds it (at the cut, when it holds one).
         status: NodeStatus,
-        /// The connections the node still held after its last `node.connections.delete`, at most
+        /// The connections the node still held after its last `node.connection.delete`, at most
         /// [`MAX_REPORTED_CONNECTIONS`]; empty when it holds no cut of every connection.
         held_connections: Vec<ConnectionId>,
     },
@@ -2515,10 +2515,10 @@ mod tests {
         assert!(tags_refusal(&over).is_some_and(|r| r.contains("33 tag labels, over the 32")));
         assert!(TagFilter::All(BTreeSet::new()).refusal().is_some_and(|r| r.contains("names no label")));
         assert!(TagFilter::Any(["Red".to_string()].into()).refusal().is_some_and(|r| r.contains("\"Red\"")));
-        assert!(create_tags_refusal(&BTreeSet::new()).is_some_and(|r| r.contains("node.tags.create names no label")));
+        assert!(create_tags_refusal(&BTreeSet::new()).is_some_and(|r| r.contains("node.tag.create names no label")));
         assert!(create_tags_refusal(&["Red".to_string()].into()).is_some_and(|r| r.contains("\"Red\"")));
         assert_eq!(TagScope::All.refusal(), None);
-        assert!(TagScope::Labels(BTreeSet::new()).refusal().is_some_and(|r| r.contains("node.tags.delete names no label")));
+        assert!(TagScope::Labels(BTreeSet::new()).refusal().is_some_and(|r| r.contains("node.tag.delete names no label")));
         assert!(TagScope::Labels(over.clone()).refusal().is_some_and(|r| r.contains("33 tag labels, over the 32")));
         let long = "x".repeat(4 * Status::MAX_REPLY_FRAME_BYTES);
         let len = Status::encode_reply(&StatusReply::rejected_tags(&long)).unwrap().len();

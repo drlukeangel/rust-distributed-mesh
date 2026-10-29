@@ -33,7 +33,7 @@ start's `Pending` and `Ready`.
 
 ## Status apply
 
-No node status is applied downward. A node declares its own `Pending` and `Ready` ([Status report](#status-report)); `connections-deleting` is entered only by [node.connections.delete](node-connections-delete.md) with `{ scope: All }`; a stop is [node.stop](node-stop.md); how a node leaves the stopped status is [Stopped nodes](states.md#stopped-nodes). `ApplyNodeState` is reserved on the [Status schema](../node-rpc-envelope.md#status-op-0x1b-rdm) and refused by name.
+No node status is applied downward. A node declares its own `Pending` and `Ready` ([Status report](#status-report)); `connections-deleting` is entered only by [node.connection.delete](node-connections-delete.md) with `{ scope: All }`; a stop is [node.stop](node-stop.md); how a node leaves the stopped status is [Stopped nodes](states.md#stopped-nodes). `ApplyNodeState` is reserved on the [Status schema](../node-rpc-envelope.md#status-op-0x1b-rdm) and refused by name.
 
 ## Observability contract
 

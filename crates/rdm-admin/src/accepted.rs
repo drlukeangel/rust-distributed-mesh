@@ -386,7 +386,7 @@ fn replaced_by_target(target: Option<&rdm_core::binding::Binding>, row: Option<&
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AttemptAction {
-    /// `node.connections.delete { All }` of the exact birth at a path; it keeps running
+    /// `node.connection.delete { All }` of the exact birth at a path; it keeps running
     /// (node-connections-delete.md).
     DeleteConnections {
         /// The node.
@@ -756,7 +756,7 @@ pub fn plan_holding(topology: &FabricTopology, observed: &Topology, held: &BTree
 /// birth leaves every view, and a recovered or renamed path names another birth.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ActionProgress {
-    /// A standalone node.connections.delete, stop, start or delete began for its birth: its first step's receipt.
+    /// A standalone node.connection.delete, stop, start or delete began for its birth: its first step's receipt.
     started: bool,
     /// Its `Complete` is receipted for the birth.
     finished: bool,
@@ -794,7 +794,7 @@ impl ActionProgress {
         // completed for the birth.
         if let Some(action @ (AttemptAction::DeleteConnections { path, .. } | AttemptAction::Stop { path, .. } | AttemptAction::Start { path, .. } | AttemptAction::Delete { path, .. })) = &build.action {
             let (operation, first) = match action {
-                AttemptAction::DeleteConnections { .. } => (format!("node.connections.delete:{path}"), "DeleteConnections"),
+                AttemptAction::DeleteConnections { .. } => (format!("node.connection.delete:{path}"), "DeleteConnections"),
                 AttemptAction::Start { .. } => (format!("node.start:{path}"), "StartNode"),
                 // node.delete's one key, whether the birth is deleted stopped or live (`plan_with`).
                 AttemptAction::Delete { .. } => (format!("node.delete:{path}"), "NodeDeleting"),
@@ -962,12 +962,12 @@ pub(crate) fn replacement_pins(replacements: &[BuildOperation], pinned: &[(PathN
 /// §1, "The Build applies the diff": "compares each node's entry with what the node's row records and
 /// applies every property that differs, each by its own operation"), in path order: `node.config.update`
 /// where the entry's `config` differs from the row's, or its `storage` or `placement` from what the row
-/// records (a row written before those fields records none and is not compared); `node.tags.create` of
-/// the labels the entry names and the row does not carry, `node.tags.delete` of those the row carries
+/// records (a row written before those fields records none and is not compared); `node.tag.create` of
+/// the labels the entry names and the row does not carry, `node.tag.delete` of those the row carries
 /// and the entry does not. A property this Build already applied to a path is not planned again (the
 /// last write wins: build.md §1; node-config-update.md, admitted at any time): its config (with its
 /// storage and placement) once its `node.config.update` is `Complete`, its labels once its
-/// `node.tags.create` / `node.tags.delete` is, and every property once its plain create claimed the name (`PrepareStorage`, which writes the
+/// `node.tag.create` / `node.tag.delete` is, and every property once its plain create claimed the name (`PrepareStorage`, which writes the
 /// entry's onto the row: a create whose path no `node.delete` of this Build began, never a replacement's
 /// successor, which claims its seed's). A write the node or a caller makes after it stands until the
 /// next Build. A path `planned` creates, or whose executable the row does not record, is the create's or
@@ -2048,7 +2048,7 @@ mod tests {
     /// CONTRACT (build.md §1: "Rafka's replace steps (one Build of node primitives ...)";
     /// lifecycles/node-replace.md steps 1-3; the Build carrier: completed steps are not rerun): an
     /// accepted Build of steps pins the birth its predecessor path holds and plans its steps in order, each its
-    /// op's own operation (`node.connections.delete:<name>`, `node.mesh.leave:<name>`,
+    /// op's own operation (`node.connection.delete:<name>`, `node.mesh.leave:<name>`,
     /// `node.update:<name>`, `node.stop:<name>.old`, `node.create:<name>`), never a replace operation
     /// and never a generic create or delete beside them. The predecessor's steps carry its pinned
     /// birth, followed through its rename to `.old`; the successor's create carries none (its executor
@@ -2074,7 +2074,7 @@ mod tests {
         let keys: Vec<String> = all.iter().map(BuildOperation::key).collect();
         assert_eq!(
             keys,
-            ["node.connections.delete:mesh1.rpc.1", "node.mesh.leave:mesh1.rpc.1", "node.update:mesh1.rpc.1", "node.stop:mesh1.rpc.1.old", "node.create:mesh1.rpc.1"]
+            ["node.connection.delete:mesh1.rpc.1", "node.mesh.leave:mesh1.rpc.1", "node.update:mesh1.rpc.1", "node.stop:mesh1.rpc.1.old", "node.create:mesh1.rpc.1"]
         );
         assert!(!keys.iter().any(|k| k.starts_with("replace-node:")));
         let receipt = |attempt: u32, operation: &str| BuildStepReceipt {
@@ -2135,7 +2135,7 @@ mod tests {
         }
     }
 
-    /// CONTRACT: a standalone node.connections.delete or stop plans its one operation (`node.connections.delete:<path>` /
+    /// CONTRACT: a standalone node.connection.delete or stop plans its one operation (`node.connection.delete:<path>` /
     /// `node.stop:<path>`) while the view holds the exact birth, never a create, a delete or a repair
     /// of another member whatever the view lacks; a path run by another birth plans nothing.
     #[test]
@@ -2150,7 +2150,7 @@ mod tests {
         let stop = AttemptAction::Stop { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
         assert_eq!(plan(&cur, &o, Some(&connections)).operations, vec![BuildOperation::DeleteConnections { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }]);
         assert_eq!(plan(&cur, &o, Some(&stop)).operations, vec![BuildOperation::StopNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }]);
-        assert_eq!(BuildOperation::DeleteConnections { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }.key(), "node.connections.delete:mesh1.rpc.2");
+        assert_eq!(BuildOperation::DeleteConnections { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }.key(), "node.connection.delete:mesh1.rpc.2");
         assert_eq!(BuildOperation::StopNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }.key(), "node.stop:mesh1.rpc.2");
         // A ConnectionsDeleting or Leaving birth of the path is still the birth the operation acts on.
         for status in [NodeStatus::ConnectionsDeleting, NodeStatus::Leaving] {
@@ -2824,7 +2824,7 @@ mod tests {
     /// operation"; `config` "in place, as node.config.update applies a map", `tags` "in place: the node's
     /// tag rows", `storage`, `placement` "onto the row"): mesh1.rpc.1's entry names config {zone: b}, the
     /// label x and Persistent storage, its row {zone: a}, the label y and Ephemeral: the plan is
-    /// `node.config.update`, `node.tags.create {x}` and `node.tags.delete {y}` of mesh1.rpc.1. mesh1.admin.1's
+    /// `node.config.update`, `node.tag.create {x}` and `node.tag.delete {y}` of mesh1.rpc.1. mesh1.admin.1's
     /// row, written before the storage field, records none, and its entry differs from nothing: no
     /// operation. A storage-only difference is `node.config.update` alone (the storage rides its row
     /// write). An operation this Build's receipts name Complete is not planned again (a later
@@ -2848,7 +2848,7 @@ mod tests {
         recorded.insert(admin.clone(), RecordedRow { node_id: NodeId::mint(), sha256: None, config: Some(BTreeMap::new()), tags: Some(BTreeSet::new()), storage_persistence: None, placement: None });
         let all = vec![BuildOperation::UpdateConfig { node: rpc.clone(), entry: None }, BuildOperation::CreateTags { node: rpc.clone(), labels: labels(&["x"]) }, BuildOperation::DeleteTags { node: rpc.clone(), labels: labels(&["y"]) }];
         assert_eq!(properties_owed(&topology, &recorded, &[], &[]), all, "each property that differs, by its own operation");
-        assert_eq!(all.iter().map(BuildOperation::key).collect::<Vec<_>>(), ["node.config.update:mesh1.rpc.1", "node.tags.create:mesh1.rpc.1", "node.tags.delete:mesh1.rpc.1"]);
+        assert_eq!(all.iter().map(BuildOperation::key).collect::<Vec<_>>(), ["node.config.update:mesh1.rpc.1", "node.tag.create:mesh1.rpc.1", "node.tag.delete:mesh1.rpc.1"]);
         let storage_only: Recorded = [(rpc.clone(), row(zone("b"), labels(&["x"]), StorageMeta::Ephemeral))].into();
         assert_eq!(properties_owed(&topology, &storage_only, &[], &[]), vec![BuildOperation::UpdateConfig { node: rpc.clone(), entry: None }], "a storage-only difference is the config op's row write");
         let same: Recorded = [(rpc.clone(), row(zone("b"), labels(&["x"]), persistent))].into();
@@ -2891,7 +2891,7 @@ mod tests {
         let unclaimed = vec![receipt(1, create, "AllocateIdentity", None)];
         let all = vec![BuildOperation::UpdateConfig { node: rpc.clone(), entry: None }, BuildOperation::DeleteTags { node: rpc.clone(), labels: labels(&["y"]) }];
         assert_eq!(properties_owed(&cur, &own, &unclaimed, &[]), all, "a create that never claimed the name applied nothing");
-        let untagged = vec![receipt(1, "node.tags.delete:mesh1.rpc.1", "Complete", None)];
+        let untagged = vec![receipt(1, "node.tag.delete:mesh1.rpc.1", "Complete", None)];
         assert_eq!(properties_owed(&cur, &own, &untagged, &[]), all[..1].to_vec(), "the label this Build deleted, written again since, stands; the config it never applied is applied");
         let b = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let replaced = vec![deleted_receipt(1, "mesh1.rpc.1", &b), receipt(2, create, "PrepareStorage", None), receipt(2, create, "Complete", None)];
@@ -3225,7 +3225,7 @@ mod tests {
 
     // @feature: node-replace
     /// CONTRACT: docs/architecture/lifecycles/node-replace.md:30
-    /// "1. node[1]: node.connections.delete `{ scope: All }`, then node.mesh.leave.
+    /// "1. node[1]: node.connection.delete `{ scope: All }`, then node.mesh.leave.
     ///  2. node.name.update of node[1] to `<name>.old` ... Then node[1].stop ...
     ///  3. node.create of node[2] at `<name>`, free only because the row above moved the key: a re-birth with a new node.id, incarnation and the specified bin."
     #[test]
@@ -3328,7 +3328,7 @@ mod tests {
         };
         let after_rename = plan_for_build(
             &build(vec![
-                complete("node.connections.delete:mesh1.rpc.1"),
+                complete("node.connection.delete:mesh1.rpc.1"),
                 complete("node.mesh.leave:mesh1.rpc.1"),
                 complete("node.update:mesh1.rpc.1"),
             ]),

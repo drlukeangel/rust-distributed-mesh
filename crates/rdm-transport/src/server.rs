@@ -572,7 +572,7 @@ impl NodeRpcServer {
         self.inner.replies.open.lock().unwrap().values().cloned().collect()
     }
 
-    /// Hard-cut the connections this server accepted (`node.connections.delete`), closing each with
+    /// Hard-cut the connections this server accepted (`node.connection.delete`), closing each with
     /// `reason`, except those from `spare` (the peers whose calls are in flight and answered on their
     /// connections). The endpoint stays bound and fresh dials are accepted. Returns how many were
     /// closed.
@@ -589,7 +589,7 @@ impl NodeRpcServer {
         cut.len()
     }
 
-    /// Hard-cut the connections this server accepted from `peer` (`node.connections.delete` naming
+    /// Hard-cut the connections this server accepted from `peer` (`node.connection.delete` naming
     /// one exact connection), closing each with `reason`, unless `peer` is `spare` (the peer whose
     /// call is in flight and answered on its connection). Returns how many were closed.
     pub fn close_connections_from(&self, peer: iroh::PublicKey, spare: Option<iroh::PublicKey>, reason: &'static str) -> usize {
@@ -1147,7 +1147,7 @@ mod tests {
     /// CONTRACT: docs/architecture/node-rpc-envelope.md:38
     /// "Every request carries a `CallContext` in its outer envelope"
     /// CONTRACT: docs/architecture/connections.md:384
-    /// "node.connections.delete hard-cuts the live transport connection(s) it names"
+    /// "node.connection.delete hard-cuts the live transport connection(s) it names"
     #[tokio::test]
     async fn apply_context_records_peer_metadata_and_close_connections_from_cuts_matching_peer_unless_spared() {
         // 1. `apply_context` records `caller_system` and allowlisted span baggage onto `span`.

@@ -50,7 +50,7 @@ async fn wait_for_blocked_frame(stream: &mut BuildStream) -> (String, String) {
 
 /// Page: `docs/architecture/build.md:321`
 /// "Every operation on the topology, a Build or a standalone node.stop, node.start,
-/// node.connections.delete or node.delete, passes the fabric-primary's gates in this order before
+/// node.connection.delete or node.delete, passes the fabric-primary's gates in this order before
 /// anything runs. Each gate reads one source. A gate that fails refuses by name and nothing is written.
 /// - The receiver is the fabric-primary -> `not-fabric-primary`, naming the fabric-primary
 /// - The current Build is settled -> `build-in-progress`, naming the Build

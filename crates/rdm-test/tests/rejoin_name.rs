@@ -28,7 +28,7 @@ async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &Statu
     }
 }
 
-/// CONTRACT (node-replace.md steps 1-2: node[1]'s `node.connections.delete { All }`, then its
+/// CONTRACT (node-replace.md steps 1-2: node[1]'s `node.connection.delete { All }`, then its
 /// `node.mesh.leave`, then `node.name.update` to `<name>.old`, then node[1].stop "leaves it stopped as
 /// `<name>.old`"; node-mesh-leave.md: once it has left, "the node publishes nothing"; Rollback step 2;
 /// R-JN1): a node born `mesh1.rpc.1` has its connections deleted, leaves its mesh (`MeshLeft`) and

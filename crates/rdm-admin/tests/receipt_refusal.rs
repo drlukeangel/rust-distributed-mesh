@@ -44,7 +44,7 @@ impl DeploymentProvider for Running {
     }
 }
 
-/// The birth answers every command at once: `node.connections.delete { All }` with its
+/// The birth answers every command at once: `node.connection.delete { All }` with its
 /// `node.connections.deleted`, any other command admitted.
 struct Answers;
 #[async_trait::async_trait]
@@ -158,7 +158,7 @@ impl BuildStateAdapter for Refuses {
 }
 
 /// CONTRACT (node-recovery.md "Failure and receipts"; CLAUDE.md "an error state carries every
-/// non-leaking detail"): a standalone node.connections.delete whose `DeleteConnections` receipt the Build state refuses (here
+/// non-leaking detail"): a standalone node.connection.delete whose `DeleteConnections` receipt the Build state refuses (here
 /// as a fact with no wire shape) fails at `DeleteConnections`, the error naming the step and the refusal,
 /// under a `rdm.node_admin.deployment.reject.via-receipt-refused` span naming the Build, attempt,
 /// operation, step and refusal. Must NOT happen: the refusal swallowed and the run going on to
@@ -200,7 +200,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
 
     let err = match pipeline.delete_connections(&req).await {
         Err(e) => e,
-        Ok(()) => panic!("the DeleteConnections receipt was refused and the node.connections.delete still reported complete: the refusal was swallowed"),
+        Ok(()) => panic!("the DeleteConnections receipt was refused and the node.connection.delete still reported complete: the refusal was swallowed"),
     };
     assert_eq!(err.step, "DeleteConnections", "the step whose receipt was refused: {err:?}");
     assert!(err.reason.contains("has no wire shape: this cell refuses it"), "the refusal is named in the error: {err:?}");
@@ -212,7 +212,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     assert_eq!(spans.len(), 1, "one refusal span");
     let attrs: std::collections::BTreeMap<String, String> = spans[0].attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect();
     assert_eq!(attrs.get("step").map(String::as_str), Some("DeleteConnections"), "{attrs:?}");
-    assert_eq!(attrs.get("operation").map(String::as_str), Some("node.connections.delete:mesh1.rpc.1"), "{attrs:?}");
+    assert_eq!(attrs.get("operation").map(String::as_str), Some("node.connection.delete:mesh1.rpc.1"), "{attrs:?}");
     assert_eq!(attrs.get("build_id"), Some(&build_id.log().to_string()), "{attrs:?}");
     assert!(attrs.get("detail").is_some_and(|d| d.contains("has no wire shape")), "{attrs:?}");
     eprintln!("span rdm.node_admin.deployment.reject.via-receipt-refused trace_id={} {attrs:?}", spans[0].span_context.trace_id());
@@ -220,7 +220,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
 
 /// CONTRACT (CLAUDE.md "an error state carries every non-leaking detail": "Never written" and "could
 /// not be read" are different errors, and neither is an empty answer; node-recovery.md "Failure and
-/// receipts": a run hands on the decisions its earlier attempts made): a standalone node.connections.delete of a Build
+/// receipts": a run hands on the decisions its earlier attempts made): a standalone node.connection.delete of a Build
 /// whose journal cannot be read fails the run at its start by name, the error naming the node, the
 /// Build, the operation and the read failure, under a
 /// `rdm.node_admin.deployment.reject.via-build-unreadable` span, and no step runs or writes a receipt.
@@ -236,10 +236,10 @@ async fn a_run_whose_build_cannot_be_read_fails_by_name_before_any_step() {
 
     let err = match standalone_through(&builds, &build_id, &Answers, false).await {
         Err(e) => e,
-        Ok(()) => panic!("the Build could not be read and the node.connections.delete still reported complete: the read failure was taken for no earlier receipts"),
+        Ok(()) => panic!("the Build could not be read and the node.connection.delete still reported complete: the read failure was taken for no earlier receipts"),
     };
     assert_eq!(err.step, "ReadBuild", "the run stops at its start: {err:?}");
-    for named in ["mesh1.rpc.1", &build_id.to_string(), "node.connections.delete:mesh1.rpc.1", "this cell's disk refuses it"] {
+    for named in ["mesh1.rpc.1", &build_id.to_string(), "node.connection.delete:mesh1.rpc.1", "this cell's disk refuses it"] {
         assert!(err.reason.contains(named), "the error names {named}: {err:?}");
     }
     let steps: Vec<String> = builds.inner.read_build(&build_id).await.unwrap().steps.iter().map(|s| s.step.clone()).collect();
@@ -247,7 +247,7 @@ async fn a_run_whose_build_cannot_be_read_fails_by_name_before_any_step() {
     let spans = capture.spans("rdm.node_admin.deployment.reject.via-build-unreadable");
     assert_eq!(spans.len(), 1, "one rejection span: {spans:?}");
     assert_eq!(spans[0].1.get("build_id"), Some(&build_id.log().to_string()), "{spans:?}");
-    assert_eq!(spans[0].1.get("operation").map(String::as_str), Some("node.connections.delete:mesh1.rpc.1"), "{spans:?}");
+    assert_eq!(spans[0].1.get("operation").map(String::as_str), Some("node.connection.delete:mesh1.rpc.1"), "{spans:?}");
     assert!(spans[0].1.get("detail").is_some_and(|d| d.contains("this cell's disk refuses it")), "{spans:?}");
     eprintln!("span rdm.node_admin.deployment.reject.via-build-unreadable trace_id={} {:?}", spans[0].0, spans[0].1);
 
@@ -255,7 +255,7 @@ async fn a_run_whose_build_cannot_be_read_fails_by_name_before_any_step() {
     let unwritten = BuildId::mint();
     let err = match standalone_through(&never_written, &unwritten, &Answers, false).await {
         Err(e) => e,
-        Ok(()) => panic!("the Build was never written on this node and the node.connections.delete still reported complete"),
+        Ok(()) => panic!("the Build was never written on this node and the node.connection.delete still reported complete"),
     };
     assert_eq!(err.step, "ReadBuild", "{err:?}");
     assert!(err.reason.contains(&format!("no Build {unwritten}")), "a Build never written is named as such, not as an unreadable journal: {err:?}");
@@ -282,10 +282,10 @@ impl NodeObserver for NeverReached {
 
 /// CONTRACT (node-connections-delete.md "Admission is not completion"; "never infer completion from
 /// silence"; node-recovery.md "An exit during a workflow belongs to that workflow: its Build ends
-/// Failed"): a standalone node.connections.delete whose `node.connections.delete` never reaches the birth (`NotSent`, as when the
+/// Failed"): a standalone node.connection.delete whose `node.connection.delete` never reaches the birth (`NotSent`, as when the
 /// birth exited or is held) fails at `DeleteConnections` by name, the admission and its reason in
 /// the error, and writes no `Complete`. A standalone stop never sent fails at `AwaitNodeLeft` the
-/// same way. Must NOT happen: the node.connections.delete or stop recorded complete for a birth never told of it.
+/// same way. Must NOT happen: the node.connection.delete or stop recorded complete for a birth never told of it.
 #[tokio::test]
 async fn a_standalone_connections_delete_or_stop_whose_command_is_never_sent_fails_by_name() {
     for (stop, step) in [(false, "DeleteConnections"), (true, "AwaitNodeLeft")] {
@@ -294,7 +294,7 @@ async fn a_standalone_connections_delete_or_stop_whose_command_is_never_sent_fai
         accepted_and_claimed(&local, &build_id).await;
         let err = match standalone_through(&local, &build_id, &NeverReached, stop).await {
             Err(e) => e,
-            Ok(()) => panic!("the {} command never reached the birth, yet the operation reported complete", if stop { "stop-node" } else { "node.connections.delete" }),
+            Ok(()) => panic!("the {} command never reached the birth, yet the operation reported complete", if stop { "stop-node" } else { "node.connection.delete" }),
         };
         assert_eq!(err.step, step, "{err:?}");
         assert!(err.reason.contains("NotSent") && err.reason.contains("dial-deadline"), "the admission and its reason are named: {err:?}");
@@ -343,12 +343,12 @@ async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rdm_admin::build_st
     (endpoint, builds)
 }
 
-/// A standalone node.connections.delete of a ready `mesh1.rpc.1` as attempt 1 of `build_id`, through `builds`.
+/// A standalone node.connection.delete of a ready `mesh1.rpc.1` as attempt 1 of `build_id`, through `builds`.
 async fn connections_delete_through(builds: &dyn BuildStateAdapter, build_id: &BuildId) -> Result<(), rdm_admin::deployment::pipeline::PipelineError> {
     standalone_through(builds, build_id, &Answers, false).await
 }
 
-/// A standalone node.connections.delete (or, with `stop`, a standalone stop) of a ready `mesh1.rpc.1` as attempt 1 of
+/// A standalone node.connection.delete (or, with `stop`, a standalone stop) of a ready `mesh1.rpc.1` as attempt 1 of
 /// `build_id`, through `builds`, its commands answered by `observer`.
 async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, observer: &dyn NodeObserver, stop: bool) -> Result<(), rdm_admin::deployment::pipeline::PipelineError> {
     let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
@@ -388,7 +388,7 @@ async fn accepted_and_claimed(builds: &dyn BuildStateAdapter, build_id: &BuildId
     builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
 }
 
-/// CONTRACT (node-recovery.md "Failure and receipts"): a standalone node.connections.delete run through the fabric's
+/// CONTRACT (node-recovery.md "Failure and receipts"): a standalone node.connection.delete run through the fabric's
 /// real Build state whose local log refuses the `DeleteConnections` receipt (a failed journal write) fails
 /// at `DeleteConnections`, the error naming the step and the failed write, under
 /// `rdm.node_admin.deployment.reject.via-receipt-refused`. Must NOT happen: the run going on as if
@@ -403,7 +403,7 @@ async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
 
     let err = match connections_delete_through(&builds, &build_id).await {
         Err(e) => e,
-        Ok(()) => panic!("the DeleteConnections receipt's local write failed and the node.connections.delete still reported complete"),
+        Ok(()) => panic!("the DeleteConnections receipt's local write failed and the node.connection.delete still reported complete"),
     };
     assert_eq!(err.step, "DeleteConnections", "{err:?}");
     assert!(err.reason.contains("this cell's disk refuses it"), "the failed write is named in the error: {err:?}");

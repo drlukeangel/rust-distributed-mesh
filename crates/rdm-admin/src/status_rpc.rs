@@ -98,7 +98,7 @@ pub struct Declared {
     /// because a report is evidence only while it is fresh.
     pub reports: BTreeMap<String, std::collections::HashMap<Reporter, std::time::Instant>>,
     /// Per birth `(node id, incarnation)` of this admin's mesh: the `node.connections.deleted` it
-    /// answered the last `node.connections.delete` this mesh-primary carried to it, in its current
+    /// answered the last `node.connection.delete` this mesh-primary carried to it, in its current
     /// cycle (R-CR2: what a rename of a live birth needs). Memory of this tenure: a successor holds
     /// none, and refuses a live rename until the delete is carried again.
     pub connections_deleted: std::collections::HashMap<(NodeId, IncarnationId), ConnectionsDeletedReceipt>,
@@ -461,7 +461,7 @@ pub enum MemberStatusReceipt<'a> {
     /// `CommandAccepted` on the stop's command stream: the stop's admission sets the birth stopping
     /// (`Leaving`).
     StopAdmitted(&'a rdm_core::LifecycleOp),
-    /// `ConnectionsDeleting` on `node.connections.delete`'s command stream: the node's report.
+    /// `ConnectionsDeleting` on `node.connection.delete`'s command stream: the node's report.
     ConnectionsDeleting {
         /// The node.
         node_id: &'a NodeId,
@@ -550,7 +550,7 @@ pub struct StatusAuthority {
     pub durable: Arc<Mutex<Vec<crate::model::Node>>>,
     /// The commands this admin sent (as an owning mesh-admin) and awaits a completion call for.
     pub commands: Arc<crate::node_commands::CommandView>,
-    /// This admin as the subject of `node.connections.delete` / `stop-node` from its own mesh-admin; filled once
+    /// This admin as the subject of `node.connection.delete` / `stop-node` from its own mesh-admin; filled once
     /// its digest and server exist.
     pub own: Arc<OnceLock<Arc<crate::node_self::NodeSelf>>>,
     /// What this admin signs with: the issuing key `node.issuer.update` installs, and the rafka-time
@@ -2063,14 +2063,14 @@ impl StatusAuthority {
         (admission, unreachable)
     }
 
-    /// `node.connections.delete` of a birth of this admin's mesh, carried in-process: the mesh-primary's
+    /// `node.connection.delete` of a birth of this admin's mesh, carried in-process: the mesh-primary's
     /// own pipeline step (i144 R22). The birth is read from this admin's view.
     pub async fn carry_connections_delete(&self, node_id: &NodeId, incarnation: &IncarnationId, scope: &rdm_core::status::ConnectionScope) -> CarryEnd {
         let view = self.topology.read().await.clone();
         self.carry_delete_connections(&view, None, node_id, incarnation, scope).await
     }
 
-    /// `node.connections.delete` naming a birth of this admin's mesh (R-CR2, R-CR3; i144 R22, Luke Q6,
+    /// `node.connection.delete` naming a birth of this admin's mesh (R-CR2, R-CR3; i144 R22, Luke Q6,
     /// Q7): this mesh-primary validates the scope, commands the exact birth on the node command op
     /// 0x22, and reads the command's ordered reply stream: it records nothing before the command
     /// leaves; it records and publishes the birth connections-deleting when the node reports
@@ -2118,7 +2118,7 @@ impl StatusAuthority {
                 // This mesh-primary is its own subject: an endpoint does not dial itself, so its own
                 // birth's command path runs in-process and its frames come back on a channel.
                 let Some(own) = self.own.get().cloned() else {
-                    return CarryEnd::Refused(rdm_core::reply::status::not_ready(format!("{me_name} has not yet joined its mesh; node.connections.delete of its own birth is refused and nothing is cut")));
+                    return CarryEnd::Refused(rdm_core::reply::status::not_ready(format!("{me_name} has not yet joined its mesh; node.connection.delete of its own birth is refused and nothing is cut")));
                 };
                 tracing::Span::current().record("carried", "in-process");
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2133,7 +2133,7 @@ impl StatusAuthority {
                 CarriedFrames::InProcess(rx)
             } else {
                 let Some(configs) = self.configs.get() else {
-                    return CarryEnd::Refused(rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet to carry node.connections.delete to {}; nothing is cut", subject.name)));
+                    return CarryEnd::Refused(rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet to carry node.connection.delete to {}; nothing is cut", subject.name)));
                 };
                 tracing::Span::current().record("carried", "dialled");
                 let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
@@ -2144,7 +2144,7 @@ impl StatusAuthority {
                         let end = match out {
                             rdm_core::outcome::RpcOutcome::NotSent(n) => CarryEnd::NotSent(n.reason().clone()),
                             rdm_core::outcome::RpcOutcome::Reply(r) => CarryEnd::RefusedByNode(r.into_value()),
-                            other => CarryEnd::Lost { code: other.code(), reason: format!("{me_name} carried node.connections.delete to {} and the call ended {} before the node accepted it: {other:?}", subject.name, other.name()) },
+                            other => CarryEnd::Lost { code: other.code(), reason: format!("{me_name} carried node.connection.delete to {} and the call ended {} before the node accepted it: {other:?}", subject.name, other.name()) },
                         };
                         tracing::Span::current().record("detail", end.detail().as_str());
                         return end;
@@ -2187,7 +2187,7 @@ impl StatusAuthority {
                             // states.md "Who sets each state": connections-deleted from the completion
                             // carrying `Established`, on the row before the completion is acknowledged.
                             if let Err(e) = Box::pin(self.put_status(node_id, incarnation, &subject.name, crate::model::NodeStatus::ConnectionsDeleted)).await {
-                                let reason = format!("{me_name}: {} completed its node.connections.delete and its row was not written: {e}", subject.name);
+                                let reason = format!("{me_name}: {} completed its node.connection.delete and its row was not written: {e}", subject.name);
                                 tracing::Span::current().record("detail", reason.as_str());
                                 return CarryEnd::Incomplete { reported, reason, code: rdm_core::outcome::Code::Unavailable };
                             }
@@ -2209,19 +2209,19 @@ impl StatusAuthority {
                     }
                     Err(f) => {
                         let code = f.code();
-                        let reason = format!("{me_name}'s node.connections.delete stream to {} broke {}: {f:?}", subject.name, if accepted { "after the node accepted it" } else { "before the node accepted it" });
+                        let reason = format!("{me_name}'s node.connection.delete stream to {} broke {}: {f:?}", subject.name, if accepted { "after the node accepted it" } else { "before the node accepted it" });
                         tracing::Span::current().record("detail", reason.as_str());
                         return if accepted { CarryEnd::Incomplete { reported, reason, code } } else { CarryEnd::Lost { reason, code } };
                     }
                 }
             }
-            let reason = format!("{me_name}'s node.connections.delete stream to {} ended without its completion", subject.name);
+            let reason = format!("{me_name}'s node.connection.delete stream to {} ended without its completion", subject.name);
             if accepted { CarryEnd::Incomplete { reported, reason, code: rdm_core::outcome::Code::Unknown } } else { CarryEnd::Lost { reason, code: rdm_core::outcome::Code::Unknown } }
         }
         .instrument(span.clone())
         .await;
         span.record("outcome", end.name());
-        span.in_scope(|| tracing::info!("node.connections.delete carried by the mesh-primary"));
+        span.in_scope(|| tracing::info!("node.connection.delete carried by the mesh-primary"));
         end
     }
 
@@ -2501,7 +2501,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// re-publishes its presence and answers its current state; no transition. While its
 /// `pre_node_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
-/// re-publishes nothing. `ApplyNodeState` is not served: a node's connections are deleted by `node.connections.delete` and a stop is `stop-node`.
+/// re-publishes nothing. `ApplyNodeState` is not served: a node's connections are deleted by `node.connection.delete` and a stop is `stop-node`.
 #[allow(clippy::too_many_arguments)]
 async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, pre_node_ready: &PreNodeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let incarnation = match req {
@@ -2555,10 +2555,10 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             Some(StatusReply::Current { node_id: me.node_id.clone(), incarnation: held.clone(), state })
         }
         StatusRequest::ApplyNodeState { state, .. } => {
-            // Not node.connections.delete and not a stop: neither is set by apply-node-state. The reply
+            // Not node.connection.delete and not a stop: neither is set by apply-node-state. The reply
             // carries the state this node holds; the span names why.
             let current = node_state_of(me.status);
-            tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.name, sender = %sender_name, requested = ?state, current = ?current, reason = "node.connections.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state", "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.name, sender = %sender_name, requested = ?state, current = ?current, reason = "node.connection.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state", "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("apply-node-state refused"));
             Some(rdm_core::reply::status::rejected_invalid_node_transition(current))
         }
@@ -2764,7 +2764,7 @@ fn detail(r: &StatusReply) -> String {
     }
 }
 
-/// How a carried `node.connections.delete` ended (i144 R22, Luke Q6, Q7): an in-process answer, never
+/// How a carried `node.connection.delete` ended (i144 R22, Luke Q6, Q7): an in-process answer, never
 /// a wire reply. Each end is its own fact: nothing was sent, the node refused, the call was lost before
 /// the node accepted, the stream broke after it accepted (incomplete), or the node completed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2850,7 +2850,7 @@ impl CarryEnd {
             Self::Deleted { closed, not_open, held, receipt } => StatusReply::ConnectionsDeleted { closed: closed.clone(), not_open: not_open.clone(), held: held.clone(), receipt: receipt.clone() },
             Self::RefusedByNode(N::RejectedConnectionScope { reason }) => rdm_core::reply::status::rejected_connection_scope(reason.clone()),
             Self::RefusedByNode(N::RejectedStaleIncarnation { held }) => rdm_core::reply::stale(held.clone()),
-            other => rdm_core::reply::status::not_ready(format!("node.connections.delete {}: {}", other.name(), other.detail())),
+            other => rdm_core::reply::status::not_ready(format!("node.connection.delete {}: {}", other.name(), other.detail())),
         }
     }
 }

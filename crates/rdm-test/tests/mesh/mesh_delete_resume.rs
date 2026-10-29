@@ -113,7 +113,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let lost = (s(&primary["name"]), s(&primary["incarnation_id"]));
     let door = Door::at(&estate, &lost.0).await;
 
-    // Held in tier 1: rpc.2's stop answered `stopped` (its node.connections.delete { All } and its
+    // Held in tier 1: rpc.2's stop answered `stopped` (its node.connection.delete { All } and its
     // transport cut done, its process alive) and its StopNode receipt is not yet durable, so a resumed
     // attempt sends its stop-node again and the stopped birth answers the same receipt; the other
     // admin (form a) is still ready.

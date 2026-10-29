@@ -3,7 +3,7 @@
 //!
 //! A leave is a Build step commanded by the node's mesh-primary, and only after the node's connections
 //! are deleted: the data plane first, then the control plane. So the caller submits the two as one
-//! Build of steps, `node.connections.delete { All }` then `node.mesh.leave`. The node leaves its mesh's
+//! Build of steps, `node.connection.delete { All }` then `node.mesh.leave`. The node leaves its mesh's
 //! gossip (and the backbone, a node-admin) and its Node RPC pool and then publishes nothing; it keeps
 //! its endpoint bound, its node id, incarnation, name, port and data dir, so a fresh Node RPC dial still
 //! reaches it for its rename, stop, start or delete. A node that still holds a connection refuses the

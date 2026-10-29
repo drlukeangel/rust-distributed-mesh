@@ -69,7 +69,7 @@ type Build = Box<dyn FnOnce(&ConnectionsWriter, ConnectionEnd) -> Option<NodeCon
 enum Origin {
     /// A fact observed of a connection: where (`dial`) and the peer endpoint it was observed with.
     Observed { origin: &'static str, peer: String },
-    /// A drop of an open entry (`node.connections.delete`, an invalid carrier edge).
+    /// A drop of an open entry (`node.connection.delete`, an invalid carrier edge).
     Drop { closed_entry: rdm_core::ConnectionId, reason: String },
 }
 
@@ -352,7 +352,7 @@ impl ConnectionsWriter {
         live
     }
 
-    /// `node.connections.delete`'s drops (R-CR3): each of `routes` (connections this node had open,
+    /// `node.connection.delete`'s drops (R-CR3): each of `routes` (connections this node had open,
     /// just cut) owes one `disconnected` entry with its own id and `reason`, naming the pair it
     /// closes as that pair landed (a rename that lands before the drop does not move it), queued
     /// behind every write owed before it and applied once it lands (Q169). A route whose open entry

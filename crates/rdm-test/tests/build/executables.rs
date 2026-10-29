@@ -652,7 +652,7 @@ async fn a_request_replacing_every_nodes_executable_moves_the_fabric_primary_onc
         let rpc_delete: Vec<&str> = steps.iter().filter(|r| r.operation == format!("node.delete:{mesh}.rpc.1")).map(|r| r.step.as_str()).collect();
         assert!(rpc_delete.contains(&"StopNode") && rpc_delete.contains(&"TerminateRuntime"), "{mesh}: its only rpc node's node.delete composes the whole stop: {rpc_delete:?}");
     }
-    assert!(!steps.iter().any(|r| r.operation.starts_with("node.connections.delete:") || r.operation.starts_with("node.mesh.leave:")), "no standalone connections delete or mesh leave precedes a delete");
+    assert!(!steps.iter().any(|r| r.operation.starts_with("node.connection.delete:") || r.operation.starts_with("node.mesh.leave:")), "no standalone connections delete or mesh leave precedes a delete");
     estate.stop().await;
     let spans = estate.spans();
     assert!(rdm_test::estate::named(&spans, "rdm.node_admin.build.reject.via-no-secondary").is_empty(), "no step was refused no-secondary");

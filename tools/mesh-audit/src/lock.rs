@@ -296,7 +296,7 @@ pub const DELETE_CELLS: &str = "crates/rdm-test/tests/node_delete_pipeline.rs";
 pub const DRIFT_CELLS: &str = "crates/rdm-admin/tests/drift_convergence.rs";
 pub const PROBE_APPLY_CELLS: &str = "crates/rdm-test/tests/status_probe_apply.rs";
 
-/// The typed arms of the landed `CommandAdmission` (what a directed `node.connections.delete`,
+/// The typed arms of the landed `CommandAdmission` (what a directed `node.connection.delete`,
 /// `stop-node` or `start-node` call established at the exact birth).
 pub const COMMAND_ARMS: [&str; 9] = ["Admitted", "AlreadyAdmitted", "Stopped", "ConnectionsDeleted", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
 

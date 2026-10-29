@@ -2,7 +2,7 @@
 //!
 //! The observer hides every `ConnectionsDeleting` and `Leaving` the node says, as if each announcement were
 //! lost on the fabric. The delete's proof is the commands and their completion calls
-//! (`node.connections.delete` / `node.connections.deleted`, `stop-node` / `node-left`) and the exact runtime's `Exited`,
+//! (`node.connection.delete` / `node.connections.deleted`, `stop-node` / `node-left`) and the exact runtime's `Exited`,
 //! never a digest. A predecessor's exit at the same path stands for none of a successor's commands.
 
 use crate::common;

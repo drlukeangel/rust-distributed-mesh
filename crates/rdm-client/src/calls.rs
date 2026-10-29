@@ -375,7 +375,7 @@ impl<'a> NodeRpc<'a> {
         self.status(NodeOp::ConfigUpdate, birth, req, opts).await
     }
 
-    /// `node.tags.create` of `labels` on the exact birth, the caller's single call to the node's
+    /// `node.tag.create` of `labels` on the exact birth, the caller's single call to the node's
     /// mesh-primary `mesh_primary` (R-TG1; node-rpc-envelope.md node.tags): it writes the node's row
     /// carrying them and puts each label's key of the tags index, and answers `TagsCreated` naming
     /// any label the node already carried. `route` as `Self::node_update`.
@@ -384,7 +384,7 @@ impl<'a> NodeRpc<'a> {
         self.row_writer_call(NodeOp::TagsCreate, mesh_primary, route, &req, opts).await
     }
 
-    /// `node.tags.delete` of `scope` on the exact birth, as [`Self::tags_create`]: the row written
+    /// `node.tag.delete` of `scope` on the exact birth, as [`Self::tags_create`]: the row written
     /// without the labels and each removed label's key of the tags index tombstoned; answered
     /// `TagsDeleted` naming any named label the node did not carry.
     pub async fn tags_delete(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, scope: &rdm_core::status::TagScope, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
@@ -417,7 +417,7 @@ impl<'a> NodeRpc<'a> {
         self.row_writer_call(NodeOp::NameUpdate, mesh_primary, route, &req, opts).await
     }
 
-    /// `node.connections.delete` of the exact birth's connections named by `scope`, the caller's single
+    /// `node.connection.delete` of the exact birth's connections named by `scope`, the caller's single
     /// call to the node's mesh-primary `mesh_primary` (R-CR2, R-CR3): it carries the cut to the exact
     /// birth and holds the birth's `node.connections.deleted` for its rename precondition, answering the
     /// birth's reply. `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).

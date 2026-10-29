@@ -1,4 +1,4 @@
-//! A node birth serving the commands of its owning mesh-admin: `node.connections.delete`,
+//! A node birth serving the commands of its owning mesh-admin: `node.connection.delete`,
 //! `node.stop` and `node.start` (node-connections-delete.md, node-stop.md, node-start.md). Every node
 //! kind runs this one logic over its own surface: an rpc node, a role node and a node-admin differ
 //! only in how they refuse new work, how they publish and how they leave and rejoin the mesh (their
@@ -10,7 +10,7 @@
 //!   of the connections log and answers `ConnectionsDeleted` with its `ConnectionsReceipt`
 //!   (`Established`, or `Deadline` at the bound). `Connections` closes exactly the named entries.
 //!   Gossip neighbours and the Node RPC pool are not connections: neither scope touches them.
-//! - `StopNode` (a workflow over its primitives, Q205): the whole `node.connections.delete { All }`,
+//! - `StopNode` (a workflow over its primitives, Q205): the whole `node.connection.delete { All }`,
 //!   streaming its acknowledgement `ConnectionsDeleting` and its completion `StopConnectionsDeleted`
 //!   with the `All`'s receipt (Data), then hold the node's own tasks, publish a mesh-primary
 //!   node-admin's last mesh topology with itself `Leaving` (gossip.md, "Mesh delete"), then
@@ -91,7 +91,7 @@ pub struct TasksStopped {
     pub waited_for: String,
 }
 
-/// What a `node.connections.delete` did at this birth (R-CR3): the connections it cut, and every
+/// What a `node.connection.delete` did at this birth (R-CR3): the connections it cut, and every
 /// connection id it accounts for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Deleted {
@@ -113,8 +113,8 @@ enum InFlight {
     Deadline { last: u64 },
 }
 
-/// The reason every drop `node.connections.delete` writes carries.
-pub const CONNECTIONS_DELETE: &str = "node.connections.delete";
+/// The reason every drop `node.connection.delete` writes carries.
+pub const CONNECTIONS_DELETE: &str = "node.connection.delete";
 
 /// Why a start stopped, and at which step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,7 +209,7 @@ enum StopBy<'a> {
 }
 
 /// What a stop by this process's own signal leaves behind (i146 Q55): the receipt of its
-/// `node.connections.delete { All }`. Each declaration it owed its mesh-primary has ended by then
+/// `node.connection.delete { All }`. Each declaration it owed its mesh-primary has ended by then
 /// (Q206, [`NodeSelf::stop_on_signal`]).
 pub struct SignalStopped {
     /// The `All`'s receipt.
@@ -231,7 +231,7 @@ enum Cycle {
     Live(Option<(String, String)>),
     /// A stop is under way; later stops of the birth wait for the same receipt.
     Stopping(tokio::sync::watch::Receiver<Option<ConnectionsReceipt>>),
-    /// Stopped, its process alive, with the receipt its node.connections.delete { All } established.
+    /// Stopped, its process alive, with the receipt its node.connection.delete { All } established.
     Stopped(ConnectionsReceipt),
     /// Stopped and a start is under way (the natural key `(node_id, incarnation, Pending)`): later
     /// starts of the birth answer the same outcome, and a stop is refused naming the start. A failed
@@ -285,7 +285,7 @@ pub struct NodeSelf {
     /// Declare the state this birth entered to its authority (a node-admin of its mesh); `None` for
     /// a surface whose declarations are made elsewhere (a node-admin).
     pub declare: Option<Declare>,
-    /// Cancelled when `node.connections.delete { All }` or `stop-node` is admitted: the birth is
+    /// Cancelled when `node.connection.delete { All }` or `stop-node` is admitted: the birth is
     /// deleted, so its `pre_node_ready` hook and any pull it has in flight end.
     pub birth_cancel: Option<rdm_transport::BirthCancel>,
     /// What this birth owes its mesh-primary, for a signal stop's outcome span to name what it left.
@@ -294,7 +294,7 @@ pub struct NodeSelf {
     /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
     /// them onto the backbone.
     pub backbone: Option<rdm_transport::topology::Backbone>,
-    /// The bound of this birth's `node.connections.delete { All }`, standalone or inside a stop
+    /// The bound of this birth's `node.connection.delete { All }`, standalone or inside a stop
     /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, read once where the process reads its launch or its
     /// admin config): the eligible work in flight is let finish until it passes. Strictly shorter
     /// than the stop ladder's grace.
@@ -307,13 +307,13 @@ pub struct NodeSelf {
     session: Mutex<Option<Arc<dyn Session>>>,
     /// The client this birth originates its data-plane connections on, the ones its connections log
     /// holds as Direct entries (connections.md "Two planes, two words"); `None` for a process whose
-    /// data plane is not a Node RPC client of its own. `node.connections.delete` closes its pooled
+    /// data plane is not a Node RPC client of its own. `node.connection.delete` closes its pooled
     /// connection to the destination of each Direct entry it closes, and nothing of the Node RPC pool.
     data_plane: Mutex<Option<Arc<NodeRpcClient>>>,
     /// The process's connections writer: what this birth holds (R-CR1) and where the drops of a
-    /// `node.connections.delete` are written; filled once the process holds it.
+    /// `node.connection.delete` are written; filled once the process holds it.
     connections: Mutex<Option<Arc<crate::connections_writer::ConnectionsWriter>>>,
-    /// The process's data-plane `ConnectionsRegistry`: `node.connections.delete` closes active
+    /// The process's data-plane `ConnectionsRegistry`: `node.connection.delete` closes active
     /// `Connection`s by their row id and blocks new connections under `All`.
     data_connections: Mutex<Option<rdm_transport::connections::ConnectionsRegistry>>,
     /// The process's storage change moves (storage.md §2 "Changing it"): filled once the process holds
@@ -360,7 +360,7 @@ impl NodeSelf {
         self
     }
 
-    /// This surface, cancelling `delete` when `node.connections.delete { All }` or a stop is admitted.
+    /// This surface, cancelling `delete` when `node.connection.delete { All }` or a stop is admitted.
     pub fn with_cancel(mut self, birth_cancel: rdm_transport::BirthCancel) -> Self {
         self.birth_cancel = Some(birth_cancel);
         self
@@ -372,13 +372,13 @@ impl NodeSelf {
     }
 
     /// This surface, closing the data-plane connections of the Direct entries a
-    /// `node.connections.delete` closes on `client`.
+    /// `node.connection.delete` closes on `client`.
     pub fn set_data_plane(&self, client: Arc<NodeRpcClient>) {
         *self.data_plane.lock().unwrap() = Some(client);
     }
 
     /// This surface, holding the process's connections writer: what this birth holds and where a
-    /// `node.connections.delete` writes its drops.
+    /// `node.connection.delete` writes its drops.
     pub fn set_connections(&self, connections: Arc<crate::connections_writer::ConnectionsWriter>) {
         *self.connections.lock().unwrap() = Some(connections);
     }
@@ -429,7 +429,7 @@ impl NodeSelf {
         StatusReply::CertRenewed { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), expires_at: signed.cert.expiry_ms }
     }
 
-    /// The fabric's root set this birth admits on (`node.connections.admit`): the one its admissions
+    /// The fabric's root set this birth admits on (`node.connection.create`): the one its admissions
     /// read.
     pub fn roots(&self) -> Vec<rdm_core::certs::VerifyingKey> {
         self.data_connections.lock().unwrap().as_ref().map(|r| r.roots().current()).unwrap_or_default()
@@ -476,7 +476,7 @@ impl NodeSelf {
     /// node's held connections"; Q167 R-RD7): the connections it holds now that match every pair of
     /// `filter`, under the name it holds, answered from what is held: a connection whose row has not
     /// landed is not held yet, and the read never waits for a write (Q169); the ids are those
-    /// `node.connections.delete` names.
+    /// `node.connection.delete` names.
     pub async fn connections_get(&self, filter: &rdm_core::filter::Filter) -> StatusReply {
         let writer = self.connections.lock().unwrap().clone();
         let data_connections = self.data_connections.lock().unwrap().clone();
@@ -492,7 +492,7 @@ impl NodeSelf {
         }
     }
 
-    /// `node.connections.delete` at this birth (R-CR5; node-connections-delete.md): a connection is
+    /// `node.connection.delete` at this birth (R-CR5; node-connections-delete.md): a connection is
     /// an open Direct or Proxy connection of this birth, read from what is open now (Q169), and
     /// nothing else. `All` closes every open connection; `Connections` closes exactly the ones it
     /// names. Each closed connection's drop is queued on the writer, under the name the birth holds,
@@ -542,7 +542,7 @@ impl NodeSelf {
                 // closure"). From here the birth opens no new connection until it starts (proposal
                 // node-properties-own-commands.md §2.1, §2.4): blocked before the open set is read,
                 // so none opens between the read and the close.
-                self.block_new_connections("node.connections.delete All closed this birth's connections");
+                self.block_new_connections("node.connection.delete All closed this birth's connections");
                 Some(waited)
             }
             ConnectionScope::Connections(_) => None,
@@ -668,7 +668,7 @@ impl NodeSelf {
 
     /// Serve a node command from `commander` on its ordered reply stream (op 0x22, i144 R22; Luke Q6,
     /// Q7): every refusal is decided before `CommandAccepted`; after it the stream ends only with the
-    /// command's completion. `node.connections.delete { All }` reports `ConnectionsDeleting` once its
+    /// command's completion. `node.connection.delete { All }` reports `ConnectionsDeleting` once its
     /// block on new application work is in force, then closes and answers `ConnectionsDeleted`;
     /// `Connections([…])` answers its completion right after the acceptance. A caller gone after the
     /// acceptance stops nothing: the node completes what it accepted.
@@ -718,7 +718,7 @@ impl NodeSelf {
                     Err(e) => format!("caller gone: {e}"),
                 };
                 span.record("outcome", outcome.as_str());
-                span.in_scope(|| tracing::info!("node.connections.delete All is admitted: the block on new application work is in force; the node reports connections-deleting on the command's stream"));
+                span.in_scope(|| tracing::info!("node.connection.delete All is admitted: the block on new application work is in force; the node reports connections-deleting on the command's stream"));
             }
         };
         let span = tracing::info_span!(
@@ -740,7 +740,7 @@ impl NodeSelf {
             span.record("receipt", r.name());
         }
         span.record("outcome", "connections-deleted");
-        span.in_scope(|| tracing::info!("node.connections.delete decided at this birth"));
+        span.in_scope(|| tracing::info!("node.connection.delete decided at this birth"));
         NodeCommandReply::ConnectionsDeleted { closed: d.closed, not_open: d.not_open, held: d.held, receipt: d.receipt }
     }
 
@@ -782,7 +782,7 @@ impl NodeSelf {
         !matches!(*self.cycle.lock().unwrap(), Cycle::Live(_))
     }
 
-    /// Serve `StopNode` or `StartNode` on the exact birth it names (`node.connections.delete` reaches a
+    /// Serve `StopNode` or `StartNode` on the exact birth it names (`node.connection.delete` reaches a
     /// birth on the node command op 0x22, [`Self::serve_node_command`]); `Reserved6`
     /// and `Reserved7` are reserved positions, refused by name, whoever calls
     /// (node-rpc.md §14: nothing inside the mesh checks who is calling): `commander` is the caller as
@@ -1027,7 +1027,7 @@ impl NodeSelf {
         }
     }
 
-    /// The stop (node-stop.md): the whole `node.connections.delete { All }`, declare `Leaving`, the
+    /// The stop (node-stop.md): the whole `node.connection.delete { All }`, declare `Leaving`, the
     /// stop's own transport cut. The receipt is the `All`'s. A second stop of the same birth, while this one runs or after it, answers the same
     /// receipt: stopping a stopped birth is done. A stop while a start of the birth is under way is
     /// refused naming the start.
@@ -1085,7 +1085,7 @@ impl NodeSelf {
 
     /// node.stop's steps (node-stop.md steps 2-4), one workflow over the primitives for each of its
     /// subjects (i146 Q55): the mesh-primary's `StopNode` on its command stream, this process's own
-    /// signal, or a commanded start that failed at a step. The whole `node.connections.delete { All }`,
+    /// signal, or a commanded start that failed at a step. The whole `node.connection.delete { All }`,
     /// the node's own tasks held, `node.mesh.leave`, then `Stopped` to the mesh-primary. A command's stop
     /// answers on its stream and declares `Stopped` naming its operation; a signal's stop owes
     /// connections-deleting at the block and `Stopped` after the leave, waits on no answer, and hands
@@ -1109,7 +1109,7 @@ impl NodeSelf {
         if let Some(birth_cancel) = &self.birth_cancel {
             birth_cancel.cancel();
         }
-        // 1. node.connections.delete { All } (node-stop.md step 2), whole: admission of new
+        // 1. node.connection.delete { All } (node-stop.md step 2), whole: admission of new
         // application work is blocked, the eligible work in flight finishes under the bound, and every
         // open Direct or Proxy entry is closed, its drop written under the name the birth holds. The
         // receipt never turns a deadline into zero. A command's own call is in flight and is not
@@ -1151,7 +1151,7 @@ impl NodeSelf {
                 deleted.receipt.expect("All carries its receipt")
             }
         };
-        closure.in_scope(|| tracing::info!("the stop's node.connections.delete All is complete"));
+        closure.in_scope(|| tracing::info!("the stop's node.connection.delete All is complete"));
         drop(closure);
         let mut owed: Vec<(String, tokio::task::JoinHandle<()>)> = deleting.into_inner().unwrap().into_iter().collect();
         if let Some(progress) = &progress {
@@ -1579,7 +1579,7 @@ pub fn connection_view(f: &NodeConnection) -> ConnectionView {
 
 /// `node.connection.get { node }` answered from `held`, one read of the node's connections writer (Q167
 /// R-RD7): the connections the node holds (its `connected` latest Directs and its active Proxies,
-/// each named by the minted id `node.connections.delete` names it by) that match every pair of
+/// each named by the minted id `node.connection.delete` names it by) that match every pair of
 /// `filter`, under the name it holds; a filter the connection schema refuses is `RejectedFilter`
 /// naming the pair. Its span names the node, the pairs' properties, how many it answered and whether
 /// its set is complete.

@@ -984,7 +984,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
         writer.observations_landed().await;
         let open = writer.held_routes().await.into_iter().filter(|r| r.destination.name == dest.name).collect::<Vec<_>>();
         assert_eq!(open.len(), 1, "the Direct to the destination is held: {open:?}");
-        writer.write_drops(&open, "node.connections.delete");
+        writer.write_drops(&open, "node.connection.delete");
         writer.observations_landed().await;
     });
     let _ = std::fs::remove_dir_all(&dir);

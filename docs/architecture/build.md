@@ -319,7 +319,7 @@ The accepted topology is the Build's; the observed topology follows the executor
 ### 4.4 The gates before an operation
 
 Every operation on the topology, a Build or a standalone node.stop, node.start,
-node.connections.delete or node.delete, passes the fabric-primary's gates in this order before
+node.connection.delete or node.delete, passes the fabric-primary's gates in this order before
 anything runs. Each gate reads one source. A gate that fails refuses by name and nothing is written.
 
 | Gate | Reads | Refusal |

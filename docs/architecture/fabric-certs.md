@@ -11,7 +11,7 @@ or with neither by name (`NoCerts`). RDM owns the cert format (`rdm_core::certs`
 certs, signs every member
 cert, renews it before expiry ([node.cert.renew](lifecycles/node-cert-renew.md)), carries it to the
 exact birth, and verifies the cert a dialer presents on every connection of a registered product ALPN
-([node.connections.admit](lifecycles/node-connections-admit.md)). The app owns the CA material it
+([node.connection.create](lifecycles/node-connections-admit.md)). The app owns the CA material it
 passes in and what the cert means outward, to clients and other systems. The whole vocabulary is the
 [cert workflows table](#the-cert-workflows).
 
@@ -35,7 +35,7 @@ node holds (one, or two during a root rotation). A node-admin never issues a mem
 outlives its issuer (`MemberOutlivesIssuer`), nor an issuing cert that outlives its CA
 (`IssuerOutlivesCa`). Every node-admin holds the root (§Custody).
 
-Verification (RDM's, in [node.connections.admit](lifecycles/node-connections-admit.md); Rafka's own accept
+Verification (RDM's, in [node.connection.create](lifecycles/node-connections-admit.md); Rafka's own accept
 loop too until i145 e4 removes it) checks the chain in this order and
 refuses at the first failure:
 
@@ -152,7 +152,7 @@ is its iroh endpoint key, and admission to the mesh is the JoinNode check agains
 embedding app registered at `bind`, the acceptor reads the dialer's member cert on the connection's
 first bi-stream, verifies it (signature to the issuer, the issuer to the CA, the CA to a root the node
 holds, the issuer's mesh, the three expiries), writes the verdict back, and admits or drops the connection
-([node.connections.admit](lifecycles/node-connections-admit.md)); the verdict is a connection fact
+([node.connection.create](lifecycles/node-connections-admit.md)); the verdict is a connection fact
 ([connections.md](connections.md) §1.2, §12). RDM never registers the step for its own two ALPNs: a
 registration naming `rdm_transport::ALPN` or `iroh_gossip::ALPN` is refused by name at `bind`. The
 member cert is also what the app presents outward, to clients and other systems.
@@ -171,7 +171,7 @@ One vocabulary, `<entity>.<thing>.<verb>`, the event in the past tense.
 | `node.cert.create` | step inside node.mesh.join | the accepting primary, before it admits | none (the join answer) | [node.mesh.join](lifecycles/node-mesh-join.md) step 5 |
 | `node.cert.renew` | primitive, on the issuer's tick | mesh-primary → member; fabric-primary → mesh-primary | Status 0x1B `RenewCert`, reply `CertRenewed` | [node.cert.renew](lifecycles/node-cert-renew.md) |
 | `node.cert.get` | a field of node.get | any caller → the view | `NodeView.cert` on the `Nodes` reply | [typed-object table](node-rpc-envelope.md#typed-object-contract) |
-| `node.connections.admit` | primitive, on accept | the acceptor, every inbound connection of a registered ALPN | the connection's first bi-stream; not a Node RPC op | [node.connections.admit](lifecycles/node-connections-admit.md) |
+| `node.connection.create` | primitive, on accept | the acceptor, every inbound connection of a registered ALPN | the connection's first bi-stream; not a Node RPC op | [node.connection.create](lifecycles/node-connections-admit.md) |
 | `fabric.ca.renew` | workflow, on the fabric-primary's tick | the fabric-primary → every mesh (issuer) | `mesh.issuer.renew` per mesh; no trust-set change | [fabric.ca.renew](lifecycles/fabric-ca-renew.md) |
 | `fabric.root.update` | caller op | the app or a person → the fabric-primary | a single call; reply `fabric.root.updated`; then `node.roots.update` per node and `fabric.ca.renew` | [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) |
 | `node.roots.update` | primitive, inside `fabric.root.update` only | the fabric-primary → one node, exact birth | Status 0x1B `UpdateRoots`, reply `RootsUpdated` | [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive) |

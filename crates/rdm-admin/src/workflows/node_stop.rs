@@ -1,6 +1,6 @@
 //! Node stop workflow (`docs/architecture/lifecycles/node-stop.md`).
 //!
-//! Stops a node: executes `node.connections.delete { scope: All }`, cuts transport,
+//! Stops a node: executes `node.connection.delete { scope: All }`, cuts transport,
 //! and transitions the live process to stopped.
 
 pub use crate::node_self::{CutReport, NodeSelf, StartFailed, TasksStopped};
@@ -68,7 +68,7 @@ mod tests {
     /// CONTRACT (docs/architecture/lifecycles/node-stop.md:17-59):
     /// 1. `StopNode` requires an exact incarnation (`node-stop.md:17,33`): a stale incarnation is
     ///    refused `RejectedStaleIncarnation` before `CommandAccepted`, writing no state.
-    /// 2. `StopNode` on the exact birth emits `CommandAccepted`, runs `node.connections.delete { All }`
+    /// 2. `StopNode` on the exact birth emits `CommandAccepted`, runs `node.connection.delete { All }`
     ///    (`ConnectionsDeleting` -> `StopConnectionsDeleted { receipt: Established }`), holds gated tasks
     ///    (`rdm.node_admin.node.update.via-stop-quiesce`), runs `node.mesh.leave` (`Leaving` ->
     ///    `StopMeshLeft { left: [Own] }`), owes `Stopped` naming the stop operation

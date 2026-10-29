@@ -8,7 +8,7 @@
 //! The cells run a real Day-0 node-admin in this process, holding the testkit's fabric root, and
 //! births deployed by hand (the admin reconciles nothing): its ticks and Status door are the
 //! product's. Members register a product ALPN and are launched with the testkit's root set, so
-//! their dials are admitted by `node.connections.admit` on it. A cell that needs a member's Node RPC
+//! their dials are admitted by `node.connection.create` on it. A cell that needs a member's Node RPC
 //! to fail cuts its admin's calls to it (the client's admission block, its pooled connection to the
 //! member closed): the member gossips on, so nothing but the renewal is told about it.
 

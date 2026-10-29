@@ -86,10 +86,10 @@ pub const CUSTODY_VERSION: u64 = 1;
 pub const ENV_MESH_PRIMARY: &str = "RDM_MESH_PRIMARY";
 /// A person-started node-admin must recover the fabric (total loss); implies `RDM_MESH_PRIMARY`.
 pub const ENV_FABRIC_PRIMARY: &str = "RDM_FABRIC_PRIMARY";
-/// The bound of a `node.connections.delete { All }` at the node, standalone or inside a stop
+/// The bound of a `node.connection.delete { All }` at the node, standalone or inside a stop
 /// (node-connections-delete.md step 5), in whole milliseconds.
 pub const ENV_CONNECTIONS_DELETE_DEADLINE: &str = "RDM_CONNECTIONS_DELETE_DEADLINE_MS";
-/// The bound of a `node.connections.delete { All }` when the launch environment names none.
+/// The bound of a `node.connection.delete { All }` when the launch environment names none.
 pub const DEFAULT_CONNECTIONS_DELETE_DEADLINE: Duration = Duration::from_millis(5000);
 
 /// The node-admin that deployed a birth: the target of its `JoinNode`.
@@ -213,7 +213,7 @@ pub struct Launch {
     /// launcher held it at the launch: one root, or two during a root rotation. Empty for a launcher
     /// configured with no certs.
     pub roots: Vec<VerifyingKey>,
-    /// The bound of a `node.connections.delete { All }` at this birth, standalone or inside a stop
+    /// The bound of a `node.connection.delete { All }` at this birth, standalone or inside a stop
     /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`): the eligible work in flight is let finish until it
     /// passes, then the closure answers `Deadline`.
     pub connections_delete_deadline: Duration,

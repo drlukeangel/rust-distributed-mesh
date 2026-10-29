@@ -898,11 +898,11 @@ If a handler continues after caller cancellation, telemetry records caller_cance
 
 ## 35. Connections-deleting
 
-When its node enters connections-deleting under [node.connections.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`, on its own or as the first step of [node.stop](lifecycles/node-stop.md), the runtime answers new non-status calls with typed `ConnectionsDeleting`, which proves their handler did not run. The Status family stays served.
+When its node enters connections-deleting under [node.connection.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`, on its own or as the first step of [node.stop](lifecycles/node-stop.md), the runtime answers new non-status calls with typed `ConnectionsDeleting`, which proves their handler did not run. The Status family stays served.
 
 The caller invalidates pooled connections to that birth and re-enters its own target and reachability policy on a future attempt.
 
-Handlers already running keep their admission and memory permits, may finish, and may issue outbound Node RPC calls while finishing. In-flight work finishes under node.connections.delete's own rules; its receipt is `ConnectionsReceipt`: `Established { in_flight, closed }`, or `Deadline { last_in_flight, closed, held }` at its bound (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`). Node RPC never rolls back domain work.
+Handlers already running keep their admission and memory permits, may finish, and may issue outbound Node RPC calls while finishing. In-flight work finishes under node.connection.delete's own rules; its receipt is `ConnectionsReceipt`: `Established { in_flight, closed }`, or `Deadline { last_in_flight, closed, held }` at its bound (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`). Node RPC never rolls back domain work.
 
 A stopped node keeps its endpoint bound; stopped does not refuse node.start, node.update or node.delete ([readiness gate](node-rpc-envelope.md#node-rpc-readiness-gate)). A stop and the start after it never exit the process.
 

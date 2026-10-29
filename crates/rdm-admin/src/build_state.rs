@@ -54,7 +54,7 @@ pub enum AttemptReason {
     Reserved2,
     /// The previous attempt's executor is gone; another admin continues the Build.
     AuthorityMoved,
-    /// `POST /api/nodes/{name}/connections/delete`: node.connections.delete { All }.
+    /// `POST /api/nodes/{name}/connections/delete`: node.connection.delete { All }.
     DeleteConnections,
     /// A standalone stop of an exact birth was requested (`node.stop:<path>`).
     Stop,
@@ -85,7 +85,7 @@ impl AttemptReason {
             Self::ProvenDrift => "proven-drift",
             Self::Reserved2 => "reserved-2",
             Self::AuthorityMoved => "authority-moved",
-            Self::DeleteConnections => "node.connections.delete",
+            Self::DeleteConnections => "node.connection.delete",
             Self::Stop => "stop",
             Self::Start => "start",
             Self::Recovery => "recovery",
@@ -1308,7 +1308,7 @@ fn mesh_deleted_final(s: &BuildStepReceipt) -> Option<(crate::model::NodeId, cra
 /// What an opened attempt carries, for a refusal: its reason, its action and who opened it.
 fn describe_open(o: &AttemptOpened) -> String {
     let action = match &o.action {
-        Some(crate::accepted::AttemptAction::DeleteConnections { path, node_id, from_incarnation }) => format!("node.connections.delete of {path} from {node_id} at {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::DeleteConnections { path, node_id, from_incarnation }) => format!("node.connection.delete of {path} from {node_id} at {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Stop { path, node_id, from_incarnation }) => format!("stop of {path} from {node_id} at {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Start { path, node_id, from_incarnation }) => format!("start of {path} from {node_id} at {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. }) => format!("recovery of {path} from exited {node_id} at {from_incarnation}"),

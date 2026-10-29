@@ -138,7 +138,7 @@ The Pending hand-off to a mesh's first admin is a row of [States: who sets each 
 
 - node.stop then node.start (same NodeId, incarnation, endpoint and port) and replacement (new NodeId at the
   same path.name) of a node-admin are Builds, one node-admin at a time per mesh (rule 2).
-- A Build that runs `node.connections.delete { scope: All }` on, stops or replaces a
+- A Build that runs `node.connection.delete { scope: All }` on, stops or replaces a
   primary runs [node.primary.update](lifecycles/node-primary-update.md) first: the primary, commanded from
   above, hands over to its successor, who then commands the old primary's step (rule 3).
 

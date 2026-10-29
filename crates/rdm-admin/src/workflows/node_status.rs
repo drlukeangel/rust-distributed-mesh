@@ -442,7 +442,7 @@ mod tests {
         );
 
         // node-status.md:36 (Q281) — ApplyNodeState is reserved and refused by name; ApplyNodeState(ConnectionsDeleting) is refused with a named typed refusal
-        // because connections-deleting is entered only by node.connections.delete { scope: All }; node.id,
+        // because connections-deleting is entered only by node.connection.delete { scope: All }; node.id,
         // incarnation, endpoint key, port, and immutable path are kept unchanged; and the workflow step
         // classifies the refusal as Refused (recorded as Failed { step, reason }).
         let apply_cd = StatusRequest::ApplyNodeState {

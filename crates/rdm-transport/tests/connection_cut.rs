@@ -1,4 +1,4 @@
-//! A node's hard cut of its mesh connections (node.connections.delete) spares the caller whose call is
+//! A node's hard cut of its mesh connections (node.connection.delete) spares the caller whose call is
 //! being answered, and a client's own cut closes everything it holds.
 //!
 //! CONTRACT: `close_connections_except(spare)` closes every connection the server accepted except those
@@ -48,7 +48,7 @@ async fn a_cut_closes_every_accepted_connection_but_the_spared_peers_and_the_end
     assert!(ping(&spared, &target).await && ping(&cut, &target).await);
     assert_eq!((spared.pooled().len(), cut.pooled().len()), (1, 1));
 
-    let closed = server.close_connections_except(&[spared_key], "node.connections.delete");
+    let closed = server.close_connections_except(&[spared_key], "node.connection.delete");
     assert_eq!(closed, 1, "one connection was not the spared peer's");
     // The spared peer's connection still carries a call, on the connection it already held.
     assert!(ping(&spared, &target).await, "the spared peer's connection is open");
@@ -58,7 +58,7 @@ async fn a_cut_closes_every_accepted_connection_but_the_spared_peers_and_the_end
     assert!(ping(&cut, &target).await, "the endpoint is still bound: a fresh dial is served");
 
     // The client's own cut.
-    assert_eq!(cut.close_pooled("node.connections.delete"), 1);
+    assert_eq!(cut.close_pooled("node.connection.delete"), 1);
     assert!(cut.pooled().is_empty(), "nothing is left pooled after a cut");
     assert!(ping(&cut, &target).await, "the next call dials afresh");
     assert_eq!(cut.close_pooled_to(&key.public(), "node.stopped"), 1, "the connections to one peer are the ones closed");

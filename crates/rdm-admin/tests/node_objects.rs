@@ -1165,7 +1165,7 @@ fn a_build_that_hands_back_and_fails_sends_one_started_and_one_failed_ended_nami
 /// CONTRACT: a `node.name.update` whose name is outside the name grammar (proposal
 /// node-properties-own-commands.md §9 A) is refused `RejectedName` by name before anything is sent,
 /// as are tags that are not a node's tag set (R-TG1) and a read's filter its entity's schema refuses
-/// (Q167 R-RD2: an empty values list, a tag value that is not a label, a property the row has not). A `node.connections.delete` naming no connection is refused by name before
+/// (Q167 R-RD2: an empty values list, a tag value that is not a label, a property the row has not). A `node.connection.delete` naming no connection is refused by name before
 /// anything is sent (R-CR3). Calls whose request no op carries say so by name.
 #[test]
 fn calls_no_op_carries_today_say_so_by_name() {
@@ -1196,7 +1196,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
             Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains("(tags, [red]) names no property of a mesh row"), "mesh.get: {reason}: {detail}"),
             other => panic!("a mesh pair on a node property is refused by name before anything is sent, not {other:?}"),
         }
-        // node.connections.delete naming no connection is refused by name, and nothing is sent.
+        // node.connection.delete naming no connection is refused by name, and nothing is sent.
         assert!(
             matches!(nodes.connections_delete(&birth, &mp, &route, &rdm_core::status::ConnectionScope::Connections(vec![])).await, Ok(rdm_core::status::StatusReply::RejectedConnectionScope { reason }) if reason.contains("at least one")),
             "an empty Connections list is refused by name"
@@ -1244,9 +1244,9 @@ fn every_pipeline_step_is_named_by_the_client() {
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
     let f = rdm_client::fold(&WorkflowKind::Stop(name.clone()), &view("node.stop:mesh1.rpc.3", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
-    // A standalone node.connections.delete { All } ends on the birth's node.connections.deleted: the
+    // A standalone node.connection.delete { All } ends on the birth's node.connections.deleted: the
     // process is not stopped and nothing is deleted.
-    let f = rdm_client::fold(&WorkflowKind::DeleteConnections(name.clone()), &view("node.connections.delete:mesh1.rpc.3", vec!["DeleteConnections", "Complete"]), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::DeleteConnections(name.clone()), &view("node.connection.delete:mesh1.rpc.3", vec!["DeleteConnections", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete]);
     // A node-admin's delete with only NodeDeleting held resumes at StopNode, as any node's does.
     let r = rdm_client::Resume::from_view(&WorkflowKind::Delete(admin.clone()), &view("node.delete:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();

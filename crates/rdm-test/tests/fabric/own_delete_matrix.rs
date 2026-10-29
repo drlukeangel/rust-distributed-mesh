@@ -210,7 +210,7 @@ async fn a_two_mesh_fabrics_primary_left_after_fabric_deleted_is_deleted_by_its_
 /// the stop is refused by name before anything moves"; fabric-delete.md "After completion": the one call
 /// left is the fabric-primary's own node.delete): a one-mesh fabric {1 node-admin, 1 rpc node} completes
 /// fabric.delete, the fabric-primary alive and alone. Its node.stop, node.restart and
-/// node.connections.delete are each refused by name, `unknown-node` (the delete took it out of the
+/// node.connection.delete are each refused by name, `unknown-node` (the delete took it out of the
 /// accepted topology): none is run by itself as its own executor, which would leave a stopped
 /// fabric-primary that nothing is left to start or delete; its node.delete, step 4's call, is the one
 /// admitted. Then its own node.delete from outside answers node.deleted and its runtime exits
@@ -225,7 +225,7 @@ async fn after_fabric_deleted_the_fabric_primarys_own_stop_and_connections_delet
     let fp = path("mesh1.admin.1");
     let mut refusals = Vec::new();
     refusals.push(refused_by_name("node.stop of the fabric-primary after fabric.deleted", "unknown-node", nodes.stop(&fp).await));
-    refusals.push(refused_by_name("node.connections.delete of the fabric-primary after fabric.deleted", "unknown-node", nodes.delete_connections(&fp).await));
+    refusals.push(refused_by_name("node.connection.delete of the fabric-primary after fabric.deleted", "unknown-node", nodes.delete_connections(&fp).await));
     let pid = pid_of(&estate, "mesh1.admin.1").await;
     assert!(running(pid), "the refusals moved nothing: the fabric-primary runs");
     let replies = deleted_inside_the_bound(&mut estate, "mesh1.admin.1", pid).await;

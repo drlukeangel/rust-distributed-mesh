@@ -221,7 +221,7 @@ Size:
 
 The eleven reserved type names in the receive table retain their historical page positions; their
 old numeric wire discriminants are not reused. None is published. Each type is refused before data
-decode as via-reserved; an unknown type is refused distinctly. node.connections.delete and node.stop are calls, not gossip: connections-deleting,
+decode as via-reserved; an unknown type is refused distinctly. node.connection.delete and node.stop are calls, not gossip: connections-deleting,
 connections-deleted and stopping reach peers as the member's status in its mesh-primary's member
 projection (the `MeshTopology` and `MeshTopologyDelta` rows of the catalog), and node.connections.deleted is a
 reply on the call, never gossip. The typed node.stop's stopped is a frame on its call stream, not a

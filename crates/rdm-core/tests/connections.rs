@@ -115,7 +115,7 @@ fn a_complete_projection_with_no_direct_fact_dials_and_a_standing_failed_fact_do
 
 /// CONTRACT (connections.md section 9.1: a reconnect series exists only when the latest Direct is
 /// Failed; section 1.2: only Failed is this source's failure evidence): a Direct this node dropped
-/// (`node.connections.delete`'s Disconnected, as node.stop writes) leaves no series
+/// (`node.connection.delete`'s Disconnected, as node.stop writes) leaves no series
 /// to retry it, so the next new call dials the destination again; a Failed one after it waits for its
 /// series. Must NOT happen: a dropped Direct answering NoActiveRoute to every later call.
 #[test]

@@ -1,7 +1,7 @@
 //! The lifecycle primitives called by the workflow modules (`docs/plans/proposal/rdm-code-conformance.md` §0.1).
 //!
 //! Each primitive does one thing: join, the `pre_node_ready` hook, the Build floor,
-//! rafka-time, `node.connections.delete`, the transport cut, the exited verdict, row claim/put/tombstone,
+//! rafka-time, `node.connection.delete`, the transport cut, the exited verdict, row claim/put/tombstone,
 //! topology reads, and status reports/applies.
 
 pub use crate::deployment::provider::{inspect_runtime, Inspected};

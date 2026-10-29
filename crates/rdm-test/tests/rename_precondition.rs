@@ -1,6 +1,6 @@
 //! A node takes another name only when it holds no connection (R-CR1, R-CR1a, R-CR3; rulings
 //! 2026-10-11): `ApplyNodeName` at the node answers `Busy` naming the routes it still holds, and
-//! `node.connections.delete { scope: All }` closes every one of them, writing each drop under the
+//! `node.connection.delete { scope: All }` closes every one of them, writing each drop under the
 //! node's current name, before the name can move.
 //!
 //! CONTRACT: `mesh1.rpc.7` originates a data-plane connection to its admin and one to its peer
@@ -145,7 +145,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         assert_eq!(busy, StatusReply::BusyHoldingConnections { connections: holding }, "a node holding its routes keeps its name, naming each connection");
         assert_eq!(renamed_seams.connections.own().name, born, "the node holds the name it had");
 
-        // node.connections.delete { All }: every route closed, each drop under the name it holds.
+        // node.connection.delete { All }: every route closed, each drop under the name it holds.
         let open_ids: Vec<_> = renamed_seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
         let deleted = crate::common::node_command_completion(&admin.observer.client, &target, &NodeCommandRequest::DeleteConnections { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), scope: ConnectionScope::All }).await;
         let NodeCommandReply::ConnectionsDeleted { closed, not_open, held, .. } = &deleted else { panic!("the cut ends node.connections.deleted: {deleted:?}") };
@@ -175,7 +175,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
             }
         }
         for dest in ["mesh1.admin.1", "mesh1.rpc.2"] {
-            let drop = log.iter().find(|e| e.source.name == born && e.destination.name.to_string() == dest && e.state == ConnectionState::Disconnected && e.reason.as_deref() == Some("node.connections.delete"));
+            let drop = log.iter().find(|e| e.source.name == born && e.destination.name.to_string() == dest && e.state == ConnectionState::Disconnected && e.reason.as_deref() == Some("node.connection.delete"));
             if drop.is_none() {
                 wrong.push(format!("no drop of the route to {dest} under {born}"));
             }

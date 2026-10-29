@@ -167,7 +167,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert!(start(deleting[0]) < start(deleted[0]));
     // The stop leg (node-stop.md steps 2-3): after the pre-notice the executor's stop-node reached the
     // exact birth (the victim's own `via-stop-node`); inside it the victim ran its whole
-    // node.connections.delete { All }, then its own transport cut; its reply `stopped` is the
+    // node.connection.delete { All }, then its own transport cut; its reply `stopped` is the
     // stop's completion (no node-left call is made), all before the terminal proof.
     let stop_span = named(&spans, "rdm.node_admin.status.update.via-stop-node")
         .into_iter()
@@ -183,7 +183,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
         .filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["operation"] != "signal")
         .cloned()
         .collect::<Vec<Value>>();
-    assert_eq!(all.len(), 1, "the victim's stop ran its node.connections.delete {{ All }} once: {all:#?}");
+    assert_eq!(all.len(), 1, "the victim's stop ran its node.connection.delete {{ All }} once: {all:#?}");
     assert_eq!(all[0]["parent_span_id"], stop_span["span_id"], "the All is the stop's own step, inside its via-node.stop: {}", all[0]);
     let all_at = start(&all[0]);
     let all_end = all[0]["end_unix_nano"].as_u64().unwrap_or(u64::MAX);

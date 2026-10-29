@@ -1,4 +1,4 @@
-//! Functional cell for `node.connections.delete` (`docs/architecture/lifecycles/node-connections-delete.md`).
+//! Functional cell for `node.connection.delete` (`docs/architecture/lifecycles/node-connections-delete.md`).
 
 use iroh::SecretKey;
 use rdm_admin::connections_writer::ConnectionsWriter;

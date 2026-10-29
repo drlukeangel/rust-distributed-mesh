@@ -1,4 +1,4 @@
-//! `node.tags.create` and `node.tags.delete`: label a node, find nodes by label, remove the label
+//! `node.tag.create` and `node.tag.delete`: label a node, find nodes by label, remove the label
 //! (node-rpc-envelope.md, node properties).
 //!
 //! A tag is a label on a node's row. The node's mesh-primary is the one writer of its mesh's rows, so
@@ -50,12 +50,12 @@ async fn main() -> Result<()> {
 
     let labels = BTreeSet::from([label.clone()]);
     let created = nodes.tags_create(&exact(row)?, &primary.node_id, &RouteChoice::Direct, &labels).await?;
-    println!("node.tags.create {label} on {node}: {created:?}");
+    println!("node.tag.create {label} on {node}: {created:?}");
 
     let tagged = nodes.get(&Filter::new().eq("tags", [label.clone()])).await?;
     println!("node.get [tags: {label}]: {:?}", tagged.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
 
     let deleted = nodes.tags_delete(&exact(row)?, &primary.node_id, &RouteChoice::Direct, &TagScope::Labels(labels)).await?;
-    println!("node.tags.delete {label} on {node}: {deleted:?}");
+    println!("node.tag.delete {label} on {node}: {deleted:?}");
     Ok(())
 }

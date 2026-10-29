@@ -7,7 +7,7 @@ other type alike, and completes as `node.primary.updated`. `node.fabric-primary.
 fabric-primary by the same primitive and completes as `node.fabric-primary.updated`. Commands only go
 down: the fabric-primary commands a mesh-primary, and a mesh-primary commands the primaries of its
 mesh's other node types. No node commands its own primary. A stop, delete, replace or
-`node.connections.delete { scope: All }` of a primary runs it first.
+`node.connection.delete { scope: All }` of a primary runs it first.
 
 Who is primary is the [election](../fabric-node-lifecycle-elections.md)'s result, computed by every
 node-admin from the facts it holds. Becoming primary and recording it are separate: the successor
@@ -43,7 +43,7 @@ the same, command, then the successor becomes primary and announces, then the re
 and recording it are separate for every type.
 
 1. The primary is commanded from above, as a step of the Build that stops, deletes, replaces or
-   runs `node.connections.delete { scope: All }` on it.
+   runs `node.connection.delete { scope: All }` on it.
 2. The writer pre-checks from its own view: the election over the nodes of that type in the mesh with the
    primary excluded names a Ready successor. If it names none, the step is refused by name and
    nothing has changed, no row ([no-successor cases](#no-successor-cases)).
@@ -149,7 +149,7 @@ as its mesh's writer), with its own op,
 `node.fabric-primary.update`. It runs the same sequence through the same primitive and completes as
 `node.fabric-primary.updated` (never `node.primary.updated`, which is the mesh-primary's), the
 fabric-primary (a mesh-primary by definition) as caller, its commander being the workflow that stops,
-deletes or runs `node.connections.delete { scope: All }` on it, or mesh.delete. Only the
+deletes or runs `node.connection.delete { scope: All }` on it, or mesh.delete. Only the
 successor search and the row differ.
 
 Successor search for the commanded transfer:

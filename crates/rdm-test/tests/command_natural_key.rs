@@ -52,7 +52,7 @@ impl Birth {
         Self::launched(cell, pre_node_ready, rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
     }
 
-    /// [`Self::up`], launched with `deadline` as its `node.connections.delete { All }` bound.
+    /// [`Self::up`], launched with `deadline` as its `node.connection.delete { All }` bound.
     async fn up_bounded(cell: &str, deadline: Duration) -> Self {
         Self::launched(cell, None, deadline).await
     }
@@ -232,7 +232,7 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
     })
 }
 
-/// CONTRACT: `node.connections.delete { All }` lets the eligible in-flight work finish under the
+/// CONTRACT: `node.connection.delete { All }` lets the eligible in-flight work finish under the
 /// birth's bound (node-connections-delete.md step 5), the one its launch carries
 /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, read once where the process reads its launch): a call
 /// that never finishes ends the closure at that bound with `Deadline` naming the count it last
@@ -265,7 +265,7 @@ fn an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receip
         let decided = spans_named(&spans, "rdm.node_admin.connection.delete.via-delete-connections");
         assert!(
             decided.iter().any(|f| f.get("deadline_ms").map(String::as_str) == Some("500") && f.get("receipt").map(String::as_str) == Some("deadline")),
-            "the birth's node.connections.delete span names the bound it ran under and the Deadline receipt: {decided:?}"
+            "the birth's node.connection.delete span names the bound it ran under and the Deadline receipt: {decided:?}"
         );
         birth.pull.release();
         held.await.unwrap();
@@ -327,7 +327,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_stopp
 }
 
 /// CONTRACT (i144 R22; Luke Q7: "Replies (NodeCommand replies, classified into the existing stream
-/// order)"): the node answers `node.connections.delete` on op 0x22 with its ordered stream. `All` with
+/// order)"): the node answers `node.connection.delete` on op 0x22 with its ordered stream. `All` with
 /// no work in flight: `CommandAccepted`, `ConnectionsDeleting`, `ConnectionsDeleted` `Established`.
 /// `All` with a call held in flight past the birth's 500 ms bound: `CommandAccepted`,
 /// `ConnectionsDeleting`, `ConnectionsDeleted` `Deadline` naming the one call. `Connections([id])`:

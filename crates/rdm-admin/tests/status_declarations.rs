@@ -469,7 +469,7 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
     let answer = Arc::new(answer);
     let (cs, ch, canswer) = (seen.clone(), heard.clone(), answer.clone());
     let server = ServerBuilder::new()
-        // The node command op 0x22 (i144 R22): `node.connections.delete` reaches the birth here, answered
+        // The node command op 0x22 (i144 R22): `node.connection.delete` reaches the birth here, answered
         // through the same `answer` and logged as the request it carries, on the command's ordered stream.
         .serve_stream::<rdm_core::node_command::NodeCommand, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: rdm_core::node_command::NodeCommandRequest, sink| {
             let (s, h, answer) = (cs.clone(), ch.clone(), canswer.clone());
@@ -1315,7 +1315,7 @@ fn a_callers_command_carried_up_while_the_fabric_primary_changes_completes_once_
 /// through, mesh1.admin.2, which is not the fabric-primary: mesh1.admin.2 carries it up to the
 /// fabric-primary, mesh1's primary, which writes the row carrying the labels: `TagsCreated`, the row
 /// holds them, and mesh1.admin.2 writes nothing. Span: `via-forward` at mesh1.admin.2, op
-/// `node.tags.create`, outcome `tags-created`. Must NOT happen: `ReceiverNotPrimary` at mesh1.admin.2.
+/// `node.tag.create`, outcome `tags-created`. Must NOT happen: `ReceiverNotPrimary` at mesh1.admin.2.
 #[test]
 fn a_nodes_own_tags_create_through_an_admin_that_is_not_the_fabric_primary_is_carried_up_and_written() {
     let cap = capture();
@@ -1338,8 +1338,8 @@ fn a_nodes_own_tags_create_through_an_admin_that_is_not_the_fabric_primary_is_ca
     });
     let up = cap.spans("rdm.node_admin.node.update.via-forward");
     let (trace, a) = up.iter().find(|(_, a)| a.get("node").map(String::as_str) == Some("mesh1.admin.2")).unwrap_or_else(|| panic!("a via-forward span at mesh1.admin.2: {up:?}"));
-    assert_eq!((a.get("op").map(String::as_str), a.get("fabric_primary").map(String::as_str), a.get("outcome").map(String::as_str)), (Some("node.tags.create"), Some("mesh1.admin.1"), Some("tags-created")), "{a:?}");
-    eprintln!("trace {trace}: rdm.node_admin.node.update.via-forward node=mesh1.admin.2 op=node.tags.create outcome=tags-created");
+    assert_eq!((a.get("op").map(String::as_str), a.get("fabric_primary").map(String::as_str), a.get("outcome").map(String::as_str)), (Some("node.tag.create"), Some("mesh1.admin.1"), Some("tags-created")), "{a:?}");
+    eprintln!("trace {trace}: rdm.node_admin.node.update.via-forward node=mesh1.admin.2 op=node.tag.create outcome=tags-created");
 }
 
 /// The rig's view with mesh1.admin.2 mesh1's primary and mesh1.admin.1 the fabric-primary only.
@@ -1639,7 +1639,7 @@ async fn successor_new(rig: &Rig) -> (Birth, ServedNode) {
 }
 
 /// [`successor_new`], its connections deleted (connections-deleting in the mesh-primary's view and its declared state),
-/// answering `node.connections.delete` with every connection cut and nothing held, `node.mesh.leave`
+/// answering `node.connection.delete` with every connection cut and nothing held, `node.mesh.leave`
 /// with its mesh left, and every other request `Applied`.
 async fn successor_connections_deleted(rig: &Rig) -> (Birth, ServedNode) {
     let mut b = birth("mesh1.rpc.8", NodeKind::RpcNode, "mesh1", false, false);
@@ -1754,7 +1754,7 @@ fn a_ready_nodes_rename_is_refused_admitting_connections_and_nothing_is_claimed_
 /// carrying `renamed_from: <old path.name>`, then the old claim's release"; steps 4-5; Completion "The
 /// left node: `node.name.updated` after `Applied`"): the successor `mesh1.rpc.8`, ConnectionsDeleting in the mesh-primary's view, is
 /// refused the rename to `3` `RejectedAdmittingConnections { status: ConnectionsDeleting,
-/// held_connections: [] }`, nothing claimed and nothing told. A caller's `node.connections.delete {
+/// held_connections: [] }`, nothing claimed and nothing told. A caller's `node.connection.delete {
 /// All }` through the mesh-primary is carried to the exact birth and answered with the birth's
 /// `node.connections.deleted`, which the mesh-primary holds; the same rename is refused again, the
 /// birth still on its mesh (`connections=deleted`, `mesh=on-mesh`). The mesh-primary carries
@@ -2069,7 +2069,7 @@ fn a_rename_whose_release_fails_ends_incomplete_with_both_keys_held_and_its_retr
 /// renamed to `2.old` while the nodes store refuses the release ends `release-pending`, both keys
 /// held; the next `node.config.update` of the node releases `mesh1.rpc.2` before its put. Renamed back
 /// to `2` under a second refused release, `mesh1.rpc.2.old` is held twice over the same way, and the
-/// next `node.tags.create` releases it before its put. One
+/// next `node.tag.create` releases it before its put. One
 /// `rdm.node_admin.name.update.via-pending-release` span names each release, `moment=config-put`
 /// and `moment=tags-put`. What must NOT happen: a config or tags put leaving the old key held until the
 /// next rename or a successor's rebuild.
@@ -2188,8 +2188,8 @@ fn delete_tags(b: &Birth, scope: rdm_core::status::TagScope) -> StatusRequest {
     StatusRequest::DeleteTags { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), scope }
 }
 
-/// CONTRACT (`docs/architecture/node-rpc-envelope.md:323` — "`node.tags.create { label | [labels] }` adds
-/// one label or a list; `node.tags.delete { All | [labels] }` removes every label or the named ones ...
+/// CONTRACT (`docs/architecture/node-rpc-envelope.md:323` — "`node.tag.create { label | [labels] }` adds
+/// one label or a list; `node.tag.delete { All | [labels] }` removes every label or the named ones ...
 /// Each label is its own keyed row (label, node id) in the node store's tags index. Create is a blind put
 /// of that key, so creating a label the node already carries is ignored and writes no duplicate; delete
 /// tombstones the named keys. A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.', and a
@@ -2255,7 +2255,7 @@ fn node_tags_commands_and_a_config_update_before_the_fabric_first_reaches_ready_
 
 /// CONTRACT (R-TG1; proposal §3: tags and config: "Neither has a precondition ..., neither touches the
 /// name"; node-identity-and-state.md "A rewrite is lossless for every field its
-/// writer knows"): a caller's `node.tags.create { rabbit, red }` of the live `mesh1.rpc.1` writes its row
+/// writer knows"): a caller's `node.tag.create { rabbit, red }` of the live `mesh1.rpc.1` writes its row
 /// and the tags index with the birth told nothing. A `node.config.update` of rpc.1 then writes its row
 /// with the new config and the same tags, the index unchanged. The left `mesh1.rpc.2` (its connections
 /// deleted, its mesh left), whose row carries {red}, renamed to `2.old` keeps its tags at the row's new
@@ -2650,7 +2650,7 @@ fn a_replace_successor_inherits_the_retained_row_keeps_its_later_updates_on_a_re
 /// CONTRACT (i144 R22; Luke Q9: "Caller → mesh-primary: Status DeleteConnections, direct or forwarded,
 /// for either scope. Mesh-primary → subject node: streaming 0x22 NodeCommand"; "a forwarded caller
 /// request, and the Connections([ids]) scope, stay functional"): `mesh1.rpc.2` sends
-/// `node.connections.delete { Connections([one id]) }` of `mesh1.rpc.1` to mesh1's primary through a
+/// `node.connection.delete { Connections([one id]) }` of `mesh1.rpc.1` to mesh1's primary through a
 /// carrier (`ViaPeer` `mesh2.admin.1`, Forward 0x1A). The primary carries it to the exact birth on the
 /// node command op 0x22 (`carried=dialled`) and answers the birth's completion naming the id closed;
 /// the birth received the request once. A list of ids reports no connections-deleting, so nothing is

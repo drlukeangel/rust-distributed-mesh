@@ -1,4 +1,4 @@
-//! `node.connections.delete { scope: All }` is just connections (R-CR5; lifecycles/node-connections-delete.md:
+//! `node.connection.delete { scope: All }` is just connections (R-CR5; lifecycles/node-connections-delete.md:
 //! "A connection is an open Direct or Proxy entry of the node's connections log. Gossip neighbours and
 //! the Node RPC pool are not connections, and neither scope touches them: a node that has had its
 //! connections deleted is still heard on gossip"; lifecycles/node-name-update.md "Rename precondition").
@@ -103,7 +103,7 @@ fn named(spans: &Spans, name: &str) -> usize {
     spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).count()
 }
 
-/// CONTRACT: a live node's `node.connections.delete { All }` closes every open Direct or Proxy entry
+/// CONTRACT: a live node's `node.connection.delete { All }` closes every open Direct or Proxy entry
 /// of its connections log and nothing else. It answers `ConnectionsDeleted` holding nothing, and the
 /// node is still heard on gossip: the admin side receives a later digest of the same birth. What must
 /// NOT happen: the gossip channel stopped (`rdm.mesh.connection.delete.via-channel-stopped`), or the
@@ -306,7 +306,7 @@ fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handl
     })
 }
 
-/// CONTRACT: once `node.connections.delete { All }` has closed a live node's connections, the node opens
+/// CONTRACT: once `node.connection.delete { All }` has closed a live node's connections, the node opens
 /// no new connection until it starts or joins its mesh again (node-name-update.md Precondition: "No new
 /// connection is admitted from the row write through `ApplyNodeName`"; node-replace.md: a node is
 /// renamed once "nothing is connected to it", and a rename is followed by its stop or its rejoin). After
@@ -478,12 +478,12 @@ fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
 }
 
 /// CONTRACT: `node.mesh.leave` refuses `BusyHoldingConnections` (`rdm.node.mesh.reject.via-busy-holding-connections`)
-/// while an entry is open in the node's connections log; once `node.connections.delete { All }` closes
+/// while an entry is open in the node's connections log; once `node.connection.delete { All }` closes
 /// the log's entries, `LeaveMesh` stops the mesh channel (`rdm.node.mesh.update.via-leaving`,
 /// `rdm.node.mesh.update.via-left` with `which = "own"`) and answers `MeshLeft { joined/left: [Own] }`.
 /// `JoinMesh` then reports back via `JoinNode` (`rdm.node.mesh.update.via-joining`), starts the mesh
 /// channel (`rdm.node.mesh.update.via-joined` with `which = "own"`), and answers `MeshJoined`. And
-/// `node.stop` shares the `node.mesh.leave` step after `node.connections.delete { All }`.
+/// `node.stop` shares the `node.mesh.leave` step after `node.connection.delete { All }`.
 #[test]
 fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
     let cap = crate::common::capture("node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop");

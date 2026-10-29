@@ -152,7 +152,7 @@ pub async fn run_launched() -> Result<()> {
 
 #[cfg(feature = "file-backend")]
 /// Run a role process to completion: boot as `launch` says, serve, wait for the stop signal (or
-/// the mesh transport stopping for good), then `node.connections.delete` and leave.
+/// the mesh transport stopping for good), then `node.connection.delete` and leave.
 pub async fn run(role: Role, types: &[&str]) -> Result<()> {
     run_with(role, types, crate::node_hooks::NodeHooks::none(), |b| b).await
 }

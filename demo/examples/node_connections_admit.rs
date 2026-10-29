@@ -1,4 +1,4 @@
-//! `node.connections.admit`: the acceptor's verification of the member cert a dialer presents on
+//! `node.connection.create`: the acceptor's verification of the member cert a dialer presents on
 //! the first bi-stream of an inbound connection on a registered application ALPN
 //! (`docs/architecture/lifecycles/node-connections-admit.md:1`,
 //! `crates/rdm-transport/src/connections/admit.rs:1`, `crates/rdm-admin/src/certs.rs:1`).

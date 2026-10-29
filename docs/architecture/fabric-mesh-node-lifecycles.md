@@ -60,7 +60,7 @@ What an operation is admitted against, gate by gate and the source each reads, i
 | Workflow | Read when |
 |---|---|
 | [fabric.create](lifecycles/fabric-create.md) | Creating a fabric: minting it, its first mesh's first node-admin as fabric-primary, the fabric's states to ready |
-| [node.primary.update](lifecycles/node-primary-update.md) | Moving the primary of the nodes of one type in one mesh to its successor, first in every stop, delete, replace or `node.connections.delete { scope: All }` of a primary |
+| [node.primary.update](lifecycles/node-primary-update.md) | Moving the primary of the nodes of one type in one mesh to its successor, first in every stop, delete, replace or `node.connection.delete { scope: All }` of a primary |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | Moving the fabric-primary, the first step of a mesh.delete of its mesh |
 | [fabric.ca.renew](lifecycles/fabric-ca-renew.md) | RDM's CA rotated internally on policy under the same anchor: every issuer re-minted, no node's trust set touched |
 | [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | The trust anchor rotated on a caller's new root, through an overlap in which every node trusts both, then the CA re-minted under it and the old anchor retired |
@@ -91,20 +91,20 @@ Callers use the [typed node and Build objects](node-rpc-envelope.md#typed-object
 | [node investigation](lifecycles/node-investigation.md) (primitive) | The one verdict on one exact birth: the by-destination connections index read, node.runtime.inspect, node.tickle direct and via those peers; reached is commanded back through node.mesh.join, any other verdict is re-created at the same path.name with a new node.id |
 | [node.stop](lifecycles/node-stop.md) | Taking a node out of traffic while its process stays alive |
 | [node.delete](lifecycles/node-delete.md) | Removing a node and releasing its identity |
-| [node.connections.delete](lifecycles/node-connections-delete.md) | Closing a node's connections while its process keeps running: all of them gracefully, or exactly the named ones |
+| [node.connection.delete](lifecycles/node-connections-delete.md) | Closing a node's connections while its process keeps running: all of them gracefully, or exactly the named ones |
 | [node recovery (RDM)](lifecycles/node-recovery.md) | Replacing a member whose exit its mesh-primary proved |
 | [Rafka replace](lifecycles/node-replace.md) | Replacing a node under Rafka's steps: the predecessor renamed `<name>.old` live and stopped, the successor re-born at `<name>` |
 | [node status (internal)](lifecycles/node-status.md) | The node's status report and its mesh-primary's apply; not a caller op |
 | [node.topology.get](lifecycles/node-topology-get.md) | Reading a node's held topology; a [running node's reconnect](lifecycles/node-topology-get.md#running-node-reconnect) |
 | [node.name.update](lifecycles/node-name-update.md) | Renaming a node |
-| node.tags.get/create/delete | A node's tag labels ([typed-object table](node-rpc-envelope.md#typed-object-contract)) |
+| node.tag.get/create/delete | A node's tag labels ([typed-object table](node-rpc-envelope.md#typed-object-contract)) |
 | [node.get](node-rpc-envelope.md#typed-object-contract) | Reading nodes |
 | [node.connection.get](node-rpc-envelope.md#typed-object-contract) | Reading a node's held connections |
 | [node.config.get/update](lifecycles/node-config-update.md) | Reading or putting a node's application config |
 | [node.cert.renew](lifecycles/node-cert-renew.md) (primitive) | The mesh-primary, as issuer, installing a fresh member cert on a running node before the old one expires; presented on new connections, terminates nothing |
 | [node.issuer.update](lifecycles/node-issuer-update.md) (primitive) | The fabric-primary installing a mesh's re-minted issuing material on a running node-admin |
 | [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive) (primitive) | The fabric-primary installing the fabric's root set on one node; one or two roots through a rotation |
-| [node.connections.admit](lifecycles/node-connections-admit.md) (primitive) | The acceptor's verification of a dialer's member cert on an inbound connection of a registered ALPN; admitted or refused, a connection fact |
+| [node.connection.create](lifecycles/node-connections-admit.md) (primitive) | The acceptor's verification of a dialer's member cert on an inbound connection of a registered ALPN; admitted or refused, a connection fact |
 | [build.create/get/delete](node-rpc-envelope.md#build-op-0x20-rdm) | Submitting a Build, reattaching to it, or deleting its history |
 
 ## Wire-op-to-workflow index
@@ -117,14 +117,14 @@ are explicit.
 |---|---|---|
 | 0x01 Ping | [Ping](node-rpc-envelope.md#ping-op-0x01-core) | [Mesh investigation](lifecycles/mesh-investigation.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md) |
 | 0x1A Forward | [Forward](node-rpc-envelope.md#forward-op-0x1a-core) | [Mesh investigation](lifecycles/mesh-investigation.md) |
-| 0x1B Status | [Status](node-rpc-envelope.md#status-op-0x1b-rdm) | [node.cert.renew](lifecycles/node-cert-renew.md), [node.issuer.update](lifecycles/node-issuer-update.md), [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive), [Node status](lifecycles/node-status.md), [replace](lifecycles/node-replace.md), [delete](lifecycles/node-delete.md), [ready](lifecycles/states.md#the-fabrics-ready), [mesh.delete](lifecycles/mesh-delete.md), [start](lifecycles/node-start.md), [create](lifecycles/node-create.md), [node recovery](lifecycles/node-recovery.md), [stop](lifecycles/node-stop.md), [node.connections.delete](lifecycles/node-connections-delete.md) |
+| 0x1B Status | [Status](node-rpc-envelope.md#status-op-0x1b-rdm) | [node.cert.renew](lifecycles/node-cert-renew.md), [node.issuer.update](lifecycles/node-issuer-update.md), [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive), [Node status](lifecycles/node-status.md), [replace](lifecycles/node-replace.md), [delete](lifecycles/node-delete.md), [ready](lifecycles/states.md#the-fabrics-ready), [mesh.delete](lifecycles/mesh-delete.md), [start](lifecycles/node-start.md), [create](lifecycles/node-create.md), [node recovery](lifecycles/node-recovery.md), [stop](lifecycles/node-stop.md), [node.connection.delete](lifecycles/node-connections-delete.md) |
 | 0x1C BuildClaim | [BuildClaim](node-rpc-envelope.md#buildclaim-op-0x1c-rdm) | [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) claim-and-dispatch, [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md) |
 | 0x1D JoinNode (node.mesh.join's report) | [Join](node-rpc-envelope.md#join-op-0x1d-rdm) | [node.mesh.join](lifecycles/node-mesh-join.md), [create](lifecycles/node-create.md), [replace](lifecycles/node-replace.md), [node recovery](lifecycles/node-recovery.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh) |
 | 0x1E GetTopology (node.topology.get) | [Topology](node-rpc-envelope.md#topology-op-0x1e-rdm) | [Create](lifecycles/node-create.md), [replace](lifecycles/node-replace.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md), [node.topology.get and running reconnect](lifecycles/node-topology-get.md), [node recovery](lifecycles/node-recovery.md) |
 | 0x1F FetchBuildFacts, FetchCurrentBuild | [Build facts](node-rpc-envelope.md#build-facts-op-0x1f-rdm) | [node.start](lifecycles/node-start.md#end-to-end-sequence) step 4: FetchCurrentBuild when the missing pointer names no Build, FetchBuildFacts of the Build a blocker names |
 | 0x20 build | [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) | [Node create](lifecycles/node-create.md), [stop](lifecycles/node-stop.md), [start](lifecycles/node-start.md), [delete](lifecycles/node-delete.md); fabric-primary claim-and-dispatch of topology operations; mesh-primary claim-and-run of drift attempts; reattachment |
-| 0x21 PrimaryUpdate | [PrimaryUpdate](node-rpc-envelope.md#primaryupdate-op-0x21-rdm) | [node.primary.update and node.fabric-primary.update](lifecycles/node-primary-update.md), before a primary's [node.connections.delete](lifecycles/node-connections-delete.md), [stop](lifecycles/node-stop.md), replace or delete |
-| 0x22 NodeCommand | [NodeCommand](node-rpc-envelope.md#nodecommand-op-0x22-rdm) | [node.connections.delete](lifecycles/node-connections-delete.md), [stop](lifecycles/node-stop.md), [start](lifecycles/node-start.md): the mesh-primary to the exact node |
+| 0x21 PrimaryUpdate | [PrimaryUpdate](node-rpc-envelope.md#primaryupdate-op-0x21-rdm) | [node.primary.update and node.fabric-primary.update](lifecycles/node-primary-update.md), before a primary's [node.connection.delete](lifecycles/node-connections-delete.md), [stop](lifecycles/node-stop.md), replace or delete |
+| 0x22 NodeCommand | [NodeCommand](node-rpc-envelope.md#nodecommand-op-0x22-rdm) | [node.connection.delete](lifecycles/node-connections-delete.md), [stop](lifecycles/node-stop.md), [start](lifecycles/node-start.md): the mesh-primary to the exact node |
 
 ## Terminology firewall
 
@@ -138,10 +138,10 @@ node.create:<path.name>
 node.stop:<path.name>
 node.start:<path.name>
 node.delete:<path.name>
-node.connections.delete:<path.name>
+node.connection.delete:<path.name>
 ```
 
-A typed call has one canonical name, noun.verb, and a command completes as noun.verb in the past tense: node.create completes as node.created, node.connections.delete as node.connections.deleted. The Rust request and reply variants (`NodeRequest::Create`, `NodeReply::Created`), the Build step key (`noun.verb:<path.name>`, an opaque string, see [the Build schema](node-rpc-envelope.md#build-schema)) and the span (`rdm.<component>.<noun>.<verb>.via-...`) are rendered from it mechanically and are never named by hand.
+A typed call has one canonical name, noun.verb, and a command completes as noun.verb in the past tense: node.create completes as node.created, node.connection.delete as node.connections.deleted. The Rust request and reply variants (`NodeRequest::Create`, `NodeReply::Created`), the Build step key (`noun.verb:<path.name>`, an opaque string, see [the Build schema](node-rpc-envelope.md#build-schema)) and the span (`rdm.<component>.<noun>.<verb>.via-...`) are rendered from it mechanically and are never named by hand.
 
 A new node is node.created. Birth and re-birth are the application's names for its own workflows, never RDM operations. Rafka names its own recover/replace steps without creating an RDM opcode.
 

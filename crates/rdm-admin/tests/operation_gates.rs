@@ -1,5 +1,5 @@
 //! The gates before an operation (build.md §4.4): every operation on the topology, a Build or a
-//! standalone node.stop, node.start, node.connections.delete or node.delete, passes the
+//! standalone node.stop, node.start, node.connection.delete or node.delete, passes the
 //! fabric-primary's gates in the page's order before anything runs; each gate reads one source, and a
 //! gate that fails refuses by name and nothing is written.
 //!

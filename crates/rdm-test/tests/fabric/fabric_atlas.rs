@@ -325,7 +325,7 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
     let renamed = node.renamed();
     let nodes = estate.nodes_obj().await;
     // The node's connections deleted and its mesh left: the precondition of a live rename.
-    Estate::workflow(&format!("node.connections.delete and node.mesh.leave of {node}"), nodes.steps(vec![rdm_core::build::Step::DeleteConnections { node: node.clone() }, rdm_core::build::Step::LeaveMesh { node: node.clone() }]).await).await;
+    Estate::workflow(&format!("node.connection.delete and node.mesh.leave of {node}"), nodes.steps(vec![rdm_core::build::Step::DeleteConnections { node: node.clone() }, rdm_core::build::Step::LeaveMesh { node: node.clone() }]).await).await;
     let id = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
     let node_id: rdm_core::NodeId = serde_json::from_value(targets[0]["node_id"].clone()).expect("a node id");
     let birth = rdm_client::ExactBirth {

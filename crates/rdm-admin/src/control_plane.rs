@@ -618,7 +618,7 @@ impl ControlPlane {
             if let Some(reject) = operations.iter().find_map(|op| {
                 let (node, action) = match op {
                     crate::build::BuildOperation::DeleteLiveNode { node, .. } => (node, "delete"),
-                    crate::build::BuildOperation::DeleteConnections { node, .. } => (node, "node.connections.delete"),
+                    crate::build::BuildOperation::DeleteConnections { node, .. } => (node, "node.connection.delete"),
                     crate::build::BuildOperation::StopNode { node, .. } => (node, "stop"),
                     _ => return None,
                 };
@@ -725,7 +725,7 @@ impl ControlPlane {
     /// acting on a path that holds no birth and that no earlier step makes
     /// (`crate::accepted::steps_action`); a step in a mesh held by its own drift attempt (R-BI7
     /// caveat 3); a step on a node of a peer mesh this fabric-primary holds unheard (R-D1); a
-    /// node.connections.delete, stop or delete of a seat holder while no other node of its type in its
+    /// node.connection.delete, stop or delete of a seat holder while no other node of its type in its
     /// mesh can take its seat (R-MT1, Q7).
     pub async fn open_steps_in(&self, span: tracing::Span, route: &'static str, steps: Vec<rdm_core::build::Step>) -> Result<Opened, Refusal> {
         let outer = tracing::Span::current();
@@ -770,9 +770,9 @@ impl ControlPlane {
                 let step_action = match step {
                     rdm_core::build::Step::Stop { .. } => Some("stop"),
                     rdm_core::build::Step::Delete { .. } => Some("delete"),
-                    // A seat holder's seats move at its node.connections.delete { All }, the first step of
+                    // A seat holder's seats move at its node.connection.delete { All }, the first step of
                     // a replace (node-connections-delete.md step 0; node-replace.md step 1).
-                    rdm_core::build::Step::DeleteConnections { .. } => Some("node.connections.delete"),
+                    rdm_core::build::Step::DeleteConnections { .. } => Some("node.connection.delete"),
                     _ => None,
                 };
                 if let Some(reject) = step_action.and_then(|a| last_admin(node, a, &t)) {
@@ -860,7 +860,7 @@ impl ControlPlane {
                 let needs_live = !matches!(kind, ActionKind::Start | ActionKind::Delete);
                 if (kind == ActionKind::Start && !startable) || (kind == ActionKind::Delete && !deletable) || (needs_live && !live) {
                     let reason = match kind {
-                        ActionKind::DeleteConnections => "node.connections.delete needs a live node",
+                        ActionKind::DeleteConnections => "node.connection.delete needs a live node",
                         ActionKind::Stop => "a stop needs a live node",
                         ActionKind::Start => "a start needs a stopped node",
                         ActionKind::Delete => "a delete of a .old path needs the stopped predecessor or one whose exit is proven; any other delete through this route is of a deleted mesh's birth",
@@ -1273,7 +1273,7 @@ fn in_progress(route: &'static str, outer: &tracing::Span, path: &PathName, curr
 /// What an attempt opened at a node route does to the exact birth it is targeted to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
-    /// `node.connections.delete:<path>`.
+    /// `node.connection.delete:<path>`.
     DeleteConnections,
     /// `node.stop:<path>`.
     Stop,
@@ -1287,7 +1287,7 @@ impl ActionKind {
     /// The action's name: what a refusal says the request would do to the node.
     pub fn name(self) -> &'static str {
         match self {
-            Self::DeleteConnections => "node.connections.delete",
+            Self::DeleteConnections => "node.connection.delete",
             Self::Stop => "stop",
             Self::Start => "start",
             Self::Delete => "delete",

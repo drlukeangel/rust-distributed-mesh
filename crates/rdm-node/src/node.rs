@@ -220,7 +220,7 @@ impl RunningNode {
     /// done, or followed by a start not yet ended) runs its stop at the command and leaves stopped only
     /// through a start or a delete (node-stop.md step 6): its signal runs no second stop, and its
     /// process ends as [`Self::stop_commanded`] ends it, once every reply it owes is settled. A live birth runs node-stop.md steps 2-4 as its own subject (i146 Q55,
-    /// [`crate::node_self::NodeSelf::stop_on_signal`]): the whole `node.connections.delete { All }`
+    /// [`crate::node_self::NodeSelf::stop_on_signal`]): the whole `node.connection.delete { All }`
     /// under the birth's bound, its connections-deleting owed to its mesh-primary; the leave step
     /// (its gossip neighbours left, its Node RPC pool cut but for the connection to its mesh-primary,
     /// nothing published); its stopped state owed to its mesh-primary; then the wait until each owed
@@ -543,7 +543,7 @@ async fn start_booted(
         Vec::new(),
     )
     .map_err(|e| anyhow!("{e}"))?;
-    // node.connections.admit judges every dialer of the app's protocols on the root set the launch
+    // node.connection.create judges every dialer of the app's protocols on the root set the launch
     // carries (`RDM_ROOTS`), held where node.roots.update replaces it, on this node's rafka-time; a
     // launch with none (its launcher configured with no certs) admits by name.
     data_connections.admit_on(launch.roots.clone(), rafka_time.clone());
@@ -1017,8 +1017,8 @@ impl crate::node_self::Session for NodeSession {
     async fn cut(&self, spare: &[iroh::PublicKey], mesh_primary: Option<iroh::PublicKey>) -> crate::node_self::CutReport {
         let neighbours = self.topology_view.neighbours();
         self.leave_channels().await;
-        let pooled = self.client.close_pooled_except(mesh_primary.as_slice(), "node.connections.delete");
-        let accepted = self.server.close_connections_except(spare, "node.connections.delete");
+        let pooled = self.client.close_pooled_except(mesh_primary.as_slice(), "node.connection.delete");
+        let accepted = self.server.close_connections_except(spare, "node.connection.delete");
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }
 
@@ -1927,9 +1927,9 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     Ok(StatusReply::Current { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone(), state: node_state_of(status) })
                 }
                 StatusRequest::ApplyNodeState { state, .. } => {
-                    // Not a node command: a node's connections are deleted only by `node.connections.delete` on op 0x22.
+                    // Not a node command: a node's connections are deleted only by `node.connection.delete` on op 0x22.
                     let current = node_state_of(*me.status.lock().unwrap());
-                    tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.topology_view.held_name(&me.digest.node.name), sender = %sender_name, requested = ?state, current = ?current, reason = "node.connections.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state")
+                    tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.topology_view.held_name(&me.digest.node.name), sender = %sender_name, requested = ?state, current = ?current, reason = "node.connection.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state")
                         .in_scope(|| tracing::info!("apply-node-state refused"));
                     Ok(rdm_core::reply::status::rejected_invalid_node_transition(current))
                 }

@@ -242,11 +242,11 @@ impl NodeObserver for TopologyObserver {
             tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal").in_scope(|| tracing::info!("the exact node's command stream ended"));
             return admission;
         }
-        // node.connections.delete { All } goes through this admin's own status authority, the birth's
+        // node.connection.delete { All } goes through this admin's own status authority, the birth's
         // mesh-primary: it commands the birth and holds its node.connections.deleted for a rename.
         if cmd == crate::node_commands::NodeCommand::DeleteConnections {
             let (Some(authority), Some(incarnation)) = (self.authority.get(), node.incarnation_id.clone()) else {
-                return crate::deployment::pipeline::CommandAdmission::NotSent { reason: format!("this admin holds no status authority yet to carry node.connections.delete to {}", node.name), code: rdm_core::outcome::Code::Unavailable };
+                return crate::deployment::pipeline::CommandAdmission::NotSent { reason: format!("this admin holds no status authority yet to carry node.connection.delete to {}", node.name), code: rdm_core::outcome::Code::Unavailable };
             };
             // The carrier's end, in-process (i144 R22): a command never sent reaches the never-sent mark
             // as `NotSent` (node-recovery.md step 1); one broken after the node accepted it is
@@ -273,7 +273,7 @@ impl NodeObserver for TopologyObserver {
 
 }
 
-/// The admission of a carried `node.connections.delete { All }` (i144 R22), and the reachability
+/// The admission of a carried `node.connection.delete { All }` (i144 R22), and the reachability
 /// cause of one never sent (node-recovery.md step 1: it marks the birth `PendingReconnect` at once).
 /// The node's completion is the step's receipt; a command lost before the node accepted it, or broken
 /// after it did (incomplete), is indeterminate, never a completion; a refusal is named.
@@ -357,8 +357,8 @@ impl crate::node_self::Session for AdminSession {
         let turns_in_progress = self.gate.state().borrow().in_progress();
         let neighbours = self.topology_view.neighbours();
         self.leave_channels().await;
-        let pooled = self.client.close_pooled_except(mesh_primary.as_slice(), "node.connections.delete");
-        let accepted = self.server.close_connections_except(spare, "node.connections.delete");
+        let pooled = self.client.close_pooled_except(mesh_primary.as_slice(), "node.connection.delete");
+        let accepted = self.server.close_connections_except(spare, "node.connection.delete");
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
     }
 

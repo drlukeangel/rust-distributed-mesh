@@ -1066,7 +1066,7 @@ fn concurrent_streams_from_both_ends_preserve_pairing_finish_reset_and_stop_code
 
 /// Row 5 — `retirement breaks lifecycle control`:
 /// Restore Direct during a long Proxy stream: that stream continues, the next `open` is Direct,
-/// `node.connections.delete` by the tunnel's id still closes it. Also captures and verifies the
+/// `node.connection.delete` by the tunnel's id still closes it. Also captures and verifies the
 /// three-node flame (`rpc.1` → `gateway.1` → `rpc.2`).
 #[test]
 fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_delete_intact() {
@@ -1234,7 +1234,7 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
         let direct_server = tokio::time::timeout(BOUND, rpc2_a.accept()).await.unwrap().unwrap();
         assert_eq!(direct_client.kind(), ConnectionKind::Direct);
 
-        // 3. `node.connections.delete` by the tunnel's ConnectionId still closes the live tunnel and its stream!
+        // 3. `node.connection.delete` by the tunnel's ConnectionId still closes the live tunnel and its stream!
         let closed = delete_connections_command(
             &root,
             &rpc1_birth,

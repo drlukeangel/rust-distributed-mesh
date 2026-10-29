@@ -108,8 +108,8 @@ and the `tags` row of [Node properties](../architecture/node-rpc-envelope.md#nod
 | How do I… | What happens |
 |---|---|
 | tag a node when it is created | put the labels on its path in the Build; a change of a path's tags alone is no resize, and the fabric stays ready |
-| add labels | `node.tags.create { label \| [labels] }`: one label or a list; a blind put per label, so a label the node already carries is reported `ALREADY_EXISTS` for that label and nothing is duplicated |
-| remove labels | `node.tags.delete { All \| [labels] }`: every label or the named ones; a label the node does not carry is reported `NOT_FOUND` for that label |
+| add labels | `node.tag.create { label \| [labels] }`: one label or a list; a blind put per label, so a label the node already carries is reported `ALREADY_EXISTS` for that label and nothing is duplicated |
+| remove labels | `node.tag.delete { All \| [labels] }`: every label or the named ones; a label the node does not carry is reported `NOT_FOUND` for that label |
 | read a node's labels | the `tags` field of its node row (`node.get`) |
 | select nodes by label | `node.get [tags: a, b]` for any of the labels, `[tags: a][tags: b]` for all of them, with `[mesh: m]` for one mesh's |
 | keep labels across a re-birth | nothing to do: tags are inherited with the config at the same path.name on recovery and on replacement |

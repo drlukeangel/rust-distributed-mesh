@@ -5,7 +5,7 @@
 //! the node, the hop its carrier makes; the caller-to-mesh-primary routing is the Build carrier's,
 //! unchanged. Nothing checks who sent a command (node-rpc.md §14).
 //!
-//! `node.connections.delete` (node-connections-delete.md) is its first command:
+//! `node.connection.delete` (node-connections-delete.md) is its first command:
 //!
 //! ```text
 //! DeleteConnections { All }
@@ -20,7 +20,7 @@
 //!
 //! Q47 appends `StopNode` and `StartNode`; Q205 makes the stop a workflow that calls its primitives
 //! and streams each one's acknowledgement and completion: stop reports `CommandAccepted`, then
-//! `ConnectionsDeleting` and `StopConnectionsDeleted` (node.connections.delete's, Data), then
+//! `ConnectionsDeleting` and `StopConnectionsDeleted` (node.connection.delete's, Data), then
 //! `Leaving` and `StopMeshLeft` (node.mesh.leave's, Data), then `NodeStopped` (Terminal). Q205 appends
 //! `LeaveMesh`, standalone node.mesh.leave: `CommandAccepted` (leaving), then `MeshLeft` (Terminal), or
 //! the refusal `BusyHoldingConnections` before acceptance. Start reports `CommandAccepted`,
@@ -50,7 +50,7 @@ pub struct NodeCommand;
 /// A command to the exact birth it names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeCommandRequest {
-    /// `node.connections.delete` (R-CR3): the exact birth hard-cuts the connections the scope
+    /// `node.connection.delete` (R-CR3): the exact birth hard-cuts the connections the scope
     /// names, writing each drop under the name it holds. `All` is graceful node-wide closure: the
     /// birth blocks new application work, lets admitted work finish under its bound, then closes
     /// every open connection (node-connections-delete.md step 3). Its endpoint stays bound and the

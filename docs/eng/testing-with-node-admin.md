@@ -89,7 +89,7 @@ names:
 | `nodes.create_named(based_on, specs)`, `estate.create_node(mesh, kind)` | [node.create](../architecture/lifecycles/node-create.md), itself a `build.create` of the complete topology (`Change::Reconcile`) |
 | `nodes.stop(path)` / `nodes.start(path)` | [node.stop](../architecture/lifecycles/node-stop.md) / [node.start](../architecture/lifecycles/node-start.md): same node id and incarnation |
 | `nodes.delete(path)` | [node.delete](../architecture/lifecycles/node-delete.md) |
-| `nodes.delete_connections(path)`, `connections_delete(…)` | [node.connections.delete](../architecture/lifecycles/node-connections-delete.md) |
+| `nodes.delete_connections(path)`, `connections_delete(…)` | [node.connection.delete](../architecture/lifecycles/node-connections-delete.md) |
 | `nodes.name_update(…)` | [node.name.update](../architecture/lifecycles/node-name-update.md) |
 | `nodes.tags_create(…)`, `tags_delete(…)` | the node's tag rows |
 | `nodes.primary_update(…)`, `fabric_primary_update(…)` | [node.primary.update, node.fabric-primary.update](../architecture/lifecycles/node-primary-update.md) |

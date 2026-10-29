@@ -15,7 +15,7 @@ a fresh Node RPC dial for its rename, stop, start or delete.
 |---|---|
 | Commander | The workflow that stops or deletes the node: its mesh-primary for a member, the fabric-primary for a mesh-primary (a mesh's last admin included, mesh-delete.md step 7). A Build's `node.mesh.leave` step ([node replace](node-replace.md) steps 1 and Rollback) is commanded by the node's mesh-primary, after the step before it deleted the node's connections, and the mesh-primary holds the node's `node.mesh.left` for its rename. Commands go down |
 | Executor | The node itself |
-| Entry | The exact `(node.id, incarnation)`, connections-deleted: `node.connections.delete { All }` completed with its receipt (`Established`, or `Deadline` with the held ids recorded). A node that still holds a connection is refused `BusyHoldingConnections { connections }` and leaves nothing |
+| Entry | The exact `(node.id, incarnation)`, connections-deleted: `node.connection.delete { All }` completed with its receipt (`Established`, or `Deadline` with the held ids recorded). A node that still holds a connection is refused `BusyHoldingConnections { connections }` and leaves nothing |
 | Leaves | Its gossip neighbours on its mesh (and the backbone, a node-admin) and its Node RPC pool; the control plane, which are not connections (R-CR5) |
 | Keeps | Its endpoint bound, node.id, incarnation, path and name, port, bin, data dir |
 | Progress | `leaving` from the command until the mesh is left (and the backbone, a node-admin): the command's acknowledgement, from which the mesh-primary writes leaving on the node's row; the node publishes nothing in that state and nothing after it (R-ON1) |
@@ -26,7 +26,7 @@ a fresh Node RPC dial for its rename, stop, start or delete.
 
 ## Numbered end-to-end sequence
 
-1. The commanding workflow has completed `node.connections.delete { All }` on the node and holds
+1. The commanding workflow has completed `node.connection.delete { All }` on the node and holds
    its receipt. Inside node.stop this is step 2 of the stop; the leave is its step 3.
 2. `leaving`: the node is commanded to leave. It checks it has no connection open, read from the
    connections open now, a connection whose row is still owed included (Q169); one still open
@@ -100,7 +100,7 @@ NodeDeleting and NodeDeleted for a delete.
 sequenceDiagram
     participant M as Mesh-primary (commander)
     participant N as Node
-    Note over M,N: 1. node.connections.delete { All } complete, receipt held
+    Note over M,N: 1. node.connection.delete { All } complete, receipt held
     M->>N: 2. LeaveMesh on NodeCommand 0x22
     alt a connection still held
         N-->>M: BusyHoldingConnections { connections } (refusal)

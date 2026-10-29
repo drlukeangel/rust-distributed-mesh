@@ -47,7 +47,7 @@ fn row_status(root: &Path, node_id: &str) -> String {
 }
 
 /// CONTRACT: every node of a ready fabric has `ready` on its durable row, as
-/// stored. Through `node.connections.delete { All }`, `node.stop`, `node.start` and `node.delete` of one
+/// stored. Through `node.connection.delete { All }`, `node.stop`, `node.start` and `node.delete` of one
 /// rpc node, its row says, once each call completes, `connections-deleted`, `stopped`,
 /// `ready` and `deleted`; and its mesh-primary wrote on its row each status "Who sets each
 /// state" names, from the node's frame or its own receipt (one
@@ -78,9 +78,9 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let (path, node_id): (PathName, String) = (subject.name.clone(), subject.node_id.to_string());
     let nodes = estate.nodes_obj().await;
 
-    for (call, then) in [("node.connections.delete", "connections-deleted"), ("node.stop", "stopped"), ("node.start", "ready"), ("node.delete", "deleted")] {
+    for (call, then) in [("node.connection.delete", "connections-deleted"), ("node.stop", "stopped"), ("node.start", "ready"), ("node.delete", "deleted")] {
         let stream = match call {
-            "node.connections.delete" => nodes.delete_connections(&path).await,
+            "node.connection.delete" => nodes.delete_connections(&path).await,
             "node.stop" => nodes.stop(&path).await,
             "node.start" => nodes.start(&path).await,
             _ => nodes.delete(&path).await,

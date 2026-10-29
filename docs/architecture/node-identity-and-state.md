@@ -311,7 +311,7 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
 - **A mesh outage moves no row.** The fabric-primary observes it
   ([mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation)) and never writes the
   peer mesh's row; an unheard mesh is not dead.
-- **It carries tags** as its own property (mesh.tags.get / create / delete, the same shape as a node's tags), so an application selector resolves a mesh by tag before it
+- **It carries tags** as its own property (mesh.tag.get / create / delete, the same shape as a node's tags), so an application selector resolves a mesh by tag before it
   submits mesh.delete or any other Build intent.
 
 - **Its lifecycle states and who declares each are defined only in [States](lifecycles/states.md#states).** Each status has a virtual topic, so "which meshes are ready" is one filtered read.

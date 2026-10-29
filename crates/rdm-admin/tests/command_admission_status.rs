@@ -1,6 +1,6 @@
 //! The mesh-primary records its members' states (states.md "Who sets each state"): stopping at "the
 //! stop call's admission (node.stop)"; connections-deleting from the node's own report on its
-//! `node.connections.delete` command's stream (i144 R22, Luke Q6), never at the command's admission.
+//! `node.connection.delete` command's stream (i144 R22, Luke Q6), never at the command's admission.
 
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};

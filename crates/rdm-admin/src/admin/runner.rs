@@ -1000,13 +1000,13 @@ impl AdminRunner {
         }
     }
 
-    /// `node.connections.delete:<path>` / `node.stop:<path>` (node-connections-delete.md, node-stop.md):
+    /// `node.connection.delete:<path>` / `node.stop:<path>` (node-connections-delete.md, node-stop.md):
     /// the exact birth `pin` at `node`, verified against this admin's view before any effect (build.md
-    /// §4.4): another birth there is refused `birth-replaced`. A node.connections.delete leaves the
+    /// §4.4): another birth there is refused `birth-replaced`. A node.connection.delete leaves the
     /// process running; a stop leaves it stopped, its process alive (node-stop.md: no runtime Exited
     /// receipt), and publishes no departure.
     pub(crate) async fn standalone(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, pin: &crate::build::PinnedBirth, stop: bool) -> Result<(), crate::executor::RunEnd> {
-        let op = if stop { "node.stop" } else { "node.connections.delete" };
+        let op = if stop { "node.stop" } else { "node.connection.delete" };
         // The pinned birth is found by its node id: a birth that left its mesh and took a name live
         // publishes nothing more, so the view lists it at the name it last published until it is
         // stopped and its row is read (node-replace.md steps 1-2). Its row's name is the operation's path.
@@ -1483,7 +1483,7 @@ impl AdminRunner {
     /// this admin, the node's mesh-primary, through the door a caller's command takes. `UpdateConfig`
     /// puts the entry's config as `node.config.update` does (row first, then the node) and writes the
     /// entry's storage and placement onto the row with it; `CreateTags` / `DeleteTags` put the labels as
-    /// `node.tags.create` / `node.tags.delete` do. The node is the birth this admin's view holds at the
+    /// `node.tag.create` / `node.tag.delete` do. The node is the birth this admin's view holds at the
     /// path; one the view does not hold yet ends the step incomplete, nothing written.
     async fn apply_in_place(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
         use rdm_core::status::{StatusReply, StatusRequest, TagScope};
@@ -1557,7 +1557,7 @@ impl AdminRunner {
     /// as that op's own workflow on the exact birth the step acts on, the one it is targeted to, or for a
     /// node an earlier step of the Build created, the birth this executor holds at the step's path.
     /// node.create is the create workflow, its claim a replace successor's ([`ClaimFor::Successor`]);
-    /// node.connections.delete the standalone `{ All }`; node.mesh.leave carried by this admin as the
+    /// node.connection.delete the standalone `{ All }`; node.mesh.leave carried by this admin as the
     /// node's mesh-primary, which holds its `node.mesh.left`; node.stop the standalone stop;
     /// node.name.update its own core at this admin as the node's mesh-primary; node.start the start of
     /// the stopped birth; node.delete node.delete's workflow from the state the birth is in.

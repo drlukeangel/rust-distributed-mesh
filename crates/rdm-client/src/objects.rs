@@ -188,7 +188,7 @@ impl Nodes {
         crate::NodeRpc::new(self.carrier.client()).name_update(mesh_primary, route, birth, name, &rdm_transport::CallOptions::default()).await
     }
 
-    /// `node.tags.create`: add `labels` to the tags of the exact birth `birth`, a single call to the
+    /// `node.tag.create`: add `labels` to the tags of the exact birth `birth`, a single call to the
     /// node's mesh-primary `mesh_primary` over `route` ([`crate::NodeRpc::tags_create`]). Labels
     /// outside the label grammar, an empty list or more than a node carries are refused here,
     /// `RejectedTags`, and nothing is sent.
@@ -199,7 +199,7 @@ impl Nodes {
         crate::NodeRpc::new(self.carrier.client()).tags_create(mesh_primary, route, birth, labels, &rdm_transport::CallOptions::default()).await
     }
 
-    /// `node.tags.delete`: remove every label (`All`) or the named ones from the exact birth `birth`,
+    /// `node.tag.delete`: remove every label (`All`) or the named ones from the exact birth `birth`,
     /// as [`Self::tags_create`]; a `Labels` scope naming nothing or a non-label is refused here,
     /// `RejectedTags`, and nothing is sent.
     pub async fn tags_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rdm_transport::RouteChoice, scope: &rdm_core::status::TagScope) -> Result<StatusReply, CallEnd> {
@@ -209,7 +209,7 @@ impl Nodes {
         crate::NodeRpc::new(self.carrier.client()).tags_delete(mesh_primary, route, birth, scope, &rdm_transport::CallOptions::default()).await
     }
 
-    /// `node.connections.delete`: the hard cut of the connections of the exact birth `birth`,
+    /// `node.connection.delete`: the hard cut of the connections of the exact birth `birth`,
     /// `scope` `All` (the stop's cut) or `Connections` naming open entries by id, a single call to the
     /// node's mesh-primary `mesh_primary` over `route` (R-CR2, R-CR3; [`crate::NodeRpc::connections_delete`]).
     /// A scope that names nothing to cut is refused here by name, `RejectedConnectionScope`, and
@@ -251,7 +251,7 @@ impl Nodes {
         self.workflow(WorkflowKind::Start(node.clone()), BuildChange::Start { node: node.clone() }).await
     }
 
-    /// `node.connections.delete { All }` of `node` as a Build (`lifecycles/node-connections-delete.md`: a
+    /// `node.connection.delete { All }` of `node` as a Build (`lifecycles/node-connections-delete.md`: a
     /// target that is a primary runs `node.primary.update` first). The stream is `Started`, then `node.connections.deleted`,
     /// ending `Complete`; the process keeps running.
     pub async fn delete_connections(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
@@ -430,7 +430,7 @@ impl Connections {
 
     /// `node.connection.get { node }`: the connections the exact birth `birth` holds as its own that match
     /// every pair of `filter` (`id`, `destination`, `kind`, `state`, …), under the name it holds, each
-    /// named by the minted id `node.connections.delete` names it by.
+    /// named by the minted id `node.connection.delete` names it by.
     pub async fn get(&self, birth: &ExactBirth, filter: &Filter) -> Result<ConnectionsView, CallEnd> {
         let node = Some((birth.node_id.clone(), birth.incarnation.clone()));
         read_list(&self.carrier, &birth.target, NodeOp::ConnectionsGet.span(), NodeOp::ConnectionsGet.name(), Entity::Connections, node, filter, |r| match r {
@@ -491,7 +491,7 @@ mod tests {
     use super::*;
 
     /// CONTRACT: each op and each step event has one canonical name and one span, a literal of five
-    /// segments (telemetry-patterns.md §8): the op `node.connections.delete` spans
+    /// segments (telemetry-patterns.md §8): the op `node.connection.delete` spans
     /// `rdm.node_admin.connection.delete.via-call`, a workflow `…via-workflow` (or
     /// `node.update.via-<op>-workflow` for stop and start), and an event's frame
     /// `…via-<event>-frame`. Every op and event opens exactly the span this table names.

@@ -72,7 +72,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         use rdm_admin::deployment::pipeline::{CommandAdmission, Completion};
         let output = |step: DeleteStep| view.steps.iter().find(|r| r.step == step.name()).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{} receipted with an output", step.name()));
         // The stop is answered `Stopped` on its own call: the receipt names what its
-        // node.connections.delete { All } established.
+        // node.connection.delete { All } established.
         let stopped: CommandAdmission = serde_json::from_value(output(DeleteStep::StopNode)).expect("a CommandAdmission");
         assert!(matches!(stopped, CommandAdmission::Stopped { receipt: rdm_core::status::ConnectionsReceipt::Established { .. } }), "StopNode: {stopped:?}");
         for step in [DeleteStep::AwaitNodeLeft] {

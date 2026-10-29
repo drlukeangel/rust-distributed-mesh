@@ -165,7 +165,7 @@ election's input: under mesh.delete the incumbent stays mesh-primary and is fabr
 hand-over needs no incumbent-mesh death, infers nothing from silence and turns no announcement into a
 fact.
 
-A Build that runs `node.connections.delete { scope: All }` on, stops or replaces a primary
+A Build that runs `node.connection.delete { scope: All }` on, stops or replaces a primary
 follows the [node.primary.update](lifecycles/node-primary-update.md) sequence: the primary, commanded
 from above, calls node.primary.update on its successor; the successor becomes primary and, for the
 `node-admin` type, the mesh's writer from that moment, and records the change itself. The record is the

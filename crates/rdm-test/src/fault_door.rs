@@ -337,7 +337,7 @@ pub enum FaultReply {
         /// Which bound it is at.
         reason: String,
     },
-    /// The node is deleting its connections (`node.connections.delete`) and takes no new call.
+    /// The node is deleting its connections (`node.connection.delete`) and takes no new call.
     ///
     /// Position 7 on the wire.
     ConnectionsDeleting {

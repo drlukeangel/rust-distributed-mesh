@@ -120,7 +120,7 @@ fn placement(nodes: &[Value]) -> (String, String, Value) {
     let mesh_primary = s(&nodes.iter().find(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).expect("the node's mesh-primary")["name"]);
     assert_ne!(mesh_primary, s(&primary["name"]), "the member's mesh-primary is not the fabric-primary");
     // The member is an rpc node holding no seat: a cohort's primary runs node.primary.update before its
-    // own node.connections.delete, stop or delete (lifecycles/node-connections-delete.md step 0), which
+    // own node.connection.delete, stop or delete (lifecycles/node-connections-delete.md step 0), which
     // is not the member workflow these cells follow.
     let member = nodes.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "rpc_node" && n["is_primary"] != true).map(|n| s(&n["name"])).min().expect("an rpc member of the mesh that holds no seat");
     (member, mesh_primary, primary)
@@ -1010,7 +1010,7 @@ async fn a_replace_runs_as_one_build_of_node_primitives_in_order() {
         }
     }
     let keys = [
-        format!("node.connections.delete:{NODE}"),
+        format!("node.connection.delete:{NODE}"),
         format!("node.mesh.leave:{NODE}"),
         format!("node.update:{NODE}"),
         format!("node.stop:{old}"),
@@ -1152,7 +1152,7 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
     let tagged = rdm_client::NodeRpc::new(&fp_client)
         .tags_create(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &rdm_transport::CallOptions::default())
         .await
-        .unwrap_or_else(|e| panic!("node.tags.create of {node_path} at the fabric-primary: {e:?}"));
+        .unwrap_or_else(|e| panic!("node.tag.create of {node_path} at the fabric-primary: {e:?}"));
     assert_eq!(tagged.name(), "tags-created", "the mesh-primary wrote the label's row: {tagged:?}");
     wait_for(&format!("{node_path} carries its tag"), Duration::from_secs(30), || async { (estate.node_view(node_path).await.tags == labels).then_some(()) }).await;
 
@@ -1203,9 +1203,9 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
 }
 
 /// CONTRACT (lifecycles/node-replace.md "Rollback": "While node[1] is stopped as `<name>.old` and its
-/// data remains available: 1. node[2]: node.connections.delete `{ scope: All }`, node.mesh.leave, then
+/// data remains available: 1. node[2]: node.connection.delete `{ scope: All }`, node.mesh.leave, then
 /// node[2].delete releases `<name>` after exact runtime exited verdict. 2. node[1].start rejoins the same
-/// stopped process with AfterStop under `<name>.old` ... 3. node[1]: node.connections.delete `{ scope:
+/// stopped process with AfterStop under `<name>.old` ... 3. node[1]: node.connection.delete `{ scope:
 /// All }`, node.mesh.leave, then node.name.update to `<name>` ..., then node[1].stop and node[1].start
 /// under `<name>`. Its ready ends the rollback"): `mesh1.rpc.1` is replaced up to the
 /// successor's create (the predecessor stopped at `.old`), then the rollback runs as one Build of nine
@@ -1248,11 +1248,11 @@ async fn a_replace_rollback_ends_with_the_predecessor_ready_under_its_name() {
         }
     }
     let keys = [
-        format!("node.connections.delete:{NODE}"),
+        format!("node.connection.delete:{NODE}"),
         format!("node.mesh.leave:{NODE}"),
         format!("node.delete:{NODE}"),
         format!("node.start:{old}"),
-        format!("node.connections.delete:{old}"),
+        format!("node.connection.delete:{old}"),
         format!("node.mesh.leave:{old}"),
         format!("node.update:{old}"),
         format!("node.stop:{NODE}"),
@@ -1983,8 +1983,8 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
 /// CONTRACT (node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that
 /// workflow: its Build ends Failed, and the mesh-primary's next tick finds the member still proven
 /// exited and submits the recovery"): a member of the mesh that does not hold the fabric-primary is
-/// held (SIGSTOP) and a `node.connections.delete { All }` of it is requested at once, attempt N of the
-/// accepted Build (`node.connections.delete:<path>`, carried by its mesh-primary). While that call
+/// held (SIGSTOP) and a `node.connection.delete { All }` of it is requested at once, attempt N of the
+/// accepted Build (`node.connection.delete:<path>`, carried by its mesh-primary). While that call
 /// waits on the held process, the process is killed. The held, then exited, birth never answers
 /// node.connections.deleted: attempt N ends Failed at DeleteConnections, named by how the call ended
 /// (node-connections-delete.md "Admission is not completion"), never Complete. Which transport outcome the
@@ -2011,21 +2011,21 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
         match deleting.next().await {
             Some(Ok(BuildFrame::Failed { attempt, operation, step, reason, .. })) => break (attempt, operation, step, reason),
             Some(Ok(_)) => continue,
-            other => panic!("the stream of the node.connections.delete ended without its Failed frame: {other:?}"),
+            other => panic!("the stream of the node.connection.delete ended without its Failed frame: {other:?}"),
         }
     };
     assert_eq!((u64::from(ended.0), ended.2.as_str()), (delete_attempt, "DeleteConnections"), "the stream names the failed step: {ended:?}");
 
-    let operation = format!("node.connections.delete:{node}");
+    let operation = format!("node.connection.delete:{node}");
     let failed_step = |p: &Value| p["steps"].as_array().cloned().unwrap_or_default().into_iter().find(|r| r["operation"] == operation.as_str() && r["attempt"] == json!(delete_attempt) && r["outcome"]["failed"].is_object());
-    let held = build_log::build_fact(&estate.carrier_at(&fp).await, &birth_build, "the node.connections.delete attempt ends Failed", SETTLE, |p| failed_step(&serde_json::to_value(p).expect("a Build view serializes")).is_some())
+    let held = build_log::build_fact(&estate.carrier_at(&fp).await, &birth_build, "the node.connection.delete attempt ends Failed", SETTLE, |p| failed_step(&serde_json::to_value(p).expect("a Build view serializes")).is_some())
         .await
         .unwrap_or_else(|end| panic!("{end}"));
     let failed = failed_step(&serde_json::to_value(held).expect("a Build view serializes")).expect("the failed step was just held");
-    // The exit belongs to the node.connections.delete: the held, then exited, birth never answered
+    // The exit belongs to the node.connection.delete: the held, then exited, birth never answered
     // node.connections.deleted, and the attempt ends Failed, never Complete.
-    assert_eq!(s(&failed["step"]), "DeleteConnections", "the node.connections.delete is not complete: {failed}");
-    assert!(s(&failed["outcome"]["failed"]["reason"]).contains("node.connections.delete { All } ended"), "the failure names how the call ended: {failed}");
+    assert_eq!(s(&failed["step"]), "DeleteConnections", "the node.connection.delete is not complete: {failed}");
+    assert!(s(&failed["outcome"]["failed"]["reason"]).contains("node.connection.delete { All } ended"), "the failure names how the call ended: {failed}");
 
     let after = until_node_where(&estate, &node, &format!("{node} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same endpoint key, from the inherited data dir");
@@ -2042,7 +2042,7 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
     assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "{recovery}");
     // One attempt in flight per mesh: the recovery is opened only after the fabric lane's attempt N,
     // whose executor acts in the same mesh, ended (its reconcile span closes at the verdict).
-    let spans = wait_for("the failed node.connections.delete attempt's reconcile span is exported", Duration::from_secs(30), || async {
+    let spans = wait_for("the failed node.connection.delete attempt's reconcile span is exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
         reconcile_span(&spans, &birth_build, &delete_attempt.to_string()).is_some().then_some(spans)
     })
@@ -2206,7 +2206,7 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     let carrier = estate.carrier().await;
     for (action, change) in [
         ("replace", Change::Steps { steps: replace_steps(&node) }),
-        ("node.connections.delete", Change::DeleteConnections { node: node.clone() }),
+        ("node.connection.delete", Change::DeleteConnections { node: node.clone() }),
         ("stop", Change::Stop { node: node.clone() }),
     ] {
         match carrier.create(change).await {
@@ -2247,7 +2247,7 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
 /// mesh-primary and not the fabric-primary, `build.create` of the replace steps of mesh2's primary is refused
 /// `last-admin` with exactly `cannot transfer: no secondary of type node-admin in mesh mesh2`, under one
 /// `rdm.node_admin.build.reject.via-last-admin` with the same text, before any step (its first, the
-/// node.connections.delete that moves a seat holder's seats, has no successor): no attempt opens, no
+/// node.connection.delete that moves a seat holder's seats, has no successor): no attempt opens, no
 /// connection is deleted, no seat move is commanded, no row is written, and every node keeps its birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_by_name_before_any_step() {
@@ -2340,7 +2340,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     let tagged = rdm_client::NodeRpc::new(&fp_client)
         .tags_create(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &rdm_transport::CallOptions::default())
         .await
-        .unwrap_or_else(|e| panic!("node.tags.create of {node_path} at the fabric-primary: {e:?}"));
+        .unwrap_or_else(|e| panic!("node.tag.create of {node_path} at the fabric-primary: {e:?}"));
     assert_eq!(tagged.name(), "tags-created", "the mesh-primary wrote the label's row: {tagged:?}");
     wait_for(&format!("{node_path} carries its tag"), Duration::from_secs(30), || async { (estate.node_view(node_path).await.tags == labels).then_some(()) }).await;
 

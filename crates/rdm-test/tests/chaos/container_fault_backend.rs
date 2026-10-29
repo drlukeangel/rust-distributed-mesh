@@ -798,7 +798,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let silent_by = |route: &str| silent_resolves.iter().filter(|sp| sp["attributes"]["route"] == route).count();
     let reads_n = silence.len();
     let isolated_set: BTreeSet<&str> = isolated_names.iter().map(String::as_str).collect();
-    // node.connections.delete's spans, each a mutation of an isolated node as the node's own spans are.
+    // node.connection.delete's spans, each a mutation of an isolated node as the node's own spans are.
     const CONNECTIONS_DELETE: [&str; 6] = [
         "rdm.node_admin.connection.delete.via-call",
         "rdm.node_admin.connection.delete.via-connections-deleting",
