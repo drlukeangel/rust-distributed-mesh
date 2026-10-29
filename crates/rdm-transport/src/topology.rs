@@ -1926,11 +1926,16 @@ impl View {
     /// the backbone and, forwarded, on its mesh channel; a forwarded frame the backbone already moved
     /// past is ignored, so the mesh channel's copy can stay behind the version the node holds (rdm#154).
     fn held_sources(&self) -> Vec<SourceSnapshot> {
+        self.held_sources_of(None)
+    }
+
+    /// [`Self::held_sources`] of `mesh` alone when one is named: no other mesh's source is copied.
+    fn held_sources_of(&self, mesh: Option<&str>) -> Vec<SourceSnapshot> {
         if self.primary.load(Ordering::Relaxed) {
-            return self.forwarder.lock().unwrap().snapshots();
+            return self.forwarder.lock().unwrap().snapshots_of(mesh);
         }
-        let channel = self.mesh_rx.lock().unwrap().snapshots();
-        let backbone = self.backbone_rx.lock().unwrap().snapshots();
+        let channel = self.mesh_rx.lock().unwrap().snapshots_of(mesh);
+        let backbone = self.backbone_rx.lock().unwrap().snapshots_of(mesh);
         let order = self.order.lock().unwrap();
         let mut by_mesh: std::collections::BTreeMap<String, SourceSnapshot> = Default::default();
         for s in channel.into_iter().chain(backbone) {
@@ -3230,14 +3235,20 @@ impl TopologyView {
     /// this node holds no published snapshot of is absent, but for its own mesh at its primary
     /// before the first publication.
     pub fn held_topology(&self, own: &MeshDigest) -> Vec<SourceSnapshot> {
+        self.held_topology_of(own, None)
+    }
+
+    /// [`Self::held_topology`] of `of` alone when one is named (a read of one mesh, Q266): no other
+    /// mesh's source is copied to be dropped.
+    pub fn held_topology_of(&self, own: &MeshDigest, of: Option<&str>) -> Vec<SourceSnapshot> {
         // A held source is topology, served as published: whether its members are alive is the
         // reader's to learn (a read installs them as topology and refreshes no liveness).
-        let mut held = self.held_sources();
+        let mut held = self.view.held_sources_of(of);
         let mesh = &self.view.mesh;
         // A mesh's primary that has not published yet still holds its members in its view: it serves
         // them as its own source at version 0 (the version before any publication, the one its
         // publisher reports), never as nothing. Its first publication supersedes it.
-        if self.view.primary.load(Ordering::Relaxed) && held.iter().all(|s| &s.mesh != mesh) {
+        if self.view.primary.load(Ordering::Relaxed) && of.is_none_or(|want| want == mesh.as_str()) && held.iter().all(|s| &s.mesh != mesh) {
             let mut digests: Vec<MeshDigest> = self
                 .digest_view
                 .current(self.digest_view.staleness_floor())

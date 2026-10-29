@@ -765,10 +765,15 @@ impl SnapshotReceiver {
 
     /// Every projection held, as the baselines a node serves.
     pub fn snapshots(&self) -> Vec<SourceSnapshot> {
+        self.snapshots_of(None)
+    }
+
+    /// [`Self::snapshots`] of `mesh` alone when one is named: a source of another mesh is not copied.
+    pub fn snapshots_of(&self, mesh: Option<&str>) -> Vec<SourceSnapshot> {
         let mut v: Vec<SourceSnapshot> = self
             .held
             .iter()
-            .filter(|(_, h)| h.desynced.is_none())
+            .filter(|(m, h)| h.desynced.is_none() && mesh.is_none_or(|want| m.as_str() == want))
             .map(|(m, h)| SourceSnapshot { mesh: m.clone(), publisher: h.publisher.clone(), topology_version: h.version, digests: h.full.digests(), in_flight: h.full.in_flight(), deleted: h.full.deleted() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));
@@ -952,9 +957,15 @@ impl Forwarder {
 
     /// What this primary has published into its Mesh, as the baselines a top-up serves.
     pub fn snapshots(&self) -> Vec<SourceSnapshot> {
+        self.snapshots_of(None)
+    }
+
+    /// [`Self::snapshots`] of `mesh` alone when one is named: a source of another mesh is not copied.
+    pub fn snapshots_of(&self, mesh: Option<&str>) -> Vec<SourceSnapshot> {
         let mut v: Vec<SourceSnapshot> = self
             .published
             .iter()
+            .filter(|(m, _)| mesh.is_none_or(|want| m.as_str() == want))
             .map(|(m, p)| SourceSnapshot { mesh: m.clone(), publisher: p.publisher.clone(), topology_version: p.version, digests: p.full.digests(), in_flight: p.full.in_flight(), deleted: p.full.deleted() })
             .collect();
         v.sort_by(|a, b| a.mesh.cmp(&b.mesh));

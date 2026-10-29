@@ -1979,7 +1979,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 });
                                 let gone: crate::topology_read::GoneSource = {
                                     let (digest_view, records) = (digest_view.clone(), records.clone());
-                                    Arc::new(move |h: &rdm_core::Primary| incumbency_of(&digest_view, &records).lost.contains(&h.incarnation))
+                                    Arc::new(move || incumbency_of(&digest_view, &records).lost)
                                 };
                                 // The hydration sync's own row (Q234): a node of this admin's mesh reading its mesh-primary
                                 // is answered its whole row from this admin's atlas, never the store; any other

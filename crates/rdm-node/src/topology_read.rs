@@ -42,8 +42,9 @@ pub struct TopologyDoor {
     snapshots: AtomicU64,
 }
 
-/// Whether the node holds a recorded seat holder's exact birth as proven gone.
-pub type GoneSource = Arc<dyn Fn(&rdm_core::Primary) -> bool + Send + Sync>;
+/// The incarnations of recorded primaries the node holds as proven gone, read once per topology read
+/// (Q266): each primary record the read hands out is marked gone when its incarnation is among them.
+pub type GoneSource = Arc<dyn Fn() -> std::collections::HashSet<rdm_core::IncarnationId> + Send + Sync>;
 
 /// The whole row of the caller whose endpoint key is given, with the row's revision (P1), answered by its
 /// own mesh-primary from its atlas (Q234), never the store: `None` from any other node, or for a caller that is not a node of the
@@ -139,15 +140,15 @@ impl TopologyDoor {
                 span.record("outcome", "not-ready");
                 return rdm_core::reply::topology::not_ready(format!("{}: this node holds no rafka-time yet", me.node.name));
             };
-            let mut held = self.topology_view.held_topology(&me);
-            if let Some(m) = &mesh {
-                held.retain(|s| &s.mesh == m);
-            }
+            // Only the mesh asked for is copied out of the view (Q266).
+            let held = self.topology_view.held_topology_of(&me, mesh.as_deref());
             // A mesh with no gossiped snapshot is answered from the stored map, marked as having no
-            // version, when the node stores births of it.
+            // version, when the node stores births of it. A read of one mesh this node holds a snapshot
+            // of, or of its own mesh, has none to answer from it, and the map is not built (Q266).
             let mut stored: std::collections::BTreeMap<String, Vec<StoredNode>> = Default::default();
             let mut stored_ids = std::collections::BTreeMap::new();
-            if let Some(source) = &self.stored {
+            let unheld = mesh.as_ref().is_none_or(|m| held.is_empty() && *m != me.node.name.mesh);
+            if let Some(source) = self.stored.as_ref().filter(|_| unheld) {
                 let map = match source().await {
                     Ok(map) => map,
                     Err(reason) => {
@@ -215,8 +216,9 @@ impl TopologyDoor {
             let mut records: Vec<(rdm_core::topology::PrimaryKind, rdm_core::Primary)> = self.topology_view.primaries().meshes().into_values().map(|h| (rdm_core::topology::PrimaryKind::MeshPrimary, h)).collect();
             records.extend(self.topology_view.primaries().fabric().map(|h| (rdm_core::topology::PrimaryKind::FabricPrimary, h)));
             let primary_records = records.len() as u64;
+            let lost = self.gone.as_ref().filter(|_| primary_records > 0).map(|g| g()).unwrap_or_default();
             for (kind, primary) in records {
-                let gone = self.gone.as_ref().is_some_and(|g| g(&primary));
+                let gone = lost.contains(&primary.incarnation);
                 let r = TopologyReply::Primaries { kind, primary, gone };
                 bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
                 if let Err(e) = sink.data(r).await {

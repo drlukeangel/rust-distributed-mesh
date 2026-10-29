@@ -160,3 +160,38 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         }
     });
 }
+
+/// CONTRACT (query.md §2, node.topology.get of one mesh; Q266: a read of one mesh copies that mesh alone):
+/// `held_topology_of(own, Some(mesh))` serves exactly what `held_topology(own)` serves of that mesh, before
+/// the primary's first publication (its own source at version 0) and after it; a read of a mesh the node
+/// holds no source of serves nothing, and never the primary's own source in its place.
+/// Must NOT happen: a one-mesh read answering differently from the whole read, or naming another mesh.
+#[test]
+fn a_read_of_one_mesh_serves_that_mesh_as_the_whole_read_does() {
+    let dir = crate::evidence_dir();
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-served-topology-one-mesh").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        let p_node = node().await;
+        let mesh_id = MeshId::mint();
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());
+        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
+        bb.set_mesh_primary(true);
+        p.publish(&digest("mesh1.admin.1", &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_201)).await.unwrap();
+        let (one, one_birth) = (NodeId::mint(), IncarnationId::mint());
+        assert!(p.digest_view.record(digest("mesh1.rpc.1", &one, &one_birth, MemberStatus::Ready, 1, 41_211)));
+        let own = || p.digest_view.get(p_node_id.as_str()).expect("the primary holds itself").0;
+        let same = |when: &str| {
+            let whole = of(p.held_topology(&own()), "mesh1");
+            let one_mesh = p.held_topology_of(&own(), Some("mesh1"));
+            assert_eq!(one_mesh.len(), 1, "{when}: one source for one mesh: {:?}", one_mesh.iter().map(|s| &s.mesh).collect::<Vec<_>>());
+            assert_eq!((one_mesh[0].publisher.clone(), one_mesh[0].topology_version, one_mesh[0].full()), (whole.publisher.clone(), whole.topology_version, whole.full()), "{when}: the one-mesh read serves what the whole read serves of mesh1");
+            assert!(p.held_topology_of(&own(), Some("mesh2")).is_empty(), "{when}: a read of a mesh with no source serves nothing, not the primary's own source");
+            whole.topology_version
+        };
+        assert_eq!(same("before the first publication"), 0, "the primary serves its own source at version 0 until it publishes");
+        assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication");
+        assert!(same("after the publication") >= 1, "the publication published a version");
+        p_node.ep.close().await;
+    });
+}
