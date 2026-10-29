@@ -368,8 +368,15 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     };
     assert!(member_latest >= delta_c.2, "the member applied the baseline's delta and every re-entry delta after it: {member_latest} >= {}", delta_c.2);
     assert_eq!(delta_e.1, member_latest, "the delta follows the latest the member applied");
-    // Past the idle timeout, so the member's connections are gone, not delayed.
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // The member's connections are gone, not delayed: its own neighbour-down on mesh1's channel after
+    // the cut (the idle timeout is the staleness floor). The cut is dropped then, before node recovery's
+    // investigation of the member (half a floor after its stale mark, node-recovery.md) can re-create
+    // it: a re-created member is a new birth and installs every source as a new revision.
+    wait_for("the member's connections to mesh1 are gone under the cut", Duration::from_secs(30), || async {
+        let spans = estate.spans();
+        spans_of(&spans, "rdm.mesh.connection.update.via-neighbour-down", MEMBER, cut_at).into_iter().find(|sp| attr(sp, "channel") == "mesh:mesh1" && attr(sp, "neighbours") == "0").map(|_| ())
+    })
+    .await;
     drop(cut);
     let healed_at = now_ns();
     let full_after_heal = wait_for("the member holds the version the source reached while it was cut", Duration::from_secs(60), || async {
