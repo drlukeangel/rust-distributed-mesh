@@ -619,8 +619,9 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // mesh's status also states the Dead it heard, bound to this mesh id (never to a name).
         let row = id.as_ref().and_then(|id| declared_meshes.get(id).copied());
         let authored_here = records.me.get().is_some_and(|me| topology.node_type_primary(&m, NodeKind::NodeAdmin).is_some_and(|p| &p.node_id == me));
-        let degraded = digest_view.statuses.mesh(&m).is_some_and(|s| s.status == "degraded")
-            || (records.peer_recovery_of(&m).is_some() && digest_view.statuses.mesh(&m).is_none());
+        let degraded = !authored_here
+            && (digest_view.statuses.mesh(&m).is_some_and(|s| s.status == "degraded")
+                || (records.peer_recovery_of(&m).is_some() && digest_view.statuses.mesh(&m).is_none()));
         let status = match row {
             Some(rdm_core::status::MeshState::Dead) => ScopeStatus::Dead,
             _ if id.as_ref().is_some_and(|id| records.mesh_deleted(id)) => ScopeStatus::Dead,

@@ -2360,12 +2360,20 @@ mod tests {
         // Fabric-primary's MeshStatus degraded at mesh2's revision 2, verdict instant t = 61_000.
         let degraded = rdm_transport::topology::Frame::MeshStatus { mesh: "mesh2".into(), status: "degraded".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 61_000 }.authored(&fp_birth, 2, 61_000);
         assert!(digest_view.statuses.take(&degraded, &fabric1()));
+        records.set_me(NodeId::parse("200000000000").unwrap());
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
         assert_eq!(t.mesh_view("mesh2").unwrap().status, ScopeStatus::Degraded, "the topology view shows mesh2 degraded");
         let StatusReply::Meshes { meshes } = crate::views::meshes_answer(&me, &t, &Filter::default()) else { panic!("meshes reply") };
         assert_eq!(meshes.iter().find(|m| m.name == "mesh2").unwrap().status, rdm_core::views::ScopeStatus::Degraded, "mesh.get shows mesh2 degraded");
         let StatusReply::Fabrics { fabrics } = crate::views::fabric_answer(&me, &t, None, &Filter::default()) else { panic!("fabric reply") };
         assert_eq!(fabrics[0].meshes.iter().find(|m| m.name == "mesh2").unwrap().status, rdm_core::views::ScopeStatus::Degraded, "fabric.get shows mesh2 degraded");
+
+        // R3: mesh2's own mesh-primary authors its own mesh's lifecycle; the fabric-primary's marker never feeds its publish input.
+        let own_records = Records::default();
+        own_records.set_fabric_state(crate::fabric_state::FabricState::Ready);
+        own_records.set_me(NodeId::parse("300000000000").unwrap());
+        let own_t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &own_records);
+        assert_eq!(own_t.mesh_view("mesh2").unwrap().status, ScopeStatus::Ready, "mesh2's own mesh-primary projects its own lifecycle, never the fabric-primary's degraded marker");
 
         // Successor's first MeshStatus at revision 3, preserving changed_at = 1_000, replaces degraded.
         let successor_ready = rdm_transport::topology::Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1_000 }.authored(&successor_birth, 3, 1_000);

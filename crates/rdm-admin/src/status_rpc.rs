@@ -710,7 +710,10 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
             // it is answered, and owes the declaration until that write lands (Q144): a repeated
             // declaration is answered `Applied` again, so a successor that declares again writes it.
             match apply_mesh(declared, mesh_id, *state, *changed_at_rafka_ms) {
-                (StatusReply::AlreadyApplied, _) => (rdm_core::reply::applied(), None),
+                (StatusReply::AlreadyApplied, _) => (
+                    rdm_core::reply::applied(),
+                    Some(Effect::Mesh(mesh_id.clone(), *state, None, *changed_at_rafka_ms)),
+                ),
                 decided => decided,
             }
         }
@@ -740,11 +743,19 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
                     return (rdm_core::reply::status::rejected_stale_mesh(held.clone()), None);
                 }
             }
-            let (decided, effect) = apply_mesh(declared, mesh_id, *state, *changed_at_rafka_ms);
-            (decided, effect.map(|e| match e {
-                Effect::Mesh(id, state, _, at) => Effect::Mesh(id, state, Some(mesh_name.clone()), at),
-                other => other,
-            }))
+            match apply_mesh(declared, mesh_id, *state, *changed_at_rafka_ms) {
+                (StatusReply::AlreadyApplied, _) => (
+                    rdm_core::reply::already_applied(),
+                    Some(Effect::Mesh(mesh_id.clone(), *state, Some(mesh_name.clone()), *changed_at_rafka_ms)),
+                ),
+                (decided, effect) => (
+                    decided,
+                    effect.map(|e| match e {
+                        Effect::Mesh(id, state, _, at) => Effect::Mesh(id, state, Some(mesh_name.clone()), at),
+                        other => other,
+                    }),
+                ),
+            }
         }
         StatusRequest::ApplyFabricEvent { fabric_id, event } => {
             if !me.is_primary {
@@ -820,6 +831,9 @@ fn hold_fabric_event(declared: &Mutex<Declared>, fabric_id: &FabricId, event: &s
 pub(crate) async fn commit_mesh_state(storage: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, declared: &Mutex<Declared>, mesh: &str, mesh_id: &MeshId, state: MeshState, at: u64) -> StatusReply {
     let (decided, effect) = apply_mesh(&declared.lock().unwrap(), mesh_id, state, at);
     if effect.is_none() {
+        if matches!(decided, StatusReply::AlreadyApplied) && at > 0 {
+            declared.lock().unwrap().hold_mesh_at(mesh_id.clone(), state, at);
+        }
         return decided;
     }
     let base = crate::storage::MeshRecord::new(mesh_id.clone(), mesh);
@@ -2306,15 +2320,16 @@ impl StatusDoor {
                 return rdm_core::reply::applied();
             };
             let reply = commit_mesh_state(&*self.meshes_storage, &self.caches, &self.declared, mesh, mesh_id, *state, *at).await;
-            // The hand-off's state is this admin's held MeshStatus at the instant it carries, so its
+            // The hand-off's state is handed straight to this admin's own mesh StatusPublisher as its
+            // adopted held fact at the instant it carries, never through the gossip receive view, so the
             // publisher republishes it with that changed_at once its checklist completes
             // (mesh-investigation.md step 7: "republishes its held MeshStatus, preserving changed_at").
             // A hand-off with no instant (a new mesh's first admin handed Pending) reaches the publisher
             // too: it is the mesh's first state, which the publisher stamps once (Q272).
             if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
-                if let Some(digest_view) = &self.digest_view {
-                    let held = rdm_transport::topology::Frame::MeshStatus { mesh: mesh.clone(), status: mesh_status_name(*state).to_string(), publisher: self.held_name().await.to_string(), forwarded_by: None, changed_at_rafka_ms: *at };
-                    let taken = digest_view.statuses.take(&held, &self.fabric_id);
+                if let Some(view) = &self.app_channels {
+                    let taken = view.adopt_mesh_status(rdm_transport::topology::StatusFact { status: mesh_status_name(*state).to_string(), changed_at_rafka_ms: *at });
+                    self.wake.report_notify.notify_waiters();
                     tracing::info_span!("rdm.node_admin.mesh.update.via-held-mesh-status", mesh = %mesh, state = ?state, changed_at_rafka_ms = *at, taken).in_scope(|| tracing::info!("the hand-off's state is held as this admin's MeshStatus at the instant it carries"));
                 }
             }
@@ -2412,9 +2427,10 @@ impl StatusDoor {
         let day0 = state == MeshState::Pending && at == 0;
         let mut taken = false;
         if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
-            if let Some(digest_view) = &self.digest_view {
-                let held = rdm_transport::topology::Frame::MeshStatus { mesh: mesh.to_string(), status: mesh_status_name(state).to_string(), publisher: me_name.to_string(), forwarded_by: None, changed_at_rafka_ms: at };
-                taken = digest_view.statuses.take(&held, &self.fabric_id);
+            if let Some(view) = &self.app_channels {
+                let _ = mesh;
+                taken = view.adopt_mesh_status(rdm_transport::topology::StatusFact { status: mesh_status_name(state).to_string(), changed_at_rafka_ms: at });
+                self.wake.report_notify.notify_waiters();
             }
         }
         tracing::info_span!(

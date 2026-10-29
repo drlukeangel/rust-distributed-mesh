@@ -2457,8 +2457,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // gossip or readiness.
                                     {
                                         let declarer = declarer.clone();
-                                        let (digest, topology, records, me_id, incarnation, client, resolver, digest_view, status_door) =
-                                            (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), digest_view.clone(), status_door.clone());
+                                        let (digest, topology, records, me_id, incarnation, client, resolver, digest_view, topology_view, status_door) =
+                                            (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), digest_view.clone(), topology_view.clone(), status_door.clone());
                                         let stop = stop_gate.clone();
                                         tasks.push(tokio::spawn(async move {
                                             loop {
@@ -2476,7 +2476,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
                                                 let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
                                                 // The instant this admin's own MeshStatus holds for each state: what its publisher sent.
-                                                let own_mesh_changed_at = |state| super::runner::held_mesh_changed_at(&digest_view, &records, &me.mesh, state);
+                                                let own_mesh_changed_at = |state| {
+                                                    topology_view
+                                                        .adopted_mesh_status()
+                                                        .filter(|h| super::reconcile::mesh_state_of(&h.status).ok() == Some(state) && h.changed_at_rafka_ms > 0)
+                                                        .map(|h| h.changed_at_rafka_ms)
+                                                        .unwrap_or_else(|| super::runner::held_mesh_changed_at(&digest_view, &records, &me.mesh, state))
+                                                };
                                                 crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own, records.declare_gate(), own_mesh_held, own_mesh_changed_at, &view, &mesh_ids);
                                                 rdm_node::node_rpc::feed_once(&digest_view, &resolver, &me.to_string());
                                                 declarer.sweep(&me, &me_id, &view, &client, status_door.get().map(|a| a.as_ref()), &addressed, &records.wake).await;
@@ -3030,7 +3036,27 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 // Every mesh the Build names, its section held here or not (Q284).
                                                 let named = current.and_then(|c| c.as_ref()).map(|b| b.topology.mesh_names()).unwrap_or_default();
-                                                records.set_heard_ready(records.planned().keys().chain(named.iter()).chain(std::iter::once(&mesh)).filter(|m| topology_view.digest_view.statuses.mesh_lifecycle(m).or_else(|| topology_view.mesh_status(m)).is_some_and(|h| h.status == rdm_transport::topology::MESH_READY)).cloned().collect());
+                                                let adopted_ready = backbone.adopted_mesh_status().is_some_and(|h| h.status == rdm_transport::topology::MESH_READY);
+                                                records.set_heard_ready(
+                                                    records
+                                                        .planned()
+                                                        .keys()
+                                                        .chain(named.iter())
+                                                        .chain(std::iter::once(&mesh))
+                                                        .filter(|m| {
+                                                            topology_view.mesh_status(m).is_some_and(|h| h.status == rdm_transport::topology::MESH_READY)
+                                                                || (**m == mesh && adopted_ready)
+                                                                || records
+                                                                    .meshes
+                                                                    .lock()
+                                                                    .unwrap()
+                                                                    .get(*m)
+                                                                    .and_then(|id| records.declared.lock().unwrap().meshes.get(id).copied())
+                                                                    .is_some_and(|s| s >= rdm_core::status::MeshState::Ready)
+                                                        })
+                                                        .cloned()
+                                                        .collect(),
+                                                );
                                                 // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
                                                 records.set_heard_dead(topology_view.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
                                                     topology_view.digest_view.all().into_iter().find(|d| d.node.name.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
@@ -3158,18 +3184,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let heard = topology_view.digest_view.current(topology_view.digest_view.staleness_floor());
                                                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                                                 // A status is sent when it changed, never per turn (gossip.md §3.2).
-                                                // A mesh primary publishes its mesh's lifecycle word (Q272; states.md:12), never the
-                                                // fabric-primary's `degraded` health marker that the view projects until the successor's
-                                                // first send replaces it.
-                                                let mesh_status = match t.meshes.iter().find(|m| m.name == mesh).map(|m| m.status) {
-                                                    Some(crate::model::ScopeStatus::Degraded) => {
-                                                        let ready = t.mesh_unready(&mesh, records.planned().get(&mesh)).is_empty()
-                                                            || (records.heard_ready(&mesh) && t.node_type_primary(&mesh, NodeKind::NodeAdmin).is_some());
-                                                        status_of(if ready { crate::model::ScopeStatus::Ready } else { crate::model::ScopeStatus::Pending })
-                                                    }
-                                                    Some(s) => status_of(s),
-                                                    None => String::new(),
-                                                };
+                                                let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
                                                 // The fabric's status as the live records state it: a checklist that just cleared the adopted
                                                 // degraded must not be answered by the older projection `t`.
                                                 // The fabric-primary publishes the state it holds now, not the projection's last refresh:

@@ -786,10 +786,10 @@ pub(crate) async fn take_entry_control(answer: &crate::wire::JoinAnswer, accepte
 /// refused by name and adopts nothing.
 pub(crate) fn adopt_held_mesh_state(answer: &crate::wire::JoinAnswer, records: &Records, mesh: &str, mesh_id: &MeshId) {
     let held = answer.statuses.iter().find_map(|f| match f.data() {
-        rdm_transport::topology::Frame::MeshStatus { mesh: m, status, publisher, .. } if m == mesh => Some((status.clone(), publisher.clone())),
+        rdm_transport::topology::Frame::MeshStatus { mesh: m, status, publisher, changed_at_rafka_ms, .. } if m == mesh => Some((status.clone(), publisher.clone(), *changed_at_rafka_ms)),
         _ => None,
     });
-    let Some((status, publisher)) = held else { return };
+    let Some((status, publisher, changed_at_rafka_ms)) = held else { return };
     let state = match mesh_state_of(&status) {
         Ok(state) => state,
         Err(why) => {
@@ -803,7 +803,7 @@ pub(crate) fn adopt_held_mesh_state(answer: &crate::wire::JoinAnswer, records: &
         if declared.meshes.contains_key(mesh_id) {
             return;
         }
-        declared.hold_mesh(mesh_id.clone(), state);
+        declared.hold_mesh_at(mesh_id.clone(), state, changed_at_rafka_ms);
     }
     tracing::info_span!("rdm.node_admin.mesh.update.via-held-state-adopted", mesh, mesh_id = %mesh_id, state = ?state, served_by = %answer.served_by, publisher = %publisher)
         .in_scope(|| tracing::info!("the mesh's held lifecycle state is adopted as it exists: no transition, no durable write"));

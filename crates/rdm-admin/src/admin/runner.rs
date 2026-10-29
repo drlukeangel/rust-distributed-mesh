@@ -32,7 +32,7 @@ pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, m
 /// names `state`, else the declaration's applied here by the mesh's MeshId; 0 when it holds neither
 /// (mesh-investigation.md step 7: the successor republishes the held MeshStatus, preserving changed_at).
 pub(crate) fn held_mesh_changed_at(digest_view: &DigestView, records: &Records, mesh: &str, state: rdm_core::status::MeshState) -> u64 {
-    let heard = digest_view.statuses.mesh_lifecycle(mesh).or_else(|| digest_view.statuses.mesh(mesh)).filter(|h| super::reconcile::mesh_state_of(&h.status).ok() == Some(state)).map(|h| h.changed_at_rafka_ms);
+    let heard = digest_view.statuses.mesh(mesh).filter(|h| super::reconcile::mesh_state_of(&h.status).ok() == Some(state)).map(|h| h.changed_at_rafka_ms);
     let declared = || {
         let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned()?;
         let declared = records.declared.lock().unwrap();
@@ -42,7 +42,7 @@ pub(crate) fn held_mesh_changed_at(digest_view: &DigestView, records: &Records, 
 }
 
 pub(crate) fn held_mesh_state(digest_view: &DigestView, records: &Records, mesh: &str) -> rdm_core::status::MeshState {
-    let heard = digest_view.statuses.mesh_lifecycle(mesh).or_else(|| digest_view.statuses.mesh(mesh)).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok());
+    let heard = digest_view.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok());
     let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned();
     let declared = mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
     heard.max(declared).unwrap_or(rdm_core::status::MeshState::Pending)
@@ -817,10 +817,7 @@ impl AdminRunner {
         // every node.create of one is: it takes the mesh's issuing material and the fabric primary's
         // Pending hand-off before it is asked to be Ready (e4.s11; mesh-investigation.md "A node-admin
         // joins the live mesh").
-        let first_admin = {
-            let t = self.topology.read().await;
-            t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
-        };
+        let first_admin = self.topology.read().await.first_admin_of(node);
         let pre_node_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
         // A recovery's create names no executable: the launch runs the one the exited birth's row records,
         // on both arms (node-recovery.md "Retained": never the recovering admin's): the new node's config
@@ -918,10 +915,7 @@ impl AdminRunner {
             Some(rdm_core::meta::StorageMeta::Persistent { .. }) => true,
             None => return Err(format!("node.create:{node}: the accepted Build {build_id} holds no entry for the path: its storage decides the successor's data dir; nothing is launched").into()),
         };
-        let first_admin = {
-            let t = self.topology.read().await;
-            t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
-        };
+        let first_admin = self.topology.read().await.first_admin_of(node);
         let pre_node_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
         let mut template = self.create_template(node, Some(executable)).await?;
         if node.kind == NodeKind::NodeAdmin {

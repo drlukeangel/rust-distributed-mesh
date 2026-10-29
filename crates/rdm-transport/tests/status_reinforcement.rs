@@ -319,11 +319,12 @@ fn a_mesh_status_publisher_sends_only_a_state_it_holds() {
     assert!(successor.observe("pending", None, true, base, 102).is_none(), "a projection behind the held state never replaces it");
 
     let mut first = publisher();
-    let stamped = first.observe("ready", Some(fact("pending", 0)), false, base, 200).expect("a mesh's first state is sent at once");
+    assert!(first.adopt(fact("pending", 0)));
+    let stamped = first.observe("ready", None, false, base, 200).expect("a mesh's first state is sent at once");
     assert_eq!((status_of(&stamped), ts(&stamped)), ("pending", 200), "Pending with no instant is stamped here");
-    let forward = first.observe("ready", Some(fact("pending", 0)), false, base, 201).expect("the projection's forward change follows");
+    let forward = first.observe("ready", None, false, base, 201).expect("the projection's forward change follows");
     assert_eq!((status_of(&forward), ts(&forward)), ("ready", 201));
-    assert!(first.observe("ready", Some(fact("pending", 0)), false, base, 202).is_none(), "the first state is stamped once");
+    assert!(first.observe("ready", None, false, base, 202).is_none(), "the first state is stamped once");
 
     // Q144: Pending at an instant heard, ready projected: nothing while the checklist is open, then
     // ready stamped at the checklist's completion.
@@ -395,17 +396,60 @@ fn mesh_degraded_sequence_orders_above_the_lost_primary_and_below_the_successor(
     assert!(seq(&lost_last) < seq(&degraded), "lost primary's last frame ({}) < degraded frame ({})", seq(&lost_last), seq(&degraded));
     assert!(seq(&degraded) < seq(&successor_first), "degraded frame ({}) < successor's first frame ({})", seq(&degraded), seq(&successor_first));
 
-    // StatusView admits lost_last -> degraded -> successor_first in order, refuses stale frames at each step,
-    // and preserves the held lifecycle status across degraded.
+    // StatusView admits lost_last -> degraded -> successor_first in order and refuses stale frames at each step.
     let view = StatusView::default();
     assert!(view.take(&lost_last, &fabric));
     assert_eq!(view.mesh("mesh2").unwrap().status, "ready");
     assert!(view.take(&degraded, &fabric), "degraded at (rev 3, t=61_000) replaces ready at (rev 3, t=1_000)");
     assert_eq!(view.mesh("mesh2").unwrap().status, "degraded");
-    assert_eq!(view.mesh_lifecycle("mesh2").unwrap(), rdm_transport::topology::MeshStatus { status: "ready".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 1_000 });
     assert!(!view.take(&lost_last, &fabric), "the lost primary's older frame is refused behind degraded");
     assert!(view.take(&successor_first, &fabric), "the successor's first frame at (rev 4, t=1_000) replaces degraded at (rev 3, t=61_000)");
     assert_eq!(view.mesh("mesh2").unwrap().status, "ready");
     assert_eq!(view.mesh("mesh2").unwrap().changed_at_rafka_ms, 1_000);
     assert!(!view.take(&degraded, &fabric), "the degraded frame at rev 3 is refused behind the successor's rev 4");
+}
+
+/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:69
+/// "The new mesh-primary adopts the held MeshStatus from the control/status context handed to it when it is created (Q272, not pending) and republishes it once its fresh planned-birth checklist completes, preserving changed_at_rafka_ms."
+/// CONTRACT: docs/architecture/lifecycles/states.md:12
+/// "MeshStatus also carries a `degraded` health marker, set when a mesh is given a new node-admin by the fabric-primary (on either investigation arm, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status."
+/// A successor handed `Ready` at `X` (`StatusPublisher::adopt`) while the fabric-primary's `degraded`
+/// frame for its mesh is held in `StatusView` publishes nothing while its checklist is open, then
+/// `Ready` with `changed_at_rafka_ms = X`; the view then holds `Ready` (the successor's higher
+/// revision replaces `degraded`).
+#[test]
+fn successor_handed_ready_while_degraded_is_held_publishes_after_checklist_and_replaces_degraded() {
+    let fabric = FabricId::parse("fab000000001").unwrap();
+    let fp_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: NodeId::parse("0123456789bb").unwrap(), incarnation: IncarnationId::parse("yrz49j303ybb").unwrap() };
+    let successor_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: NodeId::parse("0123456789cc").unwrap(), incarnation: IncarnationId::parse("yrz49j303ycc").unwrap() };
+    let base = Instant::now();
+    let x = 1_000;
+    let fact = |status: &str, at: u64| rdm_transport::topology::StatusFact { status: status.into(), changed_at_rafka_ms: at };
+
+    // The fabric-primary's authored degraded frame for mesh2 (revision 3, t = 61_000) is held in the view.
+    let mut fp_peer_pub = StatusPublisher::new("mesh1.admin.1", StatusScope::Mesh("mesh2".into()));
+    fp_peer_pub.set_role(true);
+    fp_peer_pub.set_author(Some((fp_author, 3)));
+    let degraded = fp_peer_pub.observe_degraded(base, 61_000).expect("fabric-primary's degraded frame");
+    let view = StatusView::default();
+    assert!(view.take(&degraded, &fabric));
+    assert_eq!(view.mesh("mesh2").unwrap().status, "degraded");
+
+    // The successor is handed Ready at X directly as its publisher's adopted fact.
+    let mut successor_pub = StatusPublisher::new("mesh2.admin.1", StatusScope::Mesh("mesh2".into()));
+    assert!(successor_pub.adopt(fact("ready", x)), "the successor adopts Ready at X");
+    successor_pub.set_role(true);
+    successor_pub.set_author(Some((successor_author, 4)));
+    assert_eq!(successor_pub.held(), Some(fact("ready", x)));
+
+    // While its checklist is open, it publishes nothing and keeps its adopted Ready at X.
+    let heard = || view.mesh("mesh2").map(|s| fact(&s.status, s.changed_at_rafka_ms));
+    assert!(successor_pub.observe("ready", heard(), false, base, 62_000).is_none(), "checklist open: nothing published");
+    assert_eq!(successor_pub.held(), Some(fact("ready", x)), "the held degraded frame in the view does not overwrite the adopted Ready");
+
+    // Once its checklist completes, it publishes Ready with changed_at = X, replacing degraded in the view.
+    let ready = successor_pub.observe("ready", heard(), true, base, 62_500).expect("checklist complete: Ready is published");
+    assert_eq!((status_of(&ready), ts(&ready), publisher_of(&ready)), ("ready", x, "mesh2.admin.1"));
+    assert!(view.take(&ready, &fabric), "the successor's revision 4 replaces degraded at revision 3");
+    assert_eq!(view.mesh("mesh2").unwrap(), rdm_transport::topology::MeshStatus { status: "ready".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: x });
 }

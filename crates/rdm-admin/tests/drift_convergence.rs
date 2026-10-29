@@ -1857,34 +1857,50 @@ mod fully_crashed_mesh {
             status_announcements(&fabric_id, &fp_pub, "mesh1", &digest_view, mesh_pub, fabric_pub, peer_pubs, "ready", fabric_status, false, false, &degraded, t0 + Duration::from_millis(at_ms), at_ms).0
         };
 
-        // 20 s probe 1, 30 s silent mark, and 40 s probe 2: no recovery is open, so nothing is sent.
-        for rung_ms in [20_000, 30_000, 40_000] {
-            let emitted = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, rung_ms);
-            assert!(emitted.is_empty(), "nothing is sent at {rung_ms} ms: {emitted:?}");
+        let dir = evidence_dir("the_decision_on_each_arm_emits_mesh_degraded_beside_fabric_degraded_with_the_mesh_row_revision_and_nothing_at_the_probes");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-s214").expect("the cell's evidence file can be created");
+        let root = tracing::info_span!("rdm.test.mesh.update.degraded-verdict");
+        use tracing::Instrument as _;
+        async {
+            // 20 s probe 1, 30 s silent mark, and 40 s probe 2: no recovery is open, so nothing is sent.
+            for rung_ms in [20_000, 30_000, 40_000] {
+                let emitted = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, rung_ms);
+                assert!(emitted.is_empty(), "nothing is sent at {rung_ms} ms: {emitted:?}");
+            }
+
+            // Verdict with verdict_rafka_ms = Some(60_000) and known revision 7 emits FabricStatus degraded and MeshStatus degraded.
+            assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: Some(60_000), opened_at: t0, lost: vec![peer_inc.clone()] }, "carrier-edge-lost", true));
+            let arm1 = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, 60_000);
+            assert_eq!(arm1.len(), 2, "verdict emits FabricStatus degraded and MeshStatus degraded: {arm1:?}");
+            assert!(arm1.iter().any(|f| matches!(f.data(), Frame::FabricStatus { status, publisher, changed_at_rafka_ms: 60_000, .. } if status == "degraded" && publisher == "mesh1.admin.1")));
+            let mesh_deg = arm1.iter().find(|f| matches!(f.data(), Frame::MeshStatus { .. })).expect("MeshStatus degraded at verdict");
+            assert!(matches!(mesh_deg.data(), Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms: 60_000, .. } if mesh == "mesh2" && status == "degraded" && publisher == "mesh1.admin.1"));
+            assert_eq!(mesh_deg.context().unwrap().primary_revision(), Some(7), "stamped with mesh2's Mesh row revision");
+
+            // Clear recovery and return to ready.
+            records.close_peer_recovery("mesh2");
+            let _ = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, 65_000);
+            assert!(peer_pubs.is_empty(), "closing the recovery drops the peer publisher");
+
+            // R4: a recovery record with verdict_rafka_ms = None, or a mesh with no known revision (no seat record, no held authored frame),
+            // sends no MeshStatus for that mesh (never revision 0) and names it in rdm.node_admin.mesh.reject.via-no-revision.
+            assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: None, opened_at: t0, lost: vec![peer_inc.clone()] }, "fully-crashed", false));
+            assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh3".into(), verdict_rafka_ms: Some(70_000), opened_at: t0, lost: vec![peer_inc] }, "carrier-edge-lost", true));
+            let rejected = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, 70_000);
+            assert_eq!(rejected.len(), 1, "only FabricStatus degraded is sent when verdict_rafka_ms or revision is missing: {rejected:?}");
+            assert!(matches!(rejected[0].data(), Frame::FabricStatus { status, publisher, changed_at_rafka_ms: 70_000, .. } if status == "degraded" && publisher == "mesh1.admin.1"));
+            assert!(peer_pubs.is_empty(), "no peer MeshStatus publisher is created without both revision and verdict_rafka_ms");
         }
-
-        // Arm 1: 60 s carrier-edge-lost verdict opens recovery with verdict_rafka_ms = Some(60_000).
-        assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: Some(60_000), opened_at: t0, lost: vec![peer_inc.clone()] }, "carrier-edge-lost", true));
-        let arm1 = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, 60_000);
-        assert_eq!(arm1.len(), 2, "carrier-edge-lost verdict emits FabricStatus degraded and MeshStatus degraded: {arm1:?}");
-        assert!(arm1.iter().any(|f| matches!(f.data(), Frame::FabricStatus { status, publisher, changed_at_rafka_ms: 60_000, .. } if status == "degraded" && publisher == "mesh1.admin.1")));
-        let mesh_deg_1 = arm1.iter().find(|f| matches!(f.data(), Frame::MeshStatus { .. })).expect("MeshStatus degraded on carrier-edge-lost");
-        assert!(matches!(mesh_deg_1.data(), Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms: 60_000, .. } if mesh == "mesh2" && status == "degraded" && publisher == "mesh1.admin.1"));
-        assert_eq!(mesh_deg_1.context().unwrap().primary_revision(), Some(7), "stamped with mesh2's Mesh row revision");
-
-        // Clear recovery and return to ready before testing Arm 2 (fully-crashed).
-        records.close_peer_recovery("mesh2");
-        let _ = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, 65_000);
-        assert!(peer_pubs.is_empty(), "closing the recovery drops the peer publisher");
-
-        // Arm 2: fully-crashed verdict opens recovery with verdict_rafka_ms = None.
-        assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: None, opened_at: t0, lost: vec![peer_inc] }, "fully-crashed", false));
-        let arm2 = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, 70_000);
-        assert_eq!(arm2.len(), 2, "fully-crashed verdict emits FabricStatus degraded and MeshStatus degraded: {arm2:?}");
-        assert!(arm2.iter().any(|f| matches!(f.data(), Frame::FabricStatus { status, publisher, changed_at_rafka_ms: 70_000, .. } if status == "degraded" && publisher == "mesh1.admin.1")));
-        let mesh_deg_2 = arm2.iter().find(|f| matches!(f.data(), Frame::MeshStatus { .. })).expect("MeshStatus degraded on fully-crashed");
-        assert!(matches!(mesh_deg_2.data(), Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms: 70_000, .. } if mesh == "mesh2" && status == "degraded" && publisher == "mesh1.admin.1"));
-        assert_eq!(mesh_deg_2.context().unwrap().primary_revision(), Some(7), "stamped with mesh2's Mesh row revision");
+        .instrument(root.clone())
+        .await;
+        drop(root);
+        let spans = capture.spans().expect("the cell's spans can be read");
+        let rejects: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.mesh.reject.via-no-revision").collect();
+        assert_eq!(rejects.len(), 2, "both mesh2 (verdict_rafka_ms=None) and mesh3 (no revision) are named: {rejects:?}");
+        assert!(rejects.iter().any(|s| s["attributes"]["mesh"].as_str() == Some("mesh2") && s["attributes"]["verdict_rafka_ms"].as_str() == Some("None")));
+        assert!(rejects.iter().any(|s| s["attributes"]["mesh"].as_str() == Some("mesh3") && s["attributes"]["verdict_rafka_ms"].as_str() == Some("Some(70000)")));
     }
 }
 
