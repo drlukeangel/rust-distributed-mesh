@@ -80,7 +80,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("the probe printed no JSON ({e}): {stdout} / {stderr}"));
     assert_eq!((v["outcome"].as_str(), v["route"].as_str()), (Some("Reply"), Some("direct")), "the call reaches the target the admin's view names: {v}");
     assert_eq!(v["reply"]["executing_node"].as_str(), Some(target.as_str()), "the target node executed the call: {v}");
-    let read = |entity, filter| StatusRequest::Get { entity, node: None, filter };
+    let read = |entity, filter| rdm_core::read::ReadRequest::Get { entity, filter };
     assert_eq!(*admin.seen.lock().unwrap(), vec![read(Entity::Fabrics, Filter::new()), read(Entity::Nodes, Filter::new().eq("mesh", ["mesh1"]))], "the probe read the fabric, then the one mesh it lists, and nothing else");
     let spans: Vec<serde_json::Value> = std::fs::read_dir(&evidence)
         .unwrap()

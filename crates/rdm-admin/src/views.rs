@@ -5,9 +5,9 @@
 //! filter ([`rdm_core::filter`]) by a pass over what the admin holds, and `node.connection.get { node }`
 //! answered by any node from the connections it holds as its own (fabric-mesh-node-lifecycles.md:
 //! "Reading or cutting a node's held connections"). A read changes nothing and publishes nothing;
-//! its answer is one Status reply, a filter the entity's schema refuses is `RejectedFilter` naming
-//! the pair, and an answer past the Status reply bound is refused naming its size
-//! ([`StatusReply::within_reply_bound`]).
+//! a filter the entity's schema refuses is `RejectedFilter` naming the pair. The plural reads' rows
+//! are answered whole, never bounded as one frame: op `0x23` streams them in frames (Q285,
+//! [`crate::read_op`]).
 //!
 //! The control API's routes answer from the same view and the same held connections
 //! (`crate::control_plane`): the fold of what a node holds is written once, here.
@@ -288,12 +288,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         nodes.retain(|n| matches_active(filter, records, n));
         let count = nodes.len();
         span.record("nodes", count as u64);
-        let reply = StatusReply::within_reply_bound(StatusReply::Nodes { nodes }, read);
-        if let StatusReply::ReadOverBound { bytes, max, .. } = &reply {
-            tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %me, read, properties = %filter.properties(), nodes = count, bytes, max, "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the matching nodes encode past the Status reply bound; nothing of them is sent"));
-        }
-        reply
+        StatusReply::Nodes { nodes }
     };
     // What the read's store calls took (the blocking pool's queue and run).
     let io = crate::blocking::IoTime::default();
@@ -301,9 +296,6 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
     span.record("io_calls", io.calls()).record("io_queued_ms", io.queued_ms()).record("io_ms", io.ran_ms());
     span.record("outcome", reply.name());
     match &reply {
-        StatusReply::ReadOverBound { bytes, max, .. } => {
-            span.record("detail", format!("the matching nodes encode to {bytes} bytes, past the {max}-byte Status reply bound").as_str());
-        }
         StatusReply::RejectedFilter { reason } => {
             span.record("detail", reason.as_str());
             span.in_scope(|| tracing::info!(read, "the node read refused by name"));
@@ -371,14 +363,9 @@ pub fn meshes_answer(me: &PathName, view: &Topology, filter: &Filter) -> StatusR
     }
     let meshes: Vec<MeshView> = meshes(view).into_iter().filter(|m| filter.matches(m)).collect();
     let count = meshes.len();
-    let reply = StatusReply::within_reply_bound(StatusReply::Meshes { meshes }, read);
-    match &reply {
-        StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.mesh.reject.via-over-bound", node = %me, read, properties = %filter.properties(), meshes = count, bytes, max, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the matching meshes encode past the Status reply bound; nothing of them is sent")),
-        _ => tracing::info_span!("rdm.node_admin.mesh.serve.via-get", node = %me, read, properties = %filter.properties(), pairs = %pairs(filter), meshes = count, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the meshes the view holds answered")),
-    }
-    reply
+    tracing::info_span!("rdm.node_admin.mesh.serve.via-get", node = %me, read, properties = %filter.properties(), pairs = %pairs(filter), meshes = count, "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("the meshes the view holds answered"));
+    StatusReply::Meshes { meshes }
 }
 
 /// `fabric.get` (Q167) answered by the node-admin `me`: the fabric its `view` holds, with `build_id`,
@@ -400,14 +387,9 @@ fn fabrics_reply(me: &PathName, fabrics: Vec<FabricView>, filter: &Filter) -> St
     }
     let fabrics: Vec<FabricView> = fabrics.into_iter().filter(|f| filter.matches(f)).collect();
     let (count, meshes, build) = (fabrics.len(), fabrics.first().map_or(0, |f| f.meshes.len()), fabrics.first().and_then(|f| f.build_id.clone()).unwrap_or_default());
-    let reply = StatusReply::within_reply_bound(StatusReply::Fabrics { fabrics }, read);
-    match &reply {
-        StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.fabric.reject.via-over-bound", node = %me, read, meshes, bytes, max, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the fabric encodes past the Status reply bound; nothing of it is sent")),
-        _ => tracing::info_span!("rdm.node_admin.fabric.serve.via-get", node = %me, read, properties = %filter.properties(), pairs = %pairs(filter), fabrics = count, meshes, build_id = %build, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the fabric the view holds answered")),
-    }
-    reply
+    tracing::info_span!("rdm.node_admin.fabric.serve.via-get", node = %me, read, properties = %filter.properties(), pairs = %pairs(filter), fabrics = count, meshes, build_id = %build, "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("the fabric the view holds answered"));
+    StatusReply::Fabrics { fabrics }
 }
 
 /// [`fabric_answer`] with the cert dates the node records of `records`, this admin's atlas, hold

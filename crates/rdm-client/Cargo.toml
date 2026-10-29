@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 rdm-core = { path = "../rdm-core" }
 rdm-transport = { path = "../rdm-transport" }
+bytes = "1"
 iroh = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }

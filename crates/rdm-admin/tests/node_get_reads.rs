@@ -355,8 +355,9 @@ fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atl
     }
 }
 
-fn get(entity: rdm_core::filter::Entity, filter: Filter) -> rdm_core::status::StatusRequest {
-    rdm_core::status::StatusRequest::Get { entity, node: None, filter }
+/// A plural read as the door answers it on op 0x23 (Q285).
+fn get(entity: rdm_core::filter::Entity, filter: Filter) -> rdm_core::status::Read {
+    rdm_core::status::Read { entity, node: None, filter }
 }
 
 /// CONTRACT (query.md §1; node-rpc-envelope.md node.get: "answered by the fabric-primary from its
@@ -392,15 +393,15 @@ async fn nodes_get_and_fabrics_get_answer_from_the_atlas_while_the_nodes_store_f
     let store = Arc::new(Unreadable::default());
     let fp = fabric_primary_at(&admin, view, atlas, store.clone());
 
-    match fp.apply(None, &get(rdm_core::filter::Entity::Nodes, Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold"]))).await {
-        StatusReply::Nodes { nodes } => {
+    match fp.read_rows(&get(rdm_core::filter::Entity::Nodes, Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold"]))).await {
+        Ok(rdm_core::read::Rows::Nodes(nodes)) => {
             assert_eq!(nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>(), ["mesh1.admin.1", "mesh1.gateway.1"], "{nodes:#?}");
             assert_eq!(nodes[1].cert.as_ref().map(|c| c.expires_at), Some(7_000_000), "the cert is the atlas record's");
         }
         other => panic!("node.get answers from the atlas while the store fails every read, not {other:?}"),
     }
-    match fp.apply(None, &get(rdm_core::filter::Entity::Fabrics, Filter::new())).await {
-        StatusReply::Fabrics { fabrics } => {
+    match fp.read_rows(&get(rdm_core::filter::Entity::Fabrics, Filter::new())).await {
+        Ok(rdm_core::read::Rows::Fabrics(fabrics)) => {
             assert_eq!(fabrics.len(), 1, "{fabrics:#?}");
             assert_eq!(fabrics[0].next_expiry, Some(7_000_000), "the soonest cert expiry the atlas's records hold: {fabrics:#?}");
         }

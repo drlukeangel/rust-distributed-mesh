@@ -1094,9 +1094,9 @@ async fn fabric_primary_door(rig: &Rig, births: &[&Birth], resolves: &[ResolvedN
 
 /// `node.get [id: b]` at the rig's fabric-primary: the config its answer carries.
 async fn config_read_from_the_fabric_primary(rig: &Rig, b: &Birth) -> BTreeMap<String, String> {
-    let read = StatusRequest::Get { entity: rdm_core::filter::Entity::Nodes, node: None, filter: rdm_core::filter::Filter::new().eq("id", [b.node.node_id.to_string()]) };
-    match rig.door.apply(None, &read).await {
-        StatusReply::Nodes { nodes } => {
+    let read = rdm_core::status::Read { entity: rdm_core::filter::Entity::Nodes, node: None, filter: rdm_core::filter::Filter::new().eq("id", [b.node.node_id.to_string()]) };
+    match rig.door.read_rows(&read).await {
+        Ok(rdm_core::read::Rows::Nodes(nodes)) => {
             assert_eq!(nodes.len(), 1, "node.get [id] answers the one node: {nodes:?}");
             nodes[0].config.clone()
         }
@@ -2503,9 +2503,9 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
                 digest_view: None,
                 builds,
             };
-            let read = StatusRequest::Get { entity: rdm_core::filter::Entity::Fabrics, node: None, filter: rdm_core::filter::Filter::new() };
-            match door.apply(None, &read).await {
-                StatusReply::Fabrics { mut fabrics } if fabrics.len() == 1 => fabrics.remove(0),
+            let read = rdm_core::status::Read { entity: rdm_core::filter::Entity::Fabrics, node: None, filter: rdm_core::filter::Filter::new() };
+            match door.read_rows(&read).await {
+                Ok(rdm_core::read::Rows::Fabrics(mut fabrics)) if fabrics.len() == 1 => fabrics.remove(0),
                 other => panic!("fabric.get answered {other:?}"),
             }
         }

@@ -24,6 +24,7 @@
 //! | `0x20` | `build` | [`Build`](crate::build::Build) | [`BuildRequest`](crate::build::BuildRequest) | [`BuildReply`](crate::build::BuildReply) |
 //! | `0x21` | `node-primary-update` | [`NodePrimaryUpdate`](crate::handover::NodePrimaryUpdate) | [`NodePrimaryUpdateRequest`](crate::handover::NodePrimaryUpdateRequest) | [`NodePrimaryUpdateReply`](crate::handover::NodePrimaryUpdateReply) |
 //! | `0x22` | `node-command` | [`NodeCommand`](crate::node_command::NodeCommand) | [`NodeCommandRequest`](crate::node_command::NodeCommandRequest) | [`NodeCommandReply`](crate::node_command::NodeCommandReply) |
+//! | `0x23` | `read` | [`Read`](crate::read::Read) | [`ReadRequest`](crate::read::ReadRequest) | [`ReadReply`](crate::read::ReadReply) |
 
 use crate::framing::{decode_varint, Varint};
 use crate::outcome::{MalformedKind, ReplyKind};

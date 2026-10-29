@@ -39,7 +39,7 @@ mod workflow;
 /// The Build family client, stream and reattachment types ([`BuildCarrier`], [`BuildStream`], [`follow_with`]).
 pub use build_stream::{follow_with, Build, BuildCarrier, BuildFrame, BuildStream, Change, Followed, Reattached, StartDisposition};
 /// Single-hop Node RPC calls to an exact birth and their typed call endings ([`NodeRpc`], [`ExactBirth`], [`CallEnd`]).
-pub use calls::{CallEnd, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
+pub use calls::{read_frames, CallEnd, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
 /// The canonical operation, step and event names of the fabric, mesh, node and Build lifecycles.
 pub use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 /// The typed `node`, `mesh`, `fabric`, `connections` and `build` objects.

@@ -804,7 +804,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // Closed until the Status authority is filled and its view holds this admin (it decides from
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let rpc_builder = crate::build_op::serve(crate::fabric_handover::serve(crate::build_facts_read::serve(crate::topology_read::serve(rpc_server(connections.clone(), node_rpc.client.clone(), status_door.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), build_facts_slot.clone()), handover_slot.clone()), build_slot.clone());
+    let rpc_builder = crate::build_op::serve(crate::fabric_handover::serve(crate::build_facts_read::serve(crate::read_op::serve(crate::topology_read::serve(rpc_server(connections.clone(), node_rpc.client.clone(), status_door.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), status_door.clone()), build_facts_slot.clone()), handover_slot.clone()), build_slot.clone());
     // The app's own ops (each behind the gate of its hook), before the catalog is built.
     let rpc_builder = match wiring.serve_app.take() {
         Some(serve_app) => serve_app(rpc_builder),
@@ -2054,10 +2054,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             async move {
                                                 let birth = (d.node.node_id.clone(), d.node.incarnation.clone());
                                                 if d.node.name.kind == rdm_core::NodeKind::NodeAdmin {
-                                                    let req = rdm_core::status::StatusRequest::Get { entity: rdm_core::filter::Entity::Nodes, node: None, filter: rdm_core::filter::Filter::new().eq("id", [d.node.node_id.to_string()]) };
-                                                    let (out, _) = client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(d.node.node_id.clone()), &req, &rdm_transport::CallOptions::default()).await;
-                                                    if let Some(reply) = out.reply() {
-                                                        if let rdm_core::status::StatusReply::Nodes { nodes } = reply.value() {
+                                                    // node.get of its own row, on op 0x23 (Q285).
+                                                    let filter = rdm_core::filter::Filter::new().eq("id", [d.node.node_id.to_string()]);
+                                                    let read = rdm_client::NodeRpc::new(&client).read(&rdm_transport::NodeTarget::ExactNode(d.node.node_id.clone()), rdm_core::filter::Entity::Nodes, &filter, &rdm_transport::CallOptions::default()).await;
+                                                    {
+                                                        if let Ok(rdm_core::read::Rows::Nodes(nodes)) = read {
                                                             if let Some(n) = nodes.iter().find(|n| n.node_id == birth.0 && n.incarnation_id.as_ref() == Some(&birth.1)) {
                                                                 let hash = rdm_core::app_types::hash(&n.held);
                                                                 if hash == n.held_hash && n.types.is_subset(&n.held) {

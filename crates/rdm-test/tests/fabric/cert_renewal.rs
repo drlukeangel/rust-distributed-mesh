@@ -171,18 +171,18 @@ fn signed(bytes: &[u8]) -> SignedCert {
     certs::cert_from_bytes(bytes).expect("a signed member cert")
 }
 
-/// `node.get [id: node]` on `admin`'s Status authority.
+/// `node.get [id: node]` on `admin`'s Status door, as op 0x23 reads it (Q285).
 async fn node_get(admin: &Running, node: &NodeId) -> Option<NodeView> {
-    match admin.status_door()?.apply(None, &StatusRequest::Get { entity: Entity::Nodes, node: None, filter: Filter::new().eq("id", [node.to_string()]) }).await {
-        StatusReply::Nodes { mut nodes } => nodes.pop(),
+    match admin.status_door()?.read_rows(&rdm_core::status::Read { entity: Entity::Nodes, node: None, filter: Filter::new().eq("id", [node.to_string()]) }).await {
+        Ok(rdm_core::read::Rows::Nodes(mut nodes)) => nodes.pop(),
         _ => None,
     }
 }
 
-/// `fabric.get` on `admin`'s Status authority.
+/// `fabric.get` on `admin`'s Status door, as op 0x23 reads it (Q285).
 async fn fabric_get(admin: &Running) -> Option<FabricView> {
-    match admin.status_door()?.apply(None, &StatusRequest::Get { entity: Entity::Fabrics, node: None, filter: Filter::new() }).await {
-        StatusReply::Fabrics { mut fabrics } => fabrics.pop(),
+    match admin.status_door()?.read_rows(&rdm_core::status::Read { entity: Entity::Fabrics, node: None, filter: Filter::new() }).await {
+        Ok(rdm_core::read::Rows::Fabrics(mut fabrics)) => fabrics.pop(),
         _ => None,
     }
 }

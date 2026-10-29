@@ -273,7 +273,7 @@ mod tests {
     use super::*;
     use crate::outcome::Code;
 
-    /// CONTRACT: docs/architecture/node-rpc-envelope.md:1253 "Direction: peer read between node-admins. RDM owns this server stream; it is not forwardable. A non-node-admin answers 421 UNSERVED_OP. Request ceiling 1024 bytes; reply ceiling 8 KiB. There is no cursor. REQUEST_VARIANTS is 3; REPLY_VARIANTS is 11. Positions are fixed in the shown order (FetchBuildFacts=0, FetchCurrentBuild=1, FetchBuildSection=2; Facts=0 through NoCurrentBuild=10), the two last appended, none reordered."
+    /// CONTRACT: docs/architecture/node-rpc-envelope.md:1259 "Direction: peer read between node-admins. RDM owns this server stream; it is not forwardable. A non-node-admin answers 421 UNSERVED_OP. Request ceiling 1024 bytes; reply ceiling 8 KiB. There is no cursor. REQUEST_VARIANTS is 3; REPLY_VARIANTS is 11. Positions are fixed in the shown order (FetchBuildFacts=0, FetchCurrentBuild=1, FetchBuildSection=2; Facts=0 through NoCurrentBuild=10), the two last appended, none reordered."
     #[test]
     fn build_facts_protocol_wire_positions_and_stream_classifications_match_contract() {
         assert_eq!(BuildFacts::OP, 0x1F);

@@ -62,8 +62,8 @@ impl Capture {
     }
 }
 
-/// CONTRACT: docs/architecture/node-rpc-envelope.md:1330 "Every progress frame (Step, Blocked) carries the receipt key `(build_id, attempt, operation, step)` and receivers drop duplicates by that key. A caller watching a Build whose connection closes (`Budget::Stream`'s one end) reattaches by `build_id`: `build.get [id: build_id]` for the receipts, then the outer stream again, resuming from the receipts; the break is never a defect and never a new execution (Node RPC §34, §43)."
-/// docs/architecture/node-rpc-envelope.md:1345 "`FabricPrimaryMoved { build_id, fabric_primary }`, the typed frame naming the new fabric-primary | deliberate outer-stream end naming the new fabric-primary; caller resubmits the same build_id there"
+/// CONTRACT: docs/architecture/node-rpc-envelope.md:1388 "Every progress frame (Step, Blocked) carries the receipt key `(build_id, attempt, operation, step)` and receivers drop duplicates by that key. A caller watching a Build whose connection closes (`Budget::Stream`'s one end) reattaches by `build_id`: `build.get [id: build_id]` for the receipts, then the outer stream again, resuming from the receipts; the break is never a defect and never a new execution (Node RPC §34, §43)."
+/// docs/architecture/node-rpc-envelope.md:1403 "`FabricPrimaryMoved { build_id, fabric_primary }`, the typed frame naming the new fabric-primary | deliberate outer-stream end naming the new fabric-primary; caller resubmits the same build_id there"
 #[test]
 fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating_step_receipts() {
     let capture = Capture::new(

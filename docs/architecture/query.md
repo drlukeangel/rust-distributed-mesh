@@ -59,8 +59,9 @@ The matching rules:
   config key) does not match.
 - **Refused:** an unknown property, a value the field cannot take, an empty values list or a field that
   is not public is `INVALID_ARGUMENT`, naming the pair.
-- **Nothing matching** is `[]`, a mesh the fabric-primary does not hold included. An answer past the
-  reply bound is `ReadOverBound` (`RESOURCE_EXHAUSTED`); the caller narrows, by mesh, then by `id`.
+- **Nothing matching** is `[]`, a mesh the fabric-primary does not hold included. Every matching row is
+  answered, streamed in frames on [op 0x23](node-rpc-envelope.md#read-op-0x23-rdm) (Q285); a row that fits no
+  frame alone is `ReadOverBound` (`RESOURCE_EXHAUSTED`) naming it, and the read fails.
 - **Status:** a node's `status` is its row's as written: the state the row last took from the node's
   frame or the mesh-primary's receipt ([states.md](lifecycles/states.md#who-sets-each-state)). A
   command the node has not acknowledged moves it nowhere: a stop sent and not yet acknowledged reads

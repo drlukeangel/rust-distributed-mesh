@@ -146,12 +146,17 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         assert_eq!(names_of(&nodes_get(Filter::new().eq("is_fabric_primary", ["true"]).eq("status", ["ready"])).await), vec!["mesh1.admin.1"], "a boolean and an enum by their page names");
 
         // An unknown property is INVALID_ARGUMENT naming the pair, on the wire and through the object.
-        let bad = rdm_core::status::StatusRequest::Get { entity: rdm_client::Entity::Nodes, node: None, filter: Filter::new().eq("mesh", ["mesh1"]).eq("zone", ["eu-1"]) };
-        let (out, _) = client.call::<rdm_core::status::Status>(&NodeTarget::CurrentPath(me.node.name.clone()), &bad, &rdm_transport::CallOptions::default()).await;
-        assert_eq!(out.code(), rdm_core::outcome::Code::InvalidArgument, "an unknown property is INVALID_ARGUMENT: {out:?}");
+        let bad = Filter::new().eq("mesh", ["mesh1"]).eq("zone", ["eu-1"]);
+        match rdm_client::NodeRpc::new(&client).read(&NodeTarget::CurrentPath(me.node.name.clone()), rdm_client::Entity::Nodes, &bad, &rdm_transport::CallOptions::default()).await {
+            Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains("the pair (zone, [eu-1])"), "op 0x23 refuses naming the pair: {reason}: {detail}"),
+            other => panic!("an unknown property is RejectedFilter on op 0x23, not {other:?}"),
+        }
+        // The same read on Status is refused by name, naming op 0x23 (Q285).
+        let on_status = rdm_core::status::StatusRequest::Get { entity: rdm_client::Entity::Nodes, node: None, filter: Filter::new() };
+        let (out, _) = client.call::<rdm_core::status::Status>(&NodeTarget::CurrentPath(me.node.name.clone()), &on_status, &rdm_transport::CallOptions::default()).await;
         match out.reply().map(|r| r.value().clone()) {
-            Some(StatusReply::RejectedFilter { reason }) => assert!(reason.contains("the pair (zone, [eu-1])"), "the refusal names the pair: {reason}"),
-            other => panic!("an unknown property is RejectedFilter, not {other:?}"),
+            Some(StatusReply::RejectedFilter { reason }) => assert!(reason.contains("op 0x23"), "Status names op 0x23: {reason}"),
+            other => panic!("a plural read on Status is refused naming op 0x23, not {other:?}"),
         }
         match nodes.get(&Filter::new().eq("zone", ["eu-1"])).await {
             Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains("(zone, [eu-1])"), "refused naming the pair: {reason}: {detail}"),

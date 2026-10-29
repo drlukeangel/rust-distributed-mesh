@@ -344,7 +344,7 @@ impl FetchBuild {
 mod tests {
     use super::*;
 
-    /// CONTRACT: docs/architecture/node-rpc-envelope.md:1300 "The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer, unreadable-build, behind-floor. Every blocker reads `FetchBuildSection` of the admin's own mesh. no-pointer, which names no Build, reads it naming none: the responder selects its current accepted Build once for the request and streams that Build's facts, every chunk and End naming its id, or answers `NoCurrentBuild` and the blocker stays; every other blocker reads it of the Build it names. No blocker is read by a second JoinNode. It asks the fabric-primary first, then other node-admins, then the launcher. Read-only recovery is authorized and uses bounded backoff, 250 ms doubling to 4 s."
+    /// CONTRACT: docs/architecture/node-rpc-envelope.md:1303 "The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer, unreadable-build, behind-floor. Every blocker reads `FetchBuildSection` of the admin's own mesh. no-pointer, which names no Build, reads it naming none: the responder selects its current accepted Build once for the request and streams that Build's facts, every chunk and End naming its id, or answers `NoCurrentBuild` and the blocker stays; every other blocker reads it of the Build it names. No blocker is read by a second JoinNode. It asks the fabric-primary first, then other node-admins, then the launcher. Read-only recovery is authorized and uses bounded backoff, 250 ms doubling to 4 s."
     #[test]
     fn ready_blockers_select_typed_fetch_need_and_double_backoff_from_250ms_to_4s_cap() {
         let me: PathName = "mesh1.admin.2".parse().unwrap();

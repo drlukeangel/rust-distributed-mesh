@@ -65,22 +65,19 @@ async fn own_view(r: &Running) -> rdm_core::views::NodeView {
             let answer = r
                 .status_door()
                 .unwrap()
-                .apply(
-                    None,
-                    &StatusRequest::Get {
-                        entity: rdm_core::filter::Entity::Nodes,
-                        node: None,
-                        filter: rdm_core::filter::Filter::new().eq("id", [r.birth().node_id.to_string()]),
-                    },
-                )
+                .read_rows(&rdm_core::status::Read {
+                    entity: rdm_core::filter::Entity::Nodes,
+                    node: None,
+                    filter: rdm_core::filter::Filter::new().eq("id", [r.birth().node_id.to_string()]),
+                })
                 .await;
             // Before this admin holds its own primary records it is not a primary: it forwards the read to
             // the mesh-primary its view names and, naming none yet, refuses it not-ready (query.md §1;
             // Q243). The read is not answered yet, as an empty list is not.
             match answer {
-                StatusReply::Nodes { mut nodes } if nodes.len() == 1 => return nodes.remove(0),
-                StatusReply::Nodes { nodes } => assert!(nodes.is_empty()),
-                StatusReply::NotReady { .. } => {}
+                Ok(rdm_core::read::Rows::Nodes(mut nodes)) if nodes.len() == 1 => return nodes.remove(0),
+                Ok(rdm_core::read::Rows::Nodes(nodes)) => assert!(nodes.is_empty()),
+                Err(rdm_core::read::ReadReply::NotReady { .. }) => {}
                 other => panic!("{other:?}"),
             }
             changes.changed().await.unwrap();

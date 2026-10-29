@@ -592,7 +592,7 @@ async fn start_booted(
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-built", node = %launch.name);
     // Every connection this node accepts from a live peer is a recovery trigger for its own dial
     // toward that birth, never a Direct entry (R-CN1).
-    let server = serve_node_command(serve_kick(register(crate::member_handover::serve_member(crate::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone()), subject.clone())
+    let server = serve_read(serve_node_command(serve_kick(register(crate::member_handover::serve_member(crate::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone()), subject.clone()), subject.clone())
         .carry::<rdm_core::status::Status>()
         .with_ready_gate(ready.clone())
         .with_delivery(delivery.clone())
@@ -1773,6 +1773,75 @@ async fn forward_read(me: &Kicked, read: &rdm_core::status::Read, req: &rdm_core
     reply
 }
 
+/// The plural reads on op `0x23` (Q285) at a node that is not a primary and keeps no atlas: read
+/// whole from its own mesh-primary over `0x23` and nowhere else (query.md §1; Q243), then streamed to
+/// the caller in frames as the mesh-primary's rows are (`rdm_client::read_frames`). One call with the
+/// caller's default budget, never owed. No mesh-primary held, or a read that ends with no valid `End`,
+/// is `NotReady` naming it; the mesh-primary's refusal of the filter is handed back. One span,
+/// `rdm.node.<entity>.serve.via-forward`, names the read, its pairs, the mesh-primary and the answer.
+fn serve_read(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
+    use rdm_core::filter::Entity;
+    use rdm_core::read::{Read, ReadReply, ReadRequest};
+    b.serve_stream::<Read, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: ReadRequest, sink| {
+        let slot = slot.clone();
+        async move {
+            let Some(me) = slot.get().cloned() else {
+                return Ok(ReadReply::NotReady { reason: "this node has not joined its mesh yet".into() });
+            };
+            let ReadRequest::Get { entity, filter } = req;
+            let op = entity.read();
+            if entity == Entity::Connections {
+                return Ok(ReadReply::RejectedFilter { reason: format!("{op} is Status's read (0x1B Get with its node), never op 0x23") });
+            }
+            let node = me.topology_view.held_name(&me.digest.node.name);
+            let pairs = filter.pairs.iter().map(|(p, v)| format!("({p}, [{}])", v.join(", "))).collect::<Vec<_>>().join(" ");
+            let empty = tracing::field::Empty;
+            let span = match entity {
+                Entity::Nodes => tracing::info_span!("rdm.node.node.serve.via-forward", node = %node, read = op, pairs = %pairs, mesh_primary = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+                Entity::Meshes => tracing::info_span!("rdm.node.mesh.serve.via-forward", node = %node, read = op, pairs = %pairs, mesh_primary = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+                _ => tracing::info_span!("rdm.node.fabric.serve.via-forward", node = %node, read = op, pairs = %pairs, mesh_primary = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
+            };
+            let forwarded = async {
+                let Some(primary) = me.topology_view.primaries().mesh(&me.digest.node.name.mesh) else {
+                    return Err(ReadReply::NotReady { reason: format!("{node} keeps no atlas to answer {op}, and holds no mesh-primary of {} to forward it to", me.digest.node.name.mesh) });
+                };
+                tracing::Span::current().record("mesh_primary", primary.node_id.to_string().as_str());
+                match rdm_client::NodeRpc::new(&me.own.client).read(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), entity, &filter, &rdm_transport::CallOptions::default()).await {
+                    Ok(rows) => rdm_client::read_frames(rows.into_rows(), op).map(|frames| (rows_len(&frames), frames)),
+                    Err(rdm_client::CallEnd::Rejected { reason, detail }) if reason == "rejected-filter" => Err(ReadReply::RejectedFilter { reason: detail }),
+                    Err(e) => Err(ReadReply::NotReady { reason: format!("{node} forwarded {op} to its mesh-primary: the read ended {} ({e})", e.outcome()) }),
+                }
+            };
+            let answer = tracing::Instrument::instrument(forwarded, span.clone()).await;
+            span.in_scope(|| tracing::info!("a read at a node that is not a primary, forwarded to its own mesh-primary"));
+            let (rows, frames) = match answer {
+                Ok(a) => a,
+                Err(r) => {
+                    span.record("outcome", r.name()).record("detail", format!("{r:?}").as_str());
+                    return Ok(r);
+                }
+            };
+            let n = frames.len() as u32;
+            let mut sink = match sink.started(ReadReply::Started { read: op.to_string() }).await {
+                Ok(s) => s,
+                Err(e) => return Ok(ReadReply::NotReady { reason: format!("the caller left before the read started: {e:?}") }),
+            };
+            for f in frames {
+                if let Err(e) = sink.data(f).await {
+                    return Ok(ReadReply::NotReady { reason: format!("the caller left during the read: {e:?}") });
+                }
+            }
+            span.record("outcome", "read");
+            Ok(ReadReply::End { rows, frames: n })
+        }
+    })
+}
+
+/// The rows a read's frames carry.
+fn rows_len(frames: &[rdm_core::read::ReadReply]) -> u32 {
+    frames.iter().map(|f| f.rows() as u32).sum()
+}
+
 fn node_state_of(s: MemberStatus) -> rdm_core::status::NodeState {
     use rdm_core::status::NodeState as N;
     match s {
@@ -1861,6 +1930,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // (query.md §1; Q243).
             let read = req.as_read();
             if let Some(r) = &read {
+                // The plural reads are op 0x23's stream (Q285): on Status they are refused by name; the
+                // retained `GetFabric` (its one fabric) is still forwarded.
+                if r.entity != rdm_core::filter::Entity::Connections && !matches!(req, StatusRequest::GetFabric) {
+                    return Ok(rdm_core::reply::status::bounded_rejected_filter(&format!("{} is read on op 0x23 (read), a stream (Q285); Status's Get carries node.connection.get only", r.entity.read())));
+                }
                 if r.entity != rdm_core::filter::Entity::Connections {
                     return Ok(forward_read(&me, r, &req).await);
                 }

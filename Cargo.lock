@@ -2753,6 +2753,7 @@ dependencies = [
 name = "rdm-client"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "iroh",
  "rdm-core",
  "rdm-transport",

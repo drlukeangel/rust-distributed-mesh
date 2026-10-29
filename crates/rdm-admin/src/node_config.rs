@@ -427,20 +427,21 @@ fn primary_route(view: &Topology, mesh: &str, primary: &rdm_core::NodeId, me_id:
 }
 
 impl NodeConfigs {
-    /// A read `req` (query.md §1) this admin does not answer from an atlas, sent on to the primary `to`
+    /// A plural read (query.md §1) this admin does not answer from an atlas, read from the primary `to`
     /// names in `view`: at a mesh-primary that is not the fabric-primary, a read its atlas does not hold
     /// (a read of another mesh, a read naming no mesh, `fabric.get`; Q224) is carried up to the
     /// fabric-primary, whose atlas holds every mesh; at a node-admin that is not a primary, which keeps
-    /// no atlas, every read but its own `node.connection.get` is forwarded to its own mesh-primary and never
-    /// to the fabric-primary (Q243). The answer is handed back as it is. One call with the caller's
-    /// default budget, never owed (node-rpc.md, Owed: "A command with an owner's bound keeps a finite
-    /// budget"; the read's owner is the caller's call): direct first, then through each other live
-    /// node-admin of the primary's mesh on Forward `0x1A`. A view naming no such primary, or a call that
-    /// ends with no reply, is `NotReady` naming it. One span, `rdm.node_admin.<entity>.serve.via-forward`,
-    /// names the read, its pairs, the primary (`fabric_primary` or `mesh_primary`) and the answer.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn carry_read(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, read: &rdm_core::status::Read, req: &StatusRequest, to: ReadTo) -> StatusReply {
+    /// no atlas, every read is forwarded to its own mesh-primary and never to the fabric-primary (Q243).
+    /// Read on op `0x23` (Q285), the rows collected whole from the primary's stream and handed back as
+    /// they are: one call with the caller's default budget, never owed (node-rpc.md, Owed: "A command
+    /// with an owner's bound keeps a finite budget"; the read's owner is the caller's call), direct, a
+    /// stream being never forwarded. A view naming no such primary, or a read that ends with no valid
+    /// `End`, is `NotReady` naming it; the primary's refusal of the filter is handed back as it is. One
+    /// span, `rdm.node_admin.<entity>.serve.via-forward`, names the read, its pairs, the primary
+    /// (`fabric_primary` or `mesh_primary`) and the answer.
+    pub async fn carry_read(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, read: &rdm_core::status::Read, to: ReadTo) -> Result<rdm_core::read::Rows, rdm_core::read::ReadReply> {
         use rdm_core::filter::Entity;
+        use rdm_core::read::ReadReply;
         let op = read.entity.read();
         let pairs = crate::views::pairs(&read.filter);
         let empty = tracing::field::Empty;
@@ -456,26 +457,26 @@ impl NodeConfigs {
                 ReadTo::MeshPrimary => view.own(me_id).and_then(|own| view.node_type_primary(&own.mesh, rdm_core::NodeKind::NodeAdmin)),
             };
             let Some(primary) = primary else {
-                return rdm_core::reply::status::not_ready(format!("{me} answers no {op} from an atlas, and its view names none to send this one on to ({whom})"));
+                return Err(ReadReply::NotReady { reason: format!("{me} answers no {op} from an atlas, and its view names none to send this one on to ({whom})") });
             };
             span.record(to.field(), primary.name.to_string().as_str());
-            let opts = CallOptions { route: Some(primary_route(view, &primary.mesh, &primary.node_id, me_id)), ..CallOptions::default() };
-            let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(primary.node_id.clone()), req, &opts).await;
-            match out {
-                rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
-                other => rdm_core::reply::status::not_ready(format!("{me} sent {op} on to {whom} {}: the call ended {} with no reply", primary.name, other.name())),
+            span.record("route", "direct");
+            match rdm_client::NodeRpc::new(&self.client).read(&NodeTarget::ExactNode(primary.node_id.clone()), read.entity, &read.filter, &CallOptions::default()).await {
+                Ok(rows) => Ok(rows),
+                Err(rdm_client::CallEnd::Rejected { reason, detail }) if reason == "rejected-filter" => Err(ReadReply::RejectedFilter { reason: detail }),
+                Err(e) => Err(ReadReply::NotReady { reason: format!("{me} read {op} from {whom} {}: the read ended {} ({e})", primary.name, e.outcome()) }),
             }
         };
-        let reply = tracing::Instrument::instrument(carried, span.clone()).await;
-        span.record("outcome", reply.name());
-        if let StatusReply::NotReady { reason } = &reply {
-            span.record("detail", reason.as_str());
-        }
+        let answer = tracing::Instrument::instrument(carried, span.clone()).await;
+        match &answer {
+            Ok(rows) => span.record("outcome", "read").record("detail", format!("{} rows", rows.len()).as_str()),
+            Err(r) => span.record("outcome", r.name()).record("detail", format!("{r:?}").as_str()),
+        };
         span.in_scope(|| match to {
             ReadTo::FabricPrimary => tracing::info!("a read this mesh-primary's atlas does not hold, carried up to the fabric-primary"),
             ReadTo::MeshPrimary => tracing::info!("a read at a node-admin that is not a primary, forwarded to its own mesh-primary"),
         });
-        reply
+        answer
     }
 }
 

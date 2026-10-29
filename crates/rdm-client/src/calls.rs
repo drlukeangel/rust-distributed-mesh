@@ -478,6 +478,56 @@ impl<'a> NodeRpc<'a> {
         Ok(view)
     }
 
+    /// A plural read on op `0x23` (Q285; node-rpc-envelope.md "Read, op `0x23`"): every row of
+    /// `entity` the node at `target` answers for `filter`, collected from the stream in its order. The
+    /// read succeeds only on a valid `End`: the rows collected number `End.rows` across `End.frames`
+    /// data frames. A refusal (`RejectedFilter` naming the pair, `ReadOverBound` naming the row), a cut
+    /// or a deadline is a failed read; no partial list is ever returned.
+    pub async fn read(&self, target: &NodeTarget, entity: rdm_core::filter::Entity, filter: &rdm_core::filter::Filter, opts: &CallOptions) -> Result<rdm_core::read::Rows, CallEnd> {
+        use rdm_core::read::{Read, ReadReply, ReadRequest, Rows};
+        let refused = |r: ReadReply| {
+            let detail = match &r {
+                ReadReply::RejectedFilter { reason } => format!("{target:?}: {reason}"),
+                ReadReply::ReadOverBound { read, row, bytes, max } => format!("{target:?}: {read}'s row {row} encodes to {bytes} bytes, past the {max}-byte frame"),
+                ReadReply::RejectedSourceFailed { source, op, cause } => format!("{target:?}: {source} {op}: {cause}"),
+                other => format!("{target:?} answered {} with {other:?}", entity.read()),
+            };
+            CallEnd::Rejected { reason: r.name().into(), detail }
+        };
+        let Some(mut rows) = Rows::empty(entity) else {
+            return Err(CallEnd::Rejected { reason: "rejected-filter".into(), detail: format!("{} is Status's read (0x1B Get with its node), never op 0x23", entity.read()) });
+        };
+        let req = ReadRequest::Get { entity, filter: filter.clone() };
+        // A read of the target's answer, recorded nowhere here: reading it again is its recovery.
+        let mut stream = match self.client.call_stream::<Read>(target, &req, opts).await {
+            Ok((s, _)) => s.read_only(),
+            Err((RpcOutcome::Reply(r), _)) => return Err(refused(r.into_value())),
+            Err((out, _)) => return Err(ended(out).err().unwrap_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the read ended with no stream and no refusal".into() })),
+        };
+        let mut frames = 0u32;
+        while let Some(item) = stream.next().await {
+            match item {
+                StreamItem::Frame(FrameKind::Refusal(_), r) => return Err(refused(r)),
+                StreamItem::Frame(_, ReadReply::Started { .. }) => {}
+                StreamItem::Frame(FrameKind::Data, frame) => {
+                    if !rows.take(frame) {
+                        return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::DataLoss, reason: format!("a data frame of another entity in the {} stream", entity.read()) });
+                    }
+                    frames += 1;
+                }
+                StreamItem::Frame(_, ReadReply::End { rows: n, frames: f }) => {
+                    if n as usize != rows.len() || f != frames {
+                        return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::DataLoss, reason: format!("the {} End counts {n} rows in {f} frames; {} rows arrived in {frames}", entity.read(), rows.len()) });
+                    }
+                    return Ok(rows);
+                }
+                StreamItem::Frame(_, other) => return Err(refused(other)),
+                StreamItem::Failed(f) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the {} stream failed before its End: {f:?}", entity.read()) }),
+            }
+        }
+        Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unavailable, reason: format!("the {} stream ended after {} rows in {frames} frames without its End", entity.read(), rows.len()) })
+    }
+
     /// `node.topology.get`: the topology the node at `target` holds, `mesh` or every mesh, as the
     /// frames of the read in order. A stream that breaks before its terminal is `Indeterminate`.
     pub async fn topology_get(&self, target: &NodeTarget, mesh: Option<String>, since: Option<SourceVersion>, opts: &CallOptions) -> Result<Vec<TopologyReply>, CallEnd> {
@@ -564,6 +614,27 @@ impl<'a> NodeRpc<'a> {
     }
 }
 
+/// A plural read's `rows` (op `0x23`, Q285) packed, in order, into data frames that each encode within
+/// the reply frame (`rdm_transport::chunking::pack_in_order`): what a server streams between `Started`
+/// and `End`. A row that fits no frame alone is `ReadOverBound` naming it; nothing is packed then.
+pub fn read_frames(rows: Vec<rdm_core::read::Row>, read: &str) -> Result<Vec<rdm_core::read::ReadReply>, rdm_core::read::ReadReply> {
+    use rdm_core::protocol::NodeProtocol as _;
+    use rdm_core::read::{Read, ReadReply, Row};
+    let max = Read::MAX_REPLY_FRAME_BYTES;
+    let (packed, over) = rdm_transport::chunking::pack_in_order(rows, |batch: &[Row]| {
+        let bytes = Read::encode_reply(&Row::frame(batch.to_vec())).map(|b| b.len()).unwrap_or(usize::MAX);
+        if bytes <= max {
+            Ok(bytes::Bytes::new())
+        } else {
+            Err((batch.first().map(Row::name).unwrap_or_default(), bytes))
+        }
+    });
+    if let Some((row, bytes)) = over.into_iter().next() {
+        return Err(ReadReply::ReadOverBound { read: read.to_string(), row, bytes: bytes as u64, max: max as u64 });
+    }
+    Ok(packed.into_iter().map(|(batch, _)| Row::frame(batch)).collect())
+}
+
 #[cfg(test)]
 mod outcome_code_cells {
     use super::*;
@@ -580,3 +651,4 @@ mod outcome_code_cells {
         assert_eq!(Code::DeadlineExceeded.number(),4);
     }
 }
+

@@ -108,14 +108,8 @@ impl Current {
         let at = view.fabric_primary.clone().unwrap_or_else(|| carrier.fabric_primary().clone());
         let fetched = rdm_admin::build_facts_read::fetch_current_build(carrier.client(), &NodeTarget::CurrentPath(at.clone())).await.map_err(|e| format!("the current Build at the fabric-primary {at}: {e}"))?;
         let topology = rdm_admin::build_state::fold(&fetched.facts).remove(&fetched.build_id).map(|p| p.topology).ok_or_else(|| format!("the fabric-primary {at}'s facts of its current Build {} hold no acceptance of it", fetched.build_id))?;
-        // The rows one mesh at a time: node.get's answer is bounded (node-rpc-envelope.md, node.get:
-        // "read bound RESOURCE_EXHAUSTED"), and the whole fabric's rows outgrow it (L4's 200 nodes
-        // encode to 93 KB, past the 64 KB Status reply bound).
-        let mut rows = Vec::new();
-        for mesh in topology.mesh_names() {
-            let of = rdm_client::Nodes::new(carrier.clone()).get(&rdm_client::Filter::new().eq("mesh", [mesh.clone()])).await.map_err(|e| format!("node.get of {mesh} at {}: {e}", carrier.fabric_primary()))?;
-            rows.extend(of);
-        }
+        // Every row in one read: node.get streams its rows on op 0x23 (Q285).
+        let rows = rdm_client::Nodes::new(carrier.clone()).get(&rdm_client::Filter::new()).await.map_err(|e| format!("node.get at {}: {e}", carrier.fabric_primary()))?;
         Ok(Self { based_on: fetched.build_id, topology, rows })
     }
 

@@ -10,6 +10,7 @@
 //! read the node refuses ends `Rejected`, naming the refusal (`rejected-filter` naming the pair). Calls whose request is valid but that no op carries
 //! yet end `NotBackedToday`, naming why; no request is invented for them.
 
+use rdm_core::read::Rows;
 use crate::build_stream::{Build, BuildCarrier};
 use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeOp};
 use crate::workflow::{WorkflowKind, WorkflowStream};
@@ -166,9 +167,9 @@ impl Nodes {
     /// ```
     pub async fn get(&self, filter: &Filter) -> Result<Vec<NodeView>, CallEnd> {
         let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
-        read_list(&self.carrier, &target, NodeOp::Get.span(), NodeOp::Get.name(), Entity::Nodes, None, filter, |r| match r {
-            StatusReply::Nodes { nodes } => Ok(nodes),
-            other => Err(other),
+        read_rows(&self.carrier, &target, NodeOp::Get.span(), NodeOp::Get.name(), Entity::Nodes, filter, |r| match r {
+            Rows::Nodes(nodes) => Some(nodes),
+            _ => None,
         })
         .await
     }
@@ -315,7 +316,35 @@ async fn read_list<T>(
     r
 }
 
-/// The `mesh` objects: reads as Status calls to the fabric-primary the carrier starts at.
+/// A plural read (Q167) on op `0x23` (Q285) to `target` under `span`: every row of `entity` the node
+/// answers for `filter`, collected from the stream and taken as `answer`'s list, or how it ended. A
+/// filter the entity's schema refuses is refused here, `rejected-filter` naming the pair, as the node
+/// would refuse it, and nothing is sent.
+async fn read_rows<T>(
+    carrier: &BuildCarrier,
+    target: &NodeTarget,
+    span: tracing::Span,
+    op: &'static str,
+    entity: Entity,
+    filter: &Filter,
+    answer: impl FnOnce(Rows) -> Option<Vec<T>>,
+) -> Result<Vec<T>, CallEnd> {
+    span.record("properties", filter.properties().as_str());
+    if let Some(reason) = filter.refusal(entity) {
+        let r = Err(refused(target, op, rdm_core::reply::status::bounded_rejected_filter(&reason)));
+        ended_read(&span, op, &r);
+        return r;
+    }
+    let call = async {
+        let rows = crate::NodeRpc::new(carrier.client()).read(target, entity, filter, &CallOptions::default()).await?;
+        answer(rows).ok_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::DataLoss, reason: format!("{target:?} answered {op} with another entity's rows") })
+    };
+    let r = tracing::Instrument::instrument(call, span.clone()).await;
+    ended_read(&span, op, &r);
+    r
+}
+
+/// The `mesh` objects: reads on op `0x23` to the fabric-primary the carrier starts at.
 #[derive(Debug, Clone)]
 pub struct Meshes {
     carrier: BuildCarrier,
@@ -331,15 +360,15 @@ impl Meshes {
     /// name; a mesh's nodes are `node.get [mesh: name]`.
     pub async fn get(&self, filter: &Filter) -> Result<Vec<MeshView>, CallEnd> {
         let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
-        read_list(&self.carrier, &target, MeshOp::Get.span(), MeshOp::Get.name(), Entity::Meshes, None, filter, |r| match r {
-            StatusReply::Meshes { meshes } => Ok(meshes),
-            other => Err(other),
+        read_rows(&self.carrier, &target, MeshOp::Get.span(), MeshOp::Get.name(), Entity::Meshes, filter, |r| match r {
+            Rows::Meshes(meshes) => Some(meshes),
+            _ => None,
         })
         .await
     }
 }
 
-/// The `fabric` objects: reads as Status calls to the fabric-primary the carrier starts at.
+/// The `fabric` objects: reads on op `0x23` to the fabric-primary the carrier starts at.
 #[derive(Debug, Clone)]
 pub struct Fabrics {
     carrier: BuildCarrier,
@@ -355,9 +384,9 @@ impl Fabrics {
     /// `filter`: its id, name, state, provider, fabric-primary and meshes; its nodes are `node.get`.
     pub async fn get(&self, filter: &Filter) -> Result<Vec<FabricView>, CallEnd> {
         let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
-        read_list(&self.carrier, &target, FabricOp::Get.span(), FabricOp::Get.name(), Entity::Fabrics, None, filter, |r| match r {
-            StatusReply::Fabrics { fabrics } => Ok(fabrics),
-            other => Err(other),
+        read_rows(&self.carrier, &target, FabricOp::Get.span(), FabricOp::Get.name(), Entity::Fabrics, filter, |r| match r {
+            Rows::Fabrics(fabrics) => Some(fabrics),
+            _ => None,
         })
         .await
     }

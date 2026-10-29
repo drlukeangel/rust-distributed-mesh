@@ -39,6 +39,7 @@ pub(crate) fn check<P: NodeProtocol>(reply: &P::Reply) {
         0x20 => &[0,0,0,0,0,9,0,0,0,9,9,10,5,9,14,10,9,9,5,14,14,14,15,7,0,9,0,0,0,3],
         0x21 => &[0,10,9,9,10,14,15,5,14,14,7,9,6],
         0x22 => &[0,0,0,3,10,14,5,14,14,15,7,0,0,0,0,13,9,0,10,0,0,0,14],
+        0x23 => &[0,0,0,0,0,3,8,9,14,5,14,14,15,7],
         op => panic!("no expected-code fixture for {op:#x}"),
     };
     assert_eq!(expected.len(), P::REPLY_VARIANTS as usize);
