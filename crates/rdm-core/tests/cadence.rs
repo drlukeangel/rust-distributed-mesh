@@ -55,7 +55,7 @@ fn a_malformed_gossip_interval_is_refused_by_name_at_the_first_cadence_read() {
 /// CONTRACT: a backbone interval of `1.5` (not a whole number of milliseconds) is refused by name at
 /// the first cadence read, here the staleness floor's: the refusal names `RDM_BACKBONE_INTERVAL_MS`
 /// and `"1.5"`. A backbone task reads its interval long after boot, so the process refuses it at
-/// its first cadence read, when it can still stop. What must NOT happen: the default 2 s taken in
+/// its first cadence read, when it can still stop. What must NOT happen: the default 5 s taken in
 /// its place.
 #[test]
 fn a_malformed_backbone_interval_is_refused_by_name_at_the_first_cadence_read() {
@@ -97,4 +97,17 @@ fn a_whole_number_of_milliseconds_is_the_cadence_and_an_unset_variable_its_defau
     assert_eq!(read(cadence::staleness_floor), Ok(Duration::from_millis(1500)));
     assert_eq!(read(cadence::gossip_interval), Ok(Duration::from_secs(2)));
     assert_eq!(read(cadence::backbone_gossip_interval), Ok(Duration::from_millis(250)));
+}
+
+/// CONTRACT (gossip.md §3.2, Q267: "The backbone cadence is `RDM_BACKBONE_INTERVAL_MS`, default 5000 ms."):
+/// an unset backbone interval is 5 s, beside a set gossip interval and staleness floor. What must NOT
+/// happen: the backbone taking the gossip interval's value or the former 2 s.
+#[test]
+fn an_unset_backbone_interval_is_five_seconds() {
+    let cell = "an_unset_backbone_interval_is_five_seconds";
+    if crate::own_process::delegated_with_env(module_path!(), cell, &env(Some("1500"), Some("750"), None)) {
+        return;
+    }
+    assert_eq!(read(cadence::backbone_gossip_interval), Ok(Duration::from_secs(5)));
+    assert_eq!(read(cadence::gossip_interval), Ok(Duration::from_millis(750)));
 }

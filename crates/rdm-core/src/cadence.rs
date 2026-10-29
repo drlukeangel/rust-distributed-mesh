@@ -34,7 +34,7 @@ impl Cadences {
         let cadences = Self {
             staleness_floor: ms("RDM_STALENESS_MS", 30_000),
             gossip_interval: ms("RDM_GOSSIP_INTERVAL_MS", 2_000),
-            backbone_gossip_interval: ms("RDM_BACKBONE_INTERVAL_MS", 2_000),
+            backbone_gossip_interval: ms("RDM_BACKBONE_INTERVAL_MS", 5_000),
         };
         if refused.is_empty() {
             Ok(cadences)
@@ -63,8 +63,8 @@ pub fn gossip_interval() -> Duration {
     cadences().gossip_interval
 }
 
-/// The backbone topic's gossip interval, `RDM_BACKBONE_INTERVAL_MS` (default 2 s,
-/// node-identity-and-state.md:355): how often a mesh's primary publishes its mesh on the backbone.
+/// The backbone topic's gossip interval, `RDM_BACKBONE_INTERVAL_MS` (default 5 s, gossip.md §3.2;
+/// Q267): how often a mesh's primary publishes its mesh on the backbone.
 pub fn backbone_gossip_interval() -> Duration {
     cadences().backbone_gossip_interval
 }
