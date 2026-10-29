@@ -556,3 +556,253 @@ impl Pool {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resolve::StaticResolver;
+    use rdm_core::{NodeId, PathName};
+    use std::time::Duration;
+
+    /// CONTRACT: docs/architecture/node-rpc.md:504
+    /// "Node RPC may evict because: ... resolver/current transport state proves the exact incarnation or slot/freshness was superseded"
+    /// CONTRACT: docs/architecture/lifecycles/node-stop.md:45
+    /// "Never unbind the node's own endpoint or close the stop call's stream or the connection to its mesh-primary its owed declarations ride."
+    #[test]
+    fn pool_get_or_dial_purge_stale_and_selective_close_behave_as_specified() {
+        let dir = std::env::temp_dir().join(format!("pool-unit-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = crate::EvidenceCapture::start(&dir, "pool-unit").unwrap();
+
+        capture.run(1, async {
+            let client_ep = crate::endpoint::bind(
+                iroh::SecretKey::generate(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+            let peer1_ep = crate::endpoint::bind(
+                iroh::SecretKey::generate(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+            let peer2_ep = crate::endpoint::bind(
+                iroh::SecretKey::generate(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+
+            let peer1_key = peer1_ep.secret_key().public();
+            let peer1_addr = peer1_ep.bound_sockets()[0];
+            let peer2_key = peer2_ep.secret_key().public();
+            let peer2_addr = peer2_ep.bound_sockets()[0];
+
+            let p1_clone = peer1_ep.clone();
+            let accept1 = tokio::spawn(async move {
+                let mut held = Vec::new();
+                while let Some(inc) = p1_clone.accept().await {
+                    if let Ok(connecting) = inc.accept() {
+                        if let Ok(c) = connecting.await {
+                            held.push(c);
+                        }
+                    }
+                }
+            });
+            let p2_clone = peer2_ep.clone();
+            let accept2 = tokio::spawn(async move {
+                let mut held = Vec::new();
+                while let Some(inc) = p2_clone.accept().await {
+                    if let Ok(connecting) = inc.accept() {
+                        if let Ok(c) = connecting.await {
+                            held.push(c);
+                        }
+                    }
+                }
+            });
+
+            let node1 = NodeId::mint();
+            let inc1_a = IncarnationId::mint();
+            let inc1_b = IncarnationId::mint();
+            let path1: PathName = "mesh1.rpc.1".parse().unwrap();
+
+            let node2 = NodeId::mint();
+            let inc2 = IncarnationId::mint();
+            let path2: PathName = "mesh1.admin.1".parse().unwrap();
+
+            let resolver = Arc::new(StaticResolver::new());
+            let resolved1_a = ResolvedNode {
+                node_id: node1.clone(),
+                name: path1.clone(),
+                incarnation: inc1_a.clone(),
+                endpoint_id: peer1_key,
+                transport_addr: peer1_addr,
+            };
+            let resolved1_b = ResolvedNode {
+                incarnation: inc1_b.clone(),
+                ..resolved1_a.clone()
+            };
+            let resolved2 = ResolvedNode {
+                node_id: node2.clone(),
+                name: path2.clone(),
+                incarnation: inc2.clone(),
+                endpoint_id: peer2_key,
+                transport_addr: peer2_addr,
+            };
+            resolver.insert(resolved1_a.clone());
+            resolver.insert(resolved2.clone());
+
+            let key1_a = PoolKey {
+                scope: None,
+                peer: peer1_key,
+                incarnation: Some(inc1_a.clone()),
+            };
+            let key_birthless = PoolKey {
+                scope: None,
+                peer: peer1_key,
+                incarnation: None,
+            };
+            // `is_current` checks exact peer and incarnation for birthed keys and always returns true for birthless keys.
+            assert!(key1_a.is_current(Some(&resolved1_a)));
+            assert!(!key1_a.is_current(Some(&resolved1_b)));
+            assert!(!key1_a.is_current(None));
+            assert!(key_birthless.is_current(None));
+            assert!(key_birthless.is_current(Some(&resolved1_b)));
+
+            let pool = Pool::default();
+            let spec = |target: Option<NodeTarget>, addr: SocketAddr| DialSpec {
+                endpoint: client_ep.clone(),
+                resolver: resolver.clone(),
+                target,
+                addr,
+                failpoint: None,
+                opened: None,
+                admission: Admission::default(),
+                delivery: None,
+            };
+
+            // 1. `get_or_dial` dials on first call (`reused == false`) and reuses on second (`reused == true`).
+            let (_, reused1) = pool
+                .get_or_dial(
+                    &key1_a,
+                    spec(Some(NodeTarget::ExactNode(node1.clone())), peer1_addr),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+                .unwrap();
+            assert!(!reused1);
+            let (_, reused2) = pool
+                .get_or_dial(
+                    &key1_a,
+                    spec(Some(NodeTarget::ExactNode(node1.clone())), peer1_addr),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+                .unwrap();
+            assert!(reused2);
+
+            // 2. `purge_stale` evicts superseded incarnation `inc1_a` and promotes a birthless connection at `peer1_addr` to `inc1_b`.
+            let (_, _) = pool
+                .get_or_dial(
+                    &key_birthless,
+                    spec(None, peer1_addr),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+                .unwrap();
+            resolver.insert(resolved1_b.clone());
+            pool.purge_stale(&resolved1_b);
+            let key1_b = PoolKey {
+                scope: None,
+                peer: peer1_key,
+                incarnation: Some(inc1_b.clone()),
+            };
+            assert!(pool.pooled(&key1_a).is_none());
+            assert!(pool.pooled(&key1_b).is_some());
+
+            // 3. `block_direct` closes connections to `peer1_key` and refuses new dials until `unblock_direct`.
+            #[cfg(feature = "testkit-gossip")]
+            {
+                let closed_by_block = pool.block_direct(peer1_key);
+                assert_eq!(closed_by_block, 1);
+                let blocked_res = pool
+                    .get_or_dial(
+                        &key1_b,
+                        spec(Some(NodeTarget::ExactNode(node1.clone())), peer1_addr),
+                        Instant::now() + Duration::from_secs(5),
+                    )
+                    .await;
+                assert!(matches!(blocked_res, Err(DialError::Failed(_))));
+                pool.unblock_direct(&peer1_key);
+            }
+
+            // Re-dial `peer1_key` and `peer2_key`.
+            let _ = pool
+                .get_or_dial(
+                    &key1_b,
+                    spec(Some(NodeTarget::ExactNode(node1.clone())), peer1_addr),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+                .unwrap();
+            let key2 = PoolKey {
+                scope: None,
+                peer: peer2_key,
+                incarnation: Some(inc2.clone()),
+            };
+            let _ = pool
+                .get_or_dial(
+                    &key2,
+                    spec(Some(NodeTarget::ExactNode(node2.clone())), peer2_addr),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+                .unwrap();
+
+            // 4. `close_to` and `close_peer` close connections to `peer1_key` while leaving `peer2_key` pooled.
+            let closed_vec = pool.close_to(&peer1_key, b"close_to test");
+            assert_eq!(closed_vec.len(), 1);
+            assert_eq!(closed_vec[0].key, key1_b);
+            assert_eq!(pool.close_peer(&peer1_key, b"close_peer empty"), 0);
+            assert!(pool.pooled(&key2).is_some());
+
+            // Re-dial `peer1_key`, then `close_all_except(&[peer2_key])` closes `peer1_key` and spares `peer2_key`.
+            let _ = pool
+                .get_or_dial(
+                    &key1_b,
+                    spec(Some(NodeTarget::ExactNode(node1.clone())), peer1_addr),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+                .unwrap();
+            assert_eq!(pool.close_all_except(&[peer2_key], b"spare primary"), 1);
+            assert!(pool.pooled(&key1_b).is_none());
+            assert!(pool.pooled(&key2).is_some());
+
+            // 5. `close_all` closes the remaining pooled connection.
+            assert_eq!(pool.close_all(b"close all"), 1);
+            assert!(pool.keys().is_empty());
+
+            accept1.abort();
+            accept2.abort();
+            client_ep.close().await;
+            peer1_ep.close().await;
+            peer2_ep.close().await;
+        });
+
+        let spans = capture.spans().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        for expected in [
+            "rdm.node_rpc.connection.create.via-dial",
+            "rdm.node_rpc.connection.evict.via-incarnation-superseded",
+            "rdm.node_rpc.connection.delete.via-hard-cut",
+        ] {
+            assert!(
+                spans.iter().any(|s| s["name"] == expected),
+                "expected span {expected}, got {:?}",
+                spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()
+            );
+        }
+    }
+}
