@@ -214,11 +214,34 @@ pub(crate) async fn adopt_from_reachable(
 mod tests {
     use super::*;
 
+    // @feature: rafka-time
     #[test]
-    fn the_day0_root_adopts_its_own_clock_once() {
+    fn the_day0_root_adopts_its_own_clock_once_and_cloned_handle_shares_one_clock() {
+        // docs/architecture/fabric-node-hooks.md:150 — "RDM exposes it to the application through
+        // one public, cloneable `RafkaTime` handle with `now_ms()`. The app gets the handle from
+        // the running node returned by RDM's start, and from `NodeReadyCtx`. It is the same
+        // instance every RDM stamp reads; there is no second clock."
+        let capture = crate::span_capture::Capture::new("rafka-time-own-clock-unit");
+        let _guard = tracing::dispatcher::set_default(&capture.dispatch);
+
         let time = RafkaTime::unadopted();
+        let app_handle = time.clone();
+        assert_eq!(app_handle.try_now_ms(), None);
+
         let adopted = adopt_own_clock(&tracing::Span::none(), &time, "mesh1.admin.1", OWN_CLOCK_DAY0_ROOT);
         assert_eq!(adopted.previous_ms, None);
-        assert!(time.now_ms() >= adopted.reference_ms);
+        assert!(app_handle.now_ms() >= adopted.reference_ms);
+
+        // Advancing `time` through `adopt` is immediately visible on the cloned `app_handle`
+        // ("there is no second clock").
+        let next_ref = adopted.reference_ms + 50_000;
+        time.adopt(next_ref);
+        assert!(app_handle.now_ms() >= next_ref);
+
+        let spans = capture.named("rdm.mesh.entry.update.via-rafka-time-adopted");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].attributes.get("node").map(String::as_str), Some("mesh1.admin.1"));
+        assert_eq!(spans[0].attributes.get("source").map(String::as_str), Some("own-clock"));
+        assert_eq!(spans[0].attributes.get("reason").map(String::as_str), Some(OWN_CLOCK_DAY0_ROOT));
     }
 }

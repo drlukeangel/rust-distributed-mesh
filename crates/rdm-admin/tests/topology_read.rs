@@ -762,3 +762,88 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
     let installed = cap.named("rdm.mesh.topology.update.via-read-install");
     assert_eq!(installed.iter().map(|a| (a["node"].as_str(), a["mesh"].as_str(), a["topology_version"].as_str())).collect::<Vec<_>>(), vec![("mesh1.rpc.1", "mesh2", "7")], "{installed:?}");
 }
+
+// @feature: rafka-time
+/// CONTRACT: docs/architecture/fabric-node-hooks.md:150
+/// "RDM exposes it to the application through one public, cloneable `RafkaTime` handle with
+/// `now_ms()`. The app gets the handle from the running node returned by RDM's start, and from
+/// `NodeReadyCtx`. It is the same instance every RDM stamp reads; there is no second clock."
+#[test]
+fn mesh_primary_pulls_rafka_time_from_new_fabric_primary_on_primary_change_into_shared_handle() {
+    let cap = capture("rafka-time-shared-handle-pull");
+    cap.run(async {
+        use rdm_core::{Primary, Seat};
+        let fabric = FabricId::mint();
+        let (new_fp, mesh2_primary) = (
+            node(&fabric, "mesh1", "mesh1.admin.2", |b| b).await,
+            node(&fabric, "mesh2", "mesh2.admin.1", |b| b).await,
+        );
+        new_fp.time.adopt(12_000_000);
+        open(&new_fp, &fabric);
+        hold(
+            &new_fp.topology_view,
+            &snap("mesh1", &publisher("mesh1.admin.2"), 1, vec![own_digest(&new_fp, &fabric)]),
+        );
+        new_fp.topology_view.primaries().take(
+            Seat::FabricPrimary,
+            &Primary {
+                mesh: "mesh1".into(),
+                node_id: new_fp.resolved.node_id.clone(),
+                incarnation: new_fp.resolved.incarnation.clone(),
+                revision: 2,
+            },
+        );
+
+        let t = target_of(&mesh2_primary, &new_fp);
+        let mesh2_primary_id = mesh2_primary.resolved.node_id.clone();
+        mesh2_primary.topology_view.primaries().take(
+            Seat::MeshPrimary,
+            &Primary {
+                mesh: "mesh2".into(),
+                node_id: mesh2_primary_id.clone(),
+                incarnation: mesh2_primary.resolved.incarnation.clone(),
+                revision: 1,
+            },
+        );
+
+        let app_clock = mesh2_primary.time.clone();
+        assert!(app_clock.now_ms() < 6_000_000, "starts at 5 000 000 ms");
+
+        let read = get_topology(
+            &mesh2_primary.client,
+            &t,
+            "mesh2",
+            &mesh2_primary.topology_view,
+            Some("mesh1"),
+            None,
+        )
+        .await
+        .expect("topology read from new fabric-primary succeeds");
+        let adopted = read
+            .adopt_rafka_time(
+                &mesh2_primary.time,
+                &mesh2_primary.topology_view,
+                "mesh2.admin.1",
+                "mesh2",
+                &mesh2_primary_id,
+                "mesh1.admin.2",
+            )
+            .expect("mesh-primary adopts rafka-time served by fabric-primary");
+
+        assert!(adopted.reference_ms >= 12_000_000);
+        assert!(
+            app_clock.now_ms() >= 12_000_000,
+            "the cloned RafkaTime handle sees the new fabric-primary's 12 000 000 ms: {}",
+            app_clock.now_ms()
+        );
+        new_fp.ep.close().await;
+        mesh2_primary.ep.close().await;
+    });
+    let adopted = cap.named("rdm.mesh.entry.update.via-rafka-time-adopted");
+    assert_eq!(adopted.len(), 1, "expected via-rafka-time-adopted span: {adopted:?}");
+    assert_eq!(adopted[0]["node"].as_str(), "mesh2.admin.1");
+    assert_eq!(adopted[0]["source"].as_str(), "pull");
+    assert_eq!(adopted[0]["via"].as_str(), "get-topology");
+    assert_eq!(adopted[0]["kind"].as_str(), "fabric-primary");
+    assert_eq!(adopted[0]["served_by"].as_str(), "mesh1.admin.2");
+}
