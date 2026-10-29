@@ -97,11 +97,11 @@ Every term below links to the architecture pages that define it.
   check-in (`Budget::Owed`) for a state command before the primary reports the state's upward
   completion.
 - **hand-off (mesh state hand-off)** ([States](architecture/lifecycles/states.md),
-  [Node-admin lifecycle](architecture/node-admin-lifecycle.md),
-  [Node RPC envelope](architecture/node-rpc-envelope.md)): Either the `ApplyMeshState(Pending)`
-  call (`Status`, `0x1B`) sent by the launching `node-admin` to a new mesh's first `node-admin`
-  once it answers `Ping`, or the `fabric-primary`'s next claim and `build.attempt.run` call when
-  handing a Build attempt to the executor named by `executor_for`.
+  [Fabric primary §7](architecture/fabric-primary.md#7-mesh-primary-takeover-is-hydration-not-transition)):
+  The launching `node-admin`'s one `ApplyMeshState` call (`Status`, `0x1B`) to a `node-admin` it
+  creates, once that birth answers `Ping`. A new mesh's first `node-admin` is handed `Pending`; one
+  created for an existing mesh is handed the mesh's held state with its `changed_at`, which it adopts
+  and republishes once its checklist completes.
 - **deployment provider** ([Deployment provider](architecture/deployment-provider.md)): The
   environment policy (`MESH_SPAWN_TYPE=process|container`) that launches, inspects, and terminates
   node runtimes within a provider control domain (a host PID namespace for `process`, or a Docker
@@ -205,10 +205,8 @@ Every term below links to the architecture pages that define it.
   any other verdict comes from [`node.runtime.inspect`](architecture/lifecycles/node-runtime-inspect.md)
   and re-creates the node at the same `path.name` with a new `node.id` (over the inherited data dir
   when `exited`, or a newly allocated data dir otherwise).
-- **adoption launch** ([Fabric recovery](architecture/lifecycles/fabric-recovery.md),
-  [Node-admin lifecycle](architecture/node-admin-lifecycle.md)): A person- or script-started
-  `node-admin` launched at the lost `fabric-primary`'s `path.name` (with `RDM_FABRIC_ID`,
-  `RDM_MESH_ID`, and `RDM_STORE_DIR`, and no launcher) when every `node-admin` of every mesh is
-  lost. It mints a new `node.id`, claims the `fabric-recovery` attempt of the current Build before
-  any other write, refuses with `NameHeld` if any `node-admin` answers, and restores the
-  `mesh-primary` and `fabric-primary` roles once `Ready`.
+- **adoption launch** ([Fabric recovery](architecture/lifecycles/fabric-recovery.md#nothing-alive),
+  [Node-admin lifecycle](architecture/node-admin-lifecycle.md)): A `node-admin` a person or a script
+  starts at the lost `fabric-primary`'s `path.name`, with `RDM_FABRIC_ID`, `RDM_MESH` and
+  `RDM_STORE_DIR` and no launcher, when no `node-admin` is alive. It mints its own `node.id` and no
+  fabric or mesh id, and its claim of the fabric-recovery attempt is its first recovery write.
