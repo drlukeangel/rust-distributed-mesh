@@ -773,3 +773,74 @@ impl rdm_transport::connections::ConnectionsSink for ConnectionsWriter {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::MemoryConnectionsStorage;
+    use rdm_core::{EndpointId, NodeId};
+
+    /// CONTRACT: docs/architecture/connections.md:282
+    /// "A node holds the connection facts it writes, each from the moment its write lands: its latest Direct per
+    /// `(destination, alpn)`"
+    /// CONTRACT: docs/architecture/connections.md:530
+    /// "Node-base runs one scheduler/reconciler per node process, with at most one pending direct-reconnect item per:"
+    #[tokio::test]
+    async fn opened_to_direct_closed_latest_direct_for_reconnect_state_and_runtime_handle_track_live_and_held_facts() {
+        let own = ConnectionEnd {
+            name: "mesh1.rpc.1".parse().unwrap(),
+            node_id: NodeId::mint(),
+            incarnation: Some(IncarnationId::mint()),
+        };
+        let storage = Arc::new(MemoryConnectionsStorage::default());
+        let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+        let writer = ConnectionsWriter::new(own, storage, held);
+
+        // `runtime_handle` returns the runtime handle bound at construction, and `reconnect_state` starts empty.
+        let _rt_handle = writer.runtime_handle();
+        let _reconnect = writer.reconnect_state();
+        assert!(writer.recovery_pending().is_empty());
+
+        let secret = iroh::SecretKey::from_bytes(&[7u8; 32]);
+        let peer_key = secret.public();
+        let peer_inc = IncarnationId::mint();
+        let peer_node = ResolvedNode {
+            name: "mesh1.rpc.2".parse().unwrap(),
+            node_id: NodeId::mint(),
+            incarnation: peer_inc.clone(),
+            endpoint_id: peer_key,
+            transport_addr: "127.0.0.1:19999".parse().unwrap(),
+        };
+        let dest_end = end_of(&peer_node);
+
+        assert_eq!(writer.opened_to(&dest_end), None);
+        assert_eq!(writer.latest_direct_for(&dest_end, rdm_core::connections::ALPN), None);
+
+        // Observing `direct_connected` immediately populates `opened_to` and queues the Connected row.
+        writer.direct_connected(&peer_node);
+        let opened_id = writer.opened_to(&dest_end).expect("opened_to records the newly opened connection id");
+        writer.observations_landed().await;
+
+        let latest = writer
+            .latest_direct_for(&dest_end, rdm_core::connections::ALPN)
+            .expect("latest_direct_for returns the landed Direct row on its ALPN");
+        assert_eq!(latest.id, opened_id);
+        assert_eq!(latest.state, ConnectionState::Connected);
+        assert_eq!(writer.latest_direct_for(&dest_end, b"other/alpn"), None);
+
+        // `direct_closed` removes the open connection from `opened_to`.
+        writer.direct_closed(&peer_key, &peer_inc);
+        assert_eq!(writer.opened_to(&dest_end), None);
+
+        // Observing `direct_failed` lands a Failed row and arms `reconnect_state`.
+        let _ = EndpointId(peer_key.to_string());
+        writer.direct_failed(&peer_node, "dial refused");
+        writer.observations_landed().await;
+        let failed = writer
+            .latest_direct_for(&dest_end, rdm_core::connections::ALPN)
+            .expect("latest_direct_for returns the Failed row");
+        assert_eq!(failed.state, ConnectionState::Failed);
+        assert_eq!(writer.recovery_pending().len(), 1);
+    }
+}
+
+
