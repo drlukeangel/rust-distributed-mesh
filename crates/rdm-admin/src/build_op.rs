@@ -341,7 +341,7 @@ impl BuildDoor {
             let observed = self.control.topology.read().await.clone();
             let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed).operations, hand_off_to: None };
             let context = self.env.door.contexts.get_lane(&id, Some(&mesh), attempt).await.ok().flatten().unwrap_or_default();
-            let intent = crate::build_drive::intent_frames(&*self.control.builds, &id).await;
+            let intent = crate::build_drive::intent_frames(&*self.control.builds, &id, &plan.operations).await;
             let turn = self.env.turns.turn("drift-run").await.of_build(&id.to_string());
             // An executor whose run this admin lost: only its exact departure proof ends the attempt
             // (build.md: "or, when the executor is lost with the attempt unfinished, after exact

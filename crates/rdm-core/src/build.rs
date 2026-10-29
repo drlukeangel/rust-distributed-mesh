@@ -353,8 +353,9 @@ pub enum BuildRequest {
         executor: String,
         /// The attempt's observability context, as the claim returned it.
         context: CallContext,
-        /// The Build as the fabric-primary decided the claim on it: its acceptance and every attempt
-        /// opened, claimed and ended (not its step receipts), as postcard frames of the Build topic's
+        /// The Build as the fabric-primary decided the claim on it: its acceptance, every attempt
+        /// opened, claimed and ended, and the step receipts of the operations this run carries (never
+        /// the Build's other receipts, which grow with every attempt), as postcard frames of the Build topic's
         /// message (the packing the topic's own catch-up uses). The executor absorbs them before it
         /// folds and plans, so the run never waits for the Build topic to deliver what the claim was
         /// decided on. Empty when the fabric-primary runs the attempt itself.

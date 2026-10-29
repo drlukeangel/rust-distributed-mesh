@@ -2198,7 +2198,7 @@ impl DriveEnv {
             }
             let context = self.door.contexts.get_lane(id, Some(&mesh), attempt).await.ok().flatten().unwrap_or_default();
             // The intent is read after the open and the claim, so the mesh-primary holds the attempt it runs.
-            let intent = self.intent_of(id).await;
+            let intent = self.intent_of(id, &operations).await;
             let keys: Vec<String> = operations.iter().map(BuildOperation::key).collect();
             let plan = RunPlan { operations, hand_off_to: None };
             let mut completed: Vec<String> = Vec::new();
@@ -2290,8 +2290,8 @@ impl DriveEnv {
         ended
     }
 
-    async fn intent_of(&self, id: &BuildId) -> Vec<Vec<u8>> {
-        intent_frames(&*self.builds, id).await
+    async fn intent_of(&self, id: &BuildId, run: &[BuildOperation]) -> Vec<Vec<u8>> {
+        intent_frames(&*self.builds, id, run).await
     }
 
     /// A complete Build this drive made no call of: attach to the last attempt's executor and read
@@ -2411,7 +2411,7 @@ impl DriveEnv {
 
     #[allow(clippy::too_many_arguments)]
     async fn run_inner(&self, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &PathName, context: CallContext, plan: RunPlan) -> Inner {
-        let intent = self.intent_of(id).await;
+        let intent = self.intent_of(id, &plan.operations).await;
         let mut stream = match self.dispatcher.dispatch(turn, executor, id, attempt, context, intent, plan).await {
             Dispatched::Stream(s) => s,
             Dispatched::Refused(r) => return Inner::Refused(r),
@@ -2484,12 +2484,9 @@ impl DriveEnv {
 /// postcard frames of a Build message, every fact of `id` the fabric-primary holds, its step receipts
 /// with them: the executor reads no Build record (Q227), so an earlier attempt's receipts a step reads
 /// (a successor's create reads its delete's `TerminateRuntime`) reach it here.
-pub(crate) async fn intent_frames(builds: &dyn BuildStateAdapter, id: &BuildId) -> Vec<Vec<u8>> {
+pub(crate) async fn intent_frames(builds: &dyn BuildStateAdapter, id: &BuildId, run: &[BuildOperation]) -> Vec<Vec<u8>> {
     let facts = match builds.facts().await {
-        Ok(f) => f
-            .into_iter()
-            .filter(|f| f.build_id() == id && !matches!(f, crate::build_state::BuildFact::Forget { .. }))
-            .collect::<Vec<_>>(),
+        Ok(f) => intent_facts(f, id, run),
         Err(_) => return Vec::new(),
     };
     let (frames, refused) = crate::fabric_builds::encode_chunks(facts);
@@ -2497,6 +2494,24 @@ pub(crate) async fn intent_frames(builds: &dyn BuildStateAdapter, id: &BuildId) 
         tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id.log(), detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor does not hold it"));
     }
     frames.into_iter().map(|b| b.to_vec()).collect()
+}
+
+/// The facts of Build `id` an attempt run carries ([`intent_frames`]): every fact of the Build but its
+/// forgetting, with only the step receipts the executor reuses: its own operations' (an operation run
+/// again reuses what its completed steps decided) and those of the steps a run writes under one of them
+/// (a seat move's `node.primary.update:<build>:<attempt>:<operation>`). Never every receipt the Build
+/// ever wrote, which grows with every attempt the Build opens until the request outgrows its frame.
+fn intent_facts(facts: Vec<crate::build_state::BuildFact>, id: &BuildId, run: &[BuildOperation]) -> Vec<crate::build_state::BuildFact> {
+    let keys: Vec<String> = run.iter().map(BuildOperation::key).collect();
+    let of_this_run = |operation: &str| keys.iter().any(|k| operation == k || operation.ends_with(&format!(":{k}")));
+    facts
+        .into_iter()
+        .filter(|f| f.build_id() == id && !matches!(f, crate::build_state::BuildFact::Forget { .. }))
+        .filter(|f| match f {
+            crate::build_state::BuildFact::Step(s) => of_this_run(&s.operation),
+            _ => true,
+        })
+        .collect()
 }
 
 /// Whether view `t` still names `m`'s holder the holder of the seats `m` moves before `op`.
@@ -2564,5 +2579,33 @@ mod tests {
         assert!(ended_incomplete(&me, &me, &me, "w", "w"), "an attempt this admin ran, handed back to it with nothing moved, ended incomplete");
         assert!(!ended_incomplete(&me, &me, &me, "w", "w + a receipt"), "an attempt that moved something is progress, the next is claimed at once");
         assert!(!ended_incomplete(&me, &me, &old_seat, "w", "w"), "an attempt handed to another admin is that admin's");
+    }
+
+    /// CONTRACT (the AttemptRun request's `intent`: the Build's acceptance, every attempt opened, claimed
+    /// and ended, and the step receipts of the operations this run carries; red in the soaks at 9244b8cf8,
+    /// routing: attempt 71 of a formation Build with 70 attempts of receipts refused `Malformed(TooLarge)`
+    /// past the Build op's 256 KiB request frame, the restart never dispatched): the receipts of the run's
+    /// operations and of the steps written under them are carried, the Build's other receipts are not, and
+    /// every attempt fact is. Must NOT happen: the intent growing with every receipt the Build ever wrote.
+    #[test]
+    fn an_attempt_run_carries_the_receipts_of_its_own_operations_only() {
+        use crate::build_state::{AttemptOutcome, BuildAttemptReceipt, BuildFact, BuildStepReceipt, StepOutcome};
+        let id = BuildId::parse(&rdm_core::fixture_crockford60("intent")).unwrap();
+        let other = BuildId::parse(&rdm_core::fixture_crockford60("other")).unwrap();
+        let step = |build: &BuildId, attempt: u32, operation: &str| BuildFact::Step(BuildStepReceipt { mesh: None, build_id: build.clone(), attempt, operation: operation.into(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None });
+        let mut facts = Vec::new();
+        for attempt in 1..=70 {
+            facts.push(step(&id, attempt, "node.stop:mesh1.rpc.1"));
+            facts.push(step(&id, attempt, "node.start:mesh1.rpc.1"));
+            facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }));
+        }
+        facts.push(step(&id, 71, "node.stop:mesh2.broker.3"));
+        facts.push(step(&id, 71, &format!("node.primary.update:{id}:71:node.stop:mesh2.broker.3")));
+        facts.push(step(&other, 1, "node.stop:mesh2.broker.3"));
+        let run = vec![BuildOperation::StopNode { node: "mesh2.broker.3".parse().unwrap(), node_id: rdm_core::NodeId::mint(), from_incarnation: rdm_core::IncarnationId::mint() }];
+        let carried = intent_facts(facts, &id, &run);
+        let steps: Vec<String> = carried.iter().filter_map(|f| match f { BuildFact::Step(s) => Some(s.operation.clone()), _ => None }).collect();
+        assert_eq!(steps, vec!["node.stop:mesh2.broker.3".to_string(), format!("node.primary.update:{id}:71:node.stop:mesh2.broker.3")], "only this run's receipts, its seat move's included, and none of another Build's");
+        assert_eq!(carried.iter().filter(|f| matches!(f, BuildFact::Attempt(_))).count(), 70, "every attempt fact is carried");
     }
 }
