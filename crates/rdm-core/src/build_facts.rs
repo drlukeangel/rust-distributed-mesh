@@ -273,7 +273,7 @@ mod tests {
     use super::*;
     use crate::outcome::Code;
 
-    /// CONTRACT: docs/architecture/node-rpc-envelope.md:1253 "Direction: peer read between node-admins. RDM owns this server stream; it is not forwardable. A non-node-admin answers 421 UNSERVED_OP. Request ceiling 1024 bytes; reply ceiling 8 KiB. There is no cursor. REQUEST_VARIANTS is 2; REPLY_VARIANTS is 11. Positions are fixed in the shown order (FetchBuildFacts=0, FetchCurrentBuild=1; Facts=0 through NoCurrentBuild=10), the two last appended, none reordered."
+    /// CONTRACT: docs/architecture/node-rpc-envelope.md:1253 "Direction: peer read between node-admins. RDM owns this server stream; it is not forwardable. A non-node-admin answers 421 UNSERVED_OP. Request ceiling 1024 bytes; reply ceiling 8 KiB. There is no cursor. REQUEST_VARIANTS is 3; REPLY_VARIANTS is 11. Positions are fixed in the shown order (FetchBuildFacts=0, FetchCurrentBuild=1, FetchBuildSection=2; Facts=0 through NoCurrentBuild=10), the two last appended, none reordered."
     #[test]
     fn build_facts_protocol_wire_positions_and_stream_classifications_match_contract() {
         assert_eq!(BuildFacts::OP, 0x1F);
@@ -281,7 +281,7 @@ mod tests {
         assert!(!BuildFacts::FORWARDABLE);
         assert_eq!(BuildFacts::MAX_REQUEST_FRAME_BYTES, 1024);
         assert_eq!(BuildFacts::MAX_REPLY_FRAME_BYTES, 8 * 1024);
-        assert_eq!(BuildFacts::REQUEST_VARIANTS, 2);
+        assert_eq!(BuildFacts::REQUEST_VARIANTS, 3);
         assert_eq!(BuildFacts::REPLY_VARIANTS, 11);
 
         let r0 = BuildFactsRequest::FetchBuildFacts {
@@ -297,6 +297,11 @@ mod tests {
         assert_eq!(b1[0], 1);
         assert_eq!(BuildFacts::decode_request(&b0).unwrap(), r0);
         assert_eq!(BuildFacts::decode_request(&b1).unwrap(), r1);
+        let r2 = BuildFactsRequest::FetchBuildSection { build_id: Some("cq2tyb03krac".into()), mesh: "mesh1".into() };
+        assert_eq!(r2.op(), "fetch-build-section");
+        let b2 = BuildFacts::encode_request(&r2).unwrap();
+        assert_eq!(b2[0], 2);
+        assert_eq!(BuildFacts::decode_request(&b2).unwrap(), r2);
 
         let replies = [
             (
