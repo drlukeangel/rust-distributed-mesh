@@ -15,6 +15,7 @@ costs in CPU and memory. It measures; the behaviour cells prove the behaviour
 | the cells | `crates/rdm-test/tests/load/mod.rs:384-435`, in `rdm-test`'s `main` test target (`load_profile_<l1\|l2\|l3\|l4>_baseline` and `load_profile_<l1\|l2\|l3\|l4>_no_evidence`) |
 | the driver | `scripts/rdm-load.sh <L1\|L2\|L3\|L4> [--debug] [--no-evidence] [--perf=<dir>]` (`scripts/rdm-load.sh:13-23`) |
 | the rows | `$HOME/rust-distributed-mesh-deploy/load/<short sha>.jsonl`, one JSON object per measure row, appended by `Rows::finish` (`crates/rdm-test/tests/load/mod.rs:101-124`) |
+| the run's output | `$HOME/rust-distributed-mesh-deploy/load/<short sha>-<profile>-<baseline\|no_evidence>.log`, the cell's whole output, written as it runs; the terminal shows the rows, the verdict and each panic with its message, and a red is read from the log, never run again to be read |
 | the record | `docs/plans/reports/load-experiments.md`: one entry per run (`docs/plans/reports/load-experiments.md:1-6`) |
 
 Every load cell is annotated with `#[ignore]` (`crates/rdm-test/tests/load/mod.rs:383-432`), so no gate or
