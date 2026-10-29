@@ -312,3 +312,112 @@ async fn refuse(
     }
     connection.close(iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED), reason.as_bytes());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdm_core::certs::{
+        BirthIdentity, CA_CERT_TTL_SECS, CaKey, ISSUING_CERT_TTL_SECS, IssuingKey, SigningKey,
+        cert_to_bytes, issue,
+    };
+    use rdm_core::{EndpointId, IncarnationId, NodeId, NodeKind, PathName};
+
+    #[test]
+    fn cert_admitter_and_no_certs_admitter_verify_chain_expiries_mesh_and_root_set_replacement() {
+        // docs/architecture/lifecycles/node-connections-admit.md:23-27 — "Verification: The
+        // member's signature against its issuer's key; the issuer's signature against the
+        // fabric CA's key and the CA's against a root of the node's set; the issuer's mesh is
+        // the first segment of the member's path.name; the three expiries (CA, issuer, member),
+        // judged on rafka-time (else `local-bootstrap`) with one staleness floor of skew on
+        // either side... `NoCerts`: A node-admin started `NoCerts` admits every connection by
+        // name, spanned `via-no-certs-configured`; an empty cert presented to a fabric with
+        // certs is `no-credential`."
+        let caller = Birth {
+            name: PathName::new("mesh1", NodeKind::Gateway, 1),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+        };
+
+        // 1. NoCertsAdmitter admits by name on clock "no-certs".
+        let no_certs = NoCertsAdmitter;
+        assert!(no_certs.admits_by_name());
+        assert_eq!(no_certs.clock(), "no-certs");
+        assert_eq!(
+            no_certs.verify(&caller, b"app/1", b""),
+            Ok((0, "no-certs"))
+        );
+
+        // 2. CertAdmitter switches from local-bootstrap to rafka-time once RafkaTime is adopted.
+        let root_key = SigningKey::from_bytes(&[11u8; 32]);
+        let roots = RootSet::new(vec![root_key.verifying_key()]);
+        let time = RafkaTime::unadopted();
+        let admitter = CertAdmitter::new(roots.clone(), time.clone());
+        assert!(!admitter.admits_by_name());
+        assert_eq!(admitter.clock(), "local-bootstrap");
+        time.adopt(10_000);
+        assert_eq!(admitter.clock(), "rafka-time");
+
+        // 3. Empty or malformed cert bytes are refused as `no-credential` with presented_expiry 0.
+        assert_eq!(presented_expiry(b""), 0);
+        assert_eq!(
+            admitter.verify(&caller, b"app/1", b""),
+            Err("no-credential".to_string())
+        );
+        assert_eq!(
+            admitter.verify(&caller, b"app/1", b"not-a-cert"),
+            Err("no-credential".to_string())
+        );
+
+        // 4. Valid member cert under mesh1 issuer and root is admitted and returns its expiry and clock.
+        let ca = CaKey::mint(&root_key, CA_CERT_TTL_SECS, 1_000);
+        let issuer = IssuingKey::mint(
+            &ca,
+            "mesh1",
+            1_000,
+            1_000 + ISSUING_CERT_TTL_SECS * 1_000,
+        )
+        .expect("mint mesh1 issuer");
+        let birth_id = BirthIdentity {
+            node_id: caller.node_id.clone(),
+            incarnation: caller.incarnation.clone(),
+            mesh: "mesh1".to_string(),
+            name: caller.name.clone(),
+            endpoint_key: EndpointId("ep-gw-1".to_string()),
+        };
+        let signed = issue(&issuer, &birth_id, 5_000, 65_000).expect("issue member cert");
+        let cert_bytes = cert_to_bytes(&signed);
+        assert_eq!(presented_expiry(&cert_bytes), 65_000);
+        assert_eq!(
+            admitter.verify(&caller, b"app/1", &cert_bytes),
+            Ok((65_000, "rafka-time"))
+        );
+
+        // 5. Advancing rafka-time past expiry + staleness_floor refuses with `expired`.
+        let skew_ms = rdm_core::cadence::staleness_floor().as_millis() as u64;
+        time.adopt(65_000 + skew_ms + 1_000);
+        assert_eq!(
+            admitter.verify(&caller, b"app/1", &cert_bytes),
+            Err("expired".to_string())
+        );
+
+        // 6. Mesh mismatch between issuer ("mesh1") and member path ("mesh2.gateway.1") is refused `issuer-mesh-mismatch`.
+        time.adopt(10_000);
+        let mut wrong_mesh_signed = signed.clone();
+        wrong_mesh_signed.cert.name = PathName::new("mesh2", NodeKind::Gateway, 1);
+        wrong_mesh_signed.cert.mesh = "mesh2".to_string();
+        let wrong_mesh_bytes = cert_to_bytes(&wrong_mesh_signed);
+        assert_eq!(
+            admitter.verify(&caller, b"app/1", &wrong_mesh_bytes),
+            Err("issuer-mesh-mismatch".to_string())
+        );
+
+        // 7. RootSet::replace dynamically updates the trusted roots, refusing certs under an untrusted root with `ca-bad-signature`.
+        let other_root = SigningKey::from_bytes(&[22u8; 32]);
+        roots.replace(vec![other_root.verifying_key()]);
+        assert_eq!(
+            admitter.verify(&caller, b"app/1", &cert_bytes),
+            Err("ca-bad-signature".to_string())
+        );
+    }
+}
+
