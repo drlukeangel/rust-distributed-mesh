@@ -178,8 +178,8 @@ are never reassigned.
 ## The op ledger
 
 The ledger is the registry of op codes: one row per op, naming its family, its owner and
-whether it is live or retired. An op is a family: its request enum's variants are the calls. A
-retired op is reserved forever and never reissued.
+whether it is live or reserved. An op is a family: its request enum's variants are the calls. A
+reserved op is never served and never reissued.
 
 The ledger is consulted in exactly one place: the build, once per process at boot. The core rows
 are built into the contract; a product adds its rows through the server builder. The build takes
@@ -191,7 +191,7 @@ process on any of:
 - a row in the testkit range `0x70` to `0x7F` whose owner is not testkit, or a testkit owner
   outside that range;
 - a served entry with no ledger row;
-- a served entry whose row is retired;
+- a served entry whose row is reserved;
 - an owner that differs between the row and the entry;
 - a core entry marked transitional;
 - a forwardable server-streaming entry;
@@ -205,7 +205,7 @@ sees only the catalog.
 | op | family | owner | ledger state | serving | calls |
 |---|---|---|---|---|---|
 | `0x01` | ping | core | live | canonical | `Ping` |
-| `0x11` | echo | core | retired | | |
+| `0x11` | echo | core | reserved | | |
 | `0x1A` | forward | core | live | canonical | `Forward` |
 | `0x1B` | status | rdm | live | canonical | the request and reply variants, in positional order, are on the rustdoc of [`Status`](../../api/rdm_core/status/struct.Status.html), each variant naming its position; `Reserved6`, `Reserved7`, `Reserved12`, `Reserved13` and `NodeLeft` are reserved positions, never sent; `LeaveMesh` and its reply `MeshLeft` keep their positions and are refused by name, node.mesh.leave being on 0x22 |
 | `0x1C` | build-claim | rdm | live | canonical | `ClaimAttempt` |
@@ -220,7 +220,7 @@ sees only the catalog.
 | `0x13` | snapshot | rafka | live | transitional | mesh digest snapshot |
 | `0x14` | control | rafka | live | transitional | `MeshControlMessage` |
 | `0x15` | credential-resolve | rafka | live | transitional | credential resolution |
-| `0x16` | layout-reprovision | rafka | retired | | |
+| `0x16` | layout-reprovision | rafka | reserved | | |
 | `0x17` | forward-write | rafka | live | transitional | write through a peer |
 | `0x18` | forward-read | rafka | live | transitional | read through a peer |
 | `0x19` | peer-tickle | rafka | live | transitional | tickle exact path |
@@ -231,7 +231,7 @@ sees only the catalog.
 | `0x74` | pre-node-ready-pull | testkit | live | canonical | `Pull` |
 | `0x75` | fault-door | testkit | live | canonical | `Arm`, `Release`, `State` |
 
-The ledger state says whether an op may be served at all: `live` or `retired`. The serving
+The ledger state says whether an op may be served at all: `live` or `reserved`. The serving
 mode is the catalog entry's, not the ledger's: `canonical`, or `transitional` naming the
 canonical family that replaces it. A rafka adapter is live in the ledger and transitional in
 this process's catalog.
@@ -1827,7 +1827,7 @@ pub enum OriginateReply {
         destination_node_id: String,
         route: String,
         carrier: Option<String>,
-        retired: Option<String>,
+        deleted: Option<String>,
         outcome: String,
         reply: Option<ProofReply>,
         pooled: Vec<String>,
