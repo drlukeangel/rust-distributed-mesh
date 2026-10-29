@@ -571,3 +571,92 @@ impl WorkflowStream {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdm_core::build::{BuildPhase, StepReceipt};
+    use rdm_core::outcome::Code;
+
+    /// CONTRACT: docs/architecture/build.md:453
+    /// "One writer per key: the fabric-primary writes the Fabric record and every topology attempt's Build facts"
+    #[test]
+    fn fold_steps_and_fold_receipts_map_step_receipts_to_workflow_frames_and_refuse_unknown_steps() {
+        let node: PathName = "mesh1.rpc.1".parse().unwrap();
+        let kind = WorkflowKind::Start(node.clone());
+        let op = format!("node.start:{node}");
+
+        // 1. `fold_steps` folds completed receipts from `from_attempt` onward into workflow `Frame`s.
+        let steps = vec![
+            StepView {
+                attempt: 1,
+                operation: op.clone(),
+                step: "StartNode".into(),
+                outcome: serde_json::Value::String("complete".into()),
+            },
+            StepView {
+                attempt: 1,
+                operation: op.clone(),
+                step: "WaitForNodeReady".into(),
+                outcome: serde_json::Value::String("complete".into()),
+            },
+            StepView {
+                attempt: 1,
+                operation: op.clone(),
+                step: "Complete".into(),
+                outcome: serde_json::Value::String("complete".into()),
+            },
+        ];
+        let folded = fold_steps(&kind, &steps, 1).unwrap();
+        assert_eq!(
+            folded.frames,
+            vec![Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Complete]
+        );
+        assert_eq!(folded.completed.len(), 3);
+        assert_eq!(folded.next, None);
+
+        // 2. `fold_receipts` converts `Build` step receipts (`Complete` and `Failed`) and delegates to `fold_steps`.
+        let build = Build {
+            build_id: BuildId::mint(),
+            phase: BuildPhase::Failed,
+            attempt: 2,
+            executor: None,
+            reason: "start".into(),
+            last_failure: Some("hook refused".into()),
+            current: false,
+            nodes: Vec::new(),
+            steps: vec![
+                StepReceipt {
+                    attempt: 2,
+                    operation: op.clone(),
+                    step: "StartNode".into(),
+                    result: StepResult::Complete,
+                },
+                StepReceipt {
+                    attempt: 2,
+                    operation: op.clone(),
+                    step: "WaitForNodeReady".into(),
+                    result: StepResult::Failed { reason: "hook refused".into(), code: Code::FailedPrecondition },
+                },
+            ],
+        };
+        let folded_failed = fold_receipts(&kind, &build, 2).unwrap();
+        assert_eq!(
+            folded_failed.frames,
+            vec![
+                Frame::Event(NodeEvent::Joined),
+                Frame::Failed { step: NodeStep::Start, reason: "hook refused".into() }
+            ]
+        );
+
+        // 3. An unrecognised step name for a matching operation is refused with `UnrecognisedReceipt`.
+        let bad_steps = vec![StepView {
+            attempt: 1,
+            operation: op,
+            step: "NoSuchStep".into(),
+            outcome: serde_json::Value::String("complete".into()),
+        }];
+        assert!(matches!(fold_steps(&kind, &bad_steps, 1), Err(CallEnd::UnrecognisedReceipt { .. })));
+    }
+}
+
+
