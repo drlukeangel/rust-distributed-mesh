@@ -124,7 +124,7 @@ connections-deleting is live and not routable; node.connections.deleted carries
 stopped is not live and is still present. node.stop runs `node.connections.delete { scope: All }`,
 then cuts its gossip neighbours and its Node RPC pool, which are not connections, but preserves
 the node's endpoint and the stop stream, returns node.stopped,
-and leaves the live process stopped. node.get answers Current { stopped }.
+and leaves the live process stopped. Its [node.tickle](node-tickle.md) probe answers `Current { stopped }`.
 
 node.start is the only transition out of stopped.
 It retains node.id, incarnation, endpoint key, bound port and bin and completes all

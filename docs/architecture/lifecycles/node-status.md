@@ -19,8 +19,8 @@ A report is sent when owed and again only on an eligible event:
 - the primary addresses this node with the state's down call.
 
 Typed replies, including named refusals, are terminal. One coalesced wake drives the
-work, never a timer. An unreachable target schedules no report. `node.get`
-maps the exact-instance read to ProbeNodeState; its Current reply reasserts held
+work, never a timer. An unreachable target schedules no report. The exact-instance read is
+[node.tickle](node-tickle.md)'s probe, `ProbeNodeState`; its Current reply reasserts held
 status and does not manufacture a transition or a new change timestamp.
 
 A node reports to its mesh's primary, which sets its status. A report is an owed message
