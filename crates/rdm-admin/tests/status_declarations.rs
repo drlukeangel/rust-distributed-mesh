@@ -583,12 +583,18 @@ fn holding() -> (Arc<Mutex<Vec<rdm_admin::status_rpc::ConfigHeld>>>, Arc<dyn Fn(
     }))
 }
 
-/// CONTRACT (ops-naming "Node data": a config update is a single call, not a Build; the node's
+/// CONTRACT (`docs/architecture/lifecycles/node-config-update.md:5` — "`node.config.update` replaces a
+/// node's application config, the whole map: a PUT, never a patch. It is a single call, not a Build."
+/// and `docs/architecture/lifecycles/node-config-update.md:23` — "3. A live node is sent
+/// `ApplyNodeConfig` with the map and its revision; it installs the map over an older revision. The
+/// command completes after `Applied` or `AlreadyApplied`."; ops-naming "Node data": a config update is
+/// a single call, not a Build; the node's
 /// mesh-primary is the only writer and writes the whole row): a caller's `node.config.update` to
 /// mesh1's primary ends `node.config.updated` (`ConfigUpdated` naming the exact birth); the node's
 /// record at its path.name holds the config; the birth was told the whole map exactly once
 /// (`ApplyNodeConfig`) before the mesh-primary answered; and one `rdm.node_admin.node.update.via-config`
 /// span says `config-updated`.
+// @feature: node-config
 #[test]
 fn a_config_update_at_the_mesh_primary_ends_updated_and_the_node_carries_it() {
     let cap = capture();

@@ -843,3 +843,139 @@ enum Tell {
 fn describe(end: &CallEnd) -> String {
     format!("{end:?}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeId, NodeStatus, ProviderKind, ScopeStatus};
+    use crate::storage::MemoryNodesStorage;
+    use rdm_transport::StaticResolver;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // CONTRACT (`docs/architecture/lifecycles/node-config-update.md:5` — "`node.config.update` replaces a
+    // node's application config, the whole map: a PUT, never a patch.",
+    // `docs/architecture/lifecycles/node-config-update.md:22` — "2. The mesh-primary writes the record,
+    // stepping its revision, and its atlas.", and
+    // `docs/architecture/lifecycles/node-config-update.md:25` — "A stopped node is sent nothing: the
+    // command completes after the durable row write, and its next start receives the config in its
+    // hydration sync."): `SentBy::of` classifies the subject itself as `Own`, non-admin peers as `Caller`,
+    // and other admins as `Other`; `NodeConfigs::update` replaces the whole map, steps the row revision on
+    // each put, preserves existing tags, completes on the row for a stopped node, and refuses stale
+    // incarnations and non-mesh-primary receivers.
+    // @feature: node-config
+    #[tokio::test]
+    async fn config_update_replaces_whole_map_steps_revision_preserves_tags_and_classifies_senders() {
+        let mut admin1 = Node::allocated("mesh1.admin.1".parse().unwrap());
+        admin1.status = NodeStatus::Ready;
+        admin1.is_primary = true;
+        admin1.is_fabric_primary = true;
+        admin1.incarnation_id = Some(IncarnationId::mint());
+
+        let mut admin2 = Node::allocated("mesh1.admin.2".parse().unwrap());
+        admin2.status = NodeStatus::Ready;
+        admin2.incarnation_id = Some(IncarnationId::mint());
+
+        let mut rpc1 = Node::allocated("mesh1.rpc.1".parse().unwrap());
+        rpc1.status = NodeStatus::Leaving;
+        rpc1.stopped = true;
+        let rpc1_inc = IncarnationId::mint();
+        rpc1.incarnation_id = Some(rpc1_inc.clone());
+
+        assert_eq!(SentBy::of(Some(&rpc1), &rpc1.node_id), SentBy::Own);
+        assert_eq!(SentBy::of(Some(&rpc1), &admin1.node_id), SentBy::Caller);
+        assert_eq!(SentBy::of(Some(&admin2), &rpc1.node_id), SentBy::Other);
+        assert_eq!(SentBy::of(None, &rpc1.node_id), SentBy::Other);
+        assert_eq!(SentBy::of_writer_call(Some(&admin2)), SentBy::Other);
+        assert_eq!(SentBy::of_writer_call(Some(&rpc1)), SentBy::Caller);
+        assert_eq!(SentBy::of_writer_call(None), SentBy::Caller);
+
+        let view = Topology {
+            fabric: Fabric {
+                id: FabricId::mint(),
+                name: "fabric1".into(),
+                status: ScopeStatus::Ready,
+                provider: ProviderKind::Process,
+            },
+            meshes: vec![Mesh {
+                id: Some(MeshId::mint()),
+                name: "mesh1".into(),
+                status: ScopeStatus::Ready,
+            }],
+            nodes: vec![admin1.clone(), admin2.clone(), rpc1.clone()],
+        };
+
+        let storage = MemoryNodesStorage::default();
+        let written = Arc::new(crate::node_rows::WrittenRows::default());
+        let atlas = Arc::new(crate::atlas::Atlas::default());
+        written.feeds(atlas.clone());
+
+        let mut seeded = NodeRow::new(rpc1.name.clone(), rpc1.node_id.clone(), NodeStatus::Leaving);
+        seeded.tags = BTreeSet::from(["gold".to_string()]);
+        seeded.config = BTreeMap::from([("old_key".into(), "old_val".into())]);
+        written.put(&storage, &seeded).await.unwrap();
+
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[7u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
+        let door = NodeConfigs::new(client, Default::default(), written.clone());
+
+        let map1 = BTreeMap::from([("zone".to_string(), "eu-1".to_string())]);
+        let req1 = StatusRequest::UpdateNodeConfig {
+            node_id: rpc1.node_id.clone(),
+            incarnation: rpc1_inc.clone(),
+            config: map1.clone(),
+        };
+
+        // Non-mesh-primary refuses ReceiverNotPrimary.
+        assert!(matches!(
+            door.update(&admin2.name, &admin2.node_id, &view, &storage, &req1).await,
+            StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }
+        ));
+
+        // Stale incarnation refuses RejectedStaleIncarnation.
+        let stale_req = StatusRequest::UpdateNodeConfig {
+            node_id: rpc1.node_id.clone(),
+            incarnation: IncarnationId::mint(),
+            config: map1.clone(),
+        };
+        assert_eq!(
+            door.update(&admin1.name, &admin1.node_id, &view, &storage, &stale_req).await,
+            StatusReply::RejectedStaleIncarnation { held: rpc1_inc.clone() }
+        );
+
+        // Mesh-primary replaces the whole map (old_key is removed), steps revision from 1 -> 2, and keeps tags.
+        let reply1 = door.update(&admin1.name, &admin1.node_id, &view, &storage, &req1).await;
+        assert_eq!(
+            reply1,
+            StatusReply::ConfigUpdated {
+                node_id: rpc1.node_id.clone(),
+                incarnation: rpc1_inc.clone(),
+                config: map1.clone(),
+                revision: 2,
+            }
+        );
+        let row1 = written.row_of(&rpc1.node_id).unwrap();
+        assert_eq!(row1.config, map1);
+        assert!(!row1.config.contains_key("old_key"), "PUT replaces the whole map, never patches");
+        assert_eq!(row1.tags, BTreeSet::from(["gold".to_string()]), "config put preserves tags on the record");
+        assert_eq!(row1.revision, 2);
+
+        // Second put steps revision to 3.
+        let map2 = BTreeMap::from([("rack".to_string(), "r9".to_string())]);
+        let req2 = StatusRequest::UpdateNodeConfig {
+            node_id: rpc1.node_id.clone(),
+            incarnation: rpc1_inc.clone(),
+            config: map2.clone(),
+        };
+        let reply2 = door.own_write(&admin1.name, &admin1.node_id, &view, &storage, &req2).await;
+        assert_eq!(
+            reply2,
+            StatusReply::ConfigUpdated {
+                node_id: rpc1.node_id,
+                incarnation: rpc1_inc,
+                config: map2,
+                revision: 3,
+            }
+        );
+        ep.close().await;
+    }
+}
