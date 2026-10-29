@@ -7,6 +7,7 @@ mod connection_writes;
 #[cfg(feature = "file-backend")]
 mod connections_open;
 mod leadership;
+mod node_hooks;
 mod operations;
 #[cfg(feature = "file-backend")]
 mod storage_copy;

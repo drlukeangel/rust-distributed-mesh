@@ -637,4 +637,272 @@ mod tests {
             assert_eq!(other.probe_blocker(), None, "only Blocked answers Blocked: {other:?}");
         }
     }
+
+    // @feature: pre-node-ready
+    #[test]
+    fn hook_driver_refuses_blank_reason_and_missing_accepting_primary_reruns_on_level_triggered_retry_event_and_cancels_in_flight_attempt() {
+        // docs/architecture/fabric-node-hooks.md:89 — "`Blocked { reason, retry_on }` | readiness
+        // remains blocked; the reason is named in the blocker evidence and answered to the
+        // executor's ProbeNodeState as Status `Blocked { node_id, incarnation, reason, retry_on }`;
+        // the hook runs again only when retry_on occurs"
+        // docs/architecture/fabric-node-hooks.md:93 — "A retry is level-triggered: RDM arms the
+        // wait, then checks the condition again, so an event that fired before arming cannot leave
+        // the node waiting. RDM never retries on a timer."
+        struct ScriptedHook {
+            outcomes: Mutex<Vec<HookOutcome>>,
+            addressed_during_attempt: Option<(Arc<Addressed>, iroh::PublicKey)>,
+            wait_forever_on_attempt: Option<u32>,
+            started_notify: Arc<tokio::sync::Notify>,
+        }
+
+        #[async_trait::async_trait]
+        impl PreNodeReady for ScriptedHook {
+            async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
+                if self.wait_forever_on_attempt == Some(ctx.attempt) {
+                    self.started_notify.notify_one();
+                    std::future::pending::<()>().await;
+                }
+                if ctx.attempt == 1 {
+                    if let Some((addr, key)) = &self.addressed_during_attempt {
+                        addr.note(key);
+                    }
+                }
+                self.outcomes.lock().unwrap().remove(0)
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("rdm-pre-node-ready-unit-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-pre-node-ready-unit")
+            .expect("evidence capture starts");
+
+        capture.run(2, async {
+            let ep = rdm_transport::endpoint::bind(
+                iroh::SecretKey::generate(),
+                "127.0.0.1:0".parse().expect("addr"),
+            )
+            .await
+            .expect("bind ep");
+            let resolver = Arc::new(rdm_transport::StaticResolver::new());
+            let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver));
+            let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+            let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
+            let _ = rafka_time.adopt(1_000);
+            let fabric_id = FabricId::mint();
+            let mesh_id = MeshId::mint();
+            let name = PathName::new("mesh1", NodeKind::RpcNode, 1);
+            let topology_view = TopologyView::join(
+                &gossip,
+                &ep,
+                &fabric_id,
+                "mesh1",
+                &mesh_id,
+                &name.to_string(),
+                Arc::new(rafka_time.clone()),
+                Vec::new(),
+                &[],
+            )
+            .await
+            .expect("join topology view");
+
+            let birth = Birth {
+                name: name.clone(),
+                node_id: NodeId::mint(),
+                incarnation: IncarnationId::mint(),
+                fabric_id,
+                mesh_id,
+                kind: NodeKind::RpcNode,
+            };
+            let auth_key = iroh::SecretKey::generate().public();
+            let accepting = AcceptingAuthority {
+                name: PathName::new("mesh1", NodeKind::NodeAdmin, 1),
+                endpoint: auth_key,
+                target: rdm_transport::NodeTarget::ExactNode(NodeId::mint()),
+            };
+
+            // 1. Blank reason in `Blocked` is refused by name (`Step::Failed`).
+            let blank_hook = Arc::new(ScriptedHook {
+                outcomes: Mutex::new(vec![HookOutcome::Blocked {
+                    reason: "   ".into(),
+                    retry_on: RetryOn::PrimaryAddressed,
+                }]),
+                addressed_during_attempt: None,
+                wait_forever_on_attempt: None,
+                started_notify: Arc::new(tokio::sync::Notify::new()),
+            });
+            let blank_hooks = NodeHooks::new(blank_hook);
+            let blank_driver = blank_hooks
+                .driver(
+                    NodeReadyCtx {
+                        start_kind: StartKind::FirstStart,
+                        birth: birth.clone(),
+                        authority: Authority::Accepted(accepting.clone()),
+                        client: client.clone(),
+                        topology_view: topology_view.clone(),
+                        cancel: CancelToken::new(),
+                        rafka_time: rafka_time.clone(),
+                        member_cert: None,
+                        attempt: 0,
+                        inherited: false,
+                    },
+                    Events::new(topology_view.digest_view.clone(), Addressed::new()),
+                    tracing::Span::none(),
+                )
+                .expect("driver");
+            match blank_driver.attempt().await {
+                Step::Failed(why) => assert!(why.contains("Blocked with no reason"), "{why}"),
+                _ => panic!("expected Step::Failed for blank Blocked reason"),
+            }
+            assert!(!blank_hooks.gate().is_open());
+
+            // 2. Waiting on an authority event when the birth has `Authority::None` is refused by name.
+            let no_auth_hook = Arc::new(ScriptedHook {
+                outcomes: Mutex::new(vec![HookOutcome::Blocked {
+                    reason: "waiting on primary".into(),
+                    retry_on: RetryOn::PrimaryReady,
+                }]),
+                addressed_during_attempt: None,
+                wait_forever_on_attempt: None,
+                started_notify: Arc::new(tokio::sync::Notify::new()),
+            });
+            let no_auth_hooks = NodeHooks::new(no_auth_hook);
+            let no_auth_driver = no_auth_hooks
+                .driver(
+                    NodeReadyCtx {
+                        start_kind: StartKind::FirstStart,
+                        birth: birth.clone(),
+                        authority: Authority::None(NoAuthority::Day0Root),
+                        client: client.clone(),
+                        topology_view: topology_view.clone(),
+                        cancel: CancelToken::new(),
+                        rafka_time: rafka_time.clone(),
+                        member_cert: None,
+                        attempt: 0,
+                        inherited: false,
+                    },
+                    Events::new(topology_view.digest_view.clone(), Addressed::new()),
+                    tracing::Span::none(),
+                )
+                .expect("driver");
+            match no_auth_driver.attempt().await {
+                Step::Failed(why) => assert!(why.contains("no authority"), "{why}"),
+                _ => panic!("expected Step::Failed when waiting on authority without one"),
+            }
+
+            // 3. Level-triggered retry: `addressed.note` fires while attempt 1 is running (before
+            //    `run` enters `events.wait`); `run` sees the count advanced past `mark`, clears the
+            //    blocker without stranding, runs attempt 2 -> `Ok`, and opens the gate.
+            let addressed = Addressed::new();
+            let level_hook = Arc::new(ScriptedHook {
+                outcomes: Mutex::new(vec![
+                    HookOutcome::Blocked {
+                        reason: "awaiting primary address".into(),
+                        retry_on: RetryOn::PrimaryAddressed,
+                    },
+                    HookOutcome::Ok,
+                ]),
+                addressed_during_attempt: Some((addressed.clone(), auth_key)),
+                wait_forever_on_attempt: None,
+                started_notify: Arc::new(tokio::sync::Notify::new()),
+            });
+            let level_hooks = NodeHooks::new(level_hook);
+            let level_driver = level_hooks
+                .driver(
+                    NodeReadyCtx {
+                        start_kind: StartKind::FirstStart,
+                        birth: birth.clone(),
+                        authority: Authority::Accepted(accepting.clone()),
+                        client: client.clone(),
+                        topology_view: topology_view.clone(),
+                        cancel: CancelToken::new(),
+                        rafka_time: rafka_time.clone(),
+                        member_cert: None,
+                        attempt: 0,
+                        inherited: false,
+                    },
+                    Events::new(topology_view.digest_view.clone(), addressed),
+                    tracing::Span::none(),
+                )
+                .expect("driver");
+            let step1 = level_driver.attempt().await;
+            assert!(matches!(step1, Step::Blocked(_)));
+            assert!(!level_hooks.gate().is_open());
+            let end = level_driver.run(step1).await;
+            assert_eq!(end, End::Passed);
+            assert!(level_hooks.gate().is_open());
+            assert_eq!(level_driver.handle().state(), PreNodeReadyState::Passed);
+
+            // 4. Cancellation drops an in-flight attempt and records `Step::Cancelled`.
+            let cancel = CancelToken::new();
+            let started_notify = Arc::new(tokio::sync::Notify::new());
+            let cancel_hook = Arc::new(ScriptedHook {
+                outcomes: Mutex::new(Vec::new()),
+                addressed_during_attempt: None,
+                wait_forever_on_attempt: Some(1),
+                started_notify: started_notify.clone(),
+            });
+            let cancel_hooks = NodeHooks::new(cancel_hook);
+            let cancel_driver = cancel_hooks
+                .driver(
+                    NodeReadyCtx {
+                        start_kind: StartKind::FirstStart,
+                        birth,
+                        authority: Authority::Accepted(accepting),
+                        client,
+                        topology_view,
+                        cancel: cancel.clone(),
+                        rafka_time,
+                        member_cert: None,
+                        attempt: 0,
+                        inherited: false,
+                    },
+                    Events::new(DigestView::default(), Addressed::new()),
+                    tracing::Span::none(),
+                )
+                .expect("driver");
+            let cancel_clone = cancel.clone();
+            tokio::spawn(async move {
+                started_notify.notified().await;
+                cancel_clone.cancel();
+            });
+            let cancelled_step = cancel_driver.attempt().await;
+            assert!(matches!(cancelled_step, Step::Cancelled));
+            assert_eq!(cancel_driver.handle().state(), PreNodeReadyState::Cancelled);
+
+            ep.close().await;
+        });
+
+        let spans = capture.spans().expect("captured spans");
+        let _ = std::fs::remove_dir_all(&dir);
+        let attempts: Vec<&serde_json::Value> = spans
+            .iter()
+            .filter(|s| s["name"] == "rdm.mesh.node.update.via-pre-node-ready-attempt")
+            .collect();
+        assert!(
+            attempts.iter().any(|s| {
+                s["attributes"]["outcome"] == "blocked"
+                    && s["attributes"]["retry_on"] == "primary-addressed"
+            }),
+            "expected blocked attempt span: {attempts:?}"
+        );
+        assert!(
+            attempts
+                .iter()
+                .any(|s| s["attributes"]["outcome"] == "ok"),
+            "expected ok attempt span: {attempts:?}"
+        );
+        assert!(
+            attempts
+                .iter()
+                .any(|s| s["attributes"]["outcome"] == "cancelled"),
+            "expected cancelled attempt span: {attempts:?}"
+        );
+        assert!(
+            spans.iter().any(|s| {
+                s["name"] == "rdm.mesh.node.reject.via-pre-node-ready-blocked"
+                    && s["attributes"]["cleared_by"] == "primary-addressed"
+            }),
+            "expected via-pre-node-ready-blocked span with cleared_by=primary-addressed"
+        );
+    }
 }
