@@ -266,6 +266,9 @@ impl rdm_admin::deployment::pipeline::LifecycleEvents for StopLifecycleRecorder 
 /// "5. The mesh-primary takes the matching stopped frame, or the node's declaration of `Stopped`
 /// naming the stop's operation, whichever reaches it first, and publishes NodeStopped with that
 /// operation in its in-flight overlay, once."
+/// CONTRACT: `docs/architecture/lifecycles/node-stop.md:116-117, 121-122`
+/// "Failures and stream certainty follow the caller execution contract."
+/// "Trace propagation, step spans and correlation follow the runtime spans."
 #[test]
 fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
@@ -524,6 +527,35 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
             .iter()
             .any(|s| s.name == "rdm.node_admin.node.update.via-completion-awaited"),
         "expected rdm.node_admin.node.update.via-completion-awaited span"
+    );
+    let step_spans: Vec<std::collections::BTreeMap<String, String>> = spans
+        .iter()
+        .filter(|s| s.name == "rdm.node_admin.deployment.update.via-step")
+        .map(|s| s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect())
+        .collect();
+    assert!(
+        step_spans.iter().any(|s| {
+            s.get("step").map(String::as_str) == Some(DeleteStep::AwaitNodeLeft.name())
+                && s.get("attempt").map(String::as_str) == Some("1")
+                && s.get("outcome").map(String::as_str) == Some("failed")
+        }),
+        "expected failed AwaitNodeLeft span on attempt 1: {step_spans:?}"
+    );
+    assert!(
+        step_spans.iter().any(|s| {
+            s.get("step").map(String::as_str) == Some(DeleteStep::StopNode.name())
+                && s.get("attempt").map(String::as_str) == Some("5")
+                && s.get("outcome").map(String::as_str) == Some("reused")
+        }),
+        "expected reused StopNode span on attempt 5: {step_spans:?}"
+    );
+    assert!(
+        step_spans.iter().any(|s| {
+            s.get("step").map(String::as_str) == Some(DeleteStep::Complete.name())
+                && s.get("attempt").map(String::as_str) == Some("5")
+                && s.get("outcome").map(String::as_str) == Some("complete")
+        }),
+        "expected complete Complete span on attempt 5: {step_spans:?}"
     );
     crate::assert_own_story(spans.iter().map(|s| s.name.as_ref()));
 }
