@@ -31,3 +31,28 @@ Each entry gives the question, the decision, why (a page, a ruling or a standard
   the run planned after it under load 115, so attempt 1 completed it.
 - **Page:** states.md:169 names when such a Build completes (the fabric ready again from its own change), not at which attempt.
 - **Decided:** the cell accepts 1 or 2 attempts for a run-then-change Build, never more (cd5f1c880). No product change.
+
+## D3 (for Luke): a new mesh-primary checks its mesh against a Build its own log is behind on
+
+- **Red:** the soaks at 9244b8cf8, `i143-2787-soak-process` (`soak_driver_reconciles_fixed_seed_thirty_minute_process_run`,
+  seed 1432787): `build-completes` at round 158, Build `7sh0ze59k2qf` (grow a broker in mesh1) not complete in 120 s.
+  The same job was red at 119663355, fb7a22871, 14034530d and ef431a420 and green at 0b7eda3c2, 3cf384224, fff20f872
+  (the rdm#80 family).
+- **Spans:** the fabric-primary `mesh1.admin.2` held the fabric pending for the whole 120 s on one blocker,
+  `mesh2(report-of-another-birth)` (`checklist.rs:96`). mesh2's primary had moved to `mesh2.admin.1` 2.6 s before the
+  Build; its checklist was held on `mesh2.compute.1(no-birth-heard)` throughout (`via-checklist-held`, 13.7 s and on),
+  so it never declared mesh2 Ready. `mesh2.compute.1` is not a path of the fabric-primary's current Build (the grow
+  planned `mesh1.broker.4` alone); the last Build `mesh2.admin.1` names is `1q53q67kp4v1`, older than the fabric-primary's
+  last twelve accepted Builds.
+- **Mechanism:** a mesh-primary counts its mesh's planned births from its own Build log (`boot.rs:3106`,
+  `adapter.current()`). An admin's Build log is filled at its start by the Build-floor fetch (`fetch_build.rs`:
+  `FetchCurrentBuild` / `FetchBuildFacts`, only while not Ready) and afterwards by the Build facts it hears; only the
+  fabric-primary reads the Build records (cc35bb119). A Ready admin that later takes its mesh's primary with a log
+  behind the fabric-primary's counts a stale planned set, and no step repairs it.
+- **No page states** how a mesh-primary that takes the role learns the current Build's planned births; fabric-primary.md
+  §7 covers the Mesh lifecycle state the successor hydrates, not the Build.
+- **Arms for Luke:** (a) a node-admin that takes its mesh's primary runs the Build-floor fetch once at the take
+  (`FetchCurrentBuild` from the fabric-primary), as a start does, before its checklist counts; (b) the fabric-primary
+  hands the planned paths of each mesh down with the mesh state it applies to a new mesh-primary; (x) other.
+  Lead recommendation: (a), the start's own mechanism reused at the one other moment an admin's Build view starts to
+  matter, no new carrier.

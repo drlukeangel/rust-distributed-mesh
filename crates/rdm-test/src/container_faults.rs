@@ -357,9 +357,13 @@ impl Silenced {
         Ok(self.rules()?.values().all(|r| r.contains(&format!("-A INPUT -j {SILENCE_CHAIN}")) && r.contains(&format!("-A OUTPUT -j {SILENCE_CHAIN}"))))
     }
 
-    /// Restore every member's packet filter. Every failure is named.
+    /// Restore every member's packet filter. Every failure is named, except a member whose exact container
+    /// the daemon no longer runs: its filter ended with it (node recovery replaced a silenced birth with a
+    /// new one, in a new container outside the silence, as the process provider's re-created node binds new
+    /// ports outside its cut).
     pub fn lift(&self) -> Result<(), String> {
-        let failed: Vec<String> = on_members(&self.members, |m| self.command(m, "lift").err().map(|e| format!("{}: {e}", m.node))).into_iter().flatten().collect();
+        let gone = |m: &Member| docker(&["inspect", "-f", "{{.State.Running}}", &m.id]).map_or(true, |running| running.trim() != "true");
+        let failed: Vec<String> = on_members(&self.members, |m| self.command(m, "lift").err().filter(|_| !gone(m)).map(|e| format!("{}: {e}", m.node))).into_iter().flatten().collect();
         if failed.is_empty() {
             Ok(())
         } else {

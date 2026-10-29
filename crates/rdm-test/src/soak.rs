@@ -1992,9 +1992,16 @@ impl Driver {
         };
         for (name, node_mesh, _) in &at_cut {
             let own: Vec<&str> = nodes.iter().filter(|n| s(&n["mesh"]) == *node_mesh && n["status"] == "ready").filter_map(|n| n["name"].as_str()).collect();
-            let Some(theirs) = views_at(&self.estate, &Admin { name: name.clone() }).await else {
-                return Err(broken("cut-leaves-own-mesh-ready", format!("{name} does not answer node.get during the cut")));
+            // What the admin holds itself (query.md §2: node.topology.get, answered from its own topology),
+            // never the view read, which a cut-off mesh-primary carries up to the fabric-primary and cannot
+            // answer during the cut (query.md §1).
+            let theirs = match name.parse::<PathName>() {
+                Ok(path) => self.estate.held_values_at(&path).await,
+                Err(_) => Vec::new(),
             };
+            if theirs.is_empty() {
+                return Err(broken("cut-leaves-own-mesh-ready", format!("{name} does not answer node.topology.get during the cut")));
+            }
             let missing: Vec<&&str> = own.iter().filter(|p| !theirs.iter().any(|n| n["name"] == **p && n["status"] == "ready")).collect();
             if !missing.is_empty() {
                 return Err(broken("cut-leaves-own-mesh-ready", format!("{name} no longer holds its own mesh members ready during the cut: {missing:?}")));
