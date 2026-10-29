@@ -941,7 +941,11 @@ impl StatusView {
         match f.data() {
             Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms, .. } => {
                 let mut held = self.meshes.lock().unwrap();
-                if !crate::receive_order::admit_status_context("mesh-status", mesh, held.get(mesh).and_then(|h| h.context.as_ref()), f.context(), held.get(mesh).map(|h| h.status.as_str()).unwrap_or(""), status).unwrap_or_else(|| crate::receive_order::admit_status("mesh-status", mesh, held.get(mesh).map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms, h.status.as_str())), status, publisher, *changed_at_rafka_ms)) {
+                // The same fact under its author's context replaces one held without any (a hand-off's
+                // state or a self-applied one, held before its publisher sent it; Q272): what this node
+                // holds and serves from then on is the authored frame.
+                let authors_held = context.is_some() && held.get(mesh).is_some_and(|h| h.context.is_none() && h.status == *status && h.changed_at_rafka_ms == *changed_at_rafka_ms);
+                if !authors_held && !crate::receive_order::admit_status_context("mesh-status", mesh, held.get(mesh).and_then(|h| h.context.as_ref()), f.context(), held.get(mesh).map(|h| h.status.as_str()).unwrap_or(""), status).unwrap_or_else(|| crate::receive_order::admit_status("mesh-status", mesh, held.get(mesh).map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms, h.status.as_str())), status, publisher, *changed_at_rafka_ms)) {
                     return false;
                 }
                 held.insert(mesh.clone(), HeldStatus { value: MeshStatus { status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms }, context: context.cloned() });
@@ -5975,6 +5979,28 @@ mod tests {
         assert_eq!(first.context(), repeated.context(), "a reinforcement is the original event even when the held committed row advanced");
         let changed = publisher.observe("ready", None, true, now + super::STATUS_EVERY, 101).unwrap();
         assert_eq!(changed.context().unwrap().primary_revision(), Some(2), "a new fact takes the current held committed revision");
+    }
+
+    /// CONTRACT (Q272): a mesh status held without its author's context (a hand-off's state or a
+    /// self-applied one, held before the publisher sends it) is replaced by the same fact under that
+    /// context, so the node holds and serves the authored frame. Must NOT happen: the publisher's
+    /// authored send of the fact refused as a duplicate, leaving a held frame no join answer encodes
+    /// (fabric_takeover's adoption launch at lane 3: "its answer does not encode").
+    #[test]
+    fn the_same_mesh_status_under_its_authors_context_replaces_one_held_without() {
+        let fabric = rdm_core::FabricId::parse("fab000000001").unwrap();
+        let view = super::StatusView::default();
+        let plain = super::Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 40 };
+        assert!(view.take(&plain, &fabric));
+        let mut publisher = super::StatusPublisher::new("mesh1.admin.1", super::StatusScope::Mesh("mesh1".into()));
+        publisher.set_role(true);
+        publisher.author = Some((test_author(), 1));
+        let heard = super::StatusFact { status: "ready".into(), changed_at_rafka_ms: 40 };
+        let sent = publisher.observe("ready", Some(heard), true, std::time::Instant::now(), 50).expect("the held state goes out once the checklist completes");
+        assert!(sent.context().is_some(), "the publisher's send is authored");
+        assert!(view.take(&sent, &fabric), "the authored frame of the same fact replaces the plain one");
+        assert!(!view.take(&sent, &fabric), "the same authored frame again is a duplicate");
+        assert!(view.held_frames(&fabric, "mesh1.admin.1").iter().all(|f| f.context().is_some()), "every frame the node serves carries its author's context");
     }
 
     use super::*;
