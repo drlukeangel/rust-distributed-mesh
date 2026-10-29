@@ -1433,4 +1433,112 @@ mod tests {
             _ => panic!("an attempt with its verdict is read, never run again"),
         }
     }
+
+    /// CONTRACT: docs/architecture/build.md:289 "the mesh-primary of the member's mesh opens the next attempt of B123 on its mesh's rows, claims and runs it itself (R-BI7); the Build stays completed, and the fabric-primary reads the attempt's verdict from the Build journal"
+    #[tokio::test]
+    async fn mesh_self_heal_attempt_runs_in_mesh_scope_while_build_stays_completed() {
+        use crate::accepted::AttemptAction;
+        use crate::build_state::AttemptReason;
+
+        let (door, memory) = door("mesh2.admin.1").await;
+        accepted(&memory).await;
+        memory
+            .claim_attempt(&BuildAttemptClaim {
+                claimant: Some("mesh1.admin.1".into()),
+                mesh: None,
+                build_id: id(),
+                attempt: 1,
+                executor: "mesh1.admin.1".into(),
+            })
+            .await
+            .unwrap();
+        memory
+            .append_attempt_receipt(&BuildAttemptReceipt {
+                mesh: None,
+                build_id: id(),
+                attempt: 1,
+                outcome: AttemptOutcome::Converged,
+            })
+            .await
+            .unwrap();
+
+        let victim_path: crate::model::PathName = "mesh2.rpc.1".parse().unwrap();
+        let victim_id = crate::model::NodeId::mint();
+        let victim_inc = crate::model::IncarnationId::mint();
+
+        // Mesh-primary opens and claims attempt 1 of mesh2 on the completed Build.
+        memory
+            .open_attempt(&AttemptOpened {
+                mesh: Some("mesh2".into()),
+                build_id: id(),
+                attempt: 1,
+                reason: AttemptReason::Recovery,
+                action: Some(AttemptAction::Recover {
+                    path: victim_path.clone(),
+                    node_id: victim_id,
+                    from_incarnation: victim_inc,
+                    backbone: false,
+                }),
+                opened_by: "mesh2.admin.1".into(),
+                opened_at_ms: 100,
+                context: None,
+            })
+            .await
+            .unwrap();
+        memory
+            .claim_attempt(&BuildAttemptClaim {
+                claimant: Some("mesh2.admin.1".into()),
+                mesh: Some("mesh2".into()),
+                build_id: id(),
+                attempt: 1,
+                executor: "mesh2.admin.1".into(),
+            })
+            .await
+            .unwrap();
+
+        let while_running = memory.read_build(&id()).await.unwrap();
+        assert_eq!(
+            while_running.state,
+             crate::build_state::BuildState::Complete,
+            "the Build stays completed while the mesh recovery attempt is running"
+        );
+        assert_eq!(while_running.completed_at, Some(1));
+        assert_eq!(
+            while_running.lanes.get("mesh2").map(|l| (l.state, l.attempt)),
+            Some((crate::build_state::BuildState::Running, 1))
+        );
+
+        let ctx = CallContext::default();
+        let Attached::Live {
+            disposition,
+            mut reader,
+            ..
+        } = door
+            .attempt_run_in(
+                Some("mesh2"),
+                &id(),
+                1,
+                "mesh2.admin.1",
+                &ctx,
+                &[],
+                &RunPlan::default(),
+            )
+            .await
+        else {
+            panic!("mesh2.admin.1 starts its claimed mesh recovery attempt");
+        };
+        assert_eq!(disposition, Disposition::Started);
+        let mut last = None;
+        while let Some(f) = reader.next().await {
+            last = Some(f);
+        }
+        assert!(matches!(last, Some(BuildReply::Complete { attempt: 1, .. })));
+
+        let after = memory.read_build(&id()).await.unwrap();
+        assert_eq!(after.state, crate::build_state::BuildState::Complete);
+        assert_eq!(
+            after.lanes.get("mesh2").map(|l| (l.state, l.attempt)),
+            Some((crate::build_state::BuildState::Complete, 1))
+        );
+    }
 }

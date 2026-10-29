@@ -57,6 +57,8 @@ mod await_attempt;
 mod build_op;
 #[path = "build/executables.rs"]
 mod executables;
+#[path = "build/mesh_self_heal.rs"]
+mod mesh_self_heal;
 #[path = "fabric/issuance.rs"]
 mod issuance;
 #[path = "fabric/cert_renewal.rs"]
