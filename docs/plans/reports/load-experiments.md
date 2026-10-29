@@ -163,3 +163,43 @@ build, defaults (gossip 2 s, backbone 2 s, staleness 30 s).
 - M2's 12.9 creates/s and M1's 1.3 s are on a quieter box than E1 (load 6.7 against 11.5).
 
 **Next.** M6 (Node RPC) at L1, then L2 with M7 and the idle profile.
+
+---
+
+## E5: Node RPC against one node-admin, short (2026-10-28)
+
+**What.** L1 with evidence off, at `163ad3911` plus M6's short run: 32 callers in the test process each sending
+`node.topology.get` of its own mesh to `mesh2.admin.2` (a non-primary node-admin, the others idle) directly,
+back to back, for 10 s. Completions per second, latency p50/p99/max over every completed call, and the
+calls that ended without a reply, counted apart.
+
+**Why.** Load-testing.md step 2: M6 first and short, to read its order of magnitude against the 2,000/s
+target. The only Node RPC load cell before it (`crates/rdm-transport/tests/flood.rs`) asks 200 round trips in
+10 s, about 20/s, which said nothing about the ceiling.
+
+The op is the node's own topology read (query.md §2), not Status: every Status request declares a state,
+applies one, or asks a birth to reassert itself (`ProbeNodeState`, the tickle), so a Status load at
+thousands a second would measure those effects on the fabric, not the RPC. The read is served from what
+the node holds and changes nothing.
+
+**Conditions.** Shared box (lanes 2, 5 and 7 busy). Release build; one client process carrying all 32
+callers.
+
+**Outcome.**
+
+| measure | result | target |
+|---|---|---|
+| M6 completions, 32 callers, 10 s | 7,674 /s | 2,000 /s (load-testing.md, on the cheapest direct op) |
+| M6 latency | p50 4 ms, p99 7 ms, max 9 ms | p99 under 50 ms |
+| M6 calls ended without a reply | 0 | reported |
+| M1 / M5 / M8 | 1.4 s; max 245 / 85 ms; admin 0.041 cores | as E2 |
+
+**Read.**
+- One node-admin answers nearly four times the target's rate with a p99 seven times under its bound, and
+  drops nothing. Node RPC is not the near ceiling at L1; flood.rs's 20/s was its own pass bound.
+- The client may be the limit: 32 callers in one process share one endpoint. A run at 64 and 128 callers,
+  and from two client processes, shows whether the 7,674 is the node's or the client's.
+- Every reply is the mesh's full topology (10 members); the rate per reply byte is a later read if M6 at
+  L2 moves.
+
+**Next.** M6 at 64 and 128 callers and for 60 s (the measure's window), then M3 and M4 at L1.

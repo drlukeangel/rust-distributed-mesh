@@ -173,6 +173,42 @@ fn role_of(dir: &std::path::Path) -> &'static str {
     }
 }
 
+/// M6: `concurrency` callers each sending `node.topology.get` of `node`'s own mesh to `node` directly,
+/// back to back, for `window`: every completed call's latency (ms), the calls that ended without a reply
+/// (never counted as completions), and the seconds measured. The read is the node's own topology (query.md
+/// §2), served from what it holds: a Status request declares, applies or asks a birth to reassert
+/// itself, so a Status load would measure those effects, not the RPC.
+async fn rpc_load(estate: &Estate, node: &rdm_core::PathName, concurrency: usize, window: Duration) -> (Vec<f64>, u64, f64) {
+    let carrier = estate.peers().await.carrier_at(node.clone());
+    let start = Instant::now();
+    let end = start + window;
+    let callers: Vec<_> = (0..concurrency)
+        .map(|_| {
+            let (carrier, node) = (carrier.clone(), node.clone());
+            tokio::spawn(async move {
+                let rpc = rdm_client::NodeRpc::new(carrier.client());
+                let (target, opts) = (rdm_transport::NodeTarget::CurrentPath(node.clone()), rdm_transport::CallOptions::default());
+                let (mut done, mut errors) = (Vec::new(), 0u64);
+                while Instant::now() < end {
+                    let t = Instant::now();
+                    match rpc.topology_get(&target, Some(node.mesh.clone()), None, &opts).await {
+                        Ok(_) => done.push(t.elapsed().as_secs_f64() * 1000.0),
+                        Err(_) => errors += 1,
+                    }
+                }
+                (done, errors)
+            })
+        })
+        .collect();
+    let (mut latencies, mut errors) = (Vec::new(), 0);
+    for c in callers {
+        let (done, e) = c.await.unwrap();
+        latencies.extend(done);
+        errors += e;
+    }
+    (latencies, errors, start.elapsed().as_secs_f64())
+}
+
 /// M7's steady window (load-testing.md: 5 minutes at steady state).
 const STEADY: Duration = Duration::from_secs(300);
 
@@ -278,6 +314,16 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
     for (role, cores, gb) in idle_cost(&estate, Duration::from_secs(20)).await {
         rows.value("M8", &format!("{role} idle cpu"), "cores", cores, Some(0.10));
         rows.value("M8", &format!("{role} idle rss"), "GB", gb, Some(0.5));
+    }
+
+    // M6 (short, load-testing.md Steps 2): Node RPC against one idle node-admin, evidence off only.
+    if !evidence {
+        let at: rdm_core::PathName = format!("{}.admin.{}", meshes.last().unwrap(), p.admins).parse().unwrap();
+        let (latencies, errors, secs) = rpc_load(&estate, &at, 32, Duration::from_secs(10)).await;
+        let rate = latencies.len() as f64 / secs;
+        rows.value("M6", &format!("topology.get at {at}, 32 callers, completions"), "/s", rate, None);
+        rows.value("M6", &format!("topology.get at {at}, 32 callers, errors"), "count", errors as f64, None);
+        rows.time("M6", &format!("topology.get at {at}, 32 callers"), latencies, None, None);
     }
 
     // M7: gossip cost at steady state, read from the frames each node takes in (evidence on only).

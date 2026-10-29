@@ -80,7 +80,7 @@ slowest trace is read as a flame (Steps, 3), never a target moved to pass. For t
 | M4 recovery, the kill to the stale mark | under the staleness floor + 1 gossip interval (32 s) | same | same | same |
 | M4 recovery, the stale mark to Ready | under half a staleness floor + 10 s (25 s) | same | same | same |
 | M5 Build latency | under 5 s for one node | same | same | same |
-| M6 Node RPC | at least 2,000 completions/s against one node-admin at p99 under 50 ms (Status, direct) | same | same | same |
+| M6 Node RPC | at least 2,000 completions/s against one node-admin at p99 under 50 ms (the node's own topology read, direct: every Status request declares, applies or asks a birth to reassert itself, so a Status load measures its effects; E5) | same | same | same |
 | M7 gossip cost | under 50 KB/s per node at steady state | same | same | same |
 | M8 node-admin cost | idle under 0.10 cores and 0.5 GB (the alert thresholds in CLAUDE.md's env table) | same | same | same |
 | M10 soak | the growth limits above, at the largest passing profile | | | |
