@@ -657,8 +657,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 root,
                 STATUS_WIRE,
                 &[
-                    "fn requests_match_the_frozen_thirty_six_variant_wire_schema",
-                    "fn replies_match_the_frozen_sixty_variant_wire_schema",
+                    "fn requests_match_the_frozen_thirty_seven_variant_wire_schema",
+                    "fn replies_match_the_frozen_sixty_three_variant_wire_schema",
                     "fn nested_enum_discriminants_and_fields_are_frozen_too",
                     "Status::REQUEST_VARIANTS",
                     "Status::REPLY_VARIANTS",
