@@ -91,7 +91,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (63 names)
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/boot.rs` | 1635 | fn `start_booted` | `ENV_EXECUTABLE_DIRS`, argument to `.insert` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 154 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, argument to `get` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/admin/records.rs` | 156 | fn `AdminConfig::from_env` | `ENV_EXECUTABLE_DIRS`, in `format!` |
-| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/control_plane.rs` | 1365 | fn `named_executable_refusal` | `ENV_EXECUTABLE_DIRS`, in `format!` |
+| `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/control_plane.rs` | 1370 | fn `named_executable_refusal` | `ENV_EXECUTABLE_DIRS`, in `format!` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 283 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, argument to `.get` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 285 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, in `format!` |
 | `RDM_EXECUTABLE_DIRS` | `crates/rdm-admin/src/deployment/container.rs` | 286 | fn `launch_disk` | `ENV_EXECUTABLE_DIRS`, in `format!` |
