@@ -2497,13 +2497,17 @@ pub(crate) async fn intent_frames(builds: &dyn BuildStateAdapter, id: &BuildId, 
 }
 
 /// The facts of Build `id` an attempt run carries ([`intent_frames`]): every fact of the Build but its
-/// forgetting, with only the step receipts the executor reuses: its own operations' (an operation run
-/// again reuses what its completed steps decided) and those of the steps a run writes under one of them
-/// (a seat move's `node.primary.update:<build>:<attempt>:<operation>`). Never every receipt the Build
-/// ever wrote, which grows with every attempt the Build opens until the request outgrows its frame.
+/// forgetting, with only the step receipts the executor reads: those of every operation on a path the
+/// run acts on (an operation run again reuses what its completed steps decided, and a replacement's
+/// create reads its delete's receipts at the same path) and those of the steps a run writes under one
+/// of them (a seat move's `node.primary.update:<build>:<attempt>:<operation>`). Never every receipt the
+/// Build ever wrote, which grows with every attempt the Build opens until the request outgrows its frame.
 fn intent_facts(facts: Vec<crate::build_state::BuildFact>, id: &BuildId, run: &[BuildOperation]) -> Vec<crate::build_state::BuildFact> {
     let keys: Vec<String> = run.iter().map(BuildOperation::key).collect();
-    let of_this_run = |operation: &str| keys.iter().any(|k| operation == k || operation.ends_with(&format!(":{k}")));
+    // An operation key is `<op>:<target>`; the target is the path (or `<path>@<incarnation>`) it acts on.
+    let target = |key: &str| key.split_once(':').map(|(_, t)| t.to_string()).unwrap_or_default();
+    let targets: Vec<String> = keys.iter().map(|k| target(k)).filter(|t| !t.is_empty()).collect();
+    let of_this_run = |operation: &str| keys.iter().any(|k| operation.ends_with(&format!(":{k}"))) || targets.iter().any(|t| target(operation) == *t);
     facts
         .into_iter()
         .filter(|f| f.build_id() == id && !matches!(f, crate::build_state::BuildFact::Forget { .. }))
@@ -2585,7 +2589,7 @@ mod tests {
     /// and ended, and the step receipts of the operations this run carries; red in the soaks at 9244b8cf8,
     /// routing: attempt 71 of a formation Build with 70 attempts of receipts refused `Malformed(TooLarge)`
     /// past the Build op's 256 KiB request frame, the restart never dispatched): the receipts of the run's
-    /// operations and of the steps written under them are carried, the Build's other receipts are not, and
+    /// operations' paths and of the steps written under them are carried, the Build's other receipts are not, and
     /// every attempt fact is. Must NOT happen: the intent growing with every receipt the Build ever wrote.
     #[test]
     fn an_attempt_run_carries_the_receipts_of_its_own_operations_only() {
@@ -2599,13 +2603,14 @@ mod tests {
             facts.push(step(&id, attempt, "node.start:mesh1.rpc.1"));
             facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }));
         }
+        facts.push(step(&id, 69, "node.delete:mesh2.broker.3"));
         facts.push(step(&id, 71, "node.stop:mesh2.broker.3"));
         facts.push(step(&id, 71, &format!("node.primary.update:{id}:71:node.stop:mesh2.broker.3")));
         facts.push(step(&other, 1, "node.stop:mesh2.broker.3"));
         let run = vec![BuildOperation::StopNode { node: "mesh2.broker.3".parse().unwrap(), node_id: rdm_core::NodeId::mint(), from_incarnation: rdm_core::IncarnationId::mint() }];
         let carried = intent_facts(facts, &id, &run);
         let steps: Vec<String> = carried.iter().filter_map(|f| match f { BuildFact::Step(s) => Some(s.operation.clone()), _ => None }).collect();
-        assert_eq!(steps, vec!["node.stop:mesh2.broker.3".to_string(), format!("node.primary.update:{id}:71:node.stop:mesh2.broker.3")], "only this run's receipts, its seat move's included, and none of another Build's");
+        assert_eq!(steps, vec!["node.delete:mesh2.broker.3".to_string(), "node.stop:mesh2.broker.3".to_string(), format!("node.primary.update:{id}:71:node.stop:mesh2.broker.3")], "the receipts of every operation at the run's path, its seat move's included, and none of another path's or another Build's");
         assert_eq!(carried.iter().filter(|f| matches!(f, BuildFact::Attempt(_))).count(), 70, "every attempt fact is carried");
     }
 }
