@@ -900,25 +900,28 @@ impl NodeRpcServer {
                 d.owe_response_in(&id, peer, parent.clone());
                 let (acceptance, accepted) = Acceptance::new();
                 let gate = Accepting::new(d.clone(), id.clone());
-                // An acceptance the handler declares (or a read-only request's, at dispatch) acks the
-                // request at once; otherwise its first response frame does.
-                {
+                // An acceptance the handler declares acks the request at once; otherwise its first
+                // response frame does. A read-only request is accepted at dispatch: its ack is written
+                // here, before its handler runs, so it always precedes the response on the stream (a
+                // fast reply finishing the stream before a spawned ack is written left the ack on a
+                // finished direction: rdm#216, `via-ack-not-written` of a request).
+                let read_only = h.read_only(&payload);
+                if read_only {
+                    acceptance.accepted();
+                    if gate.explicit() {
+                        gate.d.write_ack(&out, &header, AckOf::Request).await;
+                    }
+                } else {
                     let (gate, out, header, mut accepted) = (gate.clone(), out.clone(), header.clone(), accepted);
-                    let read_only = h.read_only(&payload);
                     let parent = parent.clone();
                     tokio::spawn(async move {
                         if accepted.wait_for(|a| *a).await.is_ok() && gate.explicit() {
-                            if !read_only {
-                                let span = tracing::info_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %header.delivery_id(), acceptance = "recorded");
-                                crate::delivery::parent_on(&span, parent.as_ref());
-                                span.in_scope(|| tracing::info!("the handler recorded the accepted work: the request is acked"));
-                            }
+                            let span = tracing::info_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %header.delivery_id(), acceptance = "recorded");
+                            crate::delivery::parent_on(&span, parent.as_ref());
+                            span.in_scope(|| tracing::info!("the handler recorded the accepted work: the request is acked"));
                             gate.d.write_ack(&out, &header, AckOf::Request).await;
                         }
                     });
-                    if read_only {
-                        acceptance.accepted();
-                    }
                 }
                 let ctx = PeerContext { endpoint_id: peer, context, delivery: Some(CarriedIdentity { id: id.clone(), forget_below }), acceptance };
                 let acks = tokio::spawn(Self::read_acks(d.clone(), id.clone(), acks));
