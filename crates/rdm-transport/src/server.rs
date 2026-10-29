@@ -938,7 +938,14 @@ impl NodeRpcServer {
                     // The stream's end is a step of its serve: its terminal (or refusal) is written and
                     // named under the serve span, which ends once it is written.
                     stream_out.finish(joined, &stats).instrument(serve).await;
+                    // The stream held past its terminal until the caller's acks end the request direction.
+                    let leg = tracing::info_span!("rdm.node_rpc.delivery.update.via-reply-held", delivery_id = %id, peer = %peer, held_ms = tracing::field::Empty, ended = tracing::field::Empty);
+                    crate::delivery::parent_on(&leg, parent.as_ref());
+                    let held_from = std::time::Instant::now();
                     let ended = acks.await.unwrap_or_else(|e| format!("{e}"));
+                    leg.record("held_ms", held_from.elapsed().as_millis() as u64).record("ended", ended.as_str());
+                    leg.in_scope(|| tracing::info!("the stream's terminal is written and the request direction ended: the stream is released"));
+                    drop(leg);
                     if !d.response_settled(&id) {
                         d.push(&id, None, &format!("the stream ended with frames unacked; its request direction {ended}"));
                     }
@@ -1001,6 +1008,12 @@ impl NodeRpcServer {
                             }
                             return;
                         }
+                        // The reply leg, past the serve span's end: the reply's write and the stream held
+                        // until the caller's ack of it ends the request direction (its credit to the
+                        // caller's next stream open is only then returned).
+                        let leg = tracing::info_span!("rdm.node_rpc.delivery.update.via-reply-held", delivery_id = %id, peer = %peer, write_ms = tracing::field::Empty, written = tracing::field::Empty, held_ms = tracing::field::Empty, ended = tracing::field::Empty);
+                        crate::delivery::parent_on(&leg, parent.as_ref());
+                        let reply_from = std::time::Instant::now();
                         gate.implicit();
                         // A caller that already finished the invocation is owed no reply.
                         let written = match d.owe_frame(&id, 0, reply, true) {
@@ -1008,6 +1021,10 @@ impl NodeRpcServer {
                             None => crate::delivery::Written::Ok,
                         };
                         out.finish().await;
+                        // The reply leg, past the serve span's end: the stream stays held until the
+                        // caller's ack of the reply ends the request direction.
+                        leg.record("write_ms", reply_from.elapsed().as_millis() as u64).record("written", tracing::field::debug(&written));
+                        let held_from = std::time::Instant::now();
                         // Settled when the caller acks the reply; when its direction ends first, the
                         // reply is resent on a new stream. A caller that dropped the invocation (it
                         // stopped the stream with code 0) is owed nothing.
@@ -1015,6 +1032,9 @@ impl NodeRpcServer {
                             d.drop_response(&id);
                         }
                         let ended = acks.await.unwrap_or_else(|e| format!("{e}"));
+                        leg.record("held_ms", held_from.elapsed().as_millis() as u64).record("ended", ended.as_str());
+                        leg.in_scope(|| tracing::info!("the reply is written and the request direction ended: the stream is released"));
+                        drop(leg);
                         if !d.response_settled(&id) {
                             d.push(&id, None, &format!("the reply's write {written:?}; the request direction {ended}"));
                         }

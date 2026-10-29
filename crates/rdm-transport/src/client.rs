@@ -636,9 +636,13 @@ impl NodeRpcClient {
             }
         };
         let opened_at = Instant::now();
+        // How many of this process's calls wait on a stream open with this one: a wait shared by many
+        // is the peer's stream credit (each stream is held until its reply is acked), one alone is not.
+        let opening = OpeningStream::enter();
         let (mut send, recv) = match timeout_at(send_deadline, conn.open_bi()).await {
             Ok(Ok(s)) => {
-                tracing::info!(step = "stream-opened", waited_ms = opened_at.elapsed().as_millis() as u64, "a request stream is open");
+                tracing::info!(step = "stream-opened", waited_ms = opened_at.elapsed().as_millis() as u64, waiting_with = opening.with, "a request stream is open");
+                drop(opening);
                 s
             }
             Ok(Err(e)) => {
@@ -1746,5 +1750,26 @@ mod tests {
         assert_eq!(answered.ack(), frame.ack(), "its ack names the carrier's frame");
         let ack = TransportHeader::Ack { sender: carrier, delivery_seq: 11 };
         assert_eq!(answering(ack.clone(), request), ack, "an ack is unchanged");
+    }
+}
+
+/// The calls of this process waiting on a stream open now (`stream-opened`'s `waiting_with`).
+static OPENING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One call's wait on a stream open: counted while it lasts.
+struct OpeningStream {
+    /// The calls waiting when this one began, itself included.
+    with: usize,
+}
+
+impl OpeningStream {
+    fn enter() -> Self {
+        Self { with: OPENING.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 }
+    }
+}
+
+impl Drop for OpeningStream {
+    fn drop(&mut self) {
+        OPENING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
