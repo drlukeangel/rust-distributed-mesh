@@ -464,6 +464,107 @@ async fn soak(estate: &Estate, length: Duration, rows: &mut Rows) {
     rows.value("M8", "largest process rss, worst soak window", "GB", max_of(&|w| w.rss.values().copied().fold(0.0_f64, f64::max)), Some(0.5));
 }
 
+/// One `throughput` probe from `from` to `to`: the open's and the streams' times and the bytes moved,
+/// with the connection's kind; `Err` naming why it measured nothing.
+fn measure(probe: &rdm_test::estate::ProbeHandle, entry: &rdm_core::MeshNode, from: &str, to: &str, streams: u32, bytes: u32) -> Result<(String, f64, f64, f64), String> {
+    let (streams, bytes) = (streams.to_string(), bytes.to_string());
+    let (t, d) = (format!("path:{from}"), format!("path:{to}"));
+    let out = probe.run(entry, &["throughput", "--target", &t, "--destination", &d, "--streams", &streams, "--bytes", &bytes, "--key", "x"])?;
+    if out["measured"] != true {
+        return Err(format!("{from} -> {to}: {out}"));
+    }
+    let f = |k: &str| out[k].as_f64().unwrap_or(f64::NAN);
+    Ok((s(&out["kind"]), f("open_us") / 1000.0, f("streams_us") / 1000.0, f("bytes")))
+}
+
+/// A route's throughput rows: the median and the slowest pair, MB/s both ways.
+fn throughput_rows(rows: &mut Rows, route: &str, rates: &mut [f64]) {
+    rates.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = rates.get(rates.len() / 2).copied().unwrap_or(f64::NAN);
+    let slowest = rates.first().copied().unwrap_or(f64::NAN);
+    rows.value("M9", &format!("{route} throughput per pair, median, both ways ({} pairs)", rates.len()), "MB/s", median, None);
+    rows.value("M9", &format!("{route} throughput per pair, slowest, both ways"), "MB/s", slowest, None);
+}
+
+/// M9 (load-testing.md: "connection open latency and bytes per second, Direct and Proxy, N sources x M
+/// destinations; 60 s; reported, no target"). Direct: in each mesh (an rpc node holds its own mesh's
+/// births, never another mesh's), rpc.1 and rpc.2 to rpc.6 and rpc.7, each source's destinations in turn,
+/// every source at once; each pair's measure is its open (a cold Direct dial) and its 4 streams of
+/// 512 KiB its throughput. Proxy: in each mesh, rpc.3 to rpc.5 through
+/// rpc.4: the carrier's own Direct edge first, then the source's Direct dials toward the destination
+/// blocked (connections.md §7: the first open finds the carrier), its open the cold discovery and its
+/// streams the tunnel's throughput.
+async fn data_plane(estate: &Estate, meshes: &[String], rpcs: u32, rows: &mut Rows) {
+    const STREAMS: u32 = 4;
+    const BYTES: u32 = 512 * 1024;
+    let (probe, entry) = (estate.probe_handle(), estate.entry_birth());
+    if rpcs < 7 {
+        println!("[load] M9: the data plane needs seven rpc nodes a mesh, this profile has {rpcs}: not measured");
+        return;
+    }
+    let mut tasks = Vec::new();
+    for m in meshes {
+        for src in [1, 2] {
+            let (probe, entry, src, dsts) = (probe.clone(), entry.clone(), format!("{m}.rpc.{src}"), [6, 7].map(|d| format!("{m}.rpc.{d}")));
+            tasks.push(tokio::task::spawn_blocking(move || dsts.iter().map(|d| measure(&probe, &entry, &src, d, STREAMS, BYTES)).collect::<Vec<_>>()));
+        }
+    }
+    let (mut opens, mut rates, mut failed, mut proxied) = (Vec::new(), Vec::new(), Vec::new(), 0usize);
+    for t in tasks {
+        for r in t.await.expect("a source's measures ran") {
+            match r {
+                Ok((kind, open_ms, streams_ms, bytes)) => {
+                    if kind != "direct" {
+                        proxied += 1;
+                    }
+                    opens.push(open_ms);
+                    rates.push(bytes / 1e6 / (streams_ms / 1000.0));
+                }
+                Err(why) => failed.push(why),
+            }
+        }
+    }
+    let pairs = meshes.len() * 4;
+    rows.time("M9", &format!("Direct open, {pairs} pairs"), opens, None, None);
+    throughput_rows(rows, "Direct", &mut rates);
+    rows.value("M9", "Direct pairs that measured nothing", "count", failed.len() as f64, None);
+    rows.value("M9", "Direct pairs that went through a carrier", "count", proxied as f64, None);
+    for why in failed.iter().take(3) {
+        println!("[load] M9: a Direct pair measured nothing: {why}");
+    }
+
+    let (mut opens, mut rates, mut failed) = (Vec::new(), Vec::new(), Vec::new());
+    for m in meshes {
+        let (src, carrier, dst) = (format!("{m}.rpc.3"), format!("{m}.rpc.4"), format!("{m}.rpc.5"));
+        let (probe, entry) = (probe.clone(), entry.clone());
+        let r = tokio::task::spawn_blocking(move || -> Result<(String, f64, f64, f64), String> {
+            measure(&probe, &entry, &carrier, &dst, 1, 1024)?;
+            let (t, d) = (format!("path:{src}"), format!("path:{dst}"));
+            let blocked = probe.run(&entry, &["block-direct", "--target", &t, "--destination", &d, "--key", "x"])?;
+            if blocked["direct_blocked"] != true {
+                return Err(format!("{src}'s Direct toward {dst} not blocked: {blocked}"));
+            }
+            measure(&probe, &entry, &src, &dst, STREAMS, BYTES)
+        })
+        .await
+        .expect("a mesh's proxy measure ran");
+        match r {
+            Ok((kind, open_ms, streams_ms, bytes)) if kind.starts_with("proxy") => {
+                opens.push(open_ms);
+                rates.push(bytes / 1e6 / (streams_ms / 1000.0));
+            }
+            Ok((kind, ..)) => failed.push(format!("{m}: the source opened {kind}, not through the carrier")),
+            Err(why) => failed.push(why),
+        }
+    }
+    rows.time("M9", &format!("Proxy open, cold discovery, {} meshes", meshes.len()), opens, None, None);
+    throughput_rows(rows, "Proxy", &mut rates);
+    rows.value("M9", "Proxy pairs that measured nothing", "count", failed.len() as f64, None);
+    for why in failed.iter().take(3) {
+        println!("[load] M9: a Proxy pair measured nothing: {why}");
+    }
+}
+
 /// L1 (load-testing.md Steps, 1 and 2): bring-up (M1), create rate (M2, reported), gossip cost (M7, 5 min
 /// steady), one-node Build latency (M5, 20 samples, a target on the max) and idle cost (M8), on the
 /// 2-mesh, 20-node profile.
@@ -506,6 +607,20 @@ async fn load_profile_l3_baseline() {
 #[ignore = "load: run by scripts/rdm-load.sh --no-evidence"]
 async fn load_profile_l3_no_evidence() {
     run_profile(&L3, "load_profile_l3_no_evidence", false).await;
+}
+
+/// M9 at L4 (load-testing.md M9, Q290 step 3): the data plane, Direct and Proxy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh L4 --data-plane"]
+async fn load_profile_l4_data_plane() {
+    run_as(&L4, "load_profile_l4_data_plane", true, Run::DataPlane).await;
+}
+
+/// M9 at L1, a short proof run of its reading.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh L1 --data-plane"]
+async fn load_profile_l1_data_plane() {
+    run_as(&L1, "load_profile_l1_data_plane", true, Run::DataPlane).await;
 }
 
 /// L4 again with 100 samples of M3 and M5, the target on p99 (load-testing.md "Samples": at the largest
@@ -564,6 +679,9 @@ enum Run {
     Samples,
     /// M10: M7 and M8 over this long at the largest passing profile, read for growth.
     Soak(Duration),
+    /// M9: the data plane, Direct and Proxy, N sources x M destinations; reported, no target. The
+    /// estate's rpc nodes register the testkit's app protocol (its knob written before they launch).
+    DataPlane,
 }
 
 impl Run {
@@ -583,6 +701,11 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     let t0 = Instant::now();
     let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", if evidence { &[] } else { &[("RDM_EVIDENCE_DIR", "")] }).await;
     let admin_up = t0.elapsed();
+    if run == Run::DataPlane {
+        // Every rpc node the Build launches registers the app protocol, a carrier included.
+        let root = estate.bootstrap_data_dir("mesh1").parent().expect("the estate root holds the data dirs").to_path_buf();
+        std::fs::write(root.join(rdm_test::node::APP_PROTOCOL_PROXY_KNOB), b"").unwrap();
+    }
     let mut stream = estate.submit_shape("fabric1", &shape).await;
     let _ = Estate::until_complete(&mut stream).await;
     let complete = t0.elapsed();
@@ -599,6 +722,13 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
         let spans = estate.spans_named(&["rdm.node_admin.deployment.update.via-step"]);
         let creates = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "Complete" && sp["attributes"]["outcome"] == "complete").count();
         rows.value("M2", "node creates per second", "creates/s", creates as f64 / bring_up.as_secs_f64(), None);
+    }
+
+    if run == Run::DataPlane {
+        data_plane(&estate, &meshes, p.rpcs, &mut rows).await;
+        estate.stop().await;
+        rows.finish();
+        return;
     }
 
     if let Run::Soak(length) = run {
