@@ -1061,15 +1061,9 @@ impl StatusView {
         self.meshes.lock().unwrap().get(mesh).and_then(|h| h.context.as_ref()?.primary_revision())
     }
 
-    /// The authored lifecycle `MeshStatus` entry held for `mesh` (`status` is a lifecycle word, not
-    /// `"degraded"`), if any.
-    fn mesh_held_lifecycle(&self, mesh: &str) -> Option<HeldStatus<MeshStatus>> {
-        self.meshes
-            .lock()
-            .unwrap()
-            .get(mesh)
-            .filter(|h| h.context.is_some() && mesh_state_rank(&h.status).is_some())
-            .cloned()
+    /// Every mesh status entry held, copied out under one short lock.
+    fn held_meshes_snapshot(&self) -> HashMap<String, HeldStatus<MeshStatus>> {
+        self.meshes.lock().unwrap().iter().map(|(m, h)| (m.clone(), h.clone())).collect()
     }
 
     /// Forget the status held for `mesh`: the mesh left, and nothing of it is kept or replayed.
@@ -1099,17 +1093,16 @@ impl StatusView {
     /// frame replaces it when sent.
     pub fn held_frames(&self, fabric: &FabricId, me: &str) -> Vec<Frame> {
         let by = |publisher: &str| (publisher != me).then(|| me.to_string());
-        let mut out: Vec<Frame> = self
-            .meshes
-            .lock()
-            .unwrap()
-            .iter()
+        let held_meshes = self.held_meshes_snapshot();
+        let held_fabric = self.fabric.lock().unwrap().clone();
+        let mut out: Vec<Frame> = held_meshes
+            .into_iter()
             .filter(|(_, h)| h.context.is_some())
-            .map(|(mesh, h)| Frame::MeshStatus { mesh: mesh.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), changed_at_rafka_ms: h.changed_at_rafka_ms }.with_context(h.context.clone()))
+            .map(|(mesh, h)| Frame::MeshStatus { mesh, status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), changed_at_rafka_ms: h.changed_at_rafka_ms }.with_context(h.context))
             .collect();
         out.sort_by_key(|f| if let Frame::MeshStatus { mesh, .. } = f.data() { mesh.clone() } else { String::new() });
-        if let Some(h) = self.fabric.lock().unwrap().as_ref() {
-            out.push(Frame::FabricStatus { fabric: fabric.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), changed_at_rafka_ms: h.changed_at_rafka_ms }.with_context(h.context.clone()));
+        if let Some(h) = held_fabric {
+            out.push(Frame::FabricStatus { fabric: fabric.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), changed_at_rafka_ms: h.changed_at_rafka_ms }.with_context(h.context));
         }
         out
     }
@@ -1122,31 +1115,38 @@ impl StatusView {
     /// fabric-primary.md §7). Once the successor's own frame replaces the marker in `self`, it serves
     /// the successor's frame.
     pub fn join_frames(&self, fabric: &FabricId, me: &str, peer_pubs: &HashMap<String, StatusPublisher>) -> Vec<Frame> {
-        let by = |publisher: &str| (publisher != me).then(|| me.to_string());
-        let mut out: Vec<Frame> = self
-            .meshes
-            .lock()
-            .unwrap()
+        let kept: HashMap<String, Frame> = peer_pubs
             .iter()
+            .filter_map(|(mesh, p)| Some((mesh.clone(), p.replaced_lifecycle_frame(me)?)))
+            .collect();
+        self.join_frames_with_kept(fabric, me, &kept)
+    }
+
+    fn join_frames_with_kept(&self, fabric: &FabricId, me: &str, kept: &HashMap<String, Frame>) -> Vec<Frame> {
+        let by = |publisher: &str| (publisher != me).then(|| me.to_string());
+        let held_meshes = self.held_meshes_snapshot();
+        let held_fabric = self.fabric.lock().unwrap().clone();
+        let mut out: Vec<Frame> = held_meshes
+            .into_iter()
             .filter(|(_, h)| h.context.is_some())
             .filter_map(|(mesh, h)| {
                 if h.status == "degraded" {
-                    return peer_pubs.get(mesh).and_then(|p| p.replaced_lifecycle_frame(me));
+                    return kept.get(&mesh).cloned();
                 }
                 Some(
                     Frame::MeshStatus {
-                        mesh: mesh.clone(),
+                        mesh,
                         status: h.status.clone(),
                         publisher: h.publisher.clone(),
                         forwarded_by: by(&h.publisher),
                         changed_at_rafka_ms: h.changed_at_rafka_ms,
                     }
-                    .with_context(h.context.clone()),
+                    .with_context(h.context),
                 )
             })
             .collect();
         out.sort_by_key(|f| if let Frame::MeshStatus { mesh, .. } = f.data() { mesh.clone() } else { String::new() });
-        if let Some(h) = self.fabric.lock().unwrap().as_ref() {
+        if let Some(h) = held_fabric {
             out.push(
                 Frame::FabricStatus {
                     fabric: fabric.clone(),
@@ -1155,7 +1155,7 @@ impl StatusView {
                     forwarded_by: by(&h.publisher),
                     changed_at_rafka_ms: h.changed_at_rafka_ms,
                 }
-                .with_context(h.context.clone()),
+                .with_context(h.context),
             );
         }
         out
@@ -3208,8 +3208,14 @@ impl TopologyView {
     /// replaced (or nothing when none was held), never the marker (R9: node-mesh-join.md:59,
     /// states.md:12, fabric-primary.md §7).
     pub fn status_frames(&self, me: &str) -> Vec<Frame> {
-        let peers = self.peer_mesh_status.lock().unwrap();
-        self.view.digest_view.statuses.join_frames(&self.fabric, me, &peers)
+        let kept: HashMap<String, Frame> = self
+            .peer_mesh_status
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(mesh, p)| Some((mesh.clone(), p.replaced_lifecycle_frame(me)?)))
+            .collect();
+        self.view.digest_view.statuses.join_frames_with_kept(&self.fabric, me, &kept)
     }
 
     /// Hold the statuses an entry pull answered.
@@ -3794,6 +3800,63 @@ pub struct Backbone {
 ///   into its own mesh (`mesh`).
 pub type Withhold = Arc<dyn Fn(&'static str, &'static str) -> bool + Send + Sync>;
 
+fn observe_peer_degraded(
+    node: &str,
+    author: &crate::envelope::Birth,
+    held_meshes: &HashMap<String, HeldStatus<MeshStatus>>,
+    seat_revisions: &HashMap<String, u64>,
+    peer_pubs: &mut HashMap<String, StatusPublisher>,
+    degraded_meshes: &[(String, Option<u64>)],
+    now: Instant,
+) -> Vec<Frame> {
+    let held_revision = |m: &str| held_meshes.get(m).and_then(|h| h.context.as_ref()?.primary_revision());
+    peer_pubs.retain(|m, p| {
+        let superseded = held_revision(m)
+            .zip(p.author.as_ref())
+            .is_some_and(|(held_rev, (_, rev))| held_rev > *rev);
+        let marker_held = held_meshes.get(m).is_some_and(|h| h.status == "degraded");
+        let active = degraded_meshes.iter().any(|(d, _)| d == m);
+        if !active {
+            p.schedule.stop_reinforcing();
+        }
+        !superseded && (active || marker_held)
+    });
+    let mut frames = Vec::new();
+    for (peer_mesh, verdict_ms) in degraded_meshes {
+        let revision = seat_revisions
+            .get(peer_mesh)
+            .copied()
+            .or_else(|| held_revision(peer_mesh));
+        let (Some(revision), Some(stamp)) = (revision, *verdict_ms) else {
+            tracing::info_span!("rdm.node_admin.mesh.reject.via-no-revision", mesh = %peer_mesh, verdict_rafka_ms = ?verdict_ms)
+                .in_scope(|| tracing::info!("no Mesh row revision or verdict instant is held for the recovering mesh: no MeshStatus degraded frame is sent"));
+            continue;
+        };
+        if held_revision(peer_mesh).is_some_and(|held_rev| held_rev > revision) {
+            peer_pubs.remove(peer_mesh);
+            continue;
+        }
+        let current_lifecycle = held_meshes
+            .get(peer_mesh)
+            .filter(|h| h.context.is_some() && mesh_state_rank(&h.status).is_some())
+            .cloned();
+        let p = peer_pubs.entry(peer_mesh.clone()).or_insert_with(|| {
+            let mut pub_ = StatusPublisher::new(node, StatusScope::Mesh(peer_mesh.clone()));
+            pub_.replaced_lifecycle = current_lifecycle.clone();
+            pub_
+        });
+        if let Some(lifecycle) = current_lifecycle {
+            p.replaced_lifecycle = Some(lifecycle);
+        }
+        p.set_role(true);
+        p.author = Some((author.clone(), revision));
+        if let Some(f) = p.observe_degraded(now, stamp) {
+            frames.push(f);
+        }
+    }
+    frames
+}
+
 /// The status frames `me` owes on this turn ([`Backbone::announce_statuses_with_degraded_meshes`]): its
 /// own mesh's while it holds its mesh-primary seat, the fabric's while it holds the fabric-primary
 /// seat, and each peer mesh `degraded_meshes` names as under recovery by this fabric-primary
@@ -3816,12 +3879,17 @@ pub fn status_announcements(
     now: Instant,
     now_ms: u64,
 ) -> (Vec<Frame>, Announced) {
-    let heard_mesh = digest_view.statuses.mesh(own_mesh).map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
+    let held_meshes = digest_view.statuses.held_meshes_snapshot();
+    let heard_mesh = held_meshes.get(own_mesh).map(|h| StatusFact { status: h.status.clone(), changed_at_rafka_ms: h.changed_at_rafka_ms });
     let heard_fabric = digest_view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
     let author = crate::envelope::Birth::publisher(fabric, me);
     let owned = |h: Primary| h.is_birth(&author.node, &author.incarnation).then_some((author.clone(), h.revision));
-    mesh_pub.author = digest_view.seats.mesh(own_mesh).and_then(owned);
-    fabric_pub.author = digest_view.seats.fabric().and_then(owned);
+    let seat_revisions: HashMap<String, u64> = degraded_meshes
+        .iter()
+        .filter_map(|(m, _)| Some((m.clone(), digest_view.seats.mesh(m)?.revision)))
+        .collect();
+    mesh_pub.author = digest_view.seats.mesh(own_mesh).and_then(&owned);
+    fabric_pub.author = digest_view.seats.fabric().and_then(&owned);
     let mut frames: Vec<Frame> = [
         if mesh_pub.author.is_some() { mesh_pub.observe(mesh_status, heard_mesh, mesh_checklist, now, now_ms) } else { None },
         if fabric_pub.author.is_some() { fabric_pub.observe(fabric_status, heard_fabric, fabric_checklist, now, now_ms) } else { None },
@@ -3830,49 +3898,7 @@ pub fn status_announcements(
     .flatten()
     .collect();
     if fabric_pub.author.is_some() {
-        peer_pubs.retain(|m, p| {
-            let superseded = digest_view
-                .statuses
-                .mesh_revision(m)
-                .zip(p.author.as_ref())
-                .is_some_and(|(held_rev, (_, rev))| held_rev > *rev);
-            let marker_held = digest_view.statuses.mesh(m).is_some_and(|h| h.status == "degraded");
-            let active = degraded_meshes.iter().any(|(d, _)| d == m);
-            if !active {
-                p.schedule.stop_reinforcing();
-            }
-            !superseded && (active || marker_held)
-        });
-        for (peer_mesh, verdict_ms) in degraded_meshes {
-            let revision = digest_view
-                .seats
-                .mesh(peer_mesh)
-                .map(|h| h.revision)
-                .or_else(|| digest_view.statuses.mesh_revision(peer_mesh));
-            let (Some(revision), Some(stamp)) = (revision, *verdict_ms) else {
-                tracing::info_span!("rdm.node_admin.mesh.reject.via-no-revision", mesh = %peer_mesh, verdict_rafka_ms = ?verdict_ms)
-                    .in_scope(|| tracing::info!("no Mesh row revision or verdict instant is held for the recovering mesh: no MeshStatus degraded frame is sent"));
-                continue;
-            };
-            if digest_view.statuses.mesh_revision(peer_mesh).is_some_and(|held_rev| held_rev > revision) {
-                peer_pubs.remove(peer_mesh);
-                continue;
-            }
-            let current_lifecycle = digest_view.statuses.mesh_held_lifecycle(peer_mesh);
-            let p = peer_pubs.entry(peer_mesh.clone()).or_insert_with(|| {
-                let mut pub_ = StatusPublisher::new(&me.node, StatusScope::Mesh(peer_mesh.clone()));
-                pub_.replaced_lifecycle = current_lifecycle.clone();
-                pub_
-            });
-            if let Some(lifecycle) = current_lifecycle {
-                p.replaced_lifecycle = Some(lifecycle);
-            }
-            p.set_role(true);
-            p.author = Some((author.clone(), revision));
-            if let Some(f) = p.observe_degraded(now, stamp) {
-                frames.push(f);
-            }
-        }
+        frames.extend(observe_peer_degraded(&me.node, &author, &held_meshes, &seat_revisions, peer_pubs, degraded_meshes, now));
     } else {
         peer_pubs.clear();
     }
@@ -4018,14 +4044,10 @@ impl Backbone {
         let me = self.clone();
         tokio::spawn(async move {
             loop {
-                let next = {
-                    let peers = me.peer_mesh_status.lock().unwrap();
-                    [me.mesh_status.lock().unwrap().next_due(), me.fabric_status.lock().unwrap().next_due()]
-                        .into_iter()
-                        .chain(peers.values().map(StatusPublisher::next_due))
-                        .flatten()
-                        .min()
-                };
+                let mesh_next = me.mesh_status.lock().unwrap().next_due();
+                let fabric_next = me.fabric_status.lock().unwrap().next_due();
+                let peer_next = me.peer_mesh_status.lock().unwrap().values().filter_map(StatusPublisher::next_due).min();
+                let next = [mesh_next, fabric_next, peer_next].into_iter().flatten().min();
                 match next {
                     Some(at) => {
                         tokio::select! {
@@ -4036,13 +4058,21 @@ impl Backbone {
                     None => me.wake.notified().await,
                 }
                 let now = Instant::now();
-                let due: Vec<Frame> = {
+                let mesh_due = me.mesh_status.lock().unwrap().due(now);
+                let fabric_due = me.fabric_status.lock().unwrap().due(now);
+                let held_meshes = me.topology_view.view.digest_view.statuses.held_meshes_snapshot();
+                let peer_due: Vec<Frame> = {
                     let mut peers = me.peer_mesh_status.lock().unwrap();
-                    peers.retain(|m, p| me.topology_view.view.digest_view.statuses.mesh_revision(m).zip(p.author.as_ref()).is_none_or(|(held_rev, (_, rev))| held_rev <= *rev));
-                    let mut out: Vec<Frame> = [me.mesh_status.lock().unwrap().due(now), me.fabric_status.lock().unwrap().due(now)].into_iter().flatten().collect();
-                    out.extend(peers.values_mut().filter_map(|p| p.due(now)));
-                    out
+                    peers.retain(|m, p| {
+                        held_meshes
+                            .get(m)
+                            .and_then(|h| h.context.as_ref()?.primary_revision())
+                            .zip(p.author.as_ref())
+                            .is_none_or(|(held_rev, (_, rev))| held_rev <= *rev)
+                    });
+                    peers.values_mut().filter_map(|p| p.due(now)).collect()
                 };
+                let due: Vec<Frame> = [mesh_due, fabric_due].into_iter().flatten().chain(peer_due).collect();
                 for f in due {
                     me.send_status(&f).await;
                 }
@@ -4081,34 +4111,46 @@ impl Backbone {
     /// mesh's Mesh row.
     pub async fn announce_statuses_with_degraded_meshes(&self, mesh_status: &str, fabric_status: &str, mesh_checklist: bool, fabric_checklist: bool, degraded_meshes: &[(String, Option<u64>)]) -> Announced {
         let (now, now_ms) = (Instant::now(), self.topology_view.clock.now_rafka_ms());
-        let (first, announced): (Vec<Frame>, Announced) = {
-            let mut mesh = self.mesh_status.lock().unwrap();
-            let mut fabric = self.fabric_status.lock().unwrap();
-            let mut peers = self.peer_mesh_status.lock().unwrap();
-            status_announcements(
-                &self.fabric,
-                &self.current_publisher(),
-                &self.mesh,
-                &self.topology_view.view.digest_view,
-                &mut mesh,
-                &mut fabric,
-                &mut peers,
-                mesh_status,
-                fabric_status,
-                mesh_checklist,
-                fabric_checklist,
-                degraded_meshes,
-                now,
-                now_ms,
-            )
+        let me = self.current_publisher();
+        let digest_view = &self.topology_view.view.digest_view;
+        let held_meshes = digest_view.statuses.held_meshes_snapshot();
+        let heard_mesh = held_meshes.get(&self.mesh).map(|h| StatusFact { status: h.status.clone(), changed_at_rafka_ms: h.changed_at_rafka_ms });
+        let heard_fabric = digest_view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
+        let author = crate::envelope::Birth::publisher(&self.fabric, &me);
+        let owned = |h: Primary| h.is_birth(&author.node, &author.incarnation).then_some((author.clone(), h.revision));
+        let mesh_author = digest_view.seats.mesh(&self.mesh).and_then(&owned);
+        let fabric_author = digest_view.seats.fabric().and_then(&owned);
+        let seat_revisions: HashMap<String, u64> = degraded_meshes
+            .iter()
+            .filter_map(|(m, _)| Some((m.clone(), digest_view.seats.mesh(m)?.revision)))
+            .collect();
+        let (mesh_frame, mesh_awaiting_checklist) = {
+            let mut mesh_pub = self.mesh_status.lock().unwrap();
+            mesh_pub.author = mesh_author;
+            let frame = if mesh_pub.author.is_some() { mesh_pub.observe(mesh_status, heard_mesh, mesh_checklist, now, now_ms) } else { None };
+            (frame, mesh_pub.awaiting_checklist())
         };
+        let (fabric_frame, fabric_awaiting_checklist, is_fabric_primary) = {
+            let mut fabric_pub = self.fabric_status.lock().unwrap();
+            fabric_pub.author = fabric_author;
+            let is_fp = fabric_pub.author.is_some();
+            let frame = if is_fp { fabric_pub.observe(fabric_status, heard_fabric, fabric_checklist, now, now_ms) } else { None };
+            (frame, fabric_pub.awaiting_checklist(), is_fp)
+        };
+        let mut first: Vec<Frame> = [mesh_frame, fabric_frame].into_iter().flatten().collect();
+        if is_fabric_primary {
+            let mut peers = self.peer_mesh_status.lock().unwrap();
+            first.extend(observe_peer_degraded(&me.node, &author, &held_meshes, &seat_revisions, &mut peers, degraded_meshes, now));
+        } else {
+            self.peer_mesh_status.lock().unwrap().clear();
+        }
         if !first.is_empty() {
             self.wake.notify_one();
         }
         for f in first {
             self.send_status(&f).await;
         }
-        announced
+        Announced { mesh_awaiting_checklist, fabric_awaiting_checklist }
     }
 
     fn role(flag: &AtomicBool, on: bool) -> Option<&'static str> {

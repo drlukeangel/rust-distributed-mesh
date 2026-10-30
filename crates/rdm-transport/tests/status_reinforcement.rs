@@ -537,3 +537,86 @@ fn fabric_primary_join_answer_serves_the_kept_lifecycle_frame_while_degraded_is_
     assert_eq!((status_of(join_mesh2_after), ts(join_mesh2_after), publisher_of(join_mesh2_after)), ("ready", x, "mesh2.admin.2"));
     assert_eq!(join_mesh2_after.context(), successor_frame.context());
 }
+
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-join.md:59
+/// "the statuses it holds with their original authors and instants"
+/// CONTRACT: docs/architecture/lifecycles/states.md:12
+/// "MeshStatus also carries a `degraded` health marker, set when a mesh is given a new node-admin by the fabric-primary (on either investigation arm, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status."
+/// The announce loop (`Backbone::announce_statuses_with_degraded_meshes` and its background
+/// reinforcement sender) and a join answer (`TopologyView::status_frames`) run together under a
+/// tokio multi-thread runtime for thousands of bounded iterations and both always finish without
+/// lock-order inversion or serving the `degraded` marker as a join lifecycle status.
+#[test]
+fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_always_finish() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let me = "mesh1.admin.1";
+        let (endpoint, gossip) = {
+            let transport = iroh::endpoint::QuicTransportConfig::builder().build();
+            let ep = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+            let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+            (ep, g)
+        };
+        let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let author = rdm_core::PublisherId { node: me.to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let backbone = Backbone::join(&gossip, &endpoint, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
+
+        let holder1 = rdm_core::Primary { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };
+        let lost_node = NodeId::parse("0123456789aa").unwrap();
+        let lost_inc = IncarnationId::parse("yrz49j303yaa").unwrap();
+        let holder2 = rdm_core::Primary { mesh: "mesh2".into(), node_id: lost_node.clone(), incarnation: lost_inc.clone(), revision: 3 };
+        topology_view.primaries().take(rdm_core::Seat::MeshPrimary, &holder1);
+        topology_view.primaries().take(rdm_core::Seat::FabricPrimary, &holder1);
+        topology_view.primaries().take(rdm_core::Seat::MeshPrimary, &holder2);
+        backbone.set_mesh_primary(true);
+        backbone.set_fabric_primary(true);
+
+        let pending = Frame::MeshStatus { mesh: "mesh1".into(), status: "pending".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 0 };
+        assert!(topology_view.digest_view.statuses.take(&pending, &fabric));
+        let lost_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: lost_node, incarnation: lost_inc };
+        let mesh2_ready = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1_000 }
+            .authored(&lost_author, 3, 1_000);
+        assert!(topology_view.digest_view.statuses.take(&mesh2_ready, &fabric));
+
+        const ITERATIONS: u64 = 3_000;
+        let announce_bb = backbone.clone();
+        let announce_task = tokio::spawn(async move {
+            for i in 0..ITERATIONS {
+                let degraded = vec![("mesh2".to_string(), Some(2_000 + i))];
+                if i % 2 == 0 {
+                    announce_bb.announce_statuses_with_degraded_meshes("ready", "degraded", true, true, &degraded).await;
+                } else {
+                    announce_bb.announce_statuses_with_degraded_meshes("ready", "ready", true, true, &[]).await;
+                }
+            }
+        });
+        let join_tv = topology_view.clone();
+        let join_task = tokio::spawn(async move {
+            for _ in 0..ITERATIONS {
+                let frames = join_tv.status_frames(me);
+                assert!(
+                    frames.iter().all(|f| !matches!(f.data(), Frame::MeshStatus { status, .. } if status == "degraded")),
+                    "join answer never serves a degraded MeshStatus marker: {frames:?}"
+                );
+                tokio::task::yield_now().await;
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let (a, j) = tokio::join!(announce_task, join_task);
+            a.unwrap();
+            j.unwrap();
+        })
+        .await
+        .expect("announce loop and join answer both finish without deadlock");
+
+        backbone.set_mesh_primary(false);
+        backbone.set_fabric_primary(false);
+        endpoint.close().await;
+    });
+}
