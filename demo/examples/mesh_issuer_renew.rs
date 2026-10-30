@@ -25,7 +25,7 @@ use rdm_admin::rafka_time::adopt_own_clock;
 use rdm_client::{Filter, MeshNode, NodeStatus, Nodes, Peers};
 use rdm_core::certs::{encode_issuing_cert, encode_key};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::status::{IssuingKeyHex, Status, StatusReply, StatusRequest};
+use rdm_core::status::{CaKeyHex, IssuingKeyHex, Status, StatusReply, StatusRequest};
 use rdm_core::NodeKind;
 use rdm_transport::clock::{Clock, RafkaTime};
 use rdm_transport::{CallOptions, NodeTarget};
@@ -76,12 +76,15 @@ async fn main() -> Result<()> {
         mint.issued_at, mint.renew_at, mint.expires_at
     );
 
+    // The CA the issuer is minted under rides with it (Q275), as cert_renewal sends it.
+    let ca_key = CaKeyHex(issuer.ca_key_of(&key).unwrap_or_default());
     let primary_inc = primary.incarnation_id.clone().ok_or_else(|| anyhow!("no incarnation_id on {}", primary.name))?;
     let req_primary = StatusRequest::UpdateIssuer {
         node_id: primary.node_id.clone(),
         incarnation: primary_inc,
         key: IssuingKeyHex(encode_key(key.secret())),
         cert: encode_issuing_cert(key.cert()),
+        ca_key: ca_key.clone(),
     };
     let (out_primary, _) = carrier
         .client()
@@ -105,6 +108,7 @@ async fn main() -> Result<()> {
         incarnation: replica_inc,
         key: IssuingKeyHex(encode_key(key.secret())),
         cert: encode_issuing_cert(key.cert()),
+        ca_key: ca_key.clone(),
     };
     let (out_replica, _) = carrier
         .client()
