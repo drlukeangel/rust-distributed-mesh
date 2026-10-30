@@ -1864,12 +1864,16 @@ impl Driver {
         // After the release the path is ready again: as the held birth, or, when node recovery re-created
         // it during the hold, as its replacement, the held runtime refused at admission and terminated
         // (Q110: "if it comes back it's denied ... then you kill it").
+        // A recovery that has acted on the held birth by the release (since Q273 an `os-stopped` runtime is
+        // a verdict and is recovered within seconds: node-investigation.md) is read to its end: the path is
+        // back only as the replacement, never as the birth being deleted.
+        let acting = !acted_rows(&acted_on(before, &(self.read)(&self.estate, &self.build_id).await, &path)).is_empty();
         let back = {
             let est = &self.estate;
             let held_rt = hold_rt.clone();
             let back = wait_for_opt(&format!("{path} ready as its own birth, or as its replacement with the held runtime ended"), floor * 2 + Duration::from_secs(60), || async {
                 est.node_value_opt(&path).await.filter(|x| {
-                    x["status"] == "ready" && (x["incarnation_id"] == inc.as_str() || (x["node_id"] != n["node_id"] && held_rt.as_ref().is_none_or(|r| r.check().is_err())))
+                    x["status"] == "ready" && ((x["incarnation_id"] == inc.as_str() && !acting) || (x["node_id"] != n["node_id"] && held_rt.as_ref().is_none_or(|r| r.check().is_err())))
                 })
             })
             .await;
