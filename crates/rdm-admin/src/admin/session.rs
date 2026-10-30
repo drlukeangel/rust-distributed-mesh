@@ -314,8 +314,6 @@ pub(crate) struct AdminSession {
     pub(crate) wake: Arc<Records>,
     /// This admin's own Build log: a start's Build-floor step absorbs the facts it reads into it.
     pub(crate) local: Arc<dyn crate::build_state::LocalBuildLog>,
-    /// The node-admins a start's Build-facts read asks, in order.
-    pub(crate) responders: crate::fetch_build::Responders,
     /// What this admin owes its authorities: a start begins its next own-state cycle there.
     pub(crate) declarer: Arc<crate::status_declare::Declarer>,
     /// The app protocols this admin opens connections on: what the member cert each join answers is
@@ -516,7 +514,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 me: me.clone(),
                 builds: s.builds.clone(),
                 floor: s.entry_floor.clone(),
-                fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.client.clone(), s.local.clone(), s.responders.clone()),
+                fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.builds.clone(), s.local.clone()),
                 progress: None,
                 held: Some(s.local.clone()),
             },

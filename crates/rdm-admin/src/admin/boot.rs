@@ -2110,33 +2110,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // the hook's blocker and the step the start is at. A birth with no launcher has no authority to
                             // pull from, and says why.
                             let pre_node_ready_cancel = rdm_transport::BirthCancel::new();
-                            // The node-admins a Build-facts read asks, in order: the fabric-primary, every other live
-                            // node-admin, then the launcher. Read at each request, so the order follows the leadership
-                            // projection; every start of this admin asks them.
-                            let responders: crate::fetch_build::Responders = {
-                                let topology = control.topology.clone();
-                                let launcher = cfg.launch.as_ref().and_then(|l| l.launcher.clone());
-                                Arc::new(move || {
-                                    let (topology, launcher) = (topology.clone(), launcher.clone());
-                                    Box::pin(async move {
-                                        let t = topology.read().await;
-                                        let mut out: Vec<crate::fetch_build::Responder> = t.fabric_primary().map(|n| crate::fetch_build::Responder { name: n.name.clone(), node_id: n.node_id.clone() }).into_iter().collect();
-                                        let mut admins: Vec<&crate::model::Node> = t.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).collect();
-                                        admins.sort_by(|a, b| a.name.cmp(&b.name));
-                                        for n in admins {
-                                            if !out.iter().any(|r| r.name == n.name) {
-                                                out.push(crate::fetch_build::Responder { name: n.name.clone(), node_id: n.node_id.clone() });
-                                            }
-                                        }
-                                        if let Some(l) = launcher {
-                                            if !out.iter().any(|r| r.name == l.name) {
-                                                out.push(crate::fetch_build::Responder { name: l.name.clone(), node_id: l.node_id.clone() });
-                                            }
-                                        }
-                                        out
-                                    })
-                                })
-                            };
                             // What node.start has yet to do once the hook runs: the Ready check names it until the start's
                             // last step before node.started has ended.
                             let progress = StartProgress::begun(&name);
@@ -2160,7 +2133,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     me: name.clone(),
                                     builds: builds_dyn.clone(),
                                     floor: entry_floor.clone(),
-                                    fetch_build: crate::fetch_build::FetchBuild::new(name.clone(), node_rpc.client.clone(), journal.clone(), responders.clone()),
+                                    fetch_build: crate::fetch_build::FetchBuild::new(name.clone(), builds_dyn.clone(), journal.clone()),
                                     progress: Some(progress.clone()),
                                     held: cfg.launch.is_some().then(|| journal.clone()),
                                 },
@@ -2443,7 +2416,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             pre_node_ready_task: Arc::default(),
                                             wake: records.clone(),
                                             local: journal.clone(),
-                                            responders: responders.clone(),
                                             declarer: declarer.clone(),
                                         }));
                                         let _ = own_commands.set(own);
@@ -2980,22 +2952,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let fabric_states = states_slot.get().cloned().expect("the fabric states are built before the hierarchy runs");
                                         let stop = stop_gate.clone();
                                         let claim_door = claim_slot.clone();
-                                        // A mesh-primary taking its role reads the accepted Build from the fabric-primary before it
-                                        // counts its fresh checklist (states.md "The check-in checklist", Q276): node start's Build floor
-                                        // read again, its own mesh's section of the current Build (`FetchBuildSection`, Q284) from the fabric-primary the view names, owed until answered.
-                                        let fabric_primary_only: crate::fetch_build::Responders = {
-                                            let topology = control.topology.clone();
-                                            Arc::new(move || {
-                                                let topology = topology.clone();
-                                                Box::pin(async move { topology.read().await.fabric_primary().map(|n| crate::fetch_build::Responder { name: n.name.clone(), node_id: n.node_id.clone() }).into_iter().collect() })
-                                            })
-                                        };
-                                        let (build_read_client, build_read_log) = (node_rpc.client.clone(), journal.clone());
+                                        // A mesh-primary taking its role reads the accepted Build before it counts its fresh checklist
+                                        // (states.md "The check-in checklist"): node start's Build floor read again, the current Build's
+                                        // committed records from the Build storage (Q292), owed until read.
+                                        let (build_read_store, build_read_log) = (control.builds.clone(), journal.clone());
                                         let (atlas, atlas_rows) = (control.atlas.clone(), nodes_storage.clone());
                                         hierarchy = tokio::spawn(async move {
                                             let mut was_fabric_primary = false;
                                             let mut was_mesh_primary = false;
-                                            let mut build_read = crate::fetch_build::FetchBuild::new(me.clone(), build_read_client, build_read_log, fabric_primary_only);
+                                            let mut build_read = crate::fetch_build::FetchBuild::new(me.clone(), build_read_store, build_read_log);
                                             let mut build_read_owed = false;
                                             let mut unreadable_named: Option<String> = None;
                                             loop {

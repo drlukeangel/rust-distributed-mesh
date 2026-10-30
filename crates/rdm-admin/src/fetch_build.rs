@@ -4,32 +4,25 @@
 //! request the blocked node can repeat. The blocker is a TYPED reason ([`NodeAdminNotReady`]); the
 //! Build-floor step of a node-admin's start (`admin.rs` `AdminFloor`, node-start.md step 4, every
 //! 100 ms while below the floor) hands it to a [`FetchBuild`], which issues the request the reason
-//! names:
+//! names, a read of the Build's committed records from the Build storage (Q292), never a fetch from
+//! a peer:
 //!
 //! - [`NodeAdminNotReady::NoCurrentBuild`] with a `wanted` BuildId (the entry reply named the
-//!   answering admin's current Build and it is not held): `FetchBuildSection` (op `0x1F`, Q284) for
-//!   that Build and this admin's own mesh.
+//!   answering admin's current Build and it is not held): that Build's committed records.
 //! - [`NodeAdminNotReady::UnreadableBuild`] (the entry's Build cannot be read locally) and
-//!   [`NodeAdminNotReady::BehindFloor`] (the local Build is behind the entry's attempt floor):
-//!   `FetchBuildSection` for the entry's Build and this admin's own mesh.
+//!   [`NodeAdminNotReady::BehindFloor`] (the local Build is behind the entry's attempt floor): the
+//!   entry's Build's committed records.
 //! - [`NodeAdminNotReady::NoCurrentBuild`] with nothing wanted (no-pointer: nothing names the Build):
-//!   `FetchBuildSection` naming no Build (op `0x1F`). The responder selects its current accepted Build
-//!   once for the request and streams that Build's facts, its acceptance as this admin's mesh's
-//!   section, every chunk and `End` naming its id, or answers `NoCurrentBuild` and the blocker stays. No blocker is read by a second `JoinNode`.
+//!   the storage's current Build, by R-BI3's acceptance order, and its committed records; none in
+//!   progress or completed leaves the blocker.
 //!
-//! One request is outstanding at a time. Responders are asked in order: the current fabric-primary
-//! (resolved through the canonical leadership projection, `Topology::fabric_primary`), then every
-//! other known live node-admin. A target that failed, or answered with holdings that did not clear
-//! the blocker, is not asked again until its backoff has passed.
+//! One read is outstanding at a time. A read that failed, or whose records did not clear the
+//! blocker, is not made again until its backoff has passed.
 
 use crate::build::BuildId;
-use crate::build_facts_read::fetch_build_section;
-use crate::build_state::LocalBuildLog;
+use crate::build_state::{BuildFact, BuildStateAdapter, LocalBuildLog};
 use crate::model::{NodeId, PathName};
-use rdm_transport::{NodeRpcClient, NodeTarget};
 use std::collections::BTreeMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::instrument::WithSubscriber as _;
@@ -125,19 +118,6 @@ impl NodeAdminNotReady {
     }
 }
 
-/// A node-admin that may hold the facts, in the order it is asked.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Responder {
-    /// The responder's `path.name`.
-    pub name: PathName,
-    /// The responder's node id.
-    pub node_id: NodeId,
-}
-
-/// The responders in the order they are asked: the fabric-primary first, then every other live
-/// node-admin. Read at each request, so the order follows the leadership projection.
-pub type Responders = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Vec<Responder>> + Send>> + Send + Sync>;
-
 /// How long a target that failed is left alone: doubling per consecutive failure from `BACKOFF_BASE`
 /// to `BACKOFF_CAP`. Luke explicitly authorized this backoff (R-G6) as READ-ONLY recovery: it spaces
 /// repeated reads of a peer and gates nothing else; it retries no write and no decision.
@@ -176,9 +156,11 @@ enum End {
 /// What the Build-floor check drives: at most one outstanding request, per-target backoff.
 pub struct FetchBuild {
     me: PathName,
-    client: Arc<NodeRpcClient>,
+    /// The Build storage the read is made of (Q292).
+    store: Arc<dyn BuildStateAdapter>,
     local: Arc<dyn LocalBuildLog>,
-    responders: Responders,
+    /// The key the storage's backoff is held at.
+    store_key: NodeId,
     in_flight: Option<tokio::task::JoinHandle<End>>,
     backoff: BTreeMap<NodeId, Backoff>,
     /// The responder whose complete stream was absorbed last: still owed a verdict.
@@ -188,10 +170,9 @@ pub struct FetchBuild {
 }
 
 impl FetchBuild {
-    /// A fetch_build for the admin `me` over its client, its local Build log and the `responders` it
-    /// asks.
-    pub fn new(me: PathName, client: Arc<NodeRpcClient>, local: Arc<dyn LocalBuildLog>, responders: Responders) -> Self {
-        Self { me, client, local, responders, in_flight: None, backoff: BTreeMap::new(), judging: None, ended: Arc::default() }
+    /// A fetch_build for the admin `me` over the Build storage `store` it reads and its local Build log.
+    pub fn new(me: PathName, store: Arc<dyn BuildStateAdapter>, local: Arc<dyn LocalBuildLog>) -> Self {
+        Self { me, store, local, store_key: NodeId::mint(), in_flight: None, backoff: BTreeMap::new(), judging: None, ended: Arc::default() }
     }
 
     /// One floor check's turn. `blocker` is what the check just found, `None` when no control fact
@@ -269,66 +250,43 @@ impl FetchBuild {
         }
     }
 
-    /// One read of the blocker's Build from the first responder whose backoff has passed: the facts
-    /// of `id`, or with no Build named the responder's current accepted Build, whose id the read's `End`
-    /// names, each with its acceptance as this admin's own mesh's section (`FetchBuildSection`, Q284).
+    /// One read of the blocker's Build from the Build storage (Q292: a starting admin and an admin
+    /// taking a primary role read the Build's committed records, never a copy a peer serves): the
+    /// committed facts of `id`, or with no Build named the storage's current Build, absorbed whole into
+    /// the local Build log. A read that fails is spaced by the backoff and made again.
     async fn fetch(&mut self, blocker: &NodeAdminNotReady, id: Option<BuildId>, now: Instant) {
-        let candidates = (self.responders)().await;
-        let Some(target) = candidates.into_iter().filter(|r| r.name != self.me).find(|r| self.backoff.get(&r.node_id).is_none_or(|b| b.open(now))) else {
+        if !self.backoff.get(&self.store_key).is_none_or(|b| b.open(now)) {
             return;
-        };
-        let (client, local, me, kind, ended) = (self.client.clone(), self.local.clone(), self.me.clone(), blocker.kind(), self.ended.clone());
-        // The request is a step of the turn that started it: it runs under that turn's span and dispatcher.
+        }
+        let (store, local, me, kind, ended, key) = (self.store.clone(), self.local.clone(), self.me.clone(), blocker.kind(), self.ended.clone(), self.store_key.clone());
+        // The read is a step of the turn that started it: it runs under that turn's span and dispatcher.
         let parent = tracing::Span::current();
         self.in_flight = Some(tokio::spawn(
             async move {
-                let span = tracing::info_span!(
-                    "rdm.node_admin.build.update.via-fetch-facts",
-                    node = %me,
-                    build_id = tracing::field::Empty,
-                    target = %target.name,
-                    blocker = kind,
-                    facts = tracing::field::Empty,
-                    chunks = tracing::field::Empty,
-                    outcome = tracing::field::Empty,
-                );
-                let to = NodeTarget::ExactNode(target.node_id.clone());
-                if let Some(id) = &id {
-                    span.record("build_id", tracing::field::display(id.log()));
+                let span = tracing::info_span!("rdm.node_admin.build.update.via-read-committed", node = %me, build_id = tracing::field::Empty, blocker = kind, facts = tracing::field::Empty, outcome = tracing::field::Empty);
+                let read = async {
+                    match id {
+                        Some(id) => store.committed_facts(Some(&id)).await.map(|facts| (id, facts)),
+                        None => current_committed(&*store).await,
+                    }
                 }
-                // This admin's own mesh's section of the Build (Q284): of the one named, or of the
-                // responder's current accepted Build.
-                let fetched = fetch_build_section(&client, &to, id.as_ref(), &me.mesh).instrument(span.clone()).await;
-                // The Build read: the one named, or the one the current Build read's End named.
-                let read = match (&fetched, id) {
-                    (Ok(f), None) => {
-                        span.record("build_id", tracing::field::display(f.build_id.log()));
-                        Some(f.build_id.log().to_string())
-                    }
-                    (_, id) => id.map(|b| b.log().to_string()),
-                };
-                let end = match fetched {
-                    Ok(f) if f.complete => {
-                        span.record("facts", f.facts.len() as u64);
-                        span.record("chunks", f.chunks);
-                        // A whole Build's facts, merged reading no store (Q227).
-                        local.absorb_build(&f.facts).await;
+                .instrument(span.clone())
+                .await;
+                let end = match read {
+                    Ok((id, facts)) => {
+                        span.record("build_id", tracing::field::display(id.log()));
+                        span.record("facts", facts.len() as u64);
+                        // The Build's committed records, merged into the local log (insert-and-fail on their keys).
+                        local.absorb_build(&facts).await;
                         span.record("outcome", "absorbed");
-                        span.in_scope(|| tracing::info!("the responder's complete holdings of the Build are absorbed into the local Build log"));
-                        End::Absorbed(target.node_id)
-                    }
-                    Ok(f) => {
-                        span.record("facts", f.facts.len() as u64);
-                        span.record("outcome", "responder-incomplete");
-                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-incomplete", node = %me, build_id = read.as_deref(), target = %target.name)
-                            .in_scope(|| tracing::info!("the responder says its holdings of the Build are not whole: nothing is absorbed"));
-                        End::Failed(target.node_id)
+                        span.in_scope(|| tracing::info!("the Build's committed records are read from its storage and absorbed into the local Build log"));
+                        End::Absorbed(key)
                     }
                     Err(e) => {
-                        span.record("outcome", e.reason());
-                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-failed", node = %me, build_id = read.as_deref(), target = %target.name, reason = e.reason(), detail = %e)
-                            .in_scope(|| tracing::info!("the Build-facts read produced nothing to absorb"));
-                        End::Failed(target.node_id)
+                        span.record("outcome", e.to_string().as_str());
+                        tracing::info_span!("rdm.node_admin.build.reject.via-read-committed-failed", node = %me, detail = %e)
+                            .in_scope(|| tracing::info!("the Build's committed records could not be read: nothing is absorbed, and the read is made again"));
+                        End::Failed(key)
                     }
                 };
                 ended.notify_one();
@@ -338,6 +296,20 @@ impl FetchBuild {
             .with_current_subscriber(),
         ));
     }
+}
+
+/// The storage's current Build and its committed facts (R-BI3's acceptance order, read fresh): an
+/// error naming that no Build is in progress or completed when none is.
+async fn current_committed(store: &dyn BuildStateAdapter) -> Result<(BuildId, Vec<BuildFact>), crate::build_state::BuildStateError> {
+    let all = store.committed_facts(None).await?;
+    let folded = crate::build_state::MemoryBuildStateAdapter::new();
+    folded.absorb(&all).await;
+    let id = match folded.current_build().await? {
+        crate::build_state::CurrentBuild::InProgress(id) | crate::build_state::CurrentBuild::Completed(id) => id,
+        crate::build_state::CurrentBuild::None => return Err(crate::build_state::BuildStateError::Io("the Build storage holds no Build in progress or completed".into())),
+    };
+    let facts = all.into_iter().filter(|f| *f.build_id() == id).collect();
+    Ok((id, facts))
 }
 
 #[cfg(test)]
