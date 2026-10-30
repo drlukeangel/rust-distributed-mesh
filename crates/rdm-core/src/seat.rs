@@ -29,7 +29,6 @@ pub enum Seat {
     /// (R-MT1 Q3: the mesh-primary is the mesh's one row writer and sole author of member status).
     ///
     /// Position 2 on the wire.
-    #[serde(rename = "Cohort")]
     NodeTypePrimary(NodeKind),
 }
 
@@ -123,7 +122,6 @@ pub mod transfer {
             mesh: String,
         },
         /// The node-type primary of `mesh` for node type `kind` (every type but `node_admin`).
-        #[serde(rename = "Cohort")]
         NodeTypePrimary {
             /// The mesh whose node-type primary it is.
             mesh: String,
