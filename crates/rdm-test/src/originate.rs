@@ -146,6 +146,21 @@ pub enum OriginateRequest {
         /// The whole map.
         config: std::collections::BTreeMap<String, String>,
     },
+    /// The data plane measured (load-testing.md M9): open this node's data-plane connection to the
+    /// current birth of `destination` (Direct, or Proxy when its Direct dial is blocked), then
+    /// `streams` bidirectional streams in turn on it, each writing `bytes` bytes generated here and
+    /// reading the far role's echo whole. The reply carries the open's and the streams' times and the
+    /// bytes moved both ways, never the bytes. Appended last.
+    ///
+    /// Position 10 on the wire.
+    Throughput {
+        /// The `path.name` to measure toward.
+        destination: String,
+        /// The streams opened in turn on the one connection.
+        streams: u32,
+        /// The bytes each stream writes (the echo answers them back), at most 1 MiB less the echo's prefix.
+        bytes: u32,
+    },
 }
 
 /// Who answered.
@@ -360,6 +375,21 @@ pub enum OriginateReply {
         /// The row's revision the reply carries; 0 when it carries none.
         revision: u64,
     },
+    /// The data plane measured toward `destination` ([`OriginateRequest::Throughput`]).
+    ///
+    /// Position 18 on the wire.
+    Measured {
+        /// Who answered.
+        by: AnsweredBy,
+        /// The connection's kind: `direct`, or `proxy via <carrier>`.
+        kind: String,
+        /// The open's time, microseconds.
+        open_us: u64,
+        /// The streams' time, every one in turn, microseconds.
+        streams_us: u64,
+        /// The bytes moved, written and read back, over every stream.
+        bytes: u64,
+    },
 }
 
 impl NodeProtocol for Originate {
@@ -372,7 +402,7 @@ impl NodeProtocol for Originate {
     type Reply = OriginateReply;
 
     rdm_core::protocol_variants! {
-        request OriginateRequest { Call, ArmFault, ReleaseFault, Snapshot, RecordProxy, Dial, Stream, StopTransport, BlockDirect, UpdateOwnConfig }
+        request OriginateRequest { Call, ArmFault, ReleaseFault, Snapshot, RecordProxy, Dial, Stream, StopTransport, BlockDirect, UpdateOwnConfig, Throughput }
         reply OriginateReply {
             Called = "called" => ReplyKind::Success,
             FaultArmed = "fault-armed" => ReplyKind::Success,
@@ -387,6 +417,7 @@ impl NodeProtocol for Originate {
             TransportStopMarked = "transport-stop-marked" => ReplyKind::Success,
             DirectBlocked = "direct-blocked" => ReplyKind::Success,
             OwnConfigUpdated = "own-config-updated" => ReplyKind::Success,
+            Measured = "measured" => ReplyKind::Success,
         }
     }
 }
@@ -441,6 +472,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                 OriginateRequest::RecordProxy { destination, carrier, failed_attempts } => record_proxy(&by, &seams, &destination, &carrier, failed_attempts).await,
                 OriginateRequest::Dial { destination } => dial(&by, &seams, &destination).await,
                 OriginateRequest::Stream { destination, payload } => stream(&by, &seams, &destination, payload).await,
+                OriginateRequest::Throughput { destination, streams, bytes } => throughput(&by, &seams, &destination, streams, bytes).await,
                 OriginateRequest::BlockDirect { destination, blocked } => block_direct(&by, &seams, &destination, blocked),
                 OriginateRequest::UpdateOwnConfig { config } => match seams.own_config.get().cloned() {
                     None => OriginateReply::NotReady { reason: format!("{own}: the node does not run yet; its own config has no door") },
@@ -592,6 +624,58 @@ async fn stream(by: &AnsweredBy, seams: &Seams, destination: &str, payload: Vec<
     }
 }
 
+/// The data plane measured toward `destination`'s current birth: the open, then `streams` streams in
+/// turn on the one connection, each `bytes` bytes written and their echo read whole.
+async fn throughput(by: &AnsweredBy, seams: &Seams, destination: &str, streams: u32, bytes: u32) -> OriginateReply {
+    let failed = |reason: String| OriginateReply::StreamFailed { by: by.clone(), reason };
+    if bytes as usize > (1 << 20) - 256 {
+        return failed(format!("{bytes} bytes a stream: the echo reads at most 1 MiB"));
+    }
+    let path: PathName = match destination.parse() {
+        Ok(p) => p,
+        Err(e) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination:?}: {e}") },
+    };
+    let target = match seams.resolver.resolve(&NodeTarget::CurrentPath(path)) {
+        Ok(n) => n,
+        Err(f) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination} does not resolve on this node: {f:?}") },
+    };
+    let Some(dialer) = seams.data_plane.get() else {
+        return failed("no-data-plane-alpn: this node registered no data-plane ALPN".into());
+    };
+    let birth = rdm_transport::connections::Birth { name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
+    let opened = std::time::Instant::now();
+    let conn = match dialer.open(&birth).await {
+        Ok(c) => c,
+        Err(e) => return failed(format!("open: {e:?}")),
+    };
+    let open_us = opened.elapsed().as_micros() as u64;
+    let payload = vec![b'x'; bytes as usize];
+    let (mut moved, began) = (0u64, std::time::Instant::now());
+    for i in 0..streams {
+        let (mut send, mut recv) = match conn.open_bi().await {
+            Ok(s) => s,
+            Err(e) => return failed(format!("open_bi {i}: {e:?}")),
+        };
+        if let Err(e) = send.write_all(&payload).await {
+            return failed(format!("write {i}: {e:?}"));
+        }
+        if let Err(e) = send.finish() {
+            return failed(format!("finish {i}: {e:?}"));
+        }
+        match recv.read_to_end(1 << 20).await {
+            Ok(b) => moved += payload.len() as u64 + b.len() as u64,
+            Err(e) => return failed(format!("read {i}: {e:?}")),
+        }
+    }
+    OriginateReply::Measured {
+        by: by.clone(),
+        kind: match conn.kind() { rdm_transport::connections::ConnectionKind::Direct => "direct".into(), rdm_transport::connections::ConnectionKind::Proxy { via } => format!("proxy via {}", via.name) },
+        open_us,
+        streams_us: began.elapsed().as_micros() as u64,
+        bytes: moved,
+    }
+}
+
 /// Block or release this node's Direct dials toward `destination` on its one data-plane ALPN.
 fn block_direct(by: &AnsweredBy, seams: &Seams, destination: &str, blocked: bool) -> OriginateReply {
     let path: PathName = match destination.parse() {
@@ -700,7 +784,7 @@ mod tests {
 
     /// CONTRACT: `Originate`'s wire is the one its hand-written declaration had: each request and
     /// reply variant encodes to the pinned bytes and decodes back, each reply keeps its name and code,
-    /// the variant counts are 10 and 18, and the six reserved constructors build their own variants
+    /// the variant counts are 11 and 19, and the six reserved constructors build their own variants
     /// at positions 5 to 10, between the application's variants.
     #[test]
     fn originate_keeps_every_variant_on_its_pinned_bytes() {
@@ -717,6 +801,7 @@ mod tests {
             (OriginateRequest::StopTransport { reason: s() }, "070172"),
             (OriginateRequest::BlockDirect { destination: "d".into(), blocked: true }, "08016401"),
             (OriginateRequest::UpdateOwnConfig { config: [("a".to_string(), "b".to_string())].into() }, "090101610162"),
+            (OriginateRequest::Throughput { destination: "d".into(), streams: 2, bytes: 3 }, "0a01640203"),
         ];
         let replies = [
             (OriginateReply::Called { by: by(), destination_node_id: "d".into(), route: "direct".into(), carrier: None, deleted: Some("x".into()), outcome: "reply".into(), reply: None, pooled: vec!["p".into()] }, "000169016e016301640664697265637400010178057265706c7900010170", "called", Code::Ok),
@@ -737,6 +822,7 @@ mod tests {
             (OriginateReply::TransportStopMarked { by: by(), reason: s() }, "0f0169016e01630172", "transport-stop-marked", Code::Ok),
             (OriginateReply::DirectBlocked { by: by(), destination: "d".into(), blocked: false }, "100169016e0163016400", "direct-blocked", Code::Ok),
             (OriginateReply::OwnConfigUpdated { by: by(), outcome: "o".into(), config: [("a".to_string(), "b".to_string())].into(), revision: 9 }, "110169016e0163016f010161016209", "own-config-updated", Code::Ok),
+            (OriginateReply::Measured { by: by(), kind: "k".into(), open_us: 1, streams_us: 2, bytes: 3 }, "120169016e0163016b010203", "measured", Code::Ok),
         ];
         let off = pinned::<Originate>(&requests, &replies);
         assert!(off.is_empty(), "the wire moved:\n{}", off.join("\n"));

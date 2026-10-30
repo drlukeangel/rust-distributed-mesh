@@ -66,6 +66,9 @@ struct Args {
     /// `record-proxy`: the carrier path, and how many Direct Failed observations precede the Proxy.
     carrier: Option<String>,
     failed_attempts: u32,
+    /// `throughput`: the streams opened in turn on one connection, and the bytes each writes.
+    streams: u32,
+    bytes: u32,
     /// `topology`: the one mesh asked for, and the source version already held for it.
     mesh: Option<String>,
     since: Option<String>,
@@ -80,6 +83,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let (mut destination, mut refuse_index, mut refuse_history, mut release) = (None, 0u32, 0u32, false);
     let mut pass_history = 0u32;
     let (mut carrier, mut failed_attempts) = (None, 0u32);
+    let (mut streams, mut bytes) = (1u32, 1024u32);
     let (mut mesh, mut since) = (None, None);
     while let Some(a) = it.next() {
         let mut take = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -107,7 +111,9 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--since" => since = Some(take("--since")?),
             "--carrier" => carrier = Some(take("--carrier")?),
             "--failed-attempts" => failed_attempts = take("--failed-attempts")?.parse().map_err(|e| format!("--failed-attempts: {e}"))?,
-            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "block-direct" | "stop-transport" | "topology" | "nodes" | "fabric-delete" | "node-delete" | "own-config" if op.is_none() => op = Some(a),
+            "--streams" => streams = take("--streams")?.parse().map_err(|e| format!("--streams: {e}"))?,
+            "--bytes" => bytes = take("--bytes")?.parse().map_err(|e| format!("--bytes: {e}"))?,
+            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "throughput" | "block-direct" | "stop-transport" | "topology" | "nodes" | "fabric-delete" | "node-delete" | "own-config" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -136,6 +142,8 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         release,
         carrier,
         failed_attempts,
+        streams,
+        bytes,
         mesh,
         since,
     })
@@ -320,7 +328,7 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
     if a.op == "topology" {
         return run_topology(&a, &target).await.map(|value| (value, None));
     }
-    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "block-direct" | "stop-transport" | "own-config") {
+    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "throughput" | "block-direct" | "stop-transport" | "own-config") {
         return run_originate(&a, &target).await.map(|value| (value, None));
     }
     let req = request(&a)?;
@@ -488,6 +496,11 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             destination: a.destination.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or("stream needs --destination path:<path.name>")?,
             payload: a.value.clone().unwrap_or_default().into_bytes(),
         },
+        "throughput" => OriginateRequest::Throughput {
+            destination: a.destination.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or("throughput needs --destination path:<path.name>")?,
+            streams: a.streams,
+            bytes: a.bytes,
+        },
         "record-proxy" => {
             let path = |what: &str, v: &Option<String>| -> Result<String, String> {
                 v.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or(format!("record-proxy needs {what} path:<path.name>"))
@@ -532,6 +545,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
                 "peer_incarnation": peer.incarnation_id, "answered": String::from_utf8_lossy(answered),
             }),
             OriginateReply::StreamFailed { by, reason } => json!({"outcome": "Reply", "by": by.node, "streamed": false, "reason": reason}),
+            OriginateReply::Measured { by, kind, open_us, streams_us, bytes } => json!({"outcome": "Reply", "by": by.node, "measured": true, "kind": kind, "open_us": open_us, "streams_us": streams_us, "bytes": bytes}),
             OriginateReply::DirectBlocked { by, destination, blocked } => json!({"outcome": "Reply", "by": by.node, "direct_blocked": blocked, "destination": destination}),
             OriginateReply::OwnConfigUpdated { by, outcome, config, revision } => json!({"outcome": "Reply", "by": by.node, "own_config": outcome, "config": config, "revision": revision}),
             OriginateReply::ProxyRecorded { by, destination_node_id, destination_incarnation, carrier_node_id, carrier_incarnation, failed_attempts } => json!({
