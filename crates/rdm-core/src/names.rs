@@ -35,7 +35,7 @@ pub enum NodeOp {
     Start,
     /// `node.delete`.
     Delete,
-    /// `node.primary.update`: move a cohort's or mesh-primary's seat (and the fabric-primary seat
+    /// `node.primary.update`: move a node-type primary's or mesh-primary's seat (and the fabric-primary seat
     /// with it when the holder holds both) to its same-mesh successor (`0x21`).
     PrimaryUpdate,
     /// `node.fabric-primary.update`: move the fabric-primary seat (`0x21`, C2 step 1 same-mesh first,

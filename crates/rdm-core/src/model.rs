@@ -93,7 +93,7 @@ pub enum NodeStatus {
 }
 
 impl NodeStatus {
-    /// A node that may hold or contend for a cohort primary.
+    /// A node that may hold or contend for a node-type primary.
     pub fn is_live(self) -> bool {
         matches!(self, Self::Pending | Self::Ready | Self::ConnectionsDeleting)
     }
@@ -171,7 +171,7 @@ pub struct Node {
     pub data_dir: Option<String>,
     /// The node's lifecycle state.
     pub status: NodeStatus,
-    /// Whether the node holds its cohort's primary seat.
+    /// Whether the node holds its node-type primary seat.
     pub is_primary: bool,
     /// Whether the node holds the fabric-primary seat.
     pub is_fabric_primary: bool,

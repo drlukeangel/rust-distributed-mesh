@@ -1,10 +1,9 @@
 //! Seat holders: who holds a primary seat, as a node announces it and a joiner is told it.
 //!
 //! A seat is a mesh's node-admin primary ([`Seat::MeshPrimary`]), the fabric primary
-//! ([`Seat::FabricPrimary`]), or the primary of one other (mesh, node type) cohort ([`Seat::Cohort`]:
-//! an rpc, broker, gateway or compute cohort; the approved proposal
-//! node-primary-update-fabric-mesh-and-node-type.md Part B1, "Every (mesh, node_type) cohort elects
-//! its primary by the one rule ... a living holder keeps its seat"). The holder of a seat is an EXACT birth, `(node_id, incarnation)`, in
+//! ([`Seat::FabricPrimary`]), or the node-type primary of one other `(mesh, node type)` ([`Seat::NodeTypePrimary`]:
+//! an rpc, broker, gateway or compute type; the approved proposal
+//! node-primary-update-fabric-mesh-and-node-type.md Part B1). The holder of a seat is an EXACT birth, `(node_id, incarnation)`, in
 //! a mesh, with a `revision`: the number of times the seat changed hands as the announcer saw it.
 //! A seat does not change hands while its holder lives, so the record a node holds is an input to
 //! every election (`rafka-node-admin-core` `election.rs`), never a result recomputed from
@@ -25,33 +24,34 @@ pub enum Seat {
     ///
     /// Position 1 on the wire.
     FabricPrimary,
-    /// The primary of the holder's mesh's cohort of this node type, every type but `node_admin`
+    /// The node-type primary of the holder's mesh for this node type, every type but `node_admin`
     /// (whose seat is [`Seat::MeshPrimary`]): its mesh's primary writes and announces its record
     /// (R-MT1 Q3: the mesh-primary is the mesh's one row writer and sole author of member status).
     ///
     /// Position 2 on the wire.
-    Cohort(NodeKind),
+    #[serde(rename = "Cohort")]
+    NodeTypePrimary(NodeKind),
 }
 
 impl Seat {
     /// The seat's name as it appears in spans and evidence.
     pub fn name(self) -> &'static str {
         match self {
-            Self::MeshPrimary | Self::Cohort(NodeKind::NodeAdmin) => "mesh-primary",
+            Self::MeshPrimary | Self::NodeTypePrimary(NodeKind::NodeAdmin) => "mesh-primary",
             Self::FabricPrimary => "fabric-primary",
-            Self::Cohort(NodeKind::RpcNode) => "rpc_node-primary",
-            Self::Cohort(NodeKind::Broker) => "broker-primary",
-            Self::Cohort(NodeKind::Gateway) => "gateway-primary",
-            Self::Cohort(NodeKind::Compute) => "compute-primary",
+            Self::NodeTypePrimary(NodeKind::RpcNode) => "rpc_node-primary",
+            Self::NodeTypePrimary(NodeKind::Broker) => "broker-primary",
+            Self::NodeTypePrimary(NodeKind::Gateway) => "gateway-primary",
+            Self::NodeTypePrimary(NodeKind::Compute) => "compute-primary",
         }
     }
 
-    /// The primary seat of the `kind` cohort of a mesh: the mesh-primary seat for `node_admin`, the
-    /// cohort's own seat for every other type.
+    /// The primary seat of node type `kind` in a mesh: the mesh-primary seat for `node_admin`, the
+    /// node-type primary seat for every other type.
     pub fn of_node_type(kind: NodeKind) -> Self {
         match kind {
             NodeKind::NodeAdmin => Self::MeshPrimary,
-            other => Self::Cohort(other),
+            other => Self::NodeTypePrimary(other),
         }
     }
 }
@@ -122,11 +122,12 @@ pub mod transfer {
             /// The mesh whose primary seat it is.
             mesh: String,
         },
-        /// The primary of `mesh`'s cohort of node type `kind` (every type but `node_admin`).
-        Cohort {
-            /// The mesh whose cohort it is.
+        /// The node-type primary of `mesh` for node type `kind` (every type but `node_admin`).
+        #[serde(rename = "Cohort")]
+        NodeTypePrimary {
+            /// The mesh whose node-type primary it is.
             mesh: String,
-            /// The cohort's node type.
+            /// The node type.
             kind: crate::path::NodeKind,
         },
     }
@@ -136,8 +137,8 @@ pub mod transfer {
         pub fn of(seat: super::Seat, mesh: &str) -> Self {
             match seat {
                 super::Seat::FabricPrimary => Self::FabricPrimary,
-                super::Seat::MeshPrimary | super::Seat::Cohort(crate::path::NodeKind::NodeAdmin) => Self::MeshPrimary { mesh: mesh.to_string() },
-                super::Seat::Cohort(kind) => Self::Cohort { mesh: mesh.to_string(), kind },
+                super::Seat::MeshPrimary | super::Seat::NodeTypePrimary(crate::path::NodeKind::NodeAdmin) => Self::MeshPrimary { mesh: mesh.to_string() },
+                super::Seat::NodeTypePrimary(kind) => Self::NodeTypePrimary { mesh: mesh.to_string(), kind },
             }
         }
         /// The record seat it names.
@@ -145,7 +146,7 @@ pub mod transfer {
             match self {
                 Self::FabricPrimary => super::Seat::FabricPrimary,
                 Self::MeshPrimary { .. } => super::Seat::MeshPrimary,
-                Self::Cohort { kind, .. } => super::Seat::of_node_type(*kind),
+                Self::NodeTypePrimary { kind, .. } => super::Seat::of_node_type(*kind),
             }
         }
         /// The seat's name as it appears in spans and evidence.
