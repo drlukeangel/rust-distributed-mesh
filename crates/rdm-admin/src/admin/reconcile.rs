@@ -43,8 +43,8 @@ impl crate::build_drive::Gate for SeatGate {
         if m.holder.node_id != door.node_id {
             // A mesh-primary, commanded directly; any other type's primary, commanded through its
             // mesh-primary (this admin itself when it is that mesh-primary).
-            if m.mesh_seat || m.cohort_seat {
-                let seat = if m.cohort_seat { Seat::Cohort(m.holder.kind) } else { Seat::MeshPrimary };
+            if m.mesh_seat || m.node_type_seat {
+                let seat = if m.node_type_seat { Seat::NodeTypePrimary(m.holder.kind) } else { Seat::MeshPrimary };
                 let update = update_operation(seat, build_id.as_str(), run, operation);
                 door.command_update_primary(&m.holder, build_id.as_str(), attempt, &update).await?;
             }

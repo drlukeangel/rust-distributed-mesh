@@ -40,14 +40,14 @@ pub enum TopologyViolation {
     /// A node's kind or mesh field disagrees with its `path.name`.
     KindMismatch(PathName),
     /// A `(mesh, kind)` group has no primary.
-    NoCohortPrimary {
+    NoNodeTypePrimary {
         /// The mesh concerned.
         mesh: String,
         /// The kind of the group.
         kind: NodeKind,
     },
     /// A `(mesh, kind)` group has more than one primary.
-    SplitCohortPrimary {
+    SplitNodeTypePrimary {
         /// The mesh concerned.
         mesh: String,
         /// The kind of the group.
@@ -72,9 +72,9 @@ impl fmt::Display for TopologyViolation {
             Self::DuplicateMesh(m) => write!(f, "mesh {m} appears twice"),
             Self::NodeInUnknownMesh { node, mesh } => write!(f, "node {node} names mesh {mesh}, which is not in the fabric"),
             Self::KindMismatch(p) => write!(f, "node {p}: kind or mesh field disagrees with its path.name"),
-            Self::NoCohortPrimary { mesh, kind } => write!(f, "cohort ({mesh}, {kind:?}) has no primary"),
-            Self::SplitCohortPrimary { mesh, kind, primaries } => {
-                write!(f, "cohort ({mesh}, {kind:?}) has {} primaries: {primaries:?}", primaries.len())
+            Self::NoNodeTypePrimary { mesh, kind } => write!(f, "node type ({mesh}, {kind:?}) has no primary"),
+            Self::SplitNodeTypePrimary { mesh, kind, primaries } => {
+                write!(f, "node type ({mesh}, {kind:?}) has {} primaries: {primaries:?}", primaries.len())
             }
             Self::PrimaryNotLive(p) => write!(f, "primary {p} is not live"),
             Self::FabricPrimaryCount(n) => write!(f, "{n} fabric primaries, expected exactly one"),
@@ -151,7 +151,7 @@ impl Topology {
         self.members().filter(|n| n.mesh == mesh).all(|n| n.node_id == *node_id)
     }
 
-    /// Every node of one cohort, among the members.
+    /// Every node of one type in `mesh`, among the members.
     pub fn nodes_of_type(&self, mesh: &str, kind: NodeKind) -> impl Iterator<Item = &Node> {
         let mesh = mesh.to_string();
         self.members().filter(move |n| n.mesh == mesh && n.kind == kind)
@@ -195,7 +195,7 @@ impl Topology {
         out
     }
 
-    /// The single primary of a cohort, when exactly one member holds it: the seat the election
+    /// The single primary of a node type in `mesh`, when exactly one member holds it: the seat the election
     /// resolved from the seat records this view was decided against, whatever the holder's status.
     /// Until the next election over this view, a ConnectionsDeleting, Leaving or silent holder is still
     /// the one named here. A caller that needs an admin it can reach checks the holder's
@@ -207,7 +207,7 @@ impl Topology {
     }
 
     /// The fabric primary, when exactly one member holds the seat: the holder the election resolved
-    /// from the seat records, whatever its status, as `Self::cohort_primary`.
+    /// from the seat records, whatever its status, as [`Self::node_type_primary`].
     pub fn fabric_primary(&self) -> Option<&Node> {
         let mut p = self.members().filter(|n| n.is_fabric_primary);
         let first = p.next()?;
@@ -298,17 +298,17 @@ impl Topology {
                 out.push(V::PrimaryNotLive(n.name.clone()));
             }
         }
-        // One primary per declared cohort that has a live member.
-        let mut cohorts: BTreeMap<(String, NodeKind), Vec<&Node>> = BTreeMap::new();
+        // One primary per declared node type in a mesh that has a live member.
+        let mut node_types: BTreeMap<(String, NodeKind), Vec<&Node>> = BTreeMap::new();
         for n in self.members().filter(|n| n.status.is_live()) {
-            cohorts.entry((n.mesh.clone(), n.kind)).or_default().push(n);
+            node_types.entry((n.mesh.clone(), n.kind)).or_default().push(n);
         }
-        for ((mesh, kind), members) in &cohorts {
+        for ((mesh, kind), members) in &node_types {
             let primaries: Vec<PathName> = members.iter().filter(|n| n.is_primary).map(|n| n.name.clone()).collect();
             match primaries.len() {
-                0 => out.push(V::NoCohortPrimary { mesh: mesh.clone(), kind: *kind }),
+                0 => out.push(V::NoNodeTypePrimary { mesh: mesh.clone(), kind: *kind }),
                 1 => {}
-                _ => out.push(V::SplitCohortPrimary { mesh: mesh.clone(), kind: *kind, primaries }),
+                _ => out.push(V::SplitNodeTypePrimary { mesh: mesh.clone(), kind: *kind, primaries }),
             }
         }
         // Exactly one fabric primary, a node-admin that is its mesh's admin primary.
@@ -428,11 +428,11 @@ mod tests {
     fn split_and_missing_node_type_primaries_are_named() {
         let mut t = mn();
         t.nodes[3].is_primary = true; // second rpc primary
-        t.nodes[0].is_primary = false; // admin cohort loses its primary
+        t.nodes[0].is_primary = false; // node-admin type loses its primary
         let v = t.violations();
-        assert!(v.contains(&TopologyViolation::NoCohortPrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");
+        assert!(v.contains(&TopologyViolation::NoNodeTypePrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");
         assert!(
-            v.contains(&TopologyViolation::SplitCohortPrimary {
+            v.contains(&TopologyViolation::SplitNodeTypePrimary {
                 mesh: "mesh1".into(),
                 kind: NodeKind::RpcNode,
                 primaries: vec!["mesh1.rpc.1".parse().unwrap(), "mesh1.rpc.2".parse().unwrap()],
@@ -440,7 +440,7 @@ mod tests {
             "{v:?}"
         );
         assert!(v.contains(&TopologyViolation::FabricPrimaryNotMeshPrimary("mesh1.admin.1".parse().unwrap())), "{v:?}");
-        assert_eq!(t.node_type_primary("mesh1", NodeKind::RpcNode), None, "a split cohort has no single primary");
+        assert_eq!(t.node_type_primary("mesh1", NodeKind::RpcNode), None, "a split node type has no single primary");
     }
 
     #[test]
@@ -468,7 +468,7 @@ mod tests {
         t.nodes[0].status = NodeStatus::PendingReconnect;
         let v = t.violations();
         assert!(v.contains(&TopologyViolation::PrimaryNotLive("mesh1.admin.1".parse().unwrap())), "{v:?}");
-        assert!(v.contains(&TopologyViolation::NoCohortPrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");
+        assert!(v.contains(&TopologyViolation::NoNodeTypePrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");
         assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the silent holder is still the one named");
         assert_eq!(t.mesh_control_endpoint("mesh1"), Some("http://127.0.0.1:18001"), "the holder's endpoint is the mesh's control endpoint");
     }

@@ -534,9 +534,9 @@ const RECOVERS_WITHIN: Duration = Duration::from_secs(30);
 /// CONTRACT (R-SB1, Luke 2026-10-13: "An admin started on an inherited root is fabric recovery: a new
 /// node.id and incarnation over the inherited directory (fabric-recovery.md:10), seated by the ordinary
 /// rules from its rows", "a root holding the fabric's own record and the accepted topology (the admin
-/// boots from its own row, recovery mode, FabricId and MeshIds preserved)"; fabric-recovery.md: "The
-/// relaunched node-admin is a new node over its inherited data dir: a new node.id and incarnation, the
-/// same path.name and endpoint key, and a new port"; "Nothing alive": "The launched node-admin reuses the
+/// boots from its own row, recovery mode, FabricId and MeshIds preserved)"; fabric-recovery.md: the
+/// re-created node-admin is a new node over its inherited data dir: a new node.id and incarnation, the
+/// same path.name and endpoint key, and a new port; "Nothing alive": "The launched node-admin reuses the
 /// fabric id and each MeshId it reads from the store, and mints none", "node.delete of the exited
 /// instance, then node.create at the same path.name, with a new node.id over the inherited data dir", "A
 /// node's name is released by node recovery's node.delete and taken by its node.create, which carries a

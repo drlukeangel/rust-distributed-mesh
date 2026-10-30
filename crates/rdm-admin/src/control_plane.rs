@@ -1303,18 +1303,18 @@ impl ActionKind {
 /// R-MT1's: the delete of a mesh's only node skips the update"), or, for that delete, when the fabric
 /// seat it holds has no other mesh-primary to go to (C2 step 3): the same search the holder's
 /// pre-check runs (`election::commanded_successor`), so nothing is admitted and no attempt opens. A
-/// node of any other type that holds its cohort's seat is refused [`BuildReject::NoSecondary`] when no
+/// node of any other type that holds its node-type primary seat is refused [`BuildReject::NoSecondary`] when no
 /// other node of its type in its mesh can take the seat (`election::commanded_node_type_successor`, Q7).
 fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject> {
     let target = t.node(node)?;
-    // The holder of any other cohort's seat: its mesh-primary's node.primary.update needs another node
+    // The holder of any other node type's seat: its mesh-primary's node.primary.update needs another node
     // of its type (Q7); the delete of a type's only node in its mesh skips the update, whether the node
     // leaves the topology (a removal) or is re-created at the same path.name (node recovery, an executable
     // replacement, the replace's Delete step): R5, node-primary-update.md "No-successor cases".
     if target.kind != crate::model::NodeKind::NodeAdmin {
         let holds = t.node_type_primary(&node.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
-        let only_of_cohort = t.nodes_of_type(&node.mesh, target.kind).all(|n| n.node_id == target.node_id);
-        if !holds || (action == "delete" && only_of_cohort) {
+        let only_of_node_type = t.nodes_of_type(&node.mesh, target.kind).all(|n| n.node_id == target.node_id);
+        if !holds || (action == "delete" && only_of_node_type) {
             return None;
         }
         let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
@@ -1638,8 +1638,8 @@ mod tests {
             }
         }
         let delete_sole = crate::build::BuildOperation::DeleteLiveNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None, birth: None };
-        assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t).is_none(), "deleting the sole member of a non-admin cohort skips node.primary.update");
-        assert_eq!(crate::executor::seat_move(&delete_sole, &t), None, "deleting the sole member of a non-admin cohort moves no seat");
+        assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t).is_none(), "deleting the sole member of a non-admin node type skips node.primary.update");
+        assert_eq!(crate::executor::seat_move(&delete_sole, &t), None, "deleting the sole member of a non-admin node type moves no seat");
         // R5 (Luke 2026-10-24, arm (a); node-primary-update.md "No-successor cases": "the delete of a
         // type's only node in its mesh, whether the node leaves the topology (a removal) or is re-created
         // at the same `path.name`"): the replace's Delete step and the node.delete route of a

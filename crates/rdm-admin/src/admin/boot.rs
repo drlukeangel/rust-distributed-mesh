@@ -627,8 +627,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
     // Identity and the two addresses: assigned by the launching pipeline, the bootstrap admin's own,
     // or (an inherited root) a node.id and incarnation this admin mints at the path.name and endpoint
-    // key of the inherited row, with a new port (fabric-recovery.md: "The relaunched node-admin is a new
-    // node over its inherited data dir"). A new node supersedes no birth (node-stop.md, node-start.md: a stop
+    // key of the inherited row, with a new port (fabric-recovery.md: the re-created node-admin is a new
+    // node over its inherited data dir). A new node supersedes no birth (node-stop.md, node-start.md: a stop
     // and its start alone keep the node.id and incarnation). Its bootstrap contacts are the births it last heard,
     // its own Mesh first: hints, any one of which answering is enough.
     // The fabric-recovery attempt an adoption launch claimed, held until it completes or fails.

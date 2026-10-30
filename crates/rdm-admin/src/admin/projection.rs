@@ -10,7 +10,7 @@ pub(crate) fn incumbency_of(digest_view: &DigestView, _records: &Records) -> cra
     let mut lost: std::collections::HashSet<IncarnationId> = digest_view.deleted().into_iter().map(|op| op.incarnation).collect();
     lost.extend(digest_view.superseded());
     lost.extend(digest_view.seats.gone());
-    crate::election::Incumbency { fabric: digest_view.seats.fabric(), meshes: digest_view.seats.meshes(), cohorts: digest_view.seats.node_type_primaries(), lost }
+    crate::election::Incumbency { fabric: digest_view.seats.fabric(), meshes: digest_view.seats.meshes(), node_type_primaries: digest_view.seats.node_type_primaries(), lost }
 }
 
 /// What this birth's Build log reads its target from: the fabric-primary record `digest_view` holds, the
@@ -63,8 +63,8 @@ pub(crate) fn build_records_reader(digest_view: &DigestView, records: &Arc<Recor
 
 /// The seats this admin announces from one decision of its hierarchy loop: each seat the projection
 /// `t` gives it whose record names another birth, at the
-/// next revision over that record; and, while it is its mesh's primary, each other cohort's seat of its
-/// mesh that `t` fills with a birth the cohort's record does not name. The record is the one `t` was decided against (`decided`): a seat
+/// next revision over that record; and, while it is its mesh's primary, each other node type's seat of its
+/// mesh that `t` fills with a birth the node type's record does not name. The record is the one `t` was decided against (`decided`): a seat
 /// record held after the decision (a committed handover landing while the loop awaits) is the next
 /// decision's input, and is never superseded by this one (fabric-node-lifecycle-elections.md §4.4).
 /// The record this admin already holds for itself needs no announcement.
@@ -83,15 +83,15 @@ pub(crate) fn seat_announcements(t: &Topology, mesh: &str, me: (&NodeId, &Incarn
         said.push((seat, rdm_core::Primary { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
     }
     // The mesh-primary is its mesh's one row writer and sole author of member status (R-MT1 Q3): it
-    // says each other cohort's seat the election filled with a birth the record does not name.
+    // says each other node type's seat the election filled with a birth the record does not name.
     if mesh_primary {
         for kind in NodeKind::ALL.into_iter().filter(|k| *k != NodeKind::NodeAdmin) {
             let Some((node_id, incarnation)) = t.node_type_primary(mesh, kind).and_then(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))) else { continue };
-            let held = decided.cohorts.get(&(mesh.to_string(), kind));
+            let held = decided.node_type_primaries.get(&(mesh.to_string(), kind));
             if held.is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
                 continue;
             }
-            said.push((rdm_core::Seat::Cohort(kind), rdm_core::Primary { mesh: mesh.to_string(), node_id, incarnation, revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
+            said.push((rdm_core::Seat::NodeTypePrimary(kind), rdm_core::Primary { mesh: mesh.to_string(), node_id, incarnation, revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
         }
     }
     said

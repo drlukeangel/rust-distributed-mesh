@@ -280,7 +280,7 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
             return None;
         }
         let holder = t.fabric_primary().filter(|fp| fp.mesh == *mesh)?.clone();
-        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false, successor: None });
+        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true, node_type_seat: false, successor: None });
     }
     let (node, delete) = match op {
         BuildOperation::DeleteLiveNode { node, exited: None, .. } | BuildOperation::Step { step: Step::Delete { node }, .. } => (node, true),
@@ -290,17 +290,16 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
         _ => return None,
     };
     if node.kind != NodeKind::NodeAdmin {
-        // Any other cohort's seat: its holder's seat moves first, by node.primary.update its mesh-primary
-        // commands and writes (proposal Part C1: "One primitive moves the primary of any (mesh,
-        // node_type) cohort"; Q3), except when deleting the cohort's only live node. A holder with
+        // Any other node type's seat: its holder's seat moves first, by node.primary.update its mesh-primary
+        // commands and writes (proposal Part C1, Q3), except when deleting the node type's only live node. A holder with
         // no other node of its type is still named for non-delete actions: the update refuses it by Q7's
         // name (the Build door refuses it first, `control_plane::last_admin`).
         let holder = t.node(node)?.clone();
-        let only_of_cohort = t.nodes_of_type(&node.mesh, node.kind).all(|n| n.node_id == holder.node_id);
-        if !t.node_type_primary(&node.mesh, node.kind).is_some_and(|p| p.node_id == holder.node_id) || (delete && only_of_cohort) {
+        let only_of_node_type = t.nodes_of_type(&node.mesh, node.kind).all(|n| n.node_id == holder.node_id);
+        if !t.node_type_primary(&node.mesh, node.kind).is_some_and(|p| p.node_id == holder.node_id) || (delete && only_of_node_type) {
             return None;
         }
-        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: false, cohort_seat: true, successor: None });
+        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: false, node_type_seat: true, successor: None });
     }
     let holder = t.node(node)?.clone();
     let mesh_seat = t.node_type_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == holder.node_id);
@@ -319,9 +318,9 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
         if !t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead) {
             return None;
         }
-        return fabric_seat.then_some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false, successor: None });
+        return fabric_seat.then_some(SeatMove { holder, mesh_seat: false, fabric_seat: true, node_type_seat: false, successor: None });
     }
-    Some(SeatMove { holder, mesh_seat, fabric_seat, cohort_seat: false, successor: None })
+    Some(SeatMove { holder, mesh_seat, fabric_seat, node_type_seat: false, successor: None })
 }
 
 /// What a drive moves before an operation on a seat holder runs ([`seat_move`]).
@@ -334,9 +333,9 @@ pub struct SeatMove {
     /// It holds the fabric seat: node.fabric-primary.update moves it, in the mesh seat's one row when
     /// both move; alone (the mesh seat stays) it moves out of the holder's mesh (C2 search step 2).
     pub fabric_seat: bool,
-    /// It holds the seat of its (mesh, node type) cohort, a type other than node-admin:
+    /// It holds the node-type primary seat of its (mesh, node type), a type other than node-admin:
     /// node.primary.update moves it, commanded and written by its mesh-primary (proposal Part C1, Q3).
-    pub cohort_seat: bool,
+    pub node_type_seat: bool,
     /// The successor the holder names (elections §4.4: the re-created node-admin of the mesh that lost
     /// the fabric seat); `None` when the search of node-primary-update.md picks it.
     pub successor: Option<PathName>,

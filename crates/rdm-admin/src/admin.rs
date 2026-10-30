@@ -712,7 +712,7 @@ mod tests {
         // The election's result this admin holds: itself mesh-primary at 3, mesh1.rpc.1 its type's primary at 2.
         let holder = |d: &MeshDigest, revision| rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision };
         digest_view.seats.take(rdm_core::Seat::MeshPrimary, &holder(&admin, 3));
-        digest_view.seats.take(rdm_core::Seat::Cohort(NodeKind::RpcNode), &holder(&rpc, 2));
+        digest_view.seats.take(rdm_core::Seat::NodeTypePrimary(NodeKind::RpcNode), &holder(&rpc, 2));
         let writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), refusing.clone(), Arc::new(crate::storage::MemoryMeshStorage::default()), Default::default());
         let (_writes_tx, writes) = tokio::sync::watch::channel(writing(&["mesh1"]));
         let task = tokio::spawn(rows_writer::keep_mesh_rows(writer, digest_view.clone(), fabric1(), writes, crate::stop_gate::StopGate::new(), Arc::default()));
@@ -778,7 +778,7 @@ mod tests {
         }
         let holder = |d: &MeshDigest, revision| rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision };
         digest_view.seats.take(rdm_core::Seat::MeshPrimary, &holder(&admin, 3));
-        digest_view.seats.take(rdm_core::Seat::Cohort(NodeKind::RpcNode), &holder(&rpc, 2));
+        digest_view.seats.take(rdm_core::Seat::NodeTypePrimary(NodeKind::RpcNode), &holder(&rpc, 2));
         let commands: Arc<crate::node_commands::CommandView> = Arc::default();
         let writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), nodes.clone(), Arc::new(crate::storage::MemoryMeshStorage::default()), Default::default());
         let (_writes_tx, writes) = tokio::sync::watch::channel(writing(&["mesh1"]));
@@ -793,7 +793,7 @@ mod tests {
         .expect("the rows writer writes the members' rows before the block");
         assert_eq!(commands.block().await, 0, "no command in flight at the block");
         let before = nodes.acknowledged.load(std::sync::atomic::Ordering::SeqCst);
-        digest_view.seats.take(rdm_core::Seat::Cohort(NodeKind::RpcNode), &holder(&rpc, 4));
+        digest_view.seats.take(rdm_core::Seat::NodeTypePrimary(NodeKind::RpcNode), &holder(&rpc, 4));
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(nodes.acknowledged.load(std::sync::atomic::Ordering::SeqCst), before, "nothing is written while the mesh-primary is blocked");
         assert_eq!(is_primary(&rpc).await, Some(2), "the row still holds what was copied");
@@ -2937,15 +2937,15 @@ mod tests {
     }
 
     /// CONTRACT (lifecycles/node-primary-update.md "Writer": "for every other type the mesh-primary
-    /// records the node's row"; the mesh-primary is the sole author of member status): a mesh-primary announces the seat of each other cohort of its mesh the election fills
+    /// records the node's row"; the mesh-primary is the sole author of member status): a mesh-primary announces the seat of each other node type of its mesh the election fills
     /// with a birth its record does not name (a first election, a holder proven gone), at the next
     /// revision over that record, and nothing while the record names the living holder. No other admin
-    /// announces a cohort seat. Must NOT happen: an rpc cohort's seat that no record holds, so a
+    /// announces a node-type primary seat. Must NOT happen: an rpc node-type primary seat that no record holds, so a
     /// lower NodeId that later becomes Ready displaces the living holder.
     #[tokio::test]
     async fn a_mesh_primary_announces_each_node_type_primary_the_election_fills_in_its_mesh() {
         use MemberStatus::*;
-        use rdm_core::Seat::{Cohort, FabricPrimary, MeshPrimary};
+        use rdm_core::Seat::{FabricPrimary, MeshPrimary, NodeTypePrimary};
         let digest_view = DigestView::default();
         let records = Records::default();
         let me = with_id(digest("mesh1.admin.1", Ready), "500000000000");
@@ -2958,26 +2958,26 @@ mod tests {
         digest_view.seats.take(MeshPrimary, &primary_of(&me, 1));
         digest_view.seats.take(FabricPrimary, &primary_of(&me, 1));
         let me_birth = (&me.node.node_id, &me.node.incarnation);
-        let cohort_said = |said: &[(rdm_core::Seat, rdm_core::Primary)]| said.iter().filter(|(s, _)| matches!(s, Cohort(_))).map(|(s, h)| (*s, h.node_id.to_string(), h.revision)).collect::<Vec<_>>();
-        // A first election: no record of the rpc cohort, the lowest Ready fills it at revision 1.
+        let node_type_said = |said: &[(rdm_core::Seat, rdm_core::Primary)]| said.iter().filter(|(s, _)| matches!(s, NodeTypePrimary(_))).map(|(s, h)| (*s, h.node_id.to_string(), h.revision)).collect::<Vec<_>>();
+        // A first election: no record of the rpc node type, the lowest Ready fills it at revision 1.
         let decided = incumbency_of(&digest_view, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         let said = seat_announcements(&t, "mesh1", me_birth, &decided);
-        assert_eq!(cohort_said(&said), vec![(Cohort(NodeKind::RpcNode), rpc1.node.node_id.to_string(), 1)], "the mesh-primary seats mesh1.rpc.1: {said:?}");
+        assert_eq!(node_type_said(&said), vec![(NodeTypePrimary(NodeKind::RpcNode), rpc1.node.node_id.to_string(), 1)], "the mesh-primary seats mesh1.rpc.1: {said:?}");
         let sib = seat_announcements(&t, "mesh1", (&sibling.node.node_id, &sibling.node.incarnation), &decided);
-        assert!(cohort_said(&sib).is_empty(), "an admin that is not the mesh-primary announces no cohort seat: {sib:?}");
+        assert!(node_type_said(&sib).is_empty(), "an admin that is not the mesh-primary announces no node-type primary seat: {sib:?}");
         // The record names the living mesh1.rpc.2: it keeps the seat over the lower Ready NodeId and nothing is said.
-        digest_view.seats.take(Cohort(NodeKind::RpcNode), &primary_of(&rpc2, 3));
+        digest_view.seats.take(NodeTypePrimary(NodeKind::RpcNode), &primary_of(&rpc2, 3));
         let decided = incumbency_of(&digest_view, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         assert_eq!(t.node_type_primary("mesh1", NodeKind::RpcNode).map(|n| n.name.to_string()).as_deref(), Some("mesh1.rpc.2"));
-        assert!(cohort_said(&seat_announcements(&t, "mesh1", me_birth, &decided)).is_empty(), "a living recorded holder is not announced again");
+        assert!(node_type_said(&seat_announcements(&t, "mesh1", me_birth, &decided)).is_empty(), "a living recorded holder is not announced again");
         // mesh1.rpc.2 proven exited: the seat goes to the lowest Ready, announced at the next revision.
         depart(&digest_view, &records, &rpc2).await;
         let decided = incumbency_of(&digest_view, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         let said = seat_announcements(&t, "mesh1", me_birth, &decided);
-        assert_eq!(cohort_said(&said), vec![(Cohort(NodeKind::RpcNode), rpc1.node.node_id.to_string(), 4)], "{said:?}");
+        assert_eq!(node_type_said(&said), vec![(NodeTypePrimary(NodeKind::RpcNode), rpc1.node.node_id.to_string(), 4)], "{said:?}");
     }
 
     #[test]
@@ -3053,7 +3053,7 @@ mod tests {
             PendingGate::Blocked(why) => assert!(why.contains("not been applied here by the fabric primary"), "{why}"),
             other => panic!("a first admin that is not Day 0 never self-applies: {other:?}"),
         }
-        assert_eq!(pending_gate(&me, "mesh2", false, false, true), PendingGate::Clear, "an admin entering an existing mesh owes no Pending, its cohort live or not");
+        assert_eq!(pending_gate(&me, "mesh2", false, false, true), PendingGate::Clear, "an admin entering an existing mesh owes no Pending, its node type live or not");
         assert_eq!(pending_gate(&me, "mesh2", false, true, false), PendingGate::Clear);
         assert_eq!(pending_gate(&me, "mesh2", true, true, false), PendingGate::Clear, "Day 0 applies it once");
     }
@@ -3528,7 +3528,7 @@ mod tests {
         wake.seen();
 
         let primary = rdm_core::Primary { mesh: "mesh1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), revision: 1 };
-        digest_view.seats.take(rdm_core::Seat::Cohort(NodeKind::RpcNode), &primary);
+        digest_view.seats.take(rdm_core::Seat::NodeTypePrimary(NodeKind::RpcNode), &primary);
         assert_eq!(due(&mut wake), Some("primaries"), "the rpc nodes' node-type primary record taken");
         wake.seen();
 

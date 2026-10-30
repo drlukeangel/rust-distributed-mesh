@@ -172,7 +172,7 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
         | BuildOperation::Step { step: Step::Stop { node } | Step::Delete { node } | Step::DeleteConnections { node }, .. } => {
-            vec![PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(Seat::Cohort(node.kind), build_id.as_str(), run, &key), holder: Some(node.clone()) }]
+            vec![PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(Seat::NodeTypePrimary(node.kind), build_id.as_str(), run, &key), holder: Some(node.clone()) }]
         }
         _ => Vec::new(),
     }
@@ -2522,7 +2522,7 @@ fn intent_facts(facts: Vec<crate::build_state::BuildFact>, id: &BuildId, run: &[
 
 /// Whether view `t` still names `m`'s holder the holder of the seats `m` moves before `op`.
 fn still_holds(op: &BuildOperation, m: &crate::executor::SeatMove, t: &Topology) -> bool {
-    crate::executor::seat_move(op, t).is_some_and(|still| still.holder.node_id == m.holder.node_id && still.mesh_seat == m.mesh_seat && still.fabric_seat == m.fabric_seat && still.cohort_seat == m.cohort_seat)
+    crate::executor::seat_move(op, t).is_some_and(|still| still.holder.node_id == m.holder.node_id && still.mesh_seat == m.mesh_seat && still.fabric_seat == m.fabric_seat && still.node_type_seat == m.node_type_seat)
 }
 
 /// A claim not won, in words that name what the claim door said.

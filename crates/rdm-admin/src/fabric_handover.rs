@@ -42,7 +42,7 @@ use tracing::Instrument as _;
 /// `Failed` starts a new one, so a new update.
 pub fn update_operation(seat: Seat, build_id: &str, run: u32, op_key: &str) -> String {
     match seat {
-        Seat::MeshPrimary | Seat::Cohort(_) => format!("node.primary.update:{build_id}:{run}:{op_key}"),
+        Seat::MeshPrimary | Seat::NodeTypePrimary(_) => format!("node.primary.update:{build_id}:{run}:{op_key}"),
         Seat::FabricPrimary => format!("node.fabric-primary.update:{build_id}:{run}:{op_key}"),
     }
 }
@@ -550,7 +550,7 @@ impl HandoverDoor {
         // The record the operation moves: the fabric-primary's for node.fabric-primary.update, its type's
         // otherwise.
         let fabric_update = operation.starts_with("node.fabric-primary.update:");
-        let (seat, record) = if fabric_update { (Seat::FabricPrimary, primary_view.fabric()) } else { (Seat::of_node_type(kind), primary_view.cohort(&primary.mesh, kind)) };
+        let (seat, record) = if fabric_update { (Seat::FabricPrimary, primary_view.fabric()) } else { (Seat::of_node_type(kind), primary_view.node_type_primary(&primary.mesh, kind)) };
         let Some(record) = record.filter(|r| !r.is_birth(&primary.node_id, &primary.incarnation)) else { return Ok(None) };
         if !primary_view.replaced(seat, &primary.mesh, &primary.incarnation) {
             return Ok(None);

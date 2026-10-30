@@ -1406,8 +1406,8 @@ async fn mark_retained(storage: &dyn NodesStorage, me: &PathName, written: &Writ
 }
 
 /// Fabric recovery's hand-over of the `path.name` an admin started on an inherited root takes
-/// (fabric-recovery.md: "The relaunched node-admin is a new node over its inherited data dir: a new
-/// node.id and incarnation, the same path.name"; "Nothing alive": "node.delete of the exited instance,
+/// (fabric-recovery.md: the re-created node-admin is a new node over its inherited data dir: a new
+/// node.id and incarnation, the same path.name; "Nothing alive": "node.delete of the exited instance,
 /// then node.create at the same path.name, with a new node.id over the inherited data dir", "A node's
 /// name is released by node recovery's node.delete and taken by its node.create, which carries a new
 /// node.id"). Fabric recovery starts after every node-admin is lost, so this admin, `node_id`, is the

@@ -642,15 +642,15 @@ async fn a_read_is_served_with_the_adopted_rafka_time_and_the_nodes_primaries() 
     server.topology_view.primaries().take(seat, &holder);
     let rpc_holder = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
     let broker_holder = Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 3 };
-    server.topology_view.primaries().take(Seat::Cohort(NodeKind::RpcNode), &rpc_holder);
-    server.topology_view.primaries().take(Seat::Cohort(NodeKind::Broker), &broker_holder);
+    server.topology_view.primaries().take(Seat::NodeTypePrimary(NodeKind::RpcNode), &rpc_holder);
+    server.topology_view.primaries().take(Seat::NodeTypePrimary(NodeKind::Broker), &broker_holder);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     assert_eq!(read.rafka_time.unwrap().kind, Some(PrimaryKind::MeshPrimary));
     assert_eq!(caller.topology_view.primaries().mesh("mesh1"), Some(holder.clone()));
     // The read carries the mesh-primaries and the fabric-primary (node-rpc-envelope.md `Primaries`); every
     // other type's primary rides its digest and its mesh-primary's projection (`is_primary`).
-    assert_eq!(caller.topology_view.primaries().cohort("mesh1", NodeKind::RpcNode), None, "another type's primary is not carried by the read: {rpc_holder:?}");
-    assert_eq!(caller.topology_view.primaries().cohort("mesh2", NodeKind::Broker), None, "nor a peer mesh's: {broker_holder:?}");
+    assert_eq!(caller.topology_view.primaries().node_type_primary("mesh1", NodeKind::RpcNode), None, "another type's primary is not carried by the read: {rpc_holder:?}");
+    assert_eq!(caller.topology_view.primaries().node_type_primary("mesh2", NodeKind::Broker), None, "nor a peer mesh's: {broker_holder:?}");
 
     let (seat, holder) = held(Seat::FabricPrimary);
     server.topology_view.primaries().take(seat, &holder);

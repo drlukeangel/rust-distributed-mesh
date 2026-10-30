@@ -249,7 +249,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_sl
             let (topology, seats) = (topology.clone(), seats.clone());
             Box::pin(async move {
                 let mut view = topology.write().await;
-                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), cohorts: seats.node_type_primaries(), lost: seats.gone() };
+                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), node_type_primaries: seats.node_type_primaries(), lost: seats.gone() };
                 resolve_with(&mut view.nodes, &inc);
             })
         })
@@ -622,14 +622,14 @@ async fn type_fabric_heard(with_b2: bool, b1_hears_b2: bool) -> TypeFabric {
         primary_at(a, Seat::FabricPrimary, &primary_of(&x, 7)).await;
         primary_at(a, Seat::MeshPrimary, &primary_of(&p, 3)).await;
         primary_at(a, Seat::MeshPrimary, &primary_of(&x, 1)).await;
-        primary_at(a, Seat::Cohort(RPC), &member_primary(&b1, 2)).await;
+        primary_at(a, Seat::NodeTypePrimary(RPC), &member_primary(&b1, 2)).await;
     }
     let members: Vec<&Member> = std::iter::once(&b1).chain(b2.iter()).collect();
     for m in &members {
         for r in &resolved {
             m.resolver.insert(r.clone());
         }
-        m.door.topology_view().primaries().take(Seat::Cohort(RPC), &member_primary(&b1, 2));
+        m.door.topology_view().primaries().take(Seat::NodeTypePrimary(RPC), &member_primary(&b1, 2));
         for other in members.iter().filter(|o| o.resolved.node_id != m.resolved.node_id && (b1_hears_b2 || m.resolved.node_id != b1.resolved.node_id)) {
             assert!(m.door.topology_view().digest_view.record(digest_of(&other.resolved, &other.fabric)));
             // Its mesh-primary's projection holds it Ready.
@@ -917,12 +917,12 @@ fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_fo
     cap.run(async {
         let f = type_fabric(true).await;
         let b1 = node_at(&f.p, "mesh1.rpc.1").await;
-        let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
+        let op = update_operation(Seat::NodeTypePrimary(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
         let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await.expect("mesh1's rpc-node primary moves");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.p.door.topology_view.primaries().cohort("mesh1", RPC), Some(member_primary(f.b2(), 3)));
-        assert_eq!(f.b1.door.topology_view().primaries().cohort("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
-        assert_eq!(f.b2().door.topology_view().primaries().cohort("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B2 installed itself");
+        assert_eq!(f.p.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
+        assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
+        assert_eq!(f.b2().door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B2 installed itself");
         assert_eq!(f.p.finished(), 0, "the mesh-primary finished no writes for another type's update");
         let _ = &f.x;
     });
@@ -940,11 +940,11 @@ fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_o
     cap.run(async {
         let f = type_fabric_heard(true, false).await;
         let b1 = node_at(&f.p, "mesh1.rpc.1").await;
-        let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
+        let op = update_operation(Seat::NodeTypePrimary(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
         let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await.expect("the hand-over completes on the successor P named");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.b1.door.topology_view().primaries().cohort("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
-        let bare = f.b1.door.serve(Request::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b1".into(), run: 1, operation: update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.2"), successor: None }).await;
+        assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
+        let bare = f.b1.door.serve(Request::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b1".into(), run: 1, operation: update_operation(Seat::NodeTypePrimary(RPC), "b1", 1, "node.stop:mesh1.rpc.2"), successor: None }).await;
         assert!(matches!(&bare, Reply::Failed { reason, .. } if reason == "mesh1.rpc.1 is a rpc-node primary: its mesh-primary's command names no successor"), "{bare:?}");
         let _ = &f.x;
     });
@@ -962,10 +962,10 @@ fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
     cap.run(async {
         let f = type_fabric(true).await;
         let b1 = node_at(&f.x, "mesh1.rpc.1").await;
-        let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
+        let op = update_operation(Seat::NodeTypePrimary(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
         let revisions = f.x.door.command_update_primary(&b1, "b1", 1, &op).await.expect("the command answers");
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.x.door.topology_view.primaries().cohort("mesh1", RPC), Some(member_primary(f.b2(), 3)));
+        assert_eq!(f.x.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
         let commands = spans.named(COMMAND);
         assert_eq!(commands.iter().map(|c| c["to"].clone()).collect::<Vec<_>>(), vec!["mesh1.admin.1".to_string()], "X's command goes to mesh1's mesh-primary: {commands:?}");
     });
@@ -980,10 +980,10 @@ fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() 
     cap.run(async {
         let f = type_fabric(false).await;
         let b1 = node_at(&f.p, "mesh1.rpc.1").await;
-        let op = update_operation(Seat::Cohort(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
+        let op = update_operation(Seat::NodeTypePrimary(RPC), "b1", 1, "node.stop:mesh1.rpc.1");
         let r = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await;
         assert!(matches!(&r, Err(Reply::Failed { reason, .. }) if reason == "cannot transfer: no secondary of type rpc-node in mesh mesh1"), "{r:?}");
-        assert_eq!(f.p.door.topology_view.primaries().cohort("mesh1", RPC), Some(member_primary(&f.b1, 2)), "B1 stays the rpc-node primary");
+        assert_eq!(f.p.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "B1 stays the rpc-node primary");
         let _ = &f.x;
     });
 }
