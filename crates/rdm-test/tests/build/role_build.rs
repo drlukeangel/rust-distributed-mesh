@@ -64,7 +64,7 @@ async fn roles_are_born_by_build_under_their_kind() {
     let (first, nodes) = build(&estate, "roles", &roles).await;
     estate.artifact("nodes.json", &json!(nodes));
 
-    // One primary per cohort (a cohort of one is its own primary); one fabric primary, the admin.
+    // One primary per node type (a node type of one is its own primary); one fabric primary, the admin.
     let mut primaries: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for n in &nodes {
         let e = primaries.entry(n["kind"].as_str().unwrap().to_string()).or_default();
@@ -73,8 +73,8 @@ async fn roles_are_born_by_build_under_their_kind() {
         }
     }
     assert_eq!(primaries.keys().cloned().collect::<Vec<_>>(), ["broker", "compute", "gateway", "node_admin"]);
-    for (cohort, p) in &primaries {
-        assert_eq!(p.len(), 1, "cohort {cohort} has primaries {p:?}");
+    for (node_type, p) in &primaries {
+        assert_eq!(p.len(), 1, "node type {node_type} has primaries {p:?}");
     }
     let fabric_primaries: Vec<&Value> = nodes.iter().filter(|n| n["is_fabric_primary"] == true).collect();
     assert_eq!(fabric_primaries.len(), 1, "{fabric_primaries:?}");

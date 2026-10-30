@@ -1184,8 +1184,8 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
     let admin_of = |primary: bool| views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary == primary).map(|n| n.name.clone()).expect("mesh2 has two admins");
     let (holder, successor) = (admin_of(true), admin_of(false));
     assert!(!views.iter().any(|n| n.name == holder && n.is_fabric_primary), "mesh2's primary is not the fabric primary: the entry admin stays put");
-    // The rpc node that is not its cohort's primary: its stop moves no seat of its own.
-    let stopped_birth = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode && !n.is_primary).cloned().expect("mesh2 has an rpc node that is not its cohort's primary");
+    // The rpc node that is not its node type's primary: its stop moves no seat of its own.
+    let stopped_birth = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode && !n.is_primary).cloned().expect("mesh2 has an rpc node that is not its node type's primary");
     let stopped_node = stopped_birth.name.clone();
     let nodes = estate.nodes_obj().await;
 

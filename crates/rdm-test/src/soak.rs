@@ -1157,7 +1157,7 @@ impl Driver {
                 return None;
             }
             let secondary = nodes.iter().any(|o| o["mesh"] == n["mesh"] && o["kind"] == n["kind"] && o["name"] != n["name"] && o["status"] == "ready");
-            (!secondary).then(|| format!("{what}: {} holds its cohort's seat and no other {} of {} is ready: node.primary.update has no secondary", s(&n["name"]), s(&n["kind"]), s(&n["mesh"])))
+            (!secondary).then(|| format!("{what}: {} holds its node-type primary seat and no other {} of {} is ready: node.primary.update has no secondary", s(&n["name"]), s(&n["kind"]), s(&n["mesh"])))
         };
         // A replacement is a delete then a spawn, and a spawn lands at the lowest free ordinal of
         // its class: it replaces the node at the same path.name only when no lower ordinal is free.

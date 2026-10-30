@@ -40,7 +40,7 @@
 //! failure.
 
 use rdm_client::{CallEnd, LaunchKind as NodeKind, NodeStatus, PathName, WorkflowStream};
-use rdm_test::elections::{advertised_primaries, expected_primaries, primaries_as_expected, primaries_kept, Cohort};
+use rdm_test::elections::{advertised_primaries, expected_primaries, primaries_as_expected, primaries_kept, NodeType};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
@@ -57,7 +57,7 @@ fn owner(test: &str, rung: &str) -> Owner {
     }
 }
 
-fn node_type_of(mesh: &str, kind: &str) -> Cohort {
+fn node_type_of(mesh: &str, kind: &str) -> NodeType {
     (mesh.into(), kind.into())
 }
 
@@ -70,7 +70,7 @@ fn id_of(nodes: &[Value], name: &str) -> String {
 }
 
 /// The one primary of `c` in `nodes`, if exactly one.
-fn primary_of(nodes: &[Value], c: &Cohort) -> Option<String> {
+fn primary_of(nodes: &[Value], c: &NodeType) -> Option<String> {
     match advertised_primaries(nodes).get(c).map(Vec::as_slice) {
         Some([one]) => Some(one.clone()),
         _ => None,
@@ -140,8 +140,8 @@ async fn steady(estate: &Estate, admin: &PathName, label: &str, hold: Duration) 
 }
 
 /// The lowest ready NodeId of `c` in `nodes` other than `holder` (a NodeId): the successor the
-/// cohort election names with the holder excluded (proposal Part C1 step 2).
-fn next_lowest(nodes: &[Value], c: &Cohort, holder: &str) -> (String, String) {
+/// node-type election names with the holder excluded (proposal Part C1 step 2).
+fn next_lowest(nodes: &[Value], c: &NodeType, holder: &str) -> (String, String) {
     nodes
         .iter()
         .filter(|n| n["mesh"] == c.0.as_str() && n["kind"] == c.1.as_str() && n["status"] == "ready" && n["node_id"] != holder)
@@ -154,7 +154,7 @@ fn next_lowest(nodes: &[Value], c: &Cohort, holder: &str) -> (String, String) {
 /// `operation_suffix` (a Build operation's key, the end of the update's operation identity) and answered
 /// node.primary.updated (lifecycles/node-primary-update.md step 4: its `via-primary-updated` span's
 /// start), if it did.
-fn primary_updated(spans: &[Value], c: &Cohort, operation_suffix: &str, successor: &str) -> Option<u64> {
+fn primary_updated(spans: &[Value], c: &NodeType, operation_suffix: &str, successor: &str) -> Option<u64> {
     let entry = format!("{} ", c.1.replace('_', "-"));
     named(spans, "rdm.node_admin.primary.update.via-primary-updated")
         .iter()
@@ -166,12 +166,12 @@ fn primary_updated(spans: &[Value], c: &Cohort, operation_suffix: &str, successo
         .min()
 }
 
-/// The successor to `gone_id` in `c`: the lowest NodeId among the cohort's other ready members
+/// The successor to `gone_id` in `c`: the lowest NodeId among the node type's other ready members
 /// in `before` (the view just before the kill), announced by the mesh as the winner after
 /// `gone_id`. Decided from the pre-kill view and the announcement span, never from a polled
 /// view: drift recovery rebirths the path within seconds, and a view polled after that already
 /// shows the re-born NodeId (a different birth) in the seat.
-async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Cohort, gone_id: &str) -> (String, String) {
+async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &NodeType, gone_id: &str) -> (String, String) {
     let (name, id) = before
         .iter()
         .filter(|n| n["mesh"] == c.0.as_str() && n["kind"] == c.1.as_str() && n["status"] == "ready" && n["node_id"] != gone_id)
@@ -181,7 +181,7 @@ async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Coho
     // The seat vacates only on the provider's exited verdict, which node recovery takes at the gone
     // birth's TRUE OFFLINE mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
     // winner it elected and the birth it replaced; the election's span is the only place that fact
-    // lives (a view may already show the birth drift recovery brings back in the seat's cohort), so the
+    // lives (a view may already show the birth drift recovery brings back in the seat's node type), so the
     // span is awaited.
     wait_for(&format!("{name} ({id}) announced as the successor to {gone_id}"), crate::node_recovery_due(), || async {
         announced(&estate.spans(), c, &id, gone_id).then_some(())
@@ -198,7 +198,7 @@ async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Coho
 }
 
 /// The node-type election span that announced `winner` for `c` after `previous` (NodeIds).
-fn announced(spans: &[Value], c: &Cohort, winner: &str, previous: &str) -> bool {
+fn announced(spans: &[Value], c: &NodeType, winner: &str, previous: &str) -> bool {
     named(spans, "rdm.mesh.election.resolve.via-recompute").iter().any(|s| {
         let a = &s["attributes"];
         a["election_level"] == "node_type"
@@ -283,11 +283,11 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
             (views.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.status == NodeStatus::Ready).count() == 3).then_some(())
         })
         .await;
-    let nodes = settle(&estate, &admin1, "the cohort is back at its desired count").await;
+    let nodes = settle(&estate, &admin1, "the node type is back at its desired count").await;
     estate.artifact("settled-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "live": nodes, "all": estate.node_values().await}));
     assert!(!nodes.iter().any(|n| n["node_id"] == killed_id.as_str()), "the killed birth {killed_id} is not live again: {nodes:#?}");
     assert_eq!(nodes.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node").count(), 3, "three live rpc nodes: {nodes:#?}");
-    steady(&estate, &admin1, "the cohort is back at its desired count", hold).await;
+    steady(&estate, &admin1, "the node type is back at its desired count", hold).await;
 
     // legal removal of the primary -> the next-lowest succeeds
     let removed = primary_of(&nodes, &rpc).unwrap();
@@ -380,7 +380,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
             // (mesh, node type).
             for sp in named(&spans, "rdm.mesh.election.resolve.via-recompute").into_iter().filter(after) {
                 let winner = s(&sp["attributes"]["winner_path"]);
-                assert!(!winner.contains(','), "one primary per cohort in every view: {sp}");
+                assert!(!winner.contains(','), "one primary per node type in every view: {sp}");
             }
             // Recovery follows node investigation's verdict: nothing was re-created on `reached`.
             for sp in named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(after) {
@@ -403,7 +403,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
             a["election_level"] == level && a["observer"] == boot.0.as_str() && a["winner_node_id"] == boot.1.as_str() && a["previous_node_id"] == ""
         })
     };
-    assert!(own("rdm.mesh.election.resolve.via-recompute", "node_type"), "day 0: node-admin cohort");
+    assert!(own("rdm.mesh.election.resolve.via-recompute", "node_type"), "day 0: node-admin type");
     assert!(own("rdm.mesh.election.resolve.via-mesh-primary", "mesh_primary"), "day 0: mesh primary");
     assert!(own("rdm.mesh.election.resolve.via-fabric-recompute", "fabric_primary"), "day 0: fabric primary");
     assert!(announced(&spans, &rpc, &succ_id, &killed_id), "the successor to the killed primary was announced");
@@ -437,7 +437,7 @@ async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
     // A peer mesh's members reach this admin through its primary's backbone
     // publication: the view settles within a publication or two.
     let nodes = estate
-        .until_view("the MM view settles with four cohort primaries", Duration::from_secs(15), |views| {
+        .until_view("the MM view settles with four node-type primaries", Duration::from_secs(15), |views| {
             let nodes = Estate::values(views);
             (settled(&nodes) && advertised_primaries(&nodes).len() == 4).then_some(nodes)
         })
@@ -497,13 +497,13 @@ async fn a_second_meshs_node_admins_elect_their_lowest_node_id() {
     let spans = estate.spans();
     assert!(announced(&spans, &admin2, &succ_id, &p_id), "the successor to the killed admin primary was announced");
     assert!(announced(&spans, &admin2, &succ2_id, &removed_id), "the successor to the removed admin primary was announced");
-    // The mesh primary is the node-admin cohort's winner, announced as such.
+    // The mesh primary is the node-admin type's winner, announced as such.
     assert!(
         named(&spans, "rdm.mesh.election.resolve.via-mesh-primary").iter().any(|sp| {
             let a = &sp["attributes"];
             a["mesh"] == "mesh2" && a["source_kind"] == "node_admin" && a["winner_node_id"] == succ2_id.as_str()
         }),
-        "mesh2's primary follows its node-admin cohort"
+        "mesh2's primary follows its node-admin type"
     );
 }
 

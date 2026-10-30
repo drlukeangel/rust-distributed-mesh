@@ -52,18 +52,18 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     let nodes = Estate::values(&estate.settles_to_named(&want.iter().cloned().collect(), Duration::from_secs(15)).await);
     estate.artifact("nodes.json", &json!(nodes));
 
-    // One primary per cohort, one fabric primary (an admin primary).
+    // One primary per node type, one fabric primary (an admin primary).
     let mut primaries: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for n in &nodes {
-        let cohort = (n["mesh"].as_str().unwrap().to_string(), n["kind"].as_str().unwrap().to_string());
-        let e = primaries.entry(cohort).or_default();
+        let node_type = (n["mesh"].as_str().unwrap().to_string(), n["kind"].as_str().unwrap().to_string());
+        let e = primaries.entry(node_type).or_default();
         if n["is_primary"] == true {
             e.push(n["name"].as_str().unwrap().to_string());
         }
     }
-    assert_eq!(primaries.len(), meshes.len() * 2, "{shape}: every declared cohort is present");
-    for (cohort, p) in &primaries {
-        assert_eq!(p.len(), 1, "{shape}: cohort {cohort:?} has primaries {p:?}");
+    assert_eq!(primaries.len(), meshes.len() * 2, "{shape}: every declared node type is present");
+    for (node_type, p) in &primaries {
+        assert_eq!(p.len(), 1, "{shape}: node type {node_type:?} has primaries {p:?}");
     }
     let fabric_primaries: Vec<&Value> = nodes.iter().filter(|n| n["is_fabric_primary"] == true).collect();
     assert_eq!(fabric_primaries.len(), 1, "{shape}: fabric primaries {fabric_primaries:?}");

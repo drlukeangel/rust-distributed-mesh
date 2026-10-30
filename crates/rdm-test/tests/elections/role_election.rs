@@ -10,7 +10,7 @@
 //!   `is_primary` on `node.get` (`Nodes::get`), never computed product-side.
 
 use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
-use rdm_test::elections::{advertised_primaries, primaries_as_expected, Cohort};
+use rdm_test::elections::{advertised_primaries, primaries_as_expected, NodeType};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -47,7 +47,7 @@ async fn settle(estate: &Estate, label: &str) -> Vec<Value> {
 async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 3), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
-    let brokers: Cohort = ("mesh1".into(), "broker".into());
+    let brokers: NodeType = ("mesh1".into(), "broker".into());
     let nodes = settle(&estate, "roles").await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     assert_eq!(nodes.iter().filter(|n| n["kind"] == "broker").count(), 3, "{nodes:#?}");
