@@ -1983,3 +1983,48 @@ async fn a_recovery_answered_build_in_progress_is_opened_owed_to_its_mesh_and_cl
     let opens = builds.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(o) if o.mesh.as_deref() == Some("mesh2"))).count();
     assert_eq!(opens, 1, "claimed, never reopened");
 }
+
+/// CONTRACT (build.md, R-BI7: the fabric lane runs one attempt at a time): while the fabric lane's attempt
+/// is claimed and running in mesh1, the recovery of mesh2's unheard mesh-primary, a fabric-lane recovery,
+/// opens nothing and is answered BuildInProgress naming it; once that attempt ended, the same submit is
+/// opened as the lane's next attempt. Must NOT happen: a second fabric-lane attempt opened and claimed over
+/// the running one (red at 3ae979902, i143-rshape-soak-randomized-process: attempt 5 claimed over the
+/// running attempt 4, whose dispatch was then refused stale-claim and whose in-flight row stood for good).
+#[tokio::test]
+async fn a_fabric_lane_recovery_waits_for_the_running_fabric_attempt_and_is_opened_at_its_end() {
+    use rdm_admin::accepted::AttemptAction;
+    use rdm_admin::build_state::{AttemptOpened, BuildState};
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let (mut t, accepted_view) = unheard_mesh2_primary(true);
+    t.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin).for_each(|n| n.is_primary = n.name.to_string() == "mesh2.admin.2");
+    let path: PathName = "mesh2.admin.1".parse().unwrap();
+    let unheard = t.node(&path).unwrap().clone();
+    let (node_id, birth) = (unheard.node_id.clone(), unheard.incarnation_id.clone().unwrap());
+    let mesh1_node = t.nodes.iter().find(|n| n.mesh == "mesh1" && n.kind != NodeKind::NodeAdmin).cloned().expect("a mesh1 node");
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
+    let fp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time()));
+    election_replaced(&fp, &t, "mesh2.admin.1", "mesh2.admin.2");
+    let b0 = fp.builds.current_build().await.unwrap().into_build_id().unwrap();
+    settle_other(&builds, &b0).await;
+
+    // The fabric lane's next attempt, a stop in mesh1, is opened and claimed by the fabric-primary: running.
+    let running = builds.read_build(&b0).await.unwrap().attempt + 1;
+    let stop = AttemptAction::Stop { path: mesh1_node.name.clone(), node_id: mesh1_node.node_id.clone(), from_incarnation: mesh1_node.incarnation_id.clone().unwrap() };
+    builds.open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: running, reason: AttemptReason::Delete, action: Some(stop), opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, mesh: None, context: None }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: running, executor: "mesh1.admin.1".into(), claimant: Some("mesh1.admin.1".into()), mesh: None }).await.unwrap();
+    assert_eq!(builds.read_build(&b0).await.unwrap().state, BuildState::Running, "the fabric lane's attempt {running} runs");
+
+    match fp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await {
+        Err(Refusal::BuildInProgress(held)) => assert_eq!(held.current_build_id, b0, "{held:?}"),
+        other => panic!("while the fabric lane's attempt runs, its recovery opens nothing: {other:?}"),
+    }
+    let p = builds.read_build(&b0).await.unwrap();
+    assert_eq!((p.attempt, p.opened), (running, running), "no attempt opened over the running one: {p:?}");
+
+    // The running attempt ends: the same submit is opened as the lane's next attempt.
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: running, outcome: AttemptOutcome::Converged }).await.unwrap();
+    match fp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await {
+        Ok(Recovery::Opened(o)) => assert_eq!((o.mesh.as_deref(), o.attempt), (None, running + 1), "the lane's next attempt: {o:?}"),
+        other => panic!("once the fabric lane's attempt ended, the recovery is opened: {other:?}"),
+    }
+}

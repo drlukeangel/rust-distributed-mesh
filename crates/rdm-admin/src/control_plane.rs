@@ -1161,6 +1161,20 @@ impl ControlPlane {
             // claim another attempt refused) is claimed as it stands (fabric-recovery.md: "resuming the attempt
             // from its recorded progress").
             let open = if lane.is_some() { open } else { (current.state == BuildState::Pending && current.opened == current.attempt + 1 && current.attempt_actions.get(&current.opened) == Some(&action)).then_some(current.opened) };
+            // The fabric lane is one attempt at a time (build.md, R-BI7): while its attempt is claimed and
+            // running, whatever mesh it acts in, a recovery opens nothing there and is answered
+            // build-in-progress naming it; the attempt's end leaves the lane free (red at 3ae979902,
+            // i143-rshape-soak-randomized-process: attempt 5 opened and claimed over the running attempt 4,
+            // whose dispatch was then refused stale-claim and whose in-flight row stood for good).
+            if lane.is_none() && open.is_none() && current.state == BuildState::Running {
+                if let Some(held) = holding(&current, None) {
+                    outer.in_scope(|| {
+                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""), node = %path)
+                            .in_scope(|| tracing::info!("the fabric lane's attempt is running: one attempt at a time in the fabric lane"))
+                    });
+                    return Err(Refusal::BuildInProgress(held));
+                }
+            }
             let attempt = open.unwrap_or_else(|| next_in_lane(&current, lane));
             span.record("open_attempt", if open.is_some() { "held-open" } else { "opened-here" });
             let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me.to_string(), claimant_node: None };
