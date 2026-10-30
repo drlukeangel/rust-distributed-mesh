@@ -8,6 +8,7 @@
 //! `rshape-example`.
 
 pub mod consumer_example;
+pub mod replica;
 
 use anyhow::{anyhow, Result};
 use rdm_core::connections::CarrierPolicy;
@@ -53,9 +54,22 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     }
     let oracles = Oracles::open(&launch)?;
     let originates = serves_originate(role);
+    // The replica (Q296): the broker's records log, opened before the node serves; the gateway
+    // forwards to the broker primary its topology names, the view handed over once the node is up.
+    let view = std::sync::Arc::new(std::sync::OnceLock::new());
+    let replica_node = replica::Node { view: view.clone(), me: launch.node_id.clone(), name: launch.name.clone() };
+    let broker = match role.kind {
+        NodeKind::Broker => Some(replica::Broker::open(&launch.data_dir.join("replica")).await.map_err(|e| anyhow!("refusing to start: the records log: {e}"))?),
+        _ => None,
+    };
     let (running, mut acceptor) = node::start_with_seams_and_alpn(&launch, data_alpn(), |b, seams| {
         let client = seams.client.clone();
         let b = oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, seams.resolver.clone(), &seams.name);
+        let b = match (role.kind, broker) {
+            (NodeKind::Broker, Some(broker)) => replica::register_broker(b, broker, replica_node),
+            (NodeKind::Gateway, _) => replica::register_gateway(b, seams.client.clone(), replica_node),
+            _ => b,
+        };
         if originates {
             originate::serve_with_policy(b, seams, &launch, CARRIER_POLICY)
         } else {
@@ -69,6 +83,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
         e
     })?;
     let _ = oracles.declare_client.set(running.node_rpc.clone());
+    let _ = view.set(running.topology_view.clone());
     // The data plane's answering side: every admitted connection's streams are echoed, named.
     let own = launch.name.to_string();
     tokio::spawn(async move {
