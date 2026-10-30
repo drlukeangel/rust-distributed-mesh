@@ -32,14 +32,17 @@ pub fn serve(b: ServerBuilder, door: crate::status_rpc::StatusDoorSlot) -> Serve
 
 /// Answer one read: its rows streamed in frames, or its refusal.
 async fn answer(door: &crate::status_rpc::StatusDoor, req: ReadRequest, sink: ReplySink<Read, NotStarted>) -> ReadReply {
-    let ReadRequest::Get { entity, filter } = req;
-    let read = entity.read();
+    let read = req.op();
+    let (entity, node, filter) = match req {
+        ReadRequest::Get { entity, filter } => (entity, None, filter),
+        ReadRequest::GetConnections { node, incarnation, filter } => (Entity::Connections, Some((node, incarnation)), filter),
+    };
     let empty = tracing::field::Empty;
     let pairs = crate::views::pairs(&filter);
     let span = match entity {
-        Entity::Nodes => tracing::info_span!("rdm.node_admin.node.serve.via-read", read, pairs = %pairs, rows = empty, frames = empty, outcome = empty, "otel.kind" = "internal"),
+        Entity::Nodes | Entity::Connections => tracing::info_span!("rdm.node_admin.node.serve.via-read", read, pairs = %pairs, rows = empty, frames = empty, outcome = empty, "otel.kind" = "internal"),
         Entity::Meshes => tracing::info_span!("rdm.node_admin.mesh.serve.via-read", read, pairs = %pairs, rows = empty, frames = empty, outcome = empty, "otel.kind" = "internal"),
-        _ => tracing::info_span!("rdm.node_admin.fabric.serve.via-read", read, pairs = %pairs, rows = empty, frames = empty, outcome = empty, "otel.kind" = "internal"),
+        Entity::Fabrics => tracing::info_span!("rdm.node_admin.fabric.serve.via-read", read, pairs = %pairs, rows = empty, frames = empty, outcome = empty, "otel.kind" = "internal"),
     };
     async move {
         let span = tracing::Span::current();
@@ -47,10 +50,10 @@ async fn answer(door: &crate::status_rpc::StatusDoor, req: ReadRequest, sink: Re
             span.record("outcome", r.name());
             r
         };
-        if entity == Entity::Connections {
-            return refused(ReadReply::RejectedFilter { reason: format!("{read} is Status's read (0x1B Get with its node), never op 0x23") });
+        if entity == Entity::Connections && node.is_none() {
+            return refused(ReadReply::RejectedFilter { reason: format!("{read} is GetConnections (with its node and incarnation), never Get") });
         }
-        let rows = match door.read_rows(&rdm_core::status::Read { entity, node: None, filter }).await {
+        let rows = match door.read_rows(&rdm_core::status::Read { entity, node, filter }).await {
             Ok(rows) => rows,
             Err(r) => return refused(r),
         };

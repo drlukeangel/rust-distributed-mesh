@@ -1244,16 +1244,13 @@ impl StatusDoor {
             // own mesh-primary, never to the fabric-primary (query.md §1; Q243).
             StatusRequest::Get { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
                 let read = req.as_read().expect("a read request is a read");
-                // The plural reads are op 0x23's, a stream (Q285): Status's `Get` of them, and the retained
-                // `GetNodes` and `GetMeshes`, are refused by name naming it. `node.connection.get` stays
-                // here, and the retained `GetFabric` answers its one fabric.
-                if read.entity != rdm_core::filter::Entity::Connections && !matches!(req, StatusRequest::GetFabric) {
+                // The reads are op 0x23's, a stream (Q285): Status's `Get` of any entity, and the retained
+                // `GetNodes`, `GetMeshes` and `GetConnections`, are refused by name naming it; the retained
+                // `GetFabric` answers its one fabric.
+                if !matches!(req, StatusRequest::GetFabric) {
                     tracing::info_span!("rdm.node_admin.status.reject.via-read-on-0x23", node = %me_name, read = read.entity.read(), request = req.op(), "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("a plural read on Status refused by name: it is op 0x23's stream"));
-                    return rdm_core::reply::status::bounded_rejected_filter(&format!("{} is read on op 0x23 (read), a stream (Q285); Status's Get carries node.connection.get only", read.entity.read()));
-                }
-                if read.entity == rdm_core::filter::Entity::Connections {
-                    return self.read(&me_name, &view, &read).await;
+                        .in_scope(|| tracing::info!("a read on Status refused by name: it is op 0x23's stream"));
+                    return rdm_core::reply::status::bounded_rejected_filter(&format!("{} is read on op 0x23 (read), a stream (Q285)", read.entity.read()));
                 }
                 return match self.read_rows(&read).await {
                     Ok(rdm_core::read::Rows::Fabrics(mut fabrics)) if !fabrics.is_empty() => StatusReply::Fabric { fabric: fabrics.remove(0) },
@@ -1669,6 +1666,7 @@ impl StatusDoor {
             StatusReply::Nodes { nodes } => Ok(Rows::Nodes(nodes)),
             StatusReply::Meshes { meshes } => Ok(Rows::Meshes(meshes)),
             StatusReply::Fabrics { fabrics } => Ok(Rows::Fabrics(fabrics)),
+            StatusReply::Connections { connections } => Ok(Rows::Connections(connections)),
             StatusReply::RejectedFilter { reason } => Err(ReadReply::RejectedFilter { reason }),
             StatusReply::RejectedSourceFailed { source, op, cause } => Err(ReadReply::RejectedSourceFailed { source, op, cause }),
             StatusReply::NotReady { reason } => Err(ReadReply::NotReady { reason }),

@@ -441,9 +441,10 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         // The open answers before its row lands (Q169): mesh1.rpc.1 holds the connection once its write
         // lands, and the renewal is compared against that.
         let opened_id = conn.id().to_string();
+        let birth = rdm_client::ExactBirth { target: NodeTarget::ExactNode(a.digest.node.node_id.clone()), node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone() };
         let held_before = until("node.connection.get of mesh1.rpc.1 holds the open connection before the renewal", BOUND, async || {
-            let held = call(&root, &a, &StatusRequest::Get { entity: Entity::Connections, node: Some((a.digest.node.node_id.clone(), a.digest.node.incarnation.clone())), filter: Filter::new() }).await;
-            matches!(&held, Ok(StatusReply::Connections { connections }) if connections.connections.iter().any(|c| c.id == opened_id)).then_some(held)
+            let held = rdm_client::NodeRpc::new(&root.node_rpc.client).connections_get(&birth, &Filter::new(), &CallOptions::default()).await;
+            matches!(&held, Ok(connections) if connections.connections.iter().any(|c| c.id == opened_id)).then_some(held)
         })
         .await;
         // The renewal is compared against a settled member: its admin holds it ready (a member's
@@ -466,7 +467,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
         assert_eq!(connection_spans(&spans), before, "no connection was closed, refused or opened by the renewal");
         echo(b"after").await;
         assert_eq!(conn.id(), server.id(), "the same connection carries the stream after the install");
-        let held_after = bounded("node.connection.get of mesh1.rpc.1 after the renewal", call(&root, &a, &StatusRequest::Get { entity: Entity::Connections, node: Some((a.digest.node.node_id.clone(), a.digest.node.incarnation.clone())), filter: Filter::new() })).await;
+        let held_after = bounded("node.connection.get of mesh1.rpc.1 after the renewal", rdm_client::NodeRpc::new(&root.node_rpc.client).connections_get(&birth, &Filter::new(), &CallOptions::default())).await;
         assert_eq!(held_after, held_before, "what the node holds is unchanged");
         let view_after = bounded("node.get of mesh1.rpc.1 after the renewal", node_get(&root, &a.digest.node.node_id)).await.expect("mesh1.rpc.1 in the view");
         assert_eq!(

@@ -346,7 +346,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | node.get | [Read 0x23](#read-op-0x23-rdm) `Get { entity: Nodes, filter }`, streamed in `Nodes` frames: every node row the answering admin holds that matches every pair, by path.name; no pair is every node of the fabric, its topology; a pair names any field of the node-properties table by its name, config entries as `config.<key>`; `tags` matches a node carrying the value, repeated for all of; a node's tags, config and cert are fields of its row; node.get is answered by the fabric-primary from its atlas, never from the node store: it fills the atlas from the node records once, at its start or hand-over, and each op writes it after that | the rows, `NodeView`; a stopped node answers `stopped`; no event | `OK`, the empty list when nothing matches; an unknown property, a value the field cannot take or an empty values list `INVALID_ARGUMENT` naming the pair; a row past one frame `RESOURCE_EXHAUSTED` naming it |
 | [node.topology.get](lifecycles/node-topology-get.md) | [GetTopology 0x1E](#topology-op-0x1e-rdm); complete source snapshot read | complete read result; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
 | [node.name.update](lifecycles/node-name-update.md) | Rename, to the node's mesh-primary; frames `UpdateName` and `ApplyNodeName` on [0x1B](#status-op-0x1b-rdm); the node admits no connection | node.name.updated; `NameHeld { by }`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation` | `OK`; NameHeld `ALREADY_EXISTS`, stale `ABORTED`, invalid name `INVALID_ARGUMENT`, other state refusal `FAILED_PRECONDITION` |
-| node.connection.get { node } / [node.connection.delete](lifecycles/node-connections-delete.md) | `node.connection.get { node }` answers the exact birth's own connections from its connections log, the node (id, incarnation) the read's address and the filter over id, destination, kind and state, [Status 0x1B](#status-op-0x1b-rdm) `Get { entity: Connections, node, filter }`, answered `Connections`; `node.connection.delete { scope: All }` or `{ scope: Connections([connection id, …]) }`. `All` is graceful closure of every open connection of the node, each open Direct or Proxy entry of its connections log (gossip neighbours and the Node RPC pool are not connections), with status connections-deleting then connections-deleted and the [order and deadline](lifecycles/node-connections-delete.md#numbered-end-to-end-sequence) of that page; `Connections` closes exactly the named connections, by the minted id of their open entry as node.connection.get returns them; an empty list is refused by name. The endpoint and an active stop stream stay open; each drop is written under the node's current name; the caller's carrier to the node's mesh-primary is [Status 0x1B](#status-op-0x1b-rdm): StatusRequest position 21 `DeleteConnections`, answered by StatusReply position 31 `ConnectionsDeleted`, or by position 32 `RejectedConnectionScope` for a scope that names nothing the node can cut; the mesh-primary carries it to the exact node on NodeCommand 0x22 | read result / node.connection.deleted, naming every id it closed and every id it did not know or found already closed; for `All`, carrying a `ConnectionsReceipt`: `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }` | call `OK` when served; closed `OK`, not_open `NOT_FOUND`; `All` Deadline `DEADLINE_EXCEEDED` |
+| node.connection.get { node } / [node.connection.delete](lifecycles/node-connections-delete.md) | `node.connection.get { node }` answers the exact birth's own connections from its connections log, the node (id, incarnation) the read's address and the filter over id, destination, kind and state, [Read 0x23](#read-op-0x23-rdm) `GetConnections { node, incarnation, filter }`, streamed in `Connections` frames; `node.connection.delete { scope: All }` or `{ scope: Connections([connection id, …]) }`. `All` is graceful closure of every open connection of the node, each open Direct or Proxy entry of its connections log (gossip neighbours and the Node RPC pool are not connections), with status connections-deleting then connections-deleted and the [order and deadline](lifecycles/node-connections-delete.md#numbered-end-to-end-sequence) of that page; `Connections` closes exactly the named connections, by the minted id of their open entry as node.connection.get returns them; an empty list is refused by name. The endpoint and an active stop stream stay open; each drop is written under the node's current name; the caller's carrier to the node's mesh-primary is [Status 0x1B](#status-op-0x1b-rdm): StatusRequest position 21 `DeleteConnections`, answered by StatusReply position 31 `ConnectionsDeleted`, or by position 32 `RejectedConnectionScope` for a scope that names nothing the node can cut; the mesh-primary carries it to the exact node on NodeCommand 0x22 | read result / node.connection.deleted, naming every id it closed and every id it did not know or found already closed; for `All`, carrying a `ConnectionsReceipt`: `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }` | call `OK` when served; closed `OK`, not_open `NOT_FOUND`; `All` Deadline `DEADLINE_EXCEEDED` |
 | node.tag.get/create/delete | A node's tags are its own property, not config. `node.tag.get` answers the node's labels; `node.tag.create { label \\| [labels] }` adds one label or a list; `node.tag.delete { All \\| [labels] }` removes every label or the named ones, the same scope shape as `node.connection.delete`. One item or a list, uniform: a single item is the same as a list of one. Each label is its own keyed row (label, node id) in the node store's tags index. Create is a blind put of that key, so creating a label the node already carries is ignored and writes no duplicate; delete tombstones the named keys. A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.', and a node carries at most 32; a label outside that grammar, or one past the 32, is refused by name and nothing is written; frames `CreateTags { node_id, incarnation, labels }` and `DeleteTags { node_id, incarnation, scope: All \| Labels }` on 0x1B, replies `TagsCreated { node_id, incarnation, already_carried }` and `TagsDeleted { node_id, incarnation, not_carried }` | read result / create: the reply names each label the node already carried, AlreadyApplied for those | call `OK` when served; already_carried `ALREADY_EXISTS`, not_carried `NOT_FOUND`, applied label `OK`; invalid label `INVALID_ARGUMENT` |
 | node.config.get/update | Application config read / full-map put; the [config update sequence](lifecycles/node-config-update.md); dedicated request mapping is open | read result / node.config.updated | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
 | [node.cert.renew](lifecycles/node-cert-renew.md) | The mesh-primary, as issuer, to the exact birth: [Status 0x1B](#status-op-0x1b-rdm) `RenewCert { node_id, incarnation, cert }`, answered `CertRenewed`; the node installs the cert and presents it on every connection it opens after; nothing is terminated | node.cert.renewed; a named refusal for another birth or an undecodable cert | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
@@ -820,7 +820,7 @@ pub enum StatusRequest {
     RenewCert { node_id: NodeId, incarnation: IncarnationId, cert: Vec<u8> },
     UpdateIssuer { node_id: NodeId, incarnation: IncarnationId, key: IssuingKeyHex, cert: String },
     GetAtlas,
-    Get { entity: Entity, node: Option<(NodeId, IncarnationId)>, filter: Filter }, // position 33: node.connection.get { node }; Fabrics, Meshes or Nodes refused by name, read on 0x23 (Q285)
+    Get { entity: Entity, node: Option<(NodeId, IncarnationId)>, filter: Filter }, // position 33: reserved: every entity is read on 0x23 (Q285), refused here by name
     NodeConfigUpdated { node_id: NodeId, config: BTreeMap<String, String>, revision: u64 }, // position 34: a node's row pushed up
 }
 
@@ -1343,13 +1343,14 @@ Generic RPC call/serve spans carry op=0x1F. Typed refusals are the reply variant
 
 Contract source: `crates/rdm-core/src/read.rs::ReadRequest` and `crates/rdm-core/src/read.rs::ReadReply`;
 ledger: `crates/rdm-core/src/catalog.rs::core_ledger`.
-Direction: a caller to a node. RDM owns this server stream; it is not forwardable. The plural reads
-(Q167, Q285): fabric.get, mesh.get and node.get. REQUEST_VARIANTS is 1; REPLY_VARIANTS is 14. Positions
+Direction: a caller to a node. RDM owns this server stream; it is not forwardable. The reads
+(Q167, Q285): fabric.get, mesh.get, node.get and node.connection.get. REQUEST_VARIANTS is 2; REPLY_VARIANTS is 15. Positions
 are fixed in the shown order, none reordered. Request ceiling 64 KiB; reply frame ceiling 64 KiB.
 
 ```rust
 pub enum ReadRequest {
-    Get { entity: Entity, filter: Filter }, // Fabrics, Meshes or Nodes; Connections is refused, it is Status's
+    Get { entity: Entity, filter: Filter }, // Fabrics, Meshes or Nodes; Connections is refused, naming GetConnections
+    GetConnections { node: NodeId, incarnation: IncarnationId, filter: Filter }, // node.connection.get { node }: the exact birth's own connections
 }
 
 pub enum ReadReply {
@@ -1367,10 +1368,11 @@ pub enum ReadReply {
     ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
+    Connections { node: String, complete: bool, connections: Vec<ConnectionView> }, // a data frame; every frame of a read names the same node and complete
 }
 ```
 
-The stream is Started, then the data frames `Nodes`, `Meshes` or `Fabrics`, then End. The answer is
+The stream is Started, then the data frames `Nodes`, `Meshes`, `Fabrics` or `Connections`, then End. The answer is
 the read's every matching row, captured once in its stable order (by path.name, by name), from the
 answering admin's atlas as [query.md](query.md) states, or carried to the primary that holds it (Q224,
 Q243) on this same op; it is never bounded as one frame. The rows are packed in order into data frames
@@ -1379,9 +1381,9 @@ that fits no frame alone is `ReadOverBound` naming it (`RESOURCE_EXHAUSTED`), an
 sent: no row is ever left out. An unknown pair is `RejectedFilter` naming it (`INVALID_ARGUMENT`). The
 caller counts the read only when End arrives and the rows it holds number `End.rows` across
 `End.frames` data frames; a cut or a deadline is a failed read, and no partial list is returned. Status
-(0x1B) stays unary: its `Get` of Fabrics, Meshes or Nodes, and the retained `GetNodes` and `GetMeshes`,
-are refused by name, `RejectedFilter` naming this op; `node.connection.get { node }` and the retained
-`GetFabric` stay on Status. Responder spans: `rdm.node_admin.<entity>.serve.via-read` (read, pairs,
+(0x1B) stays unary: its `Get` of any entity, and the retained `GetNodes`, `GetMeshes` and `GetConnections`,
+are refused by name, `RejectedFilter` naming this op; the retained `GetFabric` stays on Status.
+`GetConnections` is answered by the exact birth it names, from its own connections log, never carried. Responder spans: `rdm.node_admin.<entity>.serve.via-read` (read, pairs,
 rows, frames, outcome); a carried read `rdm.node_admin.<entity>.serve.via-forward`, at a node that is
 not a node-admin `rdm.node.<entity>.serve.via-forward`.
 

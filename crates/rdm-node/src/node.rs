@@ -1781,19 +1781,49 @@ async fn forward_read(me: &Kicked, read: &rdm_core::status::Read, req: &rdm_core
 /// `rdm.node.<entity>.serve.via-forward`, names the read, its pairs, the mesh-primary and the answer.
 fn serve_read(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
     use rdm_core::filter::Entity;
-    use rdm_core::read::{Read, ReadReply, ReadRequest};
+    use rdm_core::read::{Read, ReadReply, ReadRequest, Rows};
+    use rdm_core::status::StatusReply;
     b.serve_stream::<Read, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: ReadRequest, sink| {
         let slot = slot.clone();
         async move {
             let Some(me) = slot.get().cloned() else {
                 return Ok(ReadReply::NotReady { reason: "this node has not joined its mesh yet".into() });
             };
-            let ReadRequest::Get { entity, filter } = req;
-            let op = entity.read();
-            if entity == Entity::Connections {
-                return Ok(ReadReply::RejectedFilter { reason: format!("{op} is Status's read (0x1B Get with its node), never op 0x23") });
-            }
+            let op = req.op();
             let node = me.topology_view.held_name(&me.digest.node.name);
+            let (entity, filter) = match req {
+                ReadRequest::GetConnections { incarnation, filter, .. } => {
+                    if incarnation != me.digest.node.incarnation {
+                        let stale = rdm_core::reply::stale(me.digest.node.incarnation.clone());
+                        return Ok(ReadReply::NotReady { reason: format!("{node} answered {op} with {}", stale.name()) });
+                    }
+                    let rows = match me.own.connections_get(&filter).await {
+                        StatusReply::Connections { connections } => Rows::Connections(connections),
+                        StatusReply::RejectedFilter { reason } => return Ok(ReadReply::RejectedFilter { reason }),
+                        StatusReply::NotReady { reason } => return Ok(ReadReply::NotReady { reason }),
+                        other => return Ok(ReadReply::NotReady { reason: format!("{node} answered {op} with {}", other.name()) }),
+                    };
+                    let frames = match rdm_client::read_frames(rows.into_rows(), op) {
+                        Ok(f) => f,
+                        Err(over) => return Ok(over),
+                    };
+                    let (rows, n) = (rows_len(&frames), frames.len() as u32);
+                    let mut sink = match sink.started(ReadReply::Started { read: op.to_string() }).await {
+                        Ok(s) => s,
+                        Err(e) => return Ok(ReadReply::NotReady { reason: format!("the caller left before the read started: {e:?}") }),
+                    };
+                    for f in frames {
+                        if let Err(e) = sink.data(f).await {
+                            return Ok(ReadReply::NotReady { reason: format!("the caller left during the read: {e:?}") });
+                        }
+                    }
+                    return Ok(ReadReply::End { rows, frames: n });
+                }
+                ReadRequest::Get { entity, filter } => (entity, filter),
+            };
+            if entity == Entity::Connections {
+                return Ok(ReadReply::RejectedFilter { reason: format!("{op} is GetConnections (with its node and incarnation), never Get") });
+            }
             let pairs = filter.pairs.iter().map(|(p, v)| format!("({p}, [{}])", v.join(", "))).collect::<Vec<_>>().join(" ");
             let empty = tracing::field::Empty;
             let span = match entity {
@@ -1931,26 +1961,16 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 let name = me.topology_view.digest_view.all().into_iter().find(|d| d.node.node_id == *node_id).map(|d| d.node.name.to_string()).unwrap_or_default();
                 return Ok(crate::node_self::refuse_node_left(&me.topology_view.held_name(&me.digest.node.name).to_string(), &name, &sender_name, &req));
             }
-            // A read (Q167): `node.connection.get { node }` is this birth's; every other read is forwarded to
-            // its own mesh-primary and nowhere else: this node is not a primary and keeps no atlas
-            // (query.md §1; Q243).
-            let read = req.as_read();
-            if let Some(r) = &read {
-                // The plural reads are op 0x23's stream (Q285): on Status they are refused by name; the
-                // retained `GetFabric` (its one fabric) is still forwarded.
-                if r.entity != rdm_core::filter::Entity::Connections && !matches!(req, StatusRequest::GetFabric) {
-                    return Ok(rdm_core::reply::status::bounded_rejected_filter(&format!("{} is read on op 0x23 (read), a stream (Q285); Status's Get carries node.connection.get only", r.entity.read())));
+            // A read (Q167, Q285): the reads are op 0x23's stream; on Status they are refused by name,
+            // and the retained `GetFabric` (its one fabric) is forwarded to its own mesh-primary.
+            if let Some(r) = req.as_read() {
+                if !matches!(req, StatusRequest::GetFabric) {
+                    return Ok(rdm_core::reply::status::bounded_rejected_filter(&format!("{} is read on op 0x23 (read), a stream (Q285)", r.entity.read())));
                 }
-                if r.entity != rdm_core::filter::Entity::Connections {
-                    return Ok(forward_read(&me, r, &req).await);
-                }
-                if r.node.is_none() {
-                    return Ok(rdm_core::reply::status::bounded_rejected_filter("node.connection.get names no node: the exact birth (id, incarnation) is the read's address"));
-                }
+                return Ok(forward_read(&me, &r, &req).await);
             }
-            let incarnation = match (&req, &read) {
-                (_, Some(rdm_core::status::Read { node: Some((_, incarnation)), .. })) => incarnation,
-                (StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. } | StatusRequest::UpdateRoots { incarnation, .. }, _) => incarnation,
+            let incarnation = match &req {
+                StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. } | StatusRequest::UpdateRoots { incarnation, .. } => incarnation,
                 // No handler on this door for the request: not handled here (R24), decided by dispatch alone.
                 _ => return Ok(crate::node_self::request_not_handled(&me.topology_view.held_name(&me.digest.node.name).to_string(), &req)),
             };
@@ -1959,10 +1979,6 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // one held.
             if *incarnation != me.digest.node.incarnation {
                 return Ok(rdm_core::reply::stale(me.digest.node.incarnation.clone()));
-            }
-            if let Some(r) = read {
-                // node.connection.get { node }: what this birth holds, under the name it holds; a read.
-                return Ok(me.own.connections_get(&r.filter).await);
             }
             match req {
                 // node.cert.renew: its issuing authority installs a fresh member cert on this birth.

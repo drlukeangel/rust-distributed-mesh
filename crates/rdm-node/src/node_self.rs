@@ -1592,15 +1592,9 @@ pub fn connections_answer(held: &HeldConnections, filter: &rdm_core::filter::Fil
         return rdm_core::reply::status::bounded_rejected_filter(&reason);
     }
     let view = ConnectionsView { node: held.name.to_string(), complete: held.complete, connections: held.routes.iter().map(connection_view).filter(|c| filter.matches(c)).collect() };
-    let (count, complete) = (view.connections.len(), view.complete);
-    let reply = StatusReply::within_reply_bound(StatusReply::Connections { connections: view }, read);
-    match &reply {
-        StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %node, read, connections = count, bytes, max, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the held connections encode past the Status reply bound; nothing of them is sent")),
-        _ => tracing::info_span!("rdm.node_admin.node.serve.via-connection-get", node = %node, properties = %filter.properties(), connections = count, complete, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the connections the node holds answered")),
-    }
-    reply
+    tracing::info_span!("rdm.node_admin.node.serve.via-connection-get", node = %node, properties = %filter.properties(), connections = view.connections.len(), complete = view.complete, "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("the connections the node holds answered"));
+    StatusReply::Connections { connections: view }
 }
 
 

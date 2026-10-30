@@ -481,12 +481,13 @@ impl NodeConfigs {
     }
 }
 
-/// A read's rows by the reply that carries them: `nodes`, `meshes` or `fabrics`.
+/// A read's rows by the reply that carries them: `nodes`, `meshes`, `fabrics` or `connections`.
 pub(crate) fn rows_name(rows: &rdm_core::read::Rows) -> &'static str {
     match rows {
         rdm_core::read::Rows::Nodes(_) => "nodes",
         rdm_core::read::Rows::Meshes(_) => "meshes",
         rdm_core::read::Rows::Fabrics(_) => "fabrics",
+        rdm_core::read::Rows::Connections(_) => "connections",
     }
 }
 

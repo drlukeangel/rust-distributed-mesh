@@ -288,34 +288,6 @@ impl Nodes {
     }
 }
 
-/// A read (Q167) to `target`: `Get { entity, node, filter }` under `span`, the list `answer` takes
-/// from its reply, or how it ended; a reply that is not the answer (`RejectedFilter` naming the pair,
-/// `ReadOverBound`) ends `Rejected`, named. A filter the entity's schema refuses is refused here,
-/// `rejected-filter` naming the pair, as the node would refuse it, and nothing is sent.
-#[allow(clippy::too_many_arguments)]
-async fn read_list<T>(
-    carrier: &BuildCarrier,
-    target: &NodeTarget,
-    span: tracing::Span,
-    op: &'static str,
-    entity: Entity,
-    node: Option<(NodeId, rdm_core::IncarnationId)>,
-    filter: &Filter,
-    answer: impl FnOnce(StatusReply) -> Result<T, StatusReply>,
-) -> Result<T, CallEnd> {
-    span.record("properties", filter.properties().as_str());
-    if let Some(reason) = filter.refusal(entity) {
-        let r = Err(refused(target, op, rdm_core::reply::status::bounded_rejected_filter(&reason)));
-        ended_read(&span, op, &r);
-        return r;
-    }
-    let req = StatusRequest::Get { entity, node, filter: filter.clone() };
-    let call = async { answer(read(carrier, target, &req).await?).map_err(|other| refused(target, op, other)) };
-    let r = tracing::Instrument::instrument(call, span.clone()).await;
-    ended_read(&span, op, &r);
-    r
-}
-
 /// A plural read (Q167) on op `0x23` (Q285) to `target` under `span`: every row of `entity` the node
 /// answers for `filter`, collected from the stream and taken as `answer`'s list, or how it ended. A
 /// filter the entity's schema refuses is refused here, `rejected-filter` naming the pair, as the node
@@ -444,8 +416,8 @@ impl Fabrics {
     }
 }
 
-/// The `connections` objects: `node.connection.get { node }` (Q167 R-RD7), a Status call to the exact
-/// birth whose connections log holds the connections, the node the read's address.
+/// The `connections` objects: `node.connection.get { node }` (Q167 R-RD7, Q285), a read on op `0x23`
+/// to the exact birth whose connections log holds the connections, the node the read's address.
 #[derive(Debug, Clone)]
 pub struct Connections {
     carrier: BuildCarrier,
@@ -461,12 +433,19 @@ impl Connections {
     /// every pair of `filter` (`id`, `destination`, `kind`, `state`, …), under the name it holds, each
     /// named by the minted id `node.connection.delete` names it by.
     pub async fn get(&self, birth: &ExactBirth, filter: &Filter) -> Result<ConnectionsView, CallEnd> {
-        let node = Some((birth.node_id.clone(), birth.incarnation.clone()));
-        read_list(&self.carrier, &birth.target, NodeOp::ConnectionsGet.span(), NodeOp::ConnectionsGet.name(), Entity::Connections, node, filter, |r| match r {
-            StatusReply::Connections { connections } => Ok(connections),
-            other => Err(other),
-        })
-        .await
+        let span = NodeOp::ConnectionsGet.span();
+        let op = NodeOp::ConnectionsGet.name();
+        span.record("properties", filter.properties().as_str());
+        if let Some(reason) = filter.refusal(Entity::Connections) {
+            let r = Err(refused(&birth.target, op, rdm_core::reply::status::bounded_rejected_filter(&reason)));
+            ended_read(&span, op, &r);
+            return r;
+        }
+        let rpc = crate::NodeRpc::new(self.carrier.client());
+        let opts = CallOptions::default();
+        let r = tracing::Instrument::instrument(rpc.connections_get(birth, filter, &opts), span.clone()).await;
+        ended_read(&span, op, &r);
+        r
     }
 }
 

@@ -193,7 +193,8 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
             other => panic!("a fact the admin never reports ends Indeterminate, not {other:?}"),
         }
 
-        // node.connection.get { node } of the admin: exactly what it holds; without its node, refused.
+        // node.connection.get { node } of the admin: exactly what it holds; Get { Connections } on 0x23
+        // names GetConnections, and Get { Connections } on Status names op 0x23.
         let birth = ExactBirth { target: NodeTarget::ExactNode(me.node.node_id.clone()), node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone() };
         let connections = Connections::new(carrier.clone()).get(&birth, &Filter::new()).await.unwrap_or_else(|e| panic!("node.connection.get of the admin: {e}"));
         let (complete, own) = {
@@ -202,11 +203,15 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         };
         assert_eq!((connections.node.as_str(), connections.complete), ("mesh1.admin.1", complete));
         assert_eq!(ids(&connections), own, "the connections the admin holds: {connections:#?}");
-        let addressless = rdm_core::status::StatusRequest::Get { entity: rdm_client::Entity::Connections, node: None, filter: Filter::new() };
-        let (out, _) = client.call::<rdm_core::status::Status>(&birth.target, &addressless, &rdm_transport::CallOptions::default()).await;
+        match rdm_client::NodeRpc::new(&client).read(&birth.target, rdm_client::Entity::Connections, &Filter::new(), &rdm_transport::CallOptions::default()).await {
+            Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains("GetConnections"), "Get {{ Connections }} names GetConnections: {reason}: {detail}"),
+            other => panic!("Get {{ Connections }} on op 0x23 is RejectedFilter naming GetConnections, not {other:?}"),
+        }
+        let on_status_connections = rdm_core::status::StatusRequest::Get { entity: rdm_client::Entity::Connections, node: Some((me.node.node_id.clone(), me.node.incarnation.clone())), filter: Filter::new() };
+        let (out, _) = client.call::<rdm_core::status::Status>(&birth.target, &on_status_connections, &rdm_transport::CallOptions::default()).await;
         match out.reply().map(|r| r.value().clone()) {
-            Some(StatusReply::RejectedFilter { reason }) => assert!(reason.contains("node.connection.get names no node"), "refused naming the read's address: {reason}"),
-            other => panic!("node.connection.get without its node is RejectedFilter, not {other:?}"),
+            Some(StatusReply::RejectedFilter { reason }) => assert!(reason.contains("op 0x23"), "Status names op 0x23: {reason}"),
+            other => panic!("node.connection.get on Status is RejectedFilter naming op 0x23, not {other:?}"),
         }
 
         running.leave().await;

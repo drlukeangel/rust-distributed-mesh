@@ -168,9 +168,10 @@ fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
         let all = NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
         assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All closes every open entry");
         // A further call on a pool connection of its own: a new dial from the commander, a new accept at the node.
-        let probe = StatusRequest::Get { entity: rdm_core::filter::Entity::Connections, node: Some((node_id.clone(), incarnation.clone())), filter: rdm_core::filter::Filter::new() };
-        let read = call_on(&admin, &target, &probe, Some("after-all")).await;
-        assert!(matches!(read, StatusReply::Connections { .. }), "the further call is answered: {read:?}");
+        let birth = rdm_client::ExactBirth { target: target.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() };
+        let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, scope: Some("after-all".into()), ..CallOptions::default() };
+        let read = rdm_client::NodeRpc::new(&admin.observer.client).connections_get(&birth, &rdm_core::filter::Filter::new(), &opts).await;
+        assert!(read.is_ok(), "the further call is answered: {read:?}");
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
         let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: taken.to_string() };
         assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "a Node RPC connection is no connection the rename counts");

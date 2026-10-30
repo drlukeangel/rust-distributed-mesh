@@ -15,8 +15,6 @@ use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
 use rdm_node::connections::{
     Alpn, Birth, Closed, ConnectError, Connection, ConnectionKind, Connections, StreamError,
 };
-use rdm_core::outcome::RpcOutcome;
-use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rdm_core::views::{ConnectionView, ConnectionsView};
 use rdm_test::connection_faults::{block_direct, fault_pre_opened_once, unblock_direct, PreOpenedFault};
 use rdm_transport::{CallOptions, NodeResolver, NodeTarget};
@@ -308,28 +306,22 @@ const TUNNEL_PAST_ITS_ROUTE: &str = "route: deleted";
 /// answered with anything but the node's connections.
 async fn wait_for_held_connections(root: &Running, node: &Birth, bound: Duration) -> ConnectionsView {
     let what = format!("node.connection.get of {} ({})", node.name, node.node_id);
-    let req = StatusRequest::Get {
-        entity: rdm_core::filter::Entity::Connections,
-        node: Some((node.node_id.clone(), node.incarnation.clone())),
-        filter: rdm_core::filter::Filter::new(),
+    let birth = rdm_client::ExactBirth {
+        target: NodeTarget::ExactNode(node.node_id.clone()),
+        node_id: node.node_id.clone(),
+        incarnation: node.incarnation.clone(),
     };
-    let (out, _) = tokio::time::timeout(
+    tokio::time::timeout(
         bound,
-        root.node_rpc.client.call::<Status>(
-            &NodeTarget::ExactNode(node.node_id.clone()),
-            &req,
+        rdm_client::NodeRpc::new(&root.node_rpc.client).connections_get(
+            &birth,
+            &rdm_core::filter::Filter::new(),
             &CallOptions::default(),
         ),
     )
     .await
-    .unwrap_or_else(|_| panic!("{what}: not answered within {bound:?}"));
-    match out {
-        RpcOutcome::Reply(r) => match r.into_value() {
-            StatusReply::Connections { connections } => connections,
-            other => panic!("{what}: answered {other:?}"),
-        },
-        other => panic!("{what}: ended {other:?}"),
-    }
+    .unwrap_or_else(|_| panic!("{what}: not answered within {bound:?}"))
+    .unwrap_or_else(|e| panic!("{what}: ended {e}"))
 }
 
 /// The entry `id` in `held`, by the id `node.connection.get` names it by.

@@ -484,20 +484,40 @@ impl<'a> NodeRpc<'a> {
     /// data frames. A refusal (`RejectedFilter` naming the pair, `ReadOverBound` naming the row), a cut
     /// or a deadline is a failed read; no partial list is ever returned.
     pub async fn read(&self, target: &NodeTarget, entity: rdm_core::filter::Entity, filter: &rdm_core::filter::Filter, opts: &CallOptions) -> Result<rdm_core::read::Rows, CallEnd> {
-        use rdm_core::read::{Read, ReadReply, ReadRequest, Rows};
+        use rdm_core::read::{ReadRequest, Rows};
+        let Some(rows) = Rows::empty(entity) else {
+            return Err(CallEnd::Rejected { reason: "rejected-filter".into(), detail: format!("{} is GetConnections (with its node and incarnation), never Get", entity.read()) });
+        };
+        let req = ReadRequest::Get { entity, filter: filter.clone() };
+        self.read_stream(target, req, rows, opts).await
+    }
+
+    /// `node.connection.get { node }` on op `0x23` (Q285): every connection the exact birth `birth`
+    /// answers for `filter`, collected from the stream in its order under [`Self::read`]'s rules,
+    /// `node` and `complete` taken from the frames (all frames agree, or the read fails).
+    pub async fn connections_get(&self, birth: &ExactBirth, filter: &rdm_core::filter::Filter, opts: &CallOptions) -> Result<rdm_core::views::ConnectionsView, CallEnd> {
+        use rdm_core::read::{ReadRequest, Rows};
+        let req = ReadRequest::GetConnections { node: birth.node_id.clone(), incarnation: birth.incarnation.clone(), filter: filter.clone() };
+        let empty = Rows::Connections(rdm_core::views::ConnectionsView { node: String::new(), complete: false, connections: Vec::new() });
+        match self.read_stream(&birth.target, req, empty, opts).await? {
+            Rows::Connections(view) if !view.node.is_empty() => Ok(view),
+            _ => Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::DataLoss, reason: "the node.connection.get stream ended with no Connections frame".into() }),
+        }
+    }
+
+    async fn read_stream(&self, target: &NodeTarget, req: rdm_core::read::ReadRequest, mut rows: rdm_core::read::Rows, opts: &CallOptions) -> Result<rdm_core::read::Rows, CallEnd> {
+        use rdm_core::read::{Read, ReadReply};
+        let op = req.op();
         let refused = |r: ReadReply| {
             let detail = match &r {
                 ReadReply::RejectedFilter { reason } => format!("{target:?}: {reason}"),
                 ReadReply::ReadOverBound { read, row, bytes, max } => format!("{target:?}: {read}'s row {row} encodes to {bytes} bytes, past the {max}-byte frame"),
                 ReadReply::RejectedSourceFailed { source, op, cause } => format!("{target:?}: {source} {op}: {cause}"),
-                other => format!("{target:?} answered {} with {other:?}", entity.read()),
+                ReadReply::NotReady { reason } => format!("{target:?}: {reason}"),
+                other => format!("{target:?} answered {op} with {other:?}"),
             };
             CallEnd::Rejected { reason: r.name().into(), detail }
         };
-        let Some(mut rows) = Rows::empty(entity) else {
-            return Err(CallEnd::Rejected { reason: "rejected-filter".into(), detail: format!("{} is Status's read (0x1B Get with its node), never op 0x23", entity.read()) });
-        };
-        let req = ReadRequest::Get { entity, filter: filter.clone() };
         // A read of the target's answer, recorded nowhere here: reading it again is its recovery.
         let mut stream = match self.client.call_stream::<Read>(target, &req, opts).await {
             Ok((s, _)) => s.read_only(),
@@ -511,21 +531,21 @@ impl<'a> NodeRpc<'a> {
                 StreamItem::Frame(_, ReadReply::Started { .. }) => {}
                 StreamItem::Frame(FrameKind::Data, frame) => {
                     if !rows.take(frame) {
-                        return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::DataLoss, reason: format!("a data frame of another entity in the {} stream", entity.read()) });
+                        return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::DataLoss, reason: format!("a data frame of another entity in the {op} stream") });
                     }
                     frames += 1;
                 }
                 StreamItem::Frame(_, ReadReply::End { rows: n, frames: f }) => {
                     if n as usize != rows.len() || f != frames {
-                        return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::DataLoss, reason: format!("the {} End counts {n} rows in {f} frames; {} rows arrived in {frames}", entity.read(), rows.len()) });
+                        return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::DataLoss, reason: format!("the {op} End counts {n} rows in {f} frames; {} rows arrived in {frames}", rows.len()) });
                     }
                     return Ok(rows);
                 }
                 StreamItem::Frame(_, other) => return Err(refused(other)),
-                StreamItem::Failed(f) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the {} stream failed before its End: {f:?}", entity.read()) }),
+                StreamItem::Failed(f) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the {op} stream failed before its End: {f:?}") }),
             }
         }
-        Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unavailable, reason: format!("the {} stream ended after {} rows in {frames} frames without its End", entity.read(), rows.len()) })
+        Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unavailable, reason: format!("the {op} stream ended after {} rows in {frames} frames without its End", rows.len()) })
     }
 
     /// `node.topology.get`: the topology the node at `target` holds, `mesh` or every mesh, as the
