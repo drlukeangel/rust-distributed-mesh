@@ -1933,3 +1933,53 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
         "recovery submit/claim span emitted on mesh-primary"
     );
 }
+
+/// CONTRACT (node-recovery.md step 1, Q291: "A recovery answered BuildInProgress is owed to its mesh, keyed
+/// on the investigated birth: it is opened then as the mesh's next attempt, claimed by no one, on the Build
+/// journal, and no other attempt is claimed in that mesh before it ... the mesh-primary claims the recovery
+/// as it stands on its next tick after that end"): while a fabric-lane attempt holds mesh2's in-flight row
+/// (the restart's stop of an os-stopped birth, re-attempted), mesh2's primary's recovery of that birth is
+/// answered BuildInProgress and is opened as attempt 1 of mesh2's lane, claimed by no one; a repeat while
+/// the row stands opens nothing more; once the holding attempt's row is released, the next submit claims
+/// attempt 1 as it stands.
+/// Must NOT happen: the refused recovery leaving nothing on the Build journal (a later attempt of the Build
+/// could take the mesh first), a second open for the same birth, or the claim opening a new attempt.
+#[tokio::test]
+async fn a_recovery_answered_build_in_progress_is_opened_owed_to_its_mesh_and_claimed_as_it_stands_once_the_holder_ends() {
+    use rdm_admin::accepted::AttemptAction;
+    use rdm_admin::build_state::BuildState;
+    use rdm_admin::mesh_claims::InFlight;
+    let (_fp, mp, builds, path, node_id, incarnation) = fabric_of_two_meshes().await;
+    let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
+    let mp = Arc::new(ControlPlane::new(mp.builds.clone(), mp.accepted.clone(), mp.me.clone(), mp.topology.read().await.clone(), crate::adopted_time()).with_claims(claims.clone()));
+    let b0 = builds.current_build().await.unwrap().into_build_id().unwrap();
+    // The fabric lane's attempt that acts on mesh2's birth holds mesh2's row.
+    let holder = InFlight { build_id: b0.clone(), lane: None, attempt: 7, claimant: "mesh1.admin.1".into(), claimant_node: None };
+    assert_eq!(claims.take_in_flight("mesh2", &holder).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
+
+    let action = AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: false };
+    for submit in 0..2 {
+        match mp.open_recovery("node-recovery", path.clone(), node_id.clone(), incarnation.clone()).await {
+            Err(Refusal::BuildInProgress(held)) => assert_eq!((held.mesh.as_deref(), held.held_by.as_deref()), (Some("mesh2"), Some("mesh1.admin.1")), "submit {submit}"),
+            other => panic!("submit {submit}: while the fabric lane's attempt holds mesh2, the recovery is answered build-in-progress: {other:?}"),
+        }
+        let p = builds.read_build(&b0).await.unwrap();
+        let lane = p.lanes.get("mesh2").cloned().expect("mesh2's lane holds the owed recovery");
+        assert_eq!((lane.state, lane.attempt, lane.opened, lane.claimant.as_deref()), (BuildState::Pending, 0, 1, None), "submit {submit}: attempt 1 is open and claimed by no one: {lane:?}");
+        assert_eq!(lane.action.as_ref(), Some(&action), "submit {submit}: attempt 1 carries the birth's recovery");
+    }
+    let opens = builds.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(o) if o.mesh.as_deref() == Some("mesh2"))).count();
+    assert_eq!(opens, 1, "a repeat opens nothing more");
+
+    // The holding attempt ends and releases mesh2's row: the next submit claims attempt 1 as it stands.
+    claims.release_in_flight("mesh2", &holder).await.unwrap();
+    let taken = match mp.open_recovery("node-recovery", path.clone(), node_id.clone(), incarnation.clone()).await {
+        Ok(Recovery::Opened(o)) => o,
+        other => panic!("once the holder ended, the mesh-primary claims the owed recovery: {other:?}"),
+    };
+    assert_eq!((taken.mesh.as_deref(), taken.attempt), (Some("mesh2"), 1), "attempt 1, the owed one, never a new open");
+    let lane = builds.read_build(&b0).await.unwrap().lanes.get("mesh2").cloned().unwrap();
+    assert_eq!((lane.state, lane.attempt, lane.claimant.as_deref()), (BuildState::Running, 1, Some("mesh2.admin.1")), "{lane:?}");
+    let opens = builds.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(o) if o.mesh.as_deref() == Some("mesh2"))).count();
+    assert_eq!(opens, 1, "claimed, never reopened");
+}

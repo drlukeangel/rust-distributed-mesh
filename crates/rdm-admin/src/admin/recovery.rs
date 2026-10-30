@@ -196,7 +196,13 @@ impl RecoverySubmitter {
         }
         let end = self.submit_in(&span, node, incarnation, "node-recovery").instrument(span.clone()).await;
         let ended = settled(&span, end);
-        if let Some(backoff) = self.submit_ended(&(node.node_id.clone(), incarnation.clone()), &ended) {
+        // Answered build-in-progress, the recovery is owed to its mesh (node-recovery.md step 1, Q291):
+        // submitted again on the next tick, never backed off, so it is claimed within a tick of the end
+        // of the attempt holding the mesh.
+        if matches!(&ended, Err(e) if e.starts_with("build-in-progress")) {
+            self.resubmits.lock().unwrap().remove(&(node.node_id.clone(), incarnation.clone()));
+            span.record("backoff_ms", 0u64);
+        } else if let Some(backoff) = self.submit_ended(&(node.node_id.clone(), incarnation.clone()), &ended) {
             span.record("backoff_ms", backoff.as_millis() as u64);
         }
         ended

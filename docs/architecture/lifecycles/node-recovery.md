@@ -71,7 +71,13 @@ doubling from the gossip interval to the staleness floor.
 1. The mesh-primary's investigation ends in a verdict other than `reached`, and it opens the recovery
    as the next attempt of the current Build at `(build_id, mesh, attempt)` on its mesh's rows, keyed on
    the target birth `(node.id, incarnation)` (for an unheard mesh-primary, the fabric-primary opens it
-   itself). A repeat answers AlreadyApplied or BuildInProgress, never a second recovery.
+   itself). A repeat answers AlreadyApplied or BuildInProgress, never a second recovery. A recovery
+   answered BuildInProgress is owed to its mesh, keyed on the investigated birth: it is opened then as
+   the mesh's next attempt, claimed by no one, on the Build journal, and no other attempt is claimed in
+   that mesh before it, the Build's own next attempt included, until it has run or its birth is deleted
+   or replaced at its path.name; the attempt holding the mesh runs to its own end, and the mesh-primary
+   claims the recovery as it stands on its next tick after that end, never backing off a submit
+   answered BuildInProgress.
 2. The mesh-primary claims the attempt on its mesh's rows and runs it through its own executor, writing
    each receipt and the verdict to the Build journal on the store root, where the fabric-primary reads
    them (R-BI7); no call to the fabric-primary is made.

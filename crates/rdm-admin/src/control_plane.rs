@@ -1185,6 +1185,16 @@ impl ControlPlane {
                     release.record("outcome", "row-released");
                     release.in_scope(|| tracing::info!("the mesh's in-flight row of a deleted claimant's attempt that holds no lane is released"));
                 } else if self.builds.in_flight_live(&held).await.map_err(Refusal::State)? {
+                    // Owed to its mesh (node-recovery.md step 1, Q291): opened now as the mesh's next attempt,
+                    // claimed by no one, on the Build journal, so it holds the mesh against every other
+                    // attempt there, the Build's own next one included; its submitter claims it as it
+                    // stands once the attempt holding the mesh has ended. A repeat finds it open.
+                    if let (Some(lane), None) = (lane, open) {
+                        match self.open_with(&current, Some(lane), AttemptReason::Recovery, action.clone(), route, &outer, &path.to_string(), span.clone()).await {
+                            Ok(o) => span.record("open_attempt", format!("owed-{}", o.attempt).as_str()),
+                            Err(_) => span.record("open_attempt", "owed-not-opened"),
+                        };
+                    }
                     return Err(in_progress(route, &outer, &path, held.build_id, Some(held.claimant)));
                 }
             }

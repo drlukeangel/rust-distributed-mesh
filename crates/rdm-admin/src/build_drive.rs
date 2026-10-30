@@ -1966,6 +1966,12 @@ impl DriveEnv {
         if let Some((op, f)) = first.as_ref().and_then(|op| self.peer_mesh_held(p, op, crashed).map(|f| (op, f))) {
             return Err(self.stop_at_peer_mesh_held(me, drive, attempt, op, f, crashed));
         }
+        // A recovery owed to the mesh this attempt acts in, open in the mesh's lane and claimed by no one,
+        // takes the mesh first: nothing is claimed here until it ran or its birth is no longer at its
+        // path.name (node-recovery.md step 1, Q291).
+        if let Some((mesh, owed, path)) = first.as_ref().and_then(|op| op.node()).and_then(|n| owed_recovery(p, &n.mesh, &view).map(|(a, path)| (n.mesh.clone(), a, path))) {
+            return Err(self.stalled(me, drive, format!("{me}: attempt {attempt} of Build {id} acts in mesh {mesh}, where the recovery of {path} owed to it is attempt {owed} of its lane, open and claimed by no one: it runs first")));
+        }
         // The mesh's first recovering node-admin under the investigation's recovery verdict is this
         // admin's to execute (R-D1). A run handed back to this admin (its own cut, or an executor whose
         // view names this admin) is claimed for the admin this view names for what is left: an
@@ -2562,6 +2568,20 @@ fn mesh_primary_recovery_admits(p: &BuildProjection, op: &BuildOperation) -> boo
     match op {
         BuildOperation::DeleteLiveNode { node, exited: Some(b), .. } | BuildOperation::CreateNode { node, over: Some(b), .. } => node == path && birth(b),
         _ => false,
+    }
+}
+
+/// The recovery owed to `mesh` in `p` (node-recovery.md step 1, Q291): its lane's attempt opened with a
+/// recovery and claimed by no one, while `view` holds the birth it recovers at its path.name; a birth
+/// deleted or replaced there owes nothing. Its attempt and the path.name.
+fn owed_recovery(p: &BuildProjection, mesh: &str, view: &Topology) -> Option<(u32, PathName)> {
+    let lane = p.lanes.get(mesh).filter(|l| l.state == crate::build_state::BuildState::Pending && l.opened == l.attempt + 1)?;
+    match lane.action.as_ref()? {
+        crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation, .. } => {
+            let held = view.node(path).is_some_and(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(from_incarnation));
+            held.then(|| (lane.opened, path.clone()))
+        }
+        _ => None,
     }
 }
 
