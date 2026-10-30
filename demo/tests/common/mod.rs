@@ -87,38 +87,3 @@ pub async fn fetch(estate: &Estate, node: &str, topic: &str) -> Vec<(u64, String
 pub fn run<F: std::future::Future<Output = ()>>(body: F) {
     tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap().block_on(body);
 }
-
-/// The topics `node` holds, as its [`rshape_consumer::replica::TopicsRead`] answers.
-pub async fn topics(estate: &Estate, node: &str) -> Vec<String> {
-    use rshape_consumer::replica::{TopicsRead, TopicsReply, TopicsRequest};
-    let target = NodeTarget::ExactNode(node_id(estate, node).await);
-    let (outcome, _) = estate.carrier().await.client().call::<TopicsRead>(&target, &TopicsRequest::List, &CallOptions::default()).await;
-    match outcome {
-        RpcOutcome::Reply(reply) => match reply.into_value() {
-            TopicsReply::Topics { topics } => topics,
-            other => panic!("{node}'s topics read was refused: {other:?}"),
-        },
-        other => panic!("{node}'s topics read answered {other:?}"),
-    }
-}
-
-/// `node` holds every topic of `want`, awaited.
-pub async fn until_topics(estate: &Estate, node: &str, want: &[&str]) {
-    let until = std::time::Instant::now() + SETTLE;
-    loop {
-        let held = topics(estate, node).await;
-        if want.iter().all(|t| held.iter().any(|h| h == t)) {
-            return;
-        }
-        assert!(std::time::Instant::now() < until, "{node} does not hold the topics {want:?} within {SETTLE:?}: it holds {held:?}");
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-}
-
-/// Produce `record` to `topic` through `gateway`, acknowledged.
-pub async fn produce(estate: &Estate, gateway: &str, operation: &str, topic: &str, record: &str) -> u64 {
-    match records(estate, gateway, &RecordsRequest::Produce { operation: operation.into(), topic: topic.into(), record: record.into() }).await {
-        RecordsReply::Produced { offset, .. } => offset,
-        other => panic!("{gateway}'s produce of {operation} to {topic} was not acknowledged: {other:?}"),
-    }
-}

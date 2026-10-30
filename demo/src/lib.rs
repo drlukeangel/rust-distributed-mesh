@@ -62,22 +62,12 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
         NodeKind::Broker => Some(replica::Broker::open(&launch.data_dir.join("replica")).await.map_err(|e| anyhow!("refusing to start: the records log: {e}"))?),
         _ => None,
     };
-    let broker_topics = broker.clone();
-    // The topics projection (gossip.md §8): the broker announces on the channel, the gateway holds it
-    // and pulls the node-admin's at its entry.
-    let topics = replica::HeldTopics::default();
-    let (types, hooks): (&[&str], rdm_node::node_hooks::NodeHooks) = match role.kind {
-        NodeKind::Gateway => (&[replica::TOPIC_KIND], rdm_node::node_hooks::NodeHooks::new(std::sync::Arc::new(replica::Hydrate(topics.clone())))),
-        NodeKind::Broker => (&[replica::TOPIC_KIND], rdm_node::node_hooks::NodeHooks::none()),
-        _ => (&[], rdm_node::node_hooks::NodeHooks::none()),
-    };
-    let held = topics.clone();
-    let (running, mut acceptor) = node::start_with_seams_alpn_types_and_hooks(&launch, data_alpn(), types, hooks, |b, seams| {
+    let (running, mut acceptor) = node::start_with_seams_and_alpn(&launch, data_alpn(), |b, seams| {
         let client = seams.client.clone();
         let b = oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, seams.resolver.clone(), &seams.name);
         let b = match (role.kind, broker) {
             (NodeKind::Broker, Some(broker)) => replica::register_broker(b, broker, replica_node),
-            (NodeKind::Gateway, _) => replica::register_topics(replica::register_gateway(b, seams.client.clone(), replica_node), held),
+            (NodeKind::Gateway, _) => replica::register_gateway(b, seams.client.clone(), replica_node),
             _ => b,
         };
         if originates {
@@ -94,21 +84,6 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     })?;
     let _ = oracles.declare_client.set(running.node_rpc.clone());
     let _ = view.set(running.topology_view.clone());
-    match (role.kind, broker_topics) {
-        (NodeKind::Broker, Some(broker)) => match running.topology_view.join_channel(replica::TOPIC_KIND).await {
-            Ok(channel) => {
-                let _ = broker.topics.set(channel);
-            }
-            Err(e) => tracing::error!(target: "rshape", error = ?e, "the broker could not join the topic channel: it announces no topic"),
-        },
-        (NodeKind::Gateway, _) => match running.topology_view.join_channel(replica::TOPIC_KIND).await {
-            Ok(channel) => {
-                tokio::spawn(replica::feed(topics, channel, launch.name.to_string()));
-            }
-            Err(e) => tracing::error!(target: "rshape", error = ?e, "the gateway could not join the topic channel: it holds only its entry's pull"),
-        },
-        _ => {}
-    }
     // The data plane's answering side: every admitted connection's streams are echoed, named.
     let own = launch.name.to_string();
     tokio::spawn(async move {

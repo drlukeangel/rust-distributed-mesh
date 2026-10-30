@@ -12,12 +12,6 @@
 //!   up to [`FORWARD_FOR`]: when RDM elects the next broker primary, the gateway follows it. A
 //!   `Produce` whose answer was lost is asked again under the same operation id, never as a new record.
 //!
-//! - **Topics** are a projection on an app channel (gossip.md §8), kind [`TOPIC_KIND`]: the broker
-//!   publishes `demo.topic/<topic>` for every record it takes; the node-admin and every gateway hold
-//!   the topics they heard ([`HeldTopics`]) and answer [`TopicsRead`] (op `0x53`) from them. A gateway's
-//!   entry ends with a pull: its `pre_node_ready` ([`Hydrate`]) reads the node-admin's topics before it
-//!   reports Ready, then the channel keeps it current.
-//!
 //! What the application does is a log line (target `rshape`) under RDM's own call and serve spans, as
 //! in [`crate::consumer_example`].
 
@@ -29,7 +23,7 @@ use rdm_node::operation::{Decision, OperationStore, Operations, Recorded};
 use rdm_transport::topology::TopologyView;
 use rdm_transport::{Budget, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -100,128 +94,9 @@ impl NodeProtocol for Records {
     }
 }
 
-/// The app channel kind topics travel on.
-pub const TOPIC_KIND: &str = "demo.topic";
-
-/// A request of [`TopicsRead`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TopicsRequest {
-    /// Every topic the answering node holds.
-    List,
-}
-
-/// A reply of [`TopicsRead`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TopicsReply {
-    /// The topics the answering node holds, in name order.
-    Topics { topics: Vec<String> },
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    ConnectionsDeleting { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
-}
-
-/// The op the node-admin and the gateway answer their held topics on.
-pub struct TopicsRead;
-
-impl NodeProtocol for TopicsRead {
-    const OP: u8 = 0x53;
-    const NAME: &'static str = "replica-topics";
-    const MAX_REQUEST_FRAME_BYTES: usize = 1024;
-    const MAX_REPLY_FRAME_BYTES: usize = 160 * 1024;
-    type Request = TopicsRequest;
-    type Reply = TopicsReply;
-
-    rdm_core::protocol_variants! {
-        request TopicsRequest { List }
-        reply TopicsReply {
-            Topics = "topics" => ReplyKind::Success,
-            @reserved,
-        }
-    }
-
-    fn read_only(_req: &TopicsRequest) -> bool {
-        true
-    }
-}
-
-/// The ledger rows reserving the ops for [`OWNER`].
+/// The ledger row reserving the op for [`OWNER`].
 pub fn ledger_rows() -> Vec<LedgerEntry> {
-    vec![ledger_row(Records::OP, Records::NAME), ledger_row(TopicsRead::OP, TopicsRead::NAME)]
-}
-
-/// The ledger row of one of the ops: each registration declares the op it serves.
-fn ledger_row(op: u8, family: &str) -> LedgerEntry {
-    LedgerEntry { op, family: family.to_string(), owner: OpOwner::Product(OWNER.to_string()), state: OpState::Live }
-}
-
-/// The topics a node holds: what it heard on the [`TOPIC_KIND`] channel and what its entry pulled.
-#[derive(Clone, Default)]
-pub struct HeldTopics(Arc<Mutex<BTreeSet<String>>>);
-
-impl HeldTopics {
-    /// Hold `topic`; `true` when it was not held.
-    pub fn install(&self, topic: &str) -> bool {
-        self.0.lock().unwrap().insert(topic.to_string())
-    }
-
-    /// Every topic held, in name order.
-    pub fn list(&self) -> Vec<String> {
-        self.0.lock().unwrap().iter().cloned().collect()
-    }
-}
-
-/// Keep `held` current from the [`TOPIC_KIND`] channel, for as long as the channel lives.
-pub async fn feed(held: HeldTopics, mut channel: rdm_transport::gossip::Channel, node: String) {
-    while let Some(received) = channel.recv().await {
-        if let Some(topic) = received.subject.strip_prefix(&format!("{TOPIC_KIND}/")) {
-            if held.install(topic) {
-                let _in = received.span.enter();
-                tracing::info!(target: "rshape", %node, %topic, from = %received.source.name, "a topic heard on the channel");
-            }
-        }
-    }
-}
-
-/// `b` serving [`TopicsRead`] from `held`.
-pub fn register_topics(b: ServerBuilder, held: HeldTopics) -> ServerBuilder {
-    b.ledger([ledger_row(TopicsRead::OP, TopicsRead::NAME)]).serve::<TopicsRead, _, _>(OpOwner::Product(OWNER.to_string()), move |_peer, TopicsRequest::List| {
-        let held = held.clone();
-        async move { Ok(TopicsReply::Topics { topics: held.list() }) }
-    })
-}
-
-/// A gateway's `pre_node_ready`: its entry ends with a pull of the topics the node-admin that accepted
-/// its join holds, asked again for up to 30 s; the channel then keeps them current.
-pub struct Hydrate(pub HeldTopics);
-
-#[async_trait::async_trait]
-impl rdm_node::node_hooks::PreNodeReady for Hydrate {
-    async fn pre_node_ready(&self, ctx: &rdm_node::node_hooks::NodeReadyCtx) -> rdm_node::node_hooks::HookOutcome {
-        let Some(admin) = ctx.accepting_primary.accepted() else {
-            // No admin accepted this birth (a start from local state): nothing to pull.
-            return rdm_node::node_hooks::HookOutcome::Ok;
-        };
-        let until = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let (outcome, _) = ctx.client.call::<TopicsRead>(&admin.target, &TopicsRequest::List, &CallOptions::default()).await;
-            if let RpcOutcome::Reply(reply) = &outcome {
-                if let TopicsReply::Topics { topics } = reply.value() {
-                    for topic in topics {
-                        self.0.install(topic);
-                    }
-                    tracing::info!(target: "rshape", node = %ctx.birth.name, topics = topics.len(), "the entry pulled the node-admin's topics");
-                    return rdm_node::node_hooks::HookOutcome::Ok;
-                }
-            }
-            if tokio::time::Instant::now() >= until {
-                return rdm_node::node_hooks::HookOutcome::Failed { reason: format!("the node-admin's topics were not read within 30 s: {} {}", outcome.name(), outcome.detail_name()) };
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    }
+    vec![LedgerEntry { op: Records::OP, family: Records::NAME.to_string(), owner: OpOwner::Product(OWNER.to_string()), state: OpState::Live }]
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -361,12 +236,9 @@ impl OperationStore for RecordsLog {
     }
 }
 
-/// The broker's service: RDM's recovery helpers over its log, and the [`TOPIC_KIND`] channel it
-/// announces topics on (set once the node is up).
+/// The broker's service: RDM's recovery helpers over its log.
 pub struct Broker {
     operations: Operations<RecordsLog>,
-    /// The topic channel, joined once the node started.
-    pub topics: OnceLock<rdm_transport::gossip::Channel>,
 }
 
 impl Broker {
@@ -379,7 +251,7 @@ impl Broker {
                 operations.complete(&operation, &offset).await?;
             }
         }
-        Ok(Arc::new(Self { operations, topics: OnceLock::new() }))
+        Ok(Arc::new(Self { operations }))
     }
 }
 
@@ -408,7 +280,7 @@ impl Node {
 
 /// The broker's `serve_app`: [`Records`] over its log.
 pub fn register_broker(b: ServerBuilder, broker: Arc<Broker>, node: Node) -> ServerBuilder {
-    b.ledger([ledger_row(Records::OP, Records::NAME)]).serve::<Records, _, _>(OpOwner::Product(OWNER.to_string()), move |peer, request| {
+    b.ledger(ledger_rows()).serve::<Records, _, _>(OpOwner::Product(OWNER.to_string()), move |peer, request| {
         let (broker, node) = (broker.clone(), node.clone());
         async move {
             if node.view.get().is_none() {
@@ -439,13 +311,6 @@ pub fn register_broker(b: ServerBuilder, broker: Arc<Broker>, node: Node) -> Ser
                         }
                     };
                     tracing::info!(target: "rshape", node = %node.name, %operation, %topic, offset, "a record produced at the broker primary");
-                    // The topic is announced with every record taken: a receiver holds it once.
-                    if let Some(channel) = broker.topics.get() {
-                        let event = rdm_transport::gossip::Event { subject: format!("{TOPIC_KIND}/{topic}"), sequence: Some(1), dataschema: Some("demo.topic.v1".into()), data: topic.clone().into_bytes().into() };
-                        if let Err(e) = channel.publish(event).await {
-                            tracing::warn!(target: "rshape", node = %node.name, %topic, error = ?e, "the topic could not be announced");
-                        }
-                    }
                     Ok(RecordsReply::Produced { operation, topic, offset })
                 }
             }
@@ -455,7 +320,7 @@ pub fn register_broker(b: ServerBuilder, broker: Arc<Broker>, node: Node) -> Ser
 
 /// The gateway's `serve_app`: [`Records`], each request forwarded to its mesh's broker primary.
 pub fn register_gateway(b: ServerBuilder, client: Arc<NodeRpcClient>, node: Node) -> ServerBuilder {
-    b.ledger([ledger_row(Records::OP, Records::NAME)]).serve::<Records, _, _>(OpOwner::Product(OWNER.to_string()), move |_peer, request| {
+    b.ledger(ledger_rows()).serve::<Records, _, _>(OpOwner::Product(OWNER.to_string()), move |_peer, request| {
         let (client, node) = (client.clone(), node.clone());
         async move {
             if node.view.get().is_none() {

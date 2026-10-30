@@ -166,22 +166,11 @@ fn notices(own: Own) -> FabricHooks {
 async fn main() {
     let own: Own = Arc::default();
     let started = own.clone();
-    // The topics the admin holds (gossip.md §8: the node-admin holds every channel as the app), answered
-    // to a gateway's entry pull.
-    let topics = rshape_consumer::replica::HeldTopics::default();
-    let (serve, feed) = (topics.clone(), topics);
     rdm_admin::entry::run_on_started(
         SERVICE,
         // Its backend wraps RDM's file backend, registered under that backend's name (storage.md §2).
         |cfg| rdm_admin::storage_backend::TopologyStorageProviders::new().register(rdm_core::launch::TOPOLOGY_STORAGE_FILE, Arc::new(ConsumerBackend(rdm_admin::storage_backend::file_backend(cfg.store_dir.clone())))),
-        |cfg| Wiring {
-            fabric_hooks: notices(own),
-            alpns: vec![rshape_consumer::data_alpn()],
-            types: vec![rshape_consumer::replica::TOPIC_KIND.to_string()],
-            serve_app: Some(Box::new(move |b| rshape_consumer::replica::register_topics(b, serve))),
-            certs: rdm_admin::entry::material_or_exit(SERVICE, cfg),
-            ..Wiring::default()
-        },
+        |cfg| Wiring { fabric_hooks: notices(own), alpns: vec![rshape_consumer::data_alpn()], certs: rdm_admin::entry::material_or_exit(SERVICE, cfg), ..Wiring::default() },
         // The started admin hands its client, view and data-protocol connections over to the day-0
         // work, and answers the streams nodes open to it.
         move |running| {
@@ -191,13 +180,6 @@ async fn main() {
             };
             let (dialer, acceptor) = connections.split();
             tokio::spawn(answer(acceptor, birth.name.to_string()));
-            let (view, name) = (running.topology_view.clone(), birth.name.to_string());
-            tokio::spawn(async move {
-                match view.join_channel(rshape_consumer::replica::TOPIC_KIND).await {
-                    Ok(channel) => rshape_consumer::replica::feed(feed, channel, name).await,
-                    Err(e) => tracing::error!(target: "rshape", error = ?e, "the node-admin could not join the topic channel"),
-                }
-            });
             let _ = started.set(Started { client: running.node_rpc.client.clone(), view: running.topology_view.clone(), mesh: birth.name.mesh.clone(), name: birth.name.to_string(), dialer });
         },
     )

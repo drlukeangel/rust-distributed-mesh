@@ -222,7 +222,7 @@ pub async fn start_pre_node_ready_with_alpn(
     let name = alpn.name.clone();
     let dialer = Arc::new(std::sync::OnceLock::new());
     let registry = Arc::new(std::sync::OnceLock::new());
-    let running = start_with_rafka_time_pre_node_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, register, &[], &[alpn], dialer.clone(), registry.clone()).await?;
+    let running = start_with_rafka_time_pre_node_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, register, &[alpn], dialer.clone(), registry.clone()).await?;
     let (d, acceptor) = running.connections(&name).map_err(|e| anyhow::anyhow!("taking the {:?} handle: {e:?}", String::from_utf8_lossy(&name)))?.split();
     let _ = dialer.set(d);
     let _ = registry.set((running.data_connections_for_testkit().clone(), name));
@@ -237,23 +237,10 @@ pub async fn start_with_seams_and_alpn(
     alpn: rdm_transport::connections::Alpn,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<(RunningNode, rdm_transport::connections::Acceptor)> {
-    start_with_seams_alpn_types_and_hooks(launch, alpn, &[], rdm_node::node_hooks::NodeHooks::none(), register).await
-}
-
-/// [`start_with_seams_and_alpn`], the node also declaring the app's channel `types` it holds
-/// (gossip.md §8) and running `node_hooks` (its `pre_node_ready` before Ready, its `on_node_ready`
-/// after).
-pub async fn start_with_seams_alpn_types_and_hooks(
-    launch: &Launch,
-    alpn: rdm_transport::connections::Alpn,
-    types: &[&str],
-    node_hooks: rdm_node::node_hooks::NodeHooks,
-    register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
-) -> Result<(RunningNode, rdm_transport::connections::Acceptor)> {
     let name = alpn.name.clone();
     let dialer = Arc::new(std::sync::OnceLock::new());
     let registry = Arc::new(std::sync::OnceLock::new());
-    let running = start_with_rafka_time_pre_node_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, register, types, &[alpn], dialer.clone(), registry.clone()).await?;
+    let running = start_with_rafka_time_pre_node_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), register, &[alpn], dialer.clone(), registry.clone()).await?;
     let (d, acceptor) = running.connections(&name).map_err(|e| anyhow::anyhow!("taking the {:?} handle: {e:?}", String::from_utf8_lossy(&name)))?.split();
     let _ = dialer.set(d);
     let _ = registry.set((running.data_connections_for_testkit().clone(), name));
@@ -266,7 +253,7 @@ async fn start_with_rafka_time_pre_node_ready(
     node_hooks: rdm_node::node_hooks::NodeHooks,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<RunningNode> {
-    start_with_rafka_time_pre_node_ready_alpns(launch, rafka_time, node_hooks, register, &[], &[], Arc::new(std::sync::OnceLock::new()), Arc::new(std::sync::OnceLock::new())).await
+    start_with_rafka_time_pre_node_ready_alpns(launch, rafka_time, node_hooks, register, &[], Arc::new(std::sync::OnceLock::new()), Arc::new(std::sync::OnceLock::new())).await
 }
 
 async fn start_with_rafka_time_pre_node_ready_alpns(
@@ -274,7 +261,6 @@ async fn start_with_rafka_time_pre_node_ready_alpns(
     rafka_time: rdm_transport::clock::RafkaTime,
     node_hooks: rdm_node::node_hooks::NodeHooks,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
-    types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
     data_plane: Arc<std::sync::OnceLock<rdm_transport::connections::Dialer>>,
     data_plane_registry: Arc<std::sync::OnceLock<(rdm_transport::connections::ConnectionsRegistry, Vec<u8>)>>,
@@ -304,7 +290,7 @@ async fn start_with_rafka_time_pre_node_ready_alpns(
             };
             register(b, seams).carry::<crate::proof_store::ProofStore>()
         },
-        types,
+        &[],
         alpns,
     )
     .await?;
