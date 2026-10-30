@@ -650,8 +650,8 @@ pub struct RunDoor {
     pub exec: Arc<BuildExecutor>,
     /// The runs this admin holds.
     pub runs: Arc<AttemptRuns>,
-    /// This admin's own Build log, where the intent a call carries is absorbed before the attempt
-    /// is planned.
+    /// This admin's own Build log, where the Build's committed records read from storage are absorbed
+    /// before the attempt is planned (Q292).
     pub local: Arc<dyn LocalBuildLog>,
     /// This admin's stop gate (stop_gate.rs): a stopped admin's tasks are held at it.
     pub gate: crate::stop_gate::StopGate,
@@ -667,11 +667,11 @@ impl RunDoor {
         self.exec.held_name().await.parse().unwrap_or_else(|_| self.me.clone())
     }
 
-    /// Answer `build.attempt.run` for `attempt` of `build_id`, claimed for `executor`. `intent` is
-    /// the Build's intent the fabric-primary carried (empty for a run it makes itself) and `plan`
-    /// the run it planned: the operations this admin runs.
-    pub async fn attempt_run(&self, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
-        self.attempt_run_in(None, build_id, attempt, executor, context, intent, plan).await
+    /// Answer `build.attempt.run` for `attempt` of `build_id`, claimed for `executor`. `plan` is the
+    /// run the fabric-primary planned: the operations this admin runs, over the Build's committed
+    /// records it reads from storage (Q292).
+    pub async fn attempt_run(&self, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, plan: &RunPlan) -> Attached {
+        self.attempt_run_in(None, build_id, attempt, executor, context, plan).await
     }
 
     /// [`Self::attempt_run`] for `attempt` of `lane`: `None` the fabric lane (the fabric-primary's
@@ -685,11 +685,10 @@ impl RunDoor {
         attempt: u32,
         executor: &str,
         context: &CallContext,
-        intent: &[Vec<u8>],
         plan: &RunPlan,
     ) -> Attached {
         self.serve(
-            None, lane, None, build_id, attempt, executor, context, intent, plan,
+            None, lane, None, build_id, attempt, executor, context, plan,
         )
         .await
     }
@@ -706,7 +705,6 @@ impl RunDoor {
         attempt: u32,
         executor: &str,
         context: &CallContext,
-        intent: &[Vec<u8>],
         plan: &RunPlan,
         not_fabric_primary: NotFabricPrimary,
     ) -> Attached {
@@ -718,7 +716,6 @@ impl RunDoor {
             attempt,
             executor,
             context,
-            intent,
             plan,
         )
         .await
@@ -734,7 +731,6 @@ impl RunDoor {
         attempt: u32,
         executor: &str,
         context: &CallContext,
-        intent: &[Vec<u8>],
         plan: &RunPlan,
     ) -> Attached {
         self.serve(
@@ -745,7 +741,6 @@ impl RunDoor {
             attempt,
             executor,
             context,
-            intent,
             plan,
         )
         .await
@@ -761,7 +756,6 @@ impl RunDoor {
         attempt: u32,
         executor: &str,
         context: &CallContext,
-        intent: &[Vec<u8>],
         plan: &RunPlan,
     ) -> Attached {
         let me = self.held_name().await;
@@ -776,7 +770,7 @@ impl RunDoor {
         );
         let attached = self
             .attach_or_start(
-                under, lane, reporting, build_id, attempt, executor, context, intent, plan,
+                under, lane, reporting, build_id, attempt, executor, context, plan,
             )
             .instrument(span.clone())
             .await;
@@ -815,7 +809,6 @@ impl RunDoor {
         attempt: u32,
         executor: &str,
         context: &CallContext,
-        intent: &[Vec<u8>],
         plan: &RunPlan,
     ) -> Attached {
         let me = self.held_name().await;
@@ -831,7 +824,6 @@ impl RunDoor {
         // The Build is read from its committed records before anything is planned (Q292: a command names
         // the Build and the claim, never a copy of it): insert-and-fail on the facts' own keys into the
         // local log. An unreadable store refuses the run by name; it is never an empty Build.
-        let _ = intent;
         let facts = match self.builds.committed_facts(Some(build_id)).await {
             Ok(facts) => facts,
             Err(BuildStateError::UnknownBuild(_)) => return Attached::Refused(rdm_core::reply::build::unknown_build(build_id.to_string())),
@@ -1044,7 +1036,7 @@ pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, d
         return Ok(Recovered::Ran { opened, terminal });
     }
     let context = crate::build_claim::current_context();
-    let terminal = match door.attempt_run_in(lane, &opened.build_id, opened.attempt, &me.to_string(), &context, &[], &plan).await {
+    let terminal = match door.attempt_run_in(lane, &opened.build_id, opened.attempt, &me.to_string(), &context, &plan).await {
         Attached::Refused(reply) => return Err(RecoveryNotRun::RunRefused { opened, reply }),
         Attached::Ended { terminal, .. } => terminal,
         Attached::Live { mut reader, .. } => loop {
@@ -1355,10 +1347,10 @@ mod tests {
     async fn a_call_for_another_executor_or_a_stale_claim_is_refused_by_name_and_records_nothing() {
         let (door, memory) = door("mesh1.admin.1").await;
         let ctx = CallContext::default();
-        assert!(matches!(door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await, Attached::Refused(BuildReply::UnknownBuild { .. })));
+        assert!(matches!(door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &RunPlan::default()).await, Attached::Refused(BuildReply::UnknownBuild { .. })));
         accepted(&memory).await;
         assert!(matches!(
-            door.attempt_run(&id(), 1, "mesh2.admin.1", &ctx, &[], &RunPlan::default()).await,
+            door.attempt_run(&id(), 1, "mesh2.admin.1", &ctx, &RunPlan::default()).await,
             Attached::Refused(BuildReply::NotExecutor { named, recipient }) if named == "mesh2.admin.1" && recipient == "mesh1.admin.1"
         ));
         // Attempt 1 is claimed and converged; attempt 4 is ahead of the Build, attempt 0 behind it.
@@ -1366,7 +1358,7 @@ mod tests {
         memory.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
         for carried in [4u32, 0] {
             assert_eq!(
-                match door.attempt_run(&id(), carried, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await {
+                match door.attempt_run(&id(), carried, "mesh1.admin.1", &ctx, &RunPlan::default()).await {
                     Attached::Refused(r) => r,
                     _ => panic!("attempt {carried} is not the current folded attempt"),
                 },
@@ -1410,7 +1402,7 @@ mod tests {
         let of_first: Vec<String> = p.steps.iter().filter(|r| r.attempt == 1).map(|r| format!("{} {}", r.operation, r.step)).collect();
         assert_eq!(of_first, vec!["mesh.delete:meshd0000002 AcceptedRoster".to_string()], "only the receipt of attempt 1 the transition held is read: {:?}", p.steps);
         let ctx = CallContext::default();
-        match door.attempt_run(&id(), 1, "mesh2.admin.1", &ctx, &[], &RunPlan::default()).await {
+        match door.attempt_run(&id(), 1, "mesh2.admin.1", &ctx, &RunPlan::default()).await {
             Attached::Refused(r) => assert_eq!(r, BuildReply::StaleClaim { held_attempt: 2, held_executor: Some("mesh2.admin.1".into()), carried_attempt: 1 }),
             _ => panic!("the returning fabric-primary's call of attempt 1 is refused StaleClaim"),
         }
@@ -1427,7 +1419,7 @@ mod tests {
         let ctx = CallContext::default();
         // The fabric-primary won attempt 1 for this admin and died before calling it.
         memory.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-        let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await else { panic!("the claimed attempt is started") };
+        let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &RunPlan::default()).await else { panic!("the claimed attempt is started") };
         assert_eq!(disposition, Disposition::Started);
         let mut last = None;
         while let Some(f) = reader.next().await {
@@ -1437,7 +1429,7 @@ mod tests {
         // A recorded step of that attempt, then a call after the end.
         memory.append_step_receipt(&receipt(1, "AllocateIdentity", StepOutcome::Complete)).await.unwrap();
         memory.append_step_receipt(&receipt(1, "PrepareStorage", StepOutcome::failed("x"))).await.unwrap();
-        match door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await {
+        match door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &RunPlan::default()).await {
             Attached::Ended { replay, terminal } => {
                 assert_eq!(names(&replay), vec!["step"], "a frame per Complete receipt, none for a failed one");
                 assert!(matches!(terminal, BuildReply::Complete { attempt: 1, .. }));
@@ -1532,7 +1524,6 @@ mod tests {
                 1,
                 "mesh2.admin.1",
                 &ctx,
-                &[],
                 &RunPlan::default(),
             )
             .await

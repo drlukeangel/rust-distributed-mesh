@@ -1868,9 +1868,7 @@ fn publish(log: &Mutex<FactLog>, derive: Option<&FactDerivation>, new: Vec<Build
 
 /// The accepted Builds `stored`, as the store root records them, in place of the copies `log` holds of
 /// them, each at its own position (build.md §5.3: the Build facts are "written by the fabric-primary,
-/// so a successor reads them there"). A Build message's copy (`FetchBuildFacts` 0x1F, a
-/// build.attempt.run's intent) carries no executable (proposal executable-bindings-at-create.md rule
-/// 7): an admin that absorbed a Build from one holds the Build as the store root records it once it
+/// so a successor reads them there"): an admin holds each Build as the store root records it once it
 /// reads it there. The derivation runs over the log as it will stand, as for any publication.
 #[cfg(feature = "file-backend")]
 fn take_stored_acceptances(log: &Mutex<FactLog>, derive: Option<&FactDerivation>, stored: Vec<BuildAccepted>) {
@@ -2091,7 +2089,7 @@ impl MemoryBuildStateAdapter {
 /// root (`builds.storage`).
 #[async_trait]
 pub trait LocalBuildLog: BuildStateAdapter {
-    /// Merge the facts a Build message carried (`FetchBuildFacts` 0x1F, a build.attempt.run's intent):
+    /// Merge the committed records read from storage (Q292: [`BuildStateAdapter::committed_facts`]):
     /// append the unseen ones; intents, opens and claims are insert-and-fail, receipts deduplicate.
     async fn absorb_facts(&self, facts: &[BuildFact]);
     /// Run `derive` over the facts of the Builds it reads ([`FactDerivation::reads`]: the current
@@ -2112,8 +2110,8 @@ pub trait LocalBuildLog: BuildStateAdapter {
     async fn put_attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext) -> Result<(), crate::storage_error::StorageError>;
     /// The context of `(build_id, lane, attempt)`, when one was put: a point read of its key.
     async fn attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, crate::storage_error::StorageError>;
-    /// Merge one Build's whole facts, as `FetchBuildFacts` carried them complete (op 0x1F), into what
-    /// this log holds, reading no store (Q227: "only FP reads the builds"). A whole Build's facts are
+    /// Merge one Build's whole committed records, as a read of storage answered them (Q292), into what
+    /// this log holds. A whole Build's facts are
     /// ordered among themselves, so a later read of the store takes only the facts they lack. A log
     /// that reads no store merges them as [`Self::absorb_facts`] does.
     async fn absorb_build(&self, facts: &[BuildFact]) {
@@ -2132,8 +2130,8 @@ pub trait LocalBuildLog: BuildStateAdapter {
     /// (Q227: "only FP reads the builds"; build.md §5): while it is the fabric-primary, or the
     /// executor fabric recovery names in its place (Q122). Its first read of such a tenure is the take,
     /// made under the writer's turn so every record the store holds is in the log before the read
-    /// answers; any other admin answers every read from what reached it (its pulls, 0x1F, an attempt's
-    /// intent) and reads nothing. A log that reads no store has nothing to switch.
+    /// answers; any other admin answers every read from what it absorbed, its reads of the Build's
+    /// committed records (Q292), and takes nothing. A log that reads no store has nothing to switch.
     async fn read_records_while(&self, _reader: RecordsReader) {}
     /// Read the Build records now, for `op`, as admin `node`, whatever [`Self::read_records_while`]
     /// says: the re-born fabric-primary's start over an inherited root with nobody to pull from (Q227:
@@ -2392,6 +2390,26 @@ fn committed_of(facts: Vec<BuildFact>, build: Option<&BuildId>) -> Result<Vec<Bu
         return Err(BuildStateError::UnknownBuild(build.clone()));
     }
     Ok(of)
+}
+
+#[cfg(feature = "file-backend")]
+/// The committed records of `build` (every Build's when `None`) in the Build journal `file` (a fabric
+/// store root's `builds.jsonl`), read whole now (Q292): each key once, in the order they were committed
+/// (`seq`), as a take folds them; an object another writer is still writing is left out by the read.
+/// `Err(UnknownBuild)` when it holds none of `build`, an I/O error when the file cannot be read, never
+/// an empty Build. Blocking: the journal calls it on the blocking pool.
+pub fn read_committed(file: &std::path::Path, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
+    let lines = crate::store_log::read_file(file).map_err(store_io)?;
+    let prefix = build.map(|b| format!("{b}/"));
+    let mut seen = std::collections::HashSet::new();
+    let mut stored: Vec<StoredFact> = Vec::new();
+    for line in lines.iter().filter(|l| l.format == RECORD_FORMAT && prefix.as_deref().is_none_or(|p| l.key.starts_with(p))) {
+        if seen.insert(line.key.clone()) {
+            stored.push(line.decode::<StoredFact>(file).map_err(store_io)?);
+        }
+    }
+    stored.sort_by_key(|s| s.seq);
+    committed_of(stored.into_iter().map(|s| s.fact).collect(), build)
 }
 
 #[cfg(feature = "file-backend")]
@@ -2902,23 +2920,10 @@ impl BuildStateAdapter for FileJournal {
     /// (`seq`); an object another writer is still writing is left out by the read.
     async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
         let path = self.file.path().to_path_buf();
-        let lines = tokio::task::spawn_blocking({
-            let path = path.clone();
-            move || crate::store_log::read_file(&path)
-        })
-        .await
-        .map_err(|e| BuildStateError::Io(format!("the read of {} did not finish: {e}", path.display())))?
-        .map_err(store_io)?;
-        let prefix = build.map(|b| format!("{b}/"));
-        let mut seen = std::collections::HashSet::new();
-        let mut stored: Vec<StoredFact> = Vec::new();
-        for line in lines.iter().filter(|l| l.format == RECORD_FORMAT && prefix.as_deref().is_none_or(|p| l.key.starts_with(p))) {
-            if seen.insert(line.key.clone()) {
-                stored.push(line.decode::<StoredFact>(&path).map_err(store_io)?);
-            }
-        }
-        stored.sort_by_key(|s| s.seq);
-        committed_of(stored.into_iter().map(|s| s.fact).collect(), build)
+        let build = build.cloned();
+        tokio::task::spawn_blocking(move || read_committed(&path, build.as_ref()))
+            .await
+            .map_err(|e| BuildStateError::Io(format!("the read of the Build records did not finish: {e}")))?
     }
 
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
@@ -3412,7 +3417,7 @@ mod tests {
     /// (§5.3), each record at its own key, written by the fabric-primary, so a successor reads them
     /// there"; proposal executable-bindings-at-create.md rule 7, Luke 2026-10-24: "the executable is not
     /// gossiped, it's only in the node storage"): an admin that absorbed an accepted Build from a Build
-    /// message (`FetchBuildFacts` 0x1F, a build.attempt.run's intent), which carries no executable, holds
+    /// message, which carries no executable, holds
     /// the accepted Build as the fabric-primary wrote it on the store root, every entry's executable
     /// with it, at the same place in its log. Must NOT happen: the message's copy kept over the stored
     /// record (a successor planning a Build's replacements against entries that name no executable).

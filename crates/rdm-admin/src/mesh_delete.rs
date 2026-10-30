@@ -14,7 +14,7 @@
 //! Each manifest is one immutable step receipt of the accepted Build under the outer operation
 //! (`OtherMembersExited` at the mesh-primary; `MeshDeleted` and `MeshLeft` at the fabric-primary);
 //! the `receipt_manifest` string of the messages is its reference. The fabric-primary reads the
-//! mesh-primary's with a Build-facts read (`0x1F`) from the sender, never from a reference alone.
+//! mesh-primary's from the Build's committed records in storage (Q292), never from a reference alone.
 
 use crate::build::BuildId;
 use crate::build_state::{BuildFact, BuildStateAdapter, BuildStateError, BuildStepReceipt, LocalBuildLog, StepOutcome};
@@ -1057,24 +1057,24 @@ fn recorded_attempt(receipt_manifest: &str, key: &MeshDeleteKey) -> Option<u32> 
     (head.0 == key.build_id.as_str() && operation == key.operation && scope == "other-members-exited" && attempt <= key.attempt).then_some(attempt)
 }
 
-/// The verdict on the handoff of the leave `key` from the final primary's Build facts as `reader`
-/// read them from it (`read`, the sender `sender`'s FetchBuildFacts answer). A sender that holds no
-/// fact of the Build (`UnknownBuild`) recorded no exit manifest when it called: its member
+/// The verdict on the handoff of the leave `key` from the Build's committed records as `reader` read
+/// them from storage (`read`, Q292), the receipts the sender `sender` wrote among them. Storage that holds no
+/// record of the Build (`UnknownBuild`) holds no exit manifest of the sender: its member
 /// workflows are incomplete, every roster birth but the final primary without an Exited receipt,
 /// and the open leave ends now (mesh-delete.md: "Missing receipts ... leave the workflow
-/// incomplete"). `Err` is a read that decides nothing (not ready, unreached, interrupted, refused
-/// or an incomplete stream): the refusal is `RejectedSourceFailed` naming the final primary's Build
-/// log, the fetch and the read's own failure ([`refuse_source_failed`]), and the open leave stays open.
-pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts_read::FetchFailure>, key: &MeshDeleteKey, admitted: &Admitted, receipt_manifest: &str, reader: &str, sender: &str) -> Result<HandoffVerdict, StatusReply> {
+/// incomplete"). `Err` is a read that decides nothing (the storage could not be read): the refusal is
+/// `RejectedSourceFailed` naming the Build storage, the read and its own failure
+/// ([`refuse_source_failed`]), and the open leave stays open.
+pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, BuildStateError>, key: &MeshDeleteKey, admitted: &Admitted, receipt_manifest: &str, reader: &str, sender: &str) -> Result<HandoffVerdict, StatusReply> {
     match read {
         Ok(facts) => Ok(handoff_verdict(&facts, key, admitted, receipt_manifest)),
-        Err(crate::build_facts_read::FetchFailure::UnknownBuild(detail)) => Ok(match handoff_verdict(&[], key, admitted, receipt_manifest) {
-            HandoffVerdict::Incomplete { reason, without_exit } => HandoffVerdict::Incomplete { reason: format!("{reader}: the final primary {sender} holds no fact of the Build ({detail}): {reason}"), without_exit },
+        Err(BuildStateError::UnknownBuild(build)) => Ok(match handoff_verdict(&[], key, admitted, receipt_manifest) {
+            HandoffVerdict::Incomplete { reason, without_exit } => HandoffVerdict::Incomplete { reason: format!("{reader}: the Build storage holds no record of {build}, none of the final primary {sender}'s: {reason}"), without_exit },
             other => other,
         }),
-        // A read that failed is not the final primary holding nothing: the leave stays open and the
-        // call is refused naming the read.
-        Err(e) => Err(refuse_source_failed("mesh-deleted", key, &format!("the Build log of {sender} (the final primary), read by {reader} over fetch-build-facts"), &format!("fetch-build-facts {} for the manifest {receipt_manifest}", key.build_id), &e.to_string())),
+        // A read that failed is not the storage holding nothing: the leave stays open and the call is
+        // refused naming the read.
+        Err(e) => Err(refuse_source_failed("mesh-deleted", key, &format!("the Build storage, read by {reader} for the final primary {sender}'s receipts"), &format!("read-committed {} for the manifest {receipt_manifest}", key.build_id), &e.to_string())),
     }
 }
 

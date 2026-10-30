@@ -312,7 +312,7 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
         }
         steps.iter().any(|r| r["operation"] == format!("node.delete:{VICTIM}").as_str() && r["step"] == "NodeDeleted" && r["attempt"] == json!(attempt) && r["outcome"] == "complete")
     };
-    crate::build_log::build_fact(&estate.carrier_at(&Estate::path(&na2)).await, &build, &format!("the NodeDeleted receipt of {VICTIM} at attempt {attempt}"), SETTLE, |pr| deleted_receipt(&serde_json::to_value(pr).expect("a Build view serializes")))
+    crate::build_log::build_fact(&estate, &build, &format!("the NodeDeleted receipt of {VICTIM} at attempt {attempt}"), SETTLE, |pr| deleted_receipt(&serde_json::to_value(pr).expect("a Build view serializes")))
         .await
         .unwrap_or_else(|end| panic!("{end}"));
     let killed_at = unix_nanos();

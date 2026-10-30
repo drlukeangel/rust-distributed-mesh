@@ -251,9 +251,9 @@ pub trait InnerStream: Send {
 /// Calls the executor `executor` names for one claimed attempt.
 #[async_trait::async_trait]
 pub trait Dispatcher: Send + Sync {
-    /// `build.attempt.run` for `attempt` of `build_id` at `executor`, carrying the won claim, the
-    /// Build's intent (`intent`: postcard frames of a Build message) and the run the
-    /// fabric-primary planned (`plan`): the operations the executor runs and nothing else. `turn` is
+    /// `build.attempt.run` for `attempt` of `build_id` at `executor`, carrying the won claim and the
+    /// run the fabric-primary planned (`plan`): the operations the executor runs and nothing else. It
+    /// names the Build, never carries a copy of it: the executor reads its committed records (Q292). `turn` is
     /// the drive pass's turn of the admin's gate: a run this admin makes itself begins its own turn
     /// under it, never waiting at the gate for the pass that waits on it.
     async fn dispatch(
@@ -263,7 +263,6 @@ pub trait Dispatcher: Send + Sync {
         build_id: &BuildId,
         attempt: u32,
         context: CallContext,
-        intent: Vec<Vec<u8>>,
         plan: RunPlan,
     ) -> Dispatched;
     /// [`Self::dispatch`] of a mesh's drift attempt, numbered in `lane` (Q118): `build.attempt.run`
@@ -277,10 +276,9 @@ pub trait Dispatcher: Send + Sync {
         build_id: &BuildId,
         attempt: u32,
         context: CallContext,
-        intent: Vec<Vec<u8>>,
         plan: RunPlan,
     ) -> Dispatched {
-        let _ = (turn, build_id, attempt, context, intent, plan);
+        let _ = (turn, build_id, attempt, context, plan);
         Dispatched::Unreached(format!(
             "this dispatcher runs no drift attempt: {executor} in mesh {lane}"
         ))
@@ -2220,13 +2218,11 @@ impl DriveEnv {
                 other => return Err(SectionEnd::Held(format!("attempt {attempt} of mesh {mesh}'s lane of {id} was not claimed for {executor}: {}", claim_refusal(&other)))),
             }
             let context = self.door.contexts.get_lane(id, Some(&mesh), attempt).await.ok().flatten().unwrap_or_default();
-            // The intent is read after the open and the claim, so the mesh-primary holds the attempt it runs.
-            let intent = self.intent_of(id, &operations).await;
             let keys: Vec<String> = operations.iter().map(BuildOperation::key).collect();
             let plan = RunPlan { operations, hand_off_to: None };
             let mut completed: Vec<String> = Vec::new();
             let mut failed_step: Option<(String, String, String)> = None;
-            let outcome = match self.dispatcher.dispatch_in(turn, executor, &mesh, id, attempt, context, intent, plan).await {
+            let outcome = match self.dispatcher.dispatch_in(turn, executor, &mesh, id, attempt, context, plan).await {
                 Dispatched::Refused(r) => AttemptOutcome::Failed { reason: format!("{executor} refused the section: {}", describe(&r)), code: rdm_core::outcome::Code::Unavailable },
                 Dispatched::Unreached(why) => match self.departure.proven(executor).await {
                     Ok(()) => AttemptOutcome::Failed { reason: format!("{executor} exited with the section unfinished: {why}"), code: rdm_core::outcome::Code::Unavailable },
@@ -2311,10 +2307,6 @@ impl DriveEnv {
         }
         span.in_scope(|| tracing::info!("a section of the Build ran at its mesh's mesh-primary"));
         ended
-    }
-
-    async fn intent_of(&self, id: &BuildId, run: &[BuildOperation]) -> Vec<Vec<u8>> {
-        intent_frames(&*self.builds, id, run).await
     }
 
     /// A complete Build this drive made no call of: attach to the last attempt's executor and read
@@ -2434,8 +2426,7 @@ impl DriveEnv {
 
     #[allow(clippy::too_many_arguments)]
     async fn run_inner(&self, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &PathName, context: CallContext, plan: RunPlan) -> Inner {
-        let intent = self.intent_of(id, &plan.operations).await;
-        let mut stream = match self.dispatcher.dispatch(turn, executor, id, attempt, context, intent, plan).await {
+        let mut stream = match self.dispatcher.dispatch(turn, executor, id, attempt, context, plan).await {
             Dispatched::Stream(s) => s,
             Dispatched::Refused(r) => return Inner::Refused(r),
             Dispatched::Unreached(why) => return Inner::Unreached(why),
@@ -2501,46 +2492,6 @@ impl DriveEnv {
             }
         }
     }
-}
-
-/// The Build's intent as the executor absorbs it before it plans (`build.attempt.run`'s `intent`):
-/// postcard frames of a Build message, every fact of `id` the fabric-primary holds, its acceptance as
-/// the sections of the meshes the run acts in (Q284), its step receipts with them: the executor reads no Build record (Q227), so an earlier attempt's receipts a step reads
-/// (a successor's create reads its delete's `TerminateRuntime`) reach it here.
-pub(crate) async fn intent_frames(builds: &dyn BuildStateAdapter, id: &BuildId, run: &[BuildOperation]) -> Vec<Vec<u8>> {
-    let facts = match builds.facts().await {
-        Ok(f) => intent_facts(f, id, run),
-        Err(_) => return Vec::new(),
-    };
-    // The acceptance travels as the sections of the meshes the run acts in (Q284), never whole.
-    let touched: std::collections::BTreeSet<String> = run.iter().filter_map(|op| op.mesh().map(str::to_string)).collect();
-    let (frames, refused) = crate::fabric_builds::encode_chunks(crate::fabric_builds::sectioned(facts, Some(&touched)));
-    for e in refused {
-        tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id.log(), detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor does not hold it"));
-    }
-    frames.into_iter().map(|b| b.to_vec()).collect()
-}
-
-/// The facts of Build `id` an attempt run carries ([`intent_frames`]): every fact of the Build but its
-/// forgetting, with only the step receipts the executor reads: those of every operation on a path the
-/// run acts on (an operation run again reuses what its completed steps decided, and a replacement's
-/// create reads its delete's receipts at the same path) and those of the steps a run writes under one
-/// of them (a role move's `node.primary.update:<build>:<attempt>:<operation>`). Never every receipt the
-/// Build ever wrote, which grows with every attempt the Build opens until the request outgrows its frame.
-fn intent_facts(facts: Vec<crate::build_state::BuildFact>, id: &BuildId, run: &[BuildOperation]) -> Vec<crate::build_state::BuildFact> {
-    let keys: Vec<String> = run.iter().map(BuildOperation::key).collect();
-    // An operation key is `<op>:<target>`; the target is the path (or `<path>@<incarnation>`) it acts on.
-    let target = |key: &str| key.split_once(':').map(|(_, t)| t.to_string()).unwrap_or_default();
-    let targets: Vec<String> = keys.iter().map(|k| target(k)).filter(|t| !t.is_empty()).collect();
-    let of_this_run = |operation: &str| keys.iter().any(|k| operation.ends_with(&format!(":{k}"))) || targets.iter().any(|t| target(operation) == *t);
-    facts
-        .into_iter()
-        .filter(|f| f.build_id() == id && !matches!(f, crate::build_state::BuildFact::Forget { .. }))
-        .filter(|f| match f {
-            crate::build_state::BuildFact::Step(s) => of_this_run(&s.operation),
-            _ => true,
-        })
-        .collect()
 }
 
 /// Whether view `t` still names `m`'s holder the primary of the roles `m` moves before `op`.
@@ -2622,35 +2573,6 @@ mod tests {
         assert!(ended_incomplete(&me, &me, &me, "w", "w"), "an attempt this admin ran, handed back to it with nothing moved, ended incomplete");
         assert!(!ended_incomplete(&me, &me, &me, "w", "w + a receipt"), "an attempt that moved something is progress, the next is claimed at once");
         assert!(!ended_incomplete(&me, &me, &old_role, "w", "w"), "an attempt handed to another admin is that admin's");
-    }
-
-    /// CONTRACT (the AttemptRun request's `intent`: the Build's acceptance, every attempt opened, claimed
-    /// and ended, and the step receipts of the operations this run carries; red in the soaks at 9244b8cf8,
-    /// routing: attempt 71 of a formation Build with 70 attempts of receipts refused `Malformed(TooLarge)`
-    /// past the Build op's 256 KiB request frame, the restart never dispatched): the receipts of the run's
-    /// operations' paths and of the steps written under them are carried, the Build's other receipts are not, and
-    /// every attempt fact is. Must NOT happen: the intent growing with every receipt the Build ever wrote.
-    #[test]
-    fn an_attempt_run_carries_the_receipts_of_its_own_operations_only() {
-        use crate::build_state::{AttemptOutcome, BuildAttemptReceipt, BuildFact, BuildStepReceipt, StepOutcome};
-        let id = BuildId::parse(&rdm_core::fixture_crockford60("intent")).unwrap();
-        let other = BuildId::parse(&rdm_core::fixture_crockford60("other")).unwrap();
-        let step = |build: &BuildId, attempt: u32, operation: &str| BuildFact::Step(BuildStepReceipt { mesh: None, build_id: build.clone(), attempt, operation: operation.into(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None });
-        let mut facts = Vec::new();
-        for attempt in 1..=70 {
-            facts.push(step(&id, attempt, "node.stop:mesh1.rpc.1"));
-            facts.push(step(&id, attempt, "node.start:mesh1.rpc.1"));
-            facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }));
-        }
-        facts.push(step(&id, 69, "node.delete:mesh2.broker.3"));
-        facts.push(step(&id, 71, "node.stop:mesh2.broker.3"));
-        facts.push(step(&id, 71, &format!("node.primary.update:{id}:71:node.stop:mesh2.broker.3")));
-        facts.push(step(&other, 1, "node.stop:mesh2.broker.3"));
-        let run = vec![BuildOperation::StopNode { node: "mesh2.broker.3".parse().unwrap(), node_id: rdm_core::NodeId::mint(), from_incarnation: rdm_core::IncarnationId::mint() }];
-        let carried = intent_facts(facts, &id, &run);
-        let steps: Vec<String> = carried.iter().filter_map(|f| match f { BuildFact::Step(s) => Some(s.operation.clone()), _ => None }).collect();
-        assert_eq!(steps, vec!["node.delete:mesh2.broker.3".to_string(), "node.stop:mesh2.broker.3".to_string(), format!("node.primary.update:{id}:71:node.stop:mesh2.broker.3")], "the receipts of every operation at the run's path, its role move's included, and none of another path's or another Build's");
-        assert_eq!(carried.iter().filter(|f| matches!(f, BuildFact::Attempt(_))).count(), 70, "every attempt fact is carried");
     }
 
     // @feature: on-build-started-ended

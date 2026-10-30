@@ -3,14 +3,14 @@
 //!
 //! Every node-admin's Build journal is the fabric's Build journal on the shared store root (build.md
 //! §5.3, R-BI6): each fact the fabric-primary commits is one record there (Q118: it writes every
-//! Build record, a mesh's drift attempts' among them), and only the fabric-primary reads the records
-//! (Q227), at its take and from then on; every other admin holds what reached it (its pulls,
-//! FetchBuildFacts 0x1F, an attempt's intent). A successor therefore continues a Build from the store
-//! root, never from the executing admin's disk or process.
+//! Build record, a mesh's drift attempts' among them). The fabric-primary takes the records at its
+//! take and reads them from then on; an executor, a starting admin and an admin taking a primary role
+//! read the named Build's committed records fresh (Q292, `committed_facts`). A successor therefore
+//! continues a Build from the store root, never from the executing admin's disk or process.
 //!
 //! The adapter here gates the fabric-primary's decisions on the primary record this admin holds
-//! (ruling R-A2) and refuses a fact with no wire shape before it commits: `FetchBuildFacts` (0x1F)
-//! and a build.attempt.run's intent carry the facts as [`BuildMessage`]s.
+//! (ruling R-A2) and refuses a fact with no typed shape before it commits ([`BuildMessage`]: every
+//! fact and step output in its positional shape, the check a receipt passes before it is a record).
 //!
 //! Facts fold deterministically and absorb idempotently: intents and claims are insert-and-fail,
 //! receipts deduplicate. Split-primary safety comes from reconciliation over pinned intents and
@@ -23,9 +23,9 @@ use crate::build_state::{
 };
 use std::sync::Arc;
 
-/// One Build message, one postcard frame (`rdm_transport::wire`): the Build facts `FetchBuildFacts`
-/// (0x1F) streams and a build.attempt.run's intent carries, in their wire shapes (`crate::wire`),
-/// never the JSON-shaped domain types.
+/// One Build message, one postcard frame (`rdm_transport::wire`): Build facts in their typed shapes
+/// (`crate::wire`), never the JSON-shaped domain types. No call carries one (Q292): it is the shape
+/// check a fact passes before it commits ([`wire_shaped`]).
 pub struct BuildMessage {
     /// The message's nonce.
     pub nonce: u64,
@@ -60,7 +60,7 @@ fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
     Ok(bytes.into())
 }
 
-/// `facts` as they travel (Q284): each whole acceptance replaced by its sections of `meshes` (every
+/// `facts` cut as Q284 cut them (no call carries them since Q292): each whole acceptance replaced by its sections of `meshes` (every
 /// mesh it names when `None`), in place; every other fact, and a section already cut, as it is.
 pub fn sectioned(facts: Vec<BuildFact>, meshes: Option<&std::collections::BTreeSet<String>>) -> Vec<BuildFact> {
     facts
@@ -210,10 +210,9 @@ impl FabricBuildStateAdapter {
     }
 }
 
-/// A fact is encoded before it commits: one with no wire shape is refused by name and lands in no
-/// log, since `FetchBuildFacts` (0x1F) and a build.attempt.run's intent could not carry it. Its size is
-/// not bounded here: the record is whole on the store, which has no frame, and an acceptance travels as
-/// its sections ([`sectioned`], Q284), each bounded where it is packed.
+/// A fact is encoded before it commits: one with no typed shape (a step output that is not the type
+/// its step produces) is refused by name and lands in no log. Its size is not bounded here: the
+/// record is whole on the store, which has no frame.
 fn wire_shaped(fact: &BuildFact) -> Result<(), BuildStateError> {
     BuildMessage { nonce: 0, facts: vec![fact.clone()] }.to_bytes().map(|_| ())
 }
@@ -431,7 +430,7 @@ mod tests {
 
     /// CONTRACT (node-identity-and-state.md §6.9 Age and Wire: "the age lives in the receipt", "No frame
     /// gains a field"): a standalone stop's `Complete` receipt commits the stop's lifecycle op (the
-    /// exact birth and its rafka-time), and it travels in a Build message (0x1F, a build.attempt.run's intent) in the shape that already
+    /// exact birth and its rafka-time), and its Build message shape is the one that already
     /// carries a lifecycle op: it is encoded, decoded to the same receipt, and refused for no other
     /// operation's `Complete`, which still commits no output.
     #[test]

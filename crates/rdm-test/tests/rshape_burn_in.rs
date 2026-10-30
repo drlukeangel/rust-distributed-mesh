@@ -1186,7 +1186,6 @@ async fn restart_with_traffic(
 ) -> Value {
     let e = &f.estate;
     let before = e.node_value(node).await;
-    let entry = e.entry().await.to_string();
     let t0 = now_ms();
     // `node.stop` over Node RPC: the call follows the fabric-primary role; the stream is not this loop's
     // completion source (the Build log read below is, between the traffic it issues), so it is let go.
@@ -1199,7 +1198,7 @@ async fn restart_with_traffic(
     let mut during = 0;
     let mut start_sent = false;
     loop {
-        let b = build_at(e, &entry, &build_id).await.unwrap_or(Value::Null);
+        let b = build_at(e, &build_id).await.unwrap_or(Value::Null);
         assert_ne!(b["state"], "failed", "{node}: restart Build failed: {b:#}");
         let now = e.node_value_opt(node).await;
         if !start_sent && b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= attempt && now.as_ref().is_some_and(|n| n["stopped"] == true) {
@@ -1510,13 +1509,12 @@ async fn nodes_at(e: &Estate, admin: &str) -> Option<Vec<Value>> {
     e.node_views_at(&path_of(admin)).await.map(|v| Estate::values(&v))
 }
 
-/// Build `id` as the Build log of the admin named `admin` folds it (`FetchBuildFacts`, op 0x1F), when the
-/// admin answers within 2 s and its log holds the Build's acceptance; a dead admin, or an id that is no Build
-/// id (a fabric that names none yet), is a `None`.
-async fn build_at(e: &Estate, admin: &str, id: &str) -> Option<Value> {
+/// Build `id` as the fabric's Build records fold it now (Q292: every admin reads the Build from the
+/// store), when the store holds the Build's acceptance; an id that is no Build id (a fabric that names
+/// none yet), or a store that holds none of it, is a `None`.
+async fn build_at(e: &Estate, id: &str) -> Option<Value> {
     BuildId::parse(id).ok()?;
-    let carrier = e.carrier_at(&path_of(admin)).await;
-    let facts = tokio::time::timeout(Duration::from_secs(2), crate::build_log::log_read(&carrier, id)).await.ok()?.ok()?;
+    let facts = crate::build_log::log_read(e, id).await.ok()?;
     crate::build_log::projection(&facts, id).map(|b| serde_json::to_value(b).expect("a Build view serializes"))
 }
 
@@ -1766,7 +1764,7 @@ impl Run {
     async fn build(&mut self, f: &mut Formed, id: &str) -> Option<Value> {
         for name in self.candidates(f) {
             if fabric_at(&f.estate, &name).await.is_some() {
-                if let Some(v) = build_at(&f.estate, &name, id).await {
+                if let Some(v) = build_at(&f.estate, id).await {
                     follow(f, &name).await;
                     return Some(v);
                 }
@@ -1861,7 +1859,7 @@ impl Run {
         let fp_name = s(&fp["name"]);
         let own = fabric_at(&f.estate, &fp_name).await.ok_or("the fabric-primary does not answer fabric.get")?;
         let bid = s(&own["build_id"]);
-        let b = build_at(&f.estate, &fp_name, &bid).await.ok_or(format!("the fabric-primary's Build log does not answer for Build {bid:?}"))?;
+        let b = build_at(&f.estate, &bid).await.ok_or(format!("the fabric-primary's Build log does not answer for Build {bid:?}"))?;
         if b["state"] != "complete" {
             return Err(format!("the fabric's Build {bid} is {}, not complete", b["state"]));
         }
@@ -2166,7 +2164,7 @@ async fn restart_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str,
     let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not a ready admin")).clone();
     let fabric_build = s(&st.fabric["build_id"]);
     point_entry_away(f, st, node).await;
-    let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
+    let attempt_before = build_at(&f.estate, &fabric_build).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: node.restart"), Write::Restart(node.to_string())).await;
     assert_eq!(build_id, fabric_build, "{node}: a restart opens the next attempt of the accepted Build (the current build_id stays)");
@@ -2802,7 +2800,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let broker_before = f.estate.node_value(&broker).await;
     let fabric_build = s(&st.fabric["build_id"]);
     point_entry_away(&mut f, &st, &executor_name).await;
-    let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].as_u64().unwrap()).unwrap();
+    let attempt_before = build_at(&f.estate, &fabric_build).await.map(|b| b["attempt"].as_u64().unwrap()).unwrap();
     // A target holding a role has it moved first by node.primary.update and is stopped by its successor
     // (node-stop.md, PrimaryRole primary): the role's move is the call's own attempt, handed off, and the restart
     // runs in the attempt after it.
@@ -3217,7 +3215,7 @@ async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scen
     if n["kind"] == "node_admin" {
         point_entry_away(f, st, node).await;
     }
-    let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
+    let attempt_before = build_at(&f.estate, &fabric_build).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: node.restart"), Write::Restart(node.to_string())).await;
     assert_eq!(build_id, fabric_build, "{node}: a restart opens the next attempt of the accepted Build (the current build_id stays)");
@@ -4181,7 +4179,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     })
     .await;
     let rt2 = exact_runtime(&f, &victim2).await;
-    let build_before = build_at(&f.estate, &st_new.fp_name(), &drift_build).await.unwrap();
+    let build_before = build_at(&f.estate, &drift_build).await.unwrap();
     let attempt_before = build_before["attempt"].as_u64().unwrap();
     let drift_mesh = victim2.split('.').next().unwrap().to_string();
     let lane_before = build_before["lanes"][drift_mesh.as_str()]["attempt"].as_u64().unwrap_or(0);
@@ -4350,7 +4348,7 @@ async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv:
     let fabric_build = s(&st.fabric["build_id"]);
     let (mut held, hold_ack) = Held::hold(node, &rt);
     let hold_ns = now_ns();
-    let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].as_u64().unwrap());
+    let attempt_before = build_at(&f.estate, &fabric_build).await.map(|b| b["attempt"].as_u64().unwrap());
     let build_id = a.write(f, st, "C17: node.restart of a node whose runtime is held", Write::Restart(node.to_string())).await;
     assert_eq!(build_id, fabric_build, "{node}: the restart is an attempt of the accepted Build");
     let restart_attempt = a.attempts[&build_id];
@@ -5863,7 +5861,7 @@ async fn mock_control_loss_recovers_without_status_heartbeat() {
 
 /// The Build's current attempt as the fabric-primary holds it, with its state and reason.
 async fn build_attempt(e: &Estate, st: &Stable, build_id: &str) -> Value {
-    build_at(e, &st.fp_name(), build_id).await.unwrap_or_else(|| panic!("the Build log of the fabric-primary {} does not answer for Build {build_id}", st.fp_name()))
+    build_at(e, build_id).await.unwrap_or_else(|| panic!("the Build log of the fabric-primary {} does not answer for Build {build_id}", st.fp_name()))
 }
 
 /// The names of the nodes `view` holds as fabric-primary.
@@ -5952,7 +5950,7 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     a.roles = Some(roles);
     let st2 = a.stable(&mut f, "C10: healed", &both(2), &mut inv).await;
     let done = wait_for(&format!("the fabric-primary holds Build {spawn} complete"), Duration::from_secs(120), || async {
-        let b = build_at(&f.estate, &st2.fp_name(), &spawn).await?;
+        let b = build_at(&f.estate, &spawn).await?;
         (b["state"] == "complete").then_some(json!({"admin": st2.fp_name(), "state": b["state"], "executor": b["executor"]}))
     })
     .await;

@@ -342,8 +342,8 @@ struct Local(Arc<RunDoor>);
 
 #[async_trait::async_trait]
 impl Dispatcher for Local {
-    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rdm_core::context::CallContext, intent: Vec<Vec<u8>>, plan: rdm_admin::executor::RunPlan) -> Dispatched {
-        local_dispatched(self.0.attempt_run(build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
+    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rdm_core::context::CallContext, plan: rdm_admin::executor::RunPlan) -> Dispatched {
+        local_dispatched(self.0.attempt_run(build_id, attempt, &executor.to_string(), &context, &plan).await)
     }
 }
 
@@ -1326,7 +1326,7 @@ struct LostAfterStopNode {
 
 #[async_trait::async_trait]
 impl Dispatcher for LostAfterStopNode {
-    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rdm_core::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rdm_admin::executor::RunPlan) -> Dispatched {
+    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rdm_core::context::CallContext, _plan: rdm_admin::executor::RunPlan) -> Dispatched {
         use rdm_core::build::BuildReply;
         let step = |operation: &str, step: &str| {
             InnerItem::Frame(BuildReply::Step {

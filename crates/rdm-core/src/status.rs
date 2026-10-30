@@ -1628,10 +1628,10 @@ pub enum StatusReply {
     /// Position 42 on the wire.
     RejectedSourceFailed {
         /// What failed, named with its owner and row: `fabric.storage of mesh2.admin.1, handover row
-        /// <operation>`, `the view of mesh2.admin.1`, `the Build log of mesh1.admin.1 (the final
-        /// primary), read over fetch-build-facts`. Within [`MAX_SOURCE_FAILED_SOURCE_BYTES`].
+        /// <operation>`, `the view of mesh2.admin.1`, `the Build storage, read by mesh1.admin.1
+        /// for the final primary mesh2.admin.1's receipts`. Within [`MAX_SOURCE_FAILED_SOURCE_BYTES`].
         source: String,
-        /// The operation on it that failed (`put`, `read`, `fetch-build-facts`, `adopt`, `resolve`),
+        /// The operation on it that failed (`put`, `read`, `read-committed`, `adopt`, `resolve`),
         /// with its subject. Within [`MAX_SOURCE_FAILED_OP_BYTES`].
         op: String,
         /// Why it failed: the store's, the provider's or the peer's own error, or the party the view
@@ -2392,7 +2392,7 @@ mod tests {
             (StatusReply::RejectedStaleWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "mesh.delete:m".into() }, offered: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (StatusReply::RejectedConflictingWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() }, offered: MeshDeleteIdentity { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts 66h8qrqvaajk", "unreached: no path"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::source_failed("the Build storage", "read-committed 66h8qrqvaajk", "builds.jsonl: interrupted"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::Reserved44 { workflow: String::new(), status: String::new() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::TagsCreated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), already_carried: ["red".to_string()].into() }, ReplyKind::Success),

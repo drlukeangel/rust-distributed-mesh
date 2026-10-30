@@ -840,9 +840,9 @@ pub async fn node_admin_not_ready(me: &PathName, builds: &dyn BuildStateAdapter,
     not_ready_in(me, &FromStore(builds), floor).await
 }
 
-/// [`node_admin_not_ready`] over the facts `log` holds now, reading no store: a launched node-admin's
-/// Build floor at its start (Q227: "only FP reads the builds"), its facts fetched from a node-admin
-/// with `FetchBuildFacts` and merged whole ([`crate::build_state::LocalBuildLog::absorb_build`]).
+/// [`node_admin_not_ready`] over the facts `log` holds now: a launched node-admin's Build floor at its
+/// start, the Build's committed records read from storage (Q292) and merged whole
+/// ([`crate::build_state::LocalBuildLog::absorb_build`]).
 pub(crate) async fn node_admin_not_ready_held(me: &PathName, log: &dyn crate::build_state::LocalBuildLog, floor: Option<(crate::build::BuildId, u32)>) -> Option<crate::fetch_build::NodeAdminNotReady> {
     not_ready_in(me, &Held(log), floor).await
 }

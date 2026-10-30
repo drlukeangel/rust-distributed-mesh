@@ -50,7 +50,7 @@ async fn a_standalone_connections_delete_completes_on_connections_deleted_and_le
     let r = deleting.accepted().clone();
     assert_eq!(r.build_id.to_string(), birth_build, "no Build is minted: {r:?}");
     let attempt_no = u64::from(r.attempt) + u64::from(before["is_primary"] == true);
-    let opened = build_log::build_fact(&estate.carrier().await, &birth_build, "the node.connection.delete attempt is the Build's current attempt", Duration::from_secs(30), |b| serde_json::to_value(b).is_ok_and(|b| b["reason"] == "delete-connections")).await.unwrap_or_else(|end| panic!("{end}"));
+    let opened = build_log::build_fact(&estate, &birth_build, "the node.connection.delete attempt is the Build's current attempt", Duration::from_secs(30), |b| serde_json::to_value(b).is_ok_and(|b| b["reason"] == "delete-connections")).await.unwrap_or_else(|end| panic!("{end}"));
     let opened = serde_json::to_value(opened).expect("a Build view serializes");
     assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("delete_connections", NODE), "{opened}");
     assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "targeted to the live birth: {opened}");
@@ -58,7 +58,7 @@ async fn a_standalone_connections_delete_completes_on_connections_deleted_and_le
     let events: Vec<NodeEvent> = frames.iter().filter_map(|f| if let Frame::Event(e) = f { Some(*e) } else { None }).collect();
     assert_eq!(events, vec![NodeEvent::ConnectionsDeleted], "the reply stream carries node.connections.deleted and nothing after it: {frames:?}");
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
-    build_log::attempt_complete(&estate.carrier().await, &birth_build, attempt_no, SETTLE).await;
+    build_log::attempt_complete(&estate, &birth_build, attempt_no, SETTLE).await;
 
     // The birth is connections-deleted (node-connections-delete.md step 4: its mesh-primary sets it from
     // the `Established` completion; a read answers the row's status, Q233), the same birth, and its

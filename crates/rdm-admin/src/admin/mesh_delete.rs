@@ -42,17 +42,6 @@ impl MeshDeleter for MeshDeleteDoor {
 }
 
 impl AdminRunner {
-    /// The facts of `build` this admin's own log holds, as its Build-facts door answers them
-    /// (`crate::build_facts_read::BuildFactsDoor::serve`): the read of the fabric-primary that is its own
-    /// mesh's primary, which no Node RPC call reaches (lifecycles/fabric-delete.md step 1).
-    async fn own_build_facts(&self, build: &crate::build::BuildId) -> Result<Vec<crate::build_state::BuildFact>, crate::build_facts_read::FetchFailure> {
-        let held: Vec<crate::build_state::BuildFact> = self.builds.facts().await.map_err(|e| crate::build_facts_read::FetchFailure::NotReady(e.to_string()))?.into_iter().filter(|f| f.build_id() == build).collect();
-        if held.is_empty() {
-            return Err(crate::build_facts_read::FetchFailure::UnknownBuild(build.to_string()));
-        }
-        Ok(held)
-    }
-
     /// The runtime fact the view holds for `node` (its digest).
     fn held_runtime(&self, node: &Node) -> Option<rdm_core::RuntimeFact> {
         self.digest_view.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref()).and_then(|d| d.node.runtime)
@@ -876,15 +865,12 @@ impl AdminRunner {
         // The roster the owner captured once, as its LeavingRoster receipt here, or, when this admin holds
         // none, what the owner admitted: the
         // roster amendments the fabric-primary recorded (a primary lost mid-leave) are read from the
-        // owner's Build facts when this admin has not yet heard them ([`crate::mesh_delete::leaving_roster`]).
+        // Build's committed records in storage when this admin has not yet heard them (Q292;
+        // [`crate::mesh_delete::leaving_roster`]).
         let build_id = key.build_id.clone();
         let me_name_ref = &me_name;
         let fetch_owner = || async {
-            let read = match &owner.target {
-                rdm_transport::NodeTarget::ExactNode(id) if *id == self.node_id => self.own_build_facts(&build_id).await,
-                target => crate::build_facts_read::fetch_build_facts(&self.node_rpc.client, target, &build_id).await.map(|f| f.facts),
-            };
-            read.map_err(|e| format!("{me_name_ref}: the owner {owner}'s Build facts of {build_id} could not be read for the leave's roster: {e}"))
+            self.builds.committed_facts(Some(&build_id)).await.map_err(|e| format!("{me_name_ref}: the Build records of {build_id} the owner {owner} recorded could not be read for the leave's roster: {e}"))
         };
         let (roster, known) = crate::mesh_delete::leaving_roster(&*self.builds, &*self.local, key, &me_name, &me_birth, &my_runtime, fetch_owner).await?;
         let mesh: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
@@ -1050,14 +1036,9 @@ impl AdminRunner {
         if let Err(refused) = crate::mesh_delete::adopt_final_runtime(&*self.provider, final_runtime, &me_name, &key) {
             return refused;
         }
-        // The manifest: the sender's Build facts, read now.
-        let node_rpc = &self.node_rpc;
-        // The final primary that is this admin (the fabric-primary's own mesh) is read from its own log.
-        let read = if *final_node_id == self.node_id {
-            self.own_build_facts(&build).await
-        } else {
-            crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rdm_transport::NodeTarget::ExactNode(final_node_id.clone()), &build).await.map(|f| f.facts)
-        };
+        // The manifest: the receipts the final primary wrote, read now from the Build's committed
+        // records in storage (Q292), where its receipts are durable before it calls.
+        let read = self.builds.committed_facts(Some(&build)).await;
         let verdict = match crate::mesh_delete::handoff_verdict_from_read(read, &key, &admitted, receipt_manifest, &me_name, &final_node_id.to_string()) {
             Ok(v) => v,
             Err(refused) => return refused,

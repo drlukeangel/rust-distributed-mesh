@@ -353,13 +353,6 @@ pub enum BuildRequest {
         executor: String,
         /// The attempt's observability context, as the claim returned it.
         context: CallContext,
-        /// The Build as the fabric-primary decided the claim on it: its acceptance, every attempt
-        /// opened, claimed and ended, and the step receipts of the operations this run carries (never
-        /// the Build's other receipts, which grow with every attempt), as postcard frames of the Build topic's
-        /// message (the packing the topic's own catch-up uses). The executor absorbs them before it
-        /// folds and plans, so the run never waits for the Build topic to deliver what the claim was
-        /// decided on. Empty when the fabric-primary runs the attempt itself.
-        intent: Vec<Vec<u8>>,
         /// The operations the fabric-primary planned for this run, in plan order: the contiguous
         /// leading run of what is left that the executor executes in the fabric-primary's view, one
         /// JSON-encoded operation each. The executor runs exactly these and never plans the Build
@@ -919,8 +912,8 @@ impl NodeProtocol for Build {
     const OP: u8 = 0x20;
     const NAME: &'static str = "build";
     /// A change with a fabric's meshes, or a claim with its attempt context (a traceparent, a
-    /// tracestate of 512 bytes and baggage of 8192 bytes) and the Build's intent frames (each at most
-    /// the Build topic's message bound), with room for the tags and lengths.
+    /// tracestate of 512 bytes and baggage of 8192 bytes) and the operations it plans, with room for
+    /// the tags and lengths. A claim names its Build and never carries a copy of it (Q292).
     const MAX_REQUEST_FRAME_BYTES: usize = 256 * 1024;
     /// A failed step's reason is the largest field; the sender bounds it below this.
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;

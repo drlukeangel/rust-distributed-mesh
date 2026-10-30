@@ -57,7 +57,6 @@ pub mod build_claim;
 pub mod build_drive;
 pub mod build_op;
 pub mod build_run;
-pub mod build_facts_read;
 pub mod read_op;
 pub mod fabric_handover;
 pub mod fabric_recovery;

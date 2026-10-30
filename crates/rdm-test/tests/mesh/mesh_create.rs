@@ -85,7 +85,7 @@ fn last_run_executor(build: &Value) -> String {
 
 /// Build `id` complete in the Build log of the admin the estate asks, as the JSON the view serializes to.
 async fn built(estate: &Estate, id: &str) -> Value {
-    let build = build_log::build_fact(&estate.carrier().await, id, "complete", Duration::from_secs(120), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
+    let build = build_log::build_fact(&estate, id, "complete", Duration::from_secs(120), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
     serde_json::to_value(build).expect("a Build view serializes")
 }
 

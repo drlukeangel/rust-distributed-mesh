@@ -13,7 +13,7 @@
 
 use crate::mesh_delete_resume::{capture, trace_id};
 use rdm_core::{BuildId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
-use rdm_admin::build_facts_read::FetchFailure;
+use rdm_admin::build_state::BuildStateError;
 use rdm_admin::deployment::pipeline::RuntimeProof;
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::mesh_delete::{adopt_final_runtime, handoff_verdict_from_read, leave_owner, manifest_reference, operation, Admitted, MeshDeleteKey, MeshDeleteOwner, RosterBirth};
@@ -79,16 +79,16 @@ fn a_mesh_deleted_report_whose_manifest_cannot_be_read_is_refused_by_name_and_th
         let root = tracing::info_span!("rdm.test.mesh.reject.via-manifest-unread", mesh_id = %mesh_id);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
-        let unreached = handoff_verdict_from_read(Err(FetchFailure::Unreached("no path to mesh2.admin.1".into())), &k, &admitted, &reference, "mesh1.admin.1", "mesh2.admin.1");
-        let not_ready = handoff_verdict_from_read(Err(FetchFailure::NotReady("hydrating".into())), &k, &admitted, &reference, "mesh1.admin.1", "mesh2.admin.1");
+        let unreached = handoff_verdict_from_read(Err(BuildStateError::Io("builds.jsonl: no such device".into())), &k, &admitted, &reference, "mesh1.admin.1", "mesh2.admin.1");
+        let not_ready = handoff_verdict_from_read(Err(BuildStateError::Io("builds.jsonl: interrupted".into())), &k, &admitted, &reference, "mesh1.admin.1", "mesh2.admin.1");
         (unreached, not_ready, trace_id)
     });
     let spans = cap.spans();
     keep("manifest_unread", &trace_id, &spans);
     let (source, op, cause) = source_failed(&unreached);
-    assert!(source.contains("Build log of mesh2.admin.1") && op.contains("fetch-build-facts pdz453kf4br6") && op.contains(&reference) && cause.contains("unreached") && cause.contains("no path"), "{source} | {op} | {cause}");
+    assert!(source.contains("Build storage") && source.contains("mesh2.admin.1") && op.contains("read-committed pdz453kf4br6") && op.contains(&reference) && cause.contains("no such device"), "{source} | {op} | {cause}");
     let (_, _, cause) = source_failed(&not_ready);
-    assert!(cause.contains("not ready") && cause.contains("hydrating"), "the final primary's door not ready is a fact of the read: {cause}");
+    assert!(cause.contains("interrupted"), "the storage read's failure is a fact of the read: {cause}");
     let named = refusals(&spans, &trace_id);
     for r in [&unreached, &not_ready] {
         let (source, op, cause) = source_failed(r);

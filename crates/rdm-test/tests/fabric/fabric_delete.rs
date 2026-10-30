@@ -324,7 +324,7 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
     let id = delete.build_id().to_string();
-    build_log::build_fact(&estate.carrier_at(&path("mesh1.admin.2")).await, &id, "the delete's acceptance", SETTLE, |_| true).await.unwrap_or_else(|end| panic!("{end}"));
+    build_log::build_fact(&estate, &id, "the delete's acceptance", SETTLE, |_| true).await.unwrap_or_else(|end| panic!("{end}"));
     drop(grow);
     estate.kill_bootstrap();
     let fp = delete_followed(&estate, delete, "mesh1.admin.2").await;
@@ -368,7 +368,7 @@ async fn the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next
     let id = delete.build_id().to_string();
     let held = door.wait_held("first-mesh").await;
     assert_eq!(held["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at mesh2's primary's node.delete: {held}");
-    build_log::build_fact(&estate.carrier_at(&path("mesh1.admin.2")).await, &id, "mesh2's MeshDeleted", SETTLE, |b| {
+    build_log::build_fact(&estate, &id, "mesh2's MeshDeleted", SETTLE, |b| {
         b.steps.iter().any(|r| r.operation.starts_with("mesh.delete:") && r.step == rdm_admin::mesh_delete::STEP_MESH_DELETED)
     })
     .await
@@ -623,7 +623,7 @@ async fn the_fabric_primary_lost_with_no_mesh_left_leaves_only_its_own_node_dele
     door.release("deleted").await;
     let next = door.wait_held("next").await;
     assert_eq!(next["hit"]["build_id"].as_str(), Some(id.as_str()), "the delete is held at its next attempt's claim: {next}");
-    build_log::build_fact(&estate.carrier_at(&path("mesh1.admin.1")).await, &id, "mesh1's MeshDeleted", SETTLE, |b| {
+    build_log::build_fact(&estate, &id, "mesh1's MeshDeleted", SETTLE, |b| {
         b.steps.iter().any(|r| r.operation == format!("mesh.delete:{mesh_id}") && r.step == rdm_admin::mesh_delete::STEP_MESH_DELETED)
     })
     .await

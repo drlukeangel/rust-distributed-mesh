@@ -224,8 +224,8 @@ struct Dispatch {
 
 #[async_trait::async_trait]
 impl rdm_admin::build_drive::Dispatcher for Dispatch {
-    async fn dispatch(&self, turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rdm_core::context::CallContext, intent: Vec<Vec<u8>>, plan: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
-        let run = self.inner.dispatch(turn, executor, build_id, attempt, context, intent, plan).await;
+    async fn dispatch(&self, turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rdm_core::context::CallContext, plan: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
+        let run = self.inner.dispatch(turn, executor, build_id, attempt, context, plan).await;
         if let Some(fabric) = &self.during {
             fabric.ready.store(true, Ordering::SeqCst);
         }

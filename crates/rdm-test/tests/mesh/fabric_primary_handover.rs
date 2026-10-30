@@ -201,7 +201,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // The completion receipt of mesh.deleted, read from the live Build projection: every birth of mesh1
     // but its final primary, which is not deleted inside its own mesh.delete; no MeshLeft yet.
     let steps_of = |build: &Value, step: &str| -> Vec<Value> { build["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["step"] == step).collect() };
-    let build_b = build_log::build_value(&estate.carrier().await, &b).await;
+    let build_b = build_log::build_value(&estate, &b).await;
     let deleted_receipts = steps_of(&build_b, "MeshDeleted");
     assert_eq!(deleted_receipts.len(), 1, "one MeshDeleted completion receipt under {b}: {build_b}");
     assert_eq!(deleted_receipts[0]["operation"], format!("mesh.delete:{mesh1_bare}"), "keyed by the mesh's minted id: {}", deleted_receipts[0]);
@@ -263,7 +263,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     assert!(row["record"]["states"].as_array().is_some_and(|states| states.iter().any(|st| st == "Leaving")), "mesh1's primary stored Leaving on its mesh's record: {row}");
     // mesh-left, once the final birth's exit was proven: one Complete MeshLeft receipt under the
     // mesh.delete's operation, covering every birth of the mesh, the final primary included.
-    let build_b = build_log::build_value(&estate.carrier().await, &b).await;
+    let build_b = build_log::build_value(&estate, &b).await;
     let left_receipts = steps_of(&build_b, "MeshLeft");
     let other_receipts = steps_of(&build_b, "OtherMembersExited");
     estate.stop().await;

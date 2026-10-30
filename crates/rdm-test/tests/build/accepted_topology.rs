@@ -72,8 +72,8 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let b0 = current_build(&estate).await;
     // The fabric-primary role appears one gossip interval before the executor's next pass: wait for the Build
     // itself, never for the role that precedes it.
-    build_log::build_fact(&estate.carrier().await, &b0, "complete", Duration::from_secs(60), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
-    let day0 = build_log::build_value(&estate.carrier().await, &b0).await;
+    build_log::build_fact(&estate, &b0, "complete", Duration::from_secs(60), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
+    let day0 = build_log::build_value(&estate, &b0).await;
     assert_eq!(paths(&day0, "mesh1"), ["mesh1.admin.1"], "{day0}");
     assert_eq!(day0["state"], "complete", "{day0}");
 
@@ -86,7 +86,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     estate.follow(stream).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let built = build_log::build_value(&estate.carrier().await, &a).await;
+    let built = build_log::build_value(&estate, &a).await;
     assert_eq!(paths(&built, "mesh1"), ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"], "{built}");
     // The change is history the fabric-primary records with the Build, whole, in the journal on the store
     // root; the Build's facts travel with its acceptance as sections, which carry no change (Q284).
@@ -98,7 +98,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let refused = estate.builds_obj().await.delete(&BuildId::parse(&a).unwrap()).await;
     assert!(matches!(&refused, Err(CallEnd::Rejected { reason, .. }) if reason == "cannot-delete"), "the accepted Build {a} stays in history: {refused:?}");
     estate.builds_obj().await.delete(&BuildId::parse(&b0).unwrap()).await.unwrap_or_else(|e| panic!("Day 0's Build {b0} leaves history: {e}"));
-    let facts = build_log::log_read(&estate.carrier().await, &b0).await.unwrap_or_else(|end| panic!("the fabric-primary's log answers the read of the forgotten Build {b0}: {end}"));
+    let facts = build_log::log_read(&estate, &b0).await.unwrap_or_else(|end| panic!("the fabric-primary's log answers the read of the forgotten Build {b0}: {end}"));
     assert!(build_log::projection(&facts, &b0).is_none(), "the forgotten Build {b0} is no Build of the fabric-primary's log: {facts:?}");
     assert_eq!(current_build(&estate).await, a, "forget is history administration only");
 
@@ -111,7 +111,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert_eq!(estate.fabric_view_at(&late_path).await.expect("the late admin answers fabric.get").build_id.as_deref(), Some(c.as_str()));
     // The late admin reads the Build records from the store root as every admin does (Q185); the completion is a
     // later record the fabric-primary appended, so the read awaits it as step 1 does.
-    let held = build_log::build_fact(&estate.carrier_at(&late_path).await, &c, "complete", Duration::from_secs(60), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
+    let held = build_log::build_fact(&estate, &c, "complete", Duration::from_secs(60), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
     let held = serde_json::to_value(held).expect("a Build view serializes");
     assert_eq!(held["state"], "complete", "{held}");
     assert_eq!(paths(&held, "mesh1").len(), 6, "the late admin holds the accepted Build's topology: {held}");
@@ -150,12 +150,12 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     tokio::time::timeout(Duration::from_secs(90), estate.follow(r4_stream)).await.unwrap_or_else(|_| panic!("{r4} reached no Complete within 90s of {quiet_name} being back"));
     let quiet_carrier = estate.carrier_at(&quiet_name.parse().unwrap()).await;
     Fabrics::new(quiet_carrier.clone()).fact(&format!("the paused admin names {r4} its current Build"), Duration::from_secs(30), |f| f.build_id.as_deref() == Some(r4.as_str())).await.unwrap_or_else(|end| panic!("{end}"));
-    build_log::build_fact(&quiet_carrier, &r4, "the paused admin's log holds the Build", Duration::from_secs(30), |_| true).await.unwrap_or_else(|end| panic!("{end}"));
+    build_log::build_fact(&estate, &r4, "the store holds the Build the paused admin reads", Duration::from_secs(30), |_| true).await.unwrap_or_else(|end| panic!("{end}"));
     estate.settled_views(&[("mesh1", 3, 4)]).await;
 
     // 7. A killed member is its mesh-primary's node recovery: the next attempt of mesh1's lane of the
     // same Build, once.
-    let before = build_log::build_value(&estate.carrier().await, &r4).await;
+    let before = build_log::build_value(&estate, &r4).await;
     let attempts_before = before["attempt"].as_u64().unwrap();
     let lane_before = before["lanes"]["mesh1"]["attempt"].as_u64().unwrap_or(0);
     let lost = estate.node_value("mesh1.rpc.2").await;
@@ -170,7 +170,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert_eq!(current_build(&estate).await, r4, "recovery writes no Build");
     // Exactly the next attempt of mesh1's, complete: a later one is a second recovery, named.
     let expected = lane_before + 1;
-    build_log::build_fact(&estate.carrier().await, &r4, &format!("attempt {expected} of mesh1 complete, exactly"), Duration::from_secs(120), |b| {
+    build_log::build_fact(&estate, &r4, &format!("attempt {expected} of mesh1 complete, exactly"), Duration::from_secs(120), |b| {
         let Some(m) = b.lanes.get("mesh1") else { return false };
         assert!(u64::from(m.attempt) <= expected, "mesh1 of Build {r4} is past attempt {expected}: a second recovery was opened: {b:#?}");
         match m.state {
@@ -182,7 +182,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     .await
     .unwrap_or_else(|end| panic!("{end}"));
     estate.settled_views(&[("mesh1", 3, 4)]).await;
-    let after = build_log::build_value(&estate.carrier().await, &r4).await;
+    let after = build_log::build_value(&estate, &r4).await;
     let lane = &after["lanes"]["mesh1"];
     assert_eq!((lane["state"].as_str(), lane["attempt"].as_u64()), (Some("complete"), Some(expected)), "one more attempt of mesh1's lane of the same Build: {after}");
     assert_eq!(lane["reason"], "recovery", "the lane's attempt is the recovery: {after}");

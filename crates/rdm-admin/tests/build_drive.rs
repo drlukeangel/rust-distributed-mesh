@@ -1119,7 +1119,7 @@ impl rdm_admin::build_drive::InnerStream for FedStream {
 
 #[async_trait::async_trait]
 impl rdm_admin::build_drive::Dispatcher for Fed {
-    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, _: &PathName, _: &BuildId, _: u32, _: rdm_core::context::CallContext, _: Vec<Vec<u8>>, _: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
+    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, _: &PathName, _: &BuildId, _: u32, _: rdm_core::context::CallContext, _: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
         let items = self.items.lock().unwrap().take().expect("one dispatch");
         self.dispatched.notify_one();
         rdm_admin::build_drive::Dispatched::Stream(Box::new(FedStream(items)))
@@ -2736,8 +2736,8 @@ struct ReadyDuringTheRun {
 
 #[async_trait::async_trait]
 impl rdm_admin::build_drive::Dispatcher for ReadyDuringTheRun {
-    async fn dispatch(&self, turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rdm_core::context::CallContext, intent: Vec<Vec<u8>>, plan: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
-        let run = self.inner.dispatch(turn, executor, build_id, attempt, context, intent, plan).await;
+    async fn dispatch(&self, turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rdm_core::context::CallContext, plan: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
+        let run = self.inner.dispatch(turn, executor, build_id, attempt, context, plan).await;
         self.gate.ready.store(true, Ordering::SeqCst);
         run
     }
@@ -3541,7 +3541,7 @@ struct Refuses;
 
 #[async_trait::async_trait]
 impl rdm_admin::build_drive::Dispatcher for Refuses {
-    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, _build_id: &BuildId, _attempt: u32, _context: rdm_core::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
+    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, _build_id: &BuildId, _attempt: u32, _context: rdm_core::context::CallContext, _plan: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
         rdm_admin::build_drive::Dispatched::Refused(BuildReply::NotExecutor { named: executor.to_string(), recipient: "mesh1.admin.9".into() })
     }
 }

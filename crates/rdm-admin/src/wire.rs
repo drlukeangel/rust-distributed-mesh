@@ -1,5 +1,5 @@
-//! The wire shape of a Build message (`fabric_builds::BuildMessage`: `FetchBuildFacts` 0x1F and a
-//! build.attempt.run's intent): every type here is positional postcard
+//! The typed shape of a Build message (`fabric_builds::BuildMessage`, the check a Build fact passes
+//! before it commits; no call carries one, Q292): every type here is positional postcard
 //! (`rdm_transport::wire`), carrying every field and no internally tagged enum.
 //!
 //! The domain types (`BuildFact`, `FabricIdentity`, the accepted topology) are JSON elsewhere: the
@@ -774,8 +774,7 @@ struct WireFabricIdentity {
     name: String,
 }
 
-/// A Build message as it travels (`FetchBuildFacts` 0x1F, a build.attempt.run's intent): one
-/// postcard frame.
+/// A Build message in its typed shape: one postcard frame.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct WireMessage {
     nonce: u64,

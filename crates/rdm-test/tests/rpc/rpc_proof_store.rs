@@ -97,7 +97,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let accepted = estate.accepted_build_id().await;
     // The recovery is an attempt of mesh1's drift lane (R-BI7: the mesh-primary runs it in its own
     // mesh's lane, numbered there; the Build's own attempt is the fabric lane's, the restart's above).
-    let lane_before = build_log::projection(&build_log::log_read(&estate.carrier().await, &accepted).await.unwrap_or_else(|end| panic!("{end}")), &accepted).and_then(|b| b.lanes.get("mesh1").map(|l| u64::from(l.attempt))).unwrap_or(0);
+    let lane_before = build_log::projection(&build_log::log_read(&estate, &accepted).await.unwrap_or_else(|end| panic!("{end}")), &accepted).and_then(|b| b.lanes.get("mesh1").map(|l| u64::from(l.attempt))).unwrap_or(0);
     // The kill is a fault and the killed process flushes nothing (`Estate::kill_node`): what its evidence
     // file holds is what its exporter wrote before the kill. The served calls read below of this process
     // (the first birth's, and the same birth's after its stop and start, which ran in it) are in the
@@ -127,7 +127,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
 
     // The recovery is an attempt of the accepted Build; the node holding the path is that attempt's work, not its end.
     // One Build at a time: the replace below is submitted once the recovery attempt has completed.
-    build_log::lane_attempt_complete(&estate.carrier().await, &accepted, "mesh1", lane_before + 1, Duration::from_secs(60)).await;
+    build_log::lane_attempt_complete(&estate, &accepted, "mesh1", lane_before + 1, Duration::from_secs(60)).await;
 
     // 4. The replace steps do not inherit it: the successor's data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());

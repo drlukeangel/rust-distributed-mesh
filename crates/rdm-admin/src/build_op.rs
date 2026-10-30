@@ -8,9 +8,9 @@
 //! fabric-primary accepts the first three; any other admin refuses by name and names the one it sees.
 //!
 //! This module also holds the two callers of the family inside an admin: the fabric-primary's
-//! [`RpcDispatcher`] (`build.attempt.run` to an executor, in process when the executor is itself) and
-//! the intent a call carries (the Build's acceptance and opened attempts), which the executor absorbs
-//! before it plans.
+//! [`RpcDispatcher`] (`build.attempt.run` to an executor, in process when the executor is itself),
+//! which names the Build and the claim and never carries a copy of the Build: the executor reads its
+//! committed records from storage before it plans (Q292).
 
 use crate::accepted::TopologyChange;
 use crate::build::{BuildId, BuildOperation};
@@ -210,8 +210,8 @@ impl BuildDoor {
         let call = req.op();
         let reply = async {
             match req {
-                BuildRequest::AttemptRun { build_id, attempt, executor, context, intent, operations, hand_off_to, mesh } => match build_id_of(&build_id) {
-                    Ok(id) => self.attempt_run(id, attempt, executor, context, intent, operations, hand_off_to, mesh, sink).await,
+                BuildRequest::AttemptRun { build_id, attempt, executor, context, operations, hand_off_to, mesh } => match build_id_of(&build_id) {
+                    Ok(id) => self.attempt_run(id, attempt, executor, context, operations, hand_off_to, mesh, sink).await,
                     Err(refused) => Ok(refused),
                 },
                 other => {
@@ -341,7 +341,6 @@ impl BuildDoor {
             let observed = self.control.topology.read().await.clone();
             let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed).operations, hand_off_to: None };
             let context = self.env.door.contexts.get_lane(&id, Some(&mesh), attempt).await.ok().flatten().unwrap_or_default();
-            let intent = crate::build_drive::intent_frames(&*self.control.builds, &id, &plan.operations).await;
             let turn = self.env.turns.turn("drift-run").await.of_build(&id.to_string());
             // An executor whose run this admin lost: only its exact departure proof ends the attempt
             // (build.md: "or, when the executor is lost with the attempt unfinished, after exact
@@ -359,7 +358,7 @@ impl BuildDoor {
             };
             // The verdict this fabric-primary writes, and the terminal of the reporter's stream.
             let failed = |operation: String, step: String, reason: String, code: rdm_core::outcome::Code| (Some((operation, step)), AttemptOutcome::Failed { reason, code });
-            let (failed_step, outcome, terminal) = match self.env.dispatcher.dispatch_in(&turn, &executor, &mesh, &id, attempt, context, intent, plan).await {
+            let (failed_step, outcome, terminal) = match self.env.dispatcher.dispatch_in(&turn, &executor, &mesh, &id, attempt, context, plan).await {
                 Dispatched::Refused(r) => {
                     let (s, o) = failed(String::new(), "attempt".into(), format!("{executor} refused the run: {}", r.name()), rdm_core::outcome::Code::Unavailable);
                     (s, o, r)
@@ -530,7 +529,6 @@ impl BuildDoor {
         attempt: u32,
         executor: String,
         context: CallContext,
-        intent: Vec<Vec<u8>>,
         operations: Vec<Vec<u8>>,
         hand_off_to: Option<String>,
         mesh: Option<String>,
@@ -561,12 +559,12 @@ impl BuildDoor {
                 let (primaries, node_id, incarnation) = (self.primaries.clone(), self.env.door.node_id.clone(), self.incarnation.clone());
                 let not_fabric_primary: crate::build_run::NotFabricPrimary = Arc::new(move || !primaries.fabric().is_some_and(|h| h.is_birth(&node_id, &incarnation)));
                 self.run
-                    .attempt_run_reporting(lane, &id, attempt, &executor, &context, &intent, &plan, not_fabric_primary)
+                    .attempt_run_reporting(lane, &id, attempt, &executor, &context, &plan, not_fabric_primary)
                     .await
             }
             lane => {
                 self.run
-                    .attempt_run_in(lane, &id, attempt, &executor, &context, &intent, &plan)
+                    .attempt_run_in(lane, &id, attempt, &executor, &context, &plan)
                     .await
             }
         };
@@ -899,11 +897,10 @@ impl Dispatcher for RpcDispatcher {
         build_id: &BuildId,
         attempt: u32,
         context: CallContext,
-        intent: Vec<Vec<u8>>,
         plan: RunPlan,
     ) -> Dispatched {
         self.dispatch_to(
-            turn, executor, None, build_id, attempt, context, intent, plan,
+            turn, executor, None, build_id, attempt, context, plan,
         )
         .await
     }
@@ -915,7 +912,6 @@ impl Dispatcher for RpcDispatcher {
         build_id: &BuildId,
         attempt: u32,
         context: CallContext,
-        intent: Vec<Vec<u8>>,
         plan: RunPlan,
     ) -> Dispatched {
         self.dispatch_to(
@@ -925,7 +921,6 @@ impl Dispatcher for RpcDispatcher {
             build_id,
             attempt,
             context,
-            intent,
             plan,
         )
         .await
@@ -943,7 +938,6 @@ impl RpcDispatcher {
         build_id: &BuildId,
         attempt: u32,
         context: CallContext,
-        intent: Vec<Vec<u8>>,
         plan: RunPlan,
     ) -> Dispatched {
         let me = self.local.held_name().await;
@@ -963,7 +957,6 @@ impl RpcDispatcher {
                             attempt,
                             &executor.to_string(),
                             &context,
-                            &[],
                             &plan,
                         )
                         .await,
@@ -976,7 +969,6 @@ impl RpcDispatcher {
                             attempt,
                             &executor.to_string(),
                             &context,
-                            &[],
                             &plan,
                         )
                         .await,
@@ -999,7 +991,6 @@ impl RpcDispatcher {
             attempt,
             executor: executor.to_string(),
             context: context.clone(),
-            intent,
             operations,
             hand_off_to: plan.hand_off_to,
             mesh: lane.map(str::to_string),

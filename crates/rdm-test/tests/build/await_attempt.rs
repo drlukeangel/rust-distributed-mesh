@@ -87,13 +87,13 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     })
     .await;
     assert!(waiting.is_err(), "the stop's reply stream completed while attempt {attempt} was held: {seen:?}");
-    let held = build_log::build_value(&estate.carrier().await, &build_id).await;
+    let held = build_log::build_value(&estate, &build_id).await;
     assert_ne!(held["state"], "complete", "attempt {attempt} is held mid-flight: {held}");
 
     door.release(cut).await;
     let finished = Estate::complete(&mut stop).await;
     assert_eq!((finished.build_id.as_str(), finished.attempt), (build_id.as_str(), attempt), "{finished:?}");
-    let done = build_log::build_fact(&estate.carrier().await, &build_id, &format!("attempt {attempt} complete"), Duration::from_secs(120), |b| b.attempt == attempt && b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
+    let done = build_log::build_fact(&estate, &build_id, &format!("attempt {attempt} complete"), Duration::from_secs(120), |b| b.attempt == attempt && b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
     assert!(done.attempt == attempt && done.state == rdm_admin::build_state::BuildState::Complete, "{done:?}");
     estate.stop().await;
 }

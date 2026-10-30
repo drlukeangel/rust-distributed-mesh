@@ -790,7 +790,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let heard_again_slot: crate::heard_again::HeardAgainSlot = Arc::default();
     let join_slot: crate::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let topology_slot: crate::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
-    let build_facts_slot: crate::build_facts_read::BuildFactsSlot = Arc::new(std::sync::OnceLock::new());
     let build_slot: crate::build_op::BuildSlot = Arc::new(std::sync::OnceLock::new());
     let handover_slot: crate::fabric_handover::HandoverSlot = Arc::new(std::sync::OnceLock::new());
     // This admin's view, once built: the Build log's target reads fabric recovery from it (Q122).
@@ -804,7 +803,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // Closed until the Status authority is filled and its view holds this admin (it decides from
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let rpc_builder = crate::build_op::serve(crate::fabric_handover::serve(crate::build_facts_read::serve(crate::read_op::serve(crate::topology_read::serve(rpc_server(connections.clone(), node_rpc.client.clone(), status_door.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), status_door.clone()), build_facts_slot.clone()), handover_slot.clone()), build_slot.clone());
+    let rpc_builder = crate::build_op::serve(crate::fabric_handover::serve(crate::read_op::serve(crate::topology_read::serve(rpc_server(connections.clone(), node_rpc.client.clone(), status_door.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), status_door.clone()), handover_slot.clone()), build_slot.clone());
     // The app's own ops (each behind the gate of its hook), before the catalog is built.
     let rpc_builder = match wiring.serve_app.take() {
         Some(serve_app) => serve_app(rpc_builder),
@@ -1270,7 +1269,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // the policy. Without that answer it cannot know the policy, and it
                 // refuses to start by name.
                 let entry_floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>> = Arc::default();
-                let _ = build_facts_slot.set(Arc::new(crate::build_facts_read::BuildFactsDoor { me: name.clone(), builds: builds_dyn.clone(), floor: entry_floor.clone() }));
                 // The topology this admin enters its mesh from without an authority (its durable map), and
                 // where it came from; a launched admin's comes from node.start's topology step, after its hook.
                 let mut entry_map: Option<(&'static str, Vec<crate::reenter::MapNode>)> = None;
@@ -1284,8 +1282,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 Some(answer) => {
                                     // Fetch the current Build from the launching admin, and record the attempt floor its
                                     // answer names; without them this admin is not started. The Build it names is read from
-                                    // the store root, or fetched from a node-admin that holds it (`FetchBuildFacts`,
-                                    // node.start's Build-floor step after the hook).
+                                    // the store root (Q292, node.start's Build-floor step after the hook).
                                     take_entry_control(&answer, &accepted, &entry_floor, &records, &cfg.mesh, &mesh_id).await;
                                     tracing::info_span!("rdm.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
                                         .in_scope(|| tracing::info!("entry pulled; eligible to execute Builds"));

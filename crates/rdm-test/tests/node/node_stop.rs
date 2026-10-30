@@ -618,16 +618,16 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     let r = stop.accepted().clone();
     assert_eq!(r.build_id.to_string(), birth_build, "no Build is minted: {r:?}");
     let attempt_no = u64::from(r.attempt) + u64::from(before["is_primary"] == true);
-    let opened = build_log::build_fact(&estate.carrier().await, &birth_build, "the stop attempt is the Build's current attempt", Duration::from_secs(30), |b| serde_json::to_value(b).is_ok_and(|b| b["reason"] == "stop")).await.unwrap_or_else(|end| panic!("{end}"));
+    let opened = build_log::build_fact(&estate, &birth_build, "the stop attempt is the Build's current attempt", Duration::from_secs(30), |b| serde_json::to_value(b).is_ok_and(|b| b["reason"] == "stop")).await.unwrap_or_else(|end| panic!("{end}"));
     let opened = serde_json::to_value(opened).expect("a Build view serializes");
     assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("stop", NODE), "{opened}");
     assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "targeted to the live birth: {opened}");
     Estate::complete(&mut stop).await;
-    build_log::attempt_complete(&estate.carrier().await, &birth_build, attempt_no, SETTLE).await;
+    build_log::attempt_complete(&estate, &birth_build, attempt_no, SETTLE).await;
     assert!(alive(pid), "the stopped process {pid} is stopped, alive");
     // No repair attempt follows the stop: the Build's attempt is the stop's after the reconciler's checklists have passed.
     tokio::time::sleep(Duration::from_secs(15)).await;
-    let b = build_log::build_value(&estate.carrier().await, &birth_build).await;
+    let b = build_log::build_value(&estate, &birth_build).await;
     assert_eq!(b["attempt"].as_u64(), Some(attempt_no), "no repair attempt followed the stop: {b}");
     let n = estate.node_value(NODE).await;
     assert_eq!(n["incarnation_id"], before["incarnation_id"], "no new birth at {NODE}: {n}");

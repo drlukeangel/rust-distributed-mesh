@@ -230,30 +230,6 @@ pub fn malformed(kind: MalformedKind) -> BuildClaimReply { BuildClaimReply::Malf
 pub fn build_in_progress(current_build_id: String, mesh: String, held_by: Option<String>) -> BuildClaimReply { BuildClaimReply::BuildInProgress { current_build_id, mesh, held_by } }
 }
 
-/// Constructors for the BuildFactsReply family.
-#[allow(unused_imports)]
-pub mod build_facts {
-use crate::build_facts::*;
-use crate::outcome::{MalformedKind, ReplyKind};
-use crate::protocol::NodeProtocol;
-use crate::streaming::{FrameKind, StreamingProtocol};
-use serde::{Deserialize, Serialize};
-/// Construct the typed not-ready outcome.
-pub fn not_ready(reason: String) -> BuildFactsReply { BuildFactsReply::NotReady { reason } }
-/// Construct the typed unknown-build outcome.
-pub fn unknown_build(build_id: String) -> BuildFactsReply { BuildFactsReply::UnknownBuild { build_id } }
-/// Construct the typed no-current-build outcome: `FetchCurrentBuild` found no current Build.
-pub fn no_current_build(reason: String) -> BuildFactsReply { BuildFactsReply::NoCurrentBuild { reason } }
-/// Construct the typed peer-unresolved outcome.
-pub fn peer_unresolved(reason: String) -> BuildFactsReply { BuildFactsReply::PeerUnresolved { reason } }
-/// Construct the typed busy outcome.
-pub fn busy(reason: String) -> BuildFactsReply { BuildFactsReply::Busy { reason } }
-/// Construct the typed connections-deleting outcome.
-pub fn connections_deleting(reason: String) -> BuildFactsReply { BuildFactsReply::ConnectionsDeleting { reason } }
-/// Construct the typed malformed outcome.
-pub fn malformed(kind: MalformedKind) -> BuildFactsReply { BuildFactsReply::Malformed { kind } }
-}
-
 /// Constructors for the JoinReply family.
 #[allow(unused_imports)]
 pub mod join {

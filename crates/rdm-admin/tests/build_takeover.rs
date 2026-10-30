@@ -175,8 +175,8 @@ struct Admin {
     /// The admin's endpoint: what its view names it by.
     endpoint: Endpoint,
     builds: Arc<FabricBuildStateAdapter>,
-    /// The admin's Build journal on the fabric's shared store root, which the intent a call carries is
-    /// absorbed into.
+    /// The admin's Build journal on the fabric's shared store root, which the Build's committed records
+    /// it reads are absorbed into (Q292).
     local: Arc<dyn rdm_admin::build_state::LocalBuildLog>,
     /// The Fabric identity as the admin holds it.
     accepted: Arc<AcceptedStore>,

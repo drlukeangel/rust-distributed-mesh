@@ -629,7 +629,7 @@ pub(crate) const FLOOR_CHECK: Duration = Duration::from_millis(100);
 /// A node-admin's Build floor at a start (node-start.md step 4): "Fetch Build facts only when the node
 /// is below the authority's floor, after the hook and before node.started". The floor itself is the
 /// attempt of the pointed Build the admin that served the join held, recorded where the join's answer
-/// is taken ([`take_entry_control`]); this step reads the facts with `FetchBuildFacts` while the
+/// is taken ([`take_entry_control`]); this step reads the Build's committed records from storage (Q292) while the
 /// admin's own holdings are below it, and completes when the check holds them, never on a received
 /// frame alone.
 pub(crate) struct AdminFloor {

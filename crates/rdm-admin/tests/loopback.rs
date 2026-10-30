@@ -134,25 +134,25 @@ impl Dispatcher for Loopback {
     fn hold(&self, me: &PathName, build_id: &BuildId, attempt: u32) -> Option<rdm_admin::build_run::HeldRun> {
         self.door(me).hold(build_id, attempt)
     }
-    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: rdm_admin::executor::RunPlan) -> Dispatched {
+    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, plan: rdm_admin::executor::RunPlan) -> Dispatched {
         if self.lost.lock().unwrap().contains(&executor.to_string()) {
             return Dispatched::Unreached(format!("{executor} is gone: nothing answers at its address"));
         }
         self.dispatched.lock().unwrap().push((executor.to_string(), attempt));
         if self.reporting.lock().unwrap().contains(&executor.to_string()) {
-            return local_dispatched(self.door(executor).attempt_run_reporting(None, build_id, attempt, &executor.to_string(), &context, &intent, &plan, Arc::new(|| true)).await);
+            return local_dispatched(self.door(executor).attempt_run_reporting(None, build_id, attempt, &executor.to_string(), &context, &plan, Arc::new(|| true)).await);
         }
-        local_dispatched(self.door(executor).attempt_run(build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
+        local_dispatched(self.door(executor).attempt_run(build_id, attempt, &executor.to_string(), &context, &plan).await)
     }
-    async fn dispatch_in(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, lane: &str, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: rdm_admin::executor::RunPlan) -> Dispatched {
+    async fn dispatch_in(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, lane: &str, build_id: &BuildId, attempt: u32, context: CallContext, plan: rdm_admin::executor::RunPlan) -> Dispatched {
         if self.lost.lock().unwrap().contains(&executor.to_string()) {
             return Dispatched::Unreached(format!("{executor} is gone: nothing answers at its address"));
         }
         self.sections.lock().unwrap().push((executor.to_string(), lane.to_string(), attempt));
         if self.reporting.lock().unwrap().contains(&executor.to_string()) {
-            return local_dispatched(self.door(executor).attempt_run_reporting(Some(lane), build_id, attempt, &executor.to_string(), &context, &intent, &plan, Arc::new(|| true)).await);
+            return local_dispatched(self.door(executor).attempt_run_reporting(Some(lane), build_id, attempt, &executor.to_string(), &context, &plan, Arc::new(|| true)).await);
         }
-        local_dispatched(self.door(executor).attempt_run_in(Some(lane), build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
+        local_dispatched(self.door(executor).attempt_run_in(Some(lane), build_id, attempt, &executor.to_string(), &context, &plan).await)
     }
 }
 

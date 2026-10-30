@@ -4,9 +4,8 @@
 //! Build. Every cell drives the estate through the typed objects of `rafka-node-admin-client`
 //! (`Builds`, `Nodes`) over Node RPC and awaits their reply streams. The one exception is cell 6,
 //! which sends `build.attempt.run` itself because that call is the fabric-primary's own, never a
-//! caller's. The one read made outside the client's typed objects is cell 8's precondition: the surviving
-//! admin's own Build log, read over `FetchBuildFacts` (op `0x1F`) and awaited through the shared
-//! `build_log::log_fact`. The spans an estate exports are the flame of each cell; no cell asserts behaviour
+//! caller's. The one read made outside the client's typed objects is cell 8's precondition: the fabric's
+//! Build records, read from its store root (Q292) and awaited through the shared `build_log::log_fact`. The spans an estate exports are the flame of each cell; no cell asserts behaviour
 //! from them.
 //!
 //! The estate: `mesh1` (two node-admins, one rpc node) holds the fabric-primary role, and `mesh2`
@@ -317,7 +316,6 @@ async fn attempt_run(
         attempt,
         executor: executor.into(),
         context: CallContext::default(),
-        intent: Vec::new(),
         operations: Vec::new(),
         hand_off_to: None,
         mesh: None,
@@ -683,7 +681,7 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_r
     assert_eq!((s(&held["node_id"]), s(&held["status"])), (s(&recovered["node_id"]), "ready".to_string()), "the re-created birth holds its path.name: {held}");
     assert_eq!(estate.node_value(&node.to_string()).await["status"], "ready", "the started node stands");
     // The journal: nothing of the superseded attempt from its executor.
-    let facts = crate::build_log::log_read(&carrier, &build).await.unwrap_or_else(|e| panic!("the Build log of {fp}: {e}"));
+    let facts = crate::build_log::log_read(&estate, &build).await.unwrap_or_else(|e| panic!("the Build log of {fp}: {e}"));
     let landed: Vec<&BuildFact> = facts
         .iter()
         .filter(|f| match f {
@@ -1082,12 +1080,11 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     let row: Value = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::MESHES_FILE), "mesh-record", Some(&s(&name_claim["record"]["mesh_id"]))).expect("the fabric-primary's claim of mesh2 wrote its record to the store root");
     let claimed = s(&row["record"]["mesh_id"]);
     assert!(!claimed.is_empty() && row["record"]["name"] == "mesh2", "{row}");
-    // The receipt reached the surviving admin before the fabric-primary is lost: its own Build log holds the
-    // operation's `Complete` receipt of the lost attempt. The Build family is the fabric-primary's alone, so
-    // the survivor's log is read over `FetchBuildFacts`, which every node-admin serves from its own.
+    // The receipt is on the store before the fabric-primary is lost: the fabric's Build records, which the
+    // surviving admin reads when it takes the role (Q292), hold the operation's `Complete` receipt of the
+    // lost attempt.
     if let Some(operation) = survivor_holds {
-        let survivor = caller.survivor_of(&fp);
-        crate::build_log::log_fact(&caller.carrier_at(&survivor), &build_id.as_str(), &format!("{operation} Complete at attempt {attempt}"), Duration::from_secs(60), |facts| {
+        crate::build_log::log_fact(&estate, &build_id.as_str(), &format!("{operation} Complete at attempt {attempt}"), Duration::from_secs(60), |facts| {
                 facts.iter().any(|f| matches!(f, BuildFact::Step(r) if r.operation == operation && r.step == "Complete" && r.attempt == attempt && r.outcome == StepOutcome::Complete))
             })
             .await
@@ -1284,7 +1281,7 @@ async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_
         // The surviving executor has heard all receipts that precede this cut.
         let operation = format!("node.connection.delete:{node}");
         if cut == "Complete" {
-            crate::build_log::build_fact(&estate.carrier_at(&path("mesh2.admin.2")).await, accepted.build_id.as_str(), "the completed closure is recoverable on the successor before its executor is lost", Duration::from_secs(30), |b| {
+            crate::build_log::build_fact(&estate, accepted.build_id.as_str(), "the completed closure is recoverable on the successor before its executor is lost", Duration::from_secs(30), |b| {
                 b.steps.iter().any(|r| r.operation == operation && r.step == "DeleteConnections" && serde_json::to_value(r).unwrap()["outcome"] == "complete")
             }).await.unwrap_or_else(|e| panic!("{e}"));
         }
@@ -1391,9 +1388,8 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
 }
 
 /// CONTRACT (docs/architecture/build.md: "A stop, a start or a recovery opens the next attempt of the
-/// current Build with its action"; crates/rdm-core/src/build.rs `BuildRequest::AttemptRun`: `intent`
-/// carries the Build's acceptance, every attempt opened, claimed and ended, and the step receipts of
-/// the operations this run carries, never the Build's other receipts): a Build that lives through 100
+/// current Build with its action"; Q292: `build.attempt.run` names the Build and the claim and never
+/// carries a copy of it, the executor reading the Build's committed records from storage): a Build that lives through 100
 /// `node.stop` / `node.start` pairs on `mesh2` (200 attempts dispatched across `build.attempt.run` to
 /// `mesh2.admin.1`) dispatches and completes every attempt within the Build op's 256 KiB request
 /// ceiling, with zero `Malformed(TooLarge)` refusals.

@@ -66,11 +66,11 @@ pub(crate) enum Rpc1 {
     ExitProven,
 }
 
-/// Build `id` as the node-admin the estate asks holds it now (its own Build log over `FetchBuildFacts`), as
+/// Build `id` as the fabric's Build records hold it now (read from its store root, Q292), as
 /// the JSON its view serializes to; a read that ends, or a log that holds no acceptance of it, is recorded
 /// as such: nothing here panics before the estate is stopped.
 async fn build_now(estate: &Estate, id: &str) -> Value {
-    match build_log::log_read(&estate.carrier().await, id).await {
+    match build_log::log_read(&estate, id).await {
         Ok(facts) => build_log::projection(&facts, id).map(|p| serde_json::to_value(p).expect("a Build view serializes")).unwrap_or_else(|| json!({"unaccepted": facts.len()})),
         Err(end) => json!({"read_ended": end.to_string()}),
     }

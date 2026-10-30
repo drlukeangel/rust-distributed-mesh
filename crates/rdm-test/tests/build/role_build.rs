@@ -41,7 +41,7 @@ fn kind_of(kind: &str) -> NodeKind {
 async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, Vec<Value>) {
     let mesh = MeshDesired::of("mesh1", std::iter::once((NodeKind::NodeAdmin, 1)).chain(roles.iter().map(|(kind, n)| (kind_of(kind), *n))));
     let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh] }).await.build_id.to_string();
-    estate.artifact(&format!("build-{label}.json"), &build_log::build_value(&estate.carrier().await, &build_id).await);
+    estate.artifact(&format!("build-{label}.json"), &build_log::build_value(&estate, &build_id).await);
     let mut want: BTreeSet<String> = ["mesh1.admin.1".to_string()].into();
     for (kind, n) in roles {
         want.extend((1..=*n).map(|i| format!("mesh1.{kind}.{i}")));

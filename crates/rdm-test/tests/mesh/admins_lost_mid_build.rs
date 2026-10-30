@@ -88,7 +88,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier
     let stream = estate.submit(&BuildSpec::Fabric(shape(9))).await;
     let b = stream.build_id().to_string();
     // Active fabric-wide: the fabric-primary's mesh already sees mesh2's admin holding B's first attempt.
-    build_log::build_fact(&estate.carrier_at(&mesh1_primary).await, &b, "mesh1's admin sees B's first attempt held by mesh2's admin", Duration::from_secs(30), |p| p.attempt == 1 && p.state == BuildState::Running && p.executor.as_deref() == Some(mesh2_primary.as_str()))
+    build_log::build_fact(&estate, &b, "mesh1's admin sees B's first attempt held by mesh2's admin", Duration::from_secs(30), |p| p.attempt == 1 && p.state == BuildState::Running && p.executor.as_deref() == Some(mesh2_primary.as_str()))
         .await
         .unwrap_or_else(|end| panic!("{end}"));
     // mesh2's node-admins and every birth B's first attempt launched; the members born before B
@@ -110,7 +110,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier
     estate.enter(&mesh1_primary).await;
 
     // B completes under its own id, and mesh2 keeps its MeshId and names.
-    let done = build_log::attempt_complete(&estate.carrier().await, &b, 2, Duration::from_secs(180)).await;
+    let done = build_log::attempt_complete(&estate, &b, 2, Duration::from_secs(180)).await;
     assert!(done.attempt > 1, "a successor continued B: {done:#?}");
     let after = estate.settles_to_named(&names(&[("mesh1", 2, 3), ("mesh2", 2, 9)]), Duration::from_secs(60)).await;
     let mesh2 = estate.mesh_view("mesh2").await;

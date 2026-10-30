@@ -421,16 +421,11 @@ struct Run {
 }
 
 impl Run {
-    /// Build `id` as the admin behind `door` holds it: that admin's own Build log, read over
-    /// `FetchBuildFacts` (op `0x1F`).
-    async fn build(&self, door: &Door, id: &str) -> Value {
-        build_log::build_value(&self.estate.carrier_at(&path(&door.name)).await, id).await
-    }
-
-    /// [`Self::build`] while the admin's log may hold no fact of the Build yet: a Build whose one
-    /// durable write is held is held by no log (R-BI3), which is the progress marker `held-by-no-log`.
-    async fn build_if_held(&self, door: &Door, id: &str) -> Value {
-        let facts = build_log::log_read(&self.estate.carrier_at(&path(&door.name)).await, id).await.ok();
+    /// Build `id` as the fabric's Build records hold it, while they may hold no record of it yet: a
+    /// Build whose one durable write is held is held by no log (R-BI3), which is the progress marker
+    /// `held-by-no-log`.
+    async fn build_if_held(&self, id: &str) -> Value {
+        let facts = build_log::log_read(&self.estate, id).await.ok();
         match facts.and_then(|f| build_log::projection(&f, id)) {
             Some(p) => serde_json::to_value(p).expect("a Build view serializes"),
             None => json!({"state": "held-by-no-log", "attempt": 0, "steps": []}),
@@ -442,17 +437,11 @@ impl Run {
         self.estate.accepted_build_id().await
     }
 
-    /// The highest attempt of Build `id` any admin holds: an unaccepted Build has none, and an admin whose
-    /// log holds no fact of it ends the read `unknown build`.
+    /// The highest attempt of Build `id` the fabric's Build records hold, the records every admin reads
+    /// (Q292): an unaccepted Build has none.
     async fn attempt_anywhere(&self, id: &str) -> u64 {
-        let mut max = 0;
-        for admin in self.estate.node_views().await.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
-            let Ok(facts) = build_log::log_read(&self.estate.carrier_at(&admin.name).await, id).await else { continue };
-            if let Some(held) = build_log::projection(&facts, id) {
-                max = max.max(u64::from(held.attempt));
-            }
-        }
-        max
+        let Ok(facts) = build_log::log_read(&self.estate, id).await else { return 0 };
+        build_log::projection(&facts, id).map(|held| u64::from(held.attempt)).unwrap_or(0)
     }
 
     async fn door_of(&self, name: &str) -> Door {
@@ -486,7 +475,7 @@ impl Run {
 
     /// Build `id` complete in the log of the admin the estate asks.
     async fn built(&self, id: &str) -> Value {
-        let build = build_log::build_fact(&self.estate.carrier().await, id, "complete", Duration::from_secs(120), |b| {
+        let build = build_log::build_fact(&self.estate, id, "complete", Duration::from_secs(120), |b| {
             assert!(b.state != BuildState::Failed, "Build {id} failed: {b:#?}");
             b.state == BuildState::Complete
         })
@@ -563,8 +552,8 @@ impl Run {
 }
 
 /// One progress read of the Build a cut holds.
-async fn read(run: &Run, door: &Door, build_id: &str, op: &Option<String>) -> (String, bool, u64) {
-    let b = run.build_if_held(door, build_id).await;
+async fn read(run: &Run, build_id: &str, op: &Option<String>) -> (String, bool, u64) {
+    let b = run.build_if_held(build_id).await;
     let attempt = b["attempt"].as_u64().unwrap_or(0);
     let done = op.as_ref().map(|o| done_steps(&b, o, attempt)).unwrap_or_default();
     let marker = json!({"state": b["state"], "attempt": attempt, "done": done, "current_build": run.fabric_build_id().await, "attempt_anywhere": run.attempt_anywhere(build_id).await}).to_string();
@@ -627,7 +616,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         if i > 0 {
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        let (marker, complete, attempt) = read(run, door, &build_id, &op).await;
+        let (marker, complete, attempt) = read(run, &build_id, &op).await;
         if i == 0 {
             attempts[0] = attempt;
         }
@@ -668,7 +657,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     };
 
     // Recovery and the reconciled final state.
-    let (after_marker, complete_after, _) = read(run, door, &build_id, &op).await;
+    let (after_marker, complete_after, _) = read(run, &build_id, &op).await;
     ev.recovery = Some(Recovery { work_complete: complete_after, marker_after: after_marker });
     let nodes_after = run.estate.node_values().await;
     let (roles_after, roles_detail_after) = primaries(&nodes_after);
@@ -747,8 +736,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let op = format!("node.create:{admin}");
     let want = create_order[..CreateStep::ORDER.iter().position(|s| *s == stops_at).expect("stops_at is a create step")].to_vec();
     // The pipeline goes on while the admin boots, and stops where it needs the admin Ready.
-    let carrier = run.estate.carrier_at(&path(&exec.name)).await;
-    build_log::build_fact(&carrier, &build_id, &format!("the Build reaches the held admin (complete receipts exactly {want:?})"), Duration::from_secs(60), |b| done_steps(&serde_json::to_value(b).expect("a Build view serializes"), &op, 1) == want)
+    build_log::build_fact(&run.estate, &build_id, &format!("the Build reaches the held admin (complete receipts exactly {want:?})"), Duration::from_secs(60), |b| done_steps(&serde_json::to_value(b).expect("a Build view serializes"), &op, 1) == want)
         .await
         .unwrap_or_else(|end| panic!("`{id}`: {end}"));
     let mut reads = Vec::new();
@@ -758,7 +746,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
         if i > 0 {
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        let (marker, complete, attempt) = read(run, &exec, &build_id, &Some(op.clone())).await;
+        let (marker, complete, attempt) = read(run, &build_id, &Some(op.clone())).await;
         if i == 0 {
             attempts[0] = attempt;
         }
@@ -780,7 +768,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let ended = door.wait_released(id).await;
     ev.release = Some(Release { acked: rel["released"] == id, hold_ended: ended });
     let done = run.complete(&mut stream).await;
-    let (after_marker, complete_after, _) = read(run, &exec, &build_id, &Some(op.clone())).await;
+    let (after_marker, complete_after, _) = read(run, &build_id, &Some(op.clone())).await;
     ev.recovery = Some(Recovery { work_complete: complete_after, marker_after: after_marker });
     let nodes_after = run.estate.node_values().await;
     let (roles_after, detail_after) = primaries(&nodes_after);
@@ -829,7 +817,7 @@ async fn silent_case(run: &Run) {
     let data_dir = run.estate.data_dir(&name).await;
     let fabric_build = run.fabric_build_id().await;
     let attempt_of = |b: &Value| b["attempt"].as_u64().unwrap_or(0);
-    let attempt_before = attempt_of(&build_log::build_value(&run.estate.carrier().await, &fabric_build).await);
+    let attempt_before = attempt_of(&build_log::build_value(&run.estate, &fabric_build).await);
 
     // The held proof mutation: stored by the live node before it is frozen.
     let put = run.estate.probe(&["put", "--target", &exact, "--key", "77", "--value", "before-freeze"]);
@@ -860,7 +848,7 @@ async fn silent_case(run: &Run) {
     let nodes_during = run.estate.node_values().await;
     let (roles_during, detail_during) = primaries(&nodes_during);
     let during_node = nodes_during.iter().find(|n| n["name"] == name.as_str()).cloned();
-    let attempt_during = attempt_of(&build_log::build_value(&run.estate.carrier().await, &fabric_build).await);
+    let attempt_during = attempt_of(&build_log::build_value(&run.estate, &fabric_build).await);
     let alive = proc_state(pid).is_some_and(|c| c != 'Z');
     let inc_during = during_node.as_ref().map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let replaced = during_node.as_ref().is_none_or(|n| s(&n["node_id"]) != node_id) || run.fabric_build_id().await != fabric_build;
@@ -907,7 +895,7 @@ async fn silent_case(run: &Run) {
     rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == incarnation.as_str() && kept["reply"]["executing_node"] == node_id.as_str(), kept.to_string());
     rec.check("the node keeps its process and its data dir", run.estate.pid_of(&name).await == pid && run.estate.data_dir(&name).await == data_dir, format!("pid {pid}, {data_dir}"));
     rec.check("exactly one runtime serves the node", run.runtimes(&name) == 1, format!("{}", run.runtimes(&name)));
-    rec.check("the current build_id is the Build it was and that Build gained no attempt", run.fabric_build_id().await == fabric_build && attempt_of(&build_log::build_value(&run.estate.carrier().await, &fabric_build).await) == attempt_before, format!("{fabric_build} attempts {attempt_before}"));
+    rec.check("the current build_id is the Build it was and that Build gained no attempt", run.fabric_build_id().await == fabric_build && attempt_of(&build_log::build_value(&run.estate, &fabric_build).await) == attempt_before, format!("{fabric_build} attempts {attempt_before}"));
     rec.check("the advertised primaries equal the public candidates' after the thaw", roles_after, detail_after);
     ev.reconciliation = Some(rec);
     run.rows.lock().unwrap().push(json!({

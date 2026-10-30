@@ -193,8 +193,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     let first_of = |o: &str| operations.iter().position(|x| *x == o).unwrap();
     let last_of = |o: &str| operations.iter().rposition(|x| *x == o).unwrap();
     assert!(last_of(&delete) < first_of(&create), "the delete, then the create: {operations:?}");
-    // Every receipt the recovery wrote rides the fabric's Build topic and FetchBuildFacts to the
-    // fabric-primary, whose planning and recovery dedup read them: none is refused for want of a wire shape.
+    // Every receipt the recovery wrote has a wire shape: none is refused before it commits.
     let facts: Vec<rdm_admin::build_state::BuildFact> = view.steps.iter().cloned().map(rdm_admin::build_state::BuildFact::Step).collect();
     let (_, refused) = rdm_admin::fabric_builds::encode_chunks(facts);
     assert!(refused.is_empty(), "a receipt of the recovery has no wire shape: {refused:?}");

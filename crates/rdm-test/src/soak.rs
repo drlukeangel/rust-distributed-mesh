@@ -642,11 +642,11 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
     Some((agreeing, unheard_at))
 }
 
-/// How the driver reads Build `id` as the fabric-primary's Build log holds it, as the JSON the Build projection
+/// How the driver reads Build `id` as the fabric's Build records hold it, as the JSON the Build projection
 /// serializes to (`attempt`, `state`, `last_failure`, `steps` with each receipt's `output`). The read is the test
-/// binary's: the receipts' outputs travel on `FetchBuildFacts` (op `0x1F`, `build_state::fold`), a read the
-/// scenario crate's shipped code cannot link (`tools/mesh-audit/src/deps.rs`, rule 4), and `build.get` carries no
-/// output.
+/// binary's: the records are read from the fabric's store root and folded (`build_state::read_committed`,
+/// `build_state::fold`, Q292), which the scenario crate's shipped code cannot link
+/// (`tools/mesh-audit/src/deps.rs`, rule 4), and `build.get` carries no output.
 pub type BuildRead = for<'a> fn(&'a Estate, &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send + 'a>>;
 
 /// The birth a round's operation produced at `path`, from the Build's own receipts: the last

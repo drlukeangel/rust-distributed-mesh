@@ -96,7 +96,7 @@ impl Capture {
 }
 
 /// The Build state as a node-admin holds it: every fact is sent in its wire shape
-/// (`BuildMessage::to_bytes`, the Build-fact codec of `FetchBuildFacts` and a build.attempt.run's intent) and the fact
+/// (`BuildMessage::to_bytes`, the Build-fact codec) and the fact
 /// the wire gives back is the one recorded. A step output with no wire shape is refused here
 /// exactly as `FabricBuildStateAdapter` refuses it.
 #[derive(Default)]
@@ -1640,7 +1640,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
 /// CONTRACT: the leaving mesh-primary admits `DeleteMesh` for a Build whose Accepted fact gossip has
 /// not yet brought it (the command outran the fact, gate 044519ab canonical_ids: admitted at .810,
 /// "no Build" at .811, Accepted heard at .905). Its own log holding no fact of the Build is the case
-/// "its own do not yet admit it": the owner's Build facts are read (FetchBuildFacts) and absorbed
+/// "its own do not yet admit it": the Build's committed records are read from storage (Q292) and absorbed
 /// into its own Build log (node-build-hydration.md: "Facts are absorbed into the existing Build
 /// log"), and the leave runs over the roster the owner accepted. Its own log then holds the Build.
 #[test]
@@ -1685,7 +1685,7 @@ fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners
 
 /// CONTRACT (mesh-delete.md step 4: "The fabric-primary validates exact roster coverage"; line 79:
 /// "Missing receipts ... leave the workflow incomplete"): the final primary that calls mesh-deleted
-/// and holds no fact of the Build at all (FetchBuildFacts answers UnknownBuild) recorded no exit
+/// and whose Build storage holds no record of the Build at all (the read answers UnknownBuild) recorded no exit
 /// manifest, so the fabric-primary's verdict is Incomplete at once, naming every roster birth but
 /// the final primary as without an Exited receipt and naming the unknown Build; the open leave ends
 /// inside the call instead of waiting out its handoff bound (gate 044519ab canonical_ids: 120 s).
@@ -1706,9 +1706,9 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
         let root = tracing::info_span!("cell.mesh-deleted-unknown-build-handoff", build_id = %key.build_id.log());
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
-        let unknown = rdm_admin::build_facts_read::FetchFailure::UnknownBuild(format!("the responder holds no fact of {}", key.build_id));
+        let unknown = rdm_admin::build_state::BuildStateError::UnknownBuild(key.build_id.clone());
         let verdict = handoff_verdict_from_read(Err(unknown), &key, &admitted, &reference, "mesh1.admin.1", FINAL);
-        let not_ready = handoff_verdict_from_read(Err(rdm_admin::build_facts_read::FetchFailure::NotReady("hydrating".into())), &key, &admitted, &reference, "mesh1.admin.1", FINAL);
+        let not_ready = handoff_verdict_from_read(Err(rdm_admin::build_state::BuildStateError::Io("hydrating".into())), &key, &admitted, &reference, "mesh1.admin.1", FINAL);
         (verdict, not_ready, trace_id)
     });
     let spans = cap.spans();
@@ -1721,9 +1721,9 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
             let expected: BTreeSet<String> = roster.iter().filter(|b| **b != me).map(|b| format!("{} {}", b.node, b.incarnation_id)).collect();
             let HandoffVerdict::Incomplete { reason, without_exit } = &v else { unreachable!() };
             assert_eq!(without_exit.iter().cloned().collect::<BTreeSet<_>>(), expected, "every roster birth but the final primary is without an Exited receipt");
-            assert!(reason.contains("holds no fact of") && reason.contains(key.build_id.as_str()), "the reason names the unknown Build: {reason}");
+            assert!(reason.contains("holds no record of") && reason.contains(key.build_id.as_str()), "the reason names the unknown Build: {reason}");
             assert!(
-                matches!(v.refusal(), Some(StatusReply::RejectedIncompleteManifest { missing: 2, ref without_exit, ref reason }) if without_exit.iter().cloned().collect::<BTreeSet<_>>() == expected && reason.contains("holds no fact of")),
+                matches!(v.refusal(), Some(StatusReply::RejectedIncompleteManifest { missing: 2, ref without_exit, ref reason }) if without_exit.iter().cloned().collect::<BTreeSet<_>>() == expected && reason.contains("holds no record of")),
                 "the handoff is refused by name, the births and the unknown Build named: {:?}",
                 v.refusal()
             );

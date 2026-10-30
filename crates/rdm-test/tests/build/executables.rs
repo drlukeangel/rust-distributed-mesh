@@ -41,8 +41,7 @@ fn s(v: &Value) -> String {
 /// and the tags and config that row carries.
 pub async fn read_request(estate: &Estate) -> (rdm_core::BuildId, Vec<NodeSpec>) {
     let based_on = estate.accepted_build_id().await;
-    let carrier = estate.carrier().await;
-    let facts = build_log::log_read(&carrier, &based_on).await.unwrap_or_else(|e| panic!("the Build log of the fabric-primary holds no Build {based_on}: {e}"));
+    let facts = build_log::log_read(estate, &based_on).await.unwrap_or_else(|e| panic!("the fabric's Build records hold no Build {based_on}: {e}"));
     let build = build_log::projection(&facts, &based_on).unwrap_or_else(|| panic!("the fabric-primary's log holds no acceptance of {based_on}"));
     let nodes = estate.nodes_obj().await.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("node.get: {e}"));
     let mut out = Vec::new();
@@ -385,7 +384,7 @@ async fn a_one_admin_meshs_second_admin_is_accepted_first_and_kept_when_its_exec
 
     let stream = estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on: based_on.clone(), nodes: naming(request, "mesh2.admin.1", Some(&next)) }).await;
     let build = stream.build_id().to_string();
-    let accepted = build_log::build_value(&estate.carrier().await, &build).await;
+    let accepted = build_log::build_value(&estate, &build).await;
     assert!(accepted["topology"]["meshes"]["mesh2"]["nodes"].as_array().is_some_and(|n| n.iter().any(|p| p == "mesh2.admin.2")), "the added admin is in the accepted topology from acceptance: {}", accepted["topology"]);
     door.wait_held("added-admin-created").await;
     let added = estate.until_node("mesh2.admin.2", "mesh2.admin.2 ready", SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).cloned()).await;
@@ -696,7 +695,7 @@ async fn an_executor_lost_after_a_replaced_brokers_delete_leaves_its_create_alon
     assert_eq!((s(&held["hit"]["build_id"]), s(&held["hit"]["operation"])), (build.clone(), format!("node.delete:{BROKER}")), "{p} is held at the broker's node.deleted: {held}");
     let fp = estate.fabric_view_at(&Estate::path(&other)).await.and_then(|v| v.fabric_primary).expect("mesh2's other admin names the fabric-primary");
     estate.node_views_at(&fp).await.expect("the fabric-primary answers node.get");
-    build_log::build_fact(&estate.carrier_at(&fp).await, &build, &format!("{BROKER}'s NodeDeleted"), SETTLE, |b| b.steps.iter().any(|r| r.operation == format!("node.delete:{BROKER}") && r.step == "NodeDeleted"))
+    build_log::build_fact(&estate, &build, &format!("{BROKER}'s NodeDeleted"), SETTLE, |b| b.steps.iter().any(|r| r.operation == format!("node.delete:{BROKER}") && r.step == "NodeDeleted"))
         .await
         .unwrap_or_else(|end| panic!("{end}"));
     estate.kill_node(&p).await;
@@ -735,7 +734,7 @@ async fn an_executor_lost_inside_a_replaced_brokers_delete_has_its_successor_cre
     assert_eq!((s(&held["hit"]["build_id"]), s(&held["hit"]["operation"])), (build.clone(), format!("node.delete:{BROKER}")), "{p} is held inside the broker's NodeDeleted step: {held}");
     let fp = estate.fabric_view_at(&Estate::path(&other)).await.and_then(|v| v.fabric_primary).expect("mesh2's other admin names the fabric-primary");
     estate.node_views_at(&fp).await.expect("the fabric-primary answers node.get");
-    build_log::build_fact(&estate.carrier_at(&fp).await, &build, &format!("{BROKER}'s TerminateRuntime"), SETTLE, |b| b.steps.iter().any(|r| r.operation == format!("node.delete:{BROKER}") && r.step == "TerminateRuntime"))
+    build_log::build_fact(&estate, &build, &format!("{BROKER}'s TerminateRuntime"), SETTLE, |b| b.steps.iter().any(|r| r.operation == format!("node.delete:{BROKER}") && r.step == "TerminateRuntime"))
         .await
         .unwrap_or_else(|end| panic!("{end}"));
     let record = record_of(&estate, before[BROKER].view.node_id.as_str());

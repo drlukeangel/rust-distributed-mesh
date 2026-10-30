@@ -181,8 +181,7 @@ pub struct FabricTopology {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned: Vec<(PathName, crate::build::PinnedBirth)>,
     /// Every mesh the Build names, by name and id, when this topology holds sections of it, not the
-    /// whole (Q284): `meshes` then holds only the sections that reached this admin (a build.attempt.run's,
-    /// a `FetchBuildSection`'s), and `pinned` only theirs. `None`: the whole accepted Build, as the
+    /// whole (Q284): `meshes` then holds only the sections cut from it, and `pinned` only theirs. `None`: the whole accepted Build, as the
     /// fabric-primary records it. Never journaled: only the fabric-primary writes the record, whole.
     #[serde(skip)]
     pub section_of: Option<BTreeMap<String, MeshId>>,

@@ -27,7 +27,7 @@
 //!    - `rdm.mesh.node.update.via-topology-taken`: `GetTopology` from the authority that answered the
 //!      join, installed per mesh only from a complete snapshot;
 //!    - `rdm.mesh.node.update.via-build-floor`: the kind's Build floor, on every start (a node-admin
-//!      reads the Build facts it is missing with `FetchBuildFacts`; an rpc node owes none);
+//!      reads the Build's committed records it is missing from storage, Q292; an rpc node owes none);
 //!    - `rdm.mesh.node.update.via-rafka-time-refreshed`: rafka-time read again from the authority, last,
 //!      so it is current when the node re-enters.
 //! 5. `rdm.mesh.node.update.via-ready` (step 5): the kind's node.started report.

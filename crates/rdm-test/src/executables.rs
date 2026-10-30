@@ -11,11 +11,9 @@
 //! the way the compiler's count form resized them (`accepted::resize`): a grow takes the lowest free
 //! ordinal of the kind, a shrink drops the highest ordinal that is not the kind's primary.
 
-use rdm_admin::accepted::FabricTopology;
 use rdm_client::binding::{sha256_file, Binding, BindingSet};
-use rdm_client::{BuildCarrier, BuildId, Fabrics, LaunchKind as NodeKind, MeshDesired, NodeStatus, NodeView, PathName};
+use rdm_client::{BuildCarrier, BuildId, Builds, Filter, LaunchKind as NodeKind, MeshDesired, NodeStatus, NodeView, PathName};
 use rdm_core::meta::{NodeSpec, PersistentDisposition, PlacementMeta, StorageMeta};
-use rdm_transport::NodeTarget;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -94,23 +92,25 @@ fn counts(mesh: &MeshDesired) -> [(NodeKind, u32); 5] {
 pub struct Current {
     /// The current Build: the request's `based_on`.
     pub based_on: BuildId,
-    /// That Build's accepted topology.
-    pub topology: FabricTopology,
+    /// That Build's accepted topology: every node's create spec, by mesh and `path.name`.
+    pub topology: BTreeMap<String, BTreeMap<PathName, NodeSpec>>,
     /// Every node of the fabric, from the rows.
     pub rows: Vec<NodeView>,
 }
 
 impl Current {
-    /// Read it through `carrier`: `fabric.get` at the admin it starts at names the fabric-primary,
-    /// whose current Build is read with its facts (`FetchCurrentBuild`), and `node.get` with no pair.
+    /// Read it through `carrier`: `build.get` of the current Build (its topology, every node's create
+    /// spec), and `node.get` with no pair.
     pub async fn read(carrier: &BuildCarrier) -> Result<Self, String> {
-        let view = crate::typed::the_fabric(&Fabrics::new(carrier.clone())).await.map_err(|e| format!("fabric.get at {}: {e}", carrier.fabric_primary()))?;
-        let at = view.fabric_primary.clone().unwrap_or_else(|| carrier.fabric_primary().clone());
-        let fetched = rdm_admin::build_facts_read::fetch_current_build(carrier.client(), &NodeTarget::CurrentPath(at.clone())).await.map_err(|e| format!("the current Build at the fabric-primary {at}: {e}"))?;
-        let topology = rdm_admin::build_state::fold(&fetched.facts).remove(&fetched.build_id).map(|p| p.topology).ok_or_else(|| format!("the fabric-primary {at}'s facts of its current Build {} hold no acceptance of it", fetched.build_id))?;
+        let current = Builds::new(carrier.clone()).get(&Filter::new().eq("current", ["true"])).await.map_err(|e| format!("build.get of the current Build at {}: {e}", carrier.fabric_primary()))?;
+        let [build] = <[rdm_client::Build; 1]>::try_from(current).map_err(|all| format!("build.get of the current Build at {} answered {} Builds, not one", carrier.fabric_primary(), all.len()))?;
+        let mut topology: BTreeMap<String, BTreeMap<PathName, NodeSpec>> = BTreeMap::new();
+        for spec in build.nodes {
+            topology.entry(spec.path.mesh.clone()).or_default().insert(spec.path.clone(), spec);
+        }
         // Every row in one read: node.get streams its rows on op 0x23 (Q285).
         let rows = rdm_client::Nodes::new(carrier.clone()).get(&rdm_client::Filter::new()).await.map_err(|e| format!("node.get at {}: {e}", carrier.fabric_primary()))?;
-        Ok(Self { based_on: fetched.build_id, topology, rows })
+        Ok(Self { based_on: build.build_id, topology, rows })
     }
 
     /// The executable the row at `path` records, a live birth's first.
@@ -140,13 +140,10 @@ impl Current {
     /// Build, which applies every property that differs from the row (build.md §1), changes neither.
     pub fn held(&self, executables: &Executables) -> Result<BTreeMap<String, BTreeMap<PathName, NodeSpec>>, String> {
         let mut out: BTreeMap<String, BTreeMap<PathName, NodeSpec>> = BTreeMap::new();
-        for (name, mesh) in &self.topology.meshes {
+        for (name, mesh) in &self.topology {
             let paths = out.entry(name.clone()).or_default();
-            for path in &mesh.nodes {
-                let mut spec = match mesh.spec(path) {
-                    Some(s) => s.clone(),
-                    None => created_spec(path.clone(), self.created_executable(path.kind, executables)?),
-                };
+            for (path, spec) in mesh {
+                let mut spec = spec.clone();
                 if spec.executable.is_none() {
                     spec.executable = Some(match self.row_executable(path) {
                         Some(b) => b,
@@ -203,7 +200,7 @@ impl Current {
 
     /// The counts the topology holds of `mesh` (zero for a mesh it does not hold).
     pub fn counts_of(&self, mesh: &str) -> MeshDesired {
-        let of = |kind: NodeKind| self.topology.meshes.get(mesh).map(|m| m.nodes.iter().filter(|p| p.kind == kind).count() as u32).unwrap_or(0);
+        let of = |kind: NodeKind| self.topology.get(mesh).map(|m| m.keys().filter(|p| p.kind == kind).count() as u32).unwrap_or(0);
         MeshDesired { name: mesh.into(), node_admin: of(NodeKind::NodeAdmin), rpc_node: of(NodeKind::RpcNode), broker: of(NodeKind::Broker), gateway: of(NodeKind::Gateway), compute: of(NodeKind::Compute) }
     }
 
@@ -230,7 +227,6 @@ impl Current {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdm_admin::accepted::MeshTopology;
 
     fn binding(id: &str, sha: &str) -> Binding {
         Binding { launch_id: id.into(), executable: format!("/b/{id}").into(), sha256: sha.into(), image: None }
@@ -254,18 +250,16 @@ mod tests {
 
     /// A topology holding `mesh1.admin.1` (entry naming none) and `mesh1.rpc.1..=3` (entries naming `r0`).
     fn current() -> Current {
-        let mut mesh = MeshTopology { name: "mesh1".into(), mesh_id: rdm_core::MeshId::mint(), nodes: Default::default(), spec_by_path: Default::default() };
+        let mut mesh: BTreeMap<PathName, NodeSpec> = BTreeMap::new();
         let admin: PathName = "mesh1.admin.1".parse().unwrap();
         let mut admin_spec = created_spec(admin.clone(), binding("node_admin", "x"));
         admin_spec.executable = None;
-        mesh.nodes.insert(admin.clone());
-        mesh.spec_by_path.insert(admin, admin_spec);
+        mesh.insert(admin, admin_spec);
         for o in 1..=3 {
             let p = PathName::new("mesh1", NodeKind::RpcNode, o);
-            mesh.nodes.insert(p.clone());
-            mesh.spec_by_path.insert(p.clone(), created_spec(p, binding("rpc_node", "r0")));
+            mesh.insert(p.clone(), created_spec(p, binding("rpc_node", "r0")));
         }
-        let topology = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), mesh)].into_iter().collect() };
+        let topology = [("mesh1".to_string(), mesh)].into_iter().collect();
         Current { based_on: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), topology, rows: vec![row("mesh1.admin.1", true, "a0"), row("mesh1.rpc.3", true, "r0")] }
     }
 

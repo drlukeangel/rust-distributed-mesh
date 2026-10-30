@@ -9,8 +9,8 @@
 //! released through that admin's door; the Builds that trigger them are the ones a caller makes
 //! (`node.create` / `node.delete` / `build.create` accepted by the fabric-primary ->
 //! executor reconcile -> node operation -> deployment pipeline), driven through the typed objects over
-//! Node RPC. The Build "as the admin behind a door holds it" is that admin's own Build log, read over
-//! `FetchBuildFacts` (`build_log`).
+//! Node RPC. The Build is read as the fabric's Build records hold it, from its store root (Q292,
+//! `build_log`).
 
 use crate::build_log;
 use rdm_client::{LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
@@ -112,10 +112,9 @@ struct Run {
 }
 
 impl Run {
-    /// Build `id` as the admin behind `door` holds it: that admin's own Build log, read over
-    /// `FetchBuildFacts` (op `0x1F`).
-    async fn build(&self, door: &Door, id: &str) -> Value {
-        build_log::build_value(&self.estate.carrier_at(&path(&door.name)).await, id).await
+    /// Build `id` as the fabric's Build records hold it, the records every admin reads (Q292).
+    async fn build(&self, id: &str) -> Value {
+        build_log::build_value(&self.estate, id).await
     }
 
     /// the current build_id as the fabric primary holds it: `fabric.get` at the admin behind its door.
@@ -178,11 +177,10 @@ impl Run {
         self.estate.node_values_at(&door.name).await.into_iter().find(|n| n["name"] == node)
     }
 
-    /// Await the fact `holds` of Build `id` as the admin behind `door` holds it in its own log. A Build the
-    /// admin's log holds as failed fails the cell with the Build.
+    /// Await the fact `holds` of Build `id` as the fabric's Build records hold it, the records the admin
+    /// behind `door` reads (Q292). A Build they hold as failed fails the cell with the Build.
     async fn build_fact(&self, door: &Door, id: &str, fact: &str, holds: impl Fn(&rdm_admin::build_state::BuildProjection) -> bool) -> Value {
-        let carrier = self.estate.carrier_at(&path(&door.name)).await;
-        let build = build_log::build_fact(&carrier, id, fact, Duration::from_secs(120), |b| {
+        let build = build_log::build_fact(&self.estate, id, fact, Duration::from_secs(120), |b| {
             assert!(b.state != BuildState::Failed, "Build {id} failed at {}: {b:#?}", door.name);
             holds(b)
         })
@@ -229,7 +227,7 @@ impl Run {
         if !held["hit"]["build_id"].is_null() {
             assert_eq!(held["hit"]["build_id"], build_id, "`{id}` holds a call of the Build that triggered it: {held}");
         }
-        let b = self.build(door, build_id).await;
+        let b = self.build(build_id).await;
         let attempt = b["attempt"].as_u64().unwrap();
         let done = done_steps(&b, operation, Some(attempt));
         if let Some(want) = &expect_done {
@@ -405,10 +403,10 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // The healthy control: an unarmed create and removal of the same node. Its receipts are the
     // documented orders, taken from the product's own lists; every released cut must reproduce them.
     let control_create = run.plain_create(NodeKind::RpcNode, node).await;
-    let b = run.build(&run.member_door("mesh1").await, &control_create).await;
+    let b = run.build(&control_create).await;
     assert_eq!(done_steps(&b, &format!("node.create:{node}"), Some(1)), create_order, "the healthy create runs every documented step once, in order: {b}");
     let control_delete = run.plain_delete(node).await;
-    let b = run.build(&run.member_door("mesh1").await, &control_delete).await;
+    let b = run.build(&control_delete).await;
     assert_eq!(done_steps(&b, &format!("node.delete:{node}"), Some(1)), delete_order, "the healthy removal runs every documented step once, in order: {b}");
     run.push(json!({"cut": "control", "group": "healthy-control", "create_build_id": control_create, "create_steps": create_order, "delete_build_id": control_delete, "delete_steps": delete_order}));
 
@@ -457,7 +455,7 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], delete_order: &[S
     let rows = rows.into_inner().unwrap();
     let builds = builds.into_inner().unwrap();
     for (id, attempts) in &builds {
-        let b = build_log::build_value(&estate.carrier().await, id).await;
+        let b = build_log::build_value(&estate, id).await;
         let attempt = b["attempt"].as_u64().unwrap_or(0);
         let expected = if *attempts == RUN_THEN_CHANGE { (1..=RUN_THEN_CHANGE).contains(&attempt) } else { attempt == *attempts };
         assert!(b["state"] == "complete" && expected, "Build {id} ends complete at attempt {attempts}{}: {b}", if *attempts == RUN_THEN_CHANGE { " or 1 (RUN_THEN_CHANGE)" } else { "" });
@@ -669,7 +667,7 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
         assert_eq!(run.fabric_build_id().await, previous, "`{id}`: the Build is not durable, so it is not the current Build");
         for admin in run.estate.node_views().await.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
             // An admin whose log holds no fact of the Build ends the read `unknown build`.
-            let Ok(facts) = build_log::log_read(&run.estate.carrier_at(&admin.name).await, &build_id).await else { continue };
+            let Ok(facts) = build_log::log_read(&run.estate, &build_id).await else { continue };
             if let Some(seen) = build_log::projection(&facts, &build_id) {
                 held_by = json!({"admin": admin.name.to_string(), "state": seen.state, "attempt": seen.attempt, "executor": seen.executor, "receipts": seen.steps.len()});
             }
@@ -716,7 +714,7 @@ async fn mesh_pending_cut(run: &Run, create_order: &[String]) -> String {
     let rel = door.release(id).await;
     run.estate.follow(stream).await;
     let after = run.after_create(&door, &build_id, admin, create_order).await;
-    let b = run.build(&door, &build_id).await;
+    let b = run.build(&build_id).await;
     let pending = b["steps"].as_array().unwrap().iter().find(|r| r["operation"] == format!("node.create:{admin}").as_str() && r["step"] == "ApplyMeshPending").map(|r| r["output"].clone()).unwrap();
     assert_eq!(pending["applied"], "Pending", "after the release the fabric primary applied the mesh's Pending at its first admin: {pending}");
     run.note_build(&build_id, RUN_THEN_CHANGE);

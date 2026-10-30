@@ -59,9 +59,8 @@ async fn verbatim(estate: &Estate) -> (rdm_client::BuildId, Vec<NodeSpec>, Vec<N
     let live = |p: &PathName| current.rows.iter().find(|n| &n.name == p && !matches!(n.status, rdm_client::NodeStatus::Deleted | rdm_client::NodeStatus::Dead));
     let nodes = current
         .topology
-        .meshes
         .values()
-        .flat_map(|m| m.spec_by_path.values())
+        .flat_map(|m| m.values())
         .map(|s| match live(&s.path) {
             Some(row) => NodeSpec { executable: None, tags: row.tags.clone(), config: row.config.clone(), ..s.clone() },
             None => NodeSpec { executable: None, ..s.clone() },

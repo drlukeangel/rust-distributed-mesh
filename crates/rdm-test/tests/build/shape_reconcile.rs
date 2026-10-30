@@ -39,7 +39,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     let estate = Estate::bootstrap(owner(shape), "fabric1", "mesh1").await;
     let desired = FabricDesired { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
     let build_id = estate.reconcile(&desired).await.build_id.to_string();
-    let build = build_log::build_value(&estate.carrier().await, &build_id).await;
+    let build = build_log::build_value(&estate, &build_id).await;
     estate.artifact("build.json", &build);
 
     // Every desired node is live and ready; nothing else exists.

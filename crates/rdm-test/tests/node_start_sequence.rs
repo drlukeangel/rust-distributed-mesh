@@ -319,21 +319,17 @@ impl BuildStateAdapter for NoCurrentWhileHeld {
 
 const ENTRY_REPEAT: &str = "rdm.node_admin.fabric.update.via-entry-repeat";
 const JOIN_SERVED: &str = "rdm.node_admin.node.update.via-join";
-const FETCH_FACTS: &str = "rdm.node_admin.build.update.via-fetch-facts";
+const READ_COMMITTED: &str = "rdm.node_admin.build.update.via-read-committed";
 
 // @feature: node-lifecycle
-/// CONTRACT (node-start.md step 4; node-rpc-envelope.md "Build-facts, op `0x1F`": "no-pointer, which
-/// names no Build, reads it naming none: the responder selects its current accepted Build once for
-/// the request and streams that Build's facts, every chunk and End naming its id, or answers
-/// `NoCurrentBuild` and the blocker stays [...] No blocker is read by a second JoinNode."): a launched
-/// node-admin whose join was answered with no Build (its fabric-primary holds no current Build, and the
-/// Build topic's catch-up does not reach it) reports the no-pointer blocker at its Build floor and
-/// reads it with `FetchBuildSection` of its own mesh naming no Build, answered
-/// `NoCurrentBuild` while the authority holds none; once the authority's current Build is readable
-/// again the read, on its backoff, streams that Build's facts and the start completes. Its join is
-/// made once: the authority serves exactly one `JoinNode` for the birth. Must NOT happen: the
-/// blocker read by a second `JoinNode` (a `via-entry-repeat`), which re-runs the authority's join
-/// steps for a birth already joined.
+/// CONTRACT (node-start.md step 4, Q292: "no-pointer, which names no Build, reads the storage's
+/// current Build [...] No blocker is read by a second JoinNode."): a launched node-admin whose join was
+/// answered with no Build (its fabric-primary answers that it holds no current Build) reports the
+/// no-pointer blocker at its Build floor and reads the Build storage's current Build, its committed
+/// records absorbed whole, and the start completes on them. Its join is made once: the authority
+/// serves exactly one `JoinNode` for the birth. Must NOT happen: the blocker read by a second
+/// `JoinNode` (a `via-entry-repeat`), which re-runs the authority's join steps for a birth already
+/// joined.
 #[test]
 fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_build_facts() {
     let cell = "a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_build_facts";
@@ -375,7 +371,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
         // Its Build floor reports the no-pointer blocker and acts on it: the first read of it (or a
         // repeat of the entry, which must not happen) has ended.
         let mine = |f: &std::collections::BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.contains_key("outcome");
-        let read = spans.recorded(FETCH_FACTS, |f| mine(f) && f.get("blocker").map(String::as_str) == Some("no-current-build"));
+        let read = spans.recorded(READ_COMMITTED, |f| mine(f) && f.get("blocker").map(String::as_str) == Some("no-current-build"));
         let repeated = spans.recorded(ENTRY_REPEAT, mine);
         tokio::time::timeout(WRONG, async {
             tokio::select! {
@@ -395,30 +391,26 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
                 .collect();
             let reads: Vec<String> = all
                 .values()
-                .filter(|(n, _, f)| n == FETCH_FACTS && mine(f) && f.get("blocker").map(String::as_str) == Some("no-current-build"))
+                .filter(|(n, _, f)| n == READ_COMMITTED && mine(f) && f.get("blocker").map(String::as_str) == Some("no-current-build"))
                 .map(|(_, _, f)| f.get("outcome").cloned().unwrap_or_default())
                 .collect();
             let repeats = all.values().filter(|(n, _, f)| n == ENTRY_REPEAT && f.get("node").map(String::as_str) == Some("mesh1.admin.2")).count();
             (joins, reads, repeats)
         };
         assert_eq!(joins.len(), 1, "the authority serves exactly one JoinNode for mesh1.admin.2; the no-pointer blocker is read, never joined again; served joins by outcome: {joins:?}");
-        assert_eq!(repeats, 0, "no {ENTRY_REPEAT}: the no-pointer blocker is read by FetchCurrentBuild (0x1F), never by a second JoinNode");
-        assert!(
-            reads.iter().any(|o| o == "no-current-build"),
-            "the no-pointer blocker is read by FetchCurrentBuild, answered NoCurrentBuild while the authority holds no current Build: the reads ended {reads:?}"
-        );
+        assert_eq!(repeats, 0, "no {ENTRY_REPEAT}: the no-pointer blocker is read from the Build storage, never by a second JoinNode");
+        assert!(!reads.is_empty(), "the no-pointer blocker is read from the Build storage: the reads ended {reads:?}");
 
-        // The authority's current Build is readable again: the read, on its backoff, streams that
-        // Build's facts, and the start completes on them.
+        // The start completes on the storage's current Build, read whole.
         held.store(false, Ordering::SeqCst);
         until_ready("mesh1.admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
         let (joins, absorbed) = {
             let all = spans.0.lock().unwrap();
             let joins = all.values().filter(|(n, _, f)| n == JOIN_SERVED && f.get("node").map(String::as_str) == Some("mesh1.admin.2")).count();
-            let absorbed = all.values().filter(|(n, _, f)| n == FETCH_FACTS && mine(f) && f.get("blocker").map(String::as_str) == Some("no-current-build") && f.get("outcome").map(String::as_str) == Some("absorbed")).count();
+            let absorbed = all.values().filter(|(n, _, f)| n == READ_COMMITTED && mine(f) && f.get("blocker").map(String::as_str) == Some("no-current-build") && f.get("outcome").map(String::as_str) == Some("absorbed")).count();
             (joins, absorbed)
         };
-        assert_eq!(absorbed, 1, "the start completed on one FetchCurrentBuild read that streamed the authority's current Build");
+        assert!(absorbed >= 1, "the start completed on a read of the Build storage's current Build, absorbed whole");
         assert_eq!(joins, 1, "the start completed on its one JoinNode");
 
         admin.leave().await;
