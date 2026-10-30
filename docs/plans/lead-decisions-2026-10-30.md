@@ -1,0 +1,15 @@
+# Lead decisions, 2026-10-30 (Luke, 2026-10-29 night: "you are not allowed to block the execution of this finishing for any reason ... if the solution is not documented nor in the code ask the advisor then make a decision. keep a log ... done by 7am")
+
+The Q290 tail on one candidate, 864aa4710 (fast GREEN on tree a70d27922, lane 3). Each entry gives the question, the decision, why, and where it ran. Any of them can be reversed by its number. The timeline below is appended at every verdict.
+
+| # | Question | Decision | Why | Where |
+|---|---|---|---|---|
+| D1 | Q290's order run serially (M9, 100 samples, chaos, M10 4 h, release, export, soaks ~100 min) does not finish by 07:00 on one box. | Lane 6 runs only load, serially: M9, then the 100 samples, then M10 at L4 for 4 h. While M10 runs, lane 3 (the lane holding the candidate's fast-gate log, which `--soaks` reads by lane) runs the release suite, then `i143-export-run.sh` (the canonical 20-node chaos jobs among its jobs), then the 12 scale chaos jobs. The soaks start when M10 ends. Nothing runs beside M9 or the 100 samples. | Q290 allows the release suite beside steps 3-5 only on an isolated runner; this box has one. M9 and the samples measure latency and throughput, so they run alone. M10's measures are growth ratios (RSS, open files, span volume per window), and each load row records the box's load and busy lanes, so the overlap is visible in the evidence. The gate's leaked-process kill is scoped to its own lane's `target/debug` (rdm-gate-at.sh:548), so it cannot reach lane 6's release-build nodes. The soaks wait for M10: "no soak run until the load testing is finished" (Luke 2026-10-29). Advisor consulted. | lanes 6, 3 |
+| D2 | Q290 step 3 "confirm the minimum-estate evidence": does L1 (2 × 10 = 20 nodes, load-testing.md:46) run again at the candidate? | Not in the critical chain. The minimum estate at the candidate is confirmed by the canonical R-shape chaos jobs (2 × (2,2,3,3)) in the export run. L1's load rows stand at 338b5de07 under that SHA, never relabelled. L1 runs at the candidate after the soaks if the clock allows. | The serial load chain plus the soaks leaves no room for L1 before 07:00. L4 (200 nodes) is the largest passing profile Q290 names for M9, M3/M5 and M10; L1 is the floor, already passing every measure. | lane 6 |
+| D3 | Known risk: at 9244b8cf8, 7 of the 15 soak jobs ended rc=1. | Any soak red is read from its artifacts and logged here with its timeline. A fix it requires makes a new candidate; the affected measurements are rerun, and 07:00 slips by that much. Nothing is re-rolled. | Q290: "A required fix creates a new candidate: rerun the affected measurements and regenerate the receipts, never relabel old evidence." A red is read, never re-rolled. | — |
+
+## Timeline (EDT)
+
+| Time | Lane | Run | SHA | Verdict | Log |
+|---|---|---|---|---|---|
+| 00:05 | 6 | `rdm-load.sh L4 --data-plane` (M9) | 864aa4710 | running | deploy/load/864aa4710-l4-data_plane.log |
