@@ -7,37 +7,33 @@
 //! lane (`Some(mesh)`, R-BI7; `crates/rdm-admin/src/build_state.rs:360-364`), and executes
 //! `node.delete:<path.name>` followed by `node.create:<path.name>` under that attempt. No new
 //! `BuildId` is minted and the Build stays `Complete` (`docs/architecture/build.md:289`); the
-//! fabric-primary's Build log (`FetchBuildFacts`, op `0x1F`) records the mesh lane's attempt and
-//! recovery receipts.
+//! fabric's Build records (`builds.jsonl` on its store root, read whole as every admin reads them,
+//! Q292) record the mesh lane's attempt and recovery receipts.
 //!
 //! Build: `cargo build --example build_mesh_self_heal` in `demo/`.
 //! Run against a live estate (`scripts/demo-estate.sh up`):
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/build_mesh_self_heal [<path.name>]
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" RDM_STORE_DIR=<root>/store target/debug/examples/build_mesh_self_heal [<path.name>]
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_admin::build::BuildId;
-use rdm_admin::build_facts_read::fetch_build_facts;
-use rdm_admin::build_state::{fold, BuildProjection, BuildState};
+use rdm_admin::build_state::{fold, read_committed, BuildProjection, BuildState};
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{adopt, DeploymentProvider, TerminationMode};
-use rdm_client::{await_fact, Builds, CallEnd, Filter, MeshNode, NodeStatus, Nodes, PathName, Peers};
+use rdm_client::{await_fact, Builds, CallEnd, Fabrics, Filter, MeshNode, NodeStatus, Nodes, PathName, Peers};
 use rdm_core::build::BuildPhase;
 use rdm_core::{NodeKind, RuntimeFact};
-use rdm_transport::NodeTarget;
 use std::path::Path;
 use std::time::Duration;
 
-async fn read_projection(carrier: &rdm_client::BuildCarrier, id: &BuildId) -> Result<BuildProjection, CallEnd> {
-    let target = NodeTarget::CurrentPath(carrier.fabric_primary().clone());
-    let fetched = fetch_build_facts(carrier.client(), &target, id)
-        .await
-        .map_err(|e| CallEnd::Indeterminate {
-            code: rdm_core::outcome::Code::Unknown,
-            reason: e.to_string(),
-        })?;
-    fold(&fetched.facts).remove(id).ok_or_else(|| CallEnd::Indeterminate {
+/// Build `id` as the fabric's Build records at `builds` (its store root's `builds.jsonl`) fold it.
+async fn read_projection(builds: &Path, id: &BuildId) -> Result<BuildProjection, CallEnd> {
+    let facts = read_committed(builds, Some(id)).map_err(|e| CallEnd::Indeterminate {
+        code: rdm_core::outcome::Code::Unknown,
+        reason: e.to_string(),
+    })?;
+    fold(&facts).remove(id).ok_or_else(|| CallEnd::Indeterminate {
         code: rdm_core::outcome::Code::Unknown,
         reason: format!("no projection for {id}"),
     })
@@ -54,6 +50,14 @@ async fn main() -> Result<()> {
     let carrier = peers.carrier_at(entry.clone());
     let nodes = Nodes::new(carrier.clone());
     let builds = Builds::new(carrier.clone());
+    let store_dir = std::env::var("RDM_STORE_DIR").context("set RDM_STORE_DIR to the estate's store dir")?;
+    let fabric = Fabrics::new(carrier.clone())
+        .get(&Filter::new())
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("no Fabric"))?;
+    let records = Path::new(&store_dir).join(fabric.id.to_string()).join(rdm_admin::store_root::BUILDS_FILE);
 
     let before_build = builds
         .get(&Filter::new().eq("current", ["true"]))
@@ -76,7 +80,7 @@ async fn main() -> Result<()> {
             .ok_or_else(|| anyhow!("no Ready role node in peer mesh"))?,
     };
     let mesh = target.mesh.clone();
-    let before_proj = read_projection(&carrier, &build_id).await?;
+    let before_proj = read_projection(&records, &build_id).await?;
     let before_lane_attempt = before_proj.lanes.get(&mesh).map(|l| l.attempt).unwrap_or(0);
     println!(
         "before self-heal: build_id={} phase={:?} fabric_attempt={} mesh_lane_attempt({})={}",
@@ -117,7 +121,7 @@ async fn main() -> Result<()> {
         &entry.to_string(),
         "mesh drift lane attempt completed on current Build",
         Duration::from_secs(30),
-        || read_projection(&carrier, &build_id),
+        || read_projection(&records, &build_id),
         |p| p.lanes.get(&mesh).is_some_and(|l| l.attempt > before_lane_attempt && l.state == BuildState::Complete),
         |p| format!("lane={:?}", p.lanes.get(&mesh).map(|l| (l.attempt, l.state, l.steps.len()))),
     )
