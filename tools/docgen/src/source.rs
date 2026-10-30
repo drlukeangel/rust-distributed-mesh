@@ -30,7 +30,7 @@ pub struct Crate {
 pub struct SourceFile {
     /// Its path relative to the workspace root, `/`-separated.
     pub path: String,
-    /// Its module path within its crate (`src/seat.rs` is `["seat"]`, `src/lib.rs` is `[]`).
+    /// Its module path within its crate (`src/role.rs` is `["role"]`, `src/lib.rs` is `[]`).
     pub module: Vec<String>,
     /// The parsed file.
     pub syntax: syn::File,
@@ -195,7 +195,7 @@ impl Workspace {
     }
 
     /// A `use` path as a full path: one that begins with a module of `krate` (a 2018-edition
-    /// relative path, `pub use seat::Seat` in `lib.rs`) is the crate's, under `module`.
+    /// relative path, `pub use role::PrimaryRole` in `lib.rs`) is the crate's, under `module`.
     fn rooted(&self, krate: &Crate, module: &[String], path: &[String]) -> Vec<String> {
         match path.first() {
             Some(first) if self.by_ident(first).is_none() && krate.modules.contains(first) => std::iter::once(krate.ident.clone()).chain(module.iter().cloned()).chain(path.iter().cloned()).collect(),

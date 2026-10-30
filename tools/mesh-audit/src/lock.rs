@@ -213,7 +213,7 @@ pub const PROVIDER_BANNED_TOKENS: &[&str] = &["NodeSpec", "StorageMeta", "Placem
 
 /// The internal wire paths (R-W1, Luke 2026-10-08): every gossip frame and every Node RPC frame is
 /// postcard. These sources carry no JSON codec in their non-test code.
-pub const NON_WIRE_CORE_FILES: &[&str] = &["binding.rs", "cadence.rs", "certs.rs", "connections.rs", "custody.rs", "digest.rs", "dto.rs", "ids.rs", "lifecycle.rs", "model.rs", "names.rs", "path.rs", "publisher.rs", "runtime.rs", "seat.rs"];
+pub const NON_WIRE_CORE_FILES: &[&str] = &["binding.rs", "cadence.rs", "certs.rs", "connections.rs", "custody.rs", "digest.rs", "dto.rs", "ids.rs", "lifecycle.rs", "model.rs", "names.rs", "path.rs", "publisher.rs", "role.rs", "runtime.rs"];
 pub const NON_WIRE_TRANSPORT_FILES: &[&str] = &["clock.rs", "discipline.rs", "evidence_capture.rs", "export.rs", "forward_path.rs", "framer.rs", "iroh_obs.rs", "lib.rs", "load.rs", "log_sink.rs", "logs.rs", "ops.rs", "pipeline.rs", "receive_order.rs", "span_capture.rs", "telemetry.rs", "test_span_capture.rs", "transport_diag.rs", "watchdog.rs"];
 pub const WIRE_SOURCES: &[&str] = &[
     "crates/rdm-transport/src/topology.rs",
@@ -259,7 +259,7 @@ pub const JOIN_SOURCE: &str = "crates/rdm-admin/src/join.rs";
 pub const JOIN_CELLS: &str = "crates/rdm-admin/tests/join_wire.rs";
 /// The topology read (`GetTopology`, 0x1E): its serve and install sites, and the cell that proves its postcard shape.
 pub const TOPOLOGY_SOURCE: &str = "crates/rdm-node/src/topology_read.rs";
-pub const SEAT_FRAME_CELLS: &str = "crates/rdm-transport/tests/primary_frames_wire.rs";
+pub const PRIMARY_FRAME_CELLS: &str = "crates/rdm-transport/tests/primary_frames_wire.rs";
 pub const TOPOLOGY_CELLS: &str = "crates/rdm-core/tests/topology_wire.rs";
 /// The Build-facts read (`FetchBuildFacts`, 0x1F): its serve and absorb sites, and the cell that proves its postcard shape.
 pub const BUILD_FACTS_SOURCE: &str = "crates/rdm-admin/src/build_facts_read.rs";
@@ -776,9 +776,9 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             scan_non_test_tokens(root, &no_edge, &["serde_json::Value"], ratchet, &mut out);
             scan_non_test_tokens(root, &files_in(root, GOSSIP_FRAME_SOURCES), &["postcard::"], ratchet, &mut out);
             require(root, WIRE_CODEC, &["postcard::to_allocvec", "postcard::take_from_bytes", "bytes left after the frame"], ratchet, &mut out);
-            require(root, "crates/rdm-transport/src/topology.rs", &["crate::envelope::encode", "crate::envelope::decode", "rdm.mesh.topology.reject.via-undecodable-frame", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/topology.rs", &["crate::envelope::encode", "crate::envelope::decode", "rdm.mesh.topology.reject.via-undecodable-frame", "Concern { role: PrimaryRole, node_id: NodeId"], ratchet, &mut out);
             require(root, "crates/rdm-transport/src/envelope.rs", &["crate::wire", "wire::encode", "wire::decode", "specversion", "datacontenttype", "rdm.mesh.digest", "rdm.node.stopped"], ratchet, &mut out);
-            require(root, SEAT_FRAME_CELLS, &["fn primary_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
+            require(root, PRIMARY_FRAME_CELLS, &["fn primary_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, "crates/rdm-admin/src/fabric_builds.rs", &["rdm_transport::wire::encode", "rdm_transport::wire::decode"], ratchet, &mut out);
             require(root, JOIN_SOURCE, &["crate::wire::answer_to_wire"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/join.rs", &["WireDigest::from", "crate::wire::answer_from_wire"], ratchet, &mut out);
@@ -791,7 +791,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, BUILD_FACTS_CELLS, &["fn replies_match_the_frozen_eleven_variant_wire_schema"], ratchet, &mut out);
             require(root, HANDOVER_SOURCE, &["rdm.node_admin.primary.update.via-primary-updated", "rdm.node_admin.primary.reject.via-primary-update", "call_successor"], ratchet, &mut out);
             require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_two_variant_wire_schema", "fn replies_match_the_frozen_thirteen_variant_wire_schema"], ratchet, &mut out);
-            require(root, SEAT_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema"], ratchet, &mut out);
+            require(root, PRIMARY_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }
         Ratchet::OneRenameWritePath => {
