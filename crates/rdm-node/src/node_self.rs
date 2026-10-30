@@ -1511,7 +1511,7 @@ pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> Sta
 }
 
 /// The answer of a Status door that has no handler for `req` (R24, Luke Q11): `RequestNotHandled`
-/// naming the request, decided by dispatch alone, never by node kind, seat or sender, on the
+/// naming the request, decided by dispatch alone, never by node kind, role or sender, on the
 /// receiver's reject span `rdm.node.status.reject.via-request-not-handled`. `receiver` is the door's
 /// held name. Nothing is done.
 pub fn request_not_handled(receiver: &str, req: &StatusRequest) -> StatusReply {

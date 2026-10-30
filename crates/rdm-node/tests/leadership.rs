@@ -1,4 +1,4 @@
-//! e11.s4 — a product reads a node-type primary seat from node-admin's view and never computes it.
+//! e11.s4 — a product reads a node-type primary role from node-admin's view and never computes it.
 
 use rdm_core::{IncarnationId, NodeId, NodeKind};
 use rdm_client::{NodeStatus, NodeView};
@@ -34,7 +34,7 @@ fn row(name: &str, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
 
 #[test]
 fn the_primary_is_the_one_the_view_advertises_whatever_the_node_ids_order() {
-    // The view's seat is read as advertised: the product neither re-elects nor second-guesses it.
+    // The view's primary is read as advertised: the product neither re-elects nor second-guesses it.
     let view = vec![
         row("mesh1.admin.1", NodeKind::NodeAdmin, true, true),
         row("mesh1.broker.1", NodeKind::Broker, false, false),
@@ -44,7 +44,7 @@ fn the_primary_is_the_one_the_view_advertises_whatever_the_node_ids_order() {
     ];
     assert_eq!(primary_of(&view, "mesh1", NodeKind::Broker).map(|n| n.name.to_string()), Some("mesh1.broker.2".into()));
     assert_eq!(primary_of(&view, "mesh1", NodeKind::Gateway).map(|n| n.name.to_string()), Some("mesh1.gateway.1".into()));
-    assert_eq!(primary_of(&view, "mesh1", NodeKind::Compute), None, "a node type the view holds no seat for");
+    assert_eq!(primary_of(&view, "mesh1", NodeKind::Compute), None, "a node type the view holds no primary for");
     assert_eq!(primary_of(&view, "mesh2", NodeKind::Broker), None, "another mesh's node type");
     assert_eq!(fabric_primary(&view).map(|n| n.name.to_string()), Some("mesh1.admin.1".into()));
 }
@@ -55,7 +55,7 @@ fn an_election_in_flight_is_no_primary_not_a_guess() {
     assert_eq!(primary_of(&view, "mesh1", NodeKind::Broker), None);
 }
 
-/// The product base holds no election: no NodeId ordering, no seat computation, anywhere in it.
+/// The product base holds no election: no NodeId ordering, no primary computation, anywhere in it.
 #[test]
 fn node_base_holds_no_comparator() {
     // Every source file under src/, its executables' (src/bin/) included.
@@ -86,5 +86,5 @@ fn node_base_holds_no_comparator() {
             }
         }
     }
-    assert!(hits.is_empty(), "node-base computes a seat:\n{}", hits.join("\n"));
+    assert!(hits.is_empty(), "node-base computes a primary:\n{}", hits.join("\n"));
 }

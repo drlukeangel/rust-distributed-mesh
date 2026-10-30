@@ -1322,11 +1322,11 @@ impl Becoming {
     }
 }
 
-/// Whether the primary seat of this birth's mesh moved to another birth than the one this birth
-/// last told its state: the holder it told is `told`, the holder its seat record names is `holder`.
-/// A birth that told no holder yet has nothing to repeat.
-fn mesh_primary_moved(told: Option<&(NodeId, IncarnationId)>, holder: Option<&rdm_core::Primary>) -> bool {
-    match (told, holder) {
+/// Whether the primary of this birth's mesh moved to another birth than the one this birth
+/// last told its state: the primary it told is `told`, the primary its primary record names is `primary`.
+/// A birth that told no primary yet has nothing to repeat.
+fn mesh_primary_moved(told: Option<&(NodeId, IncarnationId)>, primary: Option<&rdm_core::Primary>) -> bool {
+    match (told, primary) {
         (Some((node, incarnation)), Some(h)) => !h.is_birth(node, incarnation),
         _ => false,
     }
@@ -1582,12 +1582,12 @@ enum Declared {
 /// A primary record of another mesh changes nothing here.
 async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &TopologyView, client: &rdm_transport::NodeRpcClient, owed: &OwedDeclarations, held: &Arc<Mutex<rdm_core::connections::ConnectionsHeld>>, at: u64, owing: &Owing) -> Declared {
     let birth = |h: Option<rdm_core::Primary>| h.map(|h| (h.node_id, h.incarnation));
-    let mut seats = topology_view.primaries().subscribe();
-    seats.borrow_and_update();
+    let mut primaries = topology_view.primaries().subscribe();
+    primaries.borrow_and_update();
     let from = birth(topology_view.primaries().mesh(&me.name.mesh));
     let moved = async {
         loop {
-            if seats.changed().await.is_err() {
+            if primaries.changed().await.is_err() {
                 std::future::pending::<()>().await;
             }
             if birth(topology_view.primaries().mesh(&me.name.mesh)) != from {
@@ -1604,7 +1604,7 @@ async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &Topolog
         } => declared,
         () = moved => {
             tracing::info_span!("rdm.node_rpc.status.remove.via-primary-changed", node = %topology_view.held_name(&me.name), from = %from.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default())
-                .in_scope(|| tracing::info!("the mesh's primary seat moved while the declaration was in flight: its call to the old holder is cancelled"));
+                .in_scope(|| tracing::info!("the mesh's primary role moved while the declaration was in flight: its call to the old primary is cancelled"));
             Declared::MeshPrimaryMoved
         }
     }
@@ -1612,17 +1612,17 @@ async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &Topolog
 
 /// Q39's carrier rule as the route policy of one owed declaration (i146 Q52): direct while this node
 /// holds a connected Direct edge to the primary (its connections table, as the route projection answers),
-/// else the live peers of the holder's mesh, never the holder and never this birth: the members this
+/// else the live peers of the primary's mesh, never the primary and never this birth: the members this
 /// node holds a connected Direct edge to first, else the members it hears; each attempt takes the next
 /// in turn. With no such peer the attempt goes direct.
-fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topology_view: &TopologyView, me: &NodeId, holder: &NodeId, mesh: &str, attempt: u32) -> rdm_transport::route::RouteChoice {
+fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topology_view: &TopologyView, me: &NodeId, primary: &NodeId, mesh: &str, attempt: u32) -> rdm_transport::route::RouteChoice {
     let connected: Vec<rdm_core::connections::NodeConnection> = held.lock().unwrap().own_latest_directs().into_iter().filter(|c| c.state == rdm_core::connections::ConnectionState::Connected).cloned().collect();
-    if connected.iter().any(|c| c.destination.node_id == *holder) {
+    if connected.iter().any(|c| c.destination.node_id == *primary) {
         return rdm_transport::route::RouteChoice::Direct;
     }
     let mut peers: Vec<(rdm_core::PathName, NodeId)> = connected
         .into_iter()
-        .filter(|c| c.destination.name.mesh == mesh && c.destination.node_id != *holder && c.destination.node_id != *me)
+        .filter(|c| c.destination.name.mesh == mesh && c.destination.node_id != *primary && c.destination.node_id != *me)
         .map(|c| (c.destination.name.clone(), c.destination.node_id.clone()))
         .collect();
     if peers.is_empty() {
@@ -1630,7 +1630,7 @@ fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topol
             .digest_view
             .current(topology_view.digest_view.staleness_floor())
             .into_iter()
-            .filter(|d| d.node.name.mesh == mesh && d.node.node_id != *holder && d.node.node_id != *me)
+            .filter(|d| d.node.name.mesh == mesh && d.node.node_id != *primary && d.node.node_id != *me)
             .map(|d| (d.node.name.clone(), d.node.node_id.clone()))
             .collect();
     }
@@ -1658,18 +1658,18 @@ async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_
     let node = topology_view.held_name(&me.name);
     let req = StatusRequest::DeclareNodeState { node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), state, operation: operation.clone() };
     let op_name = operation.as_ref().map(|o| o.operation.clone()).unwrap_or_default();
-    let Some(holder) = topology_view.primaries().mesh(&me.name.mesh) else {
-        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = "", route = "none", outcome = "no-holder: this birth holds no primary seat for its mesh", definitive = false)
-            .in_scope(|| tracing::info!("no primary seat is held for this birth's mesh: the declaration stays owed"));
+    let Some(primary) = topology_view.primaries().mesh(&me.name.mesh) else {
+        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = "", route = "none", outcome = "no-primary: this birth holds no primary role for its mesh", definitive = false)
+            .in_scope(|| tracing::info!("no primary role is held for this birth's mesh: the declaration stays owed"));
         return false;
     };
-    let to = topology_view.digest_view.current(topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == holder.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| holder.node_id.to_string());
+    let to = topology_view.digest_view.current(topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| primary.node_id.to_string());
     let policy = {
-        let (held, topology_view, me_id, holder_id, mesh) = (held.clone(), topology_view.clone(), me.node_id.clone(), holder.node_id.clone(), me.name.mesh.clone());
-        rdm_transport::RoutePolicy(Arc::new(move |attempt| declaration_route(&held, &topology_view, &me_id, &holder_id, &mesh, attempt)))
+        let (held, topology_view, me_id, primary_id, mesh) = (held.clone(), topology_view.clone(), me.node_id.clone(), primary.node_id.clone(), me.name.mesh.clone());
+        rdm_transport::RoutePolicy(Arc::new(move |attempt| declaration_route(&held, &topology_view, &me_id, &primary_id, &mesh, attempt)))
     };
     let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Owed, route: Some(policy), ..rdm_transport::CallOptions::default() };
-    let (out, _) = client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(holder.node_id.clone()), &req, &opts).await;
+    let (out, _) = client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), &req, &opts).await;
     let (outcome, definitive) = match &out {
         RpcOutcome::Reply(r) => {
             let outcome = match r.value() {
@@ -1681,7 +1681,7 @@ async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_
         other => (format!("{}: {other:?}", other.name()), false),
     };
     tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = %to, route = "owed", outcome = %outcome, definitive)
-        .in_scope(|| tracing::info!("declared own state to the holder of the mesh's primary seat"));
+        .in_scope(|| tracing::info!("declared own state to the mesh-primary"));
     definitive
 }
 
@@ -2096,18 +2096,18 @@ mod primary_tests {
         Primary { mesh: "mesh1".into(), node_id: node.clone(), incarnation: incarnation.clone(), revision }
     }
 
-    /// CONTRACT (R-S2): a birth owes its state again when its mesh's primary seat names another birth than the
-    /// one it told: another node, or a new incarnation of the same node. A birth that told no one, or whose seat
+    /// CONTRACT (R-S2): a birth owes its state again when its mesh's primary role names another birth than the
+    /// one it told: another node, or a new incarnation of the same node. A birth that told no one, or whose primary
     /// is unchanged or unheard, owes nothing new.
     #[test]
     fn a_birth_owes_its_state_again_only_when_its_meshs_mesh_primary_moved_to_another_birth() {
         let (a, b, inc_a, inc_b) = (NodeId::mint(), NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
         let told = (a.clone(), inc_a.clone());
         assert!(!mesh_primary_moved(None, Some(&primary(&a, &inc_a, 1))), "nothing was told yet");
-        assert!(!mesh_primary_moved(Some(&told), None), "the seat record is not heard: the seat is unknown, not moved");
-        assert!(!mesh_primary_moved(Some(&told), Some(&primary(&a, &inc_a, 1))), "the same birth holds the seat");
-        assert!(mesh_primary_moved(Some(&told), Some(&primary(&b, &inc_b, 2))), "another node holds the seat");
-        assert!(mesh_primary_moved(Some(&told), Some(&primary(&a, &inc_b, 2))), "a new incarnation of the same node holds the seat");
+        assert!(!mesh_primary_moved(Some(&told), None), "the primary record is not heard: the primary is unknown, not moved");
+        assert!(!mesh_primary_moved(Some(&told), Some(&primary(&a, &inc_a, 1))), "the same birth holds the role");
+        assert!(mesh_primary_moved(Some(&told), Some(&primary(&b, &inc_b, 2))), "another node holds the role");
+        assert!(mesh_primary_moved(Some(&told), Some(&primary(&a, &inc_b, 2))), "a new incarnation of the same node holds the role");
     }
 
     /// CONTRACT (node-rpc.md §43, Q210): a node's declarations to its mesh-primary go one in flight, the

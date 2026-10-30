@@ -301,7 +301,7 @@ pub struct TopologyRead {
     /// installed and never the mesh's current topology.
     pub stored: Vec<StoredMesh>,
     /// The primary records the target holds, in the order it sent them (`lifecycles/node-topology-get.md`).
-    pub seats: Vec<(rdm_core::Seat, rdm_core::Primary, bool)>,
+    pub primaries: Vec<(rdm_core::PrimaryRole, rdm_core::Primary, bool)>,
     /// The rafka-time the target served and which primary it was when it served it (`lifecycles/node-topology-get.md`). Every accepted
     /// read carries it.
     pub rafka_time: Option<ServedTime>,
@@ -419,9 +419,9 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
             read.installed.push(ReadMesh { mesh, publisher, topology_version, members });
         }
     }
-    // The seat records the target holds are this node's too, wherever they supersede its own: it
-    // computes no seat before it has them.
-    topology_view.learn_primaries(&read.seats, "entry");
+    // The primary records the target holds are this node's too, wherever they supersede its own: it
+    // computes no primary before it has them.
+    topology_view.learn_primaries(&read.primaries, "entry");
     // The reader's own whole row its mesh-primary's atlas holds: held on its own entry (Q234).
     if let Some((row, revision)) = &read.own_row {
         topology_view.set_own_row(row.clone(), *revision);
@@ -529,9 +529,9 @@ async fn read_with(
                 Some(m) => m.nodes.extend(nodes),
                 None => read.stored.push(StoredMesh { mesh, mesh_id, nodes }),
             },
-            StreamItem::Frame(_, TopologyReply::Primaries { kind, primary, gone }) => read.seats.push((match kind {
-                rdm_core::topology::PrimaryKind::MeshPrimary => rdm_core::Seat::MeshPrimary,
-                rdm_core::topology::PrimaryKind::FabricPrimary => rdm_core::Seat::FabricPrimary,
+            StreamItem::Frame(_, TopologyReply::Primaries { kind, primary, gone }) => read.primaries.push((match kind {
+                rdm_core::topology::PrimaryKind::MeshPrimary => rdm_core::PrimaryRole::MeshPrimary,
+                rdm_core::topology::PrimaryKind::FabricPrimary => rdm_core::PrimaryRole::FabricPrimary,
             }, primary, gone)),
             StreamItem::Frame(_, TopologyReply::RafkaTime { ms, kind }) => read.rafka_time = Some(ServedTime { ms, kind }),
             StreamItem::Frame(_, TopologyReply::OwnRow { node, revision }) => read.own_row = Some((node, revision)),

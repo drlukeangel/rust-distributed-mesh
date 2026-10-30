@@ -11,8 +11,8 @@
 //! - Every other process adopts from the answer to its pull: the `JoinNode` answer
 //!   ([`crate::wire::JoinControl::rafka_time_ms`]), its start's last step, which refreshes rafka-time
 //!   from a `GetTopology` read ([`rdm_core::topology::TopologyReply::RafkaTime`]), a
-//!   re-entry's read, and a mesh primary's pull from a new fabric-primary (`run_seat_move_pull`).
-//!   A member adopts from whoever answers. A mesh primary adopts only from a fabric-primary seat; any
+//!   re-entry's read, and a mesh primary's pull from a new fabric-primary (`run_role_move_pull`).
+//!   A member adopts from whoever answers. A mesh primary adopts only from a fabric-primary role; any
 //!   other answer is refused by name and the mesh primary keeps the rafka-time it holds.
 //! - Between pulls a node's rafka-time is disciplined from its own authority's heartbeats only. A
 //!   delta-gap top-up ([`crate::topology_read::top_up_fetch`]) is a topology read repair and adopts
@@ -38,8 +38,8 @@ pub enum Puller {
 
 impl Puller {
     /// The puller `node_id` of `mesh` is, from the primaries its view holds.
-    pub fn of(seats: &PrimaryView, mesh: &str, node_id: &NodeId) -> Self {
-        if primary_held(seats, mesh, node_id).is_some() {
+    pub fn of(primaries: &PrimaryView, mesh: &str, node_id: &NodeId) -> Self {
+        if primary_held(primaries, mesh, node_id).is_some() {
             Self::MeshPrimary
         } else {
             Self::Member
@@ -47,19 +47,19 @@ impl Puller {
     }
 }
 
-/// Which primary `node_id` of `mesh` is in the primaries `seats` holds: the fabric-primary when it is,
+/// Which primary `node_id` of `mesh` is in the primaries `primaries` holds: the fabric-primary when it is,
 /// else its mesh's mesh-primary, else none.
-pub fn primary_held(seats: &PrimaryView, mesh: &str, node_id: &NodeId) -> Option<PrimaryKind> {
-    if seats.fabric().is_some_and(|h| &h.node_id == node_id) {
+pub fn primary_held(primaries: &PrimaryView, mesh: &str, node_id: &NodeId) -> Option<PrimaryKind> {
+    if primaries.fabric().is_some_and(|h| &h.node_id == node_id) {
         return Some(PrimaryKind::FabricPrimary);
     }
-    seats.mesh(mesh).filter(|h| &h.node_id == node_id).map(|_| PrimaryKind::MeshPrimary)
+    primaries.mesh(mesh).filter(|h| &h.node_id == node_id).map(|_| PrimaryKind::MeshPrimary)
 }
 
 /// Why a mesh primary refused an answer's time, by its span `reason`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
-    /// The answering node holds no seat: a replica answers with a time it adopted from its own
+    /// The answering node holds no primary role: a replica answers with a time it adopted from its own
     /// primary, which a mesh primary does not take.
     ServedByAReplica,
     /// The answering node is a mesh primary, not the fabric-primary.

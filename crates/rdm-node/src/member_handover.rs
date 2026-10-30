@@ -14,8 +14,8 @@ use rdm_core::catalog::OpOwner;
 use rdm_core::framing::Birth;
 use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, FABRIC};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::{NodeKind, Seat};
-use rdm_transport::topology::{TopologyView, PrimaryView, SeatTaken};
+use rdm_core::{NodeKind, PrimaryRole};
+use rdm_transport::topology::{TopologyView, PrimaryView, RoleTaken};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use tracing::Instrument as _;
 
@@ -30,21 +30,21 @@ pub const STEP: &str = "primary-update";
 /// The primary record kind the node type `node_type` of an entry names: `fabric` the fabric-primary,
 /// `node-admin` the mesh-primary, every other type its node-type primary. `None` for a type RDM does
 /// not know.
-pub fn primary_of_type(node_type: &str) -> Option<Seat> {
+pub fn primary_of_type(node_type: &str) -> Option<PrimaryRole> {
     if node_type == FABRIC {
-        return Some(Seat::FabricPrimary);
+        return Some(PrimaryRole::FabricPrimary);
     }
-    NodeKind::ALL.into_iter().find(|k| k.node_type() == node_type).map(Seat::of_node_type)
+    NodeKind::ALL.into_iter().find(|k| k.node_type() == node_type).map(PrimaryRole::of_node_type)
 }
 
 /// The records `entries` name, each its successor at its revision, of the mesh `mesh_of` gives that
 /// successor. An entry of a type RDM does not know names no record.
-pub fn records_of(entries: &[Entry], mesh_of: impl Fn(&Birth) -> String) -> Vec<(Seat, rdm_core::Primary)> {
+pub fn records_of(entries: &[Entry], mesh_of: impl Fn(&Birth) -> String) -> Vec<(PrimaryRole, rdm_core::Primary)> {
     entries
         .iter()
         .filter_map(|(node_type, _, successor, revision)| {
-            let seat = primary_of_type(node_type)?;
-            Some((seat, rdm_core::Primary { mesh: mesh_of(successor), node_id: successor.node_id.clone(), incarnation: successor.incarnation.clone(), revision: *revision }))
+            let role = primary_of_type(node_type)?;
+            Some((role, rdm_core::Primary { mesh: mesh_of(successor), node_id: successor.node_id.clone(), incarnation: successor.incarnation.clone(), revision: *revision }))
         })
         .collect()
 }
@@ -53,9 +53,9 @@ pub fn records_of(entries: &[Entry], mesh_of: impl Fn(&Birth) -> String) -> Vec<
 /// or `refused-not-newer` when one is older than the record held).
 pub fn install(primary_view: &PrimaryView, entries: &[Entry], mesh_of: impl Fn(&Birth) -> String) -> &'static str {
     let taken = primary_view.take_together(&records_of(entries, mesh_of));
-    if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
+    if taken.iter().any(|t| matches!(t, RoleTaken::Refused { .. })) {
         "refused-not-newer"
-    } else if taken.iter().all(|t| matches!(t, SeatTaken::Same)) {
+    } else if taken.iter().all(|t| matches!(t, RoleTaken::Same)) {
         "same"
     } else {
         "held"
