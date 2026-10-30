@@ -453,3 +453,87 @@ fn successor_handed_ready_while_degraded_is_held_publishes_after_checklist_and_r
     assert!(view.take(&ready, &fabric), "the successor's revision 4 replaces degraded at revision 3");
     assert_eq!(view.mesh("mesh2").unwrap(), rdm_transport::topology::MeshStatus { status: "ready".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: x });
 }
+
+/// CONTRACT: docs/architecture/lifecycles/node-mesh-join.md:59
+/// "the statuses it holds with their original authors and instants"
+/// CONTRACT: docs/architecture/lifecycles/states.md:12
+/// "MeshStatus also carries a `degraded` health marker, set when a mesh is given a new node-admin by the fabric-primary (on either investigation arm, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status."
+/// CONTRACT: docs/architecture/fabric-primary.md §7
+/// A fabric-primary that marks `mesh2` `degraded` over a held `ready` frame (publisher `mesh2.admin.1`,
+/// `changed_at` `X`) answers a join with `mesh2`'s `ready` frame at `X`, its publisher unchanged, while
+/// its own gossip still sends `degraded` (and if it held no lifecycle frame for a mesh when it marked
+/// it, the join answer serves nothing for that mesh, never the marker); once the successor's frame
+/// replaces the marker, the join answer serves the successor's frame.
+#[test]
+fn fabric_primary_join_answer_serves_the_kept_lifecycle_frame_while_degraded_is_held_and_the_successors_frame_once_it_replaces_the_marker() {
+    use rdm_core::{Primary, PublisherId, Seat};
+    use rdm_transport::topology::{status_announcements, DigestView};
+    use std::collections::HashMap;
+
+    let fabric = FabricId::parse("fab000000001").unwrap();
+    let fp_node = NodeId::parse("0123456789bb").unwrap();
+    let fp_inc = IncarnationId::parse("yrz49j303ybb").unwrap();
+    let lost_node = NodeId::parse("0123456789aa").unwrap();
+    let lost_inc = IncarnationId::parse("yrz49j303yaa").unwrap();
+    let successor_node = NodeId::parse("0123456789cc").unwrap();
+    let successor_inc = IncarnationId::parse("yrz49j303ycc").unwrap();
+    let fp_pub = PublisherId { node: "mesh1.admin.1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone() };
+    let base = Instant::now();
+    let x = 1_000;
+
+    let digest_view = DigestView::default();
+    digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone(), revision: 1 });
+    digest_view.seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone(), revision: 1 });
+    digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh2".into(), node_id: lost_node.clone(), incarnation: lost_inc.clone(), revision: 3 });
+    digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh3".into(), node_id: lost_node.clone(), incarnation: lost_inc.clone(), revision: 2 });
+
+    // mesh2 has a held ready frame (publisher mesh2.admin.1, changed_at X); mesh3 has none heard yet.
+    let lost_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: lost_node, incarnation: lost_inc };
+    let mesh2_ready = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: x }
+        .authored(&lost_author, 3, x);
+    assert!(digest_view.statuses.take(&mesh2_ready, &fabric));
+
+    let mut mesh_pub = StatusPublisher::new("mesh1.admin.1", StatusScope::Mesh("mesh1".into()));
+    let mut fabric_pub = StatusPublisher::new("mesh1.admin.1", StatusScope::Fabric(fabric.clone()));
+    let mut peer_pubs: HashMap<String, StatusPublisher> = HashMap::new();
+    mesh_pub.set_role(true);
+    fabric_pub.set_role(true);
+
+    // Baseline: mesh1 and fabric are ready.
+    for f in status_announcements(&fabric, &fp_pub, "mesh1", &digest_view, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, "ready", "ready", true, true, &[], base, 500).0 {
+        digest_view.statuses.take(&f, &fabric);
+    }
+
+    // Verdict at t = 61_000 marks mesh2 (held ready at X) and mesh3 (no lifecycle frame held) degraded.
+    let degraded_meshes = vec![("mesh2".to_string(), Some(61_000)), ("mesh3".to_string(), Some(61_000))];
+    let emitted = status_announcements(&fabric, &fp_pub, "mesh1", &digest_view, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, "ready", "degraded", false, false, &degraded_meshes, base + Duration::from_secs(60), 61_000).0;
+    for f in &emitted {
+        assert!(digest_view.statuses.take(f, &fabric));
+    }
+
+    // Gossip sends degraded for mesh2 (both on initial announce, reinforcing due, and gossip held_frames).
+    assert!(emitted.iter().any(|f| matches!(f.data(), Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms: 61_000, .. } if mesh == "mesh2" && status == "degraded" && publisher == "mesh1.admin.1")));
+    let due_mesh2 = peer_pubs.get_mut("mesh2").unwrap().due(base + Duration::from_secs(61)).expect("reinforcing gossip send for mesh2");
+    assert_eq!((status_of(&due_mesh2), ts(&due_mesh2), publisher_of(&due_mesh2)), ("degraded", 61_000, "mesh1.admin.1"));
+    assert_eq!(digest_view.statuses.mesh("mesh2").unwrap().status, "degraded");
+    assert_eq!(digest_view.statuses.mesh("mesh3").unwrap().status, "degraded");
+
+    // Join answer serves mesh2's kept ready frame at X (publisher mesh2.admin.1 unchanged) and nothing for mesh3 (never the marker).
+    let join_answer = digest_view.statuses.join_frames(&fabric, "mesh1.admin.1", &peer_pubs);
+    let join_mesh2 = join_answer.iter().find(|f| matches!(f.data(), Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).expect("join answer carries mesh2's kept lifecycle frame");
+    assert_eq!((status_of(join_mesh2), ts(join_mesh2), publisher_of(join_mesh2)), ("ready", x, "mesh2.admin.1"));
+    assert_eq!(join_mesh2.context(), mesh2_ready.context(), "original author context is kept");
+    assert!(join_answer.iter().all(|f| !matches!(f.data(), Frame::MeshStatus { mesh, .. } if mesh == "mesh3")), "mesh3 had no lifecycle frame when marked degraded: join answer serves nothing for mesh3, never the marker: {join_answer:?}");
+
+    // Once the successor's frame replaces the marker (revision 4), the join answer serves the successor's frame.
+    let successor_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: successor_node, incarnation: successor_inc };
+    let successor_frame = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: x }
+        .authored(&successor_author, 4, x);
+    assert!(digest_view.statuses.take(&successor_frame, &fabric));
+    let _ = status_announcements(&fabric, &fp_pub, "mesh1", &digest_view, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, "ready", "ready", false, false, &[], base + Duration::from_secs(65), 65_000);
+    assert!(!peer_pubs.contains_key("mesh2"), "successor's frame replaced the marker: kept lifecycle frame is dropped");
+    let join_after = digest_view.statuses.join_frames(&fabric, "mesh1.admin.1", &peer_pubs);
+    let join_mesh2_after = join_after.iter().find(|f| matches!(f.data(), Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).expect("join answer carries successor's frame");
+    assert_eq!((status_of(join_mesh2_after), ts(join_mesh2_after), publisher_of(join_mesh2_after)), ("ready", x, "mesh2.admin.2"));
+    assert_eq!(join_mesh2_after.context(), successor_frame.context());
+}

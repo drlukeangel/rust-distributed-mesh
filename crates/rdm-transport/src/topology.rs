@@ -764,6 +764,11 @@ impl StatusReinforcement {
     pub fn reset(&mut self) {
         *self = Self::default();
     }
+
+    /// Stop any remaining reinforcing sends of the current status while keeping the held fact.
+    pub fn stop_reinforcing(&mut self) {
+        self.next_at = None;
+    }
 }
 
 /// Which status a [`StatusPublisher`] authors.
@@ -784,6 +789,12 @@ pub struct StatusPublisher {
     scope: StatusScope,
     author: Option<(crate::envelope::Birth, u64)>,
     context: Option<(StatusFact, crate::envelope::Context)>,
+    /// For a peer-mesh degraded publisher on the fabric-primary: the lifecycle `MeshStatus` frame
+    /// (`status`, original `publisher`, `changed_at_rafka_ms`, and its envelope `context`) that the
+    /// `degraded` marker replaced when it was first authored (R9: node-mesh-join.md:59, states.md:12,
+    /// fabric-primary.md §7). `None` when the fabric-primary held no lifecycle frame for the mesh
+    /// when it marked it.
+    replaced_lifecycle: Option<HeldStatus<MeshStatus>>,
     role: bool,
     schedule: StatusReinforcement,
 }
@@ -791,7 +802,7 @@ pub struct StatusPublisher {
 impl StatusPublisher {
     /// A publisher run by `node` for `scope`; it holds no role until [`StatusPublisher::set_role`].
     pub fn new(node: &str, scope: StatusScope) -> Self {
-        Self { node: node.to_string(), scope, author: None, context: None, role: false, schedule: StatusReinforcement::default() }
+        Self { node: node.to_string(), scope, author: None, context: None, replaced_lifecycle: None, role: false, schedule: StatusReinforcement::default() }
     }
 
     /// Hold (or lose) the publisher role. Losing it forgets the status and the sends still to come.
@@ -800,8 +811,28 @@ impl StatusPublisher {
             self.schedule.reset();
             self.author = None;
             self.context = None;
+            self.replaced_lifecycle = None;
         }
         self.role = primary;
+    }
+
+    /// The lifecycle `MeshStatus` frame that this publisher's `degraded` marker replaced when it was
+    /// first authored, as `me` serves it on a join answer (`forwarded_by` set when `publisher != me`);
+    /// `None` when the fabric-primary held no lifecycle frame for the mesh when it marked it (R9).
+    pub fn replaced_lifecycle_frame(&self, me: &str) -> Option<Frame> {
+        let StatusScope::Mesh(mesh) = &self.scope else { return None };
+        let h = self.replaced_lifecycle.as_ref()?;
+        let forwarded_by = (h.publisher != me).then(|| me.to_string());
+        Some(
+            Frame::MeshStatus {
+                mesh: mesh.clone(),
+                status: h.status.clone(),
+                publisher: h.publisher.clone(),
+                forwarded_by,
+                changed_at_rafka_ms: h.changed_at_rafka_ms,
+            }
+            .with_context(h.context.clone()),
+        )
     }
 
     /// Whether the node holds the publisher role.
@@ -821,6 +852,9 @@ impl StatusPublisher {
             return false;
         }
         if let Some(held) = self.schedule.held() {
+            if held == &fact && self.schedule.awaiting_checklist() {
+                return true;
+            }
             let advances = mesh_state_rank(&fact.status) > mesh_state_rank(&held.status)
                 || (held.status == fact.status && fact.changed_at_rafka_ms > held.changed_at_rafka_ms);
             if !advances {
@@ -905,12 +939,13 @@ impl StatusPublisher {
 
     /// [`Self::observe`] for a mesh: the fact to send, if any.
     fn observe_mesh(&mut self, status: &str, heard: Option<StatusFact>, checklist_complete: bool, now: Instant, now_ms: u64) -> Option<StatusFact> {
-        if self.schedule.held().is_none() {
-            let h = heard.filter(|h| mesh_state_rank(&h.status).is_some())?;
-            if h.changed_at_rafka_ms == 0 {
-                return (h.status == "pending").then(|| self.schedule.observe(&h.status, now, now_ms)).flatten();
+        if self.schedule.held().is_none() || self.schedule.awaiting_checklist() {
+            if let Some(h) = heard.filter(|h| mesh_state_rank(&h.status).is_some()) {
+                if h.changed_at_rafka_ms == 0 && self.schedule.held().is_none() {
+                    return (h.status == "pending").then(|| self.schedule.observe(&h.status, now, now_ms)).flatten();
+                }
+                let _ = self.adopt(h);
             }
-            self.schedule.adopt(h);
         }
         let held = self.schedule.held()?.clone();
         if held.changed_at_rafka_ms == 0 {
@@ -1026,6 +1061,17 @@ impl StatusView {
         self.meshes.lock().unwrap().get(mesh).and_then(|h| h.context.as_ref()?.primary_revision())
     }
 
+    /// The authored lifecycle `MeshStatus` entry held for `mesh` (`status` is a lifecycle word, not
+    /// `"degraded"`), if any.
+    fn mesh_held_lifecycle(&self, mesh: &str) -> Option<HeldStatus<MeshStatus>> {
+        self.meshes
+            .lock()
+            .unwrap()
+            .get(mesh)
+            .filter(|h| h.context.is_some() && mesh_state_rank(&h.status).is_some())
+            .cloned()
+    }
+
     /// Forget the status held for `mesh`: the mesh left, and nothing of it is kept or replayed.
     /// Answers the status that was held. A status dropped is a routing fact as one taken is.
     pub fn forget_mesh(&self, mesh: &str) -> Option<String> {
@@ -1064,6 +1110,53 @@ impl StatusView {
         out.sort_by_key(|f| if let Frame::MeshStatus { mesh, .. } = f.data() { mesh.clone() } else { String::new() });
         if let Some(h) = self.fabric.lock().unwrap().as_ref() {
             out.push(Frame::FabricStatus { fabric: fabric.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), changed_at_rafka_ms: h.changed_at_rafka_ms }.with_context(h.context.clone()));
+        }
+        out
+    }
+
+    /// The statuses this node serves in a join answer (`EntryState::answer`,
+    /// [`TopologyView::status_frames`]): for a mesh this fabric-primary marks `degraded`, it serves
+    /// the lifecycle `MeshStatus` frame kept beside that mesh's degraded publisher (with its original
+    /// publisher and `changed_at_rafka_ms`), or nothing for that mesh when no lifecycle frame was
+    /// held when it was marked — never the `degraded` marker (R9: node-mesh-join.md:59, states.md:12,
+    /// fabric-primary.md §7). Once the successor's own frame replaces the marker in `self`, it serves
+    /// the successor's frame.
+    pub fn join_frames(&self, fabric: &FabricId, me: &str, peer_pubs: &HashMap<String, StatusPublisher>) -> Vec<Frame> {
+        let by = |publisher: &str| (publisher != me).then(|| me.to_string());
+        let mut out: Vec<Frame> = self
+            .meshes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, h)| h.context.is_some())
+            .filter_map(|(mesh, h)| {
+                if h.status == "degraded" {
+                    return peer_pubs.get(mesh).and_then(|p| p.replaced_lifecycle_frame(me));
+                }
+                Some(
+                    Frame::MeshStatus {
+                        mesh: mesh.clone(),
+                        status: h.status.clone(),
+                        publisher: h.publisher.clone(),
+                        forwarded_by: by(&h.publisher),
+                        changed_at_rafka_ms: h.changed_at_rafka_ms,
+                    }
+                    .with_context(h.context.clone()),
+                )
+            })
+            .collect();
+        out.sort_by_key(|f| if let Frame::MeshStatus { mesh, .. } = f.data() { mesh.clone() } else { String::new() });
+        if let Some(h) = self.fabric.lock().unwrap().as_ref() {
+            out.push(
+                Frame::FabricStatus {
+                    fabric: fabric.clone(),
+                    status: h.status.clone(),
+                    publisher: h.publisher.clone(),
+                    forwarded_by: by(&h.publisher),
+                    changed_at_rafka_ms: h.changed_at_rafka_ms,
+                }
+                .with_context(h.context.clone()),
+            );
         }
         out
     }
@@ -2708,6 +2801,10 @@ pub struct TopologyView {
     name: Arc<Mutex<Option<rdm_core::PathName>>>,
     /// This node's own mesh [`StatusPublisher`], shared with its [`Backbone`].
     mesh_status_publisher: Arc<Mutex<StatusPublisher>>,
+    /// The per-mesh degraded [`StatusPublisher`]s this fabric-primary authors (`status_announcements`),
+    /// shared with its [`Backbone`] so [`Self::status_frames`] serves the lifecycle frame each marker
+    /// replaced (R9: node-mesh-join.md:59, states.md:12, fabric-primary.md §7).
+    peer_mesh_status: Arc<Mutex<HashMap<String, StatusPublisher>>>,
 }
 
 /// A birth's own config as its topology view holds it (Q235 P1, P2).
@@ -2885,7 +2982,8 @@ impl TopologyView {
         let name = view.held_name.clone();
         let apps = crate::gossip::Hub::new(gossip, fabric, channel.author.clone(), clock.clone(), types, &app_seeds).await?;
         let mesh_status_publisher = Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh(mesh.to_string()))));
-        let me = Self { apps, mesh: channel, digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), own_row: Arc::default(), name, mesh_status_publisher };
+        let peer_mesh_status = Arc::default();
+        let me = Self { apps, mesh: channel, digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), own_row: Arc::default(), name, mesh_status_publisher, peer_mesh_status };
         me.watch_meshes();
         Ok(me)
     }
@@ -3104,15 +3202,24 @@ impl TopologyView {
         self.view.digest_view.statuses.meshes()
     }
 
-    /// The statuses this node holds, as the frames it replays (original publisher and instant
-    /// kept): what an entry pull answers (`entry::EntryAnswer::statuses`).
+    /// The statuses this node holds, as the frames it serves on a join answer
+    /// (`entry::EntryAnswer::statuses`, original publisher and instant kept): for a mesh this
+    /// fabric-primary marks `degraded`, it serves the lifecycle `MeshStatus` frame that marker
+    /// replaced (or nothing when none was held), never the marker (R9: node-mesh-join.md:59,
+    /// states.md:12, fabric-primary.md §7).
     pub fn status_frames(&self, me: &str) -> Vec<Frame> {
-        self.view.digest_view.statuses.held_frames(&self.fabric, me)
+        let peers = self.peer_mesh_status.lock().unwrap();
+        self.view.digest_view.statuses.join_frames(&self.fabric, me, &peers)
     }
 
     /// Hold the statuses an entry pull answered.
     pub fn learn_statuses(&self, frames: &[Frame]) {
         for f in frames {
+            if let Frame::MeshStatus { mesh, status, changed_at_rafka_ms, .. } = f.data() {
+                if *mesh == self.view.mesh {
+                    self.adopt_mesh_status(StatusFact { status: status.clone(), changed_at_rafka_ms: *changed_at_rafka_ms });
+                }
+            }
             self.view.take_status(f, &self.fabric, "entry-answer");
         }
     }
@@ -3723,7 +3830,19 @@ pub fn status_announcements(
     .flatten()
     .collect();
     if fabric_pub.author.is_some() {
-        peer_pubs.retain(|m, _| degraded_meshes.iter().any(|(d, _)| d == m));
+        peer_pubs.retain(|m, p| {
+            let superseded = digest_view
+                .statuses
+                .mesh_revision(m)
+                .zip(p.author.as_ref())
+                .is_some_and(|(held_rev, (_, rev))| held_rev > *rev);
+            let marker_held = digest_view.statuses.mesh(m).is_some_and(|h| h.status == "degraded");
+            let active = degraded_meshes.iter().any(|(d, _)| d == m);
+            if !active {
+                p.schedule.stop_reinforcing();
+            }
+            !superseded && (active || marker_held)
+        });
         for (peer_mesh, verdict_ms) in degraded_meshes {
             let revision = digest_view
                 .seats
@@ -3739,7 +3858,15 @@ pub fn status_announcements(
                 peer_pubs.remove(peer_mesh);
                 continue;
             }
-            let p = peer_pubs.entry(peer_mesh.clone()).or_insert_with(|| StatusPublisher::new(&me.node, StatusScope::Mesh(peer_mesh.clone())));
+            let current_lifecycle = digest_view.statuses.mesh_held_lifecycle(peer_mesh);
+            let p = peer_pubs.entry(peer_mesh.clone()).or_insert_with(|| {
+                let mut pub_ = StatusPublisher::new(&me.node, StatusScope::Mesh(peer_mesh.clone()));
+                pub_.replaced_lifecycle = current_lifecycle.clone();
+                pub_
+            });
+            if let Some(lifecycle) = current_lifecycle {
+                p.replaced_lifecycle = Some(lifecycle);
+            }
             p.set_role(true);
             p.author = Some((author.clone(), revision));
             if let Some(f) = p.observe_degraded(now, stamp) {
@@ -3858,7 +3985,7 @@ impl Backbone {
             topology_view: topology_view.clone(),
             mesh_status: topology_view.mesh_status_publisher.clone(),
             fabric_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Fabric(topology_view.fabric.clone())))),
-            peer_mesh_status: Arc::default(),
+            peer_mesh_status: topology_view.peer_mesh_status.clone(),
             wake: Arc::default(),
             publisher: author,
             full_due: topology_view.forward_path.owes_full(),
