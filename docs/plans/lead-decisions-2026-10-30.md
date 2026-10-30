@@ -13,4 +13,6 @@ The Q290 tail on one candidate, 864aa4710 (fast GREEN on tree a70d27922, lane 3)
 | Time | Lane | Run | SHA | Verdict | Log |
 |---|---|---|---|---|---|
 | 00:05-00:08 | 6 | `rdm-load.sh L4 --data-plane` (M9) | 864aa4710 | pass. M1 32.9 s (target 60 s); M2 6.04 creates/s; Direct open p50 3 ms, p99 9 ms (40 pairs), 136.2 MB/s median, 58.1 MB/s slowest, 0 pairs through a carrier; Proxy cold open p50 24 ms, p99 30 ms (10 meshes), 178.6 MB/s median, 171.9 MB/s slowest. M9 is reported, with no target | deploy/load/864aa4710-l4-data_plane.log, 864aa4710.jsonl |
-| 00:09 | 6 | `rdm-load.sh L4 --samples` (100 samples of M3, M5) | 864aa4710 | running | deploy/load/864aa4710-l4-samples.log |
+| 00:09-00:19 | 6 | `rdm-load.sh L4 --samples` (100 samples of M3, M5) | 864aa4710 | pass. M1 38.4 s; M3 stop to every admin's view p50 20 ms, p99 40 ms; start p50 32 ms, p99 102 ms (target p99 4 s); M5 one-node create Build p50 1048 ms, p99 1582 ms; delete p50 873 ms, p99 1263 ms (target p99 5 s); n = 100 each | deploy/load/864aa4710-l4-samples.log |
+| 00:20 | 6 | `rdm-load.sh L4 --soak` (M10, 4 h) | 864aa4710 | running | deploy/load/864aa4710-l4-soak.log |
+| 00:22 | 3 | release suite, then `i143-export-run.sh`, then the 12 `*-scale-process` jobs (D1) | 864aa4710 | running | gates-3-864aa4710release.log, target/i143-export/864aa4710…/ |
