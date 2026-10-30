@@ -133,9 +133,11 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     let mut estate = born(cell).await;
     let (dest, source) = (view(&estate, DEST).await, view(&estate, SOURCE).await);
 
-    // 1. The Proxy (Direct Failed E1/1, then Proxy Connected), and a healthy call over it. The
-    // Failed row's backoff is when the source's own dial may run (connections.md section 9.3).
-    let seeded = seed_proxy(&estate, 1);
+    // 1. The Proxy (Direct Failed E1/1-3, then Proxy Connected), and a healthy call over it. The
+    // Failed row's backoff is when the source's own dial may run (connections.md section 9.3): its third
+    // ordinal's 16 s (RECONNECT_BACKOFF_BASE_MS doubled twice) outlasts the steps before the destination's
+    // dial, so the source's own dial is the accept's wake's, never one its own schedule ran first.
+    let seeded = seed_proxy(&estate, 3);
     let seeded_rows = history(&estate, SOURCE).await;
     let failed: rdm_core::connections::NodeConnection = serde_json::from_value(
         seeded_rows.iter().rev().find(|r| r["kind"] == "Direct" && r["state"] == "Failed" && r["destination"]["name"] == DEST).cloned().expect("the seeded Direct Failed row"),
@@ -156,7 +158,7 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
 
     // 4. The source's own dial connected and its deletion is owed and refused by name; the Proxy
     // stays effective.
-    let owed_refused = wait_for("the source's dial connected, it owes the deletion and its write was refused", Duration::from_secs(15), || async {
+    let owed_refused = wait_for("the source's dial connected, it owes the deletion and its write was refused", Duration::from_secs(40), || async {
         let snap = snapshot(&estate, SOURCE);
         let owed = snap["owed"].as_array().map(Vec::len).unwrap_or(0);
         (owed == 1 && snap["fault_refused"].as_u64().unwrap_or(0) >= 2).then_some(snap)
@@ -207,10 +209,7 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
         .collect();
     assert_eq!(wakes.len(), 1, "one accept from the destination, one wake: {wakes:?}");
     let wake = wakes[0];
-    // The accept meets the attempt the Direct Failed row armed either while it is pending (`coalesced`)
-    // or after the source's own dial already connected it (`direct-connected`: connections.md §12, "was
-    // already satisfied by Direct Connected"), whichever comes first; neither opens a second attempt.
-    assert!(matches!(wake["attributes"]["outcome"].as_str(), Some("coalesced" | "direct-connected")), "the accept coalesced into the pending attempt the Direct Failed row armed, or found it connected: {wake}");
+    assert_eq!(wake["attributes"]["outcome"], "coalesced", "the accept coalesced into the pending attempt the Direct Failed row armed: {wake}");
     assert_eq!(s(&wake["attributes"]["destination_incarnation"]), s(&dest["incarnation_id"]), "the attempt is toward the exact birth the Proxy names: {wake}");
     assert!(start(wake) >= t_inbound0 && start(wake) <= t_inbound1 + 5_000_000_000, "the wake belongs to the destination's call");
     let accept = named(&spans, "rdm.node_rpc.connection.create.via-accept").into_iter().find(|sp| sp["span_id"] == wake["parent_span_id"]).expect("the wake runs under the accept span");
