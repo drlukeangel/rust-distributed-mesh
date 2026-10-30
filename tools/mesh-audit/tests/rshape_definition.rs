@@ -569,6 +569,22 @@ fn check_matrix(m: &Value, reg: &Value) -> Vec<String> {
         }
     }
 
+    // Scale cells (load-testing.md "Chaos at scale", Q290 step 4): a scale copy of a chaos or adversarial
+    // job, at the scale tier (L4's 200 nodes), process provider, never export-qualifying.
+    let sc = &m["shapes"]["scale"];
+    if sc["meshes"] != 10 || sc["total"] != 200 || sc["qualifies_export"] != false {
+        v.push(format!("rshape-definition-shape: scale must be 10 meshes = 200 nodes, never export-qualifying, is {sc}"));
+    }
+    for c in cells.iter().filter(|c| s(c, "tier") == "scale") {
+        let (test, job, cmd) = (s(c, "test"), s(c, "job"), s(c, "command"));
+        if !job.starts_with("i143-rshape-") || !job.ends_with("-scale-process") || !cmd.contains("RDM_RSHAPE_TIER=scale ") || !cmd.contains("MESH_SPAWN_TYPE=process ") {
+            v.push(format!("rshape-definition-scale-cell: {job}/{test} must be a process cell at RDM_RSHAPE_TIER=scale in a job named i143-rshape-<name>-scale-process"));
+        }
+        if !cmd.ends_with(&format!(" --test main rshape_burn_in::{test} -- --exact")) {
+            v.push(format!("rshape-definition-scale-cell: {job}/{test} does not name exactly its own test"));
+        }
+    }
+
     // Registry: every job of the matrix that the registry owns matches it cell for cell, and no
     // registered rshape job is absent from the matrix.
     let matrix_jobs: BTreeSet<&str> = cells.iter().map(|c| s(c, "job")).collect();

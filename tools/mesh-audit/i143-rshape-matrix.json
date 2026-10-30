@@ -33,6 +33,17 @@
       },
       "total": 10,
       "qualifies_export": false
+    },
+    "scale": {
+      "meshes": 10,
+      "per_mesh": {
+        "node_admin": 3,
+        "compute": 4,
+        "gateway": 6,
+        "broker": 7
+      },
+      "total": 200,
+      "qualifies_export": false
     }
   },
   "providers": [
@@ -814,6 +825,214 @@
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_primary_handoffs_preserve_one_effective_writer",
+      "issue": 2945,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-authority-chaos-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-scale-process/mock_primary_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_primary_handoffs_preserve_one_effective_writer -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-authority-chaos-scale-process/mock_primary_handoffs_preserve_one_effective_writer",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_recovery_retains_build_and_advances_attempt",
+      "issue": 2945,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-authority-chaos-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-scale-process/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_recovery_retains_build_and_advances_attempt -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-authority-chaos-scale-process/mock_recovery_retains_build_and_advances_attempt",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_role_restarts_preserve_identity_and_birth",
+      "issue": 2947,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-lifecycle-chaos-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-scale-process/mock_role_restarts_preserve_identity_and_birth/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_role_restarts_preserve_identity_and_birth -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-scale-process/mock_role_restarts_preserve_identity_and_birth",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_node_replacement_creates_distinct_logical_identity",
+      "issue": 2947,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-lifecycle-chaos-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-scale-process/mock_node_replacement_creates_distinct_logical_identity/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_node_replacement_creates_distinct_logical_identity -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-scale-process/mock_node_replacement_creates_distinct_logical_identity",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
+      "issue": 2947,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-lifecycle-chaos-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-scale-process/mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-scale-process/mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_routes_survive_connection_and_birth_supersession",
+      "issue": 2946,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-routing-chaos-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-scale-process/mock_routes_survive_connection_and_birth_supersession/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_routes_survive_connection_and_birth_supersession -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-routing-chaos-scale-process/mock_routes_survive_connection_and_birth_supersession",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_proxy_cutback_requires_a_durable_disconnected_write",
+      "issue": 2946,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-routing-chaos-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-scale-process/mock_proxy_cutback_requires_a_durable_disconnected_write/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_proxy_cutback_requires_a_durable_disconnected_write -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-routing-chaos-scale-process/mock_proxy_cutback_requires_a_durable_disconnected_write",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_connection_churn_releases_superseded_resources",
+      "issue": 2946,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-routing-chaos-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-scale-process/mock_connection_churn_releases_superseded_resources/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_connection_churn_releases_superseded_resources -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-routing-chaos-scale-process/mock_connection_churn_releases_superseded_resources",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_partition_heal_recovers_coverage_and_routes",
+      "issue": 2948,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-partition-chaos-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-scale-process/mock_partition_heal_recovers_coverage_and_routes/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_partition_heal_recovers_coverage_and_routes -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-partition-chaos-scale-process/mock_partition_heal_recovers_coverage_and_routes",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_control_loss_recovers_without_status_heartbeat",
+      "issue": 2948,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-partition-chaos-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-scale-process/mock_control_loss_recovers_without_status_heartbeat/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_control_loss_recovers_without_status_heartbeat -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-partition-chaos-scale-process/mock_control_loss_recovers_without_status_heartbeat",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_cut_restart_of_a_near_node_completes_and_the_heal_converges",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-adv-cut-restart-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-restart-scale-process/mock_cut_restart_of_a_near_node_completes_and_the_heal_converges/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_cut_restart_of_a_near_node_completes_and_the_heal_converges -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-cut-restart-scale-process/mock_cut_restart_of_a_near_node_completes_and_the_heal_converges",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs",
+      "covers": [
+        "C9",
+        "C10"
+      ]
+    },
+    {
+      "test": "mock_cut_serves_a_topology_build_on_the_near_side_and_the_heal_converges",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-adv-cut-spawn-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-spawn-scale-process/mock_cut_serves_a_topology_build_on_the_near_side_and_the_heal_converges/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_cut_serves_a_topology_build_on_the_near_side_and_the_heal_converges -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-cut-spawn-scale-process/mock_cut_serves_a_topology_build_on_the_near_side_and_the_heal_converges",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs",
+      "covers": [
+        "C9",
+        "C10"
+      ]
+    },
+    {
+      "test": "mock_cut_kill_of_a_near_node_is_recovered_by_the_near_side_and_the_heal_converges",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-adv-cut-kill-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-kill-scale-process/mock_cut_kill_of_a_near_node_is_recovered_by_the_near_side_and_the_heal_converges/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_cut_kill_of_a_near_node_is_recovered_by_the_near_side_and_the_heal_converges -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-cut-kill-scale-process/mock_cut_kill_of_a_near_node_is_recovered_by_the_near_side_and_the_heal_converges",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs",
+      "covers": [
+        "C9",
+        "C10"
+      ]
+    },
+    {
+      "test": "mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-adv-primary-victim-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-primary-victim-scale-process/mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-primary-victim-scale-process/mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs",
+      "covers": [
+        "C14"
+      ]
+    },
+    {
+      "test": "mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-adv-two-victims-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-two-victims-scale-process/mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-two-victims-scale-process/mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs",
+      "covers": [
+        "C14"
+      ]
+    },
+    {
+      "test": "mock_direct_edge_loss_to_a_mesh_primary_declares_no_death",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-adv-direct-edge-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-edge-scale-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_direct_edge_loss_to_a_mesh_primary_declares_no_death -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-direct-edge-scale-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs",
+      "covers": [
+        "C11"
+      ]
+    },
+    {
+      "test": "mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-adv-cutback-restart-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cutback-restart-scale-process/mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-cutback-restart-scale-process/mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs",
+      "covers": [
+        "C12",
+        "C13"
+      ]
+    },
+    {
+      "test": "mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "scale",
+      "job": "i143-rshape-adv-carrier-edge-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-scale-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-scale-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs",
+      "covers": [
+        "C12"
+      ]
     }
   ]
 }

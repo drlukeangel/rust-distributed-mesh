@@ -77,7 +77,16 @@ struct Shape {
 
 const CANONICAL: Shape = Shape { tier: "canonical", node_admin: 2, compute: 2, gateway: 3, broker: 3 };
 const FAST: Shape = Shape { tier: "fast", node_admin: 2, compute: 1, gateway: 1, broker: 1 };
-const MESHES: [&str; 2] = ["mesh1", "mesh2"];
+/// Chaos at scale (load-testing.md "Chaos at scale", Q290 step 4): the authority and recovery cells at the
+/// largest passing load profile's size, L4: ten meshes of twenty nodes, 200 in all.
+const SCALE: Shape = Shape { tier: "scale", node_admin: 3, compute: 4, gateway: 6, broker: 7 };
+
+/// The meshes of the tier this run is at: two at `canonical` and `fast`, ten at `scale`.
+fn meshes() -> &'static [&'static str] {
+    const TWO: [&str; 2] = ["mesh1", "mesh2"];
+    const TEN: [&str; 10] = ["mesh1", "mesh2", "mesh3", "mesh4", "mesh5", "mesh6", "mesh7", "mesh8", "mesh9", "mesh10"];
+    if std::env::var("RDM_RSHAPE_TIER").as_deref() == Ok("scale") { &TEN } else { &TWO }
+}
 
 impl Shape {
     fn per_mesh(&self) -> u32 {
@@ -85,7 +94,7 @@ impl Shape {
     }
 
     fn total(&self) -> usize {
-        (self.per_mesh() as usize) * MESHES.len()
+        (self.per_mesh() as usize) * meshes().len()
     }
 
     fn mesh_desired(&self, mesh: &str) -> MeshDesired {
@@ -94,7 +103,7 @@ impl Shape {
 
     fn names(&self) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
-        for m in MESHES {
+        for &m in meshes() {
             for (seg, n) in [("admin", self.node_admin), ("compute", self.compute), ("gateway", self.gateway), ("broker", self.broker)] {
                 for i in 1..=n {
                     out.insert(format!("{m}.{seg}.{i}"));
@@ -337,7 +346,7 @@ async fn form(cell: &str, shape: Shape) -> Formed {
     let Born { dir, candidate, set, bound, estate, provider_before, started_ms } = birth(cell, shape).await;
     let topology_initial = estate.node_values().await;
     let mut actions = Vec::new();
-    let desired = FabricDesired { fabric: "fabric1".into(), meshes: MESHES.iter().map(|m| shape.mesh_desired(m)).collect() };
+    let desired = FabricDesired { fabric: "fabric1".into(), meshes: meshes().iter().map(|m| shape.mesh_desired(m)).collect() };
     let body = serde_json::to_value(&desired).expect("a desired fabric serializes");
     let t0 = now_ms();
     // `build.create` awaited to its stream's `Complete` (the Build follows the seat if it moves while it runs).
@@ -399,7 +408,7 @@ async fn check_identities_and_launches(f: &Formed, nodes: &[Value], inv: &mut In
 /// primary node-admin, and the fabric record agrees with the nodes' own flags.
 fn check_primaries(nodes: &[Value], fabric: &Value, inv: &mut Invariants) -> Value {
     let mut per_mesh = BTreeMap::new();
-    for m in MESHES {
+    for &m in meshes() {
         let primaries: Vec<String> = nodes.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).collect();
         assert_eq!(primaries.len(), 1, "exactly one mesh primary node-admin in {m}: {primaries:?}");
         per_mesh.insert(m.to_string(), primaries[0].clone());
@@ -691,7 +700,7 @@ struct Views<'a> {
 fn write_views(v: Views<'_>, spans_index: Vec<Value>, spans: &[Value]) {
     let f = v.f;
     let dir = &f.dir;
-    write_json(dir, "topology-initial.json", &json!({"shape_requested": {"tier": f.shape.tier, "meshes": MESHES, "per_mesh": {"node_admin": f.shape.node_admin, "compute": f.shape.compute, "gateway": f.shape.gateway, "broker": f.shape.broker}, "total": f.shape.total()}, "provider_state_before": f.provider_before, "view_at_birth": f.topology_initial}));
+    write_json(dir, "topology-initial.json", &json!({"shape_requested": {"tier": f.shape.tier, "meshes": meshes(), "per_mesh": {"node_admin": f.shape.node_admin, "compute": f.shape.compute, "gateway": f.shape.gateway, "broker": f.shape.broker}, "total": f.shape.total()}, "provider_state_before": f.provider_before, "view_at_birth": f.topology_initial}));
     write_json(dir, "topology-final.json", &json!({"total": v.topology_final.len(), "nodes": v.topology_final}));
     write_jsonl(dir, "actions.jsonl", &v.actions);
     write_jsonl(dir, "operations.jsonl", &v.operations);
@@ -1468,7 +1477,8 @@ fn any_tier() -> Shape {
     match env("RDM_RSHAPE_TIER").as_str() {
         "canonical" => CANONICAL,
         "fast" => FAST,
-        other => panic!("REFUSED: RDM_RSHAPE_TIER={other}; an authority cell runs at `canonical` (the qualifying twenty-node estate) or `fast` (the reduced control)"),
+        "scale" => SCALE,
+        other => panic!("REFUSED: RDM_RSHAPE_TIER={other}; an authority cell runs at `canonical` (the qualifying twenty-node estate), `fast` (the reduced control) or `scale` (chaos at the largest passing load profile, L4's 200 nodes)"),
     }
 }
 
@@ -1900,7 +1910,7 @@ impl Run {
         inv.holds(
             &format!("stable checkpoint `{label}`: every admin's own view agrees with the election function and with every other admin; exactly one admin accepts a topology write"),
             true,
-            json!({"fabric_primary": st.fp_name(), "fabric_primary_node_id": st.fp["node_id"], "mesh_primaries": MESHES.iter().map(|m| (m.to_string(), st.primary_of(m)["name"].clone())).collect::<BTreeMap<_, _>>(), "converged_ms": converged_ms, "probe": probe}),
+            json!({"fabric_primary": st.fp_name(), "fabric_primary_node_id": st.fp["node_id"], "mesh_primaries": meshes().iter().map(|m| (m.to_string(), st.primary_of(m)["name"].clone())).collect::<BTreeMap<_, _>>(), "converged_ms": converged_ms, "probe": probe}),
         );
         st
     }
@@ -1910,7 +1920,7 @@ impl Run {
     /// writer validates it and refuses by name (`unknown-node`). Nothing is created either way.
     async fn writer_probe(&mut self, f: &Formed, label: &str, st: &Stable) -> Value {
         self.probe_round += 1;
-        let path = format!("{}.gateway.{}", MESHES[0], 900 + self.probe_round);
+        let path = format!("{}.gateway.{}", meshes()[0], 900 + self.probe_round);
         let t0 = now_ns();
         let mut answers = Vec::new();
         for a in &st.admins {
@@ -2096,7 +2106,8 @@ fn want_admins(per_mesh: &[(&str, usize)]) -> BTreeMap<String, usize> {
 }
 
 fn both(n: usize) -> BTreeMap<String, usize> {
-    want_admins(&[(MESHES[0], n), (MESHES[1], n)])
+    let every: Vec<(&str, usize)> = meshes().iter().map(|m| (*m, n)).collect();
+    want_admins(&every)
 }
 
 /// Which role nodes hold a Connected Direct fact to the current birth of their mesh's primary
@@ -2525,7 +2536,7 @@ async fn check_final_shape(f: &Formed, nodes: &[Value], inv: &mut Invariants) ->
         *have.entry((s(&n["mesh"]), s(&n["kind"]))).or_default() += 1;
     }
     let mut want: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for m in MESHES {
+    for &m in meshes() {
         for (k, c) in [("node_admin", f.shape.node_admin), ("compute", f.shape.compute), ("gateway", f.shape.gateway), ("broker", f.shape.broker)] {
             want.insert((m.to_string(), k.to_string()), c as usize);
         }
@@ -2572,7 +2583,7 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
     // surviving path before the second is. A mesh without the fabric-primary loses its primary to a
     // death (C1); a mesh with it restarts its other admin (C3) and later hands the fabric-primary
     // off (C2). The mesh of each is read at the moment, never assumed.
-    for mesh in MESHES {
+    for &mesh in meshes() {
         let first: String;
         if st.mesh_of_fp() == mesh {
             let victim = st.secondary_of(mesh);
@@ -2603,7 +2614,7 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
     // and incarnation; back as the same birth it holds no seat while the admin that filled it lives (R-A2: a
     // lower NodeId never displaces a living holder); the fabric-primary hands off once more; no deleted
     // identity returns.
-    let quiet = MESHES.iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
+    let quiet = meshes().iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
     let incumbent = st.primary_of(&quiet);
     restart_via_build(&mut f, &mut a, &st, &s(&incumbent["name"]), &format!("C19 {quiet}: the primary restarts and holds no seat")).await;
     st = a.stable(&mut f, &format!("C19 {quiet}: the restarted primary is Ready"), &both(2), &mut inv).await;
@@ -2780,7 +2791,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     //    names) executes a role node's restart, and is SIGKILLed once the node has left service. The
     //    surviving admin continues the same Build at the next attempt; the dead admin's path.name is
     //    re-born by a further attempt of it. No Build is accepted for any of it.
-    let om = MESHES.iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
+    let om = meshes().iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
     let fp_at_the_death = st.fp_name();
     let executor = st.primary_of(&om);
     let executor_name = s(&executor["name"]);
@@ -3285,10 +3296,10 @@ async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scen
 /// harness holds its control address on, each in a different draw of the two meshes.
 fn representatives(f: &Formed, st: &Stable) -> Vec<String> {
     let mut rng = Rng(f.seed ^ 0x6c69_6665);
-    let mesh = |rng: &mut Rng| MESHES[rng.below(2) as usize];
+    let mesh = |rng: &mut Rng| meshes()[rng.below(meshes().len() as u64) as usize];
     let pick = |rng: &mut Rng, m: &str, seg: &str, n: u32| format!("{m}.{seg}.{}", rng.below(u64::from(n)) + 1);
     let bm = mesh(&mut rng);
-    let gm = MESHES.iter().find(|m| **m != bm).copied().unwrap();
+    let gm = meshes().iter().find(|m| **m != bm).copied().unwrap();
     let cm = mesh(&mut rng);
     let broker = pick(&mut rng, bm, "broker", f.shape.broker);
     let gateway = pick(&mut rng, gm, "gateway", f.shape.gateway);
@@ -3326,7 +3337,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
     // A broker is originated to by its mesh's gateway first, so that gateway holds a Direct edge (its own
     // connection, connections.md §1) to this birth. The other mesh's gateway originates to it too: a
     // cross-mesh Direct edge to the same birth.
-    let gx = format!("{}.gateway.1", MESHES.iter().find(|m| **m != mesh).unwrap());
+    let gx = format!("{}.gateway.1", meshes().iter().find(|m| **m != mesh).unwrap());
     if kind == "broker" {
         originate_op(f, a, &gw, &n, "before-restart");
         await_edge(&f.estate, &gw, &node_id, &inc, None).await;
@@ -6887,7 +6898,7 @@ async fn soak_run(cell: &str, story: Story) {
     write_jsonl(&dir, "primaries-history.jsonl", &rows.iter().map(|r| json!({"round": r["round"], "kind": r["kind"], "at_s": r["at_s"], "authority": r.get("authority"), "handed_off_from": r.get("handed_off_from")})).collect::<Vec<_>>());
     write_jsonl(&dir, "route-history.jsonl", &routes);
     write_jsonl(&dir, "runtime-history.jsonl", &rows.iter().filter(|r| r.get("born").is_some() || r.get("killed").is_some() || r.get("wedge").is_some()).map(|r| json!({"round": r["round"], "kind": r["kind"], "at_s": r["at_s"], "born": r.get("born"), "killed": r.get("killed"), "wedge": r.get("wedge"), "deleted_call": r.get("deleted_call")})).collect::<Vec<_>>());
-    write_json(&dir, "topology-initial.json", &json!({"shape_requested": {"tier": shape.tier, "meshes": MESHES, "per_mesh": {"node_admin": shape.node_admin, "compute": shape.compute, "gateway": shape.gateway, "broker": shape.broker}, "total": shape.total()}, "provider_state_before": provider_before, "view_at_day0": day0, "view_after_birth": born_view}));
+    write_json(&dir, "topology-initial.json", &json!({"shape_requested": {"tier": shape.tier, "meshes": meshes(), "per_mesh": {"node_admin": shape.node_admin, "compute": shape.compute, "gateway": shape.gateway, "broker": shape.broker}, "total": shape.total()}, "provider_state_before": provider_before, "view_at_day0": day0, "view_after_birth": born_view}));
     write_json(&dir, "topology-final.json", &json!({"total": nodes_final.len(), "nodes": nodes_final, "fabric": fabric_final}));
 
     let mut result = json!({

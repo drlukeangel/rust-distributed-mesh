@@ -67,6 +67,9 @@ for section in ("jobs", "rshape_jobs"):
         if job.startswith("_"):
             continue
         layer = v.get("layer", "")
+        # Chaos at scale (the 200-node tier) runs on its own before the export (Q290 step 4), never in it.
+        if layer == "chaos-scale":
+            continue
         if layer.startswith("soak") != soaks and job != "i143-rshape-consumer-build":
             if not soaks:
                 held.append((job, layer))

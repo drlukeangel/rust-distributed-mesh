@@ -90,7 +90,7 @@ now() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 
 # The estate binaries, built once per job so every launched admin and node is this SHA.
 case "$LAYER" in
-    process|container|fast|fast-process|fast-container|chaos-process|chaos-container|soak-process|soak-container)
+    process|container|fast|fast-process|fast-container|chaos-process|chaos-container|chaos-scale|soak-process|soak-container)
         if [ -z "${I143_ACCEPTANCE_SKIP_BUILD:-}" ]; then
             if ! cargo build -p rdm-admin -p rdm-test -p rdm-node --bins > "$JOBS_DIR/$JOB.build.log" 2>&1; then
                 refuse "$JOB: the estate binaries did not build (see $JOBS_DIR/$JOB.build.log)"
@@ -99,7 +99,7 @@ case "$LAYER" in
         fi
         ;;
     unit|static|export) ;;
-    *) refuse "$JOB: layer $LAYER is not unit, static, export, process, container, fast, fast-process, fast-container, chaos-process, chaos-container, soak-process or soak-container"; exit 2 ;;
+    *) refuse "$JOB: layer $LAYER is not unit, static, export, process, container, fast, fast-process, fast-container, chaos-process, chaos-scale, chaos-container, soak-process or soak-container"; exit 2 ;;
 esac
 case "$LAYER" in *container) ON_CONTAINER=1 ;; *) ON_CONTAINER= ;; esac
 if [ -n "$ON_CONTAINER" ]; then
@@ -245,7 +245,7 @@ for i in $(seq 0 $((NCELLS - 1))); do
                     reason="the UNIT cell left no spans.json in $dir"
                 fi
                 ;;
-            process|container|fast|fast-process|fast-container|chaos-process|chaos-container|soak-process|soak-container)
+            process|container|fast|fast-process|fast-container|chaos-process|chaos-container|chaos-scale|soak-process|soak-container)
                 estate_manifest=$(find "$dir/estate" -name manifest.json 2>/dev/null | head -1)
                 if [ -z "$estate_manifest" ]; then
                     reason="the cell left no estate manifest under $dir/estate"
