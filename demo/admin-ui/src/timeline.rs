@@ -3,7 +3,7 @@
 //! Every node process writes one `<bin>.<pid>-….spans.jsonl` into the estate's evidence folder
 //! (`RDM_EVIDENCE_DIR`). [`Evidence::refresh`] reads only the bytes appended since the last read
 //! of each file, keeps the meaningful events (status changes, node-rpc calls and serves with their
-//! outcomes, seat moves, Build steps, connection observations, fabric status sends) and counts
+//! outcomes, role moves, Build steps, connection observations, fabric status sends) and counts
 //! the high-volume ones (topology snapshots and the like) behind a toggle.
 
 use serde::Serialize;

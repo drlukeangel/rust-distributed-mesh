@@ -3,7 +3,7 @@
 //!
 //! `fabric.delete` runs as one Build (`Change::DeleteFabric`) driven by the fabric-primary:
 //! 1. `mesh.delete` on each mesh leaf-inward, the fabric-primary's own mesh last (keeping the
-//!    fabric-primary seat on its own mesh);
+//!    fabric-primary role on its own mesh);
 //! 2. `node.delete` of each other mesh's final mesh-primary after its `mesh.deleted`;
 //! 3. `fabric.deleted` (`BuildFrame::Complete`) reported by the fabric-primary while still alive;
 //! 4. a separate `node.delete` (`Nodes::delete`) of the fabric-primary from outside the fabric,

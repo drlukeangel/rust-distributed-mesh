@@ -10,8 +10,8 @@ fn text(v: &Value, k: &str) -> Option<String> {
     v.get(k).and_then(Value::as_str).map(str::to_string)
 }
 
-/// The seat a node holds, as the tabs label it. "mesh primary" is the node-admin cohort's primary
-/// only; the fabric-primary is that cohort's primary of its own mesh as well.
+/// The primary role a node holds, as the tabs label it. "mesh primary" is the node-admin node-type primary
+/// only; the fabric-primary is that node-type primary of its own mesh as well.
 pub fn primary_label(kind: &str, is_primary: bool, is_fabric_primary: bool) -> &'static str {
     match (kind, is_primary, is_fabric_primary) {
         (_, _, true) => "fabric primary · mesh primary",
@@ -85,7 +85,7 @@ fn brief(v: &Value) -> Value {
     json!({ "build_id": v["build_id"], "state": v["phase"], "attempt": v["attempt"], "reason": v["reason"], "executor": v["executor"] })
 }
 
-/// The nodes with their seat labels, and every connection fact each node answers for its own exact
+/// The nodes with their role labels, and every connection fact each node answers for its own exact
 /// birth (node.connection.get, served by every node): the data plane's Direct and Proxy rows live on
 /// the role nodes that hold them, not only on the node-admins.
 pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
@@ -97,7 +97,7 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
             let kind = text(&n, "kind").unwrap_or_default();
             let (p, fp) = (n["is_primary"].as_bool().unwrap_or(false), n["is_fabric_primary"].as_bool().unwrap_or(false));
             json!({
-                "name": n["name"], "kind": kind, "mesh": n["mesh"], "status": n["status"], "seat": primary_label(&kind, p, fp),
+                "name": n["name"], "kind": kind, "mesh": n["mesh"], "status": n["status"], "role": primary_label(&kind, p, fp),
                 "is_primary": p, "is_fabric_primary": fp, "declared": n["declared"], "incarnation_id": n["incarnation_id"], "node_id": n["node_id"],
                 "has_runtime": n["data_dir"].is_string(),
             })

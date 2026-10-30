@@ -25,7 +25,7 @@ pub struct NodeFacts {
     pub name: String,
     /// The mesh it belongs to.
     pub mesh: String,
-    /// It holds the fabric-primary seat.
+    /// It holds the fabric-primary role.
     pub is_fabric_primary: bool,
     /// Its birth's data dir, where the runtime record lives.
     pub data_dir: Option<String>,
@@ -119,7 +119,7 @@ impl Chaos {
             return self.record(target, action, "refused", json!({"refusal": "unknown-node", "reason": format!("node-admin's view holds no node `{target}`")}));
         };
         if node.is_fabric_primary {
-            return self.record(target, action, "refused", json!({"refusal": FABRIC_PRIMARY_REFUSAL, "reason": format!("{target} holds the fabric-primary seat; a fault is never aimed at it")}));
+            return self.record(target, action, "refused", json!({"refusal": FABRIC_PRIMARY_REFUSAL, "reason": format!("{target} holds the fabric-primary role; a fault is never aimed at it")}));
         }
         let Some(dir) = node.data_dir.clone() else {
             return self.record(target, action, "refused", json!({"refusal": "no-data-dir", "reason": format!("node-admin publishes no data dir for {target}, so its runtime record cannot be read")}));
@@ -145,7 +145,7 @@ impl Chaos {
             return self.record(target, &action, "refused", json!({"refusal": "unknown-target", "reason": format!("node-admin's view holds no {scope} `{target}`")}));
         }
         if let Some(fp) = side.iter().find(|n| n.is_fabric_primary) {
-            return self.record(target, &action, "refused", json!({"refusal": FABRIC_PRIMARY_REFUSAL, "reason": format!("{} holds the fabric-primary seat; the side holding it is never cut", fp.name)}));
+            return self.record(target, &action, "refused", json!({"refusal": FABRIC_PRIMARY_REFUSAL, "reason": format!("{} holds the fabric-primary role; the side holding it is never cut", fp.name)}));
         }
         let ports = |ns: Vec<&NodeFacts>| ns.iter().filter_map(|n| n.transport_port).collect::<Vec<u16>>();
         let a = ports(side.clone());

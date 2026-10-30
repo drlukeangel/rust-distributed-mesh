@@ -41,7 +41,7 @@ export interface TopologyNode {
   kind: string;
   mesh: string;
   status: string;
-  seat: string;
+  role: string;
   is_primary: boolean;
   is_fabric_primary: boolean;
   declared: string | null;

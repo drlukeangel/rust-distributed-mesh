@@ -3,7 +3,7 @@ import { api, type Timeline as T } from "../api";
 
 const colourOf = (name: string): string => {
   if (name.startsWith("ui.chaos")) return "var(--err)";
-  if (name.includes("status") || name.includes("seat") || name.includes("election")) return "var(--warn)";
+  if (name.includes("status") || name.includes("primary") || name.includes("election")) return "var(--warn)";
   if (name.includes("build") || name.includes("deployment")) return "var(--accent)";
   if (name.includes("connection")) return "var(--ok)";
   return "var(--fg-dim)";

@@ -36,7 +36,7 @@ export function Nodes() {
               kind: {n.kind}<br />
               mesh: {n.mesh}<br />
               status: {n.status}<br />
-              seat: {n.seat || "member"}<br />
+              role: {n.role || "member"}<br />
               declared: {n.declared ?? "—"}<br />
               incarnation: {n.incarnation_id ? n.incarnation_id.slice(0, 12) : "—"}
             </div>

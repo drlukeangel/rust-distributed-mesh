@@ -8,7 +8,7 @@
 //! - directly at the member's mesh-primary (`Nodes::connections_delete` with `ConnectionScope::All`
 //!   or `ConnectionScope::Connections`), which sends `NodeCommandRequest::DeleteConnections` on op
 //!   `0x22` and answers `StatusReply::ConnectionsDeleted { closed, not_open, held, receipt }`; or
-//! - as a Build workflow (`Nodes::delete_connections`), which moves any held seats first, streams
+//! - as a Build workflow (`Nodes::delete_connections`), which moves any held primary roles first, streams
 //!   `NodeEvent::ConnectionsDeleted`, and sets the member's status to
 //!   [`NodeStatus::ConnectionsDeleted`] while the process keeps running with the same birth.
 //! An empty `ConnectionScope::Connections(vec![])` is refused by name (`RejectedConnectionScope`)
