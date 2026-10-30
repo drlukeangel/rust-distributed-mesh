@@ -2231,7 +2231,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // holds its own Ready until the fabric primary applied MeshStatus::Pending at it; the
                                                 // Day-0 root, with no upstream authority, applies its own. An admin entering an
                                                 // existing mesh (its entry read holds another node of it) joins that mesh and owes
-                                                // nothing here, its cohort live or not.
+                                                // nothing here, its other node-admins live or not.
                                                 let pending_applied = records.declared.lock().unwrap().meshes.contains_key(&mesh_id);
                                                 let enters_existing_mesh = entering_gate.load(std::sync::atomic::Ordering::SeqCst);
                                                 match pending_gate(&me, &mesh_name, day0.is_some(), pending_applied, enters_existing_mesh) {

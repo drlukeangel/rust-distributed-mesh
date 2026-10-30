@@ -5,7 +5,7 @@
 //! one `build.create` asks for the shape, and the test then checks, from
 //! the typed objects and the evidence only, that:
 //! - the Build completes and every desired node is `ready`;
-//! - every cohort has exactly one `is_primary` and the fabric exactly one
+//! - every node type of each mesh has exactly one `is_primary` and the fabric exactly one
 //!   `is_fabric_primary`, a node-admin that is its own mesh's admin primary;
 //! - the evidence links Build -> deployment -> lifecycle by parent span id,
 //!   across processes: every node this Build created booted under the
@@ -85,7 +85,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
         .find(|s| s["attributes"]["build_id"] == build_id.as_str())
         .unwrap_or_else(|| panic!("{shape}: no span accepted build {build_id}"))
         .clone();
-    // The fabric primary runs the attempt that creates the admin cohorts; a
+    // The fabric primary runs the attempt that creates the node-admins; a
     // new mesh's own primary runs a later attempt for its members. Every
     // attempt descends from the accepting request, and the last converges.
     let reconciles: Vec<Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile")

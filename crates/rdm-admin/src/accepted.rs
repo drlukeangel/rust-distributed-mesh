@@ -604,12 +604,12 @@ fn validate_counts(m: &MeshDesired) -> Result<(), BuildReject> {
     Ok(())
 }
 
-/// The ordinal `observed` holds the cohort's primary at, if any: a shrink never drops it.
+/// The ordinal `observed` holds the node-type primary at, if any: a shrink never drops it.
 fn primary_ordinal(observed: &Topology, mesh: &str, kind: NodeKind) -> Option<u32> {
     observed.node_type_primary(mesh, kind).map(|n| n.name.ordinal)
 }
 
-/// Bring `mesh`'s cohorts to `counts`: grow fills the lowest free ordinals, shrink drops the
+/// Bring `mesh`'s node types to `counts`: grow fills the lowest free ordinals, shrink drops the
 /// highest ordinals that are not the observed primary.
 fn resize(mesh: &mut MeshTopology, counts: &MeshDesired, observed: &Topology) {
     for (kind, want) in counts.counts() {

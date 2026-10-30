@@ -68,7 +68,7 @@ pub(crate) fn refuse_contradictory_start(cfg: &AdminConfig, holds: Option<&str>)
 /// How a node-admin's own mesh's Pending holds its Ready (e4.s11; i143 export gate: normal
 /// joining admins never self-Ready; only the Day-0 root, which has no upstream authority, applies
 /// its own mesh's Pending). Pending belongs to mesh.create's first admin alone (states.md): an admin
-/// entering an existing mesh joins it, its cohort live or not (mesh-investigation.md, "A node-admin
+/// entering an existing mesh joins it, its other node-admins live or not (mesh-investigation.md, "A node-admin
 /// joins the live mesh").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PendingGate {

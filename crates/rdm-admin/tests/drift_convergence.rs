@@ -485,7 +485,7 @@ impl Estate {
     }
 
     /// The fabric-primary's first drive pass after a peer mesh lost its primary while its other
-    /// node-admin `survivor` is held silent (R-D1; R-A2 "cross-mesh only when the whole cohort is
+    /// node-admin `survivor` is held silent (R-D1; R-A2 "cross-mesh only when the every node-admin of the mesh is
     /// proven lost"; elections §5: the role goes to the lowest Ready NodeId of its own mesh): the
     /// drive stalls naming the mesh and `survivor`, nothing is dispatched and nothing is born; then
     /// `survivor` is primary by its own mesh and is the executor from there.
@@ -780,7 +780,7 @@ async fn a_lost_fabric_primary_is_recovered_by_its_own_meshs_new_primary() {
 
 /// CONTRACT (R-D1: the fabric-primary acts on a peer mesh's node-admin only when every admin of
 /// that mesh is proven gone, or as the restore the investigation's recovery verdict authorizes; R-A2:
-/// cross-mesh only when the whole cohort is proven lost): a peer mesh's primary admin exits and every
+/// cross-mesh only when every node-admin of the mesh is proven lost): a peer mesh's primary admin exits and every
 /// member of that mesh goes silent at once (its forwarder is gone), its second admin included,
 /// though it runs and answers. The fabric-primary's drive stalls by name while that admin is held,
 /// and once its own mesh elects it, it executes the repair: only the exited admin is recovered and no
@@ -1007,7 +1007,7 @@ async fn every_exit_is_recovered_one_birth_per_attempt_and_a_submit_waits_for_th
 async fn a_successor_recovers_a_sibling_admin_known_only_by_its_durable_runtime_row() {
     let e = estate().await;
     let before = e.builds.current().await.unwrap().unwrap();
-    // A peer mesh's node-admin cohort is lost (its first admin hung and silent, so no live
+    // A peer mesh's node-admins are all lost (its first admin hung and silent, so no live
     // mesh-primary is left to recover anything: mesh recovery); its second admin is one the
     // successor never heard.
     let peer = if e.fabric_primary().await.starts_with("mesh1.") { "mesh2" } else { "mesh1" };

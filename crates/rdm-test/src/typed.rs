@@ -395,7 +395,7 @@ impl Estate {
         self.node_view_opt(name).await.unwrap_or_else(|| panic!("no node {name}"))
     }
 
-    /// The view the Build left: every `(mesh, node_admin, rpc_node)` cohort holds exactly its count of
+    /// The view the Build left: every `(mesh, node_admin, rpc_node)` node type holds exactly its count of
     /// nodes, every one ready, as `mesh.nodes.get` reads it at the admin the estate asks. A Build's
     /// shape is counts, not paths: a shrink deletes non-primaries, so which ordinals remain depends on
     /// where the roles are. The Build's terminal frame is the executor's: the answering admin learns the
@@ -459,7 +459,7 @@ impl Estate {
     }
 
     /// The view once the fabric has recovered to `meshes` after a fault: every `(mesh, node_admin, rpc_node)`
-    /// cohort holds exactly its count of nodes, every one ready. No stream announces it: the
+    /// node type holds exactly its count of nodes, every one ready. No stream announces it: the
     /// recovery is the rectifier's (a later attempt of the accepted Build, or a person's admin on a former
     /// role's data dir), where no call is held open. `within` bounds the wait and a view that does not settle
     /// is named.
@@ -478,7 +478,7 @@ impl Estate {
         .await
     }
 
-    /// The view once every `(mesh, kind)` cohort of the fabric holds exactly its count of nodes in `want`, every
+    /// The view once every `(mesh, kind)` node type of the fabric holds exactly its count of nodes in `want`, every
     /// one ready: the view of the whole fabric, every mesh and kind named, as `mesh.nodes.get` reads it at
     /// the admin the estate asks. `within` bounds the wait and a view that does not settle is named.
     pub async fn settles_to_counts(&self, want: std::collections::BTreeMap<(String, NodeKind), usize>, within: std::time::Duration) -> Vec<NodeView> {

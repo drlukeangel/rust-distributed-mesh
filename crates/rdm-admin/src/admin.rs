@@ -3101,7 +3101,7 @@ mod tests {
 
     /// CONTRACT (i143 export gate: normal joining or restarted admins cannot self-Ready; only the
     /// Day-0 root may apply its own mesh's Pending): a mesh's first admin that is not Day 0 is held
-    /// by name until the fabric primary applies Pending; an admin joining a live cohort owes
+    /// by name until the fabric primary applies Pending; an admin joining a mesh whose node-admins are live owes
     /// nothing; Day 0 alone self-applies; an applied Pending holds no one.
     #[test]
     fn only_the_day0_root_applies_its_own_meshs_pending() {

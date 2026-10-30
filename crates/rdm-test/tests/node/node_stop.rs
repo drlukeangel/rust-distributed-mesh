@@ -1079,7 +1079,7 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
 }
 
 /// CONTRACT (the approved proposal Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12:
-/// "`node.primary.update` commanded for a cohort with no other node of that type in the mesh is refused
+/// "`node.primary.update` commanded for a node type with no other node of that type in the mesh is refused
 /// by name, `cannot transfer: no secondary of type <node_type> in mesh <mesh>`"): mesh2 has one
 /// node-admin and an rpc node. `node.stop` of mesh2.admin.1 is refused `last-admin` with exactly
 /// `cannot transfer: no secondary of type node-admin in mesh mesh2`, under
@@ -1165,7 +1165,7 @@ async fn a_stop_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_mo
 /// CONTRACT (i146 Q37; node-status.md "Status report"; node-stop.md steps 4-5; node-primary-update.md
 /// steps 5-8; the role taker's RoleFold, R14): a stopped birth's stop is published NodeStopped once,
 /// by the mesh primary that applied its Stopped, and a move of its mesh's role publishes it no second
-/// time. In a fabric of two meshes, mesh2's rpc node that is not its cohort's primary is stopped: it stops, declares its Stopped naming the
+/// time. In a fabric of two meshes, mesh2's rpc node that is not its node-type primary is stopped: it stops, declares its Stopped naming the
 /// stop, and mesh2's primary publishes NodeStopped. Then mesh2's primary is stopped: its Build moves
 /// mesh2's role to mesh2's other admin first, which folds the mesh's status rows (the stopped birth's
 /// Stopped among them), and the old primary's own stop declares its Stopped naming that stop to the new

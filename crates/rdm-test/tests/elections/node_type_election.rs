@@ -1,21 +1,21 @@
-//! i143.e4.s14 process E2E: the canonical cohort election (PRD §11;
+//! i143.e4.s14 process E2E: the canonical node-type election (PRD §11;
 //! `docs/architecture/fabric-node-lifecycle-elections.md`).
 //!
-//! Every primary, each cohort's (rpc, node-admin: the mesh primary) and the
+//! Every primary, each node type's (rpc, node-admin: the mesh primary) and the
 //! fabric-primary, follows elections §5: "a heard primary stays primary; a
 //! lower-NodeId candidate that later becomes Ready never displaces it";
 //! silence past the staleness floor supersedes it; "restart preserves NodeId;
 //! a restarted node is a candidate for a later vacancy and never displaces the
 //! primary". A primary a
 //! Build stops, restarts or deletes yields first by node.primary.update to the
-//! cohort's lowest Ready NodeId with the primary excluded (proposal
+//! node type's lowest Ready NodeId with the primary excluded (proposal
 //! node-primary-update-fabric-mesh-and-node-type.md Part C1 steps 1-2). From
 //! public surfaces only (each admin's `node.get`), every sample advertises
-//! exactly one primary per cohort and a living primary keeps its role. Through
+//! exactly one primary per node type and a living primary keeps its role. Through
 //! the matrix:
-//! - day 0: the one bootstrap admin holds the node-admin cohort, the mesh and
+//! - day 0: the one bootstrap admin holds the node-admin role, the mesh and
 //!   the fabric, by the same function (its own evidence says so);
-//! - settled, restart of a non-primary, grow, shrink: one primary per cohort on
+//! - settled, restart of a non-primary, grow, shrink: one primary per node type on
 //!   every sample, and a living primary keeps its role (a newcomer never wins it);
 //! - restart of the primary: node.primary.update moves its role to the
 //!   next-lowest ready NodeId first; the restarted node keeps its NodeId and
@@ -113,7 +113,7 @@ async fn settle(estate: &Estate, admin: &PathName, label: &str) -> Vec<Value> {
         .await
 }
 
-/// For `hold`, every sample of the view of the node-admin `admin` advertises one primary per cohort
+/// For `hold`, every sample of the view of the node-admin `admin` advertises one primary per node type
 /// (never two, never none), and every primary the first sample advertised that still lives holds its
 /// role on every later sample (elections §5: a newcomer, a lower NodeId or a restarted node never
 /// displaces a living primary).
@@ -257,7 +257,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     assert_eq!(primary_of(&nodes, &rpc).as_deref(), Some(succ_r.as_str()), "node.primary.update moved the role of {rpc_p} to {succ_r} before the stop, and the started node never displaces it: {nodes:#?}");
     steady(&estate, &admin1, "restart primary", hold).await;
 
-    // grow, then shrink back -> one primary per cohort on every sample (a newcomer never displaces the primary)
+    // grow, then shrink back -> one primary per node type on every sample (a newcomer never displaces the primary)
     build(&estate, &[("mesh1", 3, 5)]).await;
     settle(&estate, &admin1, "grow").await;
     steady(&estate, &admin1, "grow", hold).await;
@@ -413,7 +413,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let role_moved_at = primary_updated(&spans, &rpc, &format!("node.stop:{rpc_p}"), &succ_r_id)
         .unwrap_or_else(|| panic!("{succ_r} ({succ_r_id}) installed itself as the rpc-node primary before the restart of {rpc_p}"));
     // The restarted node never took its role back while the primary lived: from the restart's role move
-    // until the kill. Before that move the cohort's first election (no primary record) names the lowest
+    // until the kill. Before that move the node type's first election (no primary record) names the lowest
     // ready NodeId as each member of the forming MN becomes ready, which may move the role from the
     // restart's successor to the node restarted later; that is the formation's election, not a
     // displacement (elections §5).

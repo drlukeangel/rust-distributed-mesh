@@ -1,8 +1,8 @@
-//! i143.e11.s4 process E2E: a role cohort's role is the one election (PRD §11, §13.1).
+//! i143.e11.s4 process E2E: a node type's role is the one election (PRD §11, §13.1).
 //!
 //! One fabric, `{node_admin: 1, broker: 3, gateway: 1, compute: 1}`. From public surfaces only:
-//! - every cohort advertises exactly one primary (`roles_as_expected`), a role cohort like an rpc
-//!   cohort;
+//! - every node type of each mesh advertises exactly one primary (`roles_as_expected`), a node type like rpc
+//!   nodes;
 //! - kill the broker primary (SIGKILL): the next-lowest ready broker is announced by a
 //!   `rdm.mesh.election.resolve.via-recompute` span with `kind = broker`; the view's one broker
 //!   primary is that successor, which keeps its role over the birth drift recovery brings back at the

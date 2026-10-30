@@ -172,7 +172,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
     }
     // An admin that is not its mesh's primary now may have published earlier: under
     // lowest-ready-NodeId elections a mesh's first admin holds the role until a lower NodeId of
-    // its cohort is ready, then hands it over. What must hold: it publishes only while it is its
+    // its node-admins are ready, then hands it over. What must hold: it publishes only while it is its
     // mesh's primary in its own view, and none of its publishing intervals is still open.
     let spans = estate.spans();
     let ev = roles(&spans, "rdm.mesh.backbone.update.via-aggregate-publisher", "mesh");
@@ -424,7 +424,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
     .await;
     let accepted_by_lone: Vec<String> = named(&estate.spans(), "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| attr(sp, "node") == lone_name && start(sp) >= asked_at).map(|sp| attr(sp, "build_id")).collect();
     assert!(accepted_by_lone.is_empty(), "the isolated {lone_name} accepted no Build: {accepted_by_lone:?}");
-    // Held past the decision: every view an admin answers holds at most one primary per cohort.
+    // Held past the decision: every view an admin answers holds at most one primary per node type.
     let until = std::time::Instant::now() + rdm_transport::topology::staleness_floor() * 2;
     while std::time::Instant::now() < until {
         for admin in &admins {

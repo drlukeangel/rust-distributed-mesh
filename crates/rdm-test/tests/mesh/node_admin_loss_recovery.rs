@@ -3,8 +3,8 @@
 //! (this cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the
 //! estate's manifest, rpc ledger and every process's spans, feature `i143-2803`).
 //!
-//! Node-admin cohort loss and recovery through the Build rectifier. The fabric-primary role is never in
-//! the lost mesh: the cohort lost is the one whose admins do not hold it (a fabric-primary's mesh is
+//! Loss of every node-admin of a mesh and recovery through the Build rectifier. The fabric-primary role is never in
+//! the lost mesh: the mesh lost is the one whose admins do not hold it (a fabric-primary's mesh is
 //! only ever lost after its authority was handed off; that is a separate cell).
 
 use rdm_client::NodeView;
@@ -65,7 +65,7 @@ async fn hand_fabric_primary_over(estate: &mut Estate, former: &str) -> String {
 }
 
 /// CONTRACT (#2803 acceptance 2, 3, 10, 13, 14, 15, 16, 19; node-admin-lifecycle.md 4.1-4.3): a peer
-/// mesh loses its entire node-admin cohort (exact SIGKILL of both admin runtimes) and, while it has
+/// mesh loses every node-admin (exact SIGKILL of both admin runtimes) and, while it has
 /// no admin, one ordinary member dies as well (`rpc.3`). The fabric primary's verdict on the lost
 /// mesh opens an attempt of the SAME accepted Build that runs node.create of a node-admin into the
 /// live mesh (mesh-investigation.md steps 6-7): it joins under the mesh's EXISTING MeshId (no id is
@@ -87,7 +87,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
     let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
-    // The cohort is lost from a running fabric: the fault falls after its first ready.
+    // The node-admins are lost from a running fabric: the fault falls after its first ready.
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     // The lost mesh: the one whose admins do not hold the fabric-primary role.
@@ -129,7 +129,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     }
     assert_eq!(killed.len(), 3, "the member died in the admin-less window: {killed:?}");
 
-    // Recovery through the rectifier: the same Build, later attempts, the cohort and the member back.
+    // Recovery through the rectifier: the same Build, later attempts, the node-admins and the member back.
     let done = wait_for("the accepted Build is complete past the fault and the lost births are re-born", Duration::from_secs(240), || {
         let estate = &estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births.clone());

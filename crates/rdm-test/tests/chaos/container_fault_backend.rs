@@ -282,7 +282,7 @@ async fn container_network_partition_of_a_peer_mesh_heals_with_one_live_birth_pe
     let silenced = container_faults::prepare_silence(&estate, &isolated_names, &fabric_primary).await.expect("the exact containers and addresses are resolved before the cut");
     silenced.install().expect("the cut mesh's containers are silenced");
     let cut_at = now_nanos();
-    // One primary per cohort and one fabric-primary in every view sampled, past the decision step.
+    // One primary per node type of each mesh and one fabric-primary in every view sampled, past the decision step.
     let one_primary = |ns: &[Value]| -> Result<(), String> {
         let mut seen: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
         for n in ns.iter().filter(|n| n["is_primary"] == true && n["status"] == "ready") {
@@ -1640,7 +1640,7 @@ async fn container_node_silenced_past_the_floor_is_terminated_and_re_created_at_
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     let nodes = values(&estate.settled_views(&[("mesh1", 2, 2)]).await);
     let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("the view names a fabric primary");
-    // The silenced node holds no cohort role: its termination moves none.
+    // The silenced node holds no node-type primary role: its termination moves none.
     let target = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["is_primary"] != true).cloned().expect("an rpc node that holds no primary role");
     let (name, id) = (s(&target["name"]), s(&target["node_id"]));
     let old_dir = s(&target["data_dir"]);

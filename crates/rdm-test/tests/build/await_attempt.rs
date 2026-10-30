@@ -45,7 +45,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let created = Estate::complete(&mut spawn).await;
     assert_eq!(created.attempt, 1, "{created:?}");
     estate.until_node(first, &format!("{first} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
-    // A second rpc node, and the stop is of the one that does not hold the cohort's role: a stop
+    // A second rpc node, and the stop is of the one that is not the node-type primary: a stop
     // of the role's node moves the role first and needs a secondary to move it to
     // (node-primary-update-fabric-mesh-and-node-type.md Part C1, "no secondary"). The stop opens an
     // attempt of the second create's Build, the accepted one.

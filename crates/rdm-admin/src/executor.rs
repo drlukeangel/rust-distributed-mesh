@@ -133,7 +133,7 @@ pub fn section_create(op: &BuildOperation, t: &Topology, to: &PathName) -> bool 
 /// Build's step) on `node` in view `t`.
 fn node_op_executor(node: &PathName, op: &BuildOperation, t: &Topology) -> Option<PathName> {
     let fabric = || t.fabric_primary().map(|n| n.name.clone());
-    // The primary of its cohort's role moves that role first, by node.primary.update its mesh-primary
+    // The node-type primary moves its role first, by node.primary.update its mesh-primary
     // commands and writes (proposal Part C1, Q3; [`role_move`]): until it has, no admin executes the
     // operation.
     if node.kind != NodeKind::NodeAdmin {
@@ -159,7 +159,7 @@ fn node_op_executor(node: &PathName, op: &BuildOperation, t: &Topology) -> Optio
 
 /// The executor of an operation on a node of `mesh` (not `target` itself): the mesh's primary
 /// admin; the fabric primary only when the mesh has no node-admin left that is not proven gone
-/// (R-A2: cross-mesh only when the whole cohort is proven lost). An admin held but not elected (silent,
+/// (R-A2: cross-mesh only when every node-admin of the mesh is proven lost). An admin held but not elected (silent,
 /// or ready and waiting on its role) gives `None`: the drive waits for that admin, named by
 /// [`held_admins`], and never acts on the mesh from outside it. A `Pending` admin is a birth, not
 /// a held role: the fabric primary carries the mesh until it stands.
@@ -259,7 +259,7 @@ fn is_primary(node: &PathName, t: &Topology) -> bool {
 
 /// The roles `op` moves before it runs (R-MT1: node.primary.update "should be called on MP stop or
 /// delete. Caveat: delete is skipped if it's the only node on the mesh"): the node of any other type it
-/// stops or deletes, or deletes the connections of, when that node holds its cohort's
+/// stops or deletes, or deletes the connections of, when that node holds its node type's
 /// role (Part C1, Q3: its mesh-primary commands the update); the node-admin it stops,
 /// deletes, or deletes the connections of, when that node holds its mesh's primary
 /// role or the fabric-primary role in view `t`; and for a mesh delete of the mesh that holds the fabric-primary role,
@@ -941,7 +941,7 @@ mod tests {
     }
 
     /// CONTRACT (#3016; elections §5: a primary proven gone "hands the role to the lowest
-    /// Ready NodeId of its own mesh"; R-A2: cross-mesh only when the whole cohort is proven lost): mesh2's in its role admin is
+    /// Ready NodeId of its own mesh"; R-A2: cross-mesh only when every node-admin of the mesh is proven lost): mesh2's in its role admin is
     /// proven exited and its other admin is held but silent (`PendingReconnect`, not proven gone).
     /// No admin of mesh2 holds the role yet, and the fabric primary of mesh1 executes nothing of
     /// mesh2: the answer is `None` and the reason names the held admin. With every mesh2 admin

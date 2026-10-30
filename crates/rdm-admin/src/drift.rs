@@ -26,7 +26,7 @@ pub(crate) struct ExitedBirth {
     pub verdict: &'static str,
 }
 
-/// One cohort below what the topology names.
+/// One node type of a mesh below what the topology names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Shortfall {
     pub mesh: String,
@@ -51,9 +51,9 @@ pub fn unheard(t: &Topology) -> Vec<&crate::model::Node> {
     t.members().filter(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)).collect()
 }
 
-/// The cohorts of `topology` that `t` holds fewer births for than it names,
+/// The (mesh, node type) counts of `topology` that `t` holds fewer births for than it names,
 /// counting every held birth but those in `exited` (unheard incarnations the
-/// provider was asked about). A cohort short without one is not drift.
+/// provider was asked about). A node type short without one is not drift.
 pub(crate) fn shortfall(topology: &FabricTopology, t: &Topology, exited: &HashSet<IncarnationId>) -> Vec<Shortfall> {
     let mut out = Vec::new();
     for m in topology.meshes.values() {
@@ -118,7 +118,7 @@ mod tests {
     }
 
     /// CONTRACT: a replaced predecessor (`<path>.old`) is its replacement's, never drift's: it is not
-    /// unheard, and it counts as no birth of its cohort, so the successor at `<path>` is the one
+    /// unheard, and it counts as no birth of its node type, so the successor at `<path>` is the one
     /// present.
     #[test]
     fn a_renamed_predecessor_is_neither_unheard_nor_a_birth_of_its_node_type() {
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn a_node_type_short_with_no_exited_birth_is_not_drift() {
         use NodeStatus::Ready as R;
-        // A failed grow leaves the cohort short: that is the Build's outcome,
+        // A failed grow leaves the node type short: that is the Build's outcome,
         // not runtime drift, and must not start Build after Build.
         let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R)]);
         assert!(shortfall(&desired(1, 3), &t, &HashSet::new()).is_empty());

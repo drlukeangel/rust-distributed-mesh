@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn only_the_node_admins_node_type_primary_is_labelled_mesh_primary() {
-        assert_eq!(primary_label("rpc_node", true, false), "", "an rpc node first in its cohort is not a mesh primary");
+        assert_eq!(primary_label("rpc_node", true, false), "", "an rpc node first of its node type is not a mesh primary");
         assert_eq!(primary_label("node_admin", true, false), "mesh primary");
         assert_eq!(primary_label("node_admin", false, false), "");
         assert_eq!(primary_label("node_admin", true, true), "fabric primary · mesh primary");

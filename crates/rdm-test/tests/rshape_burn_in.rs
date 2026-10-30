@@ -65,7 +65,7 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-/// One role cohort count per mesh.
+/// One node type's count per mesh.
 #[derive(Debug, Clone, Copy)]
 struct Shape {
     tier: &'static str,
@@ -5472,7 +5472,7 @@ async fn partition_run(cell: &str, shape: Shape) {
         }
         let created: BTreeSet<String> = named(spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
         assert_eq!(created, BTreeSet::from([f.build_id.clone()]), "no Build was accepted through cut and heal: recovered unchanged topology opens no new Build");
-        inv.holds("C9/C10: under the A/B cut each mesh serves within itself, nothing crosses, repair is bounded and only toward peer-mesh admins, every view holds one primary per cohort and recovery follows the verdict; after the heal every pre-cut path.name holds one live birth, the same in every admin's view, routes converge and no Build was opened", true, json!({"refeed_pairs": per_pair.len(), "topology_versions": tv.len()}));
+        inv.holds("C9/C10: under the A/B cut each mesh serves within itself, nothing crosses, repair is bounded and only toward peer-mesh admins, every view holds one primary per node type and recovery follows the verdict; after the heal every pre-cut path.name holds one live birth, the same in every admin's view, routes converge and no Build was opened", true, json!({"refeed_pairs": per_pair.len(), "topology_versions": tv.len()}));
         json!({"refeed_attempts": att.len(), "lifecycle_marks": life.len(), "topology_version_publishers": tv.len()})
     })
     .await;
@@ -5561,7 +5561,7 @@ fn recovery_follows_the_verdict(spans: &[Value], from: u64, to: u64) {
 /// side's births survive is not pinned (Q4). The cut is dropped: every pre-cut path.name holds exactly one live
 /// Ready birth, the same in every admin's view (a new NodeId where it was re-created), a gateway
 /// reaches the other mesh's broker again and the fabric's accepted Build is unchanged.
-/// What must NOT happen: a reply across the cut, two primaries of one cohort or two fabric-primaries in a view,
+/// What must NOT happen: a reply across the cut, two primaries of one node type or two fabric-primaries in a view,
 /// a topology_version going backward, a new Build for an unchanged topology.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_partition_heal_recovers_coverage_and_routes() {

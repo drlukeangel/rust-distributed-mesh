@@ -714,7 +714,7 @@ async fn held_successor_rig(lands: bool) -> Rig {
 }
 
 /// CONTRACT (elections §5, the same-mesh successor; R-A2: cross-mesh only when
-/// the whole cohort is proven lost): a run of the fabric-primary is cut before a later operation no
+/// every node-admin of the mesh is proven lost): a run of the fabric-primary is cut before a later operation no
 /// admin executes in its view. The fabric-primary runs mesh1's rpc node and stops there: mesh2's
 /// admins are not carried by the run, and the drive stalls naming mesh2's held admin, whose role the
 /// rest waits for.

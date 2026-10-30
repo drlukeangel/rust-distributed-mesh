@@ -1,15 +1,15 @@
 //! i143.e3.s4 process E2E: live resize above and back to the floor (PRD §10).
 //!
 //! On running fabrics, each resize is one `build.create`:
-//! - MN rpc cohort 3 -> 5 -> 4 -> 7 -> 3, then node-admin cohort 2 -> 3 -> 2;
+//! - MN rpc nodes 3 -> 5 -> 4 -> 7 -> 3, then node-admins 2 -> 3 -> 2;
 //! - MM: mesh1 and mesh2 grow and shrink independently.
 //!
 //! After every step, from public surfaces only:
 //! - the Build completes and the view settles on exactly the desired count of
-//!   each cohort, all `ready` (which ordinals remain depends on
+//!   each node type, all `ready` (which ordinals remain depends on
 //!   where the roles are: shrink deletes non-primaries);
 //! - every role is the one the election computes from the view's NodeIds
-//!   (one primary per cohort, the lowest ready NodeId; one fabric primary);
+//!   (one primary per node type, the lowest ready NodeId; one fabric primary);
 //!   shrink deletes non-primaries, highest ordinal first;
 //! - no two nodes advertise the same endpoint (no port collision);
 //! - a mesh the step did not resize keeps every node's birth (incarnation).

@@ -1148,10 +1148,10 @@ impl Driver {
             }
             None
         };
-        // The restart or delete (a replace's first step) of a node that holds its cohort's role is
+        // The restart or delete (a replace's first step) of a node that holds its node type's primary role is
         // refused by name, `no-secondary`, while no other node of its type in its mesh is
         // ready to take the role (node-primary-update.md "No-successor cases"; a
-        // desired-state shrink of a cohort's only node skips the update, so a shrink is not guarded).
+        // desired-state shrink of a node type's only node skips the update, so a shrink is not guarded).
         let no_secondary = |n: &Value, what: &str| -> Option<String> {
             if n["kind"] == "node_admin" || n["is_primary"] != true {
                 return None;

@@ -4,7 +4,7 @@
 //! One fresh fabric; one `build.create` asks for `{node_admin: 1, broker: 1, gateway: 1,
 //! compute: 1}`; from public surfaces only:
 //! - the Build completes and every desired node is `ready` under its kind;
-//! - every role cohort has exactly one primary; the fabric exactly one fabric primary;
+//! - every node type of each mesh has exactly one primary; the fabric exactly one fabric primary;
 //! - every role's boot and ready spans name its kind, and each boot runs under the deployment
 //!   step that launched it;
 //! - a second Build without the compute deletes `mesh1.compute.1` under that Build, and the

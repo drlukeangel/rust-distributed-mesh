@@ -119,7 +119,7 @@ fn placement(nodes: &[Value]) -> (String, String, Value) {
     let mesh = if primary["mesh"] == "mesh1" { "mesh2" } else { "mesh1" };
     let mesh_primary = s(&nodes.iter().find(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).expect("the node's mesh-primary")["name"]);
     assert_ne!(mesh_primary, s(&primary["name"]), "the member's mesh-primary is not the fabric-primary");
-    // The member is an rpc node holding no role: a cohort's primary runs node.primary.update before its
+    // The member is an rpc node holding no role: a node-type primary runs node.primary.update before its
     // own node.connection.delete, stop or delete (lifecycles/node-connections-delete.md step 0), which
     // is not the member workflow these cells follow.
     let member = nodes.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "rpc_node" && n["is_primary"] != true).map(|n| s(&n["name"])).min().expect("an rpc member of the mesh that holds no primary role");
@@ -1373,7 +1373,7 @@ async fn replacing_a_birth_absent_from_the_executors_view_deletes_the_runtime_re
     assert_eq!(stopped_birth.renamed_by, "mesh2.admin.1", "mesh2's only admin renamed and stopped it");
     // mesh2's second admin is born after the stop: no digest of the stopped birth reaches its view.
     let grown = estate.reconcile_shape("fabric1", &GROWN).await;
-    // The view holds the stopped `.old` beside the grown cohorts, so it is read by name.
+    // The view holds the stopped `.old` beside the grown node types, so it is read by name.
     wait_for("mesh2.admin.2 is ready", Duration::from_secs(90), || async {
         estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.ok()?.into_iter().find(|n| n.name.to_string() == "mesh2.admin.2" && n.status == NodeStatus::Ready).map(|_| ())
     })
@@ -2185,7 +2185,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
 
 /// CONTRACT (the approved proposal docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md
 /// Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update` commanded for a
-/// cohort with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary
+/// node type with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary
 /// of type <node_type> in mesh <mesh>`, until a secondary is available. The primary stays primary, nothing
 /// is cut off, no row is written, and the workflow that commanded it ... fails by name with that
 /// reason"): in a fabric whose fabric-primary is its mesh's only node-admin, each of the changes Steps (replace),
@@ -2242,7 +2242,7 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
 }
 
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part C1 "The
-/// no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update` commanded for a cohort with no
+/// no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update` commanded for a node type with no
 /// other node of that type in the mesh is refused by name, `cannot transfer: no secondary of type
 /// <node_type> in mesh <mesh>` ... The primary stays primary, nothing is cut off, no row is written, and
 /// the workflow that commanded it ... fails by name with that reason"; node-replace.md: the replace
