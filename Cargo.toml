@@ -22,13 +22,13 @@ tokio = { version = "1", features = ["full"] }
 # tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tracing-opentelemetry = "0.32"
+tracing-opentelemetry = "0.34"
 
 # opentelemetry
-opentelemetry = { version = "0.31", features = ["trace", "logs"] }
-opentelemetry_sdk = { version = "0.31", features = ["trace", "logs", "rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime", "experimental_logs_batch_log_processor_with_async_runtime"] }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "hyper-client", "trace", "logs", "internal-logs"] }
-opentelemetry-semantic-conventions = "0.31"
+opentelemetry = { version = "0.33", features = ["trace", "logs"] }
+opentelemetry_sdk = { version = "0.33", features = ["trace", "logs", "rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime", "experimental_logs_batch_log_processor_with_async_runtime"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "hyper-client", "trace", "logs", "internal-logs"] }
+opentelemetry-semantic-conventions = "0.33"
 
 # iroh, iroh-base and iroh-gossip come from drlukeangel's forks, each pinned to the exact carrying
 # commit (never a branch), as direct git dependencies: a git importer sees no root [patch], so the

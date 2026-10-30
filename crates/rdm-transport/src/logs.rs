@@ -7,9 +7,10 @@
 
 use opentelemetry::logs::{AnyValue, LogRecord as _, Logger as _, Severity};
 
+use opentelemetry::trace::TraceContextExt as _;
+use tracing::dispatcher::WeakDispatch;
 use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
-use tracing_opentelemetry::OtelData;
+use tracing::{Dispatch, Event, Level, Subscriber};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
@@ -17,11 +18,15 @@ use tracing_subscriber::Layer;
 /// Hands each event to an OTLP logger (see the module doc).
 pub(crate) struct LogAdapter {
     logger: opentelemetry_sdk::logs::SdkLogger,
+    /// The dispatch this layer is registered on: the span exporter's layer in it answers a span's
+    /// OpenTelemetry context (`tracing_opentelemetry::get_otel_context`). Weak, so the adapter
+    /// does not keep its own subscriber alive.
+    dispatch: std::sync::OnceLock<WeakDispatch>,
 }
 
 impl LogAdapter {
     pub fn new(logger: opentelemetry_sdk::logs::SdkLogger) -> Self {
-        Self { logger }
+        Self { logger, dispatch: std::sync::OnceLock::new() }
     }
 }
 
@@ -76,6 +81,10 @@ impl<S> Layer<S> for LogAdapter
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
+    fn on_register_dispatch(&self, dispatch: &Dispatch) {
+        let _ = self.dispatch.set(dispatch.downgrade());
+    }
+
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         let meta = event.metadata();
         let mut fields = Fields::default();
@@ -100,13 +109,14 @@ where
         }
         // The nearest enclosing span the span exporter records: its ids are what the collector
         // joins this line to.
-        if let Some(scope) = ctx.event_scope(event) {
+        if let (Some(scope), Some(dispatch)) = (ctx.event_scope(event), self.dispatch.get().and_then(WeakDispatch::upgrade)) {
             for span in scope {
-                let ext = span.extensions();
-                if let Some(otel) = ext.get::<OtelData>() {
-                    if let (Some(trace_id), Some(span_id)) = (otel.trace_id(), otel.span_id()) {
+                if let Some(otel) = tracing_opentelemetry::get_otel_context(&span.id(), &dispatch) {
+                    let otel_span = otel.span();
+                    let context = otel_span.span_context();
+                    if context.is_valid() {
                         record.add_attribute("span.name", span.name().to_string());
-                        record.set_trace_context(trace_id, span_id, None);
+                        record.set_trace_context(context.trace_id(), context.span_id(), None);
                     }
                     break;
                 }

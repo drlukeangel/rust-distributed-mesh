@@ -225,7 +225,7 @@ pub struct Spans {
 impl Spans {
     /// Every span ended before this call, whichever thread ended it. Panics, naming why, when the
     /// flush does not return in time, errors, or leaves a span behind.
-    pub fn get_finished_spans(&self) -> Result<Vec<opentelemetry_sdk::trace::SpanData>, opentelemetry_sdk::InMemoryExporterError> {
+    pub fn get_finished_spans(&self) -> Result<Vec<opentelemetry_sdk::trace::SpanData>, opentelemetry_sdk::error::OTelSdkError> {
         if let Err(e) = self.capture.flush(std::time::Duration::from_secs(10)) {
             panic!("reading spans: {e}");
         }

@@ -23,7 +23,7 @@ opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry-semantic-conventions = { workspace = true }
-opentelemetry-http = { version = "0.31", features = ["hyper"] }
+opentelemetry-http = { version = "0.33", features = ["hyper"] }
 http = "1"
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }

@@ -264,6 +264,9 @@ pub(crate) fn build_exporter(endpoint: String) -> WatchedSpans<SpanExporter> {
     let inner = SpanExporter::builder()
         .with_http()
         .with_http_client(export_client(&url))
+        // One attempt per batch, as before opentelemetry-otlp 0.33 added its own retry: a failed
+        // batch is dropped and counted, and the outage is named once per transition (WatchedSpans).
+        .with_retry_policy(opentelemetry_otlp::RetryPolicy::disabled())
         .with_protocol(Protocol::HttpBinary)
         .with_endpoint(url.clone())
         .build()
@@ -662,7 +665,7 @@ fn init_evidence(service_name: &str, report_now: bool, extra: Vec<opentelemetry:
         let _export = export_rt.enter();
         // The log adapter's provider: every log line to the collector's log store, beside spans.
         let logs_url = signal_url(&endpoint, "/v1/logs");
-        match opentelemetry_otlp::LogExporter::builder().with_http().with_http_client(export_client(&logs_url)).with_protocol(Protocol::HttpBinary).with_endpoint(logs_url.clone()).build() {
+        match opentelemetry_otlp::LogExporter::builder().with_http().with_http_client(export_client(&logs_url)).with_retry_policy(opentelemetry_otlp::RetryPolicy::disabled()).with_protocol(Protocol::HttpBinary).with_endpoint(logs_url.clone()).build() {
             Ok(exporter) => {
                 logs = Some(
                     opentelemetry_sdk::logs::SdkLoggerProvider::builder()

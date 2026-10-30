@@ -164,11 +164,11 @@ impl<E: SpanExporter> SpanExporter for WatchedSpans<E> {
         result
     }
 
-    fn shutdown_with_timeout(&mut self, timeout: Duration) -> OTelSdkResult {
+    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
         self.inner.shutdown_with_timeout(timeout)
     }
 
-    fn force_flush(&mut self) -> OTelSdkResult {
+    fn force_flush(&self) -> OTelSdkResult {
         self.inner.force_flush()
     }
 
