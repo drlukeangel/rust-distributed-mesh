@@ -29,9 +29,9 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.connection.update.via-refeed` | `crates/rdm-transport/src/topology.rs` | 1778 |
 | `rdm.mesh.connection.update.via-refeed` | `crates/rdm-transport/src/topology.rs` | 1818 |
 | `rdm.mesh.connection.update.via-restart-address-removed` | `crates/rdm-transport/src/topology.rs` | 1761 |
-| `rdm.mesh.election.resolve.via-fabric-recompute` | `crates/rdm-admin/src/election.rs` | 483 |
-| `rdm.mesh.election.resolve.via-mesh-primary` | `crates/rdm-admin/src/election.rs` | 453 |
-| `rdm.mesh.election.resolve.via-recompute` | `crates/rdm-admin/src/election.rs` | 424 |
+| `rdm.mesh.election.resolve.via-fabric-recompute` | `crates/rdm-admin/src/election.rs` | 480 |
+| `rdm.mesh.election.resolve.via-mesh-primary` | `crates/rdm-admin/src/election.rs` | 450 |
+| `rdm.mesh.election.resolve.via-recompute` | `crates/rdm-admin/src/election.rs` | 421 |
 | `rdm.mesh.entry.reject.via-rafka-time-from-non-primary` | `crates/rdm-node/src/rafka_time.rs` | 124 |
 | `rdm.mesh.entry.reject.via-rafka-time-pull-unanswered` | `crates/rdm-admin/src/rafka_time.rs` | 120 |
 | `rdm.mesh.entry.reject.via-rafka-time-sample` | `crates/rdm-transport/src/discipline.rs` | 87 |
@@ -341,7 +341,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.update.via-claimant-departure` | `crates/rdm-admin/src/control_plane.rs` | 331 |
 | `rdm.node_admin.build.update.via-claimant-departure` | `crates/rdm-admin/src/control_plane.rs` | 376 |
 | `rdm.node_admin.build.update.via-claimant-departure` | `crates/rdm-admin/src/control_plane.rs` | 1180 |
-| `rdm.node_admin.build.update.via-create-failed` | `crates/rdm-admin/src/executor.rs` | 680 |
+| `rdm.node_admin.build.update.via-create-failed` | `crates/rdm-admin/src/executor.rs` | 679 |
 | `rdm.node_admin.build.update.via-departure-proven` | `crates/rdm-admin/src/build_drive.rs` | 1658 |
 | `rdm.node_admin.build.update.via-dispatch` | `crates/rdm-admin/src/build_drive.rs` | 1546 |
 | `rdm.node_admin.build.update.via-dispatch` | `crates/rdm-admin/src/build_drive.rs` | 1846 |
@@ -352,7 +352,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.update.via-fabric-primary-changed` | `crates/rdm-admin/src/build_op.rs` | 591 |
 | `rdm.node_admin.build.update.via-fabric-primary-changed` | `crates/rdm-admin/src/build_op.rs` | 768 |
 | `rdm.node_admin.build.update.via-fetch-facts` | `crates/rdm-admin/src/fetch_build.rs` | 286 |
-| `rdm.node_admin.build.update.via-interrupted` | `crates/rdm-admin/src/executor.rs` | 697 |
+| `rdm.node_admin.build.update.via-interrupted` | `crates/rdm-admin/src/executor.rs` | 696 |
 | `rdm.node_admin.build.update.via-interrupted-terminal` | `crates/rdm-admin/src/build_drive.rs` | 1729 |
 | `rdm.node_admin.build.update.via-journal-turn` | `crates/rdm-admin/src/build_state.rs` | 2536 |
 | `rdm.node_admin.build.update.via-node-recovery` | `crates/rdm-admin/src/admin/recovery.rs` | 492 |
@@ -361,7 +361,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.update.via-on-build-started` | `crates/rdm-admin/src/build_drive.rs` | 737 |
 | `rdm.node_admin.build.update.via-owner-facts-absorbed` | `crates/rdm-admin/src/mesh_delete.rs` | 641 |
 | `rdm.node_admin.build.update.via-proven-drift` | `crates/rdm-admin/src/admin/reconcile.rs` | 713 |
-| `rdm.node_admin.build.update.via-reconcile` | `crates/rdm-admin/src/executor.rs` | 480 |
+| `rdm.node_admin.build.update.via-reconcile` | `crates/rdm-admin/src/executor.rs` | 479 |
 | `rdm.node_admin.build.update.via-reconcile-woken` | `crates/rdm-admin/src/admin/boot.rs` | 3381 |
 | `rdm.node_admin.build.update.via-reconciling-stopped` | `crates/rdm-admin/src/build_drive.rs` | 926 |
 | `rdm.node_admin.build.update.via-recovery` | `crates/rdm-admin/src/control_plane.rs` | 1005 |
