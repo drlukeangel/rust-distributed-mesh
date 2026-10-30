@@ -432,6 +432,9 @@ impl BuildStateAdapter for FramedBuilds {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
+    async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
+        self.inner.committed_facts(build).await
+    }
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
@@ -534,6 +537,9 @@ impl BuildStateAdapter for LaneBuilds {
     }
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
+    }
+    async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
+        self.inner.committed_facts(build).await
     }
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
@@ -1188,6 +1194,9 @@ mod tests {
         async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
             self.0.facts().await
         }
+        async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
+            self.0.committed_facts(build).await
+        }
         async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
             self.0.recovery_of(path, node_id, incarnation).await
         }
@@ -1239,6 +1248,9 @@ mod tests {
         }
         async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
             panic!("the whole fact log was read for a lookup")
+        }
+        async fn committed_facts(&self, _build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
+            panic!("the Build storage was read for a lookup")
         }
         async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
             self.0.recovery_of(path, node_id, incarnation).await

@@ -707,6 +707,9 @@ impl crate::build_state::BuildStateAdapter for Through {
     async fn facts(&self) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.facts().await
     }
+    async fn committed_facts(&self, build: Option<&crate::build::BuildId>) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
+        self.read().stores().boundaries.builds.committed_facts(build).await
+    }
     async fn forget(&self, build_id: &crate::build::BuildId) -> Result<(), crate::build_state::BuildStateError> {
         let w = self.write();
         w.boundaries.builds.forget(build_id).await

@@ -691,6 +691,10 @@ impl BuildStateAdapter for PointerMovesOnceRead {
     async fn facts(&self) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
         self.inner.facts().await
     }
+    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
+        let facts = self.facts().await?;
+        Ok(match build { Some(b) => facts.into_iter().filter(|f| f.build_id() == b).collect(), None => facts })
+    }
     async fn forget(&self, id: &BuildId) -> Result<(), rdm_admin::build_state::BuildStateError> {
         self.inner.forget(id).await
     }

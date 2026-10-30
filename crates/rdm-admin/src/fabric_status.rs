@@ -805,6 +805,9 @@ mod tests {
         async fn facts(&self) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
             self.inner.facts().await
         }
+        async fn committed_facts(&self, build: Option<&crate::build::BuildId>) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
+            self.inner.committed_facts(build).await
+        }
         async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, crate::build_state::BuildStateError> {
             self.inner.recovery_of(path, node_id, incarnation).await
         }

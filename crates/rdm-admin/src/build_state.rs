@@ -1200,6 +1200,13 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError>;
     /// Every fact, in append order (what the fabric projection carries).
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
+    /// The committed facts of `build`, every Build's when `None`, read fresh from the Build storage
+    /// this adapter persists to (Q292: an executor, a starting admin and an admin taking a primary
+    /// role read the named Build's committed records, never a copy a command carried): the records the
+    /// read obtained, in commit order, or an error naming why, never a cached projection. `Err(UnknownBuild)`
+    /// when the storage holds no record of `build`; an unreadable store is `Err(Io)`, never an empty
+    /// Build. Required: an adapter that persists nowhere answers its own facts, by name.
+    async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError>;
     /// Drop a finished Build from the views (history administration).
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError>;
     /// The step in flight of `operation` in `attempt` of `lane` (`None` the fabric lane, `Some(mesh)`
@@ -2303,6 +2310,10 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         Ok(snapshot(&self.log).as_ref().clone())
     }
+    /// A log held in one process persists nowhere: its committed facts are the ones it holds.
+    async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
+        committed_of(self.facts().await?, build)
+    }
 
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
         Ok(self.log.lock().unwrap().births.recovery_of(path, node_id, incarnation))
@@ -2341,6 +2352,16 @@ pub const RECORD_FORMAT: &str = "build-record/1";
 struct StoredFact {
     seq: u64,
     fact: BuildFact,
+}
+
+/// `facts` of `build` (every Build's when `None`), `Err(UnknownBuild)` when `build` has none (Q292).
+fn committed_of(facts: Vec<BuildFact>, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
+    let Some(build) = build else { return Ok(facts) };
+    let of: Vec<BuildFact> = facts.into_iter().filter(|f| f.build_id() == build).collect();
+    if of.is_empty() {
+        return Err(BuildStateError::UnknownBuild(build.clone()));
+    }
+    Ok(of)
 }
 
 #[cfg(feature = "file-backend")]
@@ -2844,6 +2865,30 @@ impl BuildStateAdapter for FileJournal {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.sync_for_read("facts").await?;
         Ok(snapshot(&self.log).as_ref().clone())
+    }
+    /// A fresh read of `builds.jsonl` whole (Q292), on the blocking pool: neither the shared cursor
+    /// nor the writer's turn is touched, so what is answered is exactly what this read obtained. Its
+    /// records are folded as a take folds them: each key once, in the order they were committed
+    /// (`seq`); an object another writer is still writing is left out by the read.
+    async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
+        let path = self.file.path().to_path_buf();
+        let lines = tokio::task::spawn_blocking({
+            let path = path.clone();
+            move || crate::store_log::read_file(&path)
+        })
+        .await
+        .map_err(|e| BuildStateError::Io(format!("the read of {} did not finish: {e}", path.display())))?
+        .map_err(store_io)?;
+        let prefix = build.map(|b| format!("{b}/"));
+        let mut seen = std::collections::HashSet::new();
+        let mut stored: Vec<StoredFact> = Vec::new();
+        for line in lines.iter().filter(|l| l.format == RECORD_FORMAT && prefix.as_deref().is_none_or(|p| l.key.starts_with(p))) {
+            if seen.insert(line.key.clone()) {
+                stored.push(line.decode::<StoredFact>(&path).map_err(store_io)?);
+            }
+        }
+        stored.sort_by_key(|s| s.seq);
+        committed_of(stored.into_iter().map(|s| s.fact).collect(), build)
     }
 
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
@@ -3977,6 +4022,52 @@ mod tests {
             assert_eq!(kinds, ["accepted", "claim", "step", "completion"], "{who} reads every committed fact on the root");
             assert_eq!(j.read_build(&id).await.unwrap().state, BuildState::Complete, "{who}: the Build is complete");
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// CONTRACT (Q292: an executor, a starting admin and an admin taking a primary role read the named
+    /// Build's committed records from the Build storage, never a copy a command carried; the read is
+    /// fresh, an unreadable store is an error and a Build the store holds no record of is `UnknownBuild`):
+    /// an admin that is not the fabric-primary (its records reader answers none) reads, through
+    /// `committed_facts`, every record the fabric-primary committed, a failed step whose reason is far
+    /// past one 4,032-byte Build message included, whole; its cached log holds none of them.
+    /// Must NOT happen: the read answering the cached log, a fact cut or dropped for its size, or an
+    /// absent Build answered as empty.
+    #[tokio::test]
+    async fn an_admin_that_is_not_the_fabric_primary_reads_a_builds_committed_records_whole() {
+        let d = crate::test_support::tempdir("q292-committed");
+        let store = d.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let fabric_id = crate::model::FabricId::mint();
+        let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
+        let fp = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &writer())).await.unwrap();
+        let mp = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), &crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &writer())).await.unwrap();
+        mp.read_records_while(Arc::new(|| None)).await;
+        let id = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
+        let long = "x".repeat(9_000);
+        fp.publish_accepted(&intent("b1")).await.unwrap();
+        fp.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
+        let failed = BuildStepReceipt { outcome: StepOutcome::Failed { reason: long.clone(), code: rdm_core::outcome::Code::DeadlineExceeded }, ..step("b1", 1, "node.create:mesh1.rpc.1") };
+        fp.append_step_receipt(&failed).await.unwrap();
+
+        assert!(mp.facts().await.unwrap().is_empty(), "the reader's cached log holds nothing: it is not the fabric-primary");
+        let read = mp.committed_facts(Some(&id)).await.expect("the committed records are read");
+        let kinds: Vec<&str> = read.iter().map(|f| match f {
+            BuildFact::Accepted(_) => "accepted",
+            BuildFact::Claim(_) => "claim",
+            BuildFact::Step(_) => "step",
+            _ => "other",
+        }).collect();
+        assert_eq!(kinds, ["accepted", "claim", "step"], "every committed record, in commit order");
+        assert!(read.iter().any(|f| matches!(f, BuildFact::Step(s) if s.outcome == failed.outcome)), "the 9,000-byte reason arrives whole");
+        assert_eq!(fold(&read).get(&id).map(|p| p.attempt), Some(1), "the read folds to the Build's claimed attempt");
+
+        // A record committed after the first read is in the next one: nothing is cached.
+        fp.append_step_receipt(&step("b1", 1, "node.create:mesh1.rpc.2")).await.unwrap();
+        assert_eq!(mp.committed_facts(Some(&id)).await.unwrap().len(), 4, "the next read holds the record committed since");
+
+        let absent = BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap();
+        assert!(matches!(mp.committed_facts(Some(&absent)).await, Err(BuildStateError::UnknownBuild(b)) if b == absent), "a Build the store holds no record of is named unknown, never empty");
         let _ = std::fs::remove_dir_all(&d);
     }
 
