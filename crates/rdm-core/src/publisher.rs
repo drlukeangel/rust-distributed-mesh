@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct PublisherId {
     /// The publisher's descriptive node name; it is not part of the birth identity.
     pub node: String,
-    /// The incarnation of the birth that holds the seat.
+    /// The incarnation of the birth that holds the role.
     pub incarnation: IncarnationId,
     /// The author's logical node, supplied at publication, never resolved from its name.
     pub node_id: NodeId,

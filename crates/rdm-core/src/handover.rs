@@ -17,7 +17,7 @@
 use crate::framing::Birth;
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
-pub use crate::seat::transfer::{HandoverBirth, Seat};
+pub use crate::role::transfer::HandoverBirth;
 use serde::{Deserialize, Serialize};
 
 /// The node-primary-update protocol: node.primary.update and node.fabric-primary.update.

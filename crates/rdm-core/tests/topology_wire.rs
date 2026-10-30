@@ -214,8 +214,8 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     assert_eq!(Topology::frame_kind(&Started), FrameKind::Started);
     assert_eq!(Topology::frame_kind(&Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 1 }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&End { meshes: 0 }), FrameKind::Terminal);
-    let holder = Primary { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 1 };
-    assert_eq!(Topology::frame_kind(&Primaries { kind: PrimaryKind::FabricPrimary, primary: holder, gone: false }), FrameKind::Data);
+    let primary = Primary { mesh: "m".into(), node_id: rdm_core::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision: 1 };
+    assert_eq!(Topology::frame_kind(&Primaries { kind: PrimaryKind::FabricPrimary, primary, gone: false }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&RafkaTime { ms: 1, kind: None }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&NotReady { reason: "n".into() }), FrameKind::Refusal(ReplyKind::NotReady));
     assert_eq!(Topology::frame_kind(&UnknownMesh { mesh: "m".into() }), FrameKind::Refusal(ReplyKind::new(rdm_core::outcome::Code::NotFound)));

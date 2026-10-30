@@ -35,10 +35,10 @@ pub enum NodeOp {
     Start,
     /// `node.delete`.
     Delete,
-    /// `node.primary.update`: move a node-type primary's or mesh-primary's seat (and the fabric-primary seat
-    /// with it when the holder holds both) to its same-mesh successor (`0x21`).
+    /// `node.primary.update`: move a node-type primary's or mesh-primary's role (and the fabric-primary role
+    /// with it when the primary holds both) to its same-mesh successor (`0x21`).
     PrimaryUpdate,
-    /// `node.fabric-primary.update`: move the fabric-primary seat (`0x21`, C2 step 1 same-mesh first,
+    /// `node.fabric-primary.update`: move the fabric-primary role (`0x21`, C2 step 1 same-mesh first,
     /// step 2 outside mesh primary when no same-mesh successor is Ready).
     FabricPrimaryUpdate,
 }

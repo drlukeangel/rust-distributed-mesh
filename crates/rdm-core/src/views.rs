@@ -161,9 +161,9 @@ pub struct NodeView {
     pub data_dir: Option<String>,
     /// The node's lifecycle state.
     pub status: NodeStatus,
-    /// Whether the node holds its mesh's primary seat.
+    /// Whether the node holds its mesh's primary role.
     pub is_primary: bool,
-    /// Whether the node holds the fabric-primary seat.
+    /// Whether the node holds the fabric-primary role.
     pub is_fabric_primary: bool,
     /// The control API base the node advertises, for a node-admin.
     pub admin_api_base: Option<String>,
@@ -282,7 +282,7 @@ pub struct MeshView {
     pub name: String,
     /// The mesh's lifecycle state.
     pub status: ScopeStatus,
-    /// The node-admin that is the mesh's primary, when one is seated.
+    /// The node-admin that is the mesh's primary, when one is elected.
     pub primary_admin: Option<PathName>,
     /// The control API base of the mesh's primary.
     pub admin_api_base: Option<String>,
@@ -304,7 +304,7 @@ pub struct FabricView {
     pub status: ScopeStatus,
     /// The provider that runs the fabric's nodes.
     pub provider: ProviderKind,
-    /// The node-admin that is the fabric primary, when one is seated.
+    /// The node-admin that is the fabric primary, when one is elected.
     pub fabric_primary: Option<PathName>,
     /// The control API base of the fabric primary.
     pub admin_api_base: Option<String>,

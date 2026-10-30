@@ -21,7 +21,7 @@
 //! Complete | Failed { step, reason } | HandedOff { to } | FabricPrimaryMoved { fabric_primary }
 //!                                                  the terminal of Create / AttemptRun (FabricPrimaryMoved on
 //!                                                  AttemptRun: the executor took the fabric-primary
-//!                                                  seat during the run and names itself)
+//!                                                  role during the run and names itself)
 //! Got | Deleted                                    the terminal of Get / Delete
 //! End                                              the terminal of GetBuilds, after per Build its
 //!                                                  Topology and Steps chunks and its Build header
@@ -132,7 +132,7 @@ pub enum BuildChange {
         steps: Vec<Step>,
     },
     /// Delete the fabric (`fabric.delete`, lifecycles/fabric-delete.md): run `mesh.delete` on each
-    /// mesh leaf-inward (the fabric-primary's own mesh last, where the fabric seat stays put),
+    /// mesh leaf-inward (the fabric-primary's own mesh last, where the fabric role stays put),
     /// delete each other mesh's final mesh-primary, release the fabric name and report
     /// `fabric.deleted` while the fabric-primary remains alive for its separate `node.delete`.
     ///
@@ -420,7 +420,7 @@ pub enum Disposition {
     ///
     /// Position 0 on the wire.
     Created,
-    /// The Build is running with a live holder: this stream is that holder's.
+    /// The Build is running with a live primary: this stream is that holder's.
     ///
     /// Position 1 on the wire.
     Attached,
@@ -720,10 +720,10 @@ pub enum BuildReply {
     /// receiver dispatches nothing (node-rpc-envelope.md's second `NotFabricPrimary { node, by }`).
     ///
     /// Position 16 on the wire.
-    SeatYielded {
-        /// The admin whose Build log yielded the seat.
+    RoleYielded {
+        /// The admin whose Build log yielded the role.
         node: String,
-        /// The record that moved the seat, in words.
+        /// The record that moved the role, in words.
         by: String,
     },
     /// Refusal: the Build cannot leave history.
@@ -777,15 +777,15 @@ pub enum BuildReply {
         /// Why the call is refused.
         reason: String,
     },
-    /// Terminal of `Create`: the fabric-primary seat moved off the receiver while the Build ran (a
-    /// node.fabric-primary.update, op `0x21`). The Build goes on at the new seat; the caller re-submits the
+    /// Terminal of `Create`: the fabric-primary role moved off the receiver while the Build ran (a
+    /// node.fabric-primary.update, op `0x21`). The Build goes on at the new fabric-primary; the caller re-submits the
     /// same `build_id` there. Never `Indeterminate` on a planned move.
     ///
     /// Position 24 on the wire.
     FabricPrimaryMoved {
         /// The Build.
         build_id: String,
-        /// The admin (path.name) that holds the seat now, when the receiver's view names one.
+        /// The admin (path.name) that holds the role now, when the receiver's view names one.
         fabric_primary: Option<String>,
     },
     /// Refusal: the receiver may not claim on the mesh the request acts in (R-BI7): a topology
@@ -876,7 +876,7 @@ impl BuildReply {
             Self::Rejected { .. } => "rejected",
             Self::BuildInProgress { .. } => "build-in-progress",
             Self::AttemptTaken { .. } => "attempt-taken",
-            Self::SeatYielded { .. } => "seat-yielded",
+            Self::RoleYielded { .. } => "role-yielded",
             Self::CannotDelete { .. } => "cannot-delete",
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::NotReady { .. } => "not-ready",
@@ -959,7 +959,7 @@ impl NodeProtocol for Build {
             BuildReply::Rejected { .. } => "rejected",
             BuildReply::BuildInProgress { .. } => "build-in-progress",
             BuildReply::AttemptTaken { .. } => "attempt-taken",
-            BuildReply::SeatYielded { .. } => "seat-yielded",
+            BuildReply::RoleYielded { .. } => "role-yielded",
             BuildReply::CannotDelete { .. } => "cannot-delete",
             BuildReply::PeerUnresolved { .. } => "peer-unresolved",
             BuildReply::NotReady { .. } => "not-ready",
@@ -995,7 +995,7 @@ impl NodeProtocol for Build {
             BuildReply::Rejected { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             BuildReply::BuildInProgress { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
             BuildReply::AttemptTaken { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
-            BuildReply::SeatYielded { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            BuildReply::RoleYielded { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             BuildReply::CannotDelete { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             BuildReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             BuildReply::NotReady { .. } => ReplyKind::NotReady,

@@ -1,11 +1,11 @@
-//! Seat holders: who holds a primary seat, as a node announces it and a joiner is told it.
+//! Primary roles: who holds a primary role, as a node announces it and a joiner is told it.
 //!
-//! A seat is a mesh's node-admin primary ([`Seat::MeshPrimary`]), the fabric primary
-//! ([`Seat::FabricPrimary`]), or the node-type primary of one other `(mesh, node type)` ([`Seat::NodeTypePrimary`]:
+//! A primary role is a mesh's node-admin primary ([`PrimaryRole::MeshPrimary`]), the fabric primary
+//! ([`PrimaryRole::FabricPrimary`]), or the node-type primary of one other `(mesh, node type)` ([`PrimaryRole::NodeTypePrimary`]:
 //! an rpc, broker, gateway or compute type; the approved proposal
-//! node-primary-update-fabric-mesh-and-node-type.md Part B1). The holder of a seat is an EXACT birth, `(node_id, incarnation)`, in
-//! a mesh, with a `revision`: the number of times the seat changed hands as the announcer saw it.
-//! A seat does not change hands while its holder lives, so the record a node holds is an input to
+//! node-primary-update-fabric-mesh-and-node-type.md Part B1). A primary is an EXACT birth, `(node_id, incarnation)`, in
+//! a mesh, with a `revision`: the number of times the role changed hands as the announcer saw it.
+//! A role does not change hands while its primary lives, so the record a node holds is an input to
 //! every election (`rafka-node-admin-core` `election.rs`), never a result recomputed from
 //! statuses alone.
 
@@ -13,9 +13,9 @@ use crate::ids::{IncarnationId, NodeId};
 use crate::path::NodeKind;
 use serde::{Deserialize, Serialize};
 
-/// A primary seat. The discriminants are the wire positions.
+/// A primary role. The discriminants are the wire positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum Seat {
+pub enum PrimaryRole {
     /// The node-admin primary of one mesh (named by [`Primary::mesh`]).
     ///
     /// Position 0 on the wire.
@@ -24,16 +24,16 @@ pub enum Seat {
     ///
     /// Position 1 on the wire.
     FabricPrimary,
-    /// The node-type primary of the holder's mesh for this node type, every type but `node_admin`
-    /// (whose seat is [`Seat::MeshPrimary`]): its mesh's primary writes and announces its record
+    /// The node-type primary of the primary's mesh for this node type, every type but `node_admin`
+    /// (whose role is [`PrimaryRole::MeshPrimary`]): its mesh's primary writes and announces its record
     /// (R-MT1 Q3: the mesh-primary is the mesh's one row writer and sole author of member status).
     ///
     /// Position 2 on the wire.
     NodeTypePrimary(NodeKind),
 }
 
-impl Seat {
-    /// The seat's name as it appears in spans and evidence.
+impl PrimaryRole {
+    /// The role's name as it appears in spans and evidence.
     pub fn name(self) -> &'static str {
         match self {
             Self::MeshPrimary | Self::NodeTypePrimary(NodeKind::NodeAdmin) => "mesh-primary",
@@ -45,8 +45,8 @@ impl Seat {
         }
     }
 
-    /// The primary seat of node type `kind` in a mesh: the mesh-primary seat for `node_admin`, the
-    /// node-type primary seat for every other type.
+    /// The primary role of node type `kind` in a mesh: the mesh-primary role for `node_admin`, the
+    /// node-type primary role for every other type.
     pub fn of_node_type(kind: NodeKind) -> Self {
         match kind {
             NodeKind::NodeAdmin => Self::MeshPrimary,
@@ -94,8 +94,7 @@ impl std::fmt::Display for Primary {
     }
 }
 
-/// An exact birth as op `0x21`'s entries name it, and the seat names of the `seat-move/1`
-/// rows an older store root holds, decoded and never written (durable-format rule).
+/// An exact birth as op `0x21`'s entries name it.
 pub mod transfer {
     use crate::ids::{IncarnationId, NodeId};
     use serde::{Deserialize, Serialize};
@@ -110,49 +109,6 @@ pub mod transfer {
         /// The birth's incarnation.
         pub incarnation: IncarnationId,
     }
-
-    /// A seat as a `seat-move/1` row names it. The discriminants are its positions.
-    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    pub enum Seat {
-        /// The fabric primary.
-        FabricPrimary,
-        /// The node-admin primary of `mesh`.
-        MeshPrimary {
-            /// The mesh whose primary seat it is.
-            mesh: String,
-        },
-        /// The node-type primary of `mesh` for node type `kind` (every type but `node_admin`).
-        NodeTypePrimary {
-            /// The mesh whose node-type primary it is.
-            mesh: String,
-            /// The node type.
-            kind: crate::path::NodeKind,
-        },
-    }
-
-    impl Seat {
-        /// The transfer's name for the record seat `seat` of `mesh`.
-        pub fn of(seat: super::Seat, mesh: &str) -> Self {
-            match seat {
-                super::Seat::FabricPrimary => Self::FabricPrimary,
-                super::Seat::MeshPrimary | super::Seat::NodeTypePrimary(crate::path::NodeKind::NodeAdmin) => Self::MeshPrimary { mesh: mesh.to_string() },
-                super::Seat::NodeTypePrimary(kind) => Self::NodeTypePrimary { mesh: mesh.to_string(), kind },
-            }
-        }
-        /// The record seat it names.
-        pub fn kind(&self) -> super::Seat {
-            match self {
-                Self::FabricPrimary => super::Seat::FabricPrimary,
-                Self::MeshPrimary { .. } => super::Seat::MeshPrimary,
-                Self::NodeTypePrimary { kind, .. } => super::Seat::of_node_type(*kind),
-            }
-        }
-        /// The seat's name as it appears in spans and evidence.
-        pub fn name(&self) -> &'static str {
-            self.kind().name()
-        }
-    }
-
 }
 
 #[cfg(test)]

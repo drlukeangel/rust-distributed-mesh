@@ -171,9 +171,9 @@ pub struct Node {
     pub data_dir: Option<String>,
     /// The node's lifecycle state.
     pub status: NodeStatus,
-    /// Whether the node holds its node-type primary seat.
+    /// Whether the node holds its node-type primary role.
     pub is_primary: bool,
-    /// Whether the node holds the fabric-primary seat.
+    /// Whether the node holds the fabric-primary role.
     pub is_fabric_primary: bool,
     /// The control API base a node-admin serves; `None` for other kinds.
     pub admin_api_base: Option<String>,

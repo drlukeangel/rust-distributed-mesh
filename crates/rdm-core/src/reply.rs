@@ -181,8 +181,8 @@ pub fn rejected(reason: String, detail: String) -> BuildReply { BuildReply::Reje
 pub fn build_in_progress(current_build_id: String, mesh: Option<String>, held_by: Option<String>) -> BuildReply { BuildReply::BuildInProgress { current_build_id, mesh, held_by } }
 /// Construct the typed attempt-taken outcome.
 pub fn attempt_taken(detail: String) -> BuildReply { BuildReply::AttemptTaken { detail } }
-/// Construct the typed seat-yielded outcome.
-pub fn seat_yielded(node: String, by: String) -> BuildReply { BuildReply::SeatYielded { node, by } }
+/// Construct the typed role-yielded outcome.
+pub fn role_yielded(node: String, by: String) -> BuildReply { BuildReply::RoleYielded { node, by } }
 /// Construct the typed cannot-delete outcome.
 pub fn cannot_delete(build_id: String, reason: String) -> BuildReply { BuildReply::CannotDelete { build_id, reason } }
 /// Construct the typed peer-unresolved outcome.
@@ -324,7 +324,7 @@ use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
 use crate::wire::ProjectionEntry;
-use crate::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId, Seat, Primary};
+use crate::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, Primary, PrimaryRole, PublisherId};
 use serde::{Deserialize, Serialize};
 /// Construct the typed not-ready outcome.
 pub fn not_ready(reason: String) -> TopologyReply { TopologyReply::NotReady { reason } }

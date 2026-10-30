@@ -1130,11 +1130,11 @@ impl StatusRequest {
 /// Why a declaration was not applied, by name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotPrimary {
-    /// The receiver does not hold the seat the declaration needs.
+    /// The receiver does not hold the role the declaration needs.
     ///
     /// Position 0 on the wire.
     ReceiverNotPrimary {
-        /// The seat the receiver would have to hold.
+        /// The role the receiver would have to hold.
         needed: String,
     },
     /// The sender is not the subject (or the subject's current primary).
@@ -1729,7 +1729,7 @@ pub enum StatusReply {
         left: Vec<WhichMesh>,
     },
     /// The receiving endpoint has no handler for the request (R24, Luke Q11): decided by dispatch
-    /// alone, never by node kind, seat or sender; nothing is done.
+    /// alone, never by node kind, role or sender; nothing is done.
     ///
     /// Position 51 on the wire.
     RequestNotHandled {

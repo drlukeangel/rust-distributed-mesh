@@ -71,8 +71,8 @@ pub mod publisher;
 pub mod read;
 pub mod reconnect;
 pub mod reply;
+pub mod role;
 pub mod runtime;
-pub mod seat;
 pub mod status;
 pub mod streaming;
 pub mod topology;
@@ -102,8 +102,8 @@ pub use outcome::PreCommit;
 pub use path::{NodeKind, PathName, PathNameError};
 pub use protocol::{DecodeFailure, NodeProtocol};
 pub use publisher::PublisherId;
+pub use role::{Primary, PrimaryRole};
 pub use runtime::{RuntimeFact, RuntimeFactError, RuntimeLocator, RuntimeProvider};
-pub use seat::{Seat, Primary};
 
 /// App type declaration bounds and held-set identity.
 pub mod app_types;
