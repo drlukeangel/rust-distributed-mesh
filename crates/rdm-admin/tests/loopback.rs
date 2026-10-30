@@ -72,11 +72,13 @@ impl Loopback {
         Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(BTreeMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), own: Mutex::new(BTreeMap::new()), reporting: Mutex::new(BTreeSet::new()), framed: Mutex::new(BTreeSet::new()), dispatched: Mutex::new(Vec::new()), sections: Mutex::new(Vec::new()) })
     }
 
-    /// `executor` keeps its own Build log (returned): the intent a call carries is absorbed there, its
+    /// `executor` keeps its own Build log (returned): the Build's committed records its run reads (Q292) are absorbed there, its
     /// run writes its receipts there and frames them on the call's stream, and nothing of it reaches
     /// the fixture's log but the frames and the terminal.
     pub fn own_log(&self, executor: &str) -> Arc<MemoryBuildStateAdapter> {
-        self.own.lock().unwrap().entry(executor.to_string()).or_insert_with(|| Arc::new(MemoryBuildStateAdapter::new())).clone()
+        // Its own log beside the fabric's shared Build storage, the fixture's log (Q292): a run reads
+        // the Build's committed records there.
+        self.own.lock().unwrap().entry(executor.to_string()).or_insert_with(|| Arc::new(MemoryBuildStateAdapter::new().persisted_in(self.builds.clone()))).clone()
     }
 
     /// `executor` keeps its own Build log ([`Self::own_log`]) and serves the fabric-primary's dispatch

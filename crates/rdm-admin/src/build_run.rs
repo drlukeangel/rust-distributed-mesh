@@ -828,15 +828,15 @@ impl RunDoor {
             let (replay, reader) = log.attach();
             return Attached::Live { disposition: Disposition::Reattached, replay, reader };
         }
-        // The intent the fabric-primary decided the claim on is absorbed before anything is planned:
-        // insert-and-fail on the facts' own keys, so what the store root holds too changes nothing.
-        let mut facts = Vec::new();
-        for (i, frame) in intent.iter().enumerate() {
-            match crate::fabric_builds::BuildMessage::from_bytes(frame) {
-                Ok(m) => facts.extend(m.facts),
-                Err(e) => return Attached::Refused(rdm_core::reply::build::rejected("intent-undecodable".into(), format!("{me}: intent frame {i} of Build {build_id} does not decode: {e}"))),
-            }
-        }
+        // The Build is read from its committed records before anything is planned (Q292: a command names
+        // the Build and the claim, never a copy of it): insert-and-fail on the facts' own keys into the
+        // local log. An unreadable store refuses the run by name; it is never an empty Build.
+        let _ = intent;
+        let facts = match self.builds.committed_facts(Some(build_id)).await {
+            Ok(facts) => facts,
+            Err(BuildStateError::UnknownBuild(_)) => return Attached::Refused(rdm_core::reply::build::unknown_build(build_id.to_string())),
+            Err(e) => return Attached::Refused(rdm_core::reply::build::not_ready(format!("{me}: the committed records of Build {build_id} could not be read: {e}"))),
+        };
         self.local.absorb_facts(&facts).await;
         // The attempt is read in its lane: a drift attempt's number, executor and state are its
         // mesh's lane's, never the fabric lane's.

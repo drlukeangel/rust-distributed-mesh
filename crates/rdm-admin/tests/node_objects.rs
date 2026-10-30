@@ -296,6 +296,8 @@ async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
 /// receipts on `rig`'s log, the fabric-primary's log holds the claim it decided and the verdict the
 /// executor reported, and no step receipt reaches it (the Build topic delivers those apart, later).
 async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, join: Duration) -> Arc<BuildDoor> {
+    // The executor's own log beside the fabric's shared Build storage, the fabric-primary's log (Q292).
+    rig.local.persist_in(fp.clone());
     let t = mn();
     let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*fp, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let me: PathName = "mesh1.admin.1".parse().unwrap();

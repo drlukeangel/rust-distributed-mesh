@@ -2024,12 +2024,38 @@ pub struct MemoryBuildStateAdapter {
     writer: tokio::sync::Mutex<Derived>,
     /// Each attempt's context, at its key.
     contexts: Mutex<BTreeMap<String, rdm_core::context::CallContext>>,
+    /// The Build storage this log's admin reads committed records from (Q292), when it is another log:
+    /// an admin of a fabric whose fabric-primary's log stands for the shared store. None: this log is
+    /// its own storage.
+    storage: std::sync::OnceLock<Storage>,
+}
+
+/// The Build storage a [`MemoryBuildStateAdapter`] reads committed records from (Q292).
+#[derive(Clone)]
+struct Storage(Arc<dyn BuildStateAdapter>);
+
+impl std::fmt::Debug for Storage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Storage")
+    }
 }
 
 impl MemoryBuildStateAdapter {
     /// An empty store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// This log, its admin reading the Build's committed records from `storage` (Q292): an admin's own
+    /// log beside the fabric's shared Build storage, as every admin but the fabric-primary keeps one.
+    pub fn persisted_in(self, storage: Arc<dyn BuildStateAdapter>) -> Self {
+        self.persist_in(storage);
+        self
+    }
+
+    /// [`Self::persisted_in`] for a log already shared: the first storage it is given holds.
+    pub fn persist_in(&self, storage: Arc<dyn BuildStateAdapter>) {
+        let _ = self.storage.set(Storage(storage));
     }
 
     /// Publish `fact` under the writer's turn `w`.
@@ -2310,8 +2336,12 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         Ok(snapshot(&self.log).as_ref().clone())
     }
-    /// A log held in one process persists nowhere: its committed facts are the ones it holds.
+    /// A log held in one process persists nowhere: its committed facts are the ones it holds, or the
+    /// storage it was given's ([`MemoryBuildStateAdapter::persisted_in`]).
     async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
+        if let Some(Storage(storage)) = self.storage.get() {
+            return storage.committed_facts(build).await;
+        }
         committed_of(self.facts().await?, build)
     }
 
