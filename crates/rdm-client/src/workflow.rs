@@ -555,7 +555,7 @@ impl WorkflowStream {
                 BuildFrame::FabricPrimaryMoved { fabric_primary } => {
                     self.ended = true;
                     self.span.record("outcome", "fabric-primary-moved");
-                    self.span.in_scope(|| tracing::info!(fabric_primary = fabric_primary.as_deref().unwrap_or("none"), "the fabric-primary seat moved; the Build goes on at the new seat"));
+                    self.span.in_scope(|| tracing::info!(fabric_primary = fabric_primary.as_deref().unwrap_or("none"), "the fabric-primary role moved; the Build goes on at the new fabric-primary"));
                     return Some(Ok(Frame::FabricPrimaryMoved { fabric_primary }));
                 }
                 other => return Some(Err(self.broke(CallEnd::Rejected { reason: "unexpected-frame".into(), detail: format!("a workflow stream carried {other:?}") }))),

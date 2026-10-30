@@ -276,15 +276,15 @@ impl Nodes {
     /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary
     /// to move its mesh-primary role (and the fabric-primary role with it when it is both)
     /// to its same-mesh successor.
-    pub async fn primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
-        crate::NodeRpc::new(self.carrier.client()).primary_update(fabric, holder, build_id, attempt, &CallOptions::default()).await
+    pub async fn primary_update(&self, fabric: &str, primary: &PathName, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+        crate::NodeRpc::new(self.carrier.client()).primary_update(fabric, primary, build_id, attempt, &CallOptions::default()).await
     }
 
     /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` "The fabric-primary"): command the
     /// fabric-primary to move the fabric-primary role (step 1 same-mesh successor
     /// first, step 2 another Ready mesh-primary when no same-mesh successor is Ready).
-    pub async fn fabric_primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
-        crate::NodeRpc::new(self.carrier.client()).fabric_primary_update(fabric, holder, build_id, attempt, &CallOptions::default()).await
+    pub async fn fabric_primary_update(&self, fabric: &str, primary: &PathName, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+        crate::NodeRpc::new(self.carrier.client()).fabric_primary_update(fabric, primary, build_id, attempt, &CallOptions::default()).await
     }
 }
 

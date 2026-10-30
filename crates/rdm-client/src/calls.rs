@@ -590,17 +590,17 @@ impl<'a> NodeRpc<'a> {
     /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary
     /// to move its primary (and the fabric-primary with it when it is both) to the successor the
     /// election names in its own view.
-    pub async fn primary_update(&self, _fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+    pub async fn primary_update(&self, _fabric: &str, primary: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
-            node_type: holder.node_type().to_string(),
+            node_type: primary.node_type().to_string(),
             build_id: build_id.to_string(),
             run: attempt,
-            operation: format!("node.primary.update:{build_id}:{attempt}:{holder}"),
+            operation: format!("node.primary.update:{build_id}:{attempt}:{primary}"),
             successor: None,
         };
         let span = NodeOp::PrimaryUpdate.span();
-        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::CurrentPath(holder.clone()), &req, opts), span.clone()).await;
+        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::CurrentPath(primary.clone()), &req, opts), span.clone()).await;
         let r = ended(out);
         span.record("outcome", match &r {
             Ok(_) => "ok",
@@ -613,17 +613,17 @@ impl<'a> NodeRpc<'a> {
     /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` "The fabric-primary"):
     /// command the fabric-primary to move the fabric-primary: its own mesh first, so both
     /// move together when a same-mesh node-admin is Ready, else another mesh's mesh-primary.
-    pub async fn fabric_primary_update(&self, _fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+    pub async fn fabric_primary_update(&self, _fabric: &str, primary: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
             node_type: rdm_core::handover::FABRIC.to_string(),
             build_id: build_id.to_string(),
             run: attempt,
-            operation: format!("node.fabric-primary.update:{build_id}:{attempt}:{holder}"),
+            operation: format!("node.fabric-primary.update:{build_id}:{attempt}:{primary}"),
             successor: None,
         };
         let span = NodeOp::FabricPrimaryUpdate.span();
-        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::CurrentPath(holder.clone()), &req, opts), span.clone()).await;
+        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::CurrentPath(primary.clone()), &req, opts), span.clone()).await;
         let r: Result<NodePrimaryUpdateReply, CallEnd> = ended(out);
         span.record("outcome", match &r {
             Ok(_) => "ok",

@@ -229,7 +229,7 @@ fn refusal(reply: BuildReply) -> CallEnd {
             mesh_primary.as_deref().unwrap_or("none seen")
         ),
         BuildReply::AttemptTaken { detail } => detail.clone(),
-        BuildReply::SeatYielded { node, by } => format!("{node} is no longer the fabric-primary: {by}"),
+        BuildReply::RoleYielded { node, by } => format!("{node} is no longer the fabric-primary: {by}"),
         BuildReply::CannotDelete { build_id, reason } => format!("Build {build_id} stays in history: {reason}"),
         BuildReply::PeerUnresolved { reason } | BuildReply::NotReady { reason } | BuildReply::Busy { reason } | BuildReply::ConnectionsDeleting { reason } | BuildReply::Unauthorized { reason } => reason.clone(),
         BuildReply::Malformed { kind } => format!("{kind:?}"),
