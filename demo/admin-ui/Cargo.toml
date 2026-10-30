@@ -14,10 +14,10 @@ name = "rdm-admin-ui"
 path = "src/main.rs"
 
 [dependencies]
-rdm-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "864aa471034208f87cdf774888ae92d68bc37390" }
-rdm-client = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "864aa471034208f87cdf774888ae92d68bc37390" }
-rdm-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "864aa471034208f87cdf774888ae92d68bc37390" }
-rdm-test = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "864aa471034208f87cdf774888ae92d68bc37390" }
+rdm-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "848d42853ccc790d9c686ddaf405a83c0361a87a" }
+rdm-client = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "848d42853ccc790d9c686ddaf405a83c0361a87a" }
+rdm-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "848d42853ccc790d9c686ddaf405a83c0361a87a" }
+rdm-test = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "848d42853ccc790d9c686ddaf405a83c0361a87a" }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -29,6 +29,6 @@ reqwest = { version = "0.13.3", features = ["json"] }
 urlencoding = "2"
 
 [dev-dependencies]
-rdm-admin = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "864aa471034208f87cdf774888ae92d68bc37390" }
+rdm-admin = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "848d42853ccc790d9c686ddaf405a83c0361a87a" }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
