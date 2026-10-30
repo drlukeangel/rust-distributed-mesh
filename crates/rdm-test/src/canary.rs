@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 const SETTLE: Duration = Duration::from_secs(120);
-// The canary restarts the rpc cohort's primary primary (`is_primary == true`).
+// The canary restarts the rpc node-type primary (`is_primary == true`).
 
 fn ready(node: &Value) -> bool {
     node["status"] == "ready"
@@ -36,8 +36,8 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let birth_build = estate.reconcile(&shape).await.build_id.to_string();
     estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
 
-    // 2. Select the rpc node-type primary primary (lowest node_id) and Put{key=41, value="before-restart"} by ExactNode.
-    let (node_type_primary, before) = estate.until_view("rpc node-type primary primary", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.is_primary).map(|n| (n.name.to_string(), serde_json::to_value(n).unwrap()))).await; let node_name = node_type_primary.as_str();
+    // 2. Select the rpc node-type primary (lowest node_id) and Put{key=41, value="before-restart"} by ExactNode.
+    let (node_type_primary, before) = estate.until_view("rpc node-type primary", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.is_primary).map(|n| (n.name.to_string(), serde_json::to_value(n).unwrap()))).await; let node_name = node_type_primary.as_str();
     let node_id = before["node_id"].as_str().expect("node_id").to_string();
     let exact = format!("exact:{node_id}");
     let put = estate.probe(&["put", "--target", &exact, "--key", "41", "--value", "before-restart"]);

@@ -497,7 +497,7 @@ impl Estate {
         }
         assert!(self.dispatch.dispatched.lock().unwrap().is_empty() && self.born().is_empty(), "nothing dispatched and nothing born while {survivor} is held");
         self.elect(&survivor, lost).await;
-        assert_eq!(self.mesh_primary_of(lost).await, survivor, "{lost_mesh} roles its own surviving admin");
+        assert_eq!(self.mesh_primary_of(lost).await, survivor, "{lost_mesh} elects its own surviving admin");
         survivor
     }
 

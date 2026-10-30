@@ -7949,7 +7949,6 @@ mod tests {
         assert!(matches!(primaries.take(PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), &older), RoleTaken::Refused { .. }), "an older record is refused by the one supersede rule");
         // An update of the node-type primary is held under the node type.
         let next = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
-        let _op = LifecycleOp { name: "mesh1.rpc.1".parse().unwrap(), node_id: rpc.node_id.clone(), incarnation: rpc.incarnation.clone(), operation: "node.primary.update:b:stop".into(), build_id: "b".into(), attempt: 1, event_at_rafka_ms: 0, traceparent: None, tracestate: None };
         let taken = primaries.take_together(&[(PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), next.clone())]);
         assert!(matches!(taken.as_slice(), [RoleTaken::Held { .. }]), "{taken:?}");
         assert_eq!(primaries.node_type_primary("mesh1", NodeKind::RpcNode), Some(next));

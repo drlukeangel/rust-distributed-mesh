@@ -2928,7 +2928,7 @@ mod tests {
         let role_names = |t: &Topology| (t.fabric_primary().map(|n| n.name.to_string()), t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
         let flags = t.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").map(|n| (n.status, n.is_primary, n.is_fabric_primary));
-        assert_eq!(flags, Some((NodeStatus::Leaving, true, true)), "the election keeps the Leaving primary primary (R-EL1)");
+        assert_eq!(flags, Some((NodeStatus::Leaving, true, true)), "the election keeps the Leaving primary in its role (R-EL1)");
         assert_eq!(role_names(&t), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())), "the readers name the Leaving primary until its yield is held");
         assert!(t.is_fabric_primary(&primary.node.node_id) && t.is_mesh_primary("mesh1", &primary.node.node_id));
         assert_eq!(t.mesh_view("mesh1").and_then(|m| m.primary_admin).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"));

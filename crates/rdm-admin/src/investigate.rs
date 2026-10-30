@@ -1652,7 +1652,7 @@ mod tests {
         admin(name, false)
     }
 
-    /// The peer mesh mesh2 of the probe cells: node-admins 1 and 2, the held mesh-primary primary record
+    /// The peer mesh mesh2 of the probe cells: node-admins 1 and 2, the held mesh-primary record
     /// naming node-admin 2 (so the exact mesh-primary is not the first in path order), rpc members 1
     /// to 3, and this admin's own mesh1, never asked.
     fn mesh2() -> (Arc<Topology>, rdm_core::role::Primary) {

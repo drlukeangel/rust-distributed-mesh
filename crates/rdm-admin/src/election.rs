@@ -64,7 +64,7 @@ pub use rdm_core::election::{elect, no_secondary, Candidate};
 pub struct Incumbency {
     /// The fabric primary's primary record.
     pub fabric: Option<Primary>,
-    /// Each mesh's node-admin primary primary record, by mesh name.
+    /// Each mesh's node-admin primary record, by mesh name.
     pub meshes: BTreeMap<String, Primary>,
     /// The primary record of every other (mesh, node type) node-type primary role, by (mesh, kind)
     /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1). Written by

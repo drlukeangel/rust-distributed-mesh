@@ -188,5 +188,5 @@ stream certainty follow the [caller execution contract](../node-rpc-envelope.md#
 | Create | fabric-primary | [node.create](node-create.md)'s spans as maker and executor | Build, attempt, `node.create:mesh2.admin.1` |
 | Join | node-admin, fabric-primary | [node.mesh.join](node-mesh-join.md#observability-contract) | same operation |
 | Mesh Pending | fabric-primary | the Ping, then `ApplyMeshState(Pending)`'s call span | mesh id, mesh name |
-| Seat and name | node-admin | `rdm.mesh.election.resolve.via-recompute`; the name claim; the mesh row write | mesh id, revision |
+| Primary and name | node-admin | `rdm.mesh.election.resolve.via-recompute`; the name claim; the mesh row write | mesh id, revision |
 | Mesh Ready | node-admin, fabric-primary | `DeclareMeshState(Ready)` answered `Applied`; `MeshStatus` publish | mesh id |

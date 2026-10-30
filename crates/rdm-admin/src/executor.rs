@@ -201,9 +201,9 @@ pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
     };
     let held: Vec<String> = held_admins(&node.mesh, Some(node), t).into_iter().map(|n| format!("{} ({:?})", n.name, n.status)).collect();
     if held.is_empty() {
-        format!("{}: mesh {} roles no node-admin and no fabric primary is primary in this view", op.key(), node.mesh)
+        format!("{}: mesh {} has no primary node-admin and no fabric primary is named in this view", op.key(), node.mesh)
     } else {
-        format!("{}: mesh {} roles no node-admin, and its node-admin(s) {} are not proven gone: the fabric primary does not act on the mesh; the attempt waits for the mesh's own role", op.key(), node.mesh, held.join(", "))
+        format!("{}: mesh {} has no primary node-admin, and its node-admin(s) {} are not proven gone: the fabric primary does not act on the mesh; the attempt waits for the mesh's own role", op.key(), node.mesh, held.join(", "))
     }
 }
 
@@ -619,7 +619,7 @@ impl BuildExecutor {
                 // No operation failed: the receipt names none, so no step is blamed for it.
                 None => {
                     let last = operations.last().map(BuildOperation::key).unwrap_or_else(|| "no operation".into());
-                    let reason = format!("{me}: the run of attempt {attempt} ended after {last} with more of the plan to follow, and this admin's view roles no fabric primary to hand it back to");
+                    let reason = format!("{me}: the run of attempt {attempt} ended after {last} with more of the plan to follow, and this admin's view names no fabric primary to hand it back to");
                     self.finish(builds, &build, attempt, Err((String::new(), reason, rdm_core::outcome::Code::FailedPrecondition))).await
                 }
             };
@@ -815,7 +815,7 @@ mod tests {
         t3.nodes.push(node("mesh1.admin.2", false, false));
         assert_eq!(recovered_by("mesh2.admin.2", &t3), "mesh2.admin.1", "a secondary node-admin is recovered by its mesh's primary");
         assert_eq!(recovered_by("mesh1.admin.2", &t3), "mesh1.admin.1", "the fabric-primary's own secondary admin, by its mesh-primary role");
-        assert_eq!(recovered_by("mesh2.admin.1", &t3), "mesh2.admin.2", "a mesh primary's own recovery is executed by the admin its mesh-primary roles in its place");
+        assert_eq!(recovered_by("mesh2.admin.1", &t3), "mesh2.admin.2", "a mesh primary's own recovery is executed by the admin its mesh elects in its place");
         let mut silent = t3.clone();
         silent.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1").for_each(|n| n.status = NodeStatus::PendingReconnect);
         assert_eq!(recovered_by("mesh2.admin.2", &silent), "", "no live node-admin of mesh2 is left to recover it: mesh recovery");

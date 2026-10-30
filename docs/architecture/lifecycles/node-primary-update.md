@@ -19,7 +19,7 @@ fabric-primary move together and are never separated. A fabric-primary unheard p
 is not succeeded: [fabric recovery](fabric-recovery.md) re-creates it at its path.name (Q122). Under
 mesh.delete the fabric-primary hands over to another mesh first
 ([below](#the-fabric-primary-nodefabric-primaryupdate)). No other record of who is primary exists: no
-seat row, no move log, nothing to fold.
+primary row, no move log, nothing to fold.
 
 ## Operation contract
 
