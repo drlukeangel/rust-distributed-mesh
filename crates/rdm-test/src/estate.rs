@@ -966,6 +966,25 @@ impl Estate {
         self.spans.lock().unwrap().named(&self.evidence, names)
     }
 
+    /// Drop the span evidence written so far, for a run that outlasts the room its evidence takes
+    /// (load-testing.md M10, a 4-hour soak): every `.spans.jsonl` file's bytes since the last drop, by
+    /// file name, then each file truncated and the reader started over. A span a node is writing as its
+    /// file is cut may lose its first bytes; the reader skips a line that is not JSON.
+    pub fn drop_evidence(&self) -> Vec<(String, u64)> {
+        let mut reader = self.spans.lock().unwrap();
+        let mut sizes = Vec::new();
+        for e in std::fs::read_dir(&self.evidence).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".spans.jsonl") {
+                continue;
+            }
+            sizes.push((name, e.metadata().map(|m| m.len()).unwrap_or(0)));
+            let _ = std::fs::OpenOptions::new().write(true).open(e.path()).and_then(|f| f.set_len(0));
+        }
+        *reader = SpanReader::default();
+        sizes
+    }
+
     /// Where the estate's evidence is kept when it ends: `<artifacts>/spans`.
     pub fn kept_evidence(&self) -> PathBuf {
         self.artifacts.join("spans")

@@ -379,6 +379,91 @@ async fn idle_cost(estate: &Estate, window: Duration) -> Vec<(&'static str, f64,
     worst.into_iter().map(|(r, (c, m))| (r, c, m)).collect()
 }
 
+/// Open file descriptors of `pid`, from `/proc/<pid>/fd`.
+fn open_files(pid: u32) -> Option<f64> {
+    std::fs::read_dir(format!("/proc/{pid}/fd")).ok().map(|d| d.count() as f64)
+}
+
+/// The pid a span file belongs to: `<service>.<pid>[-<ns>].spans.jsonl`.
+fn pid_of_span_file(name: &str) -> Option<u32> {
+    name.split('.').nth(1).and_then(|p| p.split('-').next()).and_then(|p| p.parse().ok())
+}
+
+/// One M10 window: when it ended (seconds into the soak), and per process its RSS (GB), open files,
+/// CPU (cores over the window) and span bytes per minute, and the largest node's gossip KB/s.
+struct Window {
+    at: f64,
+    rss: std::collections::BTreeMap<u32, f64>,
+    fds: std::collections::BTreeMap<u32, f64>,
+    cores: std::collections::BTreeMap<u32, f64>,
+    spans_per_min: std::collections::BTreeMap<u32, f64>,
+    gossip_kbs: f64,
+}
+
+/// The largest relative change of `f` per process between the mean over `first` and over `last`
+/// (a fraction: 0.1 is 10 %), and the process it is at.
+fn largest_growth(first: &[&Window], last: &[&Window], f: impl Fn(&Window) -> &std::collections::BTreeMap<u32, f64>) -> (f64, Option<u32>) {
+    let mean = |ws: &[&Window], pid: u32| {
+        let v: Vec<f64> = ws.iter().filter_map(|w| f(w).get(&pid).copied()).collect();
+        (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64)
+    };
+    let pids: std::collections::BTreeSet<u32> = first.iter().flat_map(|w| f(w).keys().copied()).collect();
+    pids.into_iter()
+        .filter_map(|pid| match (mean(first, pid), mean(last, pid)) {
+            (Some(a), Some(b)) if a > 0.0 => Some(((b - a) / a, pid)),
+            _ => None,
+        })
+        .fold((0.0, None), |acc, (g, pid)| if g.abs() > acc.0.abs() { (g, Some(pid)) } else { acc })
+}
+
+/// M10 (load-testing.md: "M7 and M8 over 4 h at the largest passing profile; the first 30 minutes are not
+/// read, and between the first and the last hour after them every process's RSS grows under 10 %, its
+/// open-file count under 5 %, and the span volume per node per minute stays within 10 % of the first
+/// hour's"). The soak is read in 5-minute windows (a run shorter than 40 minutes, a proof run, scales the
+/// window, the unread start and the hours to its length); each window's span evidence is read, then
+/// dropped, so a 4-hour run never outgrows its evidence directory.
+async fn soak(estate: &Estate, length: Duration, rows: &mut Rows) {
+    let total = length.as_secs_f64();
+    let scale = (total / 14_400.0).min(1.0);
+    let (window, unread, hour) = (Duration::from_secs_f64((300.0 * scale).max(10.0)), 1_800.0 * scale, 3_600.0 * scale);
+    let started = Instant::now();
+    let _ = estate.drop_evidence();
+    let mut windows: Vec<Window> = Vec::new();
+    while started.elapsed() < length {
+        let pids: Vec<u32> = estate.live_runtimes().into_iter().map(|(_, pid)| pid).collect();
+        let ticks0: std::collections::BTreeMap<u32, u64> = pids.iter().filter_map(|p| cpu_ticks(*p).map(|t| (*p, t))).collect();
+        let from = now_ns();
+        tokio::time::sleep(window).await;
+        let to = now_ns();
+        let secs = window.as_secs_f64();
+        let (gossip_kbs, _) = gossip_bytes(&estate.spans_named(&["rdm.mesh.topology.update.via-frame"]), from, to);
+        let spans_per_min = estate.drop_evidence().into_iter().filter_map(|(name, bytes)| pid_of_span_file(&name).map(|p| (p, bytes as f64 / (secs / 60.0)))).collect();
+        windows.push(Window {
+            at: started.elapsed().as_secs_f64(),
+            rss: pids.iter().filter_map(|p| rss_gb(*p).map(|v| (*p, v))).collect(),
+            fds: pids.iter().filter_map(|p| open_files(*p).map(|v| (*p, v))).collect(),
+            cores: ticks0.iter().filter_map(|(p, t0)| cpu_ticks(*p).map(|t1| (*p, t1.saturating_sub(*t0) as f64 / 100.0 / secs))).collect(),
+            spans_per_min,
+            gossip_kbs,
+        });
+    }
+    let first: Vec<&Window> = windows.iter().filter(|w| w.at > unread && w.at <= unread + hour).collect();
+    let last: Vec<&Window> = windows.iter().filter(|w| w.at > total - hour).collect();
+    let read: Vec<&Window> = windows.iter().filter(|w| w.at > unread).collect();
+    let pct = |g: f64| g * 100.0;
+    let (rss, rss_pid) = largest_growth(&first, &last, |w| &w.rss);
+    let (fds, fds_pid) = largest_growth(&first, &last, |w| &w.fds);
+    let (vol, vol_pid) = largest_growth(&first, &last, |w| &w.spans_per_min);
+    rows.value("M10", &format!("largest RSS growth, first to last hour (pid {rss_pid:?})"), "%", pct(rss), Some(10.0));
+    rows.value("M10", &format!("largest open-file growth, first to last hour (pid {fds_pid:?})"), "%", pct(fds), Some(5.0));
+    rows.value("M10", &format!("largest span-volume change per node per minute, first to last hour (pid {vol_pid:?})"), "%", pct(vol.abs()), Some(10.0));
+    rows.value("M10", "windows read", "count", read.len() as f64, None);
+    let max_of = |f: &dyn Fn(&Window) -> f64| read.iter().map(|w| f(w)).fold(0.0_f64, f64::max);
+    rows.value("M7", "largest node, all channels, worst soak window", "KB/s", max_of(&|w| w.gossip_kbs), Some(50.0));
+    rows.value("M8", "largest process cpu, worst soak window", "cores", max_of(&|w| w.cores.values().copied().fold(0.0_f64, f64::max)), None);
+    rows.value("M8", "largest process rss, worst soak window", "GB", max_of(&|w| w.rss.values().copied().fold(0.0_f64, f64::max)), Some(0.5));
+}
+
 /// L1 (load-testing.md Steps, 1 and 2): bring-up (M1), create rate (M2, reported), gossip cost (M7, 5 min
 /// steady), one-node Build latency (M5, 20 samples, a target on the max) and idle cost (M8), on the
 /// 2-mesh, 20-node profile.
@@ -423,6 +508,33 @@ async fn load_profile_l3_no_evidence() {
     run_profile(&L3, "load_profile_l3_no_evidence", false).await;
 }
 
+/// L4 again with 100 samples of M3 and M5, the target on p99 (load-testing.md "Samples": at the largest
+/// passing profile M3 and M5 run once more with 100 samples, before M10).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh L4 --samples"]
+async fn load_profile_l4_samples() {
+    run_as(&L4, "load_profile_l4_samples", true, Run::Samples).await;
+}
+
+/// M10 at L4, the largest passing profile: 4 hours, or `RDM_LOAD_SOAK_SECS` for a proof run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh L4 --soak"]
+async fn load_profile_l4_soak() {
+    run_as(&L4, "load_profile_l4_soak", true, Run::Soak(soak_length())).await;
+}
+
+/// M10's harness at L1, for a short proof run of the soak's reading (`RDM_LOAD_SOAK_SECS`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "load: run by scripts/rdm-load.sh L1 --soak"]
+async fn load_profile_l1_soak() {
+    run_as(&L1, "load_profile_l1_soak", true, Run::Soak(soak_length())).await;
+}
+
+/// M10's length: 4 hours, or `RDM_LOAD_SOAK_SECS`.
+fn soak_length() -> Duration {
+    Duration::from_secs(std::env::var("RDM_LOAD_SOAK_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(14_400))
+}
+
 /// L4, the 10-mesh, 200-node profile (load-testing.md Steps, 3): every measure L1 takes, at this profile's M1 target.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "load: run by scripts/rdm-load.sh"]
@@ -440,6 +552,28 @@ async fn load_profile_l4_no_evidence() {
 /// Run profile `p`. With `evidence` off no node writes span evidence (load-testing.md "Conditions": the
 /// pass M6 and M8 are read from); M2, the one measure counted from the spans, is then not reported.
 async fn run_profile(p: &Profile, test: &str, evidence: bool) {
+    run_as(p, test, evidence, Run::Baseline).await
+}
+
+/// What one run of a profile measures (load-testing.md "Samples", M10).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Run {
+    /// Every measure: M1-M8, 20 samples for M3 and M5, a target on the max.
+    Baseline,
+    /// At the largest passing profile, before M10: M3 and M5 again with 100 samples, the target on p99.
+    Samples,
+    /// M10: M7 and M8 over this long at the largest passing profile, read for growth.
+    Soak(Duration),
+}
+
+impl Run {
+    /// M3's and M5's samples.
+    fn samples(self) -> usize {
+        if self == Run::Samples { 100 } else { 20 }
+    }
+}
+
+async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     let mut rows = Rows::new(p.name, evidence);
     let meshes: Vec<String> = (1..=p.meshes).map(|i| format!("mesh{i}")).collect();
     let shape: Vec<(&str, u32, u32)> = meshes.iter().map(|m| (m.as_str(), p.admins, p.rpcs)).collect();
@@ -467,72 +601,82 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
         rows.value("M2", "node creates per second", "creates/s", creates as f64 / bring_up.as_secs_f64(), None);
     }
 
-    // M8: idle cost once settled.
-    tokio::time::sleep(Duration::from_secs(10)).await;
-    for (role, cores, gb) in idle_cost(&estate, Duration::from_secs(20)).await {
-        rows.value("M8", &format!("{role} idle cpu"), "cores", cores, Some(0.10));
-        rows.value("M8", &format!("{role} idle rss"), "GB", gb, Some(0.5));
+    if let Run::Soak(length) = run {
+        soak(&estate, length, &mut rows).await;
+        estate.stop().await;
+        rows.finish();
+        return;
     }
 
-    // M6 (load-testing.md: 60 s per op at a held concurrency): Node RPC against one idle node-admin,
-    // evidence off only. The target is read at the held concurrency (32 callers); 128 callers is the
-    // saturation probe, reported with no target: past the node's ceiling the rate holds and only the
-    // queue grows (E6), so its p99 is the queue's. The node's CPU over each window is reported beside it.
-    if !evidence {
-        let at: rdm_core::PathName = format!("{}.admin.{}", meshes.last().unwrap(), p.admins).parse().unwrap();
-        let pid = estate.live_runtimes().into_iter().find(|(d, _)| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{at}-")))).map(|(_, pid)| pid);
-        for (callers, target) in [(32, true), (128, false)] {
-            let (t0, c0) = (pid.and_then(cpu_ticks), cpu_ticks(std::process::id()));
-            // With `RDM_LOAD_PERF`, the node's CPU profile over the held concurrency's window.
-            let profile = pid.filter(|_| target).and_then(|pid| profile_one(&format!("m6-{at}"), pid, M6_WINDOW));
-            let (latencies, errors, secs) = rpc_load(&estate, &at, callers, M6_WINDOW).await;
-            if let Some(mut p) = profile {
-                let _ = p.wait();
-            }
-            let what = format!("topology.get at {at}, {callers} callers");
-            let rate = latencies.len() as f64 / secs;
-            if target {
-                rows.at_least("M6", &format!("{what}, completions"), "/s", rate, 2000.0);
-            } else {
-                rows.value("M6", &format!("{what}, completions"), "/s", rate, None);
-            }
-            rows.value("M6", &format!("{what}, calls without a reply"), "count", errors as f64, None);
-            if let (Some(t0), Some(t1)) = (t0, pid.and_then(cpu_ticks)) {
-                rows.value("M6", &format!("{what}, the node's cpu"), "cores", t1.saturating_sub(t0) as f64 / 100.0 / secs, None);
-            }
-            if let (Some(c0), Some(c1)) = (c0, cpu_ticks(std::process::id())) {
-                rows.value("M6", &format!("{what}, the callers' process cpu"), "cores", c1.saturating_sub(c0) as f64 / 100.0 / secs, None);
-            }
-            if target {
-                rows.time_p99("M6", &what, latencies, 50.0);
-            } else {
-                rows.time("M6", &what, latencies, None, None);
+    if run == Run::Baseline {
+        // M8: idle cost once settled.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        for (role, cores, gb) in idle_cost(&estate, Duration::from_secs(20)).await {
+            rows.value("M8", &format!("{role} idle cpu"), "cores", cores, Some(0.10));
+            rows.value("M8", &format!("{role} idle rss"), "GB", gb, Some(0.5));
+        }
+
+        // M6 (load-testing.md: 60 s per op at a held concurrency): Node RPC against one idle node-admin,
+        // evidence off only. The target is read at the held concurrency (32 callers); 128 callers is the
+        // saturation probe, reported with no target: past the node's ceiling the rate holds and only the
+        // queue grows (E6), so its p99 is the queue's. The node's CPU over each window is reported beside it.
+        if !evidence {
+            let at: rdm_core::PathName = format!("{}.admin.{}", meshes.last().unwrap(), p.admins).parse().unwrap();
+            let pid = estate.live_runtimes().into_iter().find(|(d, _)| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{at}-")))).map(|(_, pid)| pid);
+            for (callers, target) in [(32, true), (128, false)] {
+                let (t0, c0) = (pid.and_then(cpu_ticks), cpu_ticks(std::process::id()));
+                // With `RDM_LOAD_PERF`, the node's CPU profile over the held concurrency's window.
+                let profile = pid.filter(|_| target).and_then(|pid| profile_one(&format!("m6-{at}"), pid, M6_WINDOW));
+                let (latencies, errors, secs) = rpc_load(&estate, &at, callers, M6_WINDOW).await;
+                if let Some(mut p) = profile {
+                    let _ = p.wait();
+                }
+                let what = format!("topology.get at {at}, {callers} callers");
+                let rate = latencies.len() as f64 / secs;
+                if target {
+                    rows.at_least("M6", &format!("{what}, completions"), "/s", rate, 2000.0);
+                } else {
+                    rows.value("M6", &format!("{what}, completions"), "/s", rate, None);
+                }
+                rows.value("M6", &format!("{what}, calls without a reply"), "count", errors as f64, None);
+                if let (Some(t0), Some(t1)) = (t0, pid.and_then(cpu_ticks)) {
+                    rows.value("M6", &format!("{what}, the node's cpu"), "cores", t1.saturating_sub(t0) as f64 / 100.0 / secs, None);
+                }
+                if let (Some(c0), Some(c1)) = (c0, cpu_ticks(std::process::id())) {
+                    rows.value("M6", &format!("{what}, the callers' process cpu"), "cores", c1.saturating_sub(c0) as f64 / 100.0 / secs, None);
+                }
+                if target {
+                    rows.time_p99("M6", &what, latencies, 50.0);
+                } else {
+                    rows.time("M6", &what, latencies, None, None);
+                }
             }
         }
-    }
 
-    // M7: gossip cost at steady state, read from the frames each node takes in (evidence on only).
-    if evidence {
-        let from = now_ns();
-        tokio::time::sleep(STEADY).await;
-        let to = now_ns();
-        let (per_node, per_channel) = gossip_bytes(&estate.spans_named(&["rdm.mesh.topology.update.via-frame"]), from, to);
-        rows.value("M7", "largest node, all channels", "KB/s", per_node, Some(50.0));
-        for (channel, kbs) in per_channel {
-            rows.value("M7", &format!("largest node, {channel}"), "KB/s", kbs, None);
+        // M7: gossip cost at steady state, read from the frames each node takes in (evidence on only).
+        if evidence {
+            let from = now_ns();
+            tokio::time::sleep(STEADY).await;
+            let to = now_ns();
+            let (per_node, per_channel) = gossip_bytes(&estate.spans_named(&["rdm.mesh.topology.update.via-frame"]), from, to);
+            rows.value("M7", "largest node, all channels", "KB/s", per_node, Some(50.0));
+            for (channel, kbs) in per_channel {
+                rows.value("M7", &format!("largest node, {channel}"), "KB/s", kbs, None);
+            }
         }
     }
 
     // M3: a node's change to the last node-admin's own view holding it (load-testing.md M3): a node.stop
     // of one rpc node, from its Complete to every node-admin's own topology (node.topology.get) holding it
-    // stopped, then its node.start to every node-admin holding it ready; 20 samples each.
+    // stopped, then its node.start to every node-admin holding it ready; 20 samples each (100 in a
+    // samples run, the target then on p99).
     let admins: Vec<rdm_core::PathName> = meshes.iter().flat_map(|m| (1..=p.admins).map(move |i| format!("{m}.admin.{i}").parse().unwrap())).collect();
     let subject: rdm_core::PathName = format!("{}.rpc.1", meshes[0]).parse().unwrap();
     // With evidence the sample is read from the spans: the mesh-primary's write of the status to the last
     // node-admin applying it to its own topology; without, from the call's Complete to every node-admin's
     // `node.topology.get` holding it, polled.
     let (mut stops, mut starts, mut unseen) = (Vec::new(), Vec::new(), std::collections::BTreeSet::new());
-    for _ in 0..20 {
+    for _ in 0..run.samples() {
         // A stop reaches a node's own topology as `leaving` (the held statuses: pending, ready,
         // connections-deleting, leaving); the row's stopped is the mesh-primary's.
         for (status, out) in [("leaving", &mut stops), ("ready", &mut starts)] {
@@ -571,50 +715,57 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
             }
         }
     }
-    rows.time("M3", "a stop to every node-admin's own view", stops, Some(4000.0), None);
-    rows.time("M3", "a start to every node-admin's own view", starts, Some(4000.0), None);
+    if run == Run::Samples {
+        rows.time_p99("M3", "a stop to every node-admin's own view", stops, 4000.0);
+        rows.time_p99("M3", "a start to every node-admin's own view", starts, 4000.0);
+    } else {
+        rows.time("M3", "a stop to every node-admin's own view", stops, Some(4000.0), None);
+        rows.time("M3", "a start to every node-admin's own view", starts, Some(4000.0), None);
+    }
     if !unseen.is_empty() {
         println!("[load] M3: no span names the change applied at {unseen:?}: those samples are left out");
     }
 
-    // M4: a SIGKILLed rpc node, kills spread across every mesh: the kill to its re-created birth Ready in
-    // every node-admin's own view; with evidence, the kill to the first stale mark of it
-    // (`via-member-stale`) and that mark to Ready on their own; 10 kills.
-    let (mut to_ready, mut to_mark, mut mark_to_ready) = (Vec::new(), Vec::new(), Vec::new());
-    for k in 0..10usize {
-        let mesh = &meshes[k % meshes.len()];
-        let victim: rdm_core::PathName = format!("{mesh}.rpc.{}", (k / meshes.len()) as u32 % p.rpcs + 1).parse().unwrap();
-        let before = estate.held_values_at(&admins[0]).await.into_iter().find(|v| v["name"] == victim.to_string()).map(|v| s(&v["node_id"]));
-        let killed_ns = now_ns();
-        estate.kill_node(&victim.to_string()).await;
-        let ms = every_admin_holds(&estate, &admins, &victim, "ready", before.as_deref()).await;
-        let ready_ns = killed_ns + (ms * 1e6) as u64;
-        to_ready.push(ms);
-        if evidence {
-            let spans = estate.spans_named(&["rdm.mesh.topology.update.via-member-stale"]);
-            let mark = named(&spans, "rdm.mesh.topology.update.via-member-stale")
-                .into_iter()
-                .filter(|sp| s(&sp["attributes"]["member"]) == victim.to_string())
-                .map(|sp| start_ns(&sp))
-                .filter(|at| *at >= killed_ns)
-                .min();
-            if let Some(at) = mark {
-                to_mark.push((at - killed_ns) as f64 / 1e6);
-                mark_to_ready.push(ready_ns.saturating_sub(at) as f64 / 1e6);
+    if run == Run::Baseline {
+        // M4: a SIGKILLed rpc node, kills spread across every mesh: the kill to its re-created birth Ready in
+        // every node-admin's own view; with evidence, the kill to the first stale mark of it
+        // (`via-member-stale`) and that mark to Ready on their own; 10 kills.
+        let (mut to_ready, mut to_mark, mut mark_to_ready) = (Vec::new(), Vec::new(), Vec::new());
+        for k in 0..10usize {
+            let mesh = &meshes[k % meshes.len()];
+            let victim: rdm_core::PathName = format!("{mesh}.rpc.{}", (k / meshes.len()) as u32 % p.rpcs + 1).parse().unwrap();
+            let before = estate.held_values_at(&admins[0]).await.into_iter().find(|v| v["name"] == victim.to_string()).map(|v| s(&v["node_id"]));
+            let killed_ns = now_ns();
+            estate.kill_node(&victim.to_string()).await;
+            let ms = every_admin_holds(&estate, &admins, &victim, "ready", before.as_deref()).await;
+            let ready_ns = killed_ns + (ms * 1e6) as u64;
+            to_ready.push(ms);
+            if evidence {
+                let spans = estate.spans_named(&["rdm.mesh.topology.update.via-member-stale"]);
+                let mark = named(&spans, "rdm.mesh.topology.update.via-member-stale")
+                    .into_iter()
+                    .filter(|sp| s(&sp["attributes"]["member"]) == victim.to_string())
+                    .map(|sp| start_ns(&sp))
+                    .filter(|at| *at >= killed_ns)
+                    .min();
+                if let Some(at) = mark {
+                    to_mark.push((at - killed_ns) as f64 / 1e6);
+                    mark_to_ready.push(ready_ns.saturating_sub(at) as f64 / 1e6);
+                }
             }
         }
-    }
-    rows.time("M4", "the kill to Ready", to_ready, Some(60_000.0), None);
-    if evidence {
-        rows.time("M4", "the kill to the stale mark", to_mark, Some(32_000.0), None);
-        rows.time("M4", "the stale mark to Ready", mark_to_ready, Some(25_000.0), None);
+        rows.time("M4", "the kill to Ready", to_ready, Some(60_000.0), None);
+        if evidence {
+            rows.time("M4", "the kill to the stale mark", to_mark, Some(32_000.0), None);
+            rows.time("M4", "the stale mark to Ready", mark_to_ready, Some(25_000.0), None);
+        }
     }
 
     // M5: one node added then removed, each its own Build, accepted to complete; 20 samples each.
     let mut grow = Vec::new();
     let mut shrink = Vec::new();
     let bigger: Vec<(&str, u32, u32)> = shape.iter().enumerate().map(|(i, (m, a, r))| if i == 0 { (*m, *a, r + 1) } else { (*m, *a, *r) }).collect();
-    for _ in 0..20 {
+    for _ in 0..run.samples() {
         let t = Instant::now();
         let mut s = estate.submit_shape("fabric1", &bigger).await;
         let _ = Estate::until_complete(&mut s).await;
@@ -624,8 +775,13 @@ async fn run_profile(p: &Profile, test: &str, evidence: bool) {
         let _ = Estate::until_complete(&mut s).await;
         shrink.push(t.elapsed().as_millis() as f64);
     }
-    rows.time("M5", "one node.create Build", grow, Some(5000.0), None);
-    rows.time("M5", "one node.delete Build", shrink, Some(5000.0), None);
+    if run == Run::Samples {
+        rows.time_p99("M5", "one node.create Build", grow, 5000.0);
+        rows.time_p99("M5", "one node.delete Build", shrink, 5000.0);
+    } else {
+        rows.time("M5", "one node.create Build", grow, Some(5000.0), None);
+        rows.time("M5", "one node.delete Build", shrink, Some(5000.0), None);
+    }
 
     estate.stop().await;
     rows.finish();
