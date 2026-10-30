@@ -1042,8 +1042,8 @@ struct HeldSeats {
     /// When the fabric seat's record last changed holder here, by every writer (`put`).
     fabric_since: Option<Instant>,
     meshes: HashMap<String, Primary>,
-    /// Every other (mesh, node type) cohort's primary record, by (mesh, kind).
-    cohorts: HashMap<(String, rdm_core::NodeKind), Primary>,
+    /// Every other (mesh, node type) node-type primary record, by (mesh, kind).
+    node_type_primaries: HashMap<(String, rdm_core::NodeKind), Primary>,
     /// Seat holders' exact births a peer told this node are proven gone (an entry read): the proof
     /// the peer holds, which this node never heard itself.
     gone: std::collections::HashSet<IncarnationId>,
@@ -1058,8 +1058,8 @@ struct HeldSeats {
 fn held_under(seat: Seat, mesh: &str) -> (Seat, String) {
     match seat {
         Seat::FabricPrimary => (Seat::FabricPrimary, String::new()),
-        Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin) => (Seat::MeshPrimary, mesh.to_string()),
-        Seat::Cohort(kind) => (Seat::Cohort(kind), mesh.to_string()),
+        Seat::MeshPrimary | Seat::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => (Seat::MeshPrimary, mesh.to_string()),
+        Seat::NodeTypePrimary(kind) => (Seat::NodeTypePrimary(kind), mesh.to_string()),
     }
 }
 
@@ -1068,8 +1068,8 @@ impl HeldSeats {
     fn get(&self, seat: Seat, mesh: &str) -> Option<Primary> {
         match seat {
             Seat::FabricPrimary => self.fabric.clone(),
-            Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin) => self.meshes.get(mesh).cloned(),
-            Seat::Cohort(kind) => self.cohorts.get(&(mesh.to_string(), kind)).cloned(),
+            Seat::MeshPrimary | Seat::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => self.meshes.get(mesh).cloned(),
+            Seat::NodeTypePrimary(kind) => self.node_type_primaries.get(&(mesh.to_string(), kind)).cloned(),
         }
     }
 
@@ -1086,11 +1086,11 @@ impl HeldSeats {
                 }
                 self.fabric = Some(record);
             }
-            Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin) => {
+            Seat::MeshPrimary | Seat::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => {
                 self.meshes.insert(mesh.to_string(), record);
             }
-            Seat::Cohort(kind) => {
-                self.cohorts.insert((mesh.to_string(), kind), record);
+            Seat::NodeTypePrimary(kind) => {
+                self.node_type_primaries.insert((mesh.to_string(), kind), record);
             }
         }
     }
@@ -1200,14 +1200,14 @@ impl PrimaryView {
         self.inner.lock().unwrap().meshes.iter().map(|(m, h)| (m.clone(), h.clone())).collect()
     }
 
-    /// The held record of `mesh`'s `kind` cohort primary seat (`node_admin`: its mesh-primary seat).
-    pub fn cohort(&self, mesh: &str, kind: rdm_core::NodeKind) -> Option<Primary> {
+    /// The held record of `mesh`'s `kind` node-type primary seat (`node_admin`: its mesh-primary seat).
+    pub fn node_type_primary(&self, mesh: &str, kind: rdm_core::NodeKind) -> Option<Primary> {
         self.inner.lock().unwrap().get(Seat::of_node_type(kind), mesh)
     }
 
-    /// Every other cohort's primary record held, by (mesh, kind).
+    /// Every other node type's primary record held, by (mesh, kind).
     pub fn node_type_primaries(&self) -> std::collections::BTreeMap<(String, rdm_core::NodeKind), Primary> {
-        self.inner.lock().unwrap().cohorts.iter().map(|(k, h)| (k.clone(), h.clone())).collect()
+        self.inner.lock().unwrap().node_type_primaries.iter().map(|(k, h)| (k.clone(), h.clone())).collect()
     }
 
 }
@@ -5481,7 +5481,7 @@ impl DigestView {
     /// mesh at that record's revision, the fabric-primary at that record's, none it does not hold.
     pub fn recorded_primaries(&self, d: &mut MeshDigest) {
         let n = &d.node;
-        d.is_primary = self.seats.cohort(&n.name.mesh, n.name.kind).filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
+        d.is_primary = self.seats.node_type_primary(&n.name.mesh, n.name.kind).filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
         d.is_fabric_primary = self.seats.fabric().filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
     }
 
@@ -6062,18 +6062,18 @@ mod tests {
         da.is_primary = Some(3);
         da.is_fabric_primary = Some(7);
         assert!(digest_view.record(da.clone()));
-        let held = |seat| match seat { Seat::FabricPrimary => digest_view.seats.fabric(), _ => digest_view.seats.cohort("mesh1", rdm_core::NodeKind::RpcNode) };
-        assert_eq!(held(Seat::Cohort(rdm_core::NodeKind::RpcNode)), Some(Primary { mesh: "mesh1".into(), node_id: a.clone(), incarnation: ai.clone(), revision: 3 }));
+        let held = |seat| match seat { Seat::FabricPrimary => digest_view.seats.fabric(), _ => digest_view.seats.node_type_primary("mesh1", rdm_core::NodeKind::RpcNode) };
+        assert_eq!(held(Seat::NodeTypePrimary(rdm_core::NodeKind::RpcNode)), Some(Primary { mesh: "mesh1".into(), node_id: a.clone(), incarnation: ai.clone(), revision: 3 }));
         assert_eq!(held(Seat::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a.clone(), 7)));
         let mut db = digest(&b, &bi, None, MemberStatus::Ready, 1);
         db.node.name = "mesh1.rpc.2".parse().unwrap();
         db.is_primary = Some(2);
         assert!(digest_view.record(db.clone()));
-        assert_eq!(held(Seat::Cohort(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((a.clone(), 3)), "a lower revision replaces nothing");
+        assert_eq!(held(Seat::NodeTypePrimary(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((a.clone(), 3)), "a lower revision replaces nothing");
         db.digest_seq += 1;
         db.is_primary = Some(4);
         assert!(digest_view.record(db));
-        assert_eq!(held(Seat::Cohort(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((b, 4)), "a higher revision is the record held");
+        assert_eq!(held(Seat::NodeTypePrimary(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((b, 4)), "a higher revision is the record held");
         assert_eq!(held(Seat::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a, 7)), "the fabric-primary record is its own");
     }
 
@@ -6100,7 +6100,7 @@ mod tests {
         let members = Frame::MeshTopology { mesh: "mesh1".into(), publisher, forwarded_by: Some("mesh1.admin.1".into()), topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], in_flight: Vec::new(), deleted: Vec::new() };
         let heard = hear(&mut view.order.lock().unwrap(), &view, &members, &fabric, Side::MeshChannel);
         assert!(heard, "the projection is admitted");
-        assert_eq!(view.digest_view.seats.cohort("mesh1", rdm_core::NodeKind::RpcNode), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's projection carries");
+        assert_eq!(view.digest_view.seats.node_type_primary("mesh1", rdm_core::NodeKind::RpcNode), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's projection carries");
     }
 
     fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
@@ -7579,11 +7579,10 @@ mod tests {
         Primary { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
     }
 
-    /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1: "Every
-    /// (mesh, node_type) cohort elects its primary by the one rule ... a living holder keeps its seat"):
-    /// a non-admin cohort's seat record is held under its own (mesh, kind), apart from the mesh-primary
-    /// seat of the same mesh, by the same supersede rule; a committed update of a cohort seat is held under the cohort too. Must NOT happen: an rpc
-    /// cohort's record overwriting the mesh-primary record of its mesh.
+    /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1):
+    /// a non-admin node type's primary record is held under its own (mesh, kind), apart from the mesh-primary
+    /// seat of the same mesh, by the same supersede rule; a committed update of a node-type primary seat is held under the node type too. Must NOT happen: an rpc
+    /// node-type primary's record overwriting the mesh-primary record of its mesh.
     #[test]
     fn a_node_type_primary_is_held_apart_from_its_meshs_mesh_primary() {
         use rdm_core::NodeKind;
@@ -7591,19 +7590,19 @@ mod tests {
         let admin = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 };
         let rpc = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 };
         assert!(matches!(seats.take(Seat::MeshPrimary, &admin), SeatTaken::Held { .. }));
-        assert!(matches!(seats.take(Seat::Cohort(NodeKind::RpcNode), &rpc), SeatTaken::Held { previous: None }));
+        assert!(matches!(seats.take(Seat::NodeTypePrimary(NodeKind::RpcNode), &rpc), SeatTaken::Held { previous: None }));
         assert_eq!(seats.mesh("mesh1"), Some(admin.clone()), "the mesh-primary record stays its own");
-        assert_eq!(seats.cohort("mesh1", NodeKind::RpcNode), Some(rpc.clone()));
-        assert_eq!(seats.cohort("mesh1", NodeKind::NodeAdmin), Some(admin.clone()), "the node-admin cohort's seat is the mesh-primary seat");
-        assert_eq!(seats.cohort("mesh1", NodeKind::Broker), None);
+        assert_eq!(seats.node_type_primary("mesh1", NodeKind::RpcNode), Some(rpc.clone()));
+        assert_eq!(seats.node_type_primary("mesh1", NodeKind::NodeAdmin), Some(admin.clone()), "the node-admin node-type primary seat is the mesh-primary seat");
+        assert_eq!(seats.node_type_primary("mesh1", NodeKind::Broker), None);
         let older = Primary { revision: 0, ..rpc.clone() };
-        assert!(matches!(seats.take(Seat::Cohort(NodeKind::RpcNode), &older), SeatTaken::Refused { .. }), "an older record is refused by the one supersede rule");
-        // An update of the cohort's primary is held under the cohort.
+        assert!(matches!(seats.take(Seat::NodeTypePrimary(NodeKind::RpcNode), &older), SeatTaken::Refused { .. }), "an older record is refused by the one supersede rule");
+        // An update of the node-type primary is held under the node type.
         let next = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
         let op = LifecycleOp { name: "mesh1.rpc.1".parse().unwrap(), node_id: rpc.node_id.clone(), incarnation: rpc.incarnation.clone(), operation: "node.primary.update:b:stop".into(), build_id: "b".into(), attempt: 1, event_at_rafka_ms: 0, traceparent: None, tracestate: None };
-        let taken = seats.take_together(&[(Seat::Cohort(NodeKind::RpcNode), next.clone())]);
+        let taken = seats.take_together(&[(Seat::NodeTypePrimary(NodeKind::RpcNode), next.clone())]);
         assert!(matches!(taken.as_slice(), [SeatTaken::Held { .. }]), "{taken:?}");
-        assert_eq!(seats.cohort("mesh1", NodeKind::RpcNode), Some(next));
+        assert_eq!(seats.node_type_primary("mesh1", NodeKind::RpcNode), Some(next));
         assert_eq!(seats.mesh("mesh1"), Some(admin), "and the mesh-primary record is untouched");
     }
 
