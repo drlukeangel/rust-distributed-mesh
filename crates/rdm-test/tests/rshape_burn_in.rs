@@ -973,6 +973,20 @@ impl RouteRun {
         assert_eq!(c.out["reply"]["result"], json!({"found": false}), "mesh1's broker never saw mesh2's write: {}", c.out);
         leg(self, "same-mesh-exact-get-absent", c, "controller", &json!(exact(&b1_id)), &resolved(&b1));
 
+        // The Direct facts the carrier holds toward each broker before it carries: an application's own
+        // traffic may already have connected it (the consumer node-admin's day-zero produce goes through a
+        // gateway to the broker primary, fabric-node-hooks.md `on_fabric_ready`). Carrying adds none.
+        let held_directs = |e: &Estate| -> Vec<(String, Value)> {
+            let snap = snapshot(e, g1);
+            let mut held: Vec<(String, Value)> = snap["own_latest_directs"].as_array().into_iter().flatten()
+                .filter(|x| x["destination"]["node_id"] == b1["node_id"] || x["destination"]["node_id"] == b2["node_id"])
+                .map(|x| (s(&x["destination"]["node_id"]), x["id"].clone()))
+                .collect();
+            held.sort_by(|a, b| a.0.cmp(&b.0));
+            held
+        };
+        let before_carrying = held_directs(e);
+
         // 3. carried through a mesh1 gateway: to the same-mesh broker and to the cross-mesh broker.
         let c = probe_call(e, &["get", "--target", &exact(&b1_id), "--via", &format!("path:{g1}"), "--key", "same-mesh"]);
         assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str()), (Some("Reply"), Some("via-peer")), "{}", c.out);
@@ -990,14 +1004,18 @@ impl RouteRun {
         assert_eq!((c.out["outcome"].as_str(), c.out["reason"].as_str()), (Some("NotSent"), Some("Resolve(Unknown)")), "{}", c.out);
         leg(self, "exact-unknown-node", c, "controller", &json!(exact(&ghost)), &Value::Null);
 
-        // 5. the gateway that carried kept nothing of the carried calls: its own first call to each broker
-        //    has no Direct fact to follow (`direct-unknown`, connections.md §5), and the connection it
+        // 5. the gateway that carried kept nothing of the carried calls: it holds the Direct facts it held
+        //    before carrying, no more. Its own call to each broker follows the fact it held before (`direct`),
+        //    or with none has nothing to follow (`direct-unknown`, connections.md §5), and the connection it
         //    originates is its Direct edge to the replying birth (§1, R-CR6).
+        assert_eq!(held_directs(e), before_carrying, "the carrier kept nothing of its carried calls: its Direct facts toward the brokers are the ones it held before carrying");
         for (dest, d, kind) in [("mesh1.broker.1", &b1, "same-mesh"), ("mesh2.broker.1", &b2, "cross-mesh")] {
             let dest_id = s(&d["node_id"]);
             let key = format!("orig-{kind}");
+            let held_before = before_carrying.iter().any(|(id, _)| *id == dest_id);
+            let route = if held_before { "direct" } else { "direct-unknown" };
             let c = probe_call(e, &["originate", "--target", &format!("path:{g1}"), "--destination", &format!("path:{dest}"), "--key", &key, "--value", &value(&key)]);
-            assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some("direct-unknown"), Some("reply")), "the carrier kept nothing of its carried call to {dest}: {}", c.out);
+            assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some(route), Some("reply")), "{g1}'s own call to {dest} follows the Direct fact it held before carrying ({held_before}): {}", c.out);
             wait_for(&format!("{g1} holds a Connected Direct edge to {dest}'s current birth"), Duration::from_secs(30), || async {
                 let snap = snapshot(e, g1);
                 snap["own_latest_directs"].as_array().into_iter().flatten().any(|x| x["state"] == "Connected" && x["destination"]["node_id"] == d["node_id"] && x["destination"]["incarnation"] == d["incarnation_id"]).then_some(())
