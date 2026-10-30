@@ -46,7 +46,9 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 }
 
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
+/// A launch of `name` by `root` over its own data dir `dir`, on the root's store root `store`: every
+/// admin of a fabric reads the one Build storage (Q292).
+fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store: &std::path::Path) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
@@ -62,7 +64,7 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
         launcher: Some(Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
-        store_dir: dir.to_path_buf(),
+        store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
         issuing: None,
         roots: Vec::new(),
@@ -167,7 +169,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let root_publisher = PublisherId { node: root_name.clone(), incarnation: root_digest.node.incarnation.clone(), node_id: root_digest.node.node_id.clone() };
 
         // mesh1.admin.2: launched by the root, a node-admin that is not its mesh's primary.
-        let launch = launch_by(&root, "mesh1.admin.2", &admin_dir);
+        let launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");

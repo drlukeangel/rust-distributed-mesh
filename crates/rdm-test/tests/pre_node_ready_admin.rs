@@ -144,7 +144,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             seeds: vec![(key_of(&root_digest), root_digest.node.transport_addr)],
             launcher: Some(Launcher { name: root_digest.node.name.clone(), node_id: root_digest.node.node_id.clone(), incarnation: root_digest.node.incarnation.clone() }),
             data_dir: joiner_dir.clone(),
-            store_dir: joiner_dir.clone(),
+            store_dir: root_dir.clone(),
             mesh_id: Some(root_mesh_id),
             issuing: None,
             roots: Vec::new(),

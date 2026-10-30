@@ -89,10 +89,10 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let built = build_log::build_value(&estate, &a).await;
     assert_eq!(paths(&built, "mesh1"), ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"], "{built}");
     // The change is history the fabric-primary records with the Build, whole, in the journal on the store
-    // root; the Build's facts travel with its acceptance as sections, which carry no change (Q284).
+    // root, and the Build read from there carries it (Q292).
     let recorded = rdm_admin::store_log::read_record(&estate.fabric_store_root().join(rdm_admin::store_root::BUILDS_FILE), "build-record", Some(&format!("{a}/accepted"))).unwrap_or_else(|| panic!("the journal holds Build {a}'s acceptance"));
     assert_eq!(recorded["record"]["fact"]["submitted_change"]["kind"], "reconcile", "the change is kept as history: the complete topology the request named: {recorded}");
-    assert!(built["submitted_change"].is_null(), "a section carries no change: {built}");
+    assert_eq!(built["submitted_change"]["kind"], "reconcile", "the Build read whole from the store carries its change: {built}");
 
     // 3. The accepted Build is never history; Day 0's is.
     let refused = estate.builds_obj().await.delete(&BuildId::parse(&a).unwrap()).await;
