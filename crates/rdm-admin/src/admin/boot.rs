@@ -2248,7 +2248,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                 Some(state) => (state, rafka_time_at_apply.try_now_ms().unwrap_or(0)),
                                                                 None => (rdm_core::status::MeshState::Pending, 0),
                                                             };
-                                                            let reply = door.self_apply_mesh(&mesh_id, &mesh_name, state, at).await;
+                                                            let reply = door.self_apply_mesh(&mesh_id, state, at).await;
                                                             if !matches!(reply, rdm_core::status::StatusReply::Applied | rdm_core::status::StatusReply::AlreadyApplied) {
                                                                 blocked.push(format!("{me}: its mesh's {state:?} is not applied (self-apply answered {reply:?})"));
                                                             }
@@ -3046,13 +3046,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         .filter(|m| {
                                                             topology_view.mesh_status(m).is_some_and(|h| h.status == rdm_transport::topology::MESH_READY)
                                                                 || (**m == mesh && adopted_ready)
-                                                                || records
-                                                                    .meshes
-                                                                    .lock()
-                                                                    .unwrap()
-                                                                    .get(*m)
-                                                                    .and_then(|id| records.declared.lock().unwrap().meshes.get(id).copied())
-                                                                    .is_some_and(|s| s >= rdm_core::status::MeshState::Ready)
                                                         })
                                                         .cloned()
                                                         .collect(),

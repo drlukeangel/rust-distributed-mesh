@@ -710,10 +710,7 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
             // it is answered, and owes the declaration until that write lands (Q144): a repeated
             // declaration is answered `Applied` again, so a successor that declares again writes it.
             match apply_mesh(declared, mesh_id, *state, *changed_at_rafka_ms) {
-                (StatusReply::AlreadyApplied, _) => (
-                    rdm_core::reply::applied(),
-                    Some(Effect::Mesh(mesh_id.clone(), *state, None, *changed_at_rafka_ms)),
-                ),
+                (StatusReply::AlreadyApplied, _) => (rdm_core::reply::applied(), None),
                 decided => decided,
             }
         }
@@ -743,19 +740,11 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
                     return (rdm_core::reply::status::rejected_stale_mesh(held.clone()), None);
                 }
             }
-            match apply_mesh(declared, mesh_id, *state, *changed_at_rafka_ms) {
-                (StatusReply::AlreadyApplied, _) => (
-                    rdm_core::reply::already_applied(),
-                    Some(Effect::Mesh(mesh_id.clone(), *state, Some(mesh_name.clone()), *changed_at_rafka_ms)),
-                ),
-                (decided, effect) => (
-                    decided,
-                    effect.map(|e| match e {
-                        Effect::Mesh(id, state, _, at) => Effect::Mesh(id, state, Some(mesh_name.clone()), at),
-                        other => other,
-                    }),
-                ),
-            }
+            let (decided, effect) = apply_mesh(declared, mesh_id, *state, *changed_at_rafka_ms);
+            (decided, effect.map(|e| match e {
+                Effect::Mesh(id, state, _, at) => Effect::Mesh(id, state, Some(mesh_name.clone()), at),
+                other => other,
+            }))
         }
         StatusRequest::ApplyFabricEvent { fabric_id, event } => {
             if !me.is_primary {
@@ -831,9 +820,6 @@ fn hold_fabric_event(declared: &Mutex<Declared>, fabric_id: &FabricId, event: &s
 pub(crate) async fn commit_mesh_state(storage: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, declared: &Mutex<Declared>, mesh: &str, mesh_id: &MeshId, state: MeshState, at: u64) -> StatusReply {
     let (decided, effect) = apply_mesh(&declared.lock().unwrap(), mesh_id, state, at);
     if effect.is_none() {
-        if matches!(decided, StatusReply::AlreadyApplied) && at > 0 {
-            declared.lock().unwrap().hold_mesh_at(mesh_id.clone(), state, at);
-        }
         return decided;
     }
     let base = crate::storage::MeshRecord::new(mesh_id.clone(), mesh);
@@ -2416,7 +2402,7 @@ impl StatusDoor {
     /// Mesh record's state at its own instant, which its publisher adopts and republishes once its
     /// checklist completes, as any successor's (mesh-investigation.md step 7). The applied state is held
     /// as this admin's MeshStatus, so its publisher holds what it sends.
-    pub(crate) async fn self_apply_mesh(&self, mesh_id: &MeshId, mesh: &str, state: MeshState, at: u64) -> StatusReply {
+    pub(crate) async fn self_apply_mesh(&self, mesh_id: &MeshId, state: MeshState, at: u64) -> StatusReply {
         let me_name = self.held_name().await;
         let receiver_is_primary = self.topology.read().await.own(&self.node_id).is_some_and(|n| n.is_primary);
         let (decided, effect) = apply_mesh(&self.declared.lock().unwrap(), mesh_id, state, at);
@@ -2428,7 +2414,6 @@ impl StatusDoor {
         let mut taken = false;
         if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
             if let Some(view) = &self.app_channels {
-                let _ = mesh;
                 taken = view.adopt_mesh_status(rdm_transport::topology::StatusFact { status: mesh_status_name(state).to_string(), changed_at_rafka_ms: at });
                 self.wake.report_notify.notify_waiters();
             }

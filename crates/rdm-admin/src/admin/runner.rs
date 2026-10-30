@@ -817,7 +817,10 @@ impl AdminRunner {
         // every node.create of one is: it takes the mesh's issuing material and the fabric primary's
         // Pending hand-off before it is asked to be Ready (e4.s11; mesh-investigation.md "A node-admin
         // joins the live mesh").
-        let first_admin = self.topology.read().await.first_admin_of(node);
+        let first_admin = {
+            let t = self.topology.read().await;
+            t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
+        };
         let pre_node_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
         // A recovery's create names no executable: the launch runs the one the exited birth's row records,
         // on both arms (node-recovery.md "Retained": never the recovering admin's): the new node's config
@@ -915,7 +918,10 @@ impl AdminRunner {
             Some(rdm_core::meta::StorageMeta::Persistent { .. }) => true,
             None => return Err(format!("node.create:{node}: the accepted Build {build_id} holds no entry for the path: its storage decides the successor's data dir; nothing is launched").into()),
         };
-        let first_admin = self.topology.read().await.first_admin_of(node);
+        let first_admin = {
+            let t = self.topology.read().await;
+            t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
+        };
         let pre_node_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
         let mut template = self.create_template(node, Some(executable)).await?;
         if node.kind == NodeKind::NodeAdmin {
