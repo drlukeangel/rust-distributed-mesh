@@ -380,10 +380,6 @@ fn cpu_ticks(pid: u64) -> u64 {
     f.get(11).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) + f.get(12).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0)
 }
 
-fn signal(pid: u64, sig: &str) -> bool {
-    std::process::Command::new("kill").args([sig, &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false)
-}
-
 /// What a cut is expected to leave in the public view, and where it looks.
 enum Watch {
     /// Any node not in the view when the cut was armed: it must not be Ready (or must be).
@@ -816,12 +812,14 @@ fn primaries_detail_after_str(nodes: &[Value]) -> String {
     primaries(nodes).1
 }
 
-/// A runtime frozen in place (SIGSTOP) is alive and silent: it is judged by the typed outcome of
+/// A runtime frozen in place (every task but its leader held by a tracer, so the provider reads it
+/// running: a whole-process SIGSTOP reads `os-stopped`, which node investigation decides at its inspect
+/// and re-creates over a new data dir, Q273) is alive and silent: it is judged by the typed outcome of
 /// calls to it, by its process state and CPU use, and by what the control plane does about it,
 /// never by how long it has been quiet.
 async fn silent_case(run: &Run) {
     let floor = rdm_transport::topology::staleness_floor();
-    let id = "silent-runtime:sigstop-rpc-node";
+    let id = "silent-runtime:hang-rpc-node";
     let mut ev = Evidence::new(Family::SilentRuntime, id);
     let nodes = run.estate.node_values().await;
     let target = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["is_primary"] == false && n["status"] == "ready").cloned().unwrap_or_else(|| panic!("a ready non-primary rpc node: {nodes:?}"));
@@ -840,12 +838,14 @@ async fn silent_case(run: &Run) {
     let (roles_before, detail_before) = primaries(&nodes);
     let (fp_before, inc_before) = (fabric_primary(&nodes), incarnation.clone());
 
-    // The fault: SIGSTOP, acknowledged by the OS process state. The kernel is the only source of this
-    // fact (a signal to a process that is not this cell's child has no reply), so it is read from
-    // `/proc` until it holds.
-    assert!(signal(pid, "-STOP"), "SIGSTOP {pid} ({name})");
-    let state_after_stop = wait_for(&format!("{name} (pid {pid}) is stopped"), Duration::from_secs(10), || async { (proc_state(pid) == Some('T')).then_some('T') }).await;
-    let primitive = json!({"signal": "SIGSTOP", "pid": pid, "node": name});
+    // The fault: the exact runtime's tasks but its leader held by a tracer, acknowledged by the OS
+    // process state of each held task (`t`), read from `/proc`.
+    let rt = rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&data_dir)).unwrap_or_else(|r| panic!("{name}: no exact runtime published: {r:?}"));
+    assert_eq!(u64::from(rt.pid), pid, "the published runtime is the one the estate launched");
+    let hung = rt.hang().unwrap_or_else(|r| panic!("{name} (pid {pid}) is held: {r:?}"));
+    let tasks = hung.held.clone();
+    let state_after_stop = if !tasks.is_empty() && tasks.iter().all(|t| proc_state(u64::from(*t)) == Some('t')) { 't' } else { '?' };
+    let primitive = json!({"hang": tasks, "pid": pid, "node": name});
     ev.primitive = Some(Primitive { armed: true, ack: primitive.clone() });
 
     // The topology consequence: the view stops calling it ready, within the staleness window.
@@ -869,13 +869,14 @@ async fn silent_case(run: &Run) {
         calls.into_iter().map(|c| c.join().expect("a probe call's thread")).collect()
     });
     let reads: Vec<String> = outcomes.iter().map(|probe| json!({"proc_state": proc_state(pid).map(String::from), "cpu_ticks": cpu_ticks(pid), "outcome": probe["outcome"]}).to_string()).collect();
-    let held_at_last_read = proc_state(pid) == Some('T');
+    let held_at_last_read = tasks.iter().all(|t| proc_state(u64::from(*t)) == Some('t'));
 
     // Thaw.
-    let acked = signal(pid, "-CONT");
-    let ended = wait_for(&format!("{name} (pid {pid}) runs again"), Duration::from_secs(10), || async { proc_state(pid).filter(|c| *c != 'T').map(|_| true) }).await;
+    hung.release();
+    let acked = true;
+    let ended = wait_for(&format!("{name} (pid {pid}) runs again"), Duration::from_secs(10), || async { tasks.iter().all(|t| proc_state(u64::from(*t)) != Some('t')).then_some(true) }).await;
     ev.release = Some(Release { acked, hold_ended: ended });
-    ev.fault = Some(FaultAck { held: state_after_stop == 'T', names: Some(json!({"pid": pid, "proc_state": "T", "view_status": silent_view["status"]})), held_at_last_read });
+    ev.fault = Some(FaultAck { held: state_after_stop == 't', names: Some(json!({"pid": pid, "held_tasks": tasks, "proc_state": "t", "view_status": silent_view["status"]})), held_at_last_read });
     ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
     ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
 
@@ -923,7 +924,7 @@ async fn silent_case(run: &Run) {
 /// the accepted Build durable, and current from then on (the
 /// fabric-primary admin held), a joining admin held at its Ready gate on the provider domain and another
 /// held at the topology read it makes while it hydrates (node-start.md step 4), and a non-primary rpc node
-/// frozen in place with SIGSTOP. Each: the
+/// frozen in place (its tasks but the leader held by a tracer). Each: the
 /// injector acknowledged the active fault and named it; progress read three times (a Build's
 /// receipts and attempt on every admin, the current Build; a frozen node's process state, CPU use and the
 /// typed outcome of calls to it) stood still while held; the routing effect the cut's position

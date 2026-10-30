@@ -8,7 +8,7 @@
 //! settled through a Build. An observer joins the backbone and mesh1's channel and decodes the
 //! real frames.
 //!
-//! CONTRACT: one change in mesh2 (an rpc node held, then released) is one `MeshTopologyDelta` on mesh1's
+//! CONTRACT: one change in mesh2 (an rpc node held by a tracer, so the provider reads it running, then released) is one `MeshTopologyDelta` on mesh1's
 //! channel, from the version mesh1's primary last published, and the ordinary member of mesh1
 //! applies it at exactly that base. A member cut off from every peer while mesh2 changes hears
 //! the stripped full mesh1's primary replays when it is heard again, and holds the version the
@@ -169,25 +169,23 @@ fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
         .collect()
 }
 
-/// SIGCONT on drop: a held node is never left stopped.
+/// A held rpc node: every task of its exact runtime but the leader held by a tracer, so it is silent
+/// while the provider reads it running and node investigation tickles it rather than deciding at its
+/// inspect (a whole-process SIGSTOP reads `os-stopped`, the verdict at once, and re-creates the node,
+/// node-investigation.md step 2, Q273). Released on drop: a held node is never left held.
 struct Held {
-    pid: u64,
-    held: bool,
+    rt: rdm_test::process_faults::ExactRuntime,
+    hung: Option<rdm_test::process_faults::Hung>,
 }
 
 impl Held {
-    fn signal(&mut self, sig: &str, held: bool) {
-        let ok = std::process::Command::new("kill").args([sig, &self.pid.to_string()]).status().unwrap().success();
-        assert!(ok, "kill {sig} {}", self.pid);
-        self.held = held;
+    fn hold(&mut self) {
+        assert!(self.hung.is_none(), "the node is held already");
+        self.hung = Some(self.rt.hang().unwrap_or_else(|r| panic!("hold {}: {r:?}", self.rt.pid)));
     }
-}
 
-impl Drop for Held {
-    fn drop(&mut self) {
-        if self.held {
-            let _ = std::process::Command::new("kill").args(["-CONT", &self.pid.to_string()]).status();
-        }
+    fn release(&mut self) {
+        self.hung.take().expect("the node is held").release();
     }
 }
 
@@ -218,7 +216,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         .map(|n| n.name.to_string())
         .unwrap_or_else(|| panic!("mesh2 holds an rpc node that is not its rpc primary: {nodes:?}"));
     let held = held.as_str();
-    let mut hold = Held { pid: estate.pid_of(held).await, held: false };
+    let mut hold = Held { rt: rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&estate.data_dir(held).await)).unwrap_or_else(|r| panic!("{held}: no exact runtime published: {r:?}")), hung: None };
 
     // Joined: the observer is a new neighbour of mesh1's primary, which puts the stripped full of
     // every source it has published into the Mesh.
@@ -272,7 +270,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     };
     let deltas_before = observer.deltas_of("mesh2").len();
     let t_change_a = now_ns();
-    hold.signal("-STOP", true);
+    hold.hold();
     let delta_a = until_arrival("the observer hears the delta for the held rpc node", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").get(deltas_before).copied()).await;
     // Stay a while longer: nothing else changes, so nothing else is sent.
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -339,7 +337,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
 
     // ---- resumed: the next real change is a delta that applies at the baseline
     let t_resume = now_ns();
-    hold.signal("-CONT", false);
+    hold.release();
     let delta_c = until_arrival("the observer hears the next delta", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").into_iter().find(|d| d.0 > t_resume)).await;
     assert_eq!(delta_c.1, latest, "the next delta continues from the baseline the member holds");
     let applied_c = wait_for("the member applies the next delta at the baseline", Duration::from_secs(30), || async {
@@ -356,7 +354,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     others.push(observer.endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port());
     let cut = Partition::start(&ports_of(&[MEMBER]), &others).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the member's traffic: {why}"));
     let cut_at = now_ns();
-    hold.signal("-STOP", true);
+    hold.hold();
     let delta_e = until_arrival("the observer hears the delta for the held rpc node while the member is cut", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").into_iter().find(|d| d.0 > cut_at)).await;
     // The held rpc node, released, re-entered through node.mesh.join (Q87): its Pending and its
     // Ready were deltas of their own after the one the member applied at the baseline. The
@@ -404,7 +402,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
             .cloned()
     })
     .await];
-    hold.signal("-CONT", false);
+    hold.release();
 
     let t_stop = now_ns();
     estate.stop().await;

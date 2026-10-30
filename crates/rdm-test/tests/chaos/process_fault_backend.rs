@@ -122,7 +122,9 @@ async fn attempt_of(estate: &Estate, id: &str) -> u64 {
 /// CONTRACT (#2783): the process fault backend acts on the exact runtime a birth published
 /// (provider control domain + pid + start token), never on a pid alone, and the rectifier recovers
 /// the current birth. A forged start token (a recycled pid) is refused by name with the process
-/// untouched. A held (SIGSTOP) rpc node is alive and silent: the OS acknowledges the hold, the
+/// untouched. A held rpc node (every task but the leader held by a tracer, so the provider reads it
+/// running: a SIGSTOP of the whole process reads `os-stopped`, which node investigation decides at its
+/// inspect and re-creates, Q273) is alive and silent: the OS acknowledges the hold, the
 /// view stops calling it ready, calls to it never complete, and no replacement, re-attempt or new
 /// birth follows; the thaw returns the SAME birth, which serves the value stored before the hold
 /// (the semantic wedge detector judges it). A killed rpc node is recovered by its mesh-primary
@@ -179,13 +181,16 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     assert!(matches!(foreign, Err(FaultRefusal::ForeignDomain { .. })), "{foreign:?}");
     assert!(hold_rt.check().is_ok(), "the exact runtime is untouched");
 
-    // ---- Hold: SIGSTOP of the exact runtime, judged by the semantic detector.
+    // ---- Hold: every task of the exact runtime but its leader held by a tracer, judged by the semantic
+    // detector. The provider reads it running, so node investigation tickles it rather than deciding at
+    // its inspect (node-investigation.md step 2: `os-stopped`, a whole-process SIGSTOP, is the verdict).
     let mut ev = Evidence::new(Family::SilentRuntime, format!("silent-runtime:stop-{hold}"));
     let (roles_before, detail_before) = primaries(&nodes0);
     let fp_before = fabric_primary(&nodes0);
-    let stopped = hold_rt.apply(Fault::Stop).expect("the exact runtime is held");
-    assert_eq!(stopped.state_after, Some('T'));
-    ev.primitive = Some(Primitive { armed: true, ack: serde_json::to_value(&stopped).unwrap() });
+    let hung = hold_rt.hang().expect("the exact runtime is held");
+    assert!(!hung.held.is_empty() && hung.held.iter().all(|t| proc_state(*t) == Some('t')), "every task but the leader is held: {:?}", hung.held);
+    let stopped = json!({"applied": "hang", "held": hung.held, "leader": proc_state(hold_rt.pid).map(String::from)});
+    ev.primitive = Some(Primitive { armed: true, ack: stopped.clone() });
     let silent_view = estate
         .until_node(&hold, &format!("{hold} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |n| n.filter(|n| n.status != NodeStatus::Ready).map(|n| serde_json::to_value(n).expect("a view serializes")))
         .await;
@@ -203,11 +208,13 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
         calls.into_iter().map(|c| c.join().expect("a probe call's thread")).collect()
     });
     let reads: Vec<String> = outcomes.iter().map(|probe| json!({"proc_state": proc_state(hold_rt.pid).map(String::from), "cpu_ticks": cpu_ticks(hold_rt.pid), "outcome": probe["outcome"]}).to_string()).collect();
-    let held_at_last_read = proc_state(hold_rt.pid) == Some('T');
+    let held_at_last_read = hung.held.iter().all(|t| proc_state(*t) == Some('t'));
     let alive = hold_rt.check().is_ok();
     let replaced = during.as_ref().is_none_or(|n| n["node_id"] != hold_n["node_id"]);
-    let thawed = hold_rt.apply(Fault::Continue).expect("the hold is released");
-    ev.release = Some(Release { acked: true, hold_ended: thawed.state_after != Some('T') });
+    let tasks = hung.held.clone();
+    hung.release();
+    let thawed = json!({"released": "hang", "states": tasks.iter().map(|t| proc_state(*t).map(String::from)).collect::<Vec<_>>()});
+    ev.release = Some(Release { acked: true, hold_ended: tasks.iter().all(|t| proc_state(*t) != Some('t')) });
     ev.fault = Some(FaultAck { held: true, names: Some(json!({"pid": hold_rt.pid, "start": hold_rt.start, "control_domain": hold_rt.control_domain, "view_status": silent_view["status"]})), held_at_last_read });
     ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
     ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
