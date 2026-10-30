@@ -45,8 +45,8 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let created = Estate::complete(&mut spawn).await;
     assert_eq!(created.attempt, 1, "{created:?}");
     estate.until_node(first, &format!("{first} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
-    // A second rpc node, and the stop is of the one that does not hold the cohort's seat: a stop
-    // of the seat's node moves the seat first and needs a secondary to move it to
+    // A second rpc node, and the stop is of the one that does not hold the cohort's role: a stop
+    // of the role's node moves the role first and needs a secondary to move it to
     // (node-primary-update-fabric-mesh-and-node-type.md Part C1, "no secondary"). The stop opens an
     // attempt of the second create's Build, the accepted one.
     let mut second = estate.create_node("mesh1", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a second rpc node in mesh1: {e}"));
@@ -55,7 +55,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let build_id = created.build_id.to_string();
     estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
     let views = estate.node_views().await;
-    let node_name = views.iter().find(|n| n.kind == NodeKind::RpcNode && n.mesh == "mesh1" && !n.is_primary).map(|n| n.name.to_string()).expect("one of mesh1's two rpc nodes does not hold the node-type primary seat");
+    let node_name = views.iter().find(|n| n.kind == NodeKind::RpcNode && n.mesh == "mesh1" && !n.is_primary).map(|n| n.name.to_string()).expect("one of mesh1's two rpc nodes does not hold the node-type primary role");
     let node = node_name.as_str();
 
     let primary = estate.node_views().await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == "mesh1" && n.is_primary).expect("mesh1 has an admin primary");

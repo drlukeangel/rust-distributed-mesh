@@ -391,7 +391,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     let root = estate.root.clone();
     let run = Run { estate, root, doors: Default::default(), rows: Default::default(), builds: Default::default(), span_checks: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: the mesh holds two
-    // admins before any cut is armed, and either may hold the seats.
+    // admins before any cut is armed, and either may hold the roles.
     let shape = run.estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await.build_id.to_string();
     // The initial fabric refuses a node delete until it has first reached ready (states.md "The initial fabric before ready").
     run.estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -440,7 +440,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     mesh_pending_cut(&run, &create_order).await;
 
     // A joining admin, held at its Ready gate. (It is not removed afterwards: a joined admin with the
-    // lowest NodeId holds the fabric seat and would execute its own delete, which is not what this cut
+    // lowest NodeId holds the fabric-primary role and would execute its own delete, which is not what this cut
     // explores.) `WaitForNodeReady` holds no receipt until it completes, so a Build waiting on a held
     // admin holds a receipt for every step before it.
     let pre_node_ready = index_of(&create_order, CreateStep::WaitForNodeReady.name());

@@ -181,7 +181,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
 
     // ---- Hold: SIGSTOP of the exact runtime, judged by the semantic detector.
     let mut ev = Evidence::new(Family::SilentRuntime, format!("silent-runtime:stop-{hold}"));
-    let (seats_before, detail_before) = primaries(&nodes0);
+    let (roles_before, detail_before) = primaries(&nodes0);
     let fp_before = fabric_primary(&nodes0);
     let stopped = hold_rt.apply(Fault::Stop).expect("the exact runtime is held");
     assert_eq!(stopped.state_after, Some('T'));
@@ -195,7 +195,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     // held, first, and the two calls run at once, each its own probe process with a short budget: a probe
     // process's start under a loaded box (an export batch) took 3 s, which held the runtime past the decision.
     let nodes_during = estate.node_values().await;
-    let (seats_during, detail_during) = primaries(&nodes_during);
+    let (roles_during, detail_during) = primaries(&nodes_during);
     let during = nodes_during.iter().find(|n| n["name"] == hold.as_str()).cloned();
     let attempt_during = attempt_of(&estate, &build_id).await;
     let outcomes: Vec<Value> = std::thread::scope(|scope| {
@@ -220,10 +220,10 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let kept = estate.probe(&["get", "--target", &hold_exact, "--key", "83"]);
     ev.recovery = Some(Recovery { work_complete: kept["outcome"] == "Reply", marker_after: json!({"proc_state": proc_state(hold_rt.pid).map(String::from), "outcome": kept["outcome"]}).to_string() });
     let nodes_after = estate.node_values().await;
-    let (seats_after, detail_after) = primaries(&nodes_after);
+    let (roles_after, detail_after) = primaries(&nodes_after);
     ev.control = Some(Control {
-        seats_as_expected: [seats_before, seats_during, seats_after],
-        seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
+        roles_as_expected: [roles_before, roles_during, roles_after],
+        roles_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
         fabric_primary: [fp_before.clone(), fabric_primary(&nodes_during), fabric_primary(&nodes_after)],
         fabric_home: fp_before,
         primary_may_move: false,
@@ -238,7 +238,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == hold_n["incarnation_id"] && kept["reply"]["executing_node"] == hold_n["node_id"], kept.to_string());
     rec.check("the exact runtime is the one that was held (same domain, pid, start)", published(&estate, &hold).await == hold_rt, format!("{hold_rt:?}"));
     rec.check("the Build gained no attempt", attempt_of(&estate, &build_id).await == attempt_before, format!("attempt {attempt_before}"));
-    rec.check("the seats equal the public candidates' after the thaw", seats_after, detail_after);
+    rec.check("the primaries equal the public candidates' after the thaw", roles_after, detail_after);
     ev.reconciliation = Some(rec);
 
     // ---- Kill: the exact runtime of another rpc node exits; the rectifier recovers the path.
@@ -293,8 +293,8 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let survivors_after: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["node_id"])).collect();
     let untouched: Vec<&String> = survivors_before.iter().filter(|id| ![s(&kill_n["node_id"]), s(&admin_n["node_id"])].contains(id)).collect();
     assert!(untouched.iter().all(|id| survivors_after.contains(*id)), "no other node was replaced: before {survivors_before:?} after {survivors_after:?}");
-    let seats_end = primaries(&nodes_end);
-    assert!(seats_end.0, "{}", seats_end.1);
+    let roles_end = primaries(&nodes_end);
+    assert!(roles_end.0, "{}", roles_end.1);
     let build_end = estate.accepted_build_id().await;
     assert_eq!(build_end, build_id, "the current build_id is the Build it was");
     estate.stop().await;

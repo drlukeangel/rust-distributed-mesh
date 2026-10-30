@@ -171,7 +171,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
         .await;
     }
     // An admin that is not its mesh's primary now may have published earlier: under
-    // lowest-ready-NodeId elections a mesh's first admin holds the seat until a lower NodeId of
+    // lowest-ready-NodeId elections a mesh's first admin holds the role until a lower NodeId of
     // its cohort is ready, then hands it over. What must hold: it publishes only while it is its
     // mesh's primary in its own view, and none of its publishing intervals is still open.
     let spans = estate.spans();
@@ -180,12 +180,12 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
         let mine: Vec<&(u64, String, String, String)> = ev.iter().filter(|e| &e.1 == n).collect();
         assert!(mine.last().is_none_or(|e| e.3 == "stop"), "the non-primary admin {n} has stopped publishing: {mine:?}");
         for e in mine.iter().filter(|e| e.3 == "start") {
-            let seat = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary")
+            let role = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary")
                 .into_iter()
                 .filter(|sp| attr(sp, "observer") == *n && start(sp) <= e.0)
                 .max_by_key(|sp| start(sp))
                 .map(|sp| attr(sp, "winner_path"));
-            assert_eq!(seat.as_deref(), Some(n.as_str()), "{n} started publishing {} only while it held the mesh seat: {mine:?}", e.2);
+            assert_eq!(role.as_deref(), Some(n.as_str()), "{n} started publishing {} only while it held the mesh-primary role: {mine:?}", e.2);
         }
     }
 
@@ -233,7 +233,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
         .await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
-    // 4. Lose the fabric primary: status publication moves, never doubled. The seat moved in
+    // 4. Lose the fabric primary: status publication moves, never doubled. The role moved in
     // step 3; the primary is lost only once it alone publishes the fabric's status.
     let fabric_id = estate.fabric_view().await.id.to_string();
     let fp = estate
@@ -283,16 +283,16 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
             (role_nodes(&ev, &fabric_id, &dead) == [next.clone()].into_iter().collect()).then_some(next)
         })
         .await;
-    // The seat moves with the lowest NodeId as meshes grow and lose primaries, and a rebirth of
+    // The role moves with the lowest NodeId as meshes grow and lose primaries, and a rebirth of
     // the lost path may hold it on the way: the lost primary was the last to start publishing
-    // before the loss, and the last to start after it is the seat holder the view names.
+    // before the loss, and the last to start after it is the primary the view names.
     let ev = roles(&estate.spans(), "rdm.mesh.fabric.update.via-status-publisher", "fabric");
     let before = ev.iter().filter(|e| e.0 < lost_at && e.3 == "start").max_by_key(|e| e.0).map(|e| e.1.clone());
     let after = ev.iter().filter(|e| e.0 >= lost_at && e.3 == "start").max_by_key(|e| e.0).map(|e| e.1.clone());
     assert_eq!(before.as_deref(), Some(fp_name.as_str()), "the lost primary published before the loss: {ev:?}");
-    assert_eq!(after.as_deref(), Some(next.as_str()), "the seat holder is the last to start publishing after the loss: {ev:?}");
+    assert_eq!(after.as_deref(), Some(next.as_str()), "the primary is the last to start publishing after the loss: {ev:?}");
 
-    // The stop follows the fabric-primary seat itself.
+    // The stop follows the fabric-primary role itself.
     estate.stop().await;
 }
 

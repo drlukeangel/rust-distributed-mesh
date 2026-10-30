@@ -211,7 +211,7 @@ fn a_fabric_status_with_equal_revision_and_different_content_is_refused_inconsis
         && s["attributes"]["revision"] == "100"), "conflicting fabric content at one revision must be refused by name");
 }
 
-/// R10: a predecessor's later wall time loses to the successor's higher written seat revision.
+/// R10: a predecessor's later wall time loses to the successor's higher written role revision.
 #[test]
 fn delayed_status_predecessors_lose_by_committed_revision() {
     let capture = rdm_transport::EvidenceCapture::start(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance"), "rdm-status-author-revision").unwrap();

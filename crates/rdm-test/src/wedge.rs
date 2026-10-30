@@ -10,7 +10,7 @@
 //! progress    stalled progress: two or more reads taken while the fault was active carry one
 //!             marker, and the work they measure is not complete
 //! routing     the typed routing effect the cut's position implies (routable or not)
-//! control     the public control effect: seats equal what the public candidates compute,
+//! control     the public control effect: roles equal what the public candidates compute,
 //!             authority did not move, and a running silent runtime was neither replaced,
 //!             re-attempted nor re-born
 //! release     the injection was released and the hold ended
@@ -39,7 +39,7 @@ pub const NO_ACTIVE_FAULT_ACK: &str = "wedge_detector_requires_active_fault_ack"
 pub const NO_PROGRESS_CONSEQUENCE: &str = "wedge_detector_requires_stalled_progress";
 /// The typed routing effect is missing or is not the one the cut's position implies.
 pub const NO_ROUTING_CONSEQUENCE: &str = "wedge_detector_requires_routing_consequence";
-/// The public control effect is missing, or the seats diverge from what the public candidates compute.
+/// The public control effect is missing, or the roles diverge from what the public candidates compute.
 pub const NO_CONTROL_CONSEQUENCE: &str = "wedge_detector_requires_control_consequence";
 /// A runtime that was alive and silent was replaced, re-attempted or re-born before it was unheard past
 /// the staleness floor (past it, node investigation re-creates it: node-recovery.md step 3, Q111).
@@ -182,16 +182,16 @@ pub struct Routing {
 /// The public control effect around the hold.
 #[derive(Debug, Clone, Serialize)]
 pub struct Control {
-    /// The seats the public view advertises equal the ones the public candidates compute
+    /// The names the public view advertises equal the ones the public candidates compute
     /// (`elections::primaries_as_expected`), before, during and after.
-    pub seats_as_expected: [bool; 3],
-    /// The seats' detail when one diverges.
-    pub seats_detail: String,
+    pub roles_as_expected: [bool; 3],
+    /// The roles' detail when one diverges.
+    pub roles_detail: String,
     pub fabric_primary: [String; 3],
-    /// Where the fabric seat belongs as the hold begins: its holder, or, while a takeover's hand-back
+    /// Where the fabric-primary role belongs as the hold begins: its holder, or, while a takeover's hand-back
     /// is owed, the path.name it is owed to (fabric-recovery.md "The loss of the fabric-primary while a
-    /// node-admin lives" step 4; Q107 (4): a seat taken is temporary). The seat is judged there after
-    /// the hold, not at the holder advertised before it.
+    /// node-admin lives" step 4; Q107 (4): a role taken is temporary). The role is judged there after
+    /// the hold, not at the primary advertised before it.
     pub fabric_home: String,
     /// The cut is a membership change (a join, a mesh birth): the fabric primary may legitimately
     /// move, and only the public candidates' computation judges it. For a stall of a live admin it
@@ -418,15 +418,15 @@ pub fn judge(e: &Evidence) -> Result<Verdict, Refusal> {
         Some(c) => {
             let before = out.len();
             let phases = ["before", "during", "after"];
-            for (i, ok) in c.seats_as_expected.iter().enumerate() {
+            for (i, ok) in c.roles_as_expected.iter().enumerate() {
                 if !ok {
-                    out.push(rej(NO_CONTROL_CONSEQUENCE, format!("{} the hold the advertised seats diverge from the ones the public candidates compute: {}", phases[i], c.seats_detail)));
+                    out.push(rej(NO_CONTROL_CONSEQUENCE, format!("{} the hold the advertised primaries diverge from the ones the public candidates compute: {}", phases[i], c.roles_detail)));
                 }
             }
-            // Across a stall the fabric seat may move (Q89, fabric-recovery.md "The loss of the
+            // Across a stall the fabric-primary role may move (Q89, fabric-recovery.md "The loss of the
             // fabric-primary while a node-admin lives": unheard past the floor it is superseded, and one
-            // floor after the node at its path.name is Ready the seats go home); what a stall of a live
-            // admin never does is leave the seat elsewhere than its home once the stall ended: a
+            // floor after the node at its path.name is Ready the roles go home); what a stall of a live
+            // admin never does is leave the role elsewhere than its home once the stall ended: a
             // hand-back owed as the hold began takes it home during the hold.
             if !c.primary_may_move && c.fabric_home != c.fabric_primary[2] {
                 out.push(rej(NO_CONTROL_CONSEQUENCE, format!("the fabric primary did not come home to {} after a stall of a live admin: {:?}", c.fabric_home, c.fabric_primary)));

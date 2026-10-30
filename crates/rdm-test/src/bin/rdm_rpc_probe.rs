@@ -334,7 +334,7 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
     let req = request(&a)?;
     let (client, resolver) = enter(&a.admin_birth).await?;
     // The exact final target first; `--via` only decides how it is reached.
-    // The exact final target first (a `path:` is the current holder); a target the view does
+    // The exact final target first (a `path:` is the current primary); a target the view does
     // not hold is the client's own `NotSent(Resolve(..))`, never a refusal here.
     // A carrier the view does not hold (it left the fabric while the call was aimed at it) is the same
     // fact as a target it does not hold: the call is not sent, and the client says so.

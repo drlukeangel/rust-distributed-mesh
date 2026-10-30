@@ -133,7 +133,7 @@ async fn gossip_node() -> GossipNode {
 /// CONTRACT (gossip.md §3.3): a Day-0 node-admin (mesh1.admin.1, mesh1's primary) and mesh1.admin.2,
 /// launched by it, both ready. mesh1.admin.2 holds mesh1's projection from mesh1.admin.1's publications
 /// on mesh1's channel, among them the publication that carries its own Ready, and the Digest
-/// of the primary its seat record names. The gap is forged only then: a top-up read answered older than
+/// of the primary its primary record names. The gap is forged only then: a top-up read answered older than
 /// a full this node installed on another channel is refused (R-RX3), so a gap forged before the
 /// primary's Ready publication can be topped up from a read the backbone's full has overtaken (gate
 /// gates-e4s2-ca0d0046). A delta of mesh1 under
@@ -175,12 +175,12 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         until_ready("mesh1.admin.2", || admin.digest.lock().unwrap().clone()).await;
         until("mesh1.admin.2 to hold mesh1's projection under the primary's revision", WRONG, || admin.topology_view.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
         assert!(!admin.publishes_its_mesh(), "mesh1.admin.2 is not its mesh's primary");
-        // The top-up pulls from the birth the node's seat record names, through that birth's own
+        // The top-up pulls from the birth the node's primary record names, through that birth's own
         // Digest (gossip.md §3.1, §3.3): a gap signalled before the node holds it is one refused
         // attempt, held for nothing, until the primary next speaks. A start whose topology read the
         // primary answered before its first publication carries no snapshot of mesh1 (a mesh with
         // no published snapshot is absent, node-rpc-envelope.md op 0x1E), so the cell waits for it.
-        until("mesh1.admin.2 to hold its own Mesh's primary, the birth its seat record names", WRONG, || {
+        until("mesh1.admin.2 to hold its own Mesh's primary, the birth its primary record names", WRONG, || {
             admin.topology_view.mesh_primary().is_ok_and(|p| p.node.node_id == root_digest.node.node_id && p.node.incarnation == root_digest.node.incarnation)
         })
         .await;

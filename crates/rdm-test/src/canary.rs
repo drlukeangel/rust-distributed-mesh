@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 const SETTLE: Duration = Duration::from_secs(120);
-// The canary restarts the rpc cohort's primary seat holder (`is_primary == true`).
+// The canary restarts the rpc cohort's primary primary (`is_primary == true`).
 
 fn ready(node: &Value) -> bool {
     node["status"] == "ready"
@@ -36,8 +36,8 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let birth_build = estate.reconcile(&shape).await.build_id.to_string();
     estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
 
-    // 2. Select the rpc node-type primary seat holder (lowest node_id) and Put{key=41, value="before-restart"} by ExactNode.
-    let (node_holder, before) = estate.until_view("rpc node-type primary seat holder", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.is_primary).map(|n| (n.name.to_string(), serde_json::to_value(n).unwrap()))).await; let node_name = node_holder.as_str();
+    // 2. Select the rpc node-type primary primary (lowest node_id) and Put{key=41, value="before-restart"} by ExactNode.
+    let (node_type_primary, before) = estate.until_view("rpc node-type primary primary", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.is_primary).map(|n| (n.name.to_string(), serde_json::to_value(n).unwrap()))).await; let node_name = node_type_primary.as_str();
     let node_id = before["node_id"].as_str().expect("node_id").to_string();
     let exact = format!("exact:{node_id}");
     let put = estate.probe(&["put", "--target", &exact, "--key", "41", "--value", "before-restart"]);
@@ -191,7 +191,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
         (reconcile, node_op, attempt, first)
     };
     let (reconcile, node_op, attempt, _) = chain(rest, &stop_op, &["StopNode", "AwaitNodeLeft"]);
-    assert_eq!(attempt, (stop.attempt + 1).to_string(), "the stop executes under the attempt after the seat hand-off");
+    assert_eq!(attempt, (stop.attempt + 1).to_string(), "the stop executes under the attempt after the role hand-off");
     let start_call = call_of(start.attempt);
     let (_, _, _, start_step) = chain(start_call, &start_op, &["StartNode", "WaitForNodeReady"]);
     let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().filter(|s| s["attributes"]["node"] == node_name).find(|s| descends_from(&spans, s, start_step)).expect("the node's start served under the start's StartNode step");

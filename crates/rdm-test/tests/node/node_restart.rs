@@ -71,14 +71,14 @@ async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_ro
         }).await;
         assert_eq!((&after["node_id"], &after["incarnation_id"]), (&target["node_id"], &target["incarnation_id"]), "{path} is the same birth after its stop and start: {after}");
     }
-    let holder = estate.node_values().await.into_iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2 holds a primary");
-    assert_eq!(holder["node_id"], first["node_id"], "the second stop moved mesh2's seat back to {}", name(&first));
+    let primary = estate.node_values().await.into_iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2 holds a primary");
+    assert_eq!(primary["node_id"], first["node_id"], "the second stop moved mesh2's role back to {}", name(&first));
 
     estate.stop().await;
     let spans = estate.spans();
     let back: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "operation").contains(&operations[1])).collect();
     assert_eq!(back.len(), 1, "the second stop's successor, {}, installed itself once: {back:#?}", name(&first));
     let trace = back[0]["trace_id"].as_str().unwrap_or_default().to_string();
-    println!("seat given back: http://192.168.68.99:16687/trace/{trace}");
+    println!("role given back: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
 }

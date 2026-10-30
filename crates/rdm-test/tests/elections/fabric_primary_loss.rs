@@ -32,7 +32,7 @@ fn signal(pid: u32, sig: &str) {
     let ok = std::process::Command::new("kill").args([sig, &pid.to_string()]).status().expect("kill runs").success();
     assert!(ok, "kill {sig} {pid}");
 }
-/// The fabric-primary's name and whether it also holds its mesh's seat, from a view.
+/// The fabric-primary's name and whether it also holds its mesh's role, from a view.
 fn primaries(nodes: &[Value]) -> Option<(String, bool)> {
     nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| (s(&n["name"]), n["is_primary"] == true))
 }
@@ -73,9 +73,9 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     let restored = estate
         .until_view("the node re-created at mesh1.admin.1 is Ready, mesh-primary and fabric-primary", floor * 12 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
-            let holders: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
+            let primaries: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
             let mesh1_primary: Vec<String> = ns.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true && s(&n["name"]).starts_with("mesh1.")).map(|n| s(&n["name"])).collect();
-            assert!(holders.iter().all(|h| h == fp), "only the node at {fp} is ever fabric-primary: {holders:?}");
+            assert!(primaries.iter().all(|h| h == fp), "only the node at {fp} is ever fabric-primary: {primaries:?}");
             assert!(mesh1_primary.iter().all(|h| h == fp), "only the node at {fp} is ever mesh1's primary: {mesh1_primary:?}");
             ns.iter()
                 .find(|n| n["name"] == fp && s(&n["node_id"]) != before.node_id.to_string() && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true)

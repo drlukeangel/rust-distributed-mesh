@@ -190,7 +190,7 @@ fn a_mesh_primary_lists_its_meshs_records_once_and_an_admin_that_is_no_primary_w
         eprintln!("mesh1.admin.1 calls on the nodes store: {:#?}", root_calls.0.lock().unwrap());
         eprintln!("mesh1.admin.2 calls on the nodes store: {:#?}", admin_calls.0.lock().unwrap());
         let root_id = root.digest.lock().unwrap().node.node_id.to_string();
-        // The take of mesh1's writing: the writer's fill (SeatFold's, `WrittenRows::fill`), the install's
+        // The take of mesh1's writing: the writer's fill (RoleFold's, `WrittenRows::fill`), the install's
         // arrivals, the atlas. The Day-0 admin's start reads before it are not the take: its contradictory-start
         // check (no launcher), and the primaries recorded on the rows (`take_recorded_primaries`, an election
         // input read only at a start with no launcher, Q227).

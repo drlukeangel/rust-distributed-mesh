@@ -349,7 +349,7 @@ async fn form(cell: &str, shape: Shape) -> Formed {
     let desired = FabricDesired { fabric: "fabric1".into(), meshes: meshes().iter().map(|m| shape.mesh_desired(m)).collect() };
     let body = serde_json::to_value(&desired).expect("a desired fabric serializes");
     let t0 = now_ms();
-    // `build.create` awaited to its stream's `Complete` (the Build follows the seat if it moves while it runs).
+    // `build.create` awaited to its stream's `Complete` (the Build follows the role if it moves while it runs).
     let reconciled = estate.reconcile(&desired).await;
     let build_id = reconciled.build_id.to_string();
     actions.push(json!({"t_ms": t0, "action": "build.create", "via": "build.create", "attempt": reconciled.attempt, "build_id": build_id, "body": body}));
@@ -577,7 +577,7 @@ fn check_formation_chain(f: &Formed, spans: &[Value], inv: &mut Invariants) -> V
     let reconciles: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == bid).collect();
     assert!(!reconciles.is_empty(), "the formation Build was reconciled");
     // An attempt the accepting fabric-primary decided descends from its build.create request; an attempt a successor
-    // executor takes up after the seat moved is its own trace (R-X1: the attempt carries its own context), and
+    // executor takes up after the role moved is its own trace (R-X1: the attempt carries its own context), and
     // is never the Build's first attempt.
     let mut own_trace = Vec::new();
     for r in &reconciles {
@@ -599,7 +599,7 @@ fn check_formation_chain(f: &Formed, spans: &[Value], inv: &mut Invariants) -> V
         own_trace.push(json!({"lane": r["attributes"]["lane"], "attempt": r["attributes"]["attempt"], "executor": r["attributes"]["executor"], "previous_executor": r["attributes"]["previous_executor"], "reason": r["attributes"]["reason"], "span_id": r["span_id"]}));
     }
     assert!(reconciles.iter().any(|r| r["attributes"]["lane"].as_str().unwrap_or("").is_empty() && r["attributes"]["attempt"] == "1" && descends_from(spans, r, &accepted)), "the formation Build's first attempt descends from its build.create request");
-    inv.holds("every reconcile attempt of the formation Build descends from its build.create request, or is a later attempt on its own trace after the executor seat moved", true, json!({"reconciles": reconciles.len(), "own_trace_attempts": own_trace, "accepted_span": accepted["span_id"], "trace_id": accepted["trace_id"]}));
+    inv.holds("every reconcile attempt of the formation Build descends from its build.create request, or is a later attempt on its own trace after the executor role moved", true, json!({"reconciles": reconciles.len(), "own_trace_attempts": own_trace, "accepted_span": accepted["span_id"], "trace_id": accepted["trace_id"]}));
     let mut chains = Vec::new();
     for name in f.shape.names().into_iter().filter(|n| n != "mesh1.admin.1") {
         let creates: Vec<&Value> = named(spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|c| c["attributes"]["build_id"] == bid && c["attributes"]["node"] == name.as_str()).collect();
@@ -1188,7 +1188,7 @@ async fn restart_with_traffic(
     let before = e.node_value(node).await;
     let entry = e.entry().await.to_string();
     let t0 = now_ms();
-    // `node.stop` over Node RPC: the call follows the fabric-primary seat; the stream is not this loop's
+    // `node.stop` over Node RPC: the call follows the fabric-primary role; the stream is not this loop's
     // completion source (the Build log read below is, between the traffic it issues), so it is let go.
     // Once the stop's attempt is complete and the node stopped, `node.start` the same way.
     let stream = e.nodes_obj().await.stop(&path_of(node)).await.unwrap_or_else(|end| panic!("{node}: node.stop was not accepted: {end}"));
@@ -1833,7 +1833,7 @@ impl Run {
             return Err(format!("{} node-admins in the view, {:?} wanted", admins.len(), want_admins));
         }
         if let Err(e) = primaries_as_expected(&nodes) {
-            return Err(format!("the entry view's seats are not the election function's: {e}"));
+            return Err(format!("the entry view's primaries are not the election function's: {e}"));
         }
         let fp = admins.iter().find(|a| a["is_fabric_primary"] == true).cloned().ok_or("no fabric-primary in the view")?;
         let key = |v: &[Value]| -> BTreeSet<String> { v.iter().filter(|n| n["kind"] == "node_admin").map(|n| format!("{}={}:{}", n["name"], n["node_id"], n["incarnation_id"])).collect() };
@@ -1844,7 +1844,7 @@ impl Run {
             let Some(own_fabric) = fabric_at(&f.estate, &name).await else { return Err(format!("{name} does not answer fabric.get for this Fabric")) };
             let Some(own_nodes) = nodes_at(&f.estate, &name).await else { return Err(format!("{name} does not answer node.get")) };
             if let Err(e) = primaries_as_expected(&own_nodes) {
-                return Err(format!("{}'s own seats are not the election function's: {e}", a["name"]));
+                return Err(format!("{}'s own primaries are not the election function's: {e}", a["name"]));
             }
             if key(&own_nodes) != entry_key {
                 return Err(format!("{} holds a different admin set than the entry view", a["name"]));
@@ -2183,7 +2183,7 @@ async fn restart_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str,
 }
 
 /// A non-fabric-primary node-admin dies (SIGKILL) and the fabric recovers it: the surviving admin of
-/// its mesh takes the seat, and a re-born admin stands at the same path.name. Returns the kill record,
+/// its mesh takes the role, and a re-born admin stands at the same path.name. Returns the kill record,
 /// what the survivor saw, and the recovered view.
 async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
     let mesh = node.split('.').next().unwrap().to_string();
@@ -2192,18 +2192,18 @@ async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
     let fabric_build = s(&st.fabric["build_id"]);
     let kill = kill_admin(f, a, st, node).await;
     let started = Instant::now();
-    // The survivor holds the mesh's seat in its own view; traffic runs through the window.
-    let mut seat_ms = None;
+    // The survivor holds the mesh's role in its own view; traffic runs through the window.
+    let mut role_ms = None;
     let recovered_ms;
     let recovered = loop {
         let nodes = a.nodes(f).await;
         if let Some(nodes) = &nodes {
-            if seat_ms.is_none() {
+            if role_ms.is_none() {
                 if let Some(own) = nodes_at(&f.estate, &s(&survivor["name"])).await {
                     let me = own.iter().find(|n| n["name"] == survivor["name"]);
                     if me.is_some_and(|m| m["is_primary"] == true) {
-                        seat_ms = Some(started.elapsed().as_millis() as u64);
-                        progress(&format!("{} holds {mesh}'s seat in its own view after {} ms", survivor["name"], seat_ms.unwrap()));
+                        role_ms = Some(started.elapsed().as_millis() as u64);
+                        progress(&format!("{} holds {mesh}'s role in its own view after {} ms", survivor["name"], role_ms.unwrap()));
                     }
                 }
             }
@@ -2216,19 +2216,19 @@ async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
         } else {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        assert!(started.elapsed() < Duration::from_secs(120), "{node} killed; no re-born admin stood at its path.name within 120 s; the survivor {} held the seat after {seat_ms:?} ms", survivor["name"]);
+        assert!(started.elapsed() < Duration::from_secs(120), "{node} killed; no re-born admin stood at its path.name within 120 s; the survivor {} held the primary role after {role_ms:?} ms", survivor["name"]);
     };
     let ev = json!({
         "event": "admin.kill-and-recover", "scenario": scenario, "node": node, "victim_node_id": victim["node_id"], "victim_incarnation_id": victim["incarnation_id"], "victim_was_primary": victim["is_primary"],
-        "survivor": survivor["name"], "survivor_node_id": survivor["node_id"], "survivor_held_seat_ms": seat_ms, "recovered_node_id": recovered["node_id"], "recovered_incarnation_id": recovered["incarnation_id"],
+        "survivor": survivor["name"], "survivor_node_id": survivor["node_id"], "survivor_held_role_ms": role_ms, "recovered_node_id": recovered["node_id"], "recovered_incarnation_id": recovered["incarnation_id"],
         "recovered_same_node_id": recovered["node_id"] == victim["node_id"], "recovered_ms": recovered_ms, "fabric_build_id_before": fabric_build, "kill": kill,
     });
     a.events.push(ev.clone());
     ev
 }
 
-/// The fabric-primary leaves through a deleting Build it executes itself: its seats move to another
-/// admin (SeatTransfer), then it stops, its stop declaring it Leaving (not an election candidate). The seat's
+/// The fabric-primary leaves through a deleting Build it executes itself: its roles move to another
+/// admin (its role move), then it stops, its stop declaring it Leaving (not an election candidate). The role's
 /// move is read from the election spans afterwards; here the host's observation of the process
 /// exit is taken so the order has a clock that does not depend on the dying process's own spans.
 async fn hand_off(f: &mut Formed, a: &mut Run, st: &Stable, scenario: &str, inv: &mut Invariants) -> (Stable, Value) {
@@ -2280,17 +2280,17 @@ async fn replace_deleted(f: &mut Formed, a: &mut Run, after_delete: &Stable, del
     let born: Vec<&Value> = st.admins.iter().filter(|n| n["mesh"] == mesh.as_str() && !after_delete.admins.iter().any(|o| o["node_id"] == n["node_id"])).collect();
     assert_eq!(born.len(), 1, "{scenario}: one new admin in {mesh}");
     assert_ne!(born[0]["node_id"], deleted["old_node_id"], "{scenario}: a replacement never reuses the deleted NodeId");
-    // A lower NodeId never displaces a living holder (R-A2): the late admin holds no mesh seat, whatever its
+    // A lower NodeId never displaces a living primary (R-A2): the late admin holds no mesh-primary role, whatever its
     // NodeId, and the incumbent keeps it.
     let incumbent = after_delete.admins.iter().find(|n| n["mesh"] == mesh.as_str()).unwrap().clone();
     let lower = s(&born[0]["node_id"]) < s(&incumbent["node_id"]);
-    assert_eq!(born[0]["is_primary"], false, "{scenario}: the late admin {} (NodeId lower than the incumbent's {}: {lower}) holds no mesh seat while the incumbent lives", born[0]["node_id"], incumbent["node_id"]);
+    assert_eq!(born[0]["is_primary"], false, "{scenario}: the late admin {} (NodeId lower than the incumbent's {}: {lower}) holds no mesh-primary role while the incumbent lives", born[0]["node_id"], incumbent["node_id"]);
     let kept = st.admins.iter().find(|n| n["node_id"] == incumbent["node_id"]).unwrap_or_else(|| panic!("{scenario}: the incumbent {} is in the view", incumbent["name"]));
-    assert_eq!(kept["is_primary"], true, "{scenario}: the incumbent {} keeps the mesh seat", incumbent["name"]);
+    assert_eq!(kept["is_primary"], true, "{scenario}: the incumbent {} keeps the mesh-primary role", incumbent["name"]);
     a.events.push(json!({
         "event": "admin.replacement", "scenario": scenario, "mesh": mesh, "deleted": path, "deleted_node_id": deleted["old_node_id"], "replacement": born[0]["name"], "replacement_node_id": born[0]["node_id"],
         "build_id": build_id, "fabric_build_id_before_spawn": fabric_build, "wall_ms": fin["wall_ms"], "fabric_primary_after": st.fp["name"],
-        "late_admin_lower_than_incumbent": lower, "late_admin_holds_mesh_seat": born[0]["is_primary"], "incumbent": incumbent["name"], "incumbent_node_id": incumbent["node_id"],
+        "late_admin_lower_than_incumbent": lower, "late_admin_holds_mesh_role": born[0]["is_primary"], "incumbent": incumbent["name"], "incumbent_node_id": incumbent["node_id"],
     }));
     st
 }
@@ -2366,7 +2366,7 @@ fn check_one_executor_per_attempt(claims: &[Value], inv: &mut Invariants) -> Val
 /// Which door a Build call's span comes from (build_op.rs `BuildDoor::admit_change`): a create, a delete
 /// of a node the topology names and a reconcile open `build.create.via-node-rpc`; a restart, a replace and
 /// the delete of a replace's predecessor at `<node>.old` open the next attempt under
-/// `build.update.via-node-rpc` naming the node. An admin that does not hold the fabric-primary seat refuses
+/// `build.update.via-node-rpc` naming the node. An admin that does not hold the fabric-primary role refuses
 /// the call before either door (`BuildDoor::serve`), under its own `build.reject.via-not-fabric-primary` (its `route` set; the drive's refusal of the same name carries none) naming
 /// the fabric-primary it sees.
 fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mut Invariants) -> Value {
@@ -2403,8 +2403,8 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mu
     // Each probe round's one writer answer (`unknown-node`) is a refused create; its non-writers refuse before the door.
     assert_eq!(rejected_creates, a.probes.len() + at_a_door.len() - refused_opens, "every rejected topology write at the create door is a writer probe's answer or a write the cell sent the writer to see it refused");
     let non_writer_refusals = a.probes.iter().map(|p| p["answers"].as_array().unwrap().iter().filter(|x| x["reply"] == "not-fabric-primary").count()).sum::<usize>() + a.refused_writes.len() - at_a_door.len();
-    let without_the_seat = named(spans, "rdm.node_admin.build.reject.via-not-fabric-primary").into_iter().filter(|sp| !s(&sp["attributes"]["route"]).is_empty()).count();
-    assert_eq!(without_the_seat, non_writer_refusals, "every refusal by an admin without the fabric-primary seat is a writer probe's non-writer answer or a write the cell sent a non-writer to see it refused, each under its own reject span");
+    let without_the_role = named(spans, "rdm.node_admin.build.reject.via-not-fabric-primary").into_iter().filter(|sp| !s(&sp["attributes"]["route"]).is_empty()).count();
+    assert_eq!(without_the_role, non_writer_refusals, "every refusal by an admin without the fabric-primary role is a writer probe's non-writer answer or a write the cell sent a non-writer to see it refused, each under its own reject span");
     let mut rounds = Vec::new();
     for p in &a.probes {
         let path = s(&p["path"]);
@@ -2427,10 +2427,10 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mu
         true,
         json!({"accepted_creates": got_creates.len(), "accepted_attempt_opens": got_updates.len(), "probe_rounds": rounds.len()}),
     );
-    json!({"accepted_creates": got_creates, "accepted_attempt_opens": got_updates, "probe_rounds": rounds, "formation_requests_refused_before_the_seat_was_held": formation_rejections})
+    json!({"accepted_creates": got_creates, "accepted_attempt_opens": got_updates, "probe_rounds": rounds, "formation_requests_refused_before_the_role_was_held": formation_rejections})
 }
 
-/// Elections as the spans announce them: the order of every hand-off, the surviving admin's seat after
+/// Elections as the spans announce them: the order of every hand-off, the surviving admin's role after
 /// a kill, no resurrected NodeId.
 fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Value {
     let recompute = named(spans, "rdm.mesh.election.resolve.via-fabric-recompute");
@@ -2461,9 +2461,9 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
             .min_by_key(|sp| start_ns(sp))
             .unwrap_or_else(|| panic!("{}: no successor installed the fabric-primary moving from {old_id} to {new_id} after its removal was requested", ev["scenario"]));
         assert!(start_ns(installed) <= e, "{}: an admin announced {new_id} succeeding {old_id} ({e}) before the successor installed it ({})", ev["scenario"], start_ns(installed));
-        // The decider is the new holder: its own election names it winner over the old holder (`announced`).
+        // The decider is the new primary: its own election names it winner over the old primary (`announced`).
         let decider: Vec<&&Value> = announced.iter().copied().filter(|sp| sp["attributes"]["observer"] == new_name.as_str()).collect();
-        assert!(!decider.is_empty(), "{}: the new fabric-primary {new_name} did not report its own election of the seat", ev["scenario"]);
+        assert!(!decider.is_empty(), "{}: the new fabric-primary {new_name} did not report its own election of the role", ev["scenario"]);
         let terminate: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
         let mark: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "StopNode" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
         // The deleting admin executes its own deletion: its TerminateRuntime step signals its own
@@ -2481,20 +2481,20 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
             "election_after_terminate_step_began_ms": terminate_start.map(|t| (e as i128 - t as i128) / 1_000_000),
         }));
     }
-    inv.holds("each fabric-primary hand-off: the old holder's written seat row named the new fabric-primary, then the new holder's own election named it, before the old birth's process was gone (the host observed its exit); the terminate step's own start is measured beside it", true, json!({"hand_offs": out}));
+    inv.holds("each fabric-primary hand-off: the old primary's written primary row named the new fabric-primary, then the new primary's own election named it, before the old birth's process was gone (the host observed its exit); the terminate step's own start is measured beside it", true, json!({"hand_offs": out}));
     let mut kills = Vec::new();
     for ev in a.events.iter().filter(|e| e["event"] == "admin.kill-and-recover") {
         let (victim, survivor) = (s(&ev["victim_node_id"]), s(&ev["survivor_node_id"]));
         let kill_ns = ev["kill"]["kill_ns"].as_u64().unwrap();
-        let seat: Vec<&&Value> = mesh_primary.iter().filter(|sp| sp["attributes"]["winner_node_id"] == survivor.as_str() && sp["attributes"]["previous_node_id"] == victim.as_str() && start_ns(sp) > kill_ns).collect();
-        assert!(!seat.is_empty(), "{}: no admin of the mesh announced the survivor {survivor} as primary in place of the killed {victim}", ev["scenario"]);
+        let role: Vec<&&Value> = mesh_primary.iter().filter(|sp| sp["attributes"]["winner_node_id"] == survivor.as_str() && sp["attributes"]["previous_node_id"] == victim.as_str() && start_ns(sp) > kill_ns).collect();
+        assert!(!role.is_empty(), "{}: no admin of the mesh announced the survivor {survivor} as primary in place of the killed {victim}", ev["scenario"]);
         let won_again: Vec<&&Value> = recompute.iter().filter(|sp| sp["attributes"]["winner_node_id"] == victim.as_str() && start_ns(sp) > kill_ns).collect();
-        assert!(won_again.is_empty(), "{}: the killed birth's NodeId won the fabric seat after its death", ev["scenario"]);
-        kills.push(json!({"scenario": ev["scenario"], "victim": ev["node"], "survivor": ev["survivor"], "seat_span": seat[0]["span_id"], "seat_observer": seat[0]["attributes"]["observer"], "seat_after_kill_ms": (start_ns(seat[0]) - kill_ns) / 1_000_000}));
+        assert!(won_again.is_empty(), "{}: the killed birth's NodeId won the fabric-primary role after its death", ev["scenario"]);
+        kills.push(json!({"scenario": ev["scenario"], "victim": ev["node"], "survivor": ev["survivor"], "role_span": role[0]["span_id"], "role_observer": role[0]["attributes"]["observer"], "role_after_kill_ms": (start_ns(role[0]) - kill_ns) / 1_000_000}));
     }
-    inv.holds("each killed admin: the surviving eligible admin of its mesh was announced primary in its place, and the dead NodeId never won the fabric seat afterwards", true, json!({"kills": kills}));
-    // A restarted primary loses its seat to its mesh and does not take it back from the admin that filled it
-    // (R-A2: a seat stays with a living holder, whatever NodeId a later birth holds).
+    inv.holds("each killed admin: the surviving eligible admin of its mesh was announced primary in its place, and the dead NodeId never won the fabric-primary role afterwards", true, json!({"kills": kills}));
+    // A restarted primary loses its role to its mesh and does not take it back from the admin that filled it
+    // (R-A2: a role stays with a living primary, whatever NodeId a later birth holds).
     let mut retakes = Vec::new();
     for ev in a.events.iter().filter(|e| e["event"] == "admin.restart" && e["was_primary"] == true) {
         let id = s(&ev["node_id"]);
@@ -2502,9 +2502,9 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
         let mine: Vec<&&Value> = mesh_primary.iter().filter(|sp| start_ns(sp) > req && (sp["attributes"]["winner_node_id"] == id.as_str() || sp["attributes"]["previous_node_id"] == id.as_str())).collect();
         let lost = mine.iter().any(|sp| sp["attributes"]["previous_node_id"] == id.as_str());
         let regained = mine.iter().any(|sp| sp["attributes"]["winner_node_id"] == id.as_str() && sp["attributes"]["previous_node_id"] != id.as_str());
-        retakes.push(json!({"scenario": ev["scenario"], "node": ev["node"], "seat_left_while_restarting": lost, "seat_regained_by_same_node_id": regained}));
+        retakes.push(json!({"scenario": ev["scenario"], "node": ev["node"], "role_left_while_restarting": lost, "role_regained_by_same_node_id": regained}));
     }
-    inv.holds("a restarted primary: the seat left it while its birth was not a candidate (a later vacancy may fill it again; C19 asserts it is not taken back from a living holder)", retakes.iter().all(|r| r["seat_left_while_restarting"] == true), json!({"restarts": retakes}));
+    inv.holds("a restarted primary: the role left it while its birth was not a candidate (a later vacancy may fill it again; C19 asserts it is not taken back from a living primary)", retakes.iter().all(|r| r["role_left_while_restarting"] == true), json!({"restarts": retakes}));
     // No resurrected identity.
     let ready = named(spans, "rdm.mesh.node.update.via-ready");
     let mut deleted = Vec::new();
@@ -2610,19 +2610,19 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
         fp_trail.push(json!({"after": format!("C4 {mesh} second"), "fabric_primary": st.fp_name(), "node_id": st.fp["node_id"]}));
     }
 
-    // C19: a primary that restarts loses its seat to its mesh (its stop moves its seats) and keeps its NodeId
-    // and incarnation; back as the same birth it holds no seat while the admin that filled it lives (R-A2: a
-    // lower NodeId never displaces a living holder); the fabric-primary hands off once more; no deleted
+    // C19: a primary that restarts loses its role to its mesh (its stop moves its roles) and keeps its NodeId
+    // and incarnation; back as the same birth it holds no role while the admin that filled it lives (R-A2: a
+    // lower NodeId never displaces a living primary); the fabric-primary hands off once more; no deleted
     // identity returns.
     let quiet = meshes().iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
     let incumbent = st.primary_of(&quiet);
-    restart_via_build(&mut f, &mut a, &st, &s(&incumbent["name"]), &format!("C19 {quiet}: the primary restarts and holds no seat")).await;
+    restart_via_build(&mut f, &mut a, &st, &s(&incumbent["name"]), &format!("C19 {quiet}: the primary restarts and holds no primary role")).await;
     st = a.stable(&mut f, &format!("C19 {quiet}: the restarted primary is Ready"), &both(2), &mut inv).await;
-    assert_ne!(st.primary_of(&quiet)["node_id"], incumbent["node_id"], "C19: the admin that filled the restarted primary's seat keeps it while it lives, whatever NodeId the restarted one holds");
+    assert_ne!(st.primary_of(&quiet)["node_id"], incumbent["node_id"], "C19: the admin that filled the restarted primary's role keeps it while it lives, whatever NodeId the restarted one holds");
     let back = st.admins.iter().find(|n| n["name"] == incumbent["name"]).unwrap_or_else(|| panic!("C19: the restarted admin {} is in the view", incumbent["name"]));
     assert_eq!(back["node_id"], incumbent["node_id"], "C19: the restart keeps the NodeId");
     assert_eq!(back["incarnation_id"], incumbent["incarnation_id"], "C19: the restart keeps the incarnation (node-stop.md, Kept)");
-    assert_eq!(back["is_primary"], false, "C19: the restarted admin holds no seat while the admin that filled it lives");
+    assert_eq!(back["is_primary"], false, "C19: the restarted admin holds no primary role while the admin that filled it lives");
     proofs.push(prove_path(&mut f, &mut a, &both(2), "C19 restarted primary", &mut inv).await);
     let (after, ev) = hand_off(&mut f, &mut a, &st, "C19: a repeated fabric-primary hand-off", &mut inv).await;
     st = replace_deleted(&mut f, &mut a, &after, &ev, "C19", &mut inv).await;
@@ -2698,12 +2698,12 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
 /// the second only once the first's replacement is Ready and a surviving path is proven (every compute
 /// and gateway holds a Connected Direct edge to the current primary's birth, fresh puts all stored):
 /// a mesh without the fabric-primary loses its current primary to a SIGKILL and the surviving admin
-/// takes the seat (C1); the other admin of a mesh restarts through a Build as the same NodeId in a new
+/// takes the role (C1); the other admin of a mesh restarts through a Build as the same NodeId in a new
 /// birth (C3); the fabric-primary is never killed, it is deleted by a Build it executes itself,
 /// its stopping birth is not an election candidate, and the new fabric-primary's election is
 /// announced, with the old birth not a ready candidate, before the host sees the old process gone (C2); a
-/// restarted primary keeps its NodeId and holds no seat while the admin that filled it lives, a late admin takes no seat from a living
-/// holder, a deleted path cannot be restarted and a deleted NodeId never returns,
+/// restarted primary keeps its NodeId and holds no role while the admin that filled it lives, a late admin takes no role from a living
+/// primary, a deleted path cannot be restarted and a deleted NodeId never returns,
 /// across a repeated hand-off (C19). At every stable checkpoint each admin's own view equals the
 /// election function and every other admin's, exactly one admin validates a topology write and the
 /// others reject it naming the fabric-primary. From the spans: no two effective executors share an
@@ -2796,18 +2796,18 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let executor = st.primary_of(&om);
     let executor_name = s(&executor["name"]);
     let survivor = st.secondary_of(&om);
-    // A broker that holds no seat: its restart starts with its own stop, which the hold below keeps in flight
-    // (a seat holder's restart first commands the holder, which a held holder cannot answer).
-    let broker = st.nodes.iter().filter(|n| n["mesh"] == om.as_str() && n["kind"] == "broker" && n["is_primary"] != true).map(|n| s(&n["name"])).min().unwrap_or_else(|| panic!("R3: {om} holds a broker without a seat"));
+    // A broker that holds no role: its restart starts with its own stop, which the hold below keeps in flight
+    // (a primary's restart first commands the primary, which a held primary cannot answer).
+    let broker = st.nodes.iter().filter(|n| n["mesh"] == om.as_str() && n["kind"] == "broker" && n["is_primary"] != true).map(|n| s(&n["name"])).min().unwrap_or_else(|| panic!("R3: {om} holds a broker without a primary role"));
     let broker_before = f.estate.node_value(&broker).await;
     let fabric_build = s(&st.fabric["build_id"]);
     point_entry_away(&mut f, &st, &executor_name).await;
     let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].as_u64().unwrap()).unwrap();
-    // A target holding a seat has it moved first by node.primary.update and is stopped by its successor
-    // (node-stop.md, Seat holder): the seat's move is the call's own attempt, handed off, and the restart
+    // A target holding a role has it moved first by node.primary.update and is stopped by its successor
+    // (node-stop.md, PrimaryRole primary): the role's move is the call's own attempt, handed off, and the restart
     // runs in the attempt after it.
-    let seat_first = broker_before["is_primary"] == true;
-    let restart_attempt = attempt_before + 1 + u64::from(seat_first);
+    let role_first = broker_before["is_primary"] == true;
+    let restart_attempt = attempt_before + 1 + u64::from(role_first);
     a.traffic.aim = Some(broker.clone());
     // The broker's exact runtime is held before the restart is asked, so the restart's own stop is in flight
     // when the executor dies: its stop-node gets no answer from a held runtime until its send bound, and the
@@ -3018,7 +3018,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
 /// the formed estate two Build-executed admin restarts each open exactly the next attempt of the Build
 /// the fabric already names (same Build id, one attempt further, one executor, the same NodeId in a
 /// new birth). Then a non-fabric-primary mesh primary, executing the restart of a broker that holds no
-/// seat, is SIGKILLed (a death the story names) with that attempt in flight and the broker out of
+/// role, is SIGKILLed (a death the story names) with that attempt in flight and the broker out of
 /// service: the broker's exact runtime is held from before the restart is asked, so the restart's own
 /// stop is in flight, and the kill lands inside the held stop's bound (the stop-node's 5 s send bound,
 /// measured from the request); the broker is released after the kill, and seeded puts are aimed at it
@@ -3146,12 +3146,12 @@ fn op_to(f: &Formed, a: &mut Run, node: &Value, via: Option<&str>, tag: &str, wi
     t.ops.len() - 1
 }
 
-/// The edges `holder` (a gateway or compute) holds toward `node_id`, from its own connection snapshot.
+/// The edges `primary` (a gateway or compute) holds toward `node_id`, from its own connection snapshot.
 fn directs_to(estate: &Estate, holder: &str, node_id: &str) -> Vec<Value> {
     snapshot(estate, holder)["own_latest_directs"].as_array().into_iter().flatten().filter(|d| d["destination"]["node_id"] == node_id).cloned().collect()
 }
 
-/// `holder` holds a Connected Direct edge to the current birth of `node_id` and, when `old_inc` is
+/// `primary` holds a Connected Direct edge to the current birth of `node_id` and, when `old_inc` is
 /// given, none to that superseded birth. The connections convergence bound is the same 30 s the
 /// formation cells use; a bound that fires is the finding.
 async fn await_edge(estate: &Estate, holder: &str, node_id: &str, new_inc: &str, old_inc: Option<&str>) -> Value {
@@ -3181,7 +3181,7 @@ fn carried_get(estate: &Estate, node: &Value, via: &str, key: &str) -> Call {
     c
 }
 
-/// `holder` originates a put to `dest` over its held projection: Direct, and the reply names the
+/// `primary` originates a put to `dest` over its held projection: Direct, and the reply names the
 /// destination's current birth. The put is an operation of the cell's ledger (a stable id, its key and
 /// value), so the accounting sees every put the brokers apply. Returns the ledger index.
 fn originate_op(f: &Formed, a: &mut Run, holder: &str, dest: &Value, window: &'static str) -> usize {
@@ -3326,7 +3326,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
     let gw = format!("{mesh}.gateway.1");
     // The canary: a value only this node's data dir holds. A node-admin serves no proof store (op 0x70
     // is a role-node protocol; its answer is `Unserved`), so its identity is proven by its view, its
-    // runtime and its election seat.
+    // runtime and its election role.
     let serves_proof_store = kind != "node_admin";
     let (mut ckey, mut cval) = (String::new(), String::new());
     if serves_proof_store {
@@ -3411,7 +3411,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
         _ => Value::Null,
     };
     // Every compute and gateway holds an edge to the current primary node-admin birth and none to a superseded one.
-    // A Connected fact a cross-mesh holder keeps for a superseded birth is listed under `routing` (observed
+    // A Connected fact a cross-mesh primary keeps for a superseded birth is listed under `routing` (observed
     // above), never required away here: the required edges are the current primary node-admin's.
     let connections = converge_connections_after_restart(f, inv, &node_id).await;
     let rec = json!({
@@ -3875,7 +3875,7 @@ fn stop_evidence(spans: &[Value], rec: &Value) -> Value {
     })
 }
 
-/// No Connected Direct edge from `holder` to any birth of `node_id` (a deleted node): its pooled
+/// No Connected Direct edge from `primary` to any birth of `node_id` (a deleted node): its pooled
 /// connections to it are gone. Bounded by the same 30 s as every connections convergence.
 async fn await_no_edge(estate: &Estate, holder: &str, node_id: &str) -> Value {
     let until = Instant::now() + Duration::from_secs(30);
@@ -3891,7 +3891,7 @@ async fn await_no_edge(estate: &Estate, holder: &str, node_id: &str) -> Value {
 }
 
 /// The Connected Direct facts any gateway or compute still holds toward `node_id`, observed (not
-/// required away): a cross-mesh holder's fact about a deleted or replaced birth.
+/// required away): a cross-mesh primary's fact about a deleted or replaced birth.
 fn stale_facts_toward(estate: &Estate, f: &Formed, node_id: &str) -> Vec<Value> {
     let mut out = Vec::new();
     for h in f.shape.names().into_iter().filter(|n| matches!(launch_id(n), "gateway" | "compute")) {
@@ -4722,7 +4722,7 @@ fn orig_get(f: &Formed, holder: &str, dest: &str, key: &str) -> Call {
     probe_call(&f.estate, &["originate", "--target", &format!("path:{holder}"), "--destination", &format!("path:{dest}"), "--key", key])
 }
 
-/// `holder` dials `dest` (a core Ping outside route resolution, as a node's own background traffic
+/// `primary` dials `dest` (a core Ping outside route resolution, as a node's own background traffic
 /// reaches a peer): the pooled connection it opens is a Direct Connected fact of its own.
 fn dial(f: &Formed, holder: &str, dest: &str) -> Call {
     let c = probe_call(&f.estate, &["dial", "--target", &format!("path:{holder}"), "--destination", &format!("path:{dest}"), "--key", "x"]);
@@ -4730,12 +4730,12 @@ fn dial(f: &Formed, holder: &str, dest: &str) -> Call {
     c
 }
 
-/// `holder`'s latest Direct fact toward the node named `dest`, from its own snapshot.
+/// `primary`'s latest Direct fact toward the node named `dest`, from its own snapshot.
 fn latest_direct(snap: &Value, dest: &str) -> Option<Value> {
     snap["own_latest_directs"].as_array().into_iter().flatten().find(|d| d["destination"]["name"] == dest).cloned()
 }
 
-/// Wait (a bound that fires is the finding) until `holder`'s latest Direct toward `dest` satisfies `ok`.
+/// Wait (a bound that fires is the finding) until `primary`'s latest Direct toward `dest` satisfies `ok`.
 async fn await_direct(estate: &Estate, holder: &str, dest: &str, what: &str, bound: Duration, ok: impl Fn(&Value) -> bool) -> Value {
     let until = Instant::now() + bound;
     let t0 = Instant::now();
@@ -5300,7 +5300,7 @@ fn lifecycle_marks(spans: &[Value], from: u64, to: u64) -> Vec<String> {
         .filter(|sp| start_ns(sp) >= from && start_ns(sp) <= to)
         .map(|sp| s(&sp["name"]))
         // A death, a tombstone, a departure, a rebirth or a terminate. Not among them (Q89,
-        // fabric-recovery.md): the drift attempt that hands a seat back after a heal, and the
+        // fabric-recovery.md): the drift attempt that hands a role back after a heal, and the
         // provider inspection a takeover makes of the lost birth, which adopts its runtime handle.
         .filter(|n| {
             n.contains(".node.delete.")
@@ -5396,7 +5396,7 @@ async fn partition_run(cell: &str, shape: Shape) {
     let views_during = one_primary_through(&f, &admin_names, cut_at, window * 2, "during the cut").await;
     events.push(json!({"event": "partitioned", "held_for_ms": (held_at - cut_at) / 1_000_000, "same_mesh_calls": [local1.out["call_outcome"], local2.out["call_outcome"]], "cross_mesh_call": cross.out["call_outcome"], "views": views_during}));
 
-    // C10: heal. Every admin holds every pre-cut member ready, on the computed seats, with one fabric-primary;
+    // C10: heal. Every admin holds every pre-cut member ready, on the computed roles, with one fabric-primary;
     // the cross-mesh route converges; every birth is the one that was cut.
     let healed_at = now_ns();
     drop(cut);
@@ -5731,7 +5731,7 @@ async fn control_run(cell: &str, shape: Shape) {
     events.push(json!({"event": "healed", "victim": vname, "healed_at_ns": healed_at, "quiet_after": [after0, after1], "re_created_after_a_verdict": renewed_ids}));
     a.events.extend(events.iter().cloned());
     let seen = observer.seen.lock().unwrap().clone();
-    let final_seats: BTreeSet<String> = st.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
+    let final_roles: BTreeSet<String> = st.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
     let marks = (cut_at, healed_at, after0, after1, quiet0, quiet1);
     // A restart, node.stop then node.start, keeps the node's id and incarnation (node-stop.md, "Kept":
     // "node.id, incarnation, ..."): the observer hears the restarted broker under the birth it was formed
@@ -5752,14 +5752,14 @@ async fn control_run(cell: &str, shape: Shape) {
         }
         // Status frames are event-driven: every message is five identical sends (one changed_at) and nothing else.
         let sends = named(spans, "rdm.mesh.fabric.update.via-status-send");
-        // A message is five sends of one change. The sender may stop early only by losing the seat it publishes
+        // A message is five sends of one change. The sender may stop early only by losing the role it publishes
         // for (the formation moves each mesh's primary once, to the lowest NodeId), or because a newer change of
         // the same scope replaced it (`StatusReinforcement::observe`: a change replaces any change still being
         // reinforced; a lifecycle changing pending, ready within
-        // milliseconds sends only the last of them five times). A sender that holds its seat at the end sent all
+        // milliseconds sends only the last of them five times). A sender that holds its role at the end sent all
         // five of its newest change.
-        let (odd, status_messages) = odd_status_messages(spans, &sends, &final_seats);
-        assert!(odd.is_empty(), "every status message is five sends of one change per publisher term, unless its sender lost the seat or a newer change replaced it: {odd:?}");
+        let (odd, status_messages) = odd_status_messages(spans, &sends, &final_roles);
+        assert!(odd.is_empty(), "every status message is five sends of one change per publisher term, unless its sender lost the role or a newer change replaced it: {odd:?}");
         let quiet_after: Vec<&&Value> = sends.iter().filter(|sp| start_ns(sp) >= marks.2 && start_ns(sp) <= marks.3).collect();
         assert!(quiet_after.is_empty(), "the converged fabric is quiet: {} status sends in the closing window", quiet_after.len());
         // Versions: a publisher's topology_version never goes backward; one birth's digest_seq never goes backward
@@ -5797,14 +5797,14 @@ async fn control_run(cell: &str, shape: Shape) {
 }
 
 /// The status messages that are not five sends of one change, and how many messages there were. A message is
-/// one change under one publisher term: a sender whose mesh publisher role stops (its view cut off, or its seat
+/// one change under one publisher term: a sender whose mesh publisher role stops (its view cut off, or its role
 /// gone) and starts again adopts the fact it held and republishes it, the same `changed_at_rafka_ms`, five
 /// sends again (`MeshStatusPublisher::observe` / `StatusReinforcement::republish`: "the lifecycle state did not
 /// change, so the fact keeps its old `changed_at_rafka_ms`"); a term begins at the sender's
-/// `via-aggregate-publisher` start. A sender may stop early by losing the seat it publishes for, or because a
+/// `via-aggregate-publisher` start. A sender may stop early by losing the role it publishes for, or because a
 /// newer change of the same scope replaced it (`StatusReinforcement::observe`: a change replaces any change
-/// still being reinforced); a sender that holds its seat at the end sent all five of its newest change.
-fn odd_status_messages(spans: &[Value], sends: &[&Value], seats: &BTreeSet<String>) -> (Vec<((String, String, String), usize)>, usize) {
+/// still being reinforced); a sender that holds its role at the end sent all five of its newest change.
+fn odd_status_messages(spans: &[Value], sends: &[&Value], roles: &BTreeSet<String>) -> (Vec<((String, String, String), usize)>, usize) {
     let mut starts: BTreeMap<(String, String), Vec<u64>> = BTreeMap::new();
     for sp in named(spans, "rdm.mesh.backbone.update.via-aggregate-publisher").into_iter().filter(|sp| sp["attributes"]["role"] == "start") {
         starts.entry((s(&sp["attributes"]["node"]), format!("mesh:{}", s(&sp["attributes"]["mesh"])))).or_default().push(start_ns(sp));
@@ -5822,8 +5822,8 @@ fn odd_status_messages(spans: &[Value], sends: &[&Value], seats: &BTreeSet<Strin
         *at = (*at).max(start_ns(sp));
         *groups.entry(key).or_default() += 1;
     }
-    // The sender lost the seat it published for after the message's last send: its own election named another
-    // mesh-primary of the scope's mesh then (the seats a checkpoint read may predate that).
+    // The sender lost the role it published for after the message's last send: its own election named another
+    // mesh-primary of the scope's mesh then (the roles a checkpoint read may predate that).
     let lost_after = |sender: &str, scope: &str, after: u64| {
         let mesh = scope.strip_prefix("mesh:").unwrap_or("");
         named(spans, "rdm.mesh.election.resolve.via-mesh-primary").into_iter().any(|sp| sp["attributes"]["observer"] == sender && sp["attributes"]["mesh"] == mesh && start_ns(sp) > after && sp["attributes"]["winner_path"] != sender)
@@ -5837,7 +5837,7 @@ fn odd_status_messages(spans: &[Value], sends: &[&Value], seats: &BTreeSet<Strin
     let messages = groups.len();
     let odd = groups
         .into_iter()
-        .filter(|((sender, scope, changed_at), n)| *n > 5 || (*n < 5 && seats.contains(sender) && !lost_after(sender, scope, last[&(sender.clone(), scope.clone(), changed_at.clone())]) && newest[&(sender.clone(), scope.clone())] == changed_at.split('#').next().unwrap_or_default().parse::<u64>().unwrap()))
+        .filter(|((sender, scope, changed_at), n)| *n > 5 || (*n < 5 && roles.contains(sender) && !lost_after(sender, scope, last[&(sender.clone(), scope.clone(), changed_at.clone())]) && newest[&(sender.clone(), scope.clone())] == changed_at.split('#').next().unwrap_or_default().parse::<u64>().unwrap()))
         .collect();
     (odd, messages)
 }
@@ -6295,7 +6295,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     let after1 = now_ns();
     events.push(json!({"event": "healed", "healed_at_ns": healed_at, "quiet_after": [after0, after1], "converged": converged, "new_node_ids_at": renewed}));
     a.events.extend(events.iter().cloned());
-    let final_seats: BTreeSet<String> = st2.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
+    let final_roles: BTreeSet<String> = st2.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
     let (mate_n, mate_id, wm) = (s(&mate["name"]), s(&mate["node_id"]), window_ms);
     let (f0, vn2, vmeshes) = (formation.clone(), vnames.clone(), victims.iter().map(|v| (s(&v["name"]), s(&v["mesh"]))).collect::<Vec<_>>());
     // The cut primary's mesh: its mesh topology is the backbone receipt every peer-mesh admin's coverage of that
@@ -6306,8 +6306,8 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     close_run(f, a, inv, nodes, launches, primaries, connections, scenarios, json!({"events": events}), move |_f, spans, inv| {
         // Status frames are event-driven: every message is five identical sends of one change; none in the closing quiet window.
         let sends = named(spans, "rdm.mesh.fabric.update.via-status-send");
-        let (odd, status_messages) = odd_status_messages(spans, &sends, &final_seats);
-        assert!(odd.is_empty(), "every status message is five sends of one change per publisher term, unless its sender lost the seat or a newer change replaced it: {odd:?}");
+        let (odd, status_messages) = odd_status_messages(spans, &sends, &final_roles);
+        assert!(odd.is_empty(), "every status message is five sends of one change per publisher term, unless its sender lost the role or a newer change replaced it: {odd:?}");
         let quiet_after: Vec<&&Value> = sends.iter().filter(|sp| start_ns(sp) >= after0 && start_ns(sp) <= after1).collect();
         assert!(quiet_after.is_empty(), "the converged fabric is quiet: {} status sends in the closing window", quiet_after.len());
         let tv = topology_versions(spans);
@@ -6358,7 +6358,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
 /// its own view, each node-admin of the other mesh re-feeds it (its coverage of a peer-mesh admin is its own
 /// backbone receipt only, and the victim's receipts stopped), and its mesh-mate announces itself mesh primary;
 /// the victim knows it is cut off. Repair stays at one attempt per pair per window, aimed at the victim. The cut
-/// is dropped: the fabric settles on the computed seats with one writer, every node is the birth it was, and a
+/// is dropped: the fabric settles on the computed roles with one writer, every node is the birth it was, and a
 /// quiet fabric is quiet again. Every status message of the run is five identical sends of one change, none in the
 /// quiet windows. Canon: gossip.md section 6 (held-member stale coverage; a forwarded frame refreshes no node's
 /// coverage) and R-G2 (forwarded topology carries topology, never liveness). What must NOT happen: a node
@@ -6374,7 +6374,7 @@ async fn mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every
 /// admin of the fabric-primary's mesh, each cut from every node including the other. Every other node-admin
 /// marks both silent and each node-admin of a victim's peer mesh re-feeds it; each victim knows it is cut off;
 /// repair stays at one attempt per pair per window and names a victim. The cuts are dropped and the fabric
-/// settles on the computed seats with every node the birth it was. What must NOT happen: a node declared dead,
+/// settles on the computed roles with every node the birth it was. What must NOT happen: a node declared dead,
 /// restarted or replaced from silence, a Build, a status heartbeat, a repair aimed at a node that was not cut.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer() {
@@ -6609,7 +6609,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
         let v = f.estate.node_values_at(&st.fp_name()).await;
         let n = v.iter().find(|n| n["name"] == car.as_str() && n["status"] == "ready" && n["incarnation_id"] == carrier_inc0.as_str()).cloned()?;
         let b = build_attempt(&f.estate, &st, &formation).await;
-        // The restart moves the carrier's seat to the second gateway first, and the written seat move
+        // The restart moves the carrier's role to the second gateway first, and the written role move
         // moves its attempt's revision: the stop and start may complete under the next attempt.
         (b["state"] == "complete" && b["attempt"].as_u64().is_some_and(|x| x >= attempt_c)).then_some(n)
     })
@@ -6687,8 +6687,8 @@ async fn mock_direct_edge_loss_to_a_mesh_primary_declares_no_death() {
 /// Proxy that names the old carrier) and section 9 H, I, K (a deletion write failure is safe and retried; a
 /// sent request is never rerouted). What must NOT happen: a second durable deletion, a call sent twice, a
 /// Direct route chosen while the deletion is owed, an answer from a superseded birth. Each mesh holds a
-/// second gateway: the restarted carrier may hold its type's seat, and a restart of a seat holder with no
-/// successor is refused by name (node-stop.md, Primary), so its seat moves to the second gateway first.
+/// second gateway: the restarted carrier may hold its type's role, and a restart of a primary with no
+/// successor is refused by name (node-stop.md, Primary), so its role moves to the second gateway first.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once() {
     let tier = any_tier();
@@ -6969,7 +6969,7 @@ async fn soak_run(cell: &str, story: Story) {
     inv.holds("the driver judged no rule broken: every round's invariants held and the ledger reconciled", !failed, json!({"violations": report.violations, "ledger_violations": report.ledger.violations}));
     inv.holds(&format!("{}: at least one named fault/heal/recovery cycle completed (the action converged and the invariants held at its checkpoint)", story.id), !cycles.is_empty(), json!({"cycle_kinds": story.cycle_kinds, "completed": cycles.len(), "first": cycles.first(), "action_kinds": action_kinds}));
     inv.holds("the seeded schedule is recorded: the seed, every executed action and every scheduler event", report.executed.len() == rows.len() && !report.schedule.is_empty(), json!({"seed": seed, "actions": report.executed.len(), "events": report.schedule.len()}));
-    inv.holds("checkpointed invariants: every round carries the invariants that held after it (or names the cut that defers them to its Heal row)", judged + deferred == rows.len() && judged > 0, json!({"rounds": rows.len(), "judged": judged, "deferred_during_cut": deferred, "invariants": ["one-current-birth-per-path", "live-admin-answers", "fabric-build-id-held", "no-peer-mesh-permanently-unheard", "one-fabric-primary", "seats-equal-the-public-candidates", "every-rpc-node-reachable-on-its-current-birth"]}));
+    inv.holds("checkpointed invariants: every round carries the invariants that held after it (or names the cut that defers them to its Heal row)", judged + deferred == rows.len() && judged > 0, json!({"rounds": rows.len(), "judged": judged, "deferred_during_cut": deferred, "invariants": ["one-current-birth-per-path", "live-admin-answers", "fabric-build-id-held", "no-peer-mesh-permanently-unheard", "one-fabric-primary", "primaries-equal-the-public-candidates", "every-rpc-node-reachable-on-its-current-birth"]}));
     inv.holds("continuous traffic: operations were issued, each classified once from its typed outcome", report.ledger.issued > 0, json!({"issued": report.ledger.issued, "buckets": report.ledger.buckets, "details": report.ledger.details, "applied_mutations": report.ledger.applied_mutations, "stores_reconciled": report.ledger.stores_reconciled}));
     inv.holds("the path RAN: the brokers served the operations and the topology actions ran as Build attempts", served > 0 && reconciles > 0, json!({"proof_store_serve_spans": served, "build_attempt_spans": reconciles}));
     if story.id == "S1" {
@@ -7009,7 +7009,7 @@ async fn mock_soak_routing_preserves_continuous_invariants() {
 /// CONTRACT (S2, authority, #2949): the same estate, traffic and ledger, with the seeded draw
 /// limited to node-admins: restarts, kills and holds of a non-primary admin and mesh-primary
 /// hand-offs (the fabric-primary's included, only through the hand-off Build). After every action
-/// each live admin holds the same births, there is exactly one fabric-primary, the seats equal
+/// each live admin holds the same births, there is exactly one fabric-primary, the roles equal
 /// the public candidates', and the current build_id is the accepted Build's. The fabric-primary is
 /// never signalled and no mesh loses every node-admin. What must NOT happen: two effective
 /// writers, a fabric without a mesh primary after convergence, a minted Build for drift, or an
@@ -7055,9 +7055,9 @@ async fn mock_soak_lifecycle_preserves_continuous_invariants() {
 /// birth comes back and serves the value stored before the hold. While cut, each admin holds its own
 /// mesh ready; healed, every birth that was ready at the cut is ready again as itself on both sides.
 /// A hold judges the held birth: a Build attempt replaced it only when a receipt of it terminated,
-/// deleted, created or restarted the node at its path; a hand-back of the fabric seat owed as the
-/// hold began is an attempt of the current Build that moves a seat (fabric-recovery.md "The loss of
-/// the fabric-primary while a node-admin lives" step 4, Q96), and the seat is judged at its home, the
+/// deleted, created or restarted the node at its path; a hand-back of the fabric-primary role owed as the
+/// hold began is an attempt of the current Build that moves a role (fabric-recovery.md "The loss of
+/// the fabric-primary while a node-admin lives" step 4, Q96), and the role is judged at its home, the
 /// first fabric-primary's path.name the committed takeover owes it to (Q107 (4), Q104).
 /// A host that cannot drop UDP fails the cell by name. What must NOT happen: a terminate or a new
 /// birth at a held path, a birth lost across a cut, a death during a cut, a new Build for an

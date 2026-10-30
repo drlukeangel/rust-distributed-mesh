@@ -1,7 +1,7 @@
 //! A real node.topology.get installs the recovery floor; subsequent gossip cannot move it back.
 use tracing::Instrument;
 
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PublisherId, Seat, Primary};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PublisherId, PrimaryRole, Primary};
 use rdm_transport::topology::{learn_addresses, mesh_channel, Frame, TopologyView, StatusEvent};
 use rdm_transport::snapshot::{Chunk, Taken};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -27,7 +27,7 @@ fn operation(d: &MeshDigest, command: &str) -> LifecycleOp {
     LifecycleOp { build_id: "recovery-receive".into(), attempt: 1, operation: format!("node.{command}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
 }
 
-/// CONTRACT: topology RPC installs the held version, births, terminal/lifecycle evidence and seats.
+/// CONTRACT: topology RPC installs the held version, births, terminal/lifecycle evidence and roles.
 /// Stale replacement state, publications/deltas, delayed facts and reserved positions then change
 /// none of that state. Statuses retain their prior authored context; R10 has its own revision cell.
 #[test]
@@ -58,18 +58,18 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         let receiver=TopologyView::join(&receiver_gossip,&receiver_ep,&fabric,"mesh1",&mesh,"mesh1.rpc.9",rdm_transport::clock::os_clock(),vec![addr], &[]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5),topic.joined()).await.unwrap().unwrap();
         let (sender,_rx)=topic.split();
-        let (restarted,started,deleted,holder)=(birth(&fabric,&mesh,"mesh1.rpc.1",1),birth(&fabric,&mesh,"mesh1.rpc.2",2),birth(&fabric,&mesh,"mesh1.rpc.3",3),birth(&fabric,&mesh,"mesh1.rpc.4",4));
+        let (restarted,started,deleted,rpc_primary)=(birth(&fabric,&mesh,"mesh1.rpc.1",1),birth(&fabric,&mesh,"mesh1.rpc.2",2),birth(&fabric,&mesh,"mesh1.rpc.3",3),birth(&fabric,&mesh,"mesh1.rpc.4",4));
         let (stop,delete)=(operation(&started,"stop"),operation(&deleted,"delete"));
         // The version the read serves carries the rpc node-type primary record its publisher put in it:
         // a read serves a version's content as published, never records taken since (gossip.md §3.1).
-        let full=vec![own.clone(),restarted.clone(),started.clone(),MeshDigest{is_primary:Some(10),..holder.clone()}];
+        let full=vec![own.clone(),restarted.clone(),started.clone(),MeshDigest{is_primary:Some(10),..rpc_primary.clone()}];
         assert!(matches!(server_topology_view.take_read_chunk(Chunk{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:None,topology_version:100,snapshot_id:1,chunk_index:0,chunk_count:1,digests:full.clone(),in_flight:vec![],deleted:vec![delete.clone()]},"mesh1"),Taken::Installed(_)));
-        let seat_of=|d:&MeshDigest,revision|Primary{mesh:"mesh1".into(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone(),revision};
-        for (seat,d) in [(Seat::MeshPrimary,&own),(Seat::FabricPrimary,&own),(Seat::NodeTypePrimary(NodeKind::RpcNode),&holder)] {server_topology_view.primaries().take(seat,&seat_of(d,10));}
+        let primary_of=|d:&MeshDigest,revision|Primary{mesh:"mesh1".into(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone(),revision};
+        for (role,d) in [(PrimaryRole::MeshPrimary,&own),(PrimaryRole::FabricPrimary,&own),(PrimaryRole::NodeTypePrimary(NodeKind::RpcNode),&rpc_primary)] {server_topology_view.primaries().take(role,&primary_of(d,10));}
         let answer_own=own.clone();assert!(slot.set(Arc::new(rdm_node::topology_read::TopologyDoor::new(server_topology_view.clone(),Arc::new(move||answer_own.clone()),time))).is_ok());
         let mut serial=0;
-        for d in [&own,&restarted,&started,&deleted,&holder] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::Digest{digest:old},serial,&author).await;}
-        let old_full=vec![own.clone(),restarted.clone(),deleted.clone(),holder.clone()].into_iter().map(|mut d|{d.digest_seq=1;d}).collect();
+        for d in [&own,&restarted,&started,&deleted,&rpc_primary] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::Digest{digest:old},serial,&author).await;}
+        let old_full=vec![own.clone(),restarted.clone(),deleted.clone(),rpc_primary.clone()].into_iter().map(|mut d|{d.digest_seq=1;d}).collect();
         serial+=1;send(&sender,&receiver,Frame::MeshTopology{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:10,published_at_rafka_ms:10,snapshot_id:1,chunk_index:0,chunk_count:1,digests:old_full,in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},serial,&author).await;
         serial+=1;send(&sender,&receiver,Frame::MeshStatus{mesh:"mesh1".into(),status:"ready".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         serial+=1;send(&sender,&receiver,Frame::FabricStatus{fabric:fabric.clone(),status:"ready".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
@@ -81,12 +81,12 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         assert!(receiver.digest_view.in_flight().is_empty(),"the read installs the operations' completion/later lifecycle evidence");
         assert!(receiver.digest_view.is_deleted(deleted.node.node_id.as_str()));
         assert!(receiver.digest_view.get(deleted.node.node_id.as_str()).is_none());
-        assert_eq!(receiver.primaries().node_type_primary("mesh1",NodeKind::RpcNode),Some(seat_of(&holder,10)));
-        for d in [&restarted,&started,&holder] {assert_eq!(receiver.digest_view.get(d.node.node_id.as_str()).unwrap().0.digest_seq,100);}
+        assert_eq!(receiver.primaries().node_type_primary("mesh1",NodeKind::RpcNode),Some(primary_of(&rpc_primary,10)));
+        for d in [&restarted,&started,&rpc_primary] {assert_eq!(receiver.digest_view.get(d.node.node_id.as_str()).unwrap().0.digest_seq,100);}
         let before:Vec<_>=full.iter().map(|d|receiver.digest_view.get(d.node.node_id.as_str()).unwrap().0).collect();
         let statuses=(receiver.mesh_status("mesh1"),receiver.fabric_status());
-        let (births,changes,overlays,seats)=(receiver.digest_view.birth_changes(),receiver.digest_view.digest_changes(),receiver.digest_view.overlay_changes(),receiver.primaries().subscribe());
-        let counts=(*births.borrow(),*changes.borrow(),*overlays.borrow(),*seats.borrow());
+        let (births,changes,overlays,roles)=(receiver.digest_view.birth_changes(),receiver.digest_view.digest_changes(),receiver.digest_view.overlay_changes(),receiver.primaries().subscribe());
+        let counts=(*births.borrow(),*changes.borrow(),*overlays.borrow(),*roles.borrow());
         let bad=iroh::SecretKey::generate().public();
         let mut stale=restarted.clone();stale.digest_seq=99;stale.node.endpoint_id=EndpointId(bad.to_string());stale.data_dir = Some("obsolete=yes".into());
         let mut frames=vec![
@@ -94,21 +94,21 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
             Frame::MeshStatus{mesh:"mesh1".into(),status:"deleting".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:99},
             Frame::FabricStatus{fabric:fabric.clone(),status:"deleting".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:99},
             Frame::MeshTopology{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:99,published_at_rafka_ms:200,snapshot_id:2,chunk_index:0,chunk_count:1,digests:vec![stale.clone(),deleted.clone()],in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},
-            Frame::MeshTopologyDelta{mesh:"mesh1".into(),source_publisher:publisher.clone(),base_version:98,topology_version:99,published_at_rafka_ms:200,changed:vec![stale],removed:vec![holder.node.node_id.to_string()],in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},
+            Frame::MeshTopologyDelta{mesh:"mesh1".into(),source_publisher:publisher.clone(),base_version:98,topology_version:99,published_at_rafka_ms:200,changed:vec![stale],removed:vec![rpc_primary.node.node_id.to_string()],in_flight:vec![stop.clone(),delete.clone()],deleted:vec![]},
             StatusEvent::Stopped.frame(stop,publisher.clone(),10),StatusEvent::Deleting.frame(delete.clone(),publisher.clone(),10),
             Frame::NodeDeleted{op:delete.clone(),forwarded_by:None},
-            Frame::Concern{seat:Seat::FabricPrimary,node_id:own.node.node_id.clone(),incarnation:own.node.incarnation.clone(),observer:"mesh2.admin.1".into()},
+            Frame::Concern{role:PrimaryRole::FabricPrimary,node_id:own.node.node_id.clone(),incarnation:own.node.incarnation.clone(),observer:"mesh2.admin.1".into()},
             Frame::NodeConnectionsDeleting{op:delete.clone(),forwarded_by:None},Frame::NodeConnectionsDeleted{op:delete.clone(),forwarded_by:None},Frame::NodeLeaving{op:delete.clone(),forwarded_by:None},Frame::NodeLeft{op:delete,forwarded_by:None},
-            Frame::NewFabricPrimary{holder:seat_of(&restarted,99),endpoint_id:bad.to_string(),transport_addr:"127.0.0.1:12099".parse().unwrap(),admin_api_base:None},
+            Frame::NewFabricPrimary{primary:primary_of(&restarted,99),endpoint_id:bad.to_string(),transport_addr:"127.0.0.1:12099".parse().unwrap(),admin_api_base:None},
         ];
         for frame in frames.drain(..) {
             serial+=1;send(&sender,&receiver,frame,serial,&author).await;
             assert_eq!(receiver.held_source_version("mesh1"),Some((publisher.clone(),100)));
             for held in &before {assert_eq!(receiver.digest_view.get(held.node.node_id.as_str()).unwrap().0,*held,"no category moves back the read-installed birth");}
             assert_eq!((receiver.mesh_status("mesh1"),receiver.fabric_status()),statuses);
-            assert_eq!(receiver.primaries().node_type_primary("mesh1",NodeKind::RpcNode),Some(seat_of(&holder,10)));
-            assert_eq!(receiver.primaries().mesh("mesh1"),Some(seat_of(&own,10)));assert_eq!(receiver.primaries().fabric(),Some(seat_of(&own,10)));
-            assert_eq!((*births.borrow(),*changes.borrow(),*overlays.borrow(),*seats.borrow()),counts);
+            assert_eq!(receiver.primaries().node_type_primary("mesh1",NodeKind::RpcNode),Some(primary_of(&rpc_primary,10)));
+            assert_eq!(receiver.primaries().mesh("mesh1"),Some(primary_of(&own,10)));assert_eq!(receiver.primaries().fabric(),Some(primary_of(&own,10)));
+            assert_eq!((*births.borrow(),*changes.borrow(),*overlays.borrow(),*roles.borrow()),counts);
             assert!(receiver.digest_view.in_flight().is_empty());assert!(receiver.digest_view.is_deleted(deleted.node.node_id.as_str()));assert!(receiver.digest_view.get(deleted.node.node_id.as_str()).is_none());
             assert!(receiver.desynced_sources().is_empty());assert!(receiver.location_view().addrs(bad).is_empty(),"refused gossip supplies no endpoint");
         }

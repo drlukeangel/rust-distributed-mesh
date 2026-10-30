@@ -9,7 +9,7 @@
 //! `build_log::log_fact`. The spans an estate exports are the flame of each cell; no cell asserts behaviour
 //! from them.
 //!
-//! The estate: `mesh1` (two node-admins, one rpc node) holds the fabric-primary seat, and `mesh2`
+//! The estate: `mesh1` (two node-admins, one rpc node) holds the fabric-primary role, and `mesh2`
 //! (two node-admins, two rpc nodes) is run by its own primary, so a node of `mesh2` is executed by
 //! an admin that is not the fabric-primary and every Build crosses a real `build.attempt.run`.
 
@@ -143,10 +143,10 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     named(spans, name)
 }
 
-/// The rpc node of `mesh2` that holds no seat: executed by `mesh2`'s own primary with no preceding
-/// seat move, so its stop is one attempt (`accepted.attempt`).
+/// The rpc node of `mesh2` that holds no role: executed by `mesh2`'s own primary with no preceding
+/// role move, so its stop is one attempt (`accepted.attempt`).
 async fn secondary_node(estate: &Estate) -> PathName {
-    estate.node_views().await.into_iter().filter(|n| n.name.to_string().starts_with("mesh2.rpc.") && !n.is_primary).map(|n| n.name).min().expect("an rpc node of mesh2 holding no seat")
+    estate.node_views().await.into_iter().filter(|n| n.name.to_string().starts_with("mesh2.rpc.") && !n.is_primary).map(|n| n.name).min().expect("an rpc node of mesh2 holding no primary role")
 }
 
 /// CONTRACT (acceptance 1): `node.stop` over `0x20` is one call. The stream is `Started`, a frame
@@ -820,7 +820,7 @@ async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_an
     assert_eq!(keys.len(), before, "no step has two receipts");
     assert_eq!(receipts.attempt, accepted.attempt, "the restored fabric-primary started the attempt that was claimed and opened no other");
 
-    // The estate stops through the admin that holds the seat now.
+    // The estate stops through the admin that holds the role now.
     // A surviving admin's view names the restored birth: the estate dials it from then on.
     let _ = estate.node_views_at(&path(&caller.survivor_of(&fp))).await;
     estate.enter(&path(&restored)).await;
@@ -838,15 +838,15 @@ async fn a_restored_fabric_primary_starts_the_attempt_its_predecessor_claimed_an
 
 /// CONTRACT (acceptance 5; the approved proposal node-primary-update-fabric-mesh-and-node-type.md,
 /// Part C1 step 8: "Only then does the commanding Build continue, and only once the successor's
-/// installation is acknowledged"): a planned seat move mid-Build ends the caller's outer stream with
-/// the typed new-seat frame, never `Indeterminate`. `mesh1` holds the fabric-primary seat, and the
-/// Build deletes `mesh1`: before the delete is claimed, the fabric-primary moves the fabric seat alone
+/// installation is acknowledged"): a planned role move mid-Build ends the caller's outer stream with
+/// the typed new-role frame, never `Indeterminate`. `mesh1` holds the fabric-primary role, and the
+/// Build deletes `mesh1`: before the delete is claimed, the fabric-primary moves the fabric-primary role alone
 /// to `mesh2`'s primary by node.fabric-primary.update (op `0x21`, mesh-delete.md step 1), and the Build
 /// goes on at the new fabric-primary. The successor installs the election's result the call carries
 /// (`primary.update.via-primary-updated` at the new fabric-primary, `held`) before the old fabric-primary's drive refuses in its
-/// span and names the new seat, so the caller's re-submit by the Build id at the seat the frame names
+/// span and names the new role, so the caller's re-submit by the Build id at the role the frame names
 /// is accepted and streams to `Complete`.
-/// Must NOT happen: the new seat named to the caller before it installed (its re-submit refused
+/// Must NOT happen: the new role named to the caller before it installed (its re-submit refused
 /// `not-fabric-primary`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_planned_handover_mid_build_ends_the_outer_stream_with_the_new_fabric_primary_and_the_old_one_dispatches_nothing() {
@@ -854,46 +854,46 @@ async fn a_planned_handover_mid_build_ends_the_outer_stream_with_the_new_fabric_
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
-    let old_seat = carrier.fabric_primary().to_string();
-    assert!(old_seat.starts_with("mesh1."), "mesh1 holds the fabric-primary seat: {old_seat}");
+    let old_role = carrier.fabric_primary().to_string();
+    assert!(old_role.starts_with("mesh1."), "mesh1 holds the fabric-primary role: {old_role}");
 
-    // The Build deletes mesh1; the seat leaves with it, by a planned handover inside the Build.
+    // The Build deletes mesh1; the role leaves with it, by a planned handover inside the Build.
     let keep = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] };
     let mut stream = carrier.create(estate.shape_change_at(&carrier, &keep).await).await.expect("the fabric-primary accepts the delete of mesh1");
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
-    let new_seat = loop {
+    let new_role = loop {
         match stream.next().await {
-            Some(Ok(BuildFrame::FabricPrimaryMoved { fabric_primary })) => break fabric_primary.expect("the old seat names the new one"),
+            Some(Ok(BuildFrame::FabricPrimaryMoved { fabric_primary })) => break fabric_primary.expect("the old role names the new one"),
             Some(Ok(BuildFrame::Complete { .. })) => panic!("the old fabric-primary cannot finish a delete of its own mesh"),
             Some(Ok(BuildFrame::Failed { operation, step, reason, .. })) => panic!("the Build failed at {operation} {step}: {reason}"),
             Some(Ok(_)) => continue,
-            Some(Err(end)) => panic!("a planned seat move ends the outer stream with the typed new-seat frame, never as {end:?}"),
+            Some(Err(end)) => panic!("a planned role move ends the outer stream with the typed new-primary frame, never as {end:?}"),
             None => panic!("the stream ended without a terminal frame"),
         }
     };
-    assert!(new_seat.starts_with("mesh2."), "the seat moved to mesh2's primary: {new_seat}");
-    assert_ne!(new_seat, old_seat);
+    assert!(new_role.starts_with("mesh2."), "the role moved to mesh2's primary: {new_role}");
+    assert_ne!(new_role, old_role);
 
-    // The caller re-submits the same Build at the seat the frame names.
-    let at_new_seat = BuildCarrier::new(caller.client.clone(), path(&new_seat));
-    let mut resumed = at_new_seat.resubmit(&build_id, attempt).await.expect("the new seat accepts the re-submit by build_id");
+    // The caller re-submits the same Build at the role the frame names.
+    let at_new_role = BuildCarrier::new(caller.client.clone(), path(&new_role));
+    let mut resumed = at_new_role.resubmit(&build_id, attempt).await.expect("the new role accepts the re-submit by build_id");
     assert_eq!(resumed.build_id(), &build_id, "never a second Build");
     until_complete(&mut resumed).await;
 
-    estate.enter(&path(&new_seat)).await;
+    estate.enter(&path(&new_role)).await;
     estate.stop().await;
     let spans = estate.spans();
     let build = &build_id.as_str();
     let handover_calls = spans_named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| sp["attributes"]["op"].as_str().and_then(|o| o.parse::<u64>().ok()).or_else(|| sp["attributes"]["op"].as_u64()) == Some(0x21)).count();
-    assert!(handover_calls >= 1, "the seat moved by the fabric-primary handover, op 0x21");
+    assert!(handover_calls >= 1, "the role moved by the fabric-primary handover, op 0x21");
     let yielded: Vec<_> = spans_named(&spans, "rdm.node_admin.build.reject.via-fabric-primary-changed").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
-    assert!(!yielded.is_empty(), "the old fabric-primary's dispatch after its seat moved was refused, SeatYielded in its span");
-    assert!(yielded.iter().all(|sp| s(&sp["attributes"]["node"]) == old_seat), "{yielded:?}");
-    let installed: Vec<_> = spans_named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["node"]) == new_seat && s(&sp["attributes"]["outcome"]) == "held").collect();
+    assert!(!yielded.is_empty(), "the old fabric-primary's dispatch after its role moved was refused, RoleYielded in its span");
+    assert!(yielded.iter().all(|sp| s(&sp["attributes"]["node"]) == old_role), "{yielded:?}");
+    let installed: Vec<_> = spans_named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["node"]) == new_role && s(&sp["attributes"]["outcome"]) == "held").collect();
     assert_eq!(installed.len(), 1, "the new fabric-primary installed the election's result once: {installed:?}");
     let installed_at = installed[0]["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
     let early: Vec<_> = yielded.iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) <= installed_at).collect();
-    assert!(early.is_empty(), "C1 step 8: the old seat's drive names the new seat only once the successor installed ({installed_at}): {early:?}");
+    assert!(early.is_empty(), "C1 step 8: the old role's drive names the new role only once the successor installed ({installed_at}): {early:?}");
     estate.record_trace_url(yielded[0]["trace_id"].as_str().unwrap_or(""));
 }
 
@@ -1044,7 +1044,7 @@ struct Lost {
     build_id: BuildId,
     /// The attempt the lost fabric-primary's run executed.
     attempt: u32,
-    /// The admin that holds the fabric-primary seat after it.
+    /// The admin that holds the fabric-primary role after it.
     restored: String,
     /// The carrier at the restored fabric-primary, after it streamed the Build to `Complete`.
     carrier: BuildCarrier,
@@ -1111,7 +1111,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     let mut resumed = carrier.resubmit(&build_id, attempt).await.expect("the restored fabric-primary accepts the re-submit by build_id");
     assert_eq!(resumed.build_id(), &build_id, "never a second Build");
     until_complete(&mut resumed).await;
-    // The estate is read and stopped through the admin that holds the seat now.
+    // The estate is read and stopped through the admin that holds the role now.
     // A surviving admin's view names the restored birth: the estate dials it from then on.
     let _ = estate.node_views_at(&path(&caller.survivor_of(&fp))).await;
     estate.enter(&path(&restored)).await;

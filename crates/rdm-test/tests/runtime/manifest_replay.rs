@@ -243,7 +243,7 @@ fn launched_path(o: &Value) -> PathBuf {
 /// launches; each runs the bound path with the bound hash (read from the provider, not a span); a
 /// proof round-trip through the launched nodes succeeds; restarting a node and the second admin
 /// runs the same binding under the same NodeId and incarnation (the restarted broker holds its type's
-/// seat, so the second broker takes it first: node-stop.md, Seat holder); the estate's spans carry the
+/// role, so the second broker takes it first: node-stop.md, PrimaryRole holder); the estate's spans carry the
 /// consumer admin's service and never the built-in admin's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scenario_runner_launches_explicit_external_binary_set() {

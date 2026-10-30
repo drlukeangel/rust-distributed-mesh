@@ -6,12 +6,12 @@
 //! SIGKILLed there by exact pid; the door dies with it. The owner's attempt ends the moment its view
 //! holds the lost primary unheard (`via-final-primary-lost`), never on the hand-off bound, and the next
 //! attempts delete the lost primary by its node.delete, amend the roster with the new final
-//! primary once it is seated (or created, when none survives), and finish at mesh.deleted: its
+//! primary once it is primary (or created, when none survives), and finish at mesh.deleted: its
 //! completion covers the accepted roster plus the amendment but the new final primary, which stays
 //! alive. Its end is its own node.delete (mesh-delete.md step 7), after which MeshLeft covers every
 //! birth, both primary births included.
 //!
-//! This stem is form (a): a surviving admin of mesh2 the election seats. Form (b), no admin of mesh2
+//! This stem is form (a): a surviving admin of mesh2 the election names. Form (b), no admin of mesh2
 //! survives and the fabric-primary creates the one node-admin the leaving mesh may gain, is
 //! `mesh_lifecycle__mesh_delete_no_survivor`, over the shared run and assertions here. Form (c) is
 //! form (a) with a member's delete cut right after its exited verdict: the primary is killed holding
@@ -106,7 +106,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     want.extend((1..=mesh2_admins).map(|i| format!("mesh2.admin.{i}")));
     let before = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
     // A mesh delete waits for the Build in progress (Q170): the fabric is ready before mesh2
-    // goes, so the admin seated after the primary's loss reads mesh2 deleting from its mesh's own rows.
+    // goes, so the admin in its role after the primary's loss reads mesh2 deleting from its mesh's own rows.
     estate.until_fabric_ready(Duration::from_secs(90)).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).unwrap_or_else(|| panic!("mesh2 has a minted id"));
     let primary = before.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));
@@ -317,7 +317,7 @@ pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
 }
 
 /// CONTRACT: mesh2's primary, killed while it holds rpc.2's StopNode receipt, is replaced as the
-/// leave's final primary by the surviving admin the election seats: the fabric-primary records
+/// leave's final primary by the surviving admin the election names: the fabric-primary records
 /// the lost primary's exact Exited, then one RosterAmended naming the predecessor and the
 /// survivor, and the resumed attempt finishes; MeshLeft covers the four births of the accepted
 /// roster, which already holds the survivor, both primaries included.
@@ -340,7 +340,7 @@ async fn a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_adm
 /// step 4: the executor records the complete delete receipt and emits node.deleted; the Build
 /// carrier: "Completed steps are not rerun"). mesh2's primary is killed holding rpc.1 at its
 /// NodeDeleted receipt (rpc.1 exited and its exact Exited receipted, no NodeDeleted) and rpc.2 at
-/// its StopNode receipt. The surviving admin the election seats finishes rpc.1's delete: its
+/// its StopNode receipt. The surviving admin the election names finishes rpc.1's delete: its
 /// receipted TerminateRuntime is reused (the runtime is not terminated again), NodeDeleted is
 /// executed and published, and the delete ends; the leave then finishes as in form (a): mesh2 holds
 /// no ordinary node in any view once mesh.deleted ends the mesh.delete, and MeshLeft covers the four

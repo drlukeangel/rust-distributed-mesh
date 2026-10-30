@@ -1,11 +1,11 @@
-//! i143.e11.s4 process E2E: a role cohort's seat is the one election (PRD §11, §13.1).
+//! i143.e11.s4 process E2E: a role cohort's role is the one election (PRD §11, §13.1).
 //!
 //! One fabric, `{node_admin: 1, broker: 3, gateway: 1, compute: 1}`. From public surfaces only:
-//! - every cohort advertises exactly one primary (`seats_as_expected`), a role cohort like an rpc
+//! - every cohort advertises exactly one primary (`roles_as_expected`), a role cohort like an rpc
 //!   cohort;
 //! - kill the broker primary (SIGKILL): the next-lowest ready broker is announced by a
 //!   `rdm.mesh.election.resolve.via-recompute` span with `kind = broker`; the view's one broker
-//!   primary is that successor, which keeps its seat over the birth drift recovery brings back at the
+//!   primary is that successor, which keeps its role over the birth drift recovery brings back at the
 //!   killed path whatever NodeId it drew (elections §5) — read the way a product reads it, by
 //!   `is_primary` on `node.get` (`Nodes::get`), never computed product-side.
 
@@ -36,7 +36,7 @@ fn live(nodes: &[Value]) -> Vec<Value> {
 
 async fn settle(estate: &Estate, label: &str) -> Vec<Value> {
     estate
-        .until_view(&format!("{label}: the view settles on the computed seats"), Duration::from_secs(30), |views| {
+        .until_view(&format!("{label}: the view settles on the computed roles"), Duration::from_secs(30), |views| {
             let nodes = live(&Estate::values(views));
             (!nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready") && primaries_as_expected(&nodes).is_ok()).then_some(nodes)
         })
@@ -64,7 +64,7 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap();
     estate.kill_node(&killed).await;
-    // The seat vacates only on the provider's exited verdict, which node recovery takes at the killed
+    // The role vacates only on the provider's exited verdict, which node recovery takes at the killed
     // birth's TRUE OFFLINE mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
     // winner it elected and the birth it replaced: the election's span is the only place that fact lives,
     // so the span is awaited.
@@ -79,10 +79,10 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     })
     .await;
 
-    // A product reads the seat from node-admin's view and never computes it. Drift recovery
+    // A product reads the role from node-admin's view and never computes it. Drift recovery
     // brings a new birth back at the killed path within seconds, a new NodeId, a candidate for a later vacancy that
     // never displaces the successor, whatever NodeId it drew (fabric-node-lifecycle-elections.md §5:
-    // "a living holder keeps its seat; a lower-NodeId candidate that later becomes Ready never
+    // "a living primary keeps its role; a lower-NodeId candidate that later becomes Ready never
     // displaces it"): the one advertised broker primary is the announced successor, and the killed
     // birth is no longer ready anywhere in the view.
     let view = estate

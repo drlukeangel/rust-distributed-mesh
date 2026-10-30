@@ -236,7 +236,7 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     let spans: Vec<Value> = estate.spans();
     assert!(
         named(&spans, "rdm.node_admin.primary.update.via-primary-updated").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "outcome") == "held" && attr(sp, "primaries").contains("fabric ") && attr(sp, "primaries").contains(&format!("-> {heir_id}/")))
-            || named(&spans, "rdm.mesh.primary.update.via-announcement").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "seat") == "fabric-primary" && attr(sp, "holder").contains(&heir_id)),
+            || named(&spans, "rdm.mesh.primary.update.via-announcement").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "role") == "fabric-primary" && attr(sp, "primary").contains(&heir_id)),
         "the heir installed the fabric-primary from the update's call or from its own election (the other mesh's primary id is {} the heir's: {})",
         if discriminating { "below" } else { "above" },
         other_primary.1

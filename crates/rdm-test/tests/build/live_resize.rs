@@ -7,8 +7,8 @@
 //! After every step, from public surfaces only:
 //! - the Build completes and the view settles on exactly the desired count of
 //!   each cohort, all `ready` (which ordinals remain depends on
-//!   where the seats are: shrink deletes non-primaries);
-//! - every seat is the one the election computes from the view's NodeIds
+//!   where the roles are: shrink deletes non-primaries);
+//! - every role is the one the election computes from the view's NodeIds
 //!   (one primary per cohort, the lowest ready NodeId; one fabric primary);
 //!   shrink deletes non-primaries, highest ordinal first;
 //! - no two nodes advertise the same endpoint (no port collision);
@@ -46,7 +46,7 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], befor
     let build_id = estate.reconcile_shape("fabric1", meshes).await.build_id.to_string();
     // Exactly the desired nodes, all ready.
     let nodes = Estate::values(&estate.settles_to(meshes, Duration::from_secs(15)).await);
-    // Every seat is a held one, and a holder that survived the step still holds it.
+    // Every role is a held one, and a primary that survived the step still holds it.
     if let Err(e) = primaries_as_expected(&nodes).and_then(|()| primaries_kept(before, &nodes)) {
         panic!("{label}: {e}: {nodes:#?}");
     }

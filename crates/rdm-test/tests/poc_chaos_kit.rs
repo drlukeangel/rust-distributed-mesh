@@ -164,8 +164,8 @@ async fn poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric() 
     let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"].iter().map(|s| s.to_string()).collect();
     let before = estate.settles_to_named(&want, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let holder = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).unwrap();
-    let holder_dir = if holder.to_string() == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1") } else { PathBuf::from(estate.data_dir(&holder.to_string()).await) };
+    let primary = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).unwrap();
+    let primary_dir = if primary.to_string() == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1") } else { PathBuf::from(estate.data_dir(&primary.to_string()).await) };
     let rpc_id = estate.node_view("mesh1.rpc.1").await.node_id;
     for (path, pid) in estate.live_runtimes() {
         if path.file_name().unwrap().to_string_lossy().contains(".admin.") {
@@ -173,13 +173,13 @@ async fn poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric() 
         }
     }
     estate.kill_bootstrap();
-    estate.restart_admin_with(&holder_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
-    estate.enter(&holder).await;
+    estate.restart_admin_with(&primary_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    estate.enter(&primary).await;
     let after = estate.settles_to_named(&want, Duration::from_secs(240)).await;
     let fabric = estate.fabric_view().await;
     assert_eq!(fabric.build_id.as_deref(), Some(build.as_str()), "the same Build: {fabric:?}");
     let rpc_after = after.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap();
     assert_eq!(rpc_after.node_id, rpc_id, "the live member is preserved");
-    eprintln!("poc: restarted {holder}; fabric {:?}", fabric.status);
+    eprintln!("poc: restarted {primary}; fabric {:?}", fabric.status);
     estate.stop().await;
 }

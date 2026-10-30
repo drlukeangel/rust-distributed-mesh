@@ -1,5 +1,5 @@
 //! i143.e4.s8, i143.e12.s49 process E2E: deleting the fabric-primary's own mesh hands the
-//! fabric-primary seat to a surviving mesh first, then deletes the mesh. The fabric does not move;
+//! fabric-primary role to a surviving mesh first, then deletes the mesh. The fabric does not move;
 //! its primary does. mesh.delete ends at mesh.deleted with the mesh-primary alive; its end is a
 //! separate node.delete, with the fabric-primary as executor.
 //!
@@ -14,7 +14,7 @@
 //! publishes MeshLeft only once the final birth's node.delete has its exact exited verdict. R-RX4 (a
 //! live mesh with no primary goes unheard) does not cover a deleted mesh.
 //!
-//! desired {mesh1, mesh2, mesh3} -> {mesh2, mesh3} through one Build, mesh1 holding the fabric seat.
+//! desired {mesh1, mesh2, mesh3} -> {mesh2, mesh3} through one Build, mesh1 holding the fabric-primary role.
 //! A desired change, never a recovery: no proven-drift Build names mesh1 and nothing recreates a
 //! mesh1 node (subfeature `fabric-primary-handover`). Then `node.delete` of mesh1's last admin.
 //!
@@ -24,7 +24,7 @@
 //! is that mesh's publisher of record ... it publishes the deleted mesh's own mesh topology on
 //! the backbone, publisher itself, `digests` empty, the stopped admin in `in_flight` as NodeStopped
 //! ... until ... a delete moves the birth to `deleted` as NodeDeleted." The
-//! seat lands on the lowest NodeId among mesh2's and mesh3's primaries (the election's, never
+//! role lands on the lowest NodeId among mesh2's and mesh3's primaries (the election's, never
 //! chosen here). Every receiver read is made at BOTH surviving meshes, the fabric-primary's own and
 //! the other, so every run covers both placements.
 
@@ -73,7 +73,7 @@ fn alive(pid: u64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| !st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
 }
 
-/// CONTRACT: deleting the mesh that holds the fabric seat hands the seat to a surviving mesh's
+/// CONTRACT: deleting the mesh that holds the fabric-primary role hands the role to a surviving mesh's
 /// primary first, then deletes the mesh. The mesh.delete ends at mesh.deleted: the fabric-primary
 /// validates the handoff and records its completion receipt, and stops nothing of mesh1's final
 /// primary, which stays alive, publishing mesh1's topology with itself the only member and
@@ -305,7 +305,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     };
     let members: Vec<String> = mesh1_pids.iter().map(|(n, _)| n.clone()).filter(|n| *n != final_name).collect();
     // mesh-delete.md step 3: each member's end is the whole node.delete, a node-admin's the same as
-    // any member's: it holds no seat, so no node.primary.update precedes it (R-MT1).
+    // any member's: it holds no role, so no node.primary.update precedes it (R-MT1).
     for name in &members {
         let order = order_in(name, false);
         let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
@@ -400,7 +400,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
 
     // 2. The final primary's node.delete under C, executed by the fabric-primary: its whole node.stop
     // (the delete of a mesh's only node skips node.primary.update, R-MT1: "delete is skipped if it's
-    // the only node on the mesh"; its seat stays with it), the provider's exact exited verdict, its row
+    // the only node on the mesh"; its role stays with it), the provider's exact exited verdict, its row
     // Deleted, NodeDeleted, its removal.
     let order = order_in(&final_name, true);
     let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
@@ -501,36 +501,36 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     assert!(end_ns(&finished) <= start_ns(&installed), "the issued writes finished, then the successor's install");
     assert!(end_ns(&installed) <= start_ns(&left) && end_ns(&left) < first_member_stop, "the fabric-primary left mesh1 before DeleteMesh and every stop");
     assert!(named(&spans, "rdm.node_admin.primary.reject.via-primary-update").is_empty(), "no node.primary.update was refused");
-    // Commands go down: every 0x21 call is the holder's node.primary.update on its successor.
+    // Commands go down: every 0x21 call is the primary's node.primary.update on its successor.
     let calls: Vec<&Value> = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21).collect();
-    assert!(!calls.is_empty() && calls.iter().all(|sp| descends_from(&spans, sp, &updating)), "every 0x21 call is the holder's call on its successor: {calls:?}");
+    assert!(!calls.is_empty() && calls.iter().all(|sp| descends_from(&spans, sp, &updating)), "every 0x21 call is the primary's call on its successor: {calls:?}");
 
     // A desired change, not a recovery.
     assert!(!named(&spans, "rdm.node_admin.build.create.via-proven-drift").iter().any(|sp| s(&sp["attributes"]["scope"]).contains("mesh1")), "no recovery Build names mesh1");
     let created = named(&spans, "rdm.node_admin.node.create.via-build");
     assert!(!created.iter().any(|sp| (sp["attributes"]["build_id"] == b.as_str() || sp["attributes"]["build_id"] == c.as_str()) && s(&sp["attributes"]["node"]).starts_with("mesh1.")), "nothing recreates a mesh1 node");
 
-    // rafka-time: the fabric seat moved from the deleted mesh1 to the lowest NodeId among the
-    // remaining mesh primaries (R-A2). The other remaining mesh primary, which does not hold the seat,
+    // rafka-time: the fabric-primary role moved from the deleted mesh1 to the lowest NodeId among the
+    // remaining mesh primaries (R-A2). The other remaining mesh primary, which does not hold the role,
     // pulled once from the new fabric-primary and adopted its time under the mesh-primary rule.
-    let holder = fabric_primary.clone();
-    let holder_id = after.iter().find(|n| s(&n["name"]) == holder).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("the fabric primary {holder} is in the settled view"));
-    assert!(["mesh2.admin.1", "mesh3.admin.1"].contains(&holder.as_str()), "the seat left the deleted mesh1 for a remaining mesh primary: {holder}");
-    let other = if holder == "mesh2.admin.1" { "mesh3.admin.1" } else { "mesh2.admin.1" };
+    let primary = fabric_primary.clone();
+    let primary_id = after.iter().find(|n| s(&n["name"]) == primary).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("the fabric primary {primary} is in the settled view"));
+    assert!(["mesh2.admin.1", "mesh3.admin.1"].contains(&primary.as_str()), "the role left the deleted mesh1 for a remaining mesh primary: {primary}");
+    let other = if primary == "mesh2.admin.1" { "mesh3.admin.1" } else { "mesh2.admin.1" };
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
-    let moved: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-fabric-primary-changed").into_iter().filter(|sp| attr(sp, "node") == other && attr(sp, "to") == holder_id).collect();
-    assert_eq!(moved.len(), 1, "{other} pulled once from {holder} when the fabric seat moved to it: {moved:?}");
+    let moved: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-fabric-primary-changed").into_iter().filter(|sp| attr(sp, "node") == other && attr(sp, "to") == primary_id).collect();
+    assert_eq!(moved.len(), 1, "{other} pulled once from {primary} when the fabric-primary role moved to it: {moved:?}");
     assert_eq!(attr(moved[0], "outcome"), "adopted", "{:?}", moved[0]);
     let adopted = named(&spans, "rdm.mesh.entry.update.via-rafka-time-adopted");
     let child = adopted.iter().find(|a| descends_from(&spans, a, moved[0])).expect("the adoption is a child of the pull");
     assert_eq!(
         (attr(child, "node").as_str(), attr(child, "source").as_str(), attr(child, "via").as_str(), attr(child, "kind").as_str(), attr(child, "served_by").as_str()),
-        (other, "pull", "get-topology", "fabric-primary", holder.as_str())
+        (other, "pull", "get-topology", "fabric-primary", primary.as_str())
     );
 
-    // The successor is the holder's exact birth (gossip.md "A primary change on gossip": its digest then
+    // The successor is the primary's exact birth (gossip.md "A primary change on gossip": its digest then
     // carries `is_fabric_primary`, and the other remaining mesh-primary pulled from it above).
-    let h = after.iter().find(|n| s(&n["name"]) == holder).unwrap();
-    assert!(attr_s(&installed, "primaries").contains(&format!("-> {}/{} @", s(&h["node_id"]), s(&h["incarnation_id"]))), "the successor is the holder's exact birth: {installed} {h}");
+    let h = after.iter().find(|n| s(&n["name"]) == primary).unwrap();
+    assert!(attr_s(&installed, "primaries").contains(&format!("-> {}/{} @", s(&h["node_id"]), s(&h["incarnation_id"]))), "the successor is the primary's exact birth: {installed} {h}");
     estate.record_trace_url(&s(&installed["trace_id"]));
 }

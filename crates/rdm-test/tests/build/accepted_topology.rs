@@ -70,8 +70,8 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
 
     // 1. Day 0: the first Build, exact.
     let b0 = current_build(&estate).await;
-    // The fabric seat appears one gossip interval before the executor's next pass: wait for the Build
-    // itself, never for the seat that precedes it.
+    // The fabric-primary role appears one gossip interval before the executor's next pass: wait for the Build
+    // itself, never for the role that precedes it.
     build_log::build_fact(&estate.carrier().await, &b0, "complete", Duration::from_secs(60), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
     let day0 = build_log::build_value(&estate.carrier().await, &b0).await;
     assert_eq!(paths(&day0, "mesh1"), ["mesh1.admin.1"], "{day0}");
@@ -130,7 +130,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     estate.until_node("mesh1.rpc.3", "mesh1.rpc.3 is heard again", Duration::from_secs(20), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
 
     // 6. An admin that misses a Build catches up to the current Build when it is back.
-    let quiet = estate.node_values().await.into_iter().find(|n| n["kind"] == "node_admin" && n["name"] != "mesh1.admin.1" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no seat");
+    let quiet = estate.node_values().await.into_iter().find(|n| n["kind"] == "node_admin" && n["name"] != "mesh1.admin.1" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no primary role");
     let quiet_name = quiet["name"].as_str().unwrap().to_string();
     let stopped = estate.pid_of(&quiet_name).await;
     // Stopped across the acceptance only, never past the staleness floor: the admin misses the Build's
@@ -225,7 +225,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert_eq!((sa["build_id"].as_str(), sa["mesh"].as_str(), sa["attempt"].as_str()), (Some(r4.as_str()), Some("mesh1"), Some(attempt.as_str())), "the recovery is the next attempt of mesh1's lane of the accepted Build: {submit}");
     assert_eq!(sa["outcome"], format!("complete: attempt {attempt}"), "the submit followed the recovery to its terminal: {submit}");
     // The mesh-primary's own door admitted it (R-BI7: it opens the recovery attempt itself, whoever
-    // holds the fabric seat), in process, under the submit.
+    // holds the fabric-primary role), in process, under the submit.
     let opened = named(&spans, "rdm.node_admin.build.update.via-recovery")
         .into_iter()
         .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["attempt"] == attempt.as_str() && sp["attributes"]["node"] == "mesh1.rpc.2")

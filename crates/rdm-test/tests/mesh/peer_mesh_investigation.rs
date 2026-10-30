@@ -5,7 +5,7 @@
 //! manifest, rpc ledger and every process's spans, feature `i143-2803-detect`).
 //!
 //! The estate: two meshes of two node-admins and three rpc nodes, settled through a Build. The
-//! peer mesh is the one whose admins do not hold the fabric seat. Time is the elapsed time since the
+//! peer mesh is the one whose admins do not hold the fabric-primary role. Time is the elapsed time since the
 //! fabric primary's last direct backbone receipt from the mesh, on the investigation's rungs
 //! (`Rungs::configured`, from the staleness floor `RDM_STALENESS_MS`): probe 1, the silent mark,
 //! probe 2 and the decision at 20 s, 30 s, 40 s and 60 s at the 30 s default floor.
@@ -298,25 +298,25 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     sampler.abort();
     let statuses = statuses.lock().unwrap().clone();
     // The return to ready is five sends a second apart, from the fabric primary for as long as it
-    // holds the seat: the mesh, its node-admin created, can take the seat (the election is the lowest ready NodeId), and
+    // holds the role: the mesh, its node-admin created, can take the role (the election is the lowest ready NodeId), and
     // a publisher that loses the role ends the sends still to come.
     let degraded_ms = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or(0);
     let fp_for_sends = f.fabric_primary.clone();
-    let seat_lost_or_five = |spans: &[Value]| {
+    let role_lost_or_five = |spans: &[Value]| {
         let sent = named(spans, "rdm.mesh.fabric.update.via-status-send")
             .into_iter()
             .filter(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready" && at_ns(sp) / 1_000_000 > degraded_ms)
             .count();
         let any_sent = named(spans, "rdm.mesh.fabric.update.via-status-send").into_iter().any(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready" && at_ns(sp) / 1_000_000 > degraded_ms);
-        let seat_lost = any_sent && named(spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().any(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "role") == "stop" && at_ns(sp) / 1_000_000 > degraded_ms);
-        (sent, seat_lost)
+        let role_lost = any_sent && named(spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().any(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "role") == "stop" && at_ns(sp) / 1_000_000 > degraded_ms);
+        (sent, role_lost)
     };
-    wait_for("the return to ready is sent five times or the seat moves", Duration::from_secs(30), || {
-        let (sent, seat_lost) = seat_lost_or_five(&f.estate.spans());
-        async move { (sent >= 5 || seat_lost).then_some(()) }
+    wait_for("the return to ready is sent five times or the role moves", Duration::from_secs(30), || {
+        let (sent, role_lost) = role_lost_or_five(&f.estate.spans());
+        async move { (sent >= 5 || role_lost).then_some(()) }
     })
     .await;
-    let seat_moved = seat_lost_or_five(&f.estate.spans()).1;
+    let role_moved = role_lost_or_five(&f.estate.spans()).1;
     assert_eq!(f.estate.accepted_build_id().await, f.accepted, "no new Build: the current build_id is unchanged");
     assert_eq!(f.estate.mesh_view(&f.lost).await.id.expect("the lost mesh still has its id").to_string(), f.lost_mesh_id, "{} keeps its own MeshId", f.lost);
     let new_births = births(&after);
@@ -362,8 +362,8 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     // R-D1: until the mesh is heard again the fabric primary holds it as a mesh. The ladder's decision
     // releases the first recovering node-admin only: one attempt, for mesh node-admin 1. Every other node of the
     // mesh is reconciled once the mesh is heard again (by its new mesh primary's own sweep or the drift pass).
-    // The window ends when the fabric primary hears the mesh again, or when it loses the seat to the mesh's new
-    // mesh (its drift pass is then no one's but the new holder's). Heard again is its first direct backbone receipt
+    // The window ends when the fabric primary hears the mesh again, or when it loses the role to the mesh's new
+    // mesh (its drift pass is then no one's but the new primary's). Heard again is its first direct backbone receipt
     // of the mesh after the verdict (the snapshot installed off the backbone), the instant the R-D1 target reads
     // (`Ladder::target` over `DigestView::mesh_unheard`); the ladder's own heard-again verdict comes on its next
     // checklist, after it.
@@ -374,7 +374,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
         .chain(named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "outcome") == "heard-again").map(at_ns))
         .chain(named(&spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "role") == "stop" && at_ns(sp) >= at_ns(verdict)).map(at_ns))
         .min()
-        .unwrap_or_else(|| panic!("{fp} heard {} again after its node-admin was created, or gave up the seat", f.lost));
+        .unwrap_or_else(|| panic!("{fp} heard {} again after its node-admin was created, or gave up the role", f.lost));
     let drifts: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-carrier-edge-lost").into_iter().filter(|sp| attr(sp, "primary") == fp && attr(sp, "mesh") == f.lost).collect();
     let while_unheard: Vec<&&Value> = drifts.iter().filter(|sp| at_ns(sp) >= at_ns(verdict) && at_ns(sp) < heard_again).collect();
     assert_eq!(while_unheard.len(), 1, "one attempt while {} is held unheard, for its first recovering node-admin: {while_unheard:#?}", f.lost);
@@ -401,8 +401,8 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     assert!(authored_for_peer_before_verdict.is_empty(), "the fabric primary sends no MeshStatus for {} during probing: {authored_for_peer_before_verdict:#?}", f.lost);
     let authored_for_peer: Vec<&&Value> = sends.iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "scope") == format!("mesh:{}", f.lost)).collect();
     assert!(!authored_for_peer.is_empty() && authored_for_peer.iter().all(|sp| attr(sp, "status") == "degraded"), "the fabric primary authors {}'s MeshStatus degraded at the verdict and no lifecycle status: {authored_for_peer:#?}", f.lost);
-    // Degraded is the fabric primary's alone. The return to ready is the seat holder's: the fabric
-    // primary's while it holds the seat, else the admin that took it (the election is the lowest ready NodeId).
+    // Degraded is the fabric primary's alone. The return to ready is the primary's: the fabric
+    // primary's while it holds the role, else the admin that took it (the election is the lowest ready NodeId).
     let sent_by = |status: &str, from_ms: u64, only_fp: bool| -> BTreeMap<(String, String), usize> {
         let mut by_change: BTreeMap<(String, String), usize> = BTreeMap::new();
         for sp in sends.iter().filter(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == status && at_ns(sp) / 1_000_000 >= from_ms && (!only_fp || attr(sp, "node") == fp)) {
@@ -412,10 +412,10 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     };
     let degraded_sent = sent_by("degraded", last_heard_ms, true);
     assert!(!degraded_sent.is_empty() && degraded_sent.values().all(|n| *n == 5), "degraded is one change sent five identical times: {degraded_sent:?}");
-    let ready_sent = sent_by("ready", degraded_ms, !seat_moved);
+    let ready_sent = sent_by("ready", degraded_ms, !role_moved);
     assert!(!ready_sent.is_empty(), "the return to ready was sent: {ready_sent:?}");
-    if seat_moved {
-        assert!(ready_sent.values().all(|n| (1..=5).contains(n)), "one change, sent while its author held the seat: {ready_sent:?}");
+    if role_moved {
+        assert!(ready_sent.values().all(|n| (1..=5).contains(n)), "one change, sent while its author held the primary role: {ready_sent:?}");
     } else {
         assert!(ready_sent.values().all(|n| *n == 5), "ready is one change sent five identical times: {ready_sent:?}");
     }
@@ -726,9 +726,9 @@ async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_e
     estate.stop().await;
     let spans = estate.spans();
     for m in &lost {
-        // The fabric primary that decided the node.create probed the mesh: the seat can move to a
-        // created admin while the other mesh is still unheard, and its ladder starts over from the seat.
-        // A fabric primary that loses the seat takes its ladder with it, so the next holder decides
+        // The fabric primary that decided the node.create probed the mesh: the role can move to a
+        // created admin while the other mesh is still unheard, and its ladder starts over from the role.
+        // A fabric primary that loses the role takes its ladder with it, so the next holder decides
         // again for a mesh it has not yet heard: a mesh gets its node-admin at least once, from any one
         // fabric primary at most once.
         let creates: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == *m).collect();

@@ -1,6 +1,6 @@
 //! A node.create accepted right after a node.delete of the same class completed, before the
 //! fabric-primary's view has dropped the deleted birth: the soak `i143-rshape-soak-authority-container`
-//! at `2a641bf6` (its 97th checklist, a hand-off of mesh2's seat) saw the create reconciled against a view
+//! at `2a641bf6` (its 97th checklist, a hand-off of mesh2's role) saw the create reconciled against a view
 //! that still held the deleted admin, plan no operation and complete, and nothing re-created the path
 //! in the 150 s it waited (i143 PRD, e10.s2 "The fifth run").
 use rdm_client::{LaunchKind as NodeKind, NodeStatus};
@@ -46,7 +46,7 @@ async fn a_create_accepted_inside_a_deletions_window_births_the_path_once() {
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    // The soak's shape: the deleted node is mesh2's seat-holding node-admin (a hand-off), so the seat
+    // The soak's shape: the deleted node is mesh2's role-holding node-admin (a hand-off), so the role
     // moves to the other admin, which executes the delete, and the create is a node-admin in mesh2.
     let path = estate.mesh_view("mesh2").await.primary_admin.expect("mesh2 has a primary admin").to_string();
     let path = path.as_str();

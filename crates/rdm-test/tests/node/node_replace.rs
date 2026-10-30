@@ -33,7 +33,7 @@ fn ready(node: &Value) -> bool {
     node["status"] == "ready"
 }
 
-/// A birth that holds or contends for a seat and serves (`NodeStatus::is_live`).
+/// A birth that holds or contends for a role and serves (`NodeStatus::is_live`).
 fn live(node: &Value) -> bool {
     matches!(node["status"].as_str(), Some("pending" | "ready" | "connections-deleting"))
 }
@@ -111,7 +111,7 @@ async fn recovery_span(estate: &Estate, node: &str, node_id: &Value) -> Value {
     .await
 }
 
-/// The member under test in a two-mesh estate: an rpc node holding no seat, of the mesh that does NOT hold the
+/// The member under test in a two-mesh estate: an rpc node holding no role, of the mesh that does NOT hold the
 /// fabric-primary, so its mesh-primary is not the fabric-primary; that mesh-primary's path.name; and
 /// the fabric-primary's view row.
 fn placement(nodes: &[Value]) -> (String, String, Value) {
@@ -119,10 +119,10 @@ fn placement(nodes: &[Value]) -> (String, String, Value) {
     let mesh = if primary["mesh"] == "mesh1" { "mesh2" } else { "mesh1" };
     let mesh_primary = s(&nodes.iter().find(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).expect("the node's mesh-primary")["name"]);
     assert_ne!(mesh_primary, s(&primary["name"]), "the member's mesh-primary is not the fabric-primary");
-    // The member is an rpc node holding no seat: a cohort's primary runs node.primary.update before its
+    // The member is an rpc node holding no role: a cohort's primary runs node.primary.update before its
     // own node.connection.delete, stop or delete (lifecycles/node-connections-delete.md step 0), which
     // is not the member workflow these cells follow.
-    let member = nodes.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "rpc_node" && n["is_primary"] != true).map(|n| s(&n["name"])).min().expect("an rpc member of the mesh that holds no seat");
+    let member = nodes.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "rpc_node" && n["is_primary"] != true).map(|n| s(&n["name"])).min().expect("an rpc member of the mesh that holds no primary role");
     (member, mesh_primary, primary)
 }
 
@@ -554,7 +554,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     let nodes = estate.node_values().await;
     let primary = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     let mesh_primary = s(&nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("the mesh-primary")["name"]);
-    assert_eq!(mesh_primary, primary, "one mesh: its primary holds the fabric-primary seat too");
+    assert_eq!(mesh_primary, primary, "one mesh: its primary holds the fabric-primary role too");
     let before = estate.node_value(NODE).await;
     let data_dir = estate.data_dir(NODE).await;
     let others: Vec<(String, String)> = nodes.iter().filter(|n| n["name"] != NODE).map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
@@ -723,20 +723,20 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
 /// member's data dir loses its node-key and the member is killed. Its Build's node.delete completes
 /// and its node.create refuses at PrepareStorage, so the attempt ends Failed. mesh2's primary is then
 /// killed with the key still missing (nothing it submitted can complete), and mesh2's other admin
-/// takes the seat. Once no attempt for the member is in flight, the key is put back. The new
+/// takes the role. Once no attempt for the member is in flight, the key is put back. The new
 /// mesh-primary never submitted for the member, never inspects it (its birth deleted) and holds
 /// nothing of it in memory: it reads the accepted Build's Failed attempt and reports the same birth's
 /// recovery to the fabric-primary in mesh1, which opens it; the new mesh-primary claims it through
 /// BuildClaim and runs it (node-recovery.md "Execution", Q118). A later attempt of mesh2's lane of the same Build runs
 /// only the create, and the path comes back as a new node over the same data dir and
-/// endpoint key. Must NOT happen: the path left empty after the seat moved, a second node.delete of
+/// endpoint key. Must NOT happen: the path left empty after the role moved, a second node.delete of
 /// the exited birth, a Build minted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_that_takes_over_mesh_primary() {
     let (estate, birth_build) = fabric_of("a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_that_takes_over_mesh_primary", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
     let nodes = estate.node_values().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
-    assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric seat: {fp}");
+    assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric-primary role: {fp}");
     let mp = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2's primary")["name"]);
     let heir = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != mp.as_str()).expect("mesh2's second admin")["name"]);
     const NODE: &str = "mesh2.rpc.1";
@@ -754,10 +754,10 @@ async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_tha
     assert!(outcome.contains(&format!("node.create:{NODE} step PrepareStorage")) && outcome.contains("node-key is missing"), "the create refused the dir with no key by name: {failed}");
     assert_eq!((s(&failed["attributes"]["submitter"]), s(&failed["attributes"]["mesh"]), s(&failed["attributes"]["build_id"])), (mp.clone(), "mesh2".to_string(), birth_build.clone()), "{mp} opened it in mesh2's lane: {failed}");
 
-    // mesh2's seat moves: its primary is killed with the key still missing, so nothing it submitted
-    // can complete, and its second admin takes the seat.
+    // mesh2's role moves: its primary is killed with the key still missing, so nothing it submitted
+    // can complete, and its second admin takes the role.
     estate.kill_node(&mp).await;
-    let seat = wait_for(&format!("{heir} takes mesh2's seat"), SETTLE, || async {
+    let role = wait_for(&format!("{heir} takes mesh2's role"), SETTLE, || async {
         named(&estate.spans(), "rdm.mesh.election.resolve.via-mesh-primary")
             .into_iter()
             .find(|sp| sp["attributes"]["observer"] == heir.as_str() && sp["attributes"]["winner_path"] == heir.as_str() && start(sp) > start(&failed))
@@ -765,7 +765,7 @@ async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_tha
     })
     .await;
     // No attempt for the member is in flight in mesh2's lane (one the killed primary was running
-    // when it died is ended by the admin that took the seat, on the killed primary's exited verdict, and
+    // when it died is ended by the admin that took the role, on the killed primary's exited verdict, and
     // fails on the missing key): only a later submit can bring the path back.
     let idle = build_log::build_fact(&estate.carrier().await, &birth_build, &format!("no attempt for {NODE} is in flight in mesh2's lane"), SETTLE, |p| {
         let b = serde_json::to_value(p).expect("a Build view serializes");
@@ -779,7 +779,7 @@ async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_tha
     .unwrap_or_else(|end| panic!("{end}"));
     std::fs::write(&key_path, &key).unwrap();
 
-    let after = until_node_where(&estate, NODE, &format!("{NODE} ready as a new node after mesh2's seat moved"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
+    let after = until_node_where(&estate, NODE, &format!("{NODE} ready as a new node after mesh2's role moved"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same endpoint key, loaded from the inherited data dir");
     assert_eq!(estate.data_dir(NODE).await, data_dir, "the same data dir");
     let done = wait_for(
@@ -798,7 +798,7 @@ async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_tha
             s(&done["attributes"]["mesh"])
         ),
         (heir.clone(), "mesh2".to_string()),
-        "the admin that took the seat opened it in mesh2's lane: {done}"
+        "the admin that took the role opened it in mesh2's lane: {done}"
     );
     assert_eq!(
         s(&done["attributes"]["disposition"]),
@@ -845,7 +845,7 @@ async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_tha
         },
     )
     .await;
-    // The admin that took the seat reported it, claimed it and ran it, at that attempt of mesh2's lane
+    // The admin that took the role reported it, claimed it and ran it, at that attempt of mesh2's lane
     // the fabric-primary opened (its run under the report that opened it, when that was an earlier one).
     let run = recovery_run(&spans, &done, &before, "mesh2", &attempt.to_string());
     assert_mesh_primary_ran_the_recovery(
@@ -872,9 +872,9 @@ async fn a_failed_build_for_an_exited_member_is_submitted_again_by_the_admin_tha
     let deleted: Vec<&Value> = steps.iter().filter(|r| r["operation"] == format!("node.delete:{NODE}").as_str() && r["step"] == "NodeDeleted").collect();
     assert_eq!(deleted.len(), 1, "one node.delete of the exited birth, never again: {deleted:?}");
     eprintln!(
-        "s57 part 3: failed attempt {failed_attempt} by {mp} trace {} | seat {heir} trace {} | idle at {} attempt {} | complete attempt {attempt} by {heir} trace {} | admitted trace {}",
+        "s57 part 3: failed attempt {failed_attempt} by {mp} trace {} | role {heir} trace {} | idle at {} attempt {} | complete attempt {attempt} by {heir} trace {} | admitted trace {}",
         failed["trace_id"].as_str().unwrap_or(""),
-        seat["trace_id"].as_str().unwrap_or(""),
+        role["trace_id"].as_str().unwrap_or(""),
         s(&idle["state"]),
         idle["attempt"],
         done["trace_id"].as_str().unwrap_or(""),
@@ -1327,7 +1327,7 @@ async fn deleting_a_peer_mesh_stopped_predecessor_is_admitted_from_the_fabric_pr
 
 /// CONTRACT: the same delete when the stopped birth's mesh changed its primary between the rename and
 /// the delete (node-delete.md: "Stop and inspect the exact runtime through provider control"). mesh2's
-/// primary is stopped, its seats moving to mesh2's other admin; that admin did not rename the birth.
+/// primary is stopped, its roles moving to mesh2's other admin; that admin did not rename the birth.
 /// It resolves the exact stopped birth the action is targeted to from what it holds of that birth (its
 /// topology view's stopped digest, else its durable runtime row of it), ends it with the provider's
 /// Exited proof and publishes NodeDeleted for it, and, as mesh2's primary, writes the Deleted row at
@@ -1339,11 +1339,11 @@ async fn deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_execut
     let stopped_birth = leave_rename_and_stop(&estate, &nodes, "mesh2.rpc.1").await;
     let first_primary = stopped_birth.renamed_by.clone();
     assert!(first_primary.starts_with("mesh2.admin."), "mesh2's primary renamed it: {first_primary}");
-    // mesh2's primary changes: its stop hands its seats to mesh2's other admin, which executes that
+    // mesh2's primary changes: its stop hands its roles to mesh2's other admin, which executes that
     // stop (executor_for: the mesh primary never executes its own).
     let stopped = frames(nodes.stop(&first_primary.parse().unwrap()).await.expect("the stop of mesh2's primary was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    let new_primary = wait_for("mesh2's other admin holds the seat", Duration::from_secs(30), || async {
+    let new_primary = wait_for("mesh2's other admin holds the primary role", Duration::from_secs(30), || async {
         estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.ok()?.into_iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary && n.name.to_string() != first_primary).map(|n| n.name.to_string())
     })
     .await;
@@ -1358,7 +1358,7 @@ async fn deleting_a_stopped_predecessor_after_its_mesh_primary_changed_is_execut
 /// Completion requires the NodeDeleted receipt of that exact birth"): mesh2's only admin runs the
 /// predecessor's half of the replace of `mesh2.rpc.1` (stopped at `.old`); mesh2 then takes a second
 /// admin, born after the stop, so no digest of the stopped birth ever reached its view; mesh2's first
-/// admin is stopped and its seats move to the second. The Build's `node[1].delete` at `.old` is executed
+/// admin is stopped and its roles move to the second. The Build's `node[1].delete` at `.old` is executed
 /// by that admin, whose view does not hold the birth: it rebuilds the birth from the Build action's
 /// exact birth and the runtime record in the birth's data dir under the data root
 /// (`via-rebuilt-birth`, `outcome = rebuilt`, naming the birth, its data dir and the record's
@@ -1381,7 +1381,7 @@ async fn replacing_a_birth_absent_from_the_executors_view_deletes_the_runtime_re
     let nodes = objects(&estate).await;
     let stopped = frames(nodes.stop(&"mesh2.admin.1".parse().unwrap()).await.expect("the stop of mesh2's first admin was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    wait_for("mesh2.admin.2 holds mesh2's seat", Duration::from_secs(30), || async {
+    wait_for("mesh2.admin.2 holds mesh2's role", Duration::from_secs(30), || async {
         estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh2"])).await.ok()?.into_iter().find(|n| n.name.to_string() == "mesh2.admin.2" && n.is_primary).map(|_| ())
     })
     .await;
@@ -1515,7 +1515,7 @@ async fn delete_stopped_and_assert(estate: &Estate, birth_build: &str, stopped: 
 }
 
 /// CONTRACT (lifecycles/node-replace.md, the same steps for a node-admin): the replace steps of a
-/// node-admin that holds no seat runs as one Build of node primitives: the predecessor has its
+/// node-admin that holds no role runs as one Build of node primitives: the predecessor has its
 /// connections deleted, leaves its mesh and the backbone, is renamed `<path>.old` live and then stopped
 /// (its NodeStopped drops it from every view), the successor is a re-birth at the path, and the
 /// predecessor is deleted. The successor admin's own view holds itself at the path, ready, under its
@@ -1526,7 +1526,7 @@ async fn a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births() {
     let nodes = estate.node_values().await;
     let admins: Vec<&Value> = nodes.iter().filter(|n| n["kind"] == "node_admin").collect();
     assert_eq!(admins.len(), 2, "{nodes:#?}");
-    let before = admins.iter().find(|n| n["is_primary"] != true && n["is_fabric_primary"] != true).map(|n| (*n).clone()).expect("an admin that holds no seat");
+    let before = admins.iter().find(|n| n["is_primary"] != true && n["is_fabric_primary"] != true).map(|n| (*n).clone()).expect("an admin that holds no primary role");
     let stays = Estate::path(&s(&admins.iter().find(|n| n["node_id"] != before["node_id"]).unwrap()["name"]));
     assert_eq!(estate.entry().await, stays, "the admin that stays is the entry the typed objects ask");
     let node = s(&before["name"]);
@@ -1652,9 +1652,9 @@ async fn a_hung_node_admin_member_is_investigated_by_its_mesh_primary_and_re_cre
 /// `mesh2.admin.1` is hung (every task but the leader held by a tracer: the provider reads it running).
 /// The fabric-primary's investigation ends in `running` and it submits the recovery at once, in the
 /// fabric lane: its node.delete terminates the exact runtime first; the deleted birth is gone from
-/// every seat, the election seats `mesh2.admin.2`, and `mesh2.admin.1` is re-created as a new birth,
+/// every role, the election names `mesh2.admin.2`, and `mesh2.admin.1` is re-created as a new birth,
 /// created by `mesh2.admin.2` (commands go down: the fabric-primary claims the create on its own log and
-/// the seated mesh-primary executes it, mesh-investigation.md step 6). Must NOT happen: the hung
+/// the in its role mesh-primary executes it, mesh-investigation.md step 6). Must NOT happen: the hung
 /// mesh-primary held, the fabric-primary creating mesh2's new birth itself, or a second recovery of the
 /// hung birth in mesh2's lane.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1677,8 +1677,8 @@ async fn a_hung_mesh_primary_is_terminated_and_recovered_at_once_by_the_fabric_p
     assert!(!held.held.is_empty(), "every task of mesh2's primary but the leader is held: the provider sees it running");
 
     let after = until_node_where(&estate, &mp_name, &format!("{mp_name} recovered as a new birth"), SETTLE, |n| ready(n) && n["node_id"] != mp["node_id"]).await;
-    let standby_after = until_node_where(&estate, &standby, &format!("{standby} seated as mesh2's primary once the hung birth is deleted"), Duration::from_secs(60), |n| n["is_primary"] == json!(true)).await;
-    assert_eq!(standby_after["is_primary"], json!(true), "{standby} holds mesh2's seat after the delete");
+    let standby_after = until_node_where(&estate, &standby, &format!("{standby} primary as mesh2's primary once the hung birth is deleted"), Duration::from_secs(60), |n| n["is_primary"] == json!(true)).await;
+    assert_eq!(standby_after["is_primary"], json!(true), "{standby} holds mesh2's role after the delete");
 
     let recovery = recovery_span(&estate, &mp_name, &mp["node_id"]).await;
     assert_eq!(s(&recovery["attributes"]["submitter"]), fp, "the fabric-primary submits a hung mesh-primary's recovery: {recovery}");
@@ -1695,29 +1695,29 @@ async fn a_hung_mesh_primary_is_terminated_and_recovered_at_once_by_the_fabric_p
         .unwrap_or_else(|| panic!("expected TerminateRuntime receipt in the fabric lane's steps: {steps:?}"));
     assert_eq!(terminate["output"]["verdict"], "running", "the TerminateRuntime read the hung runtime running and terminated it: {terminate}");
     let spans = estate.spans();
-    let seat_span = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary")
+    let role_span = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary")
         .into_iter()
         .find(|sp| sp["attributes"]["winner_path"] == standby.as_str())
         .cloned()
-        .expect("the election seats the standby once the hung birth is deleted");
+        .expect("the election roles the standby once the hung birth is deleted");
     // Commands go down (mesh-investigation.md step 6 and its messages: "the fabric-primary claims on its
     // own log, the executor adopts the won claim"): the delete is the fabric-primary's (R-FM1), and the
-    // new birth at mesh2.admin.1 is created by the admin mesh2 seats in the hung birth's place, which
+    // new birth at mesh2.admin.1 is created by the admin mesh2 roles in the hung birth's place, which
     // takes its join, its node.started and its member status. mesh2's lane opens no second recovery of
     // the hung birth.
     let created_rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row")
         .into_iter()
         .filter(|sp| sp["attributes"]["operation"] == format!("node.create:{mp_name}").as_str() && sp["attributes"]["node_id"] == after["node_id"] && matches!(sp["attributes"]["outcome"].as_str(), Some("row-seeded" | "row-written")))
         .collect();
-    assert!(!created_rows.is_empty() && created_rows.iter().all(|sp| sp["attributes"]["node"] == standby.as_str()), "the new birth at {mp_name} is created by {standby}, mesh2's seated primary, never by {fp}: {created_rows:#?}");
+    assert!(!created_rows.is_empty() && created_rows.iter().all(|sp| sp["attributes"]["node"] == standby.as_str()), "the new birth at {mp_name} is created by {standby}, mesh2's primary primary, never by {fp}: {created_rows:#?}");
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == mp["node_id"]).collect();
     assert!(recoveries.iter().all(|sp| s(&sp["attributes"]["submitter"]) == fp), "the hung birth is recovered once, by {fp}: no recovery of it is submitted in mesh2's lane: {recoveries:#?}");
     eprintln!(
-        "mesh-primary cell: {mp_name} (birth {}) terminated and recovered by {fp} at attempt {attempt}: trace {} | TerminateRuntime {:?} | {standby} seated (span {}) | new birth {}",
+        "mesh-primary cell: {mp_name} (birth {}) terminated and recovered by {fp} at attempt {attempt}: trace {} | TerminateRuntime {:?} | {standby} primary (span {}) | new birth {}",
         s(&mp["node_id"]),
         s(&recovery["trace_id"]),
         terminate["output"],
-        s(&seat_span["span_id"]),
+        s(&role_span["span_id"]),
         s(&after["node_id"]),
     );
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
@@ -2085,16 +2085,16 @@ fn num_attr(sp: &Value, k: &str) -> u64 {
 }
 
 /// CONTRACT (#3051 acceptance 2, node-recovery.md "Detection and proof" step 1: "Every node-admin
-/// keeps the silence bookkeeping (`first_seen`), so a node-admin that takes the seat mid-window
+/// keeps the silence bookkeeping (`first_seen`), so a node-admin that takes the role mid-window
 /// continues the window already running"): a member of mesh2 (two node-admins, its mesh-primary not
 /// the fabric-primary) is killed; once mesh2's primary has run tickle ladder 1 for it, that primary is
-/// stopped, which hands mesh2's seat to its second admin. The new mesh-primary tickles on the window
-/// it has kept since before it took the seat (its ladder names a `first_seen_ms` earlier than the
-/// seat change by a probe delay or more, never a window opened at the seat), reaches TRUE OFFLINE,
+/// stopped, which hands mesh2's role to its second admin. The new mesh-primary tickles on the window
+/// it has kept since before it took the role (its ladder names a `first_seen_ms` earlier than the
+/// role change by a probe delay or more, never a window opened at the role), reaches TRUE OFFLINE,
 /// asks the provider, and its submit follows the one recovery to `complete`: a new node.id at the
 /// path over the same endpoint key. The old primary is stopped mid-ladder, once its direct probe has
 /// ended and before its ladder is folded (node-recovery.md step 3: a ladder nobody answers is the
-/// recovery at once, Q181). Must NOT happen: the window restarted at the seat change, the recovery
+/// recovery at once, Q181). Must NOT happen: the window restarted at the role change, the recovery
 /// submitted by the stopped primary, or a proven-drift attempt for the member.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery() {
@@ -2102,14 +2102,14 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let floor = rdm_transport::topology::staleness_floor();
     let nodes = estate.node_values().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
-    assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric seat: {fp}");
+    assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric-primary role: {fp}");
     let mp = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2's primary")["name"]);
     let standby = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != mp.as_str()).expect("mesh2's second admin")["name"]);
     const NODE: &str = "mesh2.rpc.1";
     let before = estate.node_value(NODE).await;
     estate.kill_node(NODE).await;
 
-    // The ladder on the mesh-primary that holds the seat now, mid-way: its direct probe ended. Due by
+    // The ladder on the mesh-primary that holds the role now, mid-way: its direct probe ended. Due by
     // node-recovery.md steps 1-2: the silence (one floor after the last digest heard: offline.rs
     // `silent_set` derives the mark from it), the loop's pass half a floor after the mark (on the
     // gossip-interval grid: up to one interval late), then the direct probe to a killed process, which
@@ -2123,11 +2123,11 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
         named(&estate.spans(), "rdm.node.tickle.resolve.via-direct").into_iter().find(|sp| sp["attributes"]["caller"] == mp.as_str() && sp["attributes"]["node_id"] == before["node_id"]).cloned()
     })
     .await;
-    // Mid-ladder: the mesh-primary is stopped, and mesh2's seat goes to its second admin.
+    // Mid-ladder: the mesh-primary is stopped, and mesh2's role goes to its second admin.
     let stopping = estate.submit_change(Change::Stop { node: Estate::path(&mp) }).await;
     assert_eq!(stopping.build_id().as_str(), birth_build, "no Build is minted");
     estate.follow(stopping).await;
-    let seat = wait_for(&format!("{standby} takes mesh2's seat"), floor * 2, || async {
+    let role = wait_for(&format!("{standby} takes mesh2's role"), floor * 2, || async {
         named(&estate.spans(), "rdm.mesh.election.resolve.via-mesh-primary")
             .into_iter()
             .find(|sp| sp["attributes"]["observer"] == standby.as_str() && sp["attributes"]["winner_path"] == standby.as_str() && start(sp) > start(&round1))
@@ -2149,15 +2149,15 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same transport key, loaded from the inherited data dir");
 
     let spans = estate.spans();
-    let taken_ns = start(&seat);
+    let taken_ns = start(&role);
     let new_round1 = tickle_span(&spans, &standby, &before["node_id"]).unwrap_or_else(|| panic!("{standby}'s TRUE OFFLINE for {NODE}"));
-    assert!(start(new_round1) > taken_ns, "{standby} tickles only once it holds the seat");
+    assert!(start(new_round1) > taken_ns, "{standby} tickles only once it holds the primary role");
     // The window it kept: the ladder runs on the instant it first saw the member silent, before the
-    // seat changed hands and a probe delay or more before it, never on a window opened at the seat.
+    // role changed hands and a probe delay or more before it, never on a window opened at the role.
     // (The ladder's span is written when the ladder ends: the failed direct probe and via-peer probes
-    // take their call deadlines, so its time after the seat is not the wait before it.)
+    // take their call deadlines, so its time after the role is not the wait before it.)
     let first_seen_ms = num_attr(new_round1, "first_seen_ms");
-    assert!(first_seen_ms * 1_000_000 + (floor / 2).as_nanos() as u64 <= taken_ns, "{standby}'s window began a probe delay or more before it took the seat: first_seen {first_seen_ms} ms, seat at {} ms", taken_ns / 1_000_000);
+    assert!(first_seen_ms * 1_000_000 + (floor / 2).as_nanos() as u64 <= taken_ns, "{standby}'s window began a probe delay or more before it took the role: first_seen {first_seen_ms} ms, role at {} ms", taken_ns / 1_000_000);
     let waited = Duration::from_nanos(start(new_round1) - taken_ns);
     assert!(start(new_round1) < start(&recovery), "TRUE OFFLINE before the submit");
     let inspection = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection")
@@ -2169,7 +2169,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let drift: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(NODE)).collect();
     assert!(drift.is_empty(), "the fabric-primary opened a drift attempt for a member: {drift:?}");
     eprintln!(
-        "acceptance 2: old mp {mp} direct probe trace {} | seat {standby} at {} ms | new TRUE OFFLINE {} (first_seen {first_seen_ms} ms, {waited:?} after the seat) | recovery trace {} ({})",
+        "acceptance 2: old mp {mp} direct probe trace {} | role {standby} at {} ms | new TRUE OFFLINE {} (first_seen {first_seen_ms} ms, {waited:?} after the role) | recovery trace {} ({})",
         round1["trace_id"].as_str().unwrap_or(""),
         taken_ns / 1_000_000,
         new_round1["trace_id"].as_str().unwrap_or(""),
@@ -2183,14 +2183,14 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
 /// CONTRACT (the approved proposal docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md
 /// Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update` commanded for a
 /// cohort with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary
-/// of type <node_type> in mesh <mesh>`, until a secondary is available. The holder stays primary, nothing
+/// of type <node_type> in mesh <mesh>`, until a secondary is available. The primary stays primary, nothing
 /// is cut off, no row is written, and the workflow that commanded it ... fails by name with that
 /// reason"): in a fabric whose fabric-primary is its mesh's only node-admin, each of the changes Steps (replace),
 /// DeleteConnections and Stop of the fabric-primary, submitted by `build.create`, is refused by name, `last-admin`
 /// with exactly `cannot transfer: no secondary of type node-admin in mesh <its mesh>`, one
-/// `rdm.node_admin.build.reject.via-last-admin` per call with the same text. The mesh seat has no
-/// secondary, so the peer mesh's Ready primary is no successor of both seats (C2's outside search is
-/// mesh.delete's only). No attempt opens, no seat move is commanded, no row is written, and every node
+/// `rdm.node_admin.build.reject.via-last-admin` per call with the same text. The mesh-primary role has no
+/// secondary, so the peer mesh's Ready primary is no successor of both roles (C2's outside search is
+/// mesh.delete's only). No attempt opens, no role move is commanded, no row is written, and every node
 /// stays as it was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused_by_name() {
@@ -2241,14 +2241,14 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part C1 "The
 /// no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update` commanded for a cohort with no
 /// other node of that type in the mesh is refused by name, `cannot transfer: no secondary of type
-/// <node_type> in mesh <mesh>` ... The holder stays primary, nothing is cut off, no row is written, and
+/// <node_type> in mesh <mesh>` ... The primary stays primary, nothing is cut off, no row is written, and
 /// the workflow that commanded it ... fails by name with that reason"; node-replace.md: the replace
 /// steps never leave a mesh with no live node-admin): in a fabric whose mesh2 has one node-admin, its
 /// mesh-primary and not the fabric-primary, `build.create` of the replace steps of mesh2's primary is refused
 /// `last-admin` with exactly `cannot transfer: no secondary of type node-admin in mesh mesh2`, under one
 /// `rdm.node_admin.build.reject.via-last-admin` with the same text, before any step (its first, the
-/// node.connection.delete that moves a seat holder's seats, has no successor): no attempt opens, no
-/// connection is deleted, no seat move is commanded, no row is written, and every node keeps its birth.
+/// node.connection.delete that moves a primary's roles, has no successor): no attempt opens, no
+/// connection is deleted, no role move is commanded, no row is written, and every node keeps its birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_by_name_before_any_step() {
     let (estate, birth_build) = two_mesh_estate("a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_by_name_before_any_step").await;
@@ -2390,7 +2390,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
 /// fabric-primary opens the attempt, the mesh-primary claims it through BuildClaim, the fabric-primary
 /// calls `build.attempt.run` naming the mesh and writes every Build record): mesh1 holds the
 /// fabric-primary and a second node-admin; mesh2 holds one node-admin, its mesh-primary, and two rpc
-/// nodes. The fabric-primary is stopped by plan (node.stop: its seats move to mesh1's other
+/// nodes. The fabric-primary is stopped by plan (node.stop: its roles move to mesh1's other
 /// node-admin, then it stops). With it stopped, `mesh2.rpc.1` is killed. mesh2's primary proves the
 /// exit and reports it to the admin that took the fabric-primary role: the submit's trace holds that
 /// admin's open in mesh2's lane, its decision of mesh2's primary's claim, its run naming the mesh, and
@@ -2409,25 +2409,25 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
     let nodes = estate.node_values().await;
     let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
     let fp_name = s(&fp["name"]);
-    assert!(fp_name.starts_with("mesh1."), "the day-0 admin holds the fabric seat: {fp_name}");
+    assert!(fp_name.starts_with("mesh1."), "the day-0 admin holds the fabric-primary role: {fp_name}");
     let successor_name = s(&nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["name"] != fp["name"]).expect("mesh1's other node-admin")["name"]);
     let mp = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2's primary")["name"]);
 
-    // The fabric-primary is stopped by plan: its seats move to mesh1's other node-admin, then it stops.
-    // The stream ends at the old seat once the seat moves, naming the new one; the stop is
+    // The fabric-primary is stopped by plan: its roles move to mesh1's other node-admin, then it stops.
+    // The stream ends at the old role once the role moves, naming the new one; the stop is
     // followed there to its completion.
     let mut stop = estate.nodes_obj().await.stop(&Estate::path(&fp_name)).await.unwrap_or_else(|e| panic!("node.stop of the fabric-primary {fp_name} was refused: {e}"));
     let accepted = stop.accepted().clone();
     let frames = Estate::frames_of(&mut stop).await;
     match frames.last() {
-        Some(rdm_client::Frame::FabricPrimaryMoved { fabric_primary }) => assert_eq!(fabric_primary.as_deref(), Some(successor_name.as_str()), "the seat moved to mesh1's other node-admin: {frames:?}"),
-        other => panic!("the stop of the fabric-primary moves its seat first: {other:?} of {frames:?}"),
+        Some(rdm_client::Frame::FabricPrimaryMoved { fabric_primary }) => assert_eq!(fabric_primary.as_deref(), Some(successor_name.as_str()), "the role moved to mesh1's other node-admin: {frames:?}"),
+        other => panic!("the stop of the fabric-primary moves its role first: {other:?} of {frames:?}"),
     }
     estate.enter(&Estate::path(&successor_name)).await;
     let mut resumed = estate.nodes_obj().await.resume(stop.kind().clone(), &accepted).await.unwrap_or_else(|e| panic!("{successor_name} does not stream the stop of {fp_name} (Build {} attempt {}): {e}", accepted.build_id, accepted.attempt));
     Estate::complete(&mut resumed).await;
     let stopped = estate
-        .until_view(&format!("{fp_name} is stopped and {successor_name} holds the fabric seat"), SETTLE, |views| {
+        .until_view(&format!("{fp_name} is stopped and {successor_name} holds the fabric-primary role"), SETTLE, |views| {
             let old = views.iter().find(|n| n.name.to_string() == fp_name)?;
             let new = views.iter().find(|n| n.name.to_string() == successor_name)?;
             (old.stopped && !old.is_fabric_primary && new.is_fabric_primary).then(|| serde_json::to_value(old).expect("a view serializes"))
@@ -2509,7 +2509,7 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_through_
     let open = named(&run, "rdm.node_admin.build.update.via-recovery").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().expect("the open");
     let claim = named(&run, "rdm.node_admin.build.update.via-claim-decision").into_iter().find(|sp| s(&sp["attributes"]["attempt"]) == attempt).cloned().expect("the claim");
     eprintln!(
-        "s78 acceptance 1: fabric-primary {fp_name} stopped, seat at {successor_name}; {NODE} recovered by {mp} at attempt {attempt} of mesh2's lane of {build}: trace {} | via-node-recovery span {} | via-recovery span {} outcome {} | via-claim-decision span {} node {} outcome {} | {successor_name} holds receipts {} and {}",
+        "s78 acceptance 1: fabric-primary {fp_name} stopped, role at {successor_name}; {NODE} recovered by {mp} at attempt {attempt} of mesh2's lane of {build}: trace {} | via-node-recovery span {} | via-recovery span {} outcome {} | via-claim-decision span {} node {} outcome {} | {successor_name} holds receipts {} and {}",
         s(&done["trace_id"]), s(&done["span_id"]), s(&open["span_id"]), s(&open["attributes"]["outcome"]), s(&claim["span_id"]), s(&claim["attributes"]["node"]), s(&claim["attributes"]["outcome"]), s(&deleted["step"]), s(&created["step"]),
     );
     estate.record_trace_url(done["trace_id"].as_str().unwrap_or(""));

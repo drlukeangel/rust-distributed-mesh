@@ -94,9 +94,9 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from
     let mut estate = estate_of(test, &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
     let nodes = estate.node_values().await;
     let fp = "mesh1.admin.1";
-    let holder = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
-    assert_eq!(s(&holder["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
-    let old_node_id = s(&holder["node_id"]);
+    let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
+    assert_eq!(s(&primary["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
+    let old_node_id = s(&primary["node_id"]);
     let backbone = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["is_primary"] == true && n["kind"] == "node_admin").expect("mesh2's primary")["name"]);
     estate.enter(&Estate::path(&backbone)).await;
     lose_mesh1_unproven(&estate, &nodes).await;
@@ -107,8 +107,8 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from
     estate
         .until_view(&format!("the node re-created at {fp} is restored as mesh-primary and fabric-primary"), decision + floor * 20 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
-            let holders: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
-            assert!(holders.iter().all(|h| h == fp), "only the node at {fp} is ever fabric-primary: {holders:?}");
+            let primaries: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
+            assert!(primaries.iter().all(|h| h == fp), "only the node at {fp} is ever fabric-primary: {primaries:?}");
             ns.iter().find(|n| n["name"] == fp && s(&n["node_id"]) != old_node_id && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true).map(|_| ())
         })
         .await;
@@ -331,9 +331,9 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     let mut estate = estate_of(test, &shape).await;
     let nodes = estate.node_values().await;
-    let holder = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
-    assert_eq!(s(&holder["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
-    let (fp_id, fp_inc) = (s(&holder["node_id"]), s(&holder["incarnation_id"]));
+    let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
+    assert_eq!(s(&primary["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
+    let (fp_id, fp_inc) = (s(&primary["node_id"]), s(&primary["incarnation_id"]));
     let victim_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] != true && n["is_fabric_primary"] != true).cloned().expect("a mesh2 node-admin that is neither primary");
     let (victim, victim_id) = (s(&victim_row["name"]), s(&victim_row["node_id"]));
     let mesh2_primary = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2's primary")["name"]);
@@ -527,9 +527,9 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     let mut estate = estate_of(test, &shape).await;
     let nodes = estate.node_values().await;
-    let holder = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
-    assert_eq!(s(&holder["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
-    let (fp_id, fp_inc) = (s(&holder["node_id"]), s(&holder["incarnation_id"]));
+    let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
+    assert_eq!(s(&primary["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
+    let (fp_id, fp_inc) = (s(&primary["node_id"]), s(&primary["incarnation_id"]));
     let victim = s(&nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["name"] != fp).expect("mesh1's other node-admin")["name"]);
     estate.enter(&Estate::path(fp)).await;
     let root = estate.fabric_store_root();
@@ -632,9 +632,9 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     estate.settles_to(&shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let nodes = estate.node_values().await;
-    let holder = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
-    assert_eq!(s(&holder["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
-    let lost_id = s(&holder["node_id"]);
+    let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
+    assert_eq!(s(&primary["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
+    let lost_id = s(&primary["node_id"]);
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string());
     let members: Vec<(String, String)> = nodes.iter().filter(|n| n["kind"] != "node_admin").map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect();
     assert_eq!(members.len(), 2, "two members serve: {nodes:#?}");

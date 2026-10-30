@@ -1,9 +1,9 @@
 //! i143.e4.s5 process E2E: fabric-primary election and the advertised
 //! control endpoint (PRD §1.14, §1.16, §11).
 //!
-//! The fabric seat stays with its holder (ruling R-A2): a lower NodeId never displaces a living
-//! holder, and a fabric's first election is filled by the lowest Ready NodeId, which on Day 0 is
-//! the Day-0 admin alone. The seat leaves the holder's mesh only when every node-admin birth of
+//! The fabric-primary role stays with its primary (ruling R-A2): a lower NodeId never displaces a living
+//! primary, and a fabric's first election is filled by the lowest Ready NodeId, which on Day 0 is
+//! the Day-0 admin alone. The role leaves the primary's mesh only when every node-admin birth of
 //! that mesh is gone; the lowest NodeId among the remaining mesh primaries then wins.
 //!
 //! An MM fabric loses its fabric-primary mesh (every process of the mesh
@@ -19,9 +19,9 @@
 //!   made whole again on the way, and the fabric then shuts down from the new primary; no runtime
 //!   of the estate is left running.
 //!
-//! A three-mesh fabric with shuffled names keeps the Day-0 holder whatever the other mesh
-//! primaries' NodeIds are; every mesh primary reports the same holder; losing every node-admin
-//! of the holder's mesh moves the seat to the lowest NodeId among the remaining mesh primaries.
+//! A three-mesh fabric with shuffled names keeps the Day-0 primary whatever the other mesh
+//! primaries' NodeIds are; every mesh primary reports the same primary; losing every node-admin
+//! of the primary's mesh moves the role to the lowest NodeId among the remaining mesh primaries.
 //!
 //! Evidence: the new fabric primary's election is announced as
 //! `rdm.mesh.election.resolve.via-fabric-recompute` (`election_level =
@@ -92,8 +92,8 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
     estate
         .until_view("the node re-created at mesh1.admin.1 is restored as mesh-primary and fabric-primary", floor * 20 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
-            let holders: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
-            assert!(holders.iter().all(|h| h == fp), "only the node at {fp} is ever fabric-primary: {holders:?}");
+            let primaries: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
+            assert!(primaries.iter().all(|h| h == fp), "only the node at {fp} is ever fabric-primary: {primaries:?}");
             ns.iter().find(|n| n["name"] == fp && s(&n["node_id"]) != old_node_id && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true).map(|_| ())
         })
         .await;
@@ -155,12 +155,12 @@ async fn a_member_whose_runtime_exited_is_replaced() {
 
 /// CONTRACT: three meshes with shuffled names. The fabric primary is the Day-0 admin, even when
 /// another mesh primary has a lower NodeId (R-A2: a lower NodeId never displaces a living
-/// holder); every mesh primary's own view advertises that same holder. Losing every node-admin of
-/// the holder's mesh moves the seat to the lowest NodeId among the remaining mesh primaries.
+/// primary); every mesh primary's own view advertises that same primary. Losing every node-admin of
+/// the primary's mesh moves the role to the lowest NodeId among the remaining mesh primaries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_remaining_when_its_mesh_is_lost() {
     let mut estate = Estate::bootstrap(
-        Owner { subfeature: "fabric-primary".into(), rung: "MMM".into(), test: "three_mesh_primaries_keep_the_day0_holder".into(), ..owner() },
+        Owner { subfeature: "fabric-primary".into(), rung: "MMM".into(), test: "three_mesh_primaries_keep_the_day0_fabric_primary".into(), ..owner() },
         "fabric1",
         "mesh1",
     )
@@ -169,15 +169,15 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
     estate.reconcile(&desired).await;
     let all_ready = |nodes: &[Value]| nodes.len() == 9 && nodes.iter().all(|n| n["status"] == "ready");
     let nodes = estate
-        .until_view("three meshes settle on the computed seats", Duration::from_secs(30), |views| {
+        .until_view("three meshes settle on the computed roles", Duration::from_secs(30), |views| {
             let nodes = Estate::values(views);
             (all_ready(&nodes) && primaries_as_expected(&nodes).is_ok()).then_some(nodes)
         })
         .await;
     let winner = "mesh1.admin.1".to_string();
-    assert_eq!(advertised_fabric_primaries(&nodes), vec![winner.clone()], "the Day-0 admin holds the fabric seat: {nodes:#?}");
+    assert_eq!(advertised_fabric_primaries(&nodes), vec![winner.clone()], "the Day-0 admin holds the fabric-primary role: {nodes:#?}");
     let winner_node = nodes.iter().find(|n| n["name"] == winner.as_str()).unwrap().clone();
-    // Every mesh primary's own view advertises the same holder.
+    // Every mesh primary's own view advertises the same primary.
     let mesh_primaries: Vec<Value> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).cloned().collect();
     assert_eq!(mesh_primaries.len(), 3);
     for mp in &mesh_primaries {
@@ -190,8 +190,8 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
         assert_eq!(advertised_fabric_primaries(&view), vec![winner.clone()], "{} resolves the same fabric primary", mp["name"]);
     }
 
-    // Delete the holder's mesh (`mesh.delete` runs `node.fabric-primary.update` first and takes
-    // `mesh1` down only after the confirmed transfer): the seat leaves it for the lowest remaining mesh primary.
+    // Delete the primary's mesh (`mesh.delete` runs `node.fabric-primary.update` first and takes
+    // `mesh1` down only after the confirmed transfer): the role leaves it for the lowest remaining mesh primary.
     let survivors: Vec<&Value> = mesh_primaries.iter().filter(|m| m["mesh"] != "mesh1").collect();
     let survivor_admin = Estate::path(&s(&survivors[0]["name"]));
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -201,14 +201,14 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
     let next_id = survivors.iter().map(|m| s(&m["node_id"])).min().unwrap();
     let winner_id = s(&winner_node["node_id"]);
     let after = estate
-        .until_view_at(&survivor_admin, "the fabric seat moves to the lowest remaining mesh primary", Duration::from_secs(30), |views| {
+        .until_view_at(&survivor_admin, "the fabric-primary role moves to the lowest remaining mesh primary", Duration::from_secs(30), |views| {
             let v = Estate::values(views);
             let fp: Vec<&Value> = v.iter().filter(|n| n["is_fabric_primary"] == true).collect();
             (fp.len() == 1 && s(&fp[0]["node_id"]) != winner_id).then(|| v.clone())
         })
         .await;
-    let holder: Vec<&Value> = after.iter().filter(|n| n["is_fabric_primary"] == true).collect();
-    assert_eq!(s(&holder[0]["node_id"]), next_id, "the lowest NodeId among the remaining mesh primaries: {survivors:#?}");
+    let primary: Vec<&Value> = after.iter().filter(|n| n["is_fabric_primary"] == true).collect();
+    assert_eq!(s(&primary[0]["node_id"]), next_id, "the lowest NodeId among the remaining mesh primaries: {survivors:#?}");
 
     estate.stop().await;
     let spans = estate.spans();
@@ -220,12 +220,12 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
     let observers: std::collections::BTreeSet<String> = first.iter().map(|sp| s(&sp["attributes"]["observer"])).collect();
     assert!(observers.len() >= 2, "more than one mesh primary resolved the same winner: {observers:?}");
     assert!(first.iter().all(|sp| sp["attributes"]["election_level"] == "fabric_primary" && sp["attributes"]["election_key"] == "node_id_crockford"));
-    // The seat is vacant while the holder's mesh is only silent (`winner_node_id` empty, previous
-    // the holder) and filled by the lowest remaining mesh primary once every admin of that mesh is gone.
+    // The role is vacant while the primary's mesh is only silent (`winner_node_id` empty, previous
+    // the primary) and filled by the lowest remaining mesh primary once every admin of that mesh is gone.
     let recomputes = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute");
     assert!(recomputes.iter().any(|sp| sp["attributes"]["winner_node_id"] == next_id.as_str()), "the lowest remaining mesh primary {next_id} was announced as the winner");
     assert!(
         recomputes.iter().any(|sp| sp["attributes"]["previous_node_id"] == winner_node["node_id"] && sp["attributes"]["winner_node_id"] != winner_node["node_id"]),
-        "the seat left the holder {winner_id} only after its mesh was gone"
+        "the role left the primary {winner_id} only after its mesh was gone"
     );
 }

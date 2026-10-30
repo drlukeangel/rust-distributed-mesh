@@ -1,6 +1,6 @@
 //! i143.e4.s14 process E2E: a lower-NodeId admin born after a Build
-//! completed hydrates, leaves the seats with their holder, and manages that Build's births once
-//! the holder is lost (rafka-v2#2840 acceptance 3–4; ruling R-A2).
+//! completed hydrates, leaves the roles with their primary, and manages that Build's births once
+//! the primary is lost (rafka-v2#2840 acceptance 3–4; ruling R-A2).
 //!
 //! Build A grows mesh1 and completes; its history is forgotten. Admins are
 //! then born one at a time until one draws a NodeId lower than the incumbent
@@ -11,8 +11,8 @@
 //! admin:
 //! - holds the current desired topology and every held birth's runtime
 //!   before it commits Ready;
-//! - does not displace the living holder, which keeps every seat it held;
-//! - fills the seats when the holder is lost (the mesh's lowest ready NodeId), and restarts and
+//! - does not displace the living primary, which keeps every role it held;
+//! - fills the roles when the primary is lost (the mesh's lowest ready NodeId), and restarts and
 //!   deletes births A launched, through its own `node.stop` then `node.start` and `node.delete`, from their published
 //!   runtimes, with A's receipts nowhere.
 
@@ -89,7 +89,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     });
     let late_name = late.name.clone();
 
-    // A lower NodeId never displaces a living holder: the incumbent keeps every seat, seen from
+    // A lower NodeId never displaces a living primary: the incumbent keeps every role, seen from
     // both admins, for several gossip intervals: what each admin holds itself (query.md §2), never
     // node.get, which the late admin, not a primary, forwards to its mesh-primary (Q243).
     for _ in 0..12 {
@@ -98,16 +98,16 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
             for n in [&incumbent, &late] {
                 assert!(held.members.iter().any(|d| d.node.node_id == n.node_id), "{admin} holds {}: {held:#?}", n.name);
             }
-            let seats = |id: &rdm_core::NodeId| (held.mesh_primary("mesh1") == Some(id), held.fabric_primary() == Some(id));
-            assert_eq!(seats(&incumbent.node_id), (true, true), "the incumbent keeps both seats ({admin}): {held:#?}");
-            assert_eq!(seats(&late.node_id), (false, false), "the lower NodeId holds none ({admin}): {held:#?}");
+            let roles = |id: &rdm_core::NodeId| (held.mesh_primary("mesh1") == Some(id), held.fabric_primary() == Some(id));
+            assert_eq!(roles(&incumbent.node_id), (true, true), "the incumbent keeps both roles ({admin}): {held:#?}");
+            assert_eq!(roles(&late.node_id), (false, false), "the lower NodeId holds none ({admin}): {held:#?}");
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     // A is history on the admin that ran it, and leaves; the late admin never held it.
     estate.builds_obj().await.delete(&a).await.unwrap_or_else(|e| panic!("A leaves history on the admin that ran it: {e}"));
-    // The holder yields (`node.stop` runs `node.primary.update` first): the mesh's lowest ready
-    // NodeId fills both seats, and the late admin is it.
+    // The primary yields (`node.stop` runs `node.primary.update` first): the mesh's lowest ready
+    // NodeId fills both roles, and the late admin is it.
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter(&late_name).await;
     let mut stop = estate.nodes_obj().await.stop(&incumbent_admin).await.expect("node.stop of incumbent_admin");
@@ -116,7 +116,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     estate.kill_bootstrap();
-    estate.until_node(&late_name.to_string(), "the late admin fills the mesh and the fabric seats", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
+    estate.until_node(&late_name.to_string(), "the late admin fills the mesh and the fabric roles", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     let unknown = estate.carrier().await.build(&a).await;
     assert!(matches!(&unknown, Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-build"), "A's history is nowhere: {unknown:?}");
 

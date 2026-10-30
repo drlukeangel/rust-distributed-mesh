@@ -259,7 +259,7 @@ pub struct AdminSide {
 }
 
 /// How an admin side takes its place in its mesh.
-enum SideSeat {
+enum SideRole {
     /// Its mesh's primary: it says its own digest on the topology cadence and publishes its
     /// member projection on its own mesh channel.
     Primary,
@@ -363,9 +363,9 @@ pub async fn admin_side_serving(ip: std::net::IpAddr, fabric: &FabricId, status:
 }
 
 /// [`admin_side_serving`] as the node-admin `name` of `mesh1` (`mesh1.admin.<n>`): a second admin
-/// side of the same fabric and mesh, for a cell where a seat moves between two node-admins.
+/// side of the same fabric and mesh, for a cell where a role moves between two node-admins.
 pub async fn admin_side_serving_as(ip: std::net::IpAddr, fabric: &FabricId, name: &str, status: rdm_core::digest::MemberStatus, serve: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder) -> AdminSide {
-    admin_side_taking_joins_elected(ip, fabric, name, true, None, serve, status, no_certs(), SideSeat::Primary).await
+    admin_side_taking_joins_elected(ip, fabric, name, true, None, serve, status, no_certs(), SideRole::Primary).await
 }
 
 /// The node-admin `name` of `primary`'s mesh, taking joins and serving the topology it holds, that
@@ -375,7 +375,7 @@ pub async fn admin_side_serving_as(ip: std::net::IpAddr, fabric: &FabricId, name
 pub async fn admin_side_silent_as(ip: std::net::IpAddr, primary: &AdminSide, name: &str) -> AdminSide {
     let key: iroh::PublicKey = primary.seed.0.parse().expect("the primary's endpoint id is an iroh key");
     let seed = iroh::EndpointAddr::new(key).with_ip_addr(primary.seed.1);
-    admin_side_taking_joins_elected(ip, &primary.fabric, name, true, None, |b| b, rdm_core::digest::MemberStatus::Ready, no_certs(), SideSeat::Silent { seed }).await
+    admin_side_taking_joins_elected(ip, &primary.fabric, name, true, None, |b| b, rdm_core::digest::MemberStatus::Ready, no_certs(), SideRole::Silent { seed }).await
 }
 
 /// [`admin_side_silent_as`] whose `JoinNode` door is never opened: a node that joins it is answered
@@ -383,7 +383,7 @@ pub async fn admin_side_silent_as(ip: std::net::IpAddr, primary: &AdminSide, nam
 pub async fn admin_side_silent_deaf_as(ip: std::net::IpAddr, primary: &AdminSide, name: &str) -> AdminSide {
     let key: iroh::PublicKey = primary.seed.0.parse().expect("the primary's endpoint id is an iroh key");
     let seed = iroh::EndpointAddr::new(key).with_ip_addr(primary.seed.1);
-    admin_side_taking_joins_elected(ip, &primary.fabric, name, false, None, |b| b, rdm_core::digest::MemberStatus::Ready, no_certs(), SideSeat::Silent { seed }).await
+    admin_side_taking_joins_elected(ip, &primary.fabric, name, false, None, |b| b, rdm_core::digest::MemberStatus::Ready, no_certs(), SideRole::Silent { seed }).await
 }
 
 /// [`admin_side`] whose `JoinNode` door is never opened: a launched node's join is answered
@@ -403,11 +403,11 @@ pub async fn admin_side_issuing(ip: std::net::IpAddr, fabric: &FabricId, referen
 }
 
 async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, certs: rdm_admin::certs::CertChoice) -> AdminSide {
-    admin_side_taking_joins_elected(ip, fabric, name, takes_joins, reference_ms, serve_app, status, certs, SideSeat::Primary).await
+    admin_side_taking_joins_elected(ip, fabric, name, takes_joins, reference_ms, serve_app, status, certs, SideRole::Primary).await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, certs: rdm_admin::certs::CertChoice, seat: SideSeat) -> AdminSide {
+async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, certs: rdm_admin::certs::CertChoice, role: SideRole) -> AdminSide {
     // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
     // within the topology silence window, so gossip redials instead of holding it.
     let transport = iroh::endpoint::QuicTransportConfig::builder()
@@ -427,9 +427,9 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             rdm_admin::rafka_time::adopt_own_clock(&tracing::Span::current(), &rafka_time, name, rdm_admin::rafka_time::OWN_CLOCK_DAY0_ROOT);
         }
     }
-    let seeds = match &seat {
-        SideSeat::Primary => vec![],
-        SideSeat::Silent { seed } => {
+    let seeds = match &role {
+        SideRole::Primary => vec![],
+        SideRole::Silent { seed } => {
             rdm_transport::topology::learn_addresses(&admin_ep, std::slice::from_ref(seed)).unwrap();
             vec![seed.clone()]
         }
@@ -503,7 +503,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
         deleted: vec![],
     };
     // A silent admin side holds only what its primary publishes into the mesh.
-    if matches!(seat, SideSeat::Primary) {
+    if matches!(role, SideRole::Primary) {
         assert!(matches!(topology_view.take_read_chunk(held, "peer"), rdm_transport::snapshot::Taken::Installed(_)));
     }
     let topology_slot: rdm_admin::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
@@ -585,11 +585,11 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
         load: None,
         gossip: None, is_primary: None, is_fabric_primary: None
     };
-    let primary = matches!(seat, SideSeat::Primary);
+    let primary = matches!(role, SideRole::Primary);
     if primary {
         topology_view.publish(&admin_digest).await.expect("the admin's digest publishes");
     }
-    // The launcher is its mesh's primary, as a node-admin holding the seat is: it executes its
+    // The launcher is its mesh's primary, as a node-admin holding the role is: it executes its
     // members' lifecycle, sets each member's status from what it reports (its node.started, its ConnectionsDeleting and
     // Leaving), and publishes its
     // member projection on its own mesh channel at each publication and at once on a material change
@@ -600,7 +600,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
         let backbone = Backbone::join(&gossip, &admin_ep, &topology_view, "mesh1", rdm_core::PublisherId { node: name.to_string(), incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() }, vec![]).await.expect("the launcher joins the backbone");
         backbone.set_mesh_primary(true);
         if name == "mesh1.admin.1" {
-            backbone.hold_primary(rdm_core::Seat::MeshPrimary, rdm_core::Primary { mesh: "mesh1".into(), node_id: admin_node_id.clone(), incarnation: admin_incarnation.clone(), revision: 1 });
+            backbone.hold_primary(rdm_core::PrimaryRole::MeshPrimary, rdm_core::Primary { mesh: "mesh1".into(), node_id: admin_node_id.clone(), incarnation: admin_incarnation.clone(), revision: 1 });
         }
         let publications = {
             let (backbone, topology_view) = (backbone.clone(), topology_view.clone());

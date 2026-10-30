@@ -80,7 +80,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier
     let mesh2_id = estate.mesh_view("mesh2").await.id.expect("mesh2 carries its id").to_string();
     // mesh2's members are grown by mesh2's admin primary (the lowest NodeId of its admins).
     let mesh2_primary = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).unwrap();
-    let mesh1_primary = estate.mesh_view("mesh1").await.primary_admin.expect("mesh1 seats a primary admin");
+    let mesh1_primary = estate.mesh_view("mesh1").await.primary_admin.expect("mesh1 roles a primary admin");
 
     // B: grow mesh2. Once its first attempt is claimed, lose mesh2's node-admins. Its births run one
     // after another (~55 ms each on the process provider), so six of them keep the first attempt
@@ -173,7 +173,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier
         let accepted = named(&spans, "rdm.node_admin.build.create.via-accepted").into_iter().find(|sp| sp["attributes"]["build_id"] == b.as_str()).expect("B's request").clone();
         assert_eq!(takeover["trace_id"], accepted["trace_id"], "a takeover the accepting fabric-primary decided shares B's request trace");
     } else {
-        assert_eq!(takeover["parent_span_id"].as_str().unwrap_or(""), "", "a takeover decided after the seat moved starts its own trace: {takeover}");
+        assert_eq!(takeover["parent_span_id"].as_str().unwrap_or(""), "", "a takeover decided after the role moved starts its own trace: {takeover}");
     }
     // Each created admin held every surviving member's runtime before it
     // committed Ready (i143.e4.s16): mesh1's five births at least.

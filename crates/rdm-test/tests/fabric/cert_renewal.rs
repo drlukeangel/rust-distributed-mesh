@@ -583,7 +583,7 @@ fn a_cert_for_another_birth_is_refused_by_name() {
     })
 }
 
-/// The estate cell's owner (the successor cell runs node-admin processes: a seat moves only between
+/// The estate cell's owner (the successor cell runs node-admin processes: a role moves only between
 /// births the product can stop).
 fn estate_owner(test: &str) -> rdm_test::estate::Owner {
     rdm_test::estate::Owner {
@@ -609,9 +609,9 @@ fn attr_num(sp: &serde_json::Value, k: &str) -> u64 {
 /// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that does not reach the node is retried every tick and marks the node nothing: reachability is [node recovery](node-recovery.md)'s business, not this primitive's. A successor primary folds the cert rows and continues the schedule from them."
 /// CONTRACT (node-cert-renew.md Failure: "A successor authority folds the cert rows and continues the
 /// schedule from them"; fabric-certs.md §Tracking: "nothing about renewal lives only in memory";
-/// node-stop.md Seat holder: "A target holding a seat has it moved first by node.primary.update ...
+/// node-stop.md PrimaryRole primary: "A target holding a role has it moved first by node.primary.update ...
 /// and is stopped by its successor"): under a 60 s member TTL, `node.stop` of mesh1.admin.1, the
-/// holder of both seats, moves them to mesh1.admin.2 and stops it. mesh1.rpc.1's next renewal is
+/// primary of both roles, moves them to mesh1.admin.2 and stops it. mesh1.rpc.1's next renewal is
 /// mesh1.admin.2's, at the point its newest cert row names (the renew point of the issue it held at
 /// the move, the policy's two thirds plus its fixed jitter), or at once when that point had passed:
 /// never a schedule of its own from the move.
@@ -634,7 +634,7 @@ async fn a_successor_mesh_primary_continues_the_schedule_from_the_rows() {
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
-    estate.until_node("mesh1.admin.2", "mesh1.admin.2 holds both seats", Duration::from_secs(90), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
+    estate.until_node("mesh1.admin.2", "mesh1.admin.2 holds both roles", Duration::from_secs(90), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     let moved_at_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
     // The issue the member held at the move: its join's, or the newest renewal it received.
@@ -665,7 +665,7 @@ async fn wait_for_renewal(estate: &rdm_test::estate::Estate, moved_at_ns: u64, w
         if let Some(sp) = rdm_test::estate::named(&spans, "rdm.node_admin.cert.update.via-renewal").into_iter().find(|sp| attr(sp, "node") == "mesh1.rpc.1" && attr(sp, "outcome") == "installed" && sp["start_unix_nano"].as_u64().unwrap_or(0) > moved_at_ns) {
             return sp.clone();
         }
-        assert!(tokio::time::Instant::now() < deadline, "mesh1.admin.2 renewed mesh1.rpc.1 within {within:?} of taking the seats");
+        assert!(tokio::time::Instant::now() < deadline, "mesh1.admin.2 renewed mesh1.rpc.1 within {within:?} of taking the roles");
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
@@ -741,9 +741,9 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         let (admin2, env) = launched_admin(&root, &dir).await;
         let old = certs::decode_issuing_cert(&env[rdm_core::launch::ENV_ISSUING_CERT]).expect("mesh1's issuing cert");
         let minted_at = old.cert.expiry_ms - ISSUING_TTL_SECS * 1000;
-        // The holder of the old issuer's cert joins halfway through its issuer's life. The issuer is
+        // The primary of the old issuer's cert joins halfway through its issuer's life. The issuer is
         // re-minted at 67-72 % of its life (RDM_CERT_RENEW_AT plus a jitter of up to 5 %), so the join
-        // has 17-22 % of 48 s (8-10 s) to finish under the old issuer. The holder's own cert, capped at
+        // has 17-22 % of 48 s (8-10 s) to finish under the old issuer. The primary's own cert, capped at
         // the issuer's expiry, is renewed at 67-72 % of what is left (84-86 % of the issuer's life),
         // after its calls are cut below.
         until("rafka-time is 50 % into the old issuer's life", BOUND, async || (root.rafka_time.now_ms() >= minted_at + ISSUING_TTL_SECS * 500).then_some(())).await;
@@ -753,7 +753,7 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         let rotated = until("the fabric-primary re-mints mesh1's issuer", BOUND, async || named(&spans, "rdm.node_admin.issuer.create.via-renewal").into_iter().find(|f| f.get("mesh").map(String::as_str) == Some("mesh1") && f.contains_key("outcome"))).await;
         assert_eq!(num(&rotated, "previous_issuer_expires_at"), old.cert.expiry_ms, "{rotated:?}");
         until("mesh1.admin.2 installs the new issuer", BOUND, async || named(&spans, "rdm.node_admin.issuer.update.via-installed").into_iter().find(|f| f.get("node").map(String::as_str) == Some("mesh1.admin.2"))).await;
-        // From here the old issuer's holder is not reached by its own renewal.
+        // From here the old issuer's primary is not reached by its own renewal.
         cut_calls(&root, &holder);
         let update = until("the fabric-primary's update of mesh1.admin.2 is received", BOUND, async || {
             named(&spans, "rdm.node_admin.issuer.update.via-renewal").into_iter().find(|f| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("outcome").map(String::as_str) == Some("installed"))

@@ -36,7 +36,7 @@ fn s(v: &Value) -> String {
 }
 
 /// The fabric primary `observer` had resolved when `at` (a span) started: its own latest
-/// `via-fabric-recompute` before that moment. The seat moves as meshes grow (the lowest ready
+/// `via-fabric-recompute` before that moment. The role moves as meshes grow (the lowest ready
 /// NodeId fabric-wide wins), so "the fabric primary" is a fact at a time, never one name for the
 /// whole test.
 fn fabric_primary_seen_by(spans: &[Value], observer: &str, at: &Value) -> String {
@@ -142,14 +142,14 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     estate.enter(&fabric_admin).await;
     estate.stop().await;
     let spans = estate.spans();
-    // The first admin of a mesh that has none is created by whoever held the fabric seat when the
-    // create ran: the executor's own view at that moment. Day 0's fabric primary may hand the seat
+    // The first admin of a mesh that has none is created by whoever held the fabric-primary role when the
+    // create ran: the executor's own view at that moment. Day 0's fabric primary may hand the role
     // to a lower NodeId in mesh2 as soon as mesh2's first admin is ready, so a name read after the
-    // test is not the creator's seat. The second admin is created by mesh2's own primary, which at
+    // test is not the creator's role. The second admin is created by mesh2's own primary, which at
     // that moment is the only admin mesh2 has (node-admin-lifecycle.md 4.3).
     let op = operation(&spans, "rdm.node_admin.node.create.via-build", "mesh2.admin.1", &create);
     let creator = executed_by(&spans, "rdm.node_admin.node.create.via-build", "mesh2.admin.1", &create);
-    assert_eq!(fabric_primary_seen_by(&spans, &creator, op), creator, "mesh2.admin.1: created by the admin holding the fabric seat when it ran");
+    assert_eq!(fabric_primary_seen_by(&spans, &creator, op), creator, "mesh2.admin.1: created by the admin holding the fabric-primary role when it ran");
     assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", "mesh2.admin.2", &create), "mesh2.admin.1", "mesh2.admin.2: created by mesh2's own primary");
     for r in ["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3"] {
         assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", r, &create), mesh2_primary, "{r}: mesh2's primary creates its members");
@@ -186,7 +186,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert_eq!(decided[0]["attributes"]["receiver_is_primary"], "false", "accepting Pending is not an election: {}", decided[0]);
     let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).unwrap().clone();
     // The accepting fabric-primary holds the request's context: every attempt it decides descends
-    // from the request. The seat moves to mesh2's lower NodeId during the creation; an attempt the
+    // from the request. The role moves to mesh2's lower NodeId during the creation; an attempt the
     // new fabric-primary decides starts its own trace (the context is the old primary's local record).
     let accepting = claim_decider(&spans, create.as_str(), "1").expect("attempt 1 of the creation Build was claimed");
     let mut continued = 0;
@@ -195,7 +195,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
             assert!(descends_from(&spans, r, &accepted), "an attempt the accepting fabric-primary decided descends from its request: {r}");
             continued += 1;
         } else {
-            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "an attempt decided after the seat moved starts its own trace: {r}");
+            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "an attempt decided after the role moved starts its own trace: {r}");
         }
     }
     assert!(continued >= 1, "the first attempt continues the request's trace");

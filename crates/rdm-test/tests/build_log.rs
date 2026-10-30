@@ -130,7 +130,7 @@ pub async fn lane_attempt_complete(carrier: &BuildCarrier, id: &str, mesh: &str,
 /// Build log of the admin the estate asks holds it, as the JSON the projection serializes to.
 pub fn build_read<'a>(estate: &'a rdm_test::estate::Estate, id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + 'a>> {
     // A read that ends forgets the handover, so the next try reads the views again: a fabric-primary
-    // being re-created (Q110) refuses the read, and its new birth, or the admin that holds the seat
+    // being re-created (Q110) refuses the read, and its new birth, or the admin that holds the role
     // next, answers it.
     Box::pin(async move {
         let until = std::time::Instant::now() + Duration::from_secs(60);

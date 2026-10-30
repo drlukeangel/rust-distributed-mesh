@@ -14,12 +14,12 @@
 //!   count and state algebras reconcile it at the end;
 //! - [`crate::process_faults`] / [`crate::container_faults`]: faults act on the exact runtime a
 //!   birth published; [`crate::wedge`] judges every hold;
-//! - [`crate::elections`]: the seats a view advertises equal the ones the public candidates
+//! - [`crate::elections`]: the roles a view advertises equal the ones the public candidates
 //!   compute.
 //!
 //! Topology actions are Node RPC workflows on the typed objects (grow = `node.create`, shrink =
 //! `node.delete`, restart = `node.restart`, replace = delete then create into the freed ordinal,
-//! hand-off = replace of the mesh's seat-holding node-admin), each awaited on its reply stream. A
+//! hand-off = replace of the mesh's role-holding node-admin), each awaited on its reply stream. A
 //! restart or a replacement is confirmed from the Build's own receipts (`AllocateIdentity`, read
 //! through the [`BuildRead`] the test binary hands the driver) before anything is judged.
 //!
@@ -495,7 +495,7 @@ async fn fabric_at(estate: &Estate, admin: &Admin) -> Option<FabricView> {
     estate.fabric_view_at(&admin.path()).await
 }
 
-/// Control follows whoever answers for this Fabric: the fabric's advertised holder if it answers, else the first
+/// Control follows whoever answers for this Fabric: the fabric's advertised primary if it answers, else the first
 /// live admin from `known` that does. The admin control now starts at; `None` when nobody answers.
 async fn relocate_control(estate: &mut Estate, known: &[Admin]) -> Option<Admin> {
     let entry = estate.admin.clone();
@@ -503,10 +503,10 @@ async fn relocate_control(estate: &mut Estate, known: &[Admin]) -> Option<Admin>
     candidates.extend(known.iter().filter(|a| a.path() != entry));
     for c in candidates {
         if let Some(f) = fabric_at(estate, c).await {
-            if let Some(holder) = f.fabric_primary.as_ref() {
-                if estate.fabric_view_at(holder).await.is_some() {
-                    estate.enter(holder).await;
-                    return Some(Admin { name: holder.to_string() });
+            if let Some(primary) = f.fabric_primary.as_ref() {
+                if estate.fabric_view_at(primary).await.is_some() {
+                    estate.enter(primary).await;
+                    return Some(Admin { name: primary.to_string() });
                 }
             }
             estate.enter(&c.path()).await;
@@ -813,8 +813,8 @@ fn fabric_primaries(nodes: &[Value]) -> String {
 /// R-BI7) and attempt. An attempt acts on the birth when a receipt of it creates, deletes, restarts or
 /// stops the node at `path` (`node.create:<path>`, `node.delete:<path>` and its `TerminateRuntime`, ...):
 /// what a terminate or a replacement of the birth writes. A gained attempt with no such receipt did
-/// nothing to it: the hand-back of the fabric seat, an attempt of the current Build
-/// (fabric-recovery.md step 4, Q96), and the next attempt its returning holder claims after its
+/// nothing to it: the hand-back of the fabric-primary role, an attempt of the current Build
+/// (fabric-recovery.md step 4, Q96), and the next attempt its returning primary claims after its
 /// HandedOff (build.md) among them.
 fn acted_on(before: &Value, after: &Value, path: &str) -> BTreeMap<(String, u64), Vec<String>> {
     const ACTS: [&str; 4] = ["node.create", "node.delete", "node.restart", "node.stop"];
@@ -944,7 +944,7 @@ impl SpanTail {
 const LADDER_UNHEARD: &str = "rdm.node_admin.mesh.update.via-unheard";
 const LADDER_VERDICT: &str = "rdm.node_admin.mesh.update.via-probe-verdict";
 /// The span the code emits today when a node-admin takes (`role=start`) or gives up (`role=stop`)
-/// the fabric-primary role: `Backbone::set_fabric_primary(live && holds_fabric_seat)`.
+/// the fabric-primary role: `Backbone::set_fabric_primary(live && holds_fabric_role)`.
 const FABRIC_ROLE: &str = "rdm.mesh.fabric.update.via-status-publisher";
 
 /// The peer mesh the fabric-primary `fp_name` (of `fp_mesh`) holds unheard at `now` (ns), if any,
@@ -962,10 +962,10 @@ const FABRIC_ROLE: &str = "rdm.mesh.fabric.update.via-status-publisher";
 /// [`FABRIC_ROLE`] `role=start` on, or every row when the tail holds none (the role was taken
 /// before the tail began). An investigation is its fabric-primary's (mesh-investigation.md "One
 /// investigation per peer mesh, owned by the fabric-primary"): the ladder is kept while the admin
-/// holds the seat, the condition the role row follows, and is dropped
+/// holds the role, the condition the role row follows, and is dropped
 /// with no row otherwise (investigate.rs `run`), so no `heard-again` ever follows a verdict of an
 /// ended tenure. At `b6695529` the floors soak's mesh1.admin.1 decided mesh2 `unreachable` during
-/// the cut, lost the seat to mesh2.admin.1's takeover (Q89), took it back at the hand-back (Q107)
+/// the cut, lost the role to mesh2.admin.1's takeover (Q89), took it back at the hand-back (Q107)
 /// after the heal, and the driver waited 150 s on that verdict.
 fn held_unheard_by(fp_name: &str, fp_mesh: &str, floor: Duration, now: u64, spans: &[Value]) -> Option<String> {
     let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
@@ -1148,16 +1148,16 @@ impl Driver {
             }
             None
         };
-        // The restart or delete (a replace's first step) of a node that holds its cohort's seat is
+        // The restart or delete (a replace's first step) of a node that holds its cohort's role is
         // refused by name, `no-secondary`, while no other node of its type in its mesh is
-        // ready to take the seat (node-primary-update.md "No-successor cases"; a
+        // ready to take the role (node-primary-update.md "No-successor cases"; a
         // desired-state shrink of a cohort's only node skips the update, so a shrink is not guarded).
         let no_secondary = |n: &Value, what: &str| -> Option<String> {
             if n["kind"] == "node_admin" || n["is_primary"] != true {
                 return None;
             }
             let secondary = nodes.iter().any(|o| o["mesh"] == n["mesh"] && o["kind"] == n["kind"] && o["name"] != n["name"] && o["status"] == "ready");
-            (!secondary).then(|| format!("{what}: {} holds its node-type primary seat and no other {} of {} is ready: node.primary.update has no secondary", s(&n["name"]), s(&n["kind"]), s(&n["mesh"])))
+            (!secondary).then(|| format!("{what}: {} holds its node-type primary role and no other {} of {} is ready: node.primary.update has no secondary", s(&n["name"]), s(&n["kind"]), s(&n["mesh"])))
         };
         // A replacement is a delete then a spawn, and a spawn lands at the lowest free ordinal of
         // its class: it replaces the node at the same path.name only when no lower ordinal is free.
@@ -1639,7 +1639,7 @@ impl Driver {
     }
 
     /// A workflow stream to its `Complete`, within 120 s; a stream that ends `FabricPrimaryMoved` (a planned fabric-primary
-    /// hand-off) is followed at the new seat. The Build and attempt the call opened, as the round row records them.
+    /// hand-off) is followed at the new role. The Build and attempt the call opened, as the round row records them.
     async fn await_build(&mut self, mut stream: WorkflowStream) -> Result<Value, Broken> {
         let accepted = stream.accepted().clone();
         let until = tokio::time::Instant::now() + Duration::from_secs(120);
@@ -1657,7 +1657,7 @@ impl Driver {
                         .await
                         .resume(stream.kind().clone(), &accepted)
                         .await
-                        .map_err(|end| broken("build-completes", format!("the fabric-primary seat moved to {fabric_primary:?} and the new seat does not stream Build {} from attempt {}: {end}", accepted.build_id, accepted.attempt)))?;
+                        .map_err(|end| broken("build-completes", format!("the fabric-primary role moved to {fabric_primary:?} and the new role does not stream Build {} from attempt {}: {end}", accepted.build_id, accepted.attempt)))?;
                 }
                 Ok(Some(Ok(_))) => {}
             }
@@ -1675,7 +1675,7 @@ impl Driver {
         entry["accepted"] = accepted_json(delete.accepted());
         entry["build"] = self.await_build(delete).await?;
         // A deleted fabric-primary or entry admin takes the entry with it: the create goes to the admin
-        // that holds the control seat after the delete, as each round enters it.
+        // that holds the control role after the delete, as each round enters it.
         if relocate_control(&mut self.estate, &self.known).await.is_none() {
             return Err(broken("control-api-answers", format!("after node.delete {path}, no admin answers fabric.get: {:?}", self.known.iter().map(|a| a.name.as_str()).collect::<Vec<_>>())));
         }
@@ -1743,11 +1743,11 @@ impl Driver {
             }
         }
         let nodes0 = self.estate.node_values().await;
-        let (seats_before, detail_before) = primaries(&nodes0);
+        let (roles_before, detail_before) = primaries(&nodes0);
         let fp_before = fabric_primaries(&nodes0);
         // Where the fabric-primary belongs as the hold begins: the one advertised.
         let home = fp_before.clone();
-        entry["fabric_seat"] = json!({"advertised": fp_before, "home": home});
+        entry["fabric_role"] = json!({"advertised": fp_before, "home": home});
         let mut ev = Evidence::new(Family::SilentRuntime, format!("silent-runtime:{path}"));
         // The hold: SIGSTOP of the exact runtime, or `docker pause` of the exact container.
         let release: Box<dyn Fn() -> Result<Value, String> + Send>;
@@ -1841,12 +1841,12 @@ impl Driver {
         }
         let held_at_last_read = hold_rt.as_ref().map(|r| proc_state(r.pid) == Some('T')).unwrap_or(true);
         let nodes_during = self.estate.node_values().await;
-        let (seats_during, detail_during) = primaries(&nodes_during);
+        let (roles_during, detail_during) = primaries(&nodes_during);
         let during = nodes_during.iter().find(|x| x["name"] == path.as_str()).cloned();
         let build_during = (self.read)(&self.estate, &self.build_id).await;
         let attempt_during = num(&build_during["attempt"]);
         // What the gained attempts did to the held birth: only one that terminated, deleted, created
-        // or restarted it replaced it; a hand-back's attempts moved a seat (fabric-recovery.md step 4).
+        // or restarted it replaced it; a hand-back's attempts moved a role (fabric-recovery.md step 4).
         let acted_during = acted_on(before, &build_during, &path);
         entry["attempts"] = json!({"build": [attempt_before, attempt_during], "acted_on_held": acted_rows(&acted_during)});
         let alive = hold_rt.as_ref().map(|r| r.check().is_ok()).unwrap_or(true);
@@ -1880,12 +1880,12 @@ impl Driver {
         let target_now = if recreated { format!("exact:{}", s(&back["node_id"])) } else { exact.clone() };
         let kept = if is_rpc { run(vec!["get".into(), "--target".into(), target_now, "--key".into(), key.clone()]).await } else { Value::Null };
         ev.recovery = Some(Recovery { work_complete: if is_rpc { kept["outcome"] == "Reply" } else { true }, marker_after: json!({"proc_state": hold_rt.as_ref().and_then(|r| proc_state(r.pid)).map(String::from), "outcome": kept["outcome"]}).to_string() });
-        // The seats go home one floor after the node at the lost path.name is Ready (Q89): the "after"
-        // read waits for that, bounded, before it judges the seat at its home.
+        // The roles go home one floor after the node at the lost path.name is Ready (Q89): the "after"
+        // read waits for that, bounded, before it judges the role at its home.
         let nodes_after = {
             let est = &self.estate;
             let home = home.clone();
-            let settled = wait_for_opt(&format!("{path}: the fabric seat home again after the release"), floor * 3 + Duration::from_secs(30), || async {
+            let settled = wait_for_opt(&format!("{path}: the fabric-primary role home again after the release"), floor * 3 + Duration::from_secs(30), || async {
                 let ns = est.node_values().await;
                 (fabric_primaries(&ns) == home).then_some(ns)
             })
@@ -1895,10 +1895,10 @@ impl Driver {
                 None => self.estate.node_values().await,
             }
         };
-        let (seats_after, detail_after) = primaries(&nodes_after);
+        let (roles_after, detail_after) = primaries(&nodes_after);
         ev.control = Some(Control {
-            seats_as_expected: [seats_before, seats_during, seats_after],
-            seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
+            roles_as_expected: [roles_before, roles_during, roles_after],
+            roles_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
             fabric_primary: [fp_before, fabric_primaries(&nodes_during), fabric_primaries(&nodes_after)],
             fabric_home: home,
             primary_may_move: false,
@@ -1931,7 +1931,7 @@ impl Driver {
                 format!("attempt {attempt_before} -> {}: {acted_after:?}", num(&build_after["attempt"])),
             );
         }
-        rec.check("the seats equal the public candidates' after the release", seats_after, detail_after);
+        rec.check("the primaries equal the public candidates' after the release", roles_after, detail_after);
         ev.reconciliation = Some(rec);
         entry["wedge"] = json!({"released": released, "view_while_held": during.as_ref().map(|x| x["status"].clone())});
         match judge(&ev) {
@@ -2062,7 +2062,7 @@ impl Driver {
         }
         let (ok, why) = primaries(&nodes);
         if !ok {
-            return Err(broken("seats-equal-the-public-candidates", format!("round {round}: {why}")));
+            return Err(broken("primaries-equal-the-public-candidates", format!("round {round}: {why}")));
         }
         for n in nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready") {
             let r = self.estate.probe(&["get", "--target", &format!("exact:{}", s(&n["node_id"])), "--key", "9998"]);
@@ -2073,7 +2073,7 @@ impl Driver {
             }
         }
         if let Some(row) = self.rounds_log.last_mut() {
-            row["authority"] = json!({"fabric_primary": writers.iter().next(), "mesh_primaries": nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| n["name"].clone()).collect::<Vec<_>>(), "seat_holders": nodes.iter().filter(|n| n["is_primary"] == true).map(|n| n["name"].clone()).collect::<Vec<_>>()});
+            row["authority"] = json!({"fabric_primary": writers.iter().next(), "mesh_primaries": nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| n["name"].clone()).collect::<Vec<_>>(), "primaries": nodes.iter().filter(|n| n["is_primary"] == true).map(|n| n["name"].clone()).collect::<Vec<_>>()});
         }
         Ok(vec![
             "one-current-birth-per-path",
@@ -2081,7 +2081,7 @@ impl Driver {
             "fabric-build-id-held",
             "no-peer-mesh-permanently-unheard",
             "one-fabric-primary",
-            "seats-equal-the-public-candidates",
+            "primaries-equal-the-public-candidates",
             "every-rpc-node-reachable-on-its-current-birth",
         ])
     }
@@ -2356,8 +2356,8 @@ mod tests {
     /// The rows the floors soak's node-admins wrote at `b6695529` (seed 1431101; mesh2 cut at
     /// 1792619503.285 s, healed at 1792619540.214 s), as the driver's tail held them at `now` (ns):
     /// mesh1.admin.1, the fabric-primary, decided mesh2 `unreachable` during the cut; mesh2.admin.1
-    /// ran the ladder on the fabric seat's mesh, took the seat (Q89), heard mesh1 again after the heal
-    /// and handed the seat back (Q107).
+    /// ran the ladder on the fabric-primary role's mesh, took the role (Q89), heard mesh1 again after the heal
+    /// and handed the role back (Q107).
     fn floors_rows(now: u64) -> Vec<Value> {
         let row = |start: u64, name: &str, attributes: Value| json!({ "name": name, "start_unix_nano": start, "attributes": attributes });
         let (m1, m2) = ("mesh1.admin.1", "mesh2.admin.1");
@@ -2388,7 +2388,7 @@ mod tests {
     /// CONTRACT (mesh-investigation.md: "One investigation per peer mesh, owned by the
     /// fabric-primary"; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives"
     /// steps 2 and 4, Q89/Q107): an investigation is its fabric-primary tenure's. A fabric-primary
-    /// that lost the seat during a cut and took it back at the hand-back holds nothing of the verdict
+    /// that lost the role during a cut and took it back at the hand-back holds nothing of the verdict
     /// it reached before: the driver reads only the rows written since it took the role, the span
     /// the code emits today `rdm.mesh.fabric.update.via-status-publisher` `role=start`. At
     /// `b6695529` the floors soak waited 150 s on mesh1.admin.1's `unreachable` of mesh2 from the
@@ -2397,7 +2397,7 @@ mod tests {
     fn a_verdict_of_an_ended_fabric_primary_tenure_holds_no_peer_mesh() {
         let held = |now: u64| held_unheard_by("mesh1.admin.1", "mesh1", FLOOR, now, &floors_rows(now));
         assert!(held(1792619530 * S).is_some_and(|why| why.contains("\"unreachable\" at 10284 ms")), "its own tenure's verdict holds mesh2");
-        assert_eq!(held(1792619546 * S), None, "the seat handed back, the earlier tenure's verdict holds nothing");
+        assert_eq!(held(1792619546 * S), None, "the role handed back, the earlier tenure's verdict holds nothing");
         assert_eq!(held(1792619606 * S), None, "the wedge at at_s 102 acts on mesh2");
     }
 
@@ -2413,10 +2413,10 @@ mod tests {
     }
 
     /// CONTRACT (the same pages; elections §4.3): what an admin's ladder wrote before it took the
-    /// role holds nothing once it holds the seat. The 300 s floors soak run on this fix (seed 1431101):
-    /// mesh1.admin.1 learned at the heal that mesh2.admin.1 held the seat, ran the ladder on the
-    /// fabric seat's mesh (its Track and Mark of mesh2 written after its `role=stop`), and took the
-    /// seat back at the hand-back 3.4 s later; no heard-again follows the dropped ladder.
+    /// role holds nothing once it holds the role. The 300 s floors soak run on this fix (seed 1431101):
+    /// mesh1.admin.1 learned at the heal that mesh2.admin.1 held the role, ran the ladder on the
+    /// fabric-primary role's mesh (its Track and Mark of mesh2 written after its `role=stop`), and took the
+    /// role back at the hand-back 3.4 s later; no heard-again follows the dropped ladder.
     #[test]
     fn rows_written_before_the_role_was_taken_hold_no_peer_mesh() {
         let row = |start: u64, name: &str, attributes: Value| json!({ "name": name, "start_unix_nano": start, "attributes": attributes });
@@ -2438,12 +2438,12 @@ mod tests {
         };
         let held = |now: u64| held_unheard_by(m1, "mesh1", FLOOR, now, &rows(now));
         assert!(held(1792624350 * S).is_some_and(|why| why.contains("\"unreachable\" at 10030 ms")), "{:?}", held(1792624350 * S));
-        assert_eq!(held(1792624380 * S), None, "the seat taken again, the rows written before hold nothing");
+        assert_eq!(held(1792624380 * S), None, "the role taken again, the rows written before hold nothing");
     }
 
     /// The Build as the driver reads it in the floors soak on `b6695529` (seed 1431101, step 33):
-    /// mesh1.broker.2 born by attempt 1; attempt 5, the hand-back of the fabric seat to mesh1.admin.1
-    /// (`via-proven-drift` scope `handback: the fabric seat to mesh1.admin.1`), HandedOff; attempt 6,
+    /// mesh1.broker.2 born by attempt 1; attempt 5, the hand-back of the fabric-primary role to mesh1.admin.1
+    /// (`via-proven-drift` scope `handback: the fabric-primary role to mesh1.admin.1`), HandedOff; attempt 6,
     /// mesh1.admin.1's claim after it (`via-claim-decision` won, `via-reconcile` converged with no
     /// operation). Neither writes a receipt under an operation naming mesh1.broker.2.
     fn b6695529_build(attempt: u64, lanes: Value) -> Value {
@@ -2458,7 +2458,7 @@ mod tests {
     }
 
     /// CONTRACT (fabric-recovery.md step 4 and Q96: "The hand-back runs as an attempt of the current
-    /// accepted Build ... it commits the seat transfer and does not declare the returning node lost";
+    /// accepted Build ... it commits the role transfer and does not declare the returning node lost";
     /// build.md: "The next attempt is claimed after the running attempt's terminal receipt (Complete,
     /// Failed or HandedOff)"; deployment-provider.md §2.5 and the S6 CONTRACT: nothing terminates a held
     /// birth and nothing is born at its path): an attempt gained during a hold replaced the held birth
@@ -2468,12 +2468,12 @@ mod tests {
     #[test]
     fn a_hand_back_attempt_does_nothing_to_a_held_birth() {
         let before = b6695529_build(5, json!({ "mesh1": { "attempt": 2 } }));
-        assert!(acted_on(&before, &b6695529_build(6, json!({ "mesh1": { "attempt": 2 } })), "mesh1.broker.2").is_empty(), "the hand-back and its returning holder's attempt");
-        // A hand-back to a held node-admin names a seat move under its own key (build.rs
-        // `HandFabricSeat`), never the birth's own lifecycle.
+        assert!(acted_on(&before, &b6695529_build(6, json!({ "mesh1": { "attempt": 2 } })), "mesh1.broker.2").is_empty(), "the hand-back and its returning primary's attempt");
+        // A hand-back to a held node-admin names a role move under its own key (build.rs
+        // `HandFabricRole`), never the birth's own lifecycle.
         let mut handed = b6695529_build(6, json!({}));
         handed["steps"].as_array_mut().unwrap().push(json!({ "attempt": 6, "operation": "node.fabric-primary.update:mesh1.admin.1", "step": "Complete", "outcome": "complete" }));
-        assert!(acted_on(&before, &handed, "mesh1.admin.1").is_empty(), "a seat move is not the birth's terminate, create or replace");
+        assert!(acted_on(&before, &handed, "mesh1.admin.1").is_empty(), "a role move is not the birth's terminate, create or replace");
         // A recovery of the held birth in its mesh's drift lane (R-BI7, numbered by the lane): its
         // terminate and its new birth at the path.
         let recovered = b6695529_build(

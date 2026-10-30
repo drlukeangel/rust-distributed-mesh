@@ -76,8 +76,8 @@ fn birth(n: &Value) -> Value {
 /// fabric-primary (Node RPC -> reconcile -> node.update.via-build), is stop then start on the stopped
 /// process: it keeps its NodeId, incarnation and data dir and serves the value written before it, the
 /// Put and the Get after the restart each naming the executing birth exactly as the node-admin view
-/// holds it. A holder of its type's seat has the seat moved first, in the request's attempt, and is
-/// restarted in the attempt claimed after that one's hand-off (node-stop.md, Seat holder). What must
+/// holds it. A holder of its type's role has the role moved first, in the request's attempt, and is
+/// restarted in the attempt claimed after that one's hand-off (node-stop.md, PrimaryRole holder). What must
 /// NOT happen: the restarted node answering absent, or the restart reaching the node other than
 /// through the Build it was accepted as.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -95,8 +95,8 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     landed_on(&before, &first, "get");
     assert_eq!(before["reply"]["result"], json!({"found": true, "value": "before-restart"}), "presence control: {before}");
 
-    // Whether the restarted node holds its type's seat: then the request's attempt moves the seat first.
-    let holder = view(&estate, NODE).await["is_primary"] == true;
+    // Whether the restarted node holds its type's role: then the request's attempt moves the role first.
+    let is_primary = view(&estate, NODE).await["is_primary"] == true;
     // The restart: node.stop then node.start (Q183).
     let (restart_attempt, _) = estate.stop_then_start(&NODE.parse().unwrap()).await;
     let restart_build = restart_attempt.build_id.to_string();
@@ -118,8 +118,8 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     let put_span = at(&first["incarnation_id"], "put", "stored").expect("the first birth served the put");
     let kept_span = at(&restarted["incarnation_id"], "get", "value").expect("the restarted birth served the kept value");
     // The stop ran as the Build its node.stop call was accepted as: the call, then the rectifier's
-    // node update of this path under the same Build. A stop of its type's seat holder moves the seat
-    // first (node-stop.md, Seat holder): the request's attempt carries the node.primary.update and
+    // node update of this path under the same Build. A stop of its type's primary moves the role
+    // first (node-stop.md, PrimaryRole holder): the request's attempt carries the node.primary.update and
     // ends handed-off, and the stop runs in the attempt the fabric-primary claims next
     // (node-rpc-envelope.md: "Hand-off is the fabric-primary's next claim and call").
     let bare = |v: &Value| s(v).trim_start_matches("bid_").replace('-', "");
@@ -130,16 +130,16 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     let accepted = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().filter(of_build).find(|sp| sp["attributes"]["node"] == NODE && attempt_of(sp) == opened).cloned().expect("the stop's build.create span");
     let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().filter(of_build).filter(|sp| sp["attributes"]["node"] == NODE && attempt_of(sp) >= opened).min_by_key(|sp| attempt_of(sp)).cloned().expect("the stop's node update");
     assert_eq!(attempt_of(&accepted), opened, "the call's span names the attempt it opened");
-    let seat_move = if holder {
+    let role_move = if is_primary {
         let moved = named(&spans, "rdm.node_admin.primary.update.via-command")
             .into_iter()
             .filter(of_build)
             .find(|sp| attempt_of(sp) == opened && s(&sp["attributes"]["operation"]).ends_with(&format!(":{opened}:node.stop:{NODE}")))
             .cloned()
-            .unwrap_or_else(|| panic!("{NODE} held its type's seat: the request's attempt {opened} moves it first"));
+            .unwrap_or_else(|| panic!("{NODE} held its type's role: the request's attempt {opened} moves it first"));
         let handed = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(of_build).find(|sp| attempt_of(sp) == opened && sp["attributes"]["outcome"] == "handed-off").cloned();
-        assert!(handed.is_some(), "the seat move's attempt {opened} ends handed-off");
-        assert_eq!(attempt_of(&update), opened + 1, "the stop runs in the attempt the fabric-primary claims after the seat move's hand-off");
+        assert!(handed.is_some(), "the role move's attempt {opened} ends handed-off");
+        assert_eq!(attempt_of(&update), opened + 1, "the stop runs in the attempt the fabric-primary claims after the role move's hand-off");
         json!({"attempt": opened, "operation": moved["attributes"]["operation"], "span_id": moved["span_id"]})
     } else {
         assert_eq!(attempt_of(&update), opened, "the node update runs the attempt the request opened");
@@ -158,8 +158,8 @@ async fn proof_holder_restarts_preserves_same_node_store() {
         "presence_control": before["reply"],
         "kept": kept["reply"],
         "restart_build": restart_build,
-        "seat_holder": holder,
-        "seat_move": seat_move,
+        "is_primary": is_primary,
+        "role_move": role_move,
         "spans": {
             "put": {"trace_id": put_span["trace_id"], "span_id": put_span["span_id"], "parent_span_id": put_span["parent_span_id"]},
             "kept": {"trace_id": kept_span["trace_id"], "span_id": kept_span["span_id"], "parent_span_id": kept_span["parent_span_id"]},
@@ -177,7 +177,7 @@ async fn proof_holder_restarts_preserves_same_node_store() {
 /// CONTRACT (#2775; node-recovery.md: "node.delete of the exited instance, node.create at the same
 /// path.name over the inherited data dir, then node[2].update"): the runtime's death is answered by
 /// node recovery under the accepted Build, a new NodeId at the same path.name over the old birth's
-/// data dir: `path:` reaches the new holder, which serves what the old birth stored there; the old
+/// data dir: `path:` reaches the new primary, which serves what the old birth stored there; the old
 /// exact NodeId never follows the path:
 /// the probe's current-only resolver answers Unknown (NotSent), a node's own retained departure
 /// resolver answers Gone for it, Found (the replacement) for the path, Unknown for an id never
@@ -218,7 +218,7 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     assert_eq!(gone["reply"]["resolution"], "gone", "the other rpc node holds the old birth's departure: {gone}");
     let holder = estate.probe(&["resolve", "--target", &other, "--query", &path]);
     assert_eq!(holder["reply"]["resolution"], "found", "{holder}");
-    assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current holder is the replacement: {holder}");
+    assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current primary is the replacement: {holder}");
     let never = estate.probe(&["resolve", "--target", &other, "--query", &format!("exact:{}", rdm_core::NodeId::mint())]);
     assert_eq!(never["reply"]["resolution"], "unknown", "{never}");
     estate.stop().await;

@@ -32,13 +32,13 @@ fn start_ns(sp: &Value) -> u64 {
 }
 
 /// mesh1 {1 node-admin, 2 rpc nodes}, settled and ready; the rpc member that holds no
-/// seat (its stop moves no seat first) and its exact runtime.
+/// role (its stop moves no role first) and its exact runtime.
 async fn mesh_with_a_member(test: &str) -> (Estate, String, ExactRuntime) {
     let estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[]).await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let member = estate.node_values().await.into_iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node" && n["is_primary"] != true).map(|n| s(&n["name"])).min().expect("an rpc member that holds no seat");
+    let member = estate.node_values().await.into_iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node" && n["is_primary"] != true).map(|n| s(&n["name"])).min().expect("an rpc member that holds no primary role");
     let dir = estate.data_dir(&member).await;
     let rt = ExactRuntime::published(Path::new(&dir)).unwrap_or_else(|r| panic!("{member}: no exact runtime published in {dir}: {r:?}"));
     (estate, member, rt)

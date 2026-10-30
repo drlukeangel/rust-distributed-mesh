@@ -128,10 +128,10 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 /// CONTRACT (i143 1b, Arch: "the single-admin memory estate (birth, node.create, node.stop,
 /// node.restart, build.get, from the scenario crate, file feature off) is the runtime proof"; node.restart
 /// is removed, Q183: its node.stop then node.start is the stop and start below): a
-/// Day-0 node-admin started on the memory storage backend comes up ready in both seats, its storage
+/// Day-0 node-admin started on the memory storage backend comes up ready in both roles, its storage
 /// step spanned `writes_to = "memory"`; `node.create` of two rpc nodes in mesh1 completes and lists
 /// them ready; once the fabric has first reached ready, `node.stop` of the
-/// first stops it (its cohort seat moving to the second) and `node.start` brings it back; before
+/// first stops it (its cohort role moving to the second) and `node.start` brings it back; before
 /// that, a Reconcile changing mesh1.rpc.1's config alone completes and the node carries the config
 /// (build.md §1, "The Build applies the diff": `config` in place, as `node.config.update` applies a
 /// map; the executor reads the entry in the accepted Build the memory log holds); `build.get [id]` of the
@@ -164,7 +164,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
             }
         })
         .await
-        .expect("the admin's view never held it ready in both seats");
+        .expect("the admin's view never held it ready in both roles");
         let admin = ResolvedNode { node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller's endpoint binds");
         let resolver = Arc::new(StaticResolver::new());
@@ -190,7 +190,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         let (based_on, request) = one_more().await;
         let created = Estate::workflow("node.create of an rpc node in mesh1", nodes.create_named(based_on, request).await).await;
         until_status(&nodes, &node, NodeStatus::Ready).await;
-        // A stop moves the stopped node's cohort seat to a secondary of its type: a second rpc node.
+        // A stop moves the stopped node's cohort role to a secondary of its type: a second rpc node.
         let (based_on, request) = one_more().await;
         Estate::workflow("node.create of a second rpc node in mesh1", nodes.create_named(based_on, request).await).await;
         until_status(&nodes, &"mesh1.rpc.2".parse().unwrap(), NodeStatus::Ready).await;

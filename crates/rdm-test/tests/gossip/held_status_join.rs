@@ -213,7 +213,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     tokio::time::sleep(Duration::from_secs(10)).await;
     let window: Vec<Seen> = early.all().into_iter().filter(|x| x.at >= window_start).collect();
     let primary_after = estate.fabric_view().await.fabric_primary;
-    assert_eq!(primary_before, primary_after, "no seat moved during the quiet window");
+    assert_eq!(primary_before, primary_after, "no role moved during the quiet window");
     let status_in_window: Vec<&Seen> = window.iter().filter(|x| is_status(&x.frame)).collect();
     assert!(status_in_window.is_empty(), "a quiet fabric carries no status frame: {:#?}", status_in_window.iter().map(|x| row(&early, x)).collect::<Vec<_>>());
     let mesh_topology_in_window = window.iter().filter(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { .. })).count();

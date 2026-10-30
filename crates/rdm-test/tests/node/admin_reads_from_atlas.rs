@@ -142,7 +142,7 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
                 .expect("the read ends")
                 .unwrap_or_else(|e| panic!("the mesh-primary refused the read of {mesh:?} with its store unreadable: {e}"));
             assert!(read.installed.iter().any(|m| m.mesh == "mesh1"), "mesh1 is served whole ({mesh:?}): {:?}", read.installed.iter().map(|m| &m.mesh).collect::<Vec<_>>());
-            assert!(read.rafka_time.is_some() && !read.seats.is_empty(), "the rafka-time and the primaries are served ({mesh:?})");
+            assert!(read.rafka_time.is_some() && !read.primaries.is_empty(), "the rafka-time and the primaries are served ({mesh:?})");
             let own = read.own_row.as_ref().unwrap_or_else(|| panic!("its mesh-primary answers the reader its own row ({mesh:?})"));
             assert_eq!(own.0.node_id, launch.node_id, "the own row is the reader's ({mesh:?}): {own:?}");
             assert!(own.1 > 0, "the own row carries the row's revision ({mesh:?}): {own:?}");

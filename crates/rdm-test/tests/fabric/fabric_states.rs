@@ -448,9 +448,9 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let after = rows_on(&root);
     estate.artifact("rows-after-ready.json", &json!(after));
     // Under fabric/ the fabric-primary holds nothing: the Fabric record is fabric.jsonl's, the Build journal
-    // builds.jsonl's (R-BI6), and no per-seat row stands beside them (Part C2).
+    // builds.jsonl's (R-BI6), and no per-role row stands beside them (Part C2).
     let only_identity_builds_and_events = |rows: &[String]| !rows.iter().any(|r| r.starts_with("fabric/")) && rows.iter().filter(|r| r.starts_with("fabric.jsonl#")).all(|r| r.starts_with("fabric.jsonl#fabric-record/"));
-    assert!(only_identity_builds_and_events(&after), "the Fabric row carries no pointer to the newest Build and no seat row stands beside it: {after:#?}");
+    assert!(only_identity_builds_and_events(&after), "the Fabric row carries no pointer to the newest Build and no primary row stands beside it: {after:#?}");
     // A mesh's primary records each member's address on its Node record.
     let addressed = |mesh: &str, name: &str, id: &str| {
         let (mesh, name, id) = (mesh.to_string(), name.to_string(), id.to_string());
@@ -568,7 +568,7 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
     let entered = change.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-every-mesh-ready").unwrap_or_else(|| panic!("every mesh was ready under {build}"));
     let announced = named(&spans, "rdm.mesh.primary.update.via-announcement")
         .into_iter()
-        .filter(|a| a["attributes"]["seat"] == "rpc_node-primary" && a["attributes"]["via"] == "own" && s(&a["attributes"]["node"]).starts_with("mesh1.admin."))
+        .filter(|a| a["attributes"]["role"] == "rpc_node-primary" && a["attributes"]["via"] == "own" && s(&a["attributes"]["node"]).starts_with("mesh1.admin."))
         .min_by_key(|a| start(a))
         .expect("the mesh-primary announced mesh1's rpc_node primary");
     // The Day-0 Build: the first Build whose change found every mesh ready, and its attempt's claim. The

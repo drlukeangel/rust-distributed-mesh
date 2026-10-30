@@ -95,13 +95,13 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
         .collect();
     assert!(reconciles.iter().any(|r| r["attributes"]["outcome"] == "converged"), "{shape}: no converged reconcile of {build_id}");
     // The accepting fabric-primary holds the request's context: every attempt it decides descends
-    // from the request; an attempt decided after the seat moved starts its own trace.
+    // from the request; an attempt decided after the role moved starts its own trace.
     let accepting = claim_decider(&spans, build_id.as_str(), "1").expect("attempt 1 was claimed");
     for r in &reconciles {
         if claim_decider(&spans, build_id.as_str(), r["attributes"]["attempt"].as_str().unwrap_or_default()).is_none_or(|d| d == accepting) {
             assert!(descends_from(&spans, r, &accepted_span), "{shape}: every reconcile the accepting fabric-primary decided descends from the accepting request: {r}");
         } else {
-            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "{shape}: an attempt decided after the seat moved starts its own trace: {r}");
+            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "{shape}: an attempt decided after the role moved starts its own trace: {r}");
         }
     }
     let created: Vec<&String> = want.iter().filter(|n| *n != "mesh1.admin.1").collect();

@@ -236,7 +236,7 @@ pub struct Silenced {
 }
 
 /// Silence `nodes` against the rest of the estate. `fabric_primary` is the node-admin holding the
-/// fabric-primary seat: a set that holds it is refused before anything is touched. A member that
+/// fabric-primary role: a set that holds it is refused before anything is touched. A member that
 /// cannot be silenced leaves the ones already silenced restored, and the error says which.
 pub async fn silence(estate: &impl ContainerEstate, nodes: &[String], fabric_primary: &str) -> Result<Silenced, String> {
     let silenced = prepare_silence(estate, nodes, fabric_primary).await?;

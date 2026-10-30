@@ -149,7 +149,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     // The Build stopped the predecessor and renamed it `<path>.old`; its node.delete there is the
     // Build's step that releases its identity, and its NodeDeleted is the departure (node-rpc.md:
     // Gone comes only from NodeDeleted). A node's own live resolver knows more: that delete published the old
-    // birth's departure, so the other rpc node answers Gone for the old id, the new holder for
+    // birth's departure, so the other rpc node answers Gone for the old id, the new primary for
     // the path, and Unknown for an id nobody ever saw.
     let other = "path:mesh1.rpc.2";
     estate.holds_departure("mesh1.rpc.2", "mesh1", recovered["node_id"].as_str().unwrap()).await;
@@ -164,7 +164,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
     let holder = estate.probe(&["resolve", "--target", other, "--query", &format!("path:{NODE}")]);
     assert_eq!(holder["reply"]["resolution"], "found", "{holder}");
-    assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current holder is the replacement: {holder}");
+    assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current primary is the replacement: {holder}");
     let never = estate.probe(&["resolve", "--target", other, "--query", &format!("exact:{}", rdm_core::NodeId::mint())]);
     assert_eq!(never["reply"]["resolution"], "unknown", "{never}");
     estate.artifact("nodes-after.json", &json!(estate.node_values().await));

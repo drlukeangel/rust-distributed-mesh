@@ -96,7 +96,7 @@ async fn a_successor_manages_births_it_never_launched() {
     wait_for("mesh1.rpc.3's runtime is gone", Duration::from_secs(30), || async { (!alive(deleted_pid)).then_some(()) }).await;
 
     // The admins that hold mesh1 now: the successor, and the drift recovery's rebirth of the
-    // killed launcher's path, a new NodeId that may take the seat back by NodeId order.
+    // killed launcher's path, a new NodeId that may take the role back by NodeId order.
     let admins_now: Vec<String> = estate.node_views().await.iter().filter(|n| n.kind == NodeKind::NodeAdmin && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|n| n.node_id.to_string()).collect();
     let (launcher, restarted, deleted) = (serde_json::to_value(&launcher).unwrap(), serde_json::to_value(&restarted).unwrap(), serde_json::to_value(&deleted).unwrap());
     estate.stop().await;
@@ -190,7 +190,7 @@ async fn a_successor_manages_births_it_never_launched() {
             .unwrap_or_else(|| panic!("the successor adopted {name}'s runtime"));
         let (r, a) = (&ready["attributes"], &adopted["attributes"]);
         // Adopted by an admin that never launched it: the successor, or the launcher path's rebirth
-        // when it holds the seat by then. Never the killed launcher.
+        // when it holds the role by then. Never the killed launcher.
         assert_ne!(a["adopter_node_id"], launcher["node_id"], "{name}: the killed launcher never adopts");
         assert!(admins_now.contains(&s(&a["adopter_node_id"])), "{name}: adopted by a current admin {admins_now:?}: {a}");
         assert_eq!(a["execution_node_id"], a["adopter_node_id"], "{name}: the adopter executes");

@@ -28,7 +28,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         let command = match kind { StatusEvent::Deleting => "delete", StatusEvent::Stopped => "stop" };
         let op = LifecycleOp { build_id: "lifecycle-build".into(), attempt: 1, operation: format!("node.{command}:mesh1.rpc.2"), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.2".parse().unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
-        // The publisher that takes the seat after it: another birth, which re-publishes the operation its
+        // The publisher that takes the role after it: another birth, which re-publishes the operation its
         // predecessor published under the same identity (a resumed attempt replays its receipted step).
         let successor = PublisherId { node: "mesh1.admin.2".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         sender.set_author(&publisher);
@@ -143,7 +143,7 @@ macro_rules! cells {
 }
 /// CONTRACT (gossip.md receive rules, lifecycle facts: identity is the kind and the complete operation
 /// identity, never the publisher; "a repeat runs no effect twice"; the carried `topology_version` is data
-/// under its own per-publisher floor, "even for a repeated fact"): the publisher that took the seat
+/// under its own per-publisher floor, "even for a repeated fact"): the publisher that took the role
 /// re-publishes an operation its predecessor published, under the same identity. The receiver applies
 /// it once (the predecessor's copy), names the successor's copy `via-duplicate`, and records the
 /// successor's carried revision as that publisher's floor. What must NOT happen: a second apply, the

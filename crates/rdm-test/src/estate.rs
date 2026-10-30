@@ -795,7 +795,7 @@ impl Estate {
         estate.hold_printed(birth);
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
-        // Ready and elected, not when it first answers. `fabric.get` at it names the seat, the Fabric
+        // Ready and elected, not when it first answers. `fabric.get` at it names the role, the Fabric
         // and the current Build, which is the Day-0 Build it accepted at its start (its own mesh with
         // one node-admin, R-BI3).
         let (fabric_id, day_zero) = wait_for("the bootstrap admin holds the fabric", Duration::from_secs(30), || async {
@@ -822,7 +822,7 @@ impl Estate {
             match frame {
                 rdm_client::BuildFrame::Complete { .. } => break,
                 rdm_client::BuildFrame::Failed { attempt, operation, step, reason, .. } => panic!("the Day-0 Build {id} attempt {attempt} failed at {operation} {step}: {reason}"),
-                rdm_client::BuildFrame::FabricPrimaryMoved { fabric_primary } => panic!("the fabric-primary seat moved ({fabric_primary:?}) while the Day-0 Build {id} ran"),
+                rdm_client::BuildFrame::FabricPrimaryMoved { fabric_primary } => panic!("the fabric-primary role moved ({fabric_primary:?}) while the Day-0 Build {id} ran"),
                 _ => {}
             }
         }
@@ -1672,7 +1672,7 @@ pub fn iroh_observation_shape(sp: &Value) -> Result<(), String> {
 /// The node-admin that decided the claim of `attempt` of `build_id` as won (the fabric-primary of that
 /// moment; `None` when no claim of it was won), read from its `via-claim-decision` span. An attempt's reconcile continues the trace of
 /// the request that created the attempt only while the fabric-primary that holds that request's
-/// context decides the claim; after the seat moved, the new fabric-primary starts the attempt's trace.
+/// context decides the claim; after the role moved, the new fabric-primary starts the attempt's trace.
 pub fn claim_decider(spans: &[Value], build_id: &str, attempt: &str) -> Option<String> {
     named(spans, "rdm.node_admin.build.update.via-claim-decision")
         .into_iter()

@@ -852,13 +852,13 @@ async fn a_fabric_primary_paused_through_the_transfer_is_ignored_refused_stale_a
     let returned = |sp: &&Value| sp["attributes"]["node"] == "mesh1.admin.1" && start(sp) >= resumed_ns;
     // Its first read after the heal, the earliest of them: its drive's read of the Build naming a later
     // attempt another admin claimed (the transition), the fabric-primary record naming the executor, and its
-    // Build log deciding nothing more. The rafka-time pull a seat move starts (`entry.resolve`) is one such read
+    // Build log deciding nothing more. The rafka-time pull a role move starts (`entry.resolve`) is one such read
     // only when it ends before the delete stops this admin: a pull the stop holds never ends its span.
     let read = spans
         .iter()
         .filter(returned)
         .filter(|sp| {
-            ["rdm.node_admin.build.reject.via-superseded-attempt", "rdm.mesh.entry.resolve.via-fabric-primary-changed", "rdm.node_admin.build.update.via-seat-hand-over", "rdm.node_admin.build.reject.via-fabric-primary-changed", "rdm.node_admin.build.reject.via-not-fabric-primary"]
+            ["rdm.node_admin.build.reject.via-superseded-attempt", "rdm.mesh.entry.resolve.via-fabric-primary-changed", "rdm.node_admin.build.update.via-role-hand-over", "rdm.node_admin.build.reject.via-fabric-primary-changed", "rdm.node_admin.build.reject.via-not-fabric-primary"]
                 .contains(&sp["name"].as_str().unwrap_or_default())
         })
         .min_by_key(|sp| start(sp))

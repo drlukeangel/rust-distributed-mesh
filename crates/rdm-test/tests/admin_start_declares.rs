@@ -139,7 +139,7 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
             }
         })
         .await
-        .expect("the Day-0 admin takes mesh1's primary seat");
+        .expect("the Day-0 admin takes mesh1's primary role");
         let root_name = root.digest.lock().unwrap().node.name.to_string();
 
         let launch = launch_by(&root, "mesh1.admin.2", &admin_dir);

@@ -1,5 +1,5 @@
-//! Reserved positions are refused before any fact, status or seat path runs.
-use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, Primary, LifecycleOp};
+//! Reserved positions are refused before any fact, status or role path runs.
+use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PrimaryRole, Primary, LifecycleOp};
 use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Backbone, Frame, TopologyView};
 use std::time::Duration;
 
@@ -41,17 +41,17 @@ fn reserved(kind: Kind) {
         let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         receiver.digest_view.record(digest);
         assert!(receiver.digest_view.started(&node_id, &incarnation, &"mesh1.admin.2".parse().unwrap()));
-        let holder = Primary { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
-        receiver.primaries().take(Seat::FabricPrimary, &holder);
-        receiver.primaries().take(Seat::MeshPrimary, &holder);
+        let primary = Primary { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
+        receiver.primaries().take(PrimaryRole::FabricPrimary, &primary);
+        receiver.primaries().take(PrimaryRole::MeshPrimary, &primary);
         receiver.learn_statuses(&[Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: 1 }]);
         let held = receiver.digest_view.get(node_id.as_str()).unwrap().0;
         let status = receiver.mesh_status("mesh1");
         let fabric_status = receiver.fabric_status();
-        let seats = receiver.primaries().subscribe();
+        let roles = receiver.primaries().subscribe();
         let births = receiver.digest_view.birth_changes();
         let overlays = receiver.digest_view.overlay_changes();
-        let before = (*seats.borrow(), *births.borrow(), *overlays.borrow());
+        let before = (*roles.borrow(), *births.borrow(), *overlays.borrow());
         let op = LifecycleOp { build_id: "reserved-receive".into(), attempt: 1, operation: "node.delete:mesh1.admin.2".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: "mesh1.admin.2".parse().unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let unknown = iroh::SecretKey::generate().public();
         let frame = match kind {
@@ -60,7 +60,7 @@ fn reserved(kind: Kind) {
             Kind::Leaving => Frame::NodeLeaving { op, forwarded_by: None },
             Kind::Left => Frame::NodeLeft { op, forwarded_by: None },
             Kind::Restarting => Frame::NodeRestarting { op: LifecycleOp { operation: "node.restart:mesh1.admin.2".into(), ..op }, forwarded_by: None, publisher: { let a = crate::gossip_author(&fabric); rdm_core::PublisherId { node: "mesh1.admin.1".into(), incarnation: a.incarnation, node_id: a.node } }, topology_version: 2 },
-            Kind::FabricPrimary => Frame::NewFabricPrimary { holder: Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 99 }, endpoint_id: unknown.to_string(), transport_addr: "127.0.0.1:12009".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:9".into()) },
+            Kind::FabricPrimary => Frame::NewFabricPrimary { primary: Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 99 }, endpoint_id: unknown.to_string(), transport_addr: "127.0.0.1:12009".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:9".into()) },
         };
         assert_eq!(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).context().unwrap().kind, kind.type_name(), "the reserved frame travels as its reserved type");
         for (n, sender) in [&mesh_sender, &backbone_sender].into_iter().enumerate() {
@@ -76,9 +76,9 @@ fn reserved(kind: Kind) {
         assert_eq!(receiver.digest_view.get(node_id.as_str()).unwrap().0, held);
         assert_eq!(receiver.mesh_status("mesh1"), status);
         assert_eq!(receiver.fabric_status(), fabric_status);
-        assert_eq!(receiver.primaries().fabric(), Some(holder.clone()));
-        assert_eq!(receiver.primaries().mesh("mesh1"), Some(holder));
-        assert_eq!((*seats.borrow(), *births.borrow(), *overlays.borrow()), before);
+        assert_eq!(receiver.primaries().fabric(), Some(primary.clone()));
+        assert_eq!(receiver.primaries().mesh("mesh1"), Some(primary));
+        assert_eq!((*roles.borrow(), *births.borrow(), *overlays.borrow()), before);
         assert!(receiver.location_view().addrs(unknown).is_empty(), "a reserved address declaration installs no contact");
         assert!(!receiver.digest_view.is_deleted(node_id.as_str()));
         assert!(receiver.digest_view.in_flight().is_empty());
@@ -101,7 +101,7 @@ fn reserved(kind: Kind) {
 #[test] fn reserved_leaving() { reserved(Kind::Leaving); }
 /// CONTRACT: reserved position 13 establishes no departure, exit or vacancy.
 #[test] fn reserved_left() { reserved(Kind::Left); }
-/// CONTRACT: reserved position 15 installs no seat or endpoint.
+/// CONTRACT: reserved position 15 installs no role or endpoint.
 #[test] fn reserved_fabric_primary() { reserved(Kind::FabricPrimary); }
 /// CONTRACT (Q183, Luke 2026-10-26: node.restart and its NodeRestarting notice are removed): reserved
 /// position 7 holds no birth, opens no overlay and changes no routing.

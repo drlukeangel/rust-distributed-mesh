@@ -63,29 +63,29 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     // The initial fabric refuses a restart until it has first reached ready; a kill before
     // that is refused by the estate (Q74).
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    // The target mesh is the one that does not hold the fabric seat: its primary (the holder) and its
-    // other admin (the successor the holder's restart hands the seat to).
+    // The target mesh is the one that does not hold the fabric-primary role: its primary (the primary) and its
+    // other admin (the successor the primary's restart hands the role to).
     let fabric_primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let away = if fabric_primary.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
-    let holder = before.iter().find(|n| n["mesh"] == away && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("a mesh primary");
-    let successor = before.iter().find(|n| n["mesh"] == away && n["kind"] == "node_admin" && s(&n["name"]) != holder).map(|n| s(&n["name"])).expect("the other admin");
+    let primary = before.iter().find(|n| n["mesh"] == away && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("a mesh primary");
+    let successor = before.iter().find(|n| n["mesh"] == away && n["kind"] == "node_admin" && s(&n["name"]) != primary).map(|n| s(&n["name"])).expect("the other admin");
     let successor_birth = before.iter().find(|n| s(&n["name"]) == successor).map(|n| (s(&n["node_id"]), s(&n["incarnation_id"]))).expect("the successor's birth");
-    let holder_birth = before.iter().find(|n| s(&n["name"]) == holder).map(|n| (s(&n["node_id"]), s(&n["incarnation_id"]))).expect("the holder's birth");
+    let primary_birth = before.iter().find(|n| s(&n["name"]) == primary).map(|n| (s(&n["node_id"]), s(&n["incarnation_id"]))).expect("the holder's birth");
 
-    // 1. The holder's stop then start: its seat goes to the successor by node.primary.update at the
+    // 1. The primary's stop then start: its role goes to the successor by node.primary.update at the
     //    stop, then the same birth starts again.
-    estate.stop_then_start(&holder.parse().unwrap_or_else(|e| panic!("{holder} is not a path.name: {e:?}"))).await;
-    wait_for(&format!("{successor} holds {away}'s mesh seat and {holder} is back as the same birth, not the primary"), Duration::from_secs(60), || async {
+    estate.stop_then_start(&primary.parse().unwrap_or_else(|e| panic!("{primary} is not a path.name: {e:?}"))).await;
+    wait_for(&format!("{successor} holds {away}'s mesh-primary role and {primary} is back as the same birth, not the primary"), Duration::from_secs(60), || async {
         let nodes = estate.node_values().await;
         let s_ok = nodes.iter().any(|n| s(&n["name"]) == successor && n["is_primary"] == true && n["status"] == "ready");
-        let h_ok = nodes.iter().any(|n| s(&n["name"]) == holder && n["is_primary"] == false && n["status"] == "ready" && (s(&n["node_id"]), s(&n["incarnation_id"])) == holder_birth);
+        let h_ok = nodes.iter().any(|n| s(&n["name"]) == primary && n["is_primary"] == false && n["status"] == "ready" && (s(&n["node_id"]), s(&n["incarnation_id"])) == primary_birth);
         (s_ok && h_ok).then_some(())
     })
     .await;
-    let holder_pid = estate.pid_of(&holder).await;
-    let handed = wait_for(&format!("{holder}'s evidence records its restart's node.primary.update"), Duration::from_secs(10), || {
-        let spans = spans_of(&estate, holder_pid);
-        let found = named(&spans, "rdm.node_admin.primary.update.via-update-primary").into_iter().find(|x| s(&x["attributes"]["operation"]).ends_with(&format!("node.stop:{holder}")) && x["attributes"]["outcome"] == "updated").cloned();
+    let primary_pid = estate.pid_of(&primary).await;
+    let handed = wait_for(&format!("{primary}'s evidence records its restart's node.primary.update"), Duration::from_secs(10), || {
+        let spans = spans_of(&estate, primary_pid);
+        let found = named(&spans, "rdm.node_admin.primary.update.via-update-primary").into_iter().find(|x| s(&x["attributes"]["operation"]).ends_with(&format!("node.stop:{primary}")) && x["attributes"]["outcome"] == "updated").cloned();
         async move { found }
     })
     .await;
@@ -96,12 +96,12 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     estate.kill_pid(successor_pid as u32);
     let killed_at = std::time::Instant::now();
 
-    // 3. The ordinary rule seats the holder again, and the successor's recovery completes under it: a
+    // 3. The ordinary rule names the primary again, and the successor's recovery completes under it: a
     //    new node ready at the successor's path.name (a new node.id). The bound is the ladder's (a floor
     //    to mark it silent, the tickle, a floor to the second no-path, the provider's proof, the create).
-    let recovered = wait_for(&format!("{holder} is {away}'s mesh primary again and a new node stands ready at {successor}"), Duration::from_secs(120), || async {
+    let recovered = wait_for(&format!("{primary} is {away}'s mesh primary again and a new node stands ready at {successor}"), Duration::from_secs(120), || async {
         let nodes = estate.node_values().await;
-        let h_ok = nodes.iter().any(|n| s(&n["name"]) == holder && n["is_primary"] == true && n["status"] == "ready");
+        let h_ok = nodes.iter().any(|n| s(&n["name"]) == primary && n["is_primary"] == true && n["status"] == "ready");
         let re_born = nodes.iter().find(|n| s(&n["name"]) == successor && n["status"] == "ready" && s(&n["node_id"]) != successor_birth.0).cloned();
         if h_ok { re_born } else { None }
     })
@@ -109,12 +109,12 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     let recovered_ms = killed_at.elapsed().as_millis();
     estate.stop().await;
 
-    // The holder's own record: the election named it mesh-primary again after its restart's update.
-    let spans = spans_of(&estate, holder_pid);
+    // The primary's own record: the election named it mesh-primary again after its restart's update.
+    let spans = spans_of(&estate, primary_pid);
     let start = |x: &Value| x["start_unix_nano"].as_u64().unwrap_or_default();
-    let election = named(&spans, "rdm.mesh.primary.update.via-announcement").into_iter().filter(|x| start(x) > start(&handed) && x["attributes"]["seat"] == "mesh-primary" && x["attributes"]["via"] == "own" && x["attributes"]["outcome"] == "held").cloned().collect::<Vec<_>>();
-    assert!(!election.is_empty(), "{holder} holds itself {away}'s mesh-primary again by the election after its restart's update: {}", serde_json::to_string(&named(&spans, "rdm.mesh.primary.update.via-announcement")).unwrap_or_default());
+    let election = named(&spans, "rdm.mesh.primary.update.via-announcement").into_iter().filter(|x| start(x) > start(&handed) && x["attributes"]["role"] == "mesh-primary" && x["attributes"]["via"] == "own" && x["attributes"]["outcome"] == "held").cloned().collect::<Vec<_>>();
+    assert!(!election.is_empty(), "{primary} holds itself {away}'s mesh-primary again by the election after its restart's update: {}", serde_json::to_string(&named(&spans, "rdm.mesh.primary.update.via-announcement")).unwrap_or_default());
     let trace_id = s(&election[0]["trace_id"]);
     estate.record_trace_url(&trace_id);
-    eprintln!("SEATED-AGAIN-TRACE {trace_id} holder={holder} successor={successor} re-born={} recovered_ms={recovered_ms}", s(&recovered["node_id"]));
+    eprintln!("PRIMARY-AGAIN-TRACE {trace_id} holder={primary} successor={successor} re-born={} recovered_ms={recovered_ms}", s(&recovered["node_id"]));
 }

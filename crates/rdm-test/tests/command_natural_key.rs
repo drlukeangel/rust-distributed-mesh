@@ -9,7 +9,7 @@
 //! another attempt resolves nothing. A natural key holds no commander, so a second physical
 //! node-admin adds nothing the attempts do not already prove. A fabric checklist is scoped to the
 //! accepted Build and attempt (node-rpc-envelope.md, "Fabric status command pairs") and its command comes
-//! from whichever node-admin holds the mesh's primary seat: its cell moves the seat between two
+//! from whichever node-admin holds the mesh's primary role: its cell moves the role between two
 //! admin sides.
 //!
 //! A cell that stops the birth runs in its own process (the process-wide stop flag).

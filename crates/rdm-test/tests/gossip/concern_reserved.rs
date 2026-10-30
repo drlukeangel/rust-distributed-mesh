@@ -1,5 +1,5 @@
-//! Position 10 has one receive effect: refuse it, with no status, fact or seat installation.
-use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, Primary};
+//! Position 10 has one receive effect: refuse it, with no status, fact or role installation.
+use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PrimaryRole, Primary};
 use rdm_transport::topology::{backbone_channel, learn_addresses, mesh_channel, Backbone, Frame, TopologyView};
 use std::time::Duration;
 
@@ -38,18 +38,18 @@ fn receiver_refuses_position_ten_and_changes_no_status_or_primary() {
         let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         receiver.digest_view.record(digest);
         assert!(receiver.digest_view.started(&node_id, &incarnation, &"mesh1.admin.2".parse().unwrap()));
-        let holder = Primary { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
-        receiver.primaries().take(Seat::FabricPrimary, &holder);
-        receiver.primaries().take(Seat::MeshPrimary, &holder);
+        let primary = Primary { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
+        receiver.primaries().take(PrimaryRole::FabricPrimary, &primary);
+        receiver.primaries().take(PrimaryRole::MeshPrimary, &primary);
         receiver.learn_statuses(&[Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: 1 }]);
         let held = receiver.digest_view.get(node_id.as_str()).unwrap().0;
         let status = receiver.mesh_status("mesh1");
         let fabric_status = receiver.fabric_status();
-        let seats = receiver.primaries().subscribe();
+        let roles = receiver.primaries().subscribe();
         let births = receiver.digest_view.birth_changes();
         let overlays = receiver.digest_view.overlay_changes();
-        let before = (*seats.borrow(), *births.borrow(), *overlays.borrow());
-        let frame = Frame::Concern { seat: Seat::FabricPrimary, node_id: node_id.clone(), incarnation, observer: "mesh2.admin.1".into() };
+        let before = (*roles.borrow(), *births.borrow(), *overlays.borrow());
+        let frame = Frame::Concern { role: PrimaryRole::FabricPrimary, node_id: node_id.clone(), incarnation, observer: "mesh2.admin.1".into() };
         assert_eq!(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).context().unwrap().kind, "rdm.mesh.concern", "reserved position 10 has its named type");
         for (n, sender) in [&mesh_sender, &backbone_sender].into_iter().enumerate() {
             sender.broadcast(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).encode().into()).await.unwrap();
@@ -64,9 +64,9 @@ fn receiver_refuses_position_ten_and_changes_no_status_or_primary() {
         assert_eq!(receiver.digest_view.get(node_id.as_str()).unwrap().0, held);
         assert_eq!(receiver.mesh_status("mesh1"), status);
         assert_eq!(receiver.fabric_status(), fabric_status);
-        assert_eq!(receiver.primaries().fabric(), Some(holder.clone()));
-        assert_eq!(receiver.primaries().mesh("mesh1"), Some(holder));
-        assert_eq!((*seats.borrow(), *births.borrow(), *overlays.borrow()), before);
+        assert_eq!(receiver.primaries().fabric(), Some(primary.clone()));
+        assert_eq!(receiver.primaries().mesh("mesh1"), Some(primary));
+        assert_eq!((*roles.borrow(), *births.borrow(), *overlays.borrow()), before);
         assert!(!receiver.digest_view.is_deleted(node_id.as_str()));
         assert!(receiver.digest_view.in_flight().is_empty());
         assert!(receiver.digest_view.routable(node_id.as_str()));
@@ -77,5 +77,5 @@ fn receiver_refuses_position_ten_and_changes_no_status_or_primary() {
     for via in ["mesh-channel", "backbone"] {
         assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.reject.via-reserved" && s["attributes"]["position"] == "10" && s["attributes"]["frame"] == "concern" && s["attributes"]["via"] == via).count(), 1, "each channel refuses the reserved frame by name");
     }
-    assert!(!spans.iter().any(|s| matches!(s["name"].as_str(), Some("rdm.mesh.seat.update.via-concern" | "rdm.node_admin.seat.update.via-concern-answer"))));
+    assert!(!spans.iter().any(|s| matches!(s["name"].as_str(), Some("rdm.mesh.primary.update.via-concern" | "rdm.node_admin.primary.update.via-concern-answer"))));
 }

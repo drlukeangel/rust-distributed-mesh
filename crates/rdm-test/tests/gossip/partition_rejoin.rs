@@ -140,7 +140,7 @@ async fn drop_cut(partition: Partition) -> u64 {
 /// peer (more attempts than windows), a healthy or own-mesh member re-fed, any member seen
 /// `dead`, any death, tombstone, departure, rebirth or provider terminate (every process lives
 /// on with its NodeId, incarnation and pid), or a deleted birth named by a later attempt. After
-/// the cut is dropped every admin holds every pre-cut member ready, the same seats and the same
+/// the cut is dropped every admin holds every pre-cut member ready, the same roles and the same
 /// fabric primary, and every node hears the peer mesh again. A rpc node then deleted through a
 /// Build leaves the held set (its departure is the one lifecycle effect of the run, for exactly
 /// that birth) and a second cut, whose attempts on the peer mesh's node-admins complete whole
@@ -281,7 +281,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let mut views = Vec::new();
     for (name, base) in &bases {
         wait_for(&format!("{name} holds every pre-cut member ready after the cut is dropped"), Duration::from_secs(60), || async { holds_all(&estate.node_values_at(base).await, &everyone).then_some(()) }).await;
-        let view = wait_for(&format!("{name} settles on the computed seats"), Duration::from_secs(30), || async {
+        let view = wait_for(&format!("{name} settles on the computed roles"), Duration::from_secs(30), || async {
             let v = live(&estate.node_values_at(base).await);
             (holds_all(&v, &everyone) && primaries_as_expected(&v).is_ok()).then_some(v)
         })
@@ -289,10 +289,10 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         views.push((name.clone(), view));
     }
     for (name, v) in &views[1..] {
-        assert_eq!(advertised_primaries(v), advertised_primaries(&views[0].1), "{name} and {} advertise the same seats", views[0].0);
+        assert_eq!(advertised_primaries(v), advertised_primaries(&views[0].1), "{name} and {} advertise the same roles", views[0].0);
         assert_eq!(advertised_fabric_primaries(v), advertised_fabric_primaries(&views[0].1), "{name} and {} name the same fabric primary", views[0].0);
     }
-    assert_eq!(advertised_fabric_primaries(&views[0].1), fabric_primary_before, "the fabric primary that lived through the cut keeps the seat (R-A2: a lower NodeId never displaces a living holder)");
+    assert_eq!(advertised_fabric_primaries(&views[0].1), fabric_primary_before, "the fabric primary that lived through the cut keeps the role (R-A2: a lower NodeId never displaces a living primary)");
     // Every node-admin hears the peer mesh again on the backbone: its topology watcher reports
     // the mesh learned. An ordinary node held it as topology through the cut and reports nothing.
     let learned: BTreeSet<(String, String)> = wait_for("every node-admin reports the peer mesh learned again", Duration::from_secs(30), || async {
@@ -433,7 +433,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
             "lifecycle_marks": marks_cut1,
         },
         "heal": {
-            "seats": views.iter().map(|(n, v)| json!({"view": n, "primaries": advertised_primaries(v).iter().map(|(c, p)| json!({"mesh": c.0, "kind": c.1, "primary": p})).collect::<Vec<_>>(), "fabric_primary": advertised_fabric_primaries(v)})).collect::<Vec<_>>(),
+            "roles": views.iter().map(|(n, v)| json!({"view": n, "primaries": advertised_primaries(v).iter().map(|(c, p)| json!({"mesh": c.0, "kind": c.1, "primary": p})).collect::<Vec<_>>(), "fabric_primary": advertised_fabric_primaries(v)})).collect::<Vec<_>>(),
             "learned_after_heal": learned.iter().map(|(n, m)| json!({"node": n, "mesh": m})).collect::<Vec<_>>(),
             "same_births": before.iter().map(|(n, (id, inc))| json!({"name": n, "node_id": id, "incarnation_id": inc, "pid": pids[n]})).collect::<Vec<_>>(),
             "lifecycle_marks_through_heal": marks_heal,

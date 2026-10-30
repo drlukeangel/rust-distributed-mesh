@@ -265,7 +265,7 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
         let running = start_with(day0_config(&dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         let me = running.digest.lock().unwrap().clone();
         // A tags command is refused until the initial fabric has first reached ready (states.md "The
-        // initial fabric before ready"): the admin is ready in both seats, and the fabric is ready.
+        // initial fabric before ready"): the admin is ready in both roles, and the fabric is ready.
         tokio::time::timeout(WRONG, async {
             loop {
                 let t = running.control.topology.read().await;
@@ -279,7 +279,7 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
             }
         })
         .await
-        .expect("the admin's view never held it ready in both seats under a ready fabric");
+        .expect("the admin's view never held it ready in both roles under a ready fabric");
         let admin = ResolvedNode { node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
         let carrier = BuildCarrier::new(client.clone(), me.node.name.clone());

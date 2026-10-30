@@ -36,7 +36,7 @@ fn holds_fabric_identity_row(store_root: &Path) -> bool {
 
 /// CONTRACT: the node-admin an estate restarted on its own data dir is the estate's process like the
 /// bootstrap admin; dropping the estate (as a panicking cell does) stops it and whatever it launched,
-/// at once, not when the test binary exits. The bootstrap admin hands off its seats via `node.stop`
+/// at once, not when the test binary exits. The bootstrap admin hands off its roles via `node.stop`
 /// (`node.primary.update` to `mesh1.admin.2`) once the Fabric row is durable; every node-admin is then
 /// lost and it is restarted on its data dir (a launch while a node-admin lives is refused, Q156, Q199).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

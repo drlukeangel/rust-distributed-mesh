@@ -53,7 +53,7 @@ fn end(sp: &Value) -> u64 {
 /// of mesh2's own membership starts before that Pending is applied; mesh2's primary is supplied by
 /// election afterwards; every attempt of the creation Build descends from its REST request. What
 /// must NOT happen: a member of mesh2 created before Pending, a second Pending applied, or the
-/// bootstrap admin taking a seat by accepting Pending.
+/// bootstrap admin taking a role by accepting Pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bootstrap_admin_receives_pending_before_own_mesh_attempt() {
     pending_contract("bootstrap_admin_receives_pending_before_own_mesh_attempt").await;
@@ -147,7 +147,7 @@ async fn pending_contract(cell: &str) {
         .collect();
     assert!(mesh2_applied.len() <= 1, "mesh2's Ready is applied at most once by one fabric primary, whoever declared it: {mesh2_applied:?}");
     // Every attempt the accepting fabric-primary decides descends from the REST request (the
-    // rectifier); an attempt decided after the seat moved starts its own trace.
+    // rectifier); an attempt decided after the role moved starts its own trace.
     let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).cloned().expect("the creation Build's build.create span");
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str()).collect();
     assert!(!reconciles.is_empty(), "the creation Build was reconciled");
@@ -156,7 +156,7 @@ async fn pending_contract(cell: &str) {
         if claim_decider(&spans, create.as_str(), r["attributes"]["attempt"].as_str().unwrap_or_default()).is_none_or(|d| d == accepting) {
             assert!(descends_from(&spans, r, &accepted), "every attempt the accepting fabric-primary decided descends from its request: {r}");
         } else {
-            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "an attempt decided after the seat moved starts its own trace: {r}");
+            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "an attempt decided after the role moved starts its own trace: {r}");
         }
     }
 
@@ -185,19 +185,19 @@ async fn pending_contract(cell: &str) {
 }
 
 
-/// The bootstrap admin (the one handed Pending) of mesh2 or mesh3 that does not hold the fabric seat.
+/// The bootstrap admin (the one handed Pending) of mesh2 or mesh3 that does not hold the fabric-primary role.
 fn bootstrap_admin_not_fabric_primary(settled: &[NodeView]) -> String {
     ["mesh2.admin.1", "mesh3.admin.1"]
         .into_iter()
         .find(|a| settled.iter().any(|n| n.name.to_string() == *a && !n.is_fabric_primary))
-        .expect("at most one admin holds the seat, so one of the two bootstrap admins is off it")
+        .expect("at most one admin holds the primary role, so one of the two bootstrap admins is off it")
         .to_string()
 }
 
 /// CONTRACT (#2805, acceptance 8; R-SB1: a restart keeps node.id and incarnation, and a restart of a
 /// mesh's only admin is refused; node-stop.md Primary; node.restart is node.stop then node.start, Q183): the bootstrap node-admin of a peer mesh
-/// of two admins (mesh2 or mesh3, whichever does not hold the fabric seat), the admin Pending was handed
-/// to, is restarted through the Build rectifier (never the fabric-primary), its mesh's seat moving to the
+/// of two admins (mesh2 or mesh3, whichever does not hold the fabric-primary role), the admin Pending was handed
+/// to, is restarted through the Build rectifier (never the fabric-primary), its mesh's role moving to the
 /// other admin first when it holds it: it comes back as the same birth, the same node and incarnation
 /// (node-start.md: a start introduces no new incarnation), and reaches Ready without a fabric-primary
 /// hand-off, because the Pending it was applied before the restart is its own durable status row, folded
@@ -216,7 +216,7 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
     let shape = [mesh("mesh1", 2), mesh("mesh2", 2), mesh("mesh3", 2)];
     estate.reconcile_shape("fabric1", &shape).await;
     let settled = estate.settled_views(&shape).await;
-    // The bootstrap admin restarted is one that does not hold the fabric seat (the seat goes to the
+    // The bootstrap admin restarted is one that does not hold the fabric-primary role (the role goes to the
     // lowest node id fabric-wide, and the fabric primary is never restarted by this cell).
     let target = bootstrap_admin_not_fabric_primary(&settled);
     let before = estate.node_view(&target).await;
@@ -259,7 +259,7 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
 
 /// CONTRACT (#2805, acceptance 2; mesh-investigation.md step 7, "A node-admin joins the live mesh";
 /// states.md "mesh Pending"): a peer mesh's only node-admin is lost (its runtime killed exactly; its
-/// mesh holds no fabric seat) while its member lives. The fabric primary decides the recovery and marks
+/// mesh holds no fabric-primary role) while its member lives. The fabric primary decides the recovery and marks
 /// the fabric degraded (R-DG1), and the node-admin it creates joins the live mesh under the mesh's
 /// EXISTING MeshId, on the same Build. As the mesh's successor primary it adopts the mesh's held state
 /// and republishes its held MeshStatus with its changed_at preserved; on that report the fabric primary
@@ -279,14 +279,14 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     let accepted = built.build_id.to_string();
     let before = estate.settled_views(&shape).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let fabric_holder = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("one fabric primary");
-    // The lost mesh is a sole-admin mesh that does not hold the fabric seat.
+    let fabric_primary = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("one fabric primary");
+    // The lost mesh is a sole-admin mesh that does not hold the fabric-primary role.
     let lost_admin = bootstrap_admin_not_fabric_primary(&before);
     let lost = lost_admin.split('.').next().unwrap().to_string();
     let mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let admin_before = before.iter().find(|n| n.name.to_string() == lost_admin).cloned().unwrap();
     let attempt_before = u64::from(estate.carrier().await.build(&built.build_id).await.expect("build.get [id] of the accepted Build").attempt);
-    estate.enter(&Estate::path(&fabric_holder)).await;
+    estate.enter(&Estate::path(&fabric_primary)).await;
 
     // The fault: the lost mesh's only admin runtime, exactly.
     let fault_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
@@ -376,7 +376,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         .collect();
     assert!(!degraded_sends.is_empty(), "the fabric primary sends {scope} degraded at the via-recovery decision: {sends:?}");
     for sp in &degraded_sends {
-        assert_eq!(s(&sp["attributes"]["node"]), fabric_holder, "the mesh's degraded marker is authored by the fabric primary: {sp}");
+        assert_eq!(s(&sp["attributes"]["node"]), fabric_primary, "the mesh's degraded marker is authored by the fabric primary: {sp}");
     }
     let republished: Vec<&&Value> = sends
         .iter()
@@ -408,7 +408,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     let result = json!({
         "cell": cell,
         "lost_admin": lost_admin,
-        "fabric_holder": fabric_holder,
+        "fabric_primary": fabric_primary,
         "mesh_id": mesh_id,
         "accepted_build": accepted,
         "attempt_before": attempt_before,

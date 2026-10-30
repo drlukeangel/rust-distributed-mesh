@@ -170,15 +170,15 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
     estate.record_trace_url(&trace);
 }
 
-/// CONTRACT (i146 Q39: "A node's declaration is owed to the holder of its mesh's primary seat,
-/// resolved from the seat, never to an admin its view happens to hear"; R24, Luke Q11: an admin holding
-/// no seat answers a declaration with its own seat decision): `mesh1.admin.1` yields both seats to
+/// CONTRACT (i146 Q39: "A node's declaration is owed to the primary of its mesh's primary role,
+/// resolved from the role, never to an admin its view happens to hear"; R24, Luke Q11: an admin holding
+/// no role answers a declaration with its own role decision): `mesh1.admin.1` yields both roles to
 /// `mesh1.admin.2` (`node.stop` runs `node.primary.update` first) and starts again as itself, holding no
-/// seat. `mesh1.rpc.1`, restarted, declares its state to `mesh1.admin.2`, the seat's holder, which takes
+/// role. `mesh1.rpc.1`, restarted, declares its state to `mesh1.admin.2`, the role's primary, which takes
 /// it (`definitive=true`), and to no other admin. A declaration sent straight to `mesh1.admin.1` (the
 /// declare probe) is answered `RejectedNotPrimary { ReceiverNotPrimary { needed: "mesh-primary of
-/// mesh1" } }`, its own seat decision (`status_rpc.rs`'s `decide`). Must NOT happen: a declaration
-/// addressed to the admin holding no seat, or `RequestNotHandled` from a node-admin for a declaration.
+/// mesh1" } }`, its own role decision (`status_rpc.rs`'s `decide`). Must NOT happen: a declaration
+/// addressed to the admin holding no role, or `RequestNotHandled` from a node-admin for a declaration.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_own_decision() {
     let test = "a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_own_decision";
@@ -193,39 +193,39 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
-    estate.until_node("mesh1.admin.2", "mesh1.admin.2 holds the seats", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
+    estate.until_node("mesh1.admin.2", "mesh1.admin.2 holds the roles", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     Estate::workflow("node.start of mesh1.admin.1", estate.nodes_obj().await.start(&a1).await).await;
-    estate.until_node("mesh1.admin.1", "mesh1.admin.1 runs again holding no seat", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped && !n.is_primary).map(|_| ())).await;
+    estate.until_node("mesh1.admin.1", "mesh1.admin.1 runs again holding no primary role", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped && !n.is_primary).map(|_| ())).await;
     let restart_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop_then_start(&rpc1).await;
     estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && !n.stopped).map(|_| ())).await;
 
-    // A declaration straight to the admin holding no seat: its own seat decision.
+    // A declaration straight to the admin holding no role: its own role decision.
     let (rpc1v, a1v, a2v) = (estate.node_value("mesh1.rpc.1").await, estate.node_value("mesh1.admin.1").await, estate.node_value("mesh1.admin.2").await);
-    let holder_id = a2v["node_id"].as_str().unwrap().to_string();
+    let primary_id = a2v["node_id"].as_str().unwrap().to_string();
     let node = format!("exact:{}", rpc1v["node_id"].as_str().unwrap());
-    let seatless = format!("exact:{}", a1v["node_id"].as_str().unwrap());
-    let r = estate.probe(&["declare", "--target", &node, "--to", &seatless, "--state", "ready"]);
+    let non_primary = format!("exact:{}", a1v["node_id"].as_str().unwrap());
+    let r = estate.probe(&["declare", "--target", &node, "--to", &non_primary, "--state", "ready"]);
     let (reply, detail) = declared(&r);
-    assert_eq!(reply, "rejected-not-primary", "the admin holding no seat answers by its seat decision: {r}");
+    assert_eq!(reply, "rejected-not-primary", "the admin holding no primary role answers by its role decision: {r}");
     assert!(detail.contains("ReceiverNotPrimary") && detail.contains("mesh-primary of mesh1"), "{r}");
     estate.stop().await;
 
     let spans = estate.spans();
-    // An open start reports on its command stream to the seat holder. Q36's separate
+    // An open start reports on its command stream to the primary. Q36's separate
     // declaration remains for a report with no open stream.
     let started: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-frame")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1" && sp["attributes"]["frame"] == "node-started" && sp["attributes"]["operation"] == "node.start:mesh1.rpc.1" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
         .collect();
-    assert!(!started.is_empty(), "the seat holder records the start's terminal: {started:#?}");
-    assert!(started.iter().all(|sp| sp["attributes"]["recorder"] == "mesh1.admin.2"), "only the seat holder records it: {started:#?}; holder {holder_id}");
+    assert!(!started.is_empty(), "the primary records the start's terminal: {started:#?}");
+    assert!(started.iter().all(|sp| sp["attributes"]["recorder"] == "mesh1.admin.2"), "only the primary records it: {started:#?}; holder {primary_id}");
     let declared_own: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1" && sp["attributes"]["operation"] == "node.start:mesh1.rpc.1" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
         .collect();
     assert!(declared_own.is_empty(), "the open start sends no second Ready declaration: {declared_own:#?}");
     let trace = r["traceparent"].as_str().and_then(|tp| tp.split('-').nth(1)).unwrap_or_default().to_string();
-    println!("a declaration at the admin holding no seat: http://192.168.68.99:16687/trace/{trace}");
+    println!("a declaration at the admin holding no primary role: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
 }

@@ -207,7 +207,7 @@ impl Estate {
 
     /// Forget the handover of the entry admin: the next call makes it again, reading the views of every
     /// node-admin the estate knows first. A wait on the view does this when a read ends, because the admin
-    /// the estate asks may hold a new birth at its name (a restarted node-admin takes its seat back with a
+    /// the estate asks may hold a new birth at its name (a restarted node-admin takes its role back with a
     /// new birth), which a view of a live admin lists.
     pub async fn rehandover(&self) {
         if let Some(w) = self.wire.lock().await.as_mut() {
@@ -242,8 +242,8 @@ impl Estate {
 
     /// Point the typed objects at the fabric-primary the entry admin's `fabric.get` names.
     pub async fn enter_fabric_primary(&mut self) {
-        let holder = self.fabric_view().await.fabric_primary.expect("fabric.get names the fabric-primary");
-        self.enter(&holder).await;
+        let primary = self.fabric_view().await.fabric_primary.expect("fabric.get names the fabric-primary");
+        self.enter(&primary).await;
     }
 
     /// The admin the typed objects start at.
@@ -398,7 +398,7 @@ impl Estate {
     /// The view the Build left: every `(mesh, node_admin, rpc_node)` cohort holds exactly its count of
     /// nodes, every one ready, as `mesh.nodes.get` reads it at the admin the estate asks. A Build's
     /// shape is counts, not paths: a shrink deletes non-primaries, so which ordinals remain depends on
-    /// where the seats are. The Build's terminal frame is the executor's: the answering admin learns the
+    /// where the roles are. The Build's terminal frame is the executor's: the answering admin learns the
     /// nodes of another mesh by gossip, so its view converges on the shape a moment after (a wait on the
     /// view, bounded at 60 s, named when it does not settle).
     pub async fn settled_views(&self, meshes: &[(&str, u32, u32)]) -> Vec<NodeView> {
@@ -461,7 +461,7 @@ impl Estate {
     /// The view once the fabric has recovered to `meshes` after a fault: every `(mesh, node_admin, rpc_node)`
     /// cohort holds exactly its count of nodes, every one ready. No stream announces it: the
     /// recovery is the rectifier's (a later attempt of the accepted Build, or a person's admin on a former
-    /// seat's data dir), where no call is held open. `within` bounds the wait and a view that does not settle
+    /// role's data dir), where no call is held open. `within` bounds the wait and a view that does not settle
     /// is named.
     pub async fn settles_to(&self, meshes: &[(&str, u32, u32)], within: std::time::Duration) -> Vec<NodeView> {
         let want: std::collections::BTreeMap<(String, NodeKind), usize> =
@@ -724,7 +724,7 @@ impl Estate {
 
     /// A Build stream to its `Complete`, followed by the client's watcher ([`rdm_client::follow_with`]):
     /// a stream that breaks (its connection closed) or ends `FabricPrimaryMoved` (a planned fabric-primary
-    /// handover) is reattached by its build id from the attempt it carried, at the seat the carrier
+    /// handover) is reattached by its build id from the attempt it carried, at the role the carrier
     /// reaches now. A failed Build or a reattachment refused is a defect of the cell, named.
     pub async fn follow(&self, stream: BuildStream) -> Reconciled {
         let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
@@ -754,16 +754,16 @@ impl Estate {
     }
 
     /// Every frame of a Build stream, to its end; a failed step or a broken stream is a defect of the
-    /// cell, named. `Complete` last. A seat that moves under the stream is `follow`'s to chase.
+    /// cell, named. `Complete` last. A role that moves under the stream is `follow`'s to chase.
     pub async fn until_complete(stream: &mut BuildStream) -> Reconciled {
         match Self::read_to_end(stream).await {
             Ok(done) => done,
-            Err(moved) => panic!("the fabric-primary seat moved ({:?}) while Build {} ran: follow the stream with Estate::follow", moved.1, stream.build_id()),
+            Err(moved) => panic!("the fabric-primary role moved ({:?}) while Build {} ran: follow the stream with Estate::follow", moved.1, stream.build_id()),
         }
     }
 
     /// The stream's frames to `Complete`, or to the `FabricPrimaryMoved` that ends it (the frames read and the
-    /// new seat the old one named).
+    /// new role the old one named).
     async fn read_to_end(stream: &mut BuildStream) -> Result<Reconciled, (Vec<BuildFrame>, Option<String>)> {
         let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
         let mut frames = Vec::new();

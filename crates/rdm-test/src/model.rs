@@ -3,10 +3,10 @@
 //! a shrinker that reduces a failing sequence to a minimal legal one that still fails by the same
 //! rule.
 //!
-//! The model knows node CLASSES and their CAPABILITIES (`node_admin` holds seats and executes
+//! The model knows node CLASSES and their CAPABILITIES (`node_admin` holds roles and executes
 //! Builds; `rpc_node` serves the proof store) and the provider's capabilities (a network fault is
 //! a container-provider capability). It knows no application role and no authority: who holds a
-//! seat after a hand-off is decided by the live election, never by the model.
+//! role after a hand-off is decided by the live election, never by the model.
 //!
 //! Same seed + same initial model = the same ordered actions, every time (SplitMix64; every
 //! collection the generator walks is ordered).
@@ -48,7 +48,7 @@ impl NodeClass {
             NodeClass::Broker => "broker",
         }
     }
-    /// A node of this class can hold a seat and execute Builds.
+    /// A node of this class can hold a role and execute Builds.
     pub fn can_be_primary(self) -> bool {
         self == NodeClass::NodeAdmin
     }
@@ -102,7 +102,7 @@ pub enum Action {
     Restart { node: String },
     /// A Build replaces the node: a new NodeId born at the same path.name.
     Replace { node: String },
-    /// A Build deletes the connections of the mesh's seat holder; the remaining admins elect.
+    /// A Build deletes the connections of the mesh's primary; the remaining admins elect.
     HandOff { mesh: String },
     /// The provider cuts the mesh off from every other mesh.
     Unheard { mesh: String },
@@ -215,7 +215,7 @@ impl Model {
         Ok((mesh, class))
     }
 
-    /// Never every node-admin of a mesh down: a seat-holding class keeps one admin up.
+    /// Never every node-admin of a mesh down: a role-holding class keeps one admin up.
     fn keeps_an_admin(&self, step: usize, action: &Action, mesh: &str, class: NodeClass) -> Result<(), Illegal> {
         if class.can_be_primary() && self.count(mesh, class) < 2 {
             return Err(illegal(step, action, "another-admin-stays-up", format!("{mesh} has {} node-admin; taking it down leaves the mesh without one", self.count(mesh, class))));

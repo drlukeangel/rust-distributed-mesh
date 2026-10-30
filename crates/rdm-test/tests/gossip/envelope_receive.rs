@@ -22,8 +22,8 @@ fn reserved_unknown_and_malformed_contexts_are_named_before_data_and_mutate_noth
         sender.broadcast_neighbors(status("held", 1).encode().into()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status("held").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
         let held = receiver.mesh_status("held");
-        let seats = receiver.primaries().subscribe(); let births = receiver.digest_view.birth_changes();
-        let before = (*seats.borrow(), *births.borrow());
+        let roles = receiver.primaries().subscribe(); let births = receiver.digest_view.birth_changes();
+        let before = (*roles.borrow(), *births.borrow());
         let mut cases = Vec::new();
         for kind in ["rdm.mesh.concern", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.fabric.primary.new", "rdm.unknown"] {
             let (mut attrs, _): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&status("held", 2).encode()).unwrap();
@@ -44,7 +44,7 @@ fn reserved_unknown_and_malformed_contexts_are_named_before_data_and_mutate_noth
             tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < index as u64 + 10) { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
             assert_eq!(capture.spans().unwrap().iter().filter(|s| s["name"] == outcome).count(), count + 1, "the context has its named refusal");
             assert_eq!(receiver.mesh_status("held"), held);
-            assert_eq!((*seats.borrow(), *births.borrow()), before);
+            assert_eq!((*roles.borrow(), *births.borrow()), before);
         }
         send_ep.close().await; recv_ep.close().await;
     });

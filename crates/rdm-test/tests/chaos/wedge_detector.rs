@@ -100,8 +100,8 @@ fn healthy(family: Family) -> Evidence {
     e.progress = Some(Progress { reads: vec![marker.clone(), marker.clone(), marker], complete_while_held: false });
     e.routing = Some(Routing { expected_routable: false, observed_routable: false, observed: "absent from the view".into() });
     e.control = Some(Control {
-        seats_as_expected: [true; 3],
-        seats_detail: String::new(),
+        roles_as_expected: [true; 3],
+        roles_detail: String::new(),
         fabric_primary: ["mesh1.admin.1".into(), "mesh1.admin.1".into(), "mesh1.admin.1".into()],
         fabric_home: "mesh1.admin.1".into(),
         primary_may_move: false,
@@ -153,23 +153,23 @@ fn plants() -> Vec<(&'static str, &'static str, Plant)> {
         ("no routing effect", NO_ROUTING_CONSEQUENCE, |e| e.routing = None),
         ("routing effect contradicts the cut", NO_ROUTING_CONSEQUENCE, |e| e.routing.as_mut().unwrap().observed_routable = true),
         ("no control effect", NO_CONTROL_CONSEQUENCE, |e| e.control = None),
-        ("seats diverge from the public candidates", NO_CONTROL_CONSEQUENCE, |e| {
+        ("roles diverge from the public candidates", NO_CONTROL_CONSEQUENCE, |e| {
             let c = e.control.as_mut().unwrap();
-            c.seats_as_expected[1] = false;
-            c.seats_detail = "fabric primary: advertised [\"mesh1.admin.2\"], expected Some(\"mesh1.admin.1\")".into();
+            c.roles_as_expected[1] = false;
+            c.roles_detail = "fabric primary: advertised [\"mesh1.admin.2\"], expected Some(\"mesh1.admin.1\")".into();
         }),
         ("authority moves across a stall of a live admin", NO_CONTROL_CONSEQUENCE, |e| e.control.as_mut().unwrap().fabric_primary[2] = "mesh1.admin.2".into()),
-        // A hold that began while a takeover's hand-back was owed: the seat stays with its temporary
+        // A hold that began while a takeover's hand-back was owed: the role stays with its temporary
         // holder after the stall instead of going home (fabric-recovery.md step 4).
-        ("the seat stays with its temporary holder across a stall", NO_CONTROL_CONSEQUENCE, |e| {
+        ("the role stays with its temporary primary across a stall", NO_CONTROL_CONSEQUENCE, |e| {
             e.control.as_mut().unwrap().fabric_primary = ["mesh2.admin.1".into(), "mesh2.admin.1".into(), "mesh2.admin.1".into()];
         }),
         ("a stalled membership change moves authority and the public candidates disagree", NO_CONTROL_CONSEQUENCE, |e| {
             let c = e.control.as_mut().unwrap();
             c.primary_may_move = true;
             c.fabric_primary[2] = "mesh2.admin.1".into();
-            c.seats_as_expected[2] = false;
-            c.seats_detail = "fabric primary: advertised [\"mesh2.admin.1\"], expected Some(\"mesh1.admin.1\")".into();
+            c.roles_as_expected[2] = false;
+            c.roles_detail = "fabric primary: advertised [\"mesh2.admin.1\"], expected Some(\"mesh1.admin.1\")".into();
         }),
         ("a running silent runtime is replaced", SILENT_RUNTIME_JUDGED_DEAD, |e| e.control.as_mut().unwrap().replaced_during = true),
         ("a running silent runtime is re-born", SILENT_RUNTIME_JUDGED_DEAD, |e| e.control.as_mut().unwrap().incarnation[2] = "inc-b".into()),
@@ -200,9 +200,9 @@ fn plants() -> Vec<(&'static str, &'static str, Plant)> {
 /// one consequence the detector refuses with exactly that invariant, by name, and no other: the
 /// injector's success alone, a missing or false active-fault acknowledgement, a false-positive fault
 /// report whose work advances or finishes while reported held, a wrong routing effect, diverging
-/// seats or a moved fabric primary (judged at the seat's home: a hold begun while a takeover's
-/// hand-back is owed passes as the seat goes home, fabric-recovery.md "The loss of the fabric-primary
-/// while a node-admin lives" step 4, and is refused if it stays with its temporary holder), a running
+/// roles or a moved fabric primary (judged at the role's home: a hold begun while a takeover's
+/// hand-back is owed passes as the role goes home, fabric-recovery.md "The loss of the fabric-primary
+/// while a node-admin lives" step 4, and is refused if it stays with its temporary primary), a running
 /// silent runtime judged dead, a missing release or recovery, a failed reconciliation (including the
 /// RPC ledger's lost applied mutation), and a dispatch to a superseded birth. What must NOT happen: a refusal that names another invariant, a
 /// pass over a missing consequence, or a verdict that depends on a duration.
@@ -234,11 +234,11 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
     }
 
     // A hold begun while a takeover's hand-back was owed (fabric-recovery.md step 4, Q107 (4)): the
-    // holder advertised before it is the temporary one, and the seat going home during the hold is the
+    // primary advertised before it is the temporary one, and the role going home during the hold is the
     // hand-back, never a consequence of the stall.
     let mut owed = healthy(Family::SilentRuntime);
     owed.control.as_mut().unwrap().fabric_primary[0] = "mesh2.admin.1".into();
-    judge(&owed).unwrap_or_else(|r| panic!("the seat going home across a stall was refused: {r}"));
+    judge(&owed).unwrap_or_else(|r| panic!("the role going home across a stall was refused: {r}"));
 
     // A held proof mutation never reconciled: the RPC ledger's own algebra, inside the detector.
     let (ledger, state) = request_ledger(true);
@@ -267,7 +267,7 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
     let resolves = named("rdm.testkit.wedge.resolve.via-detector");
     let rejects = spans.iter().filter(|s| s["name"].as_str().unwrap().starts_with("rdm.testkit.wedge.reject.via-")).count();
     let planted = Family::ALL.len() * plants().len();
-    assert_eq!(resolves, Family::ALL.len() + 1, "one resolve span per passing control, and the seat going home");
+    assert_eq!(resolves, Family::ALL.len() + 1, "one resolve span per passing control, and the role going home");
     assert_eq!(rejects, planted + 1 + all.rejections.len(), "one reject span per rejection");
     for s in &spans {
         let n = s["name"].as_str().unwrap();
@@ -355,7 +355,7 @@ fn step_counts(build: &Value, operation: &str, attempt: u64) -> BTreeMap<String,
     m
 }
 
-/// `Ok` when the advertised seats equal the ones the public candidates compute.
+/// `Ok` when the advertised roles equal the ones the public candidates compute.
 fn primaries(nodes: &[Value]) -> (bool, String) {
     match primaries_as_expected(nodes) {
         Ok(()) => (true, String::new()),
@@ -580,7 +580,7 @@ async fn read(run: &Run, door: &Door, build_id: &str, op: &Option<String>) -> (S
 async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door, trigger: Trigger, shape: Shape, watch: Watch, expect_routable: bool) {
     let mut ev = Evidence::new(family, id);
     let nodes_before = run.estate.node_values().await;
-    let (seats_before, seats_detail_before) = primaries(&nodes_before);
+    let (roles_before, roles_detail_before) = primaries(&nodes_before);
     let admin_view = |nodes: &[Value]| nodes.iter().find(|n| n["name"] == door.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), admin_view(&nodes_before));
     let current_before = run.fabric_build_id().await;
@@ -647,7 +647,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let (routable, shown) = run.routable(&watch).await;
     ev.routing = Some(Routing { expected_routable: expect_routable, observed_routable: routable, observed: shown });
     let nodes_during = run.estate.node_values().await;
-    let (seats_during, seats_detail_during) = primaries(&nodes_during);
+    let (roles_during, roles_detail_during) = primaries(&nodes_during);
     let (fp_during, inc_during) = (fabric_primary(&nodes_during), admin_view(&nodes_during));
     let held_pid = run.admin_pid(&door.name);
     let alive = held_pid.and_then(proc_state).is_some_and(|c| c != 'Z');
@@ -675,10 +675,10 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let (after_marker, complete_after, _) = read(run, door, &build_id, &op).await;
     ev.recovery = Some(Recovery { work_complete: complete_after, marker_after: after_marker });
     let nodes_after = run.estate.node_values().await;
-    let (seats_after, seats_detail_after) = primaries(&nodes_after);
+    let (roles_after, roles_detail_after) = primaries(&nodes_after);
     ev.control = Some(Control {
-        seats_as_expected: [seats_before, seats_during, seats_after],
-        seats_detail: [seats_detail_before, seats_detail_during, seats_detail_after].join(" | "),
+        roles_as_expected: [roles_before, roles_during, roles_after],
+        roles_detail: [roles_detail_before, roles_detail_during, roles_detail_after].join(" | "),
         fabric_primary: [fp_before.clone(), fp_during, fabric_primary(&nodes_after)],
         fabric_home: fp_before,
         primary_may_move: may_move,
@@ -705,7 +705,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
             rec.check("no runtime of the node is left", run.runtimes(node) == 0, format!("{}", run.runtimes(node)));
         }
     }
-    rec.check("the advertised seats equal the public candidates' after the release", seats_after, primaries_detail_after_str(&nodes_after));
+    rec.check("the advertised primaries equal the public candidates' after the release", roles_after, primaries_detail_after_str(&nodes_after));
     ev.reconciliation = Some(rec);
 
     run.holds.lock().unwrap().push(id.to_string());
@@ -739,7 +739,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     std::fs::write(faults.join(format!("{admin}.boot.json")), serde_json::to_vec(&json!([spec])).unwrap()).unwrap();
     let exec = run.fabric_door().await;
     let nodes_before = run.estate.node_values().await;
-    let (seats_before, detail_before) = primaries(&nodes_before);
+    let (roles_before, detail_before) = primaries(&nodes_before);
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), nodes_before.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default());
     let current_before = run.fabric_build_id().await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
@@ -775,7 +775,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let (routable, shown) = run.routable(&Watch::Node(admin.into())).await;
     ev.routing = Some(Routing { expected_routable: false, observed_routable: routable, observed: shown });
     let nodes_during = run.estate.node_values().await;
-    let (seats_during, detail_during) = primaries(&nodes_during);
+    let (roles_during, detail_during) = primaries(&nodes_during);
     let alive = run.admin_pid(admin).and_then(proc_state).is_some_and(|c| c != 'Z');
     let inc_during = nodes_during.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let fp_during = fabric_primary(&nodes_during);
@@ -787,10 +787,10 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let (after_marker, complete_after, _) = read(run, &exec, &build_id, &Some(op.clone())).await;
     ev.recovery = Some(Recovery { work_complete: complete_after, marker_after: after_marker });
     let nodes_after = run.estate.node_values().await;
-    let (seats_after, detail_after) = primaries(&nodes_after);
+    let (roles_after, detail_after) = primaries(&nodes_after);
     ev.control = Some(Control {
-        seats_as_expected: [seats_before, seats_during, seats_after],
-        seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
+        roles_as_expected: [roles_before, roles_during, roles_after],
+        roles_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
         fabric_primary: [fp_before.clone(), fp_during, fabric_primary(&nodes_after)],
         fabric_home: fp_before,
         primary_may_move: true,
@@ -805,7 +805,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     rec.check("the Build completed at its one run and the Complete after the fabric's change", done["state"] == "complete" && attempt == RUN_THEN_CHANGE && run_alone_stepped(&done), format!("state {} attempt {attempt}", done["state"]));
     rec.check("the current build_id names the Build", run.fabric_build_id().await == build_id && current_before != build_id, format!("previous {current_before}"));
     create_checks(run, &mut rec, &done).await;
-    rec.check("the advertised seats equal the public candidates' after the release", seats_after, detail_after);
+    rec.check("the advertised primaries equal the public candidates' after the release", roles_after, detail_after);
     ev.reconciliation = Some(rec);
     run.holds.lock().unwrap().push(id.to_string());
     run.rows.lock().unwrap().push(json!({"cut": id, "family": family.name(), "spec": boot, "arm_ack": ack, "held_ack": held, "build_id": build_id, "door_admin": admin}));
@@ -837,7 +837,7 @@ async fn silent_case(run: &Run) {
     let put = run.estate.probe(&["put", "--target", &exact, "--key", "77", "--value", "before-freeze"]);
     assert_eq!(put["outcome"], "Reply", "the put reaches the live node: {put}");
     assert_eq!(put["reply"]["incarnation_id"], incarnation.as_str(), "{put}");
-    let (seats_before, detail_before) = primaries(&nodes);
+    let (roles_before, detail_before) = primaries(&nodes);
     let (fp_before, inc_before) = (fabric_primary(&nodes), incarnation.clone());
 
     // The fault: SIGSTOP, acknowledged by the OS process state. The kernel is the only source of this
@@ -858,7 +858,7 @@ async fn silent_case(run: &Run) {
     // held, first, and the two calls to the exact node run at once, each its own probe process with a short
     // budget (two serial probe processes took 6 s under an export batch and held past the decision).
     let nodes_during = run.estate.node_values().await;
-    let (seats_during, detail_during) = primaries(&nodes_during);
+    let (roles_during, detail_during) = primaries(&nodes_during);
     let during_node = nodes_during.iter().find(|n| n["name"] == name.as_str()).cloned();
     let attempt_during = attempt_of(&build_log::build_value(&run.estate.carrier().await, &fabric_build).await);
     let alive = proc_state(pid).is_some_and(|c| c != 'Z');
@@ -888,10 +888,10 @@ async fn silent_case(run: &Run) {
     let kept = run.estate.probe(&["get", "--target", &exact, "--key", "77"]);
     ev.recovery = Some(Recovery { work_complete: kept["outcome"] == "Reply", marker_after: json!({"proc_state": proc_state(pid).map(String::from), "outcome": kept["outcome"]}).to_string() });
     let nodes_after = run.estate.node_values().await;
-    let (seats_after, detail_after) = primaries(&nodes_after);
+    let (roles_after, detail_after) = primaries(&nodes_after);
     ev.control = Some(Control {
-        seats_as_expected: [seats_before, seats_during, seats_after],
-        seats_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
+        roles_as_expected: [roles_before, roles_during, roles_after],
+        roles_detail: [detail_before, detail_during, detail_after.clone()].join(" | "),
         fabric_primary: [fp_before.clone(), fabric_primary(&nodes_during), fabric_primary(&nodes_after)],
         fabric_home: fp_before,
         primary_may_move: false,
@@ -907,7 +907,7 @@ async fn silent_case(run: &Run) {
     rec.check("the node keeps its process and its data dir", run.estate.pid_of(&name).await == pid && run.estate.data_dir(&name).await == data_dir, format!("pid {pid}, {data_dir}"));
     rec.check("exactly one runtime serves the node", run.runtimes(&name) == 1, format!("{}", run.runtimes(&name)));
     rec.check("the current build_id is the Build it was and that Build gained no attempt", run.fabric_build_id().await == fabric_build && attempt_of(&build_log::build_value(&run.estate.carrier().await, &fabric_build).await) == attempt_before, format!("{fabric_build} attempts {attempt_before}"));
-    rec.check("the advertised seats equal the public candidates' after the thaw", seats_after, detail_after);
+    rec.check("the advertised primaries equal the public candidates' after the thaw", roles_after, detail_after);
     ev.reconciliation = Some(rec);
     run.rows.lock().unwrap().push(json!({
         "cut": id, "family": Family::SilentRuntime.name(), "primitive": primitive, "node": {"name": name, "node_id": node_id, "incarnation_id": incarnation, "pid": pid},
@@ -927,7 +927,7 @@ async fn silent_case(run: &Run) {
 /// injector acknowledged the active fault and named it; progress read three times (a Build's
 /// receipts and attempt on every admin, the current Build; a frozen node's process state, CPU use and the
 /// typed outcome of calls to it) stood still while held; the routing effect the cut's position
-/// implies; the seats equal what the public candidates compute and the held, running admin or
+/// implies; the roles equal what the public candidates compute and the held, running admin or
 /// frozen, running node was neither replaced, re-attempted nor re-born; the release; the work
 /// completed with its receipts once, one runtime, the Build current, and for the frozen node
 /// the value stored before the freeze served by the same birth afterwards. What must NOT happen: an

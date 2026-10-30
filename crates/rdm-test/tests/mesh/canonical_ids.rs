@@ -311,7 +311,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let old_ids: BTreeSet<String> = regrown.iter().filter(|n| n["mesh"] == "mesh2").map(|n| s(&n["node_id"])).collect();
     let swept_old: Vec<&Value> = named(&spans, "rdm.node_admin.node.reject.via-entry-sweep-no-reply").into_iter().filter(|sp| old_ids.contains(&s(&sp["attributes"]["node_id"]))).collect();
     assert!(swept_old.is_empty(), "the recreated mesh's first admin holds no birth of the removed mesh: {swept_old:?}");
-    // A create whose view holds a removed birth at its path investigates it (admin.rs create -> seat_revision.rs
+    // A create whose view holds a removed birth at its path investigates it (admin.rs create -> path_investigation.rs
     // `via-path-investigation`, the incarnation it investigated): no create of the recreated mesh investigates one.
     let old_incarnations: BTreeSet<String> = regrown.iter().filter(|n| n["mesh"] == "mesh2").map(|n| s(&n["incarnation_id"])).collect();
     let targeted_old: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| old_incarnations.contains(&s(&sp["attributes"]["incarnation"]))).collect();
