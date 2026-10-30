@@ -254,7 +254,7 @@ pub(crate) fn unanswered_peer_mesh(me: &PathName, current: &crate::build_state::
     })
 }
 
-/// What a drift opening decides on, as one comparable string: for a recovery (the carrier-edge-lost
+/// What a drift opening decides on, as one comparable string: for a recovery (the connection-lost
 /// verdict, or the fully crashed mesh), the decided mesh's node-admins by birth and status and the
 /// completed receipts of the create; for the
 /// mesh that lost its mesh-primary, the exited birth and the completed receipts of its create and delete
@@ -415,7 +415,7 @@ impl FabricTenureRows {
 /// The fabric authority's pass over the settled accepted Build (the current Build unchanged: the
 /// topology did not change). When this admin is the fabric primary it opens the next attempt for one
 /// of four things, in this order:
-/// - a peer mesh whose investigation decided `carrier-edge-lost` (`decided`): the verdict runs
+/// - a peer mesh whose investigation decided `connection-lost` (`decided`): the verdict runs
 ///   node.create of the mesh's first node-admin into the live mesh, on this same Build and the mesh's
 ///   own MeshId (mesh-investigation.md step 6). The attempt is the single step of that create
 ///   (`AttemptAction::Steps`, reason Steps); the create's own target asks the provider about the lost
@@ -494,7 +494,7 @@ pub async fn reconcile_drift(
     let mut map = t.clone();
     map.nodes.extend(durable_births(t, durable, &|p| current.topology.contains(p), &|id| digest_view.is_deleted(id)));
     let t = &map;
-    // The carrier-edge-lost verdict (mesh-investigation.md step 6): a peer mesh whose investigation
+    // The connection-lost verdict (mesh-investigation.md step 6): a peer mesh whose investigation
     // decided its recovery is owed node.create of a node-admin. A mesh this authority never heard on the
     // backbone is held `ready` in its view from topology alone (topology is not liveness), so the
     // ladder's decision, not a status, names the mesh. The admin is the one the Build already carried
@@ -625,7 +625,7 @@ pub async fn reconcile_drift(
     if verdict.is_none() && crashed.is_none() && first_exited.is_none() && surplus.is_empty() {
         return None;
     }
-    // The node-admin a recovery owes a node.create: the carrier-edge-lost verdict's, or the fully crashed mesh's.
+    // The node-admin a recovery owes a node.create: the connection-lost verdict's, or the fully crashed mesh's.
     let recover_admin: Option<&PathName> = verdict.as_ref().map(|(_, admin)| admin).or(crashed.as_ref().map(|(_, admin)| admin));
     let attempt = current.attempt + 1;
     // The create of a node-admin into a live mesh is a single step on the existing carrier
@@ -667,7 +667,7 @@ pub async fn reconcile_drift(
     // attempt", once per failure; R-S2: event-driven, never per pass). A key carrying the attempt
     // number never matches the next pass (every failed attempt raises it), which reopened a resume
     // that failed fast on every pass.
-    let inputs = drift_inputs(t, &current.steps, first_exited.filter(|_| recover_admin.is_none()).map(|(p, b)| (p, &b.incarnation)), recover_admin.map(|admin| (if crashed.is_some() { "fully-crashed" } else { "carrier-edge-lost" }, admin)), &surplus);
+    let inputs = drift_inputs(t, &current.steps, first_exited.filter(|_| recover_admin.is_none()).map(|(p, b)| (p, &b.incarnation)), recover_admin.map(|admin| (if crashed.is_some() { "fully-crashed" } else { "connection-lost" }, admin)), &surplus);
     let ident = key.join(" ");
     let opened_at = (current.build_id.clone(), 0u32, vec!["opened".to_string(), ident.clone(), inputs.clone()]);
     if started.contains(&opened_at) {
@@ -702,7 +702,7 @@ pub async fn reconcile_drift(
     let action_name = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::DeleteConnections { .. } => "connections-delete", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Recover { .. } => "recover", crate::accepted::AttemptAction::Delete { .. } => "delete", crate::accepted::AttemptAction::Steps { .. } => "steps", crate::accepted::AttemptAction::Terminate { .. } => "terminate" }).unwrap_or("none");
     let span = match &verdict {
         Some((mesh, admin)) => tracing::info_span!(
-            "rdm.node_admin.build.update.via-carrier-edge-lost",
+            "rdm.node_admin.build.update.via-connection-lost",
             build_id = %current.build_id.log(),
             attempt,
             mesh = %mesh,

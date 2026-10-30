@@ -35,7 +35,7 @@ diagnostic spans that open no node.create.
    The mark is neither a MeshStatus change nor death proof.
 3. At 40 s, probe 2 repeats probe 1 (exact mesh-primary first, then the other node-admins,
    each direct then via a peer), preferring a different carrier member. Record the latest completed probe's outcome; an older
-   `carrier-edge-lost` cannot override a newer unreachable outcome.
+   `connection-lost` cannot override a newer unreachable outcome.
 4. If the node-admin answers either probe (Current or Blocked, under the
    [Status contract](../node-rpc-envelope.md#status-op-0x1b-rdm)), stop the investigation.
    Direct backbone receipt from mesh-x at any point cancels the investigation and resets the
@@ -43,10 +43,10 @@ diagnostic spans that open no node.create.
 5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
    finish first; no silence-only path marks the mesh deleted. A node-admin is created into mesh-x in
    one of two cases only:
-   - **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+   - **Members live.** The latest probe answers `connection-lost`: a mesh-x member reports that
      it cannot reach its own node-admin. Record the verdict before opening the node.create attempt.
    - **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
-     fabric is alive, so carrier-edge-lost cannot arise. The fabric-primary runs
+     fabric is alive, so connection-lost cannot arise. The fabric-primary runs
      [node investigation](node-investigation.md) on mesh-x's node-admins, and the verdict decides
      (Q111): reached, that node-admin is commanded back through node.mesh.join; any other verdict,
      the fabric-primary creates mesh-x's node-admin in process (members of any mesh with no
@@ -58,12 +58,12 @@ diagnostic spans that open no node.create.
      the lowest Ready mesh-primary on the backbone, which takes no primary role (Q122). A crash does not end a mesh, so this is never a new mesh. A mesh-x node that
      comes back after it was re-created is refused at admission and decided by its path.name and the
      atlas ([node investigation](node-investigation.md), Q207): it is deleted and its runtime terminated (Q110).
-6. A carrier-edge-lost verdict runs node.create of a node-admin into mesh-x, on the SAME accepted Build
+6. A connection-lost verdict runs node.create of a node-admin into mesh-x, on the SAME accepted Build
    and mesh-x's own MeshId: a node-admin joining a live mesh. The node.create carries mesh-x's
    MeshId, a seed and the mesh-primary launch mode, and the node-admin never mints a MeshId. It joins
    through its maker and reads topology as [a node-admin joins the live mesh](#a-node-admin-joins-the-live-mesh)
    states. At that same moment, both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded)
-   are marked degraded (R-DG1), on either arm: the 60 s carrier-edge-lost verdict and the no-member-answers arm on
+   are marked degraded (R-DG1), on either arm: the 60 s connection-lost verdict and the no-member-answers arm on
    its verdict, sent under [gossip §3.2](../gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy).
    Probing itself sends no FabricStatus or MeshStatus.
 7. The joined node-admin, as mesh-x's successor primary, adopts the mesh's held state
@@ -84,12 +84,12 @@ an unreachable node-admin; what became of that node-admin is node investigation'
 | t | Actor | Op/frame | Outcome | Span |
 |---|---|---|---|---|
 | unheard interval | Fabric-primary | direct backbone receipt absent | track mesh and last-heard time | `rdm.node_admin.mesh.update.via-unheard` (`mesh`, `at`) |
-| 20 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | ProbeNodeState direct; else Ping a member and, on pong, Forward carrying ProbeNodeState | probe 1: admin answered (ends the investigation), carrier-edge-lost or unreachable | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=1`, `member`, `carrier`, `outcome`); RPC call/serve chain below |
+| 20 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | ProbeNodeState direct; else Ping a member and, on pong, Forward carrying ProbeNodeState | probe 1: admin answered (ends the investigation), connection-lost or unreachable | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=1`, `member`, `carrier`, `outcome`); RPC call/serve chain below |
 | 30 s | Fabric-primary | no frame | shared mesh silent mark only | `rdm.node_admin.mesh.update.via-unheard` (`mesh`, `at`) |
 | 40 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | as probe 1 | probe 2, prefer a different carrier member | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=2`, `member`, `carrier`, `outcome`); RPC call/serve chain below |
 | any time | Fabric-primary / answering admin | admin answer or direct backbone receipt | stop / cancel | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome`, `at`) |
-| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |
-| 60 s, carrier-edge-lost verdict | Fabric-primary / provider | same-Build node.create of a node-admin into mesh-x; MeshStatus and FabricStatus degraded (both arms, R-DG1) | mesh-x's MeshId; health marker | `rdm.node_admin.mesh.create.via-recovery` (`mesh`, `at`) |
+| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | connection-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=connection-lost or unreachable`, `at`) |
+| 60 s, connection-lost verdict | Fabric-primary / provider | same-Build node.create of a node-admin into mesh-x; MeshStatus and FabricStatus degraded (both arms, R-DG1) | mesh-x's MeshId; health marker | `rdm.node_admin.mesh.create.via-recovery` (`mesh`, `at`) |
 | new primary ready | Mesh-x primary; fabric-primary | MeshStatus ready; FabricStatus ready | fabric ready requires [States](states.md#states) completion | readiness evidence and status dissemination below |
 
 The RPC chain uses `rdm.node_rpc.request.update.via-call` and
@@ -109,15 +109,15 @@ sequenceDiagram
     C-->>FP: pong
     FP->>C: 0x1A Forward carrying 0x1B ProbeNodeState to admin
     C->>A: direct carried ProbeNodeState
-    C-->>FP: carrier-edge-lost
+    C-->>FP: connection-lost
     Note over FP: t=30 s: shared silent mark; nothing sent
     FP->>C: t=40 s, probe 2: Ping; prefer different member
     C-->>FP: pong
     FP->>C: Forward carrying ProbeNodeState
     C->>A: direct carried ProbeNodeState
-    C-->>FP: carrier-edge-lost
-    alt latest probe is carrier-edge-lost and no backbone receipt
-        FP->>FP: t=60 s: carrier-edge-lost verdict; mesh-x's MeshId, same Build
+    C-->>FP: connection-lost
+    alt latest probe is connection-lost and no backbone receipt
+        FP->>FP: t=60 s: connection-lost verdict; mesh-x's MeshId, same Build
         FP->>FP: author FabricStatus degraded
         FP->>P: node.create of a node-admin into mesh-x (a node-admin joining a live mesh)
     else no member answers
@@ -157,14 +157,14 @@ else:
 fabric-primary → mesh-x member           Ping                          ← Pong
 fabric-primary → answering carrier       Forward { target: admin, inner: ProbeNodeState }
   carrier → admin                        ProbeNodeState (one direct inner call)
-  ← carried StatusReply | CarrierEdgeLost | another named Forward refusal
+  ← carried StatusReply | ConnectionLost | another named Forward refusal
 ```
 
 A pong proves the candidate answered, not that its node-admin is reachable. No reply,
-carrier-edge-lost and a Current answer are distinct evidence.
+connection-lost and a Current answer are distinct evidence.
 
 No status or lifecycle gossip is sent at the 20 s/40 s probes or the 30 s silent mark.
-At the 60 s carrier-edge-lost verdict, or on the no-member-answers arm's verdict (both arms, R-DG1),
+At the 60 s connection-lost verdict, or on the no-member-answers arm's verdict (both arms, R-DG1),
 both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded) are marked degraded, and travel as the
 [frame catalog](../gossip.md#31-frame-catalog) states. The joined node-admin, as mesh-primary, later
 authors its MeshStatus readiness after its fresh planned-birth checklist, which clears the degraded marker on both the

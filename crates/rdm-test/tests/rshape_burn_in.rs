@@ -6546,28 +6546,28 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     f.actions.push(action_row(&refused));
     assert_eq!(refused.out["outcome"], "Reply", "the source answers its own probe: {}", refused.out);
     assert_eq!(refused.out["call_outcome"], "NotSent", "a carried call whose carrier's edge is not Active sends nothing: {}", refused.out);
-    assert!(refused.out["deleted"].to_string().contains("carrier-edge-lost"), "the source deletes the Proxy it travelled with the carrier's refusal as the reason: {}", refused.out);
+    assert!(refused.out["deleted"].to_string().contains("connection-lost"), "the source deletes the Proxy it travelled with the carrier's refusal as the reason: {}", refused.out);
     let rows1 = proxy_disconnected_rows(&durable_history(&f, &src).await);
     assert_eq!(rows1.len(), rows0 + 1, "exactly one durable Proxy Disconnected: {rows1:?}");
-    assert_eq!(rows1.last().unwrap()["reason"], "carrier-edge-lost", "{rows1:?}");
+    assert_eq!(rows1.last().unwrap()["reason"], "connection-lost", "{rows1:?}");
     let next = orig_get(&f, &src, &dst, "after-deletion");
     f.actions.push(action_row(&next));
     assert_ne!(next.out["carrier"].as_str(), Some(car.as_str()), "the deleted Proxy is not selected again: {}", next.out);
     assert_eq!(proxy_disconnected_rows(&durable_history(&f, &src).await).len(), rows0 + 1, "no second delete row");
     drop(cut_b);
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
-    events.push(json!({"event": "carrier-edge-lost", "carrier": car, "destination": dst, "source": src, "ack": ack_b, "t_cut_ns": t_cut_b, "carrier_edge_after_cut": edge_down, "healthy_control": healthy.out, "refused": refused.out, "durable_delete": rows1.last().unwrap(), "next_call": next.out, "call_window_ns": [t_call_b0, t_call_b1]}));
+    events.push(json!({"event": "connection-lost", "carrier": car, "destination": dst, "source": src, "ack": ack_b, "t_cut_ns": t_cut_b, "carrier_edge_after_cut": edge_down, "healthy_control": healthy.out, "refused": refused.out, "durable_delete": rows1.last().unwrap(), "next_call": next.out, "call_window_ns": [t_call_b0, t_call_b1]}));
 
     a.events.extend(events.iter().cloned());
     let t_call = (t_call_b0, t_call_b1, t_cut_b);
     close_run(f, a, inv, nodes, launches, primaries, connections, &["C12"], json!({"events": events}), move |_f, spans, inv| {
         // The refusal is named on a span of the carrier, once, in the one carried call's window.
-        let lost: Vec<&Value> = named(spans, "rdm.node_rpc.request.reject.via-carrier-edge-lost").into_iter().filter(|sp| start_ns(sp) >= t_call.2).collect();
+        let lost: Vec<&Value> = named(spans, "rdm.node_rpc.request.reject.via-connection-lost").into_iter().filter(|sp| start_ns(sp) >= t_call.2).collect();
         assert_eq!(lost.len(), 1, "the carrier refused exactly one carried call by name: {lost:?}");
         let inner = named(spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| start_ns(sp) >= t_call.0 && start_ns(sp) <= t_call.1).count();
         assert!(inner <= 1, "the carried call was tried once, never again: {inner} inner calls");
         inv.holds("C12: a carrier whose own edge to the destination was cut refused the carried call by name once; the source deleted the Proxy durably with that reason and did not select it again", true, json!({"refusals": lost.len()}));
-        json!({"carrier_edge_lost_spans": lost.len(), "inner_calls": inner})
+        json!({"connection_lost_spans": lost.len(), "inner_calls": inner})
     })
     .await;
 }
@@ -6664,7 +6664,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     let rows_c = proxy_disconnected_rows(&durable_history(&f, &src).await);
     assert_eq!(rows_c.len(), rows_c0 + 1, "the Proxy deleted exactly once: {rows_c:?}");
     let reason = s(&rows_c.last().unwrap()["reason"]);
-    assert!(matches!(reason.as_str(), "direct-restored" | "carrier-incarnation-superseded" | "carrier-edge-lost"), "a structural reason: {reason}");
+    assert!(matches!(reason.as_str(), "direct-restored" | "carrier-incarnation-superseded" | "connection-lost"), "a structural reason: {reason}");
     let st2 = a.stable(&mut f, "C12: carrier restarted", &both(2), &mut inv).await;
     let dn2 = st2.nodes.iter().find(|n| n["name"] == dst.as_str()).cloned().unwrap();
     assert_eq!(dn2["incarnation_id"], dn["incarnation_id"], "the destination is the birth it was");
@@ -6721,10 +6721,10 @@ async fn mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once() {
 /// CONTRACT: in the formed estate the carrier of a compute's Proxy loses its own edge to the destination (cut
 /// between two sockets that never connected, acknowledged by the host; the carrier's own dial finds no path
 /// and writes its Failed fact). The compute's carried call ends with the carrier's refusal by name,
-/// `carrier-edge-lost`, as a call that sent nothing (NotSent): the source writes one durable Proxy
+/// `connection-lost`, as a call that sent nothing (NotSent): the source writes one durable Proxy
 /// Disconnected with that reason, does not select the carrier again, and the carrier made one inner attempt.
 /// A healthy carried call to another node of the other mesh, with the carrier's edge Active, is the control.
-/// Canon: connections.md section 8 (the carrier refuses `carrier-edge-lost`; that refusal is how the source
+/// Canon: connections.md section 8 (the carrier refuses `connection-lost`; that refusal is how the source
 /// learns the edge is gone) and section 9 J. What must NOT happen: a carried call that ends Indeterminate for a
 /// call the carrier refused, a Proxy that stays selected after the carrier's edge is lost, a second inner call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

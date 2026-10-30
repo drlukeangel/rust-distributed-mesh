@@ -180,7 +180,7 @@ fn a_stale_carrier_incarnation_is_superseded() {
 /// CONTRACT: the carrier's own Direct edge is the carrier's fact (connections.md section 8). A
 /// source whose held graph does not hold it still keeps its Proxy valid; a Disconnected edge it
 /// does hold changes nothing either, because the carried call, not this read, answers
-/// `carrier-edge-lost`.
+/// `connection-lost`.
 #[test]
 fn a_proxy_is_valid_without_the_carriers_edge_in_the_sources_held_graph() {
     let (own, carrier, dest) = (end(NodeKind::RpcNode, 1, Some("o1")), end(NodeKind::RpcNode, 2, Some("c1")), end(NodeKind::RpcNode, 3, Some("d1")));

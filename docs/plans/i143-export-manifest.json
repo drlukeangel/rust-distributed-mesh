@@ -501,8 +501,8 @@
       "job": "rdm-core:rdm_core"
     },
     {
-      "cell": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs::a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes",
-      "test": "rdm-test/main: peer_mesh_investigation::a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes",
+      "cell": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs::a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes",
+      "test": "rdm-test/main: peer_mesh_investigation::a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes",
       "log": "gates-e4s8-abc1ec15release.log",
       "job": "peer_mesh_investigation"
     },
@@ -813,8 +813,8 @@
       "job": "peer_mesh_investigation"
     },
     {
-      "cell": "crates/rdm-test/tests/mesh/admins_lost_mid_build.rs::a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier_edge_lost_verdict_and_the_build_completes",
-      "test": "rdm-test/main: admins_lost_mid_build::a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier_edge_lost_verdict_and_the_build_completes",
+      "cell": "crates/rdm-test/tests/mesh/admins_lost_mid_build.rs::a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connection_lost_verdict_and_the_build_completes",
+      "test": "rdm-test/main: admins_lost_mid_build::a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connection_lost_verdict_and_the_build_completes",
       "log": "gates-e4s8-abc1ec15release.log",
       "job": "admins_lost_mid_build"
     },
@@ -825,8 +825,8 @@
       "job": "peer_mesh_investigation"
     },
     {
-      "cell": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs::an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost",
-      "test": "rdm-test/main: peer_mesh_investigation::an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost",
+      "cell": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs::an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost",
+      "test": "rdm-test/main: peer_mesh_investigation::an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost",
       "log": "gates-e4s8-abc1ec15release.log",
       "job": "peer_mesh_investigation"
     },

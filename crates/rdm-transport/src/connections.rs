@@ -8,7 +8,7 @@
 use crate::resolve::{NodeResolver, NodeTarget};
 use rdm_core::connections::{
     CarrierPolicy, ConnectionEnd, ConnectionKind as CoreKind, ConnectionState, ConnectionsHeld,
-    DirectRecovery, EffectiveRoute, INVALID_CARRIER_EDGE_LOST, NodeConnection,
+    DirectRecovery, EffectiveRoute, INVALID_CONNECTION_LOST, NodeConnection,
     carrier_order, resolve_for_carriers,
 };
 use rdm_core::reconnect::first_failure_for;
@@ -1145,7 +1145,7 @@ impl AlpnProtocolHandler {
             )
         };
         if !has_active_direct {
-            return refuse(ctrl_send, INVALID_CARRIER_EDGE_LOST).await;
+            return refuse(ctrl_send, INVALID_CONNECTION_LOST).await;
         }
         #[cfg(feature = "testkit-gossip")]
         if self
@@ -1172,7 +1172,7 @@ impl AlpnProtocolHandler {
                     .resolve(&NodeTarget::CurrentPath(destination.name.clone()))
             });
         let Ok(resolved_dest) = resolved_dest else {
-            return refuse(ctrl_send, INVALID_CARRIER_EDGE_LOST).await;
+            return refuse(ctrl_send, INVALID_CONNECTION_LOST).await;
         };
 
         let dst_addr =
@@ -1185,7 +1185,7 @@ impl AlpnProtocolHandler {
         )
         .await
         else {
-            return refuse(ctrl_send, INVALID_CARRIER_EDGE_LOST).await;
+            return refuse(ctrl_send, INVALID_CONNECTION_LOST).await;
         };
 
         let dst_present = PresentFrame {
@@ -1502,14 +1502,14 @@ impl Dialer {
                     self.registry
                         .inner
                         .sink
-                        .record_drops(std::slice::from_ref(&proxy), INVALID_CARRIER_EDGE_LOST);
+                        .record_drops(std::slice::from_ref(&proxy), INVALID_CONNECTION_LOST);
                     return Err(ConnectError::NoActiveRoute { direct: None });
                 };
                 let Some(carrier_inc) = carrier_end.incarnation.clone() else {
                     self.registry
                         .inner
                         .sink
-                        .record_drops(std::slice::from_ref(&proxy), INVALID_CARRIER_EDGE_LOST);
+                        .record_drops(std::slice::from_ref(&proxy), INVALID_CONNECTION_LOST);
                     return Err(ConnectError::NoActiveRoute { direct: None });
                 };
                 let carrier_birth = Birth {
@@ -1554,7 +1554,7 @@ impl Dialer {
                         .await
                     {
                         Ok(conn) => return Ok(conn),
-                        Err(ConnectError::Refused { reason }) if reason == INVALID_CARRIER_EDGE_LOST => continue,
+                        Err(ConnectError::Refused { reason }) if reason == INVALID_CONNECTION_LOST => continue,
                         Err(ConnectError::NotSent { .. }) => continue,
                         Err(e) => return Err(e),
                     }
@@ -1902,12 +1902,12 @@ impl Dialer {
                     iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED),
                     reason.as_bytes(),
                 );
-                if reason == INVALID_CARRIER_EDGE_LOST {
+                if reason == INVALID_CONNECTION_LOST {
                     if let Some(proxy) = held_proxy {
                         self.registry
                             .inner
                             .sink
-                            .record_drops(std::slice::from_ref(proxy), INVALID_CARRIER_EDGE_LOST);
+                            .record_drops(std::slice::from_ref(proxy), INVALID_CONNECTION_LOST);
                     }
                 }
                 Err(ConnectError::Refused { reason })

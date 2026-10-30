@@ -332,7 +332,7 @@ pub struct Records {
     /// The births a command of this admin's executor never reached for a reachability reason, marked
     /// `PendingReconnect` at once (node-tickle.md step 1): read by the mesh primary's tick.
     pub unreachable: crate::offline::UnreachableMarks,
-    /// Per peer mesh the fabric primary gave a new node-admin (the investigation's carrier-edge-lost
+    /// Per peer mesh the fabric primary gave a new node-admin (the investigation's connection-lost
     /// verdict, or the fully crashed mesh's proof): the fabric is `degraded` from that moment until
     /// each such mesh's new primary has reported its checklist.
     pub(crate) peer_recovery: Mutex<BTreeMap<String, PeerRecovery>>,
@@ -455,7 +455,7 @@ impl ServingDoor {
     }
 }
 
-/// A peer mesh the fabric primary gave a new node-admin: its carrier-edge-lost verdict's recovery
+/// A peer mesh the fabric primary gave a new node-admin: its connection-lost verdict's recovery
 /// (`crate::investigate`), or a fully crashed mesh's create on the provider's proof of every node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerRecovery {
@@ -710,7 +710,7 @@ impl Records {
     /// the fabric `degraded` (mesh-investigation.md step 6; R-DG1: on either arm), until that mesh's new
     /// primary reports its checklist (step 7: [`crate::investigate::restore_peer_recovery`]). The one place
     /// the recovery is opened and the one span that says so, `verdict` naming the arm:
-    /// `carrier-edge-lost` (the ladder's verdict, `replace`: a new decision replaces an earlier one's
+    /// `connection-lost` (the ladder's verdict, `replace`: a new decision replaces an earlier one's
     /// recovery of the mesh) or `fully-crashed` (the create admitted on the provider's proof, which keeps
     /// the recovery already open for the mesh: a later claim must not move `opened_at` past the report
     /// it waits for). Answers whether it opened one.

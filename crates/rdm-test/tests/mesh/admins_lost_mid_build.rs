@@ -13,7 +13,7 @@
 //! - mesh1 was never touched (every mesh1 node keeps its incarnation).
 //!
 //! Evidence: the fabric-primary's investigation of mesh2 finds, through a member of mesh2 that
-//! answers, that mesh2's node-admins cannot be reached (`carrier-edge-lost`), records the verdict,
+//! answers, that mesh2's node-admins cannot be reached (`connection-lost`), records the verdict,
 //! and only then runs node.create of mesh2's first node-admin (span `via-recovery`); a reconcile of
 //! B by a mesh1 admin names mesh2's admin primary as the previous executor.
 
@@ -34,7 +34,7 @@ fn owner() -> Owner {
         subfeature: "mesh-investigation".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier_edge_lost_verdict_and_the_build_completes".into(),
+        test: "a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connection_lost_verdict_and_the_build_completes".into(),
     }
 }
 
@@ -62,17 +62,17 @@ fn shape(r2: u32) -> FabricDesired {
 }
 
 /// CONTRACT (mesh-investigation.md step 5: "A node-admin is created into mesh-x in one of two cases
-/// only: Members live. The latest probe answers `carrier-edge-lost`: a mesh-x member reports that it
+/// only: Members live. The latest probe answers `connection-lost`: a mesh-x member reports that it
 /// cannot reach its own node-admin ... Record the verdict before opening the node.create attempt";
-/// step 6: "A carrier-edge-lost verdict runs node.create of a node-admin into mesh-x, on the SAME
+/// step 6: "A connection-lost verdict runs node.create of a node-admin into mesh-x, on the SAME
 /// accepted Build and mesh-x's own MeshId: a node-admin joining a live mesh"; R-D1): mesh2 loses both
 /// node-admins mid-Build while three of its members live on. The fabric-primary (mesh1's primary)
-/// probes mesh2 through a member that answers, hears `carrier-edge-lost` for each node-admin,
+/// probes mesh2 through a member that answers, hears `connection-lost` for each node-admin,
 /// records the verdict, and only then runs node.create of mesh2's first node-admin under B; B
 /// completes. Must NOT happen: a node of mesh2 created by B before the verdict (the target holds), a
 /// new MeshId, a member that stayed alive born again, or mesh1 touched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier_edge_lost_verdict_and_the_build_completes() {
+async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connection_lost_verdict_and_the_build_completes() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.reconcile(&shape(3)).await;
     let before = estate.settles_to_named(&names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]), Duration::from_secs(15)).await;
@@ -144,10 +144,10 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier
     let create = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().find(|r| attr(r, "mesh") == "mesh2" && attr(r, "node").starts_with("mesh1.")).unwrap_or_else(|| panic!("the node.create of mesh2's node-admin opened (via-recovery)")).clone();
     let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|p| attr(p, "mesh") == "mesh2" && attr(p, "node") == attr(&create, "node") && at(p) > killed_ns && at(p) < at(&create)).collect();
     let last = probes.iter().max_by_key(|p| at(p)).unwrap_or_else(|| panic!("mesh2 was probed by the fabric-primary before its verdict"));
-    assert_eq!(attr(last, "outcome"), "carrier-edge-lost", "the latest probe: a member of mesh2 cannot reach its node-admins: {probes:#?}");
+    assert_eq!(attr(last, "outcome"), "connection-lost", "the latest probe: a member of mesh2 cannot reach its node-admins: {probes:#?}");
     assert!(kept.contains(&attr(last, "carrier")), "the carrier is a member that stayed alive: {last}");
     assert!(
-        named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").iter().any(|v| attr(v, "mesh") == "mesh2" && attr(v, "outcome") == "carrier-edge-lost" && at(v) <= at(&create)),
+        named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").iter().any(|v| attr(v, "mesh") == "mesh2" && attr(v, "outcome") == "connection-lost" && at(v) <= at(&create)),
         "the verdict was recorded before the node.create attempt opened"
     );
     // The target held: no node of mesh2 was created by B before the verdict.

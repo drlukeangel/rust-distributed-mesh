@@ -29,7 +29,7 @@
 //! | G an inbound accept is a recovery trigger | `a:connections_writer::an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_source_dial_whose_connected_disconnects_the_proxy`; `a:connections_writer::repeated_accepts_coalesce_into_one_attempt_that_waits_for_the_series_backoff`; `t:connection_observer::an_accepted_connection_is_handed_to_the_accept_trigger_once` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
 //! | H Proxy deletion write failure is safe and retried | `a:connections_writer::a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands`; `n:connection_writes::a_refused_connection_write_is_retried_with_backoff_until_it_lands` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
 //! | I destination/carrier incarnation | `c:connections::a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call_dials` (added with its fix); `c:connections::a_stale_destination_incarnation_is_superseded`; `c:connections::a_stale_carrier_incarnation_is_superseded`; `c:connections::a_direct_fact_naming_a_superseded_destination_is_not_current`; `t:connections_integration::a_fact_naming_a_superseded_birth_still_dials_the_current_one`; `t:connections::an_open_against_another_incarnation_is_wrong_incarnation_and_never_served`; `a:connections_writer::a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming_that_birth` | none | `a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and_never_carries`; `a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_never_carries` |
-//! | J carrier edge loss invalidates Proxy | `t:forward::a_carrier_whose_own_edge_to_the_target_is_not_active_refuses_carrier_edge_lost`; `t:forward::a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_to_be_disconnected`; `a:connections_writer::a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connected` | none | `a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects_the_proxy` |
+//! | J carrier edge loss invalidates Proxy | `t:forward::a_carrier_whose_own_direct_to_the_target_is_not_active_refuses_connection_lost`; `t:forward::a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_disconnected`; `a:connections_writer::a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connected` | none | `a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects_the_proxy` |
 //! | K sent request is never rerouted | `t:connections_integration::an_indeterminate_alone_never_invalidates_a_proxy`; `t:routing::certainty_stays_downstream_an_indeterminate_is_never_replayed_through_another_route`; `t:certainty::reply_loss_after_a_complete_send_is_indeterminate` | none | not writable here: no process door forces a post-commit answer timeout on a carried call (Decisions) |
 //! | L #2640 independence | `t:routing::semantic_selection_is_not_connection_selection`; `t:routing::connection_changes_do_not_touch_the_selection_and_selection_changes_fabricate_no_connection_state` | none | n/a in RDM: no `orgs.topics`, route barrier or watermark exists here; the transport cells prove the selection is untouched |
 //!
@@ -424,12 +424,12 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
 }
 
 /// CONTRACT (connections.md §13 J: "Drop the carrier's active Direct edge to destination. The carrier
-/// refuses the next carried call with `carrier-edge-lost`; the source writes Proxy Disconnected with
+/// refuses the next carried call with `connection-lost`; the source writes Proxy Disconnected with
 /// that reason, stops selecting that Proxy, and either establishes another valid Proxy or exposes no
 /// active route"; §8): the source holds a Proxy through the carrier. The carrier's own edge is lost:
 /// its Direct toward the destination is deleted by id (`node.connection.delete { Connections([id]) }`,
 /// its Disconnected written). The source's next open reaches the carrier,
-/// which refuses the tunnel `carrier-edge-lost`; the source writes `Proxy Disconnected(carrier-edge-lost)`
+/// which refuses the tunnel `connection-lost`; the source writes `Proxy Disconnected(connection-lost)`
 /// and holds no Proxy. With no other carrier holding an edge, the next open has no route through a
 /// carrier and ends by name. Must NOT happen: the stream carried, the Proxy still held, or another reason.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -459,12 +459,12 @@ async fn a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects
     // 2. The source's next open: refused by the carrier by name; the Proxy is disconnected with it.
     let refused = stream(&estate, SOURCE, DEST, "after-edge-lost");
     assert_eq!(refused["streamed"].as_bool(), Some(false), "nothing is carried: {refused}");
-    assert!(s(&refused["reason"]).contains("carrier-edge-lost"), "the carrier refused by name: {refused}");
+    assert!(s(&refused["reason"]).contains("connection-lost"), "the carrier refused by name: {refused}");
     let dropped = wait_for("the source's Proxy Disconnected landed", Duration::from_secs(15), || async {
         rows(&estate.connection_history(SOURCE), DEST, "Proxy").last().filter(|r| r["state"] == "Disconnected").map(|r| (*r).clone())
     })
     .await;
-    assert_eq!(dropped["reason"], "carrier-edge-lost", "{dropped}");
+    assert_eq!(dropped["reason"], "connection-lost", "{dropped}");
     assert_eq!(snapshot(&estate, SOURCE)["own_active_proxies"].as_array().map(Vec::len), Some(0), "the Proxy is no longer selected");
     // 3. No other carrier holds an edge: no route through a carrier.
     let none = stream(&estate, SOURCE, DEST, "no-route");

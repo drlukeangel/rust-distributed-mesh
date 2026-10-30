@@ -244,7 +244,7 @@ pub enum NotSentReason {
     Carried(String),
     /// The carrier's own Direct edge to the final target is not Active, so it made no inner call
     /// that arrived; the string is the carrier's own account of that edge.
-    CarrierEdgeLost(String),
+    ConnectionLost(String),
     /// The origin's remaining budget did not exceed the carrier's reply reserve, so the carrier
     /// made no inner call. Both are whole milliseconds.
     CarrierNoBudget {
@@ -467,7 +467,7 @@ impl<R> RpcOutcome<R> {
                 NotSentReason::Deadline => "deadline",
                 NotSentReason::FrameNotSent => "frame-not-sent",
                 NotSentReason::Carried(_) => "carried",
-                NotSentReason::CarrierEdgeLost(_) => "carrier-edge-lost",
+                NotSentReason::ConnectionLost(_) => "connection-lost",
                 NotSentReason::CarrierNoBudget { .. } => "carrier-no-budget",
                 NotSentReason::NotForwardable { .. } => "not-forwardable",
                 NotSentReason::NoActiveRoute => "no-active-route",
@@ -719,7 +719,7 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
         ForwardReply::InnerUnserved { op } => RpcOutcome::Unserved(Unserved { op }),
         ForwardReply::InnerRejectedStale { target_node_id } => RpcOutcome::RejectedStale(RejectedStale { target_node_id: target_node_id.into() }),
         ForwardReply::InnerIndeterminate { cause, reason } => indeterminate(cause.into_reason(reason)),
-        ForwardReply::CarrierEdgeLost { reason } => not_sent(NotSentReason::CarrierEdgeLost(reason)),
+        ForwardReply::ConnectionLost { reason } => not_sent(NotSentReason::ConnectionLost(reason)),
         ForwardReply::NotForwardable { op } => not_sent(NotSentReason::NotForwardable { op }),
         ForwardReply::NoInnerBudget { remaining_ms, reserve_ms } => not_sent(NotSentReason::CarrierNoBudget { remaining_ms, reserve_ms }),
         // The carrier refused the forward itself, before any inner call.

@@ -16,7 +16,7 @@
 
 use crate::client::{CallEvidence, CallOptions, NodeRpcClient};
 use crate::resolve::NodeTarget;
-use rdm_core::connections::{resolve, CarrierPolicy, ConnectionsHeld, EffectiveRoute, NodeConnection, INVALID_CARRIER_EDGE_LOST};
+use rdm_core::connections::{resolve, CarrierPolicy, ConnectionsHeld, EffectiveRoute, NodeConnection, INVALID_CONNECTION_LOST};
 use rdm_core::{NodeId, PathName};
 use rdm_core::outcome::{NotSentReason, PreCommit, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
@@ -193,10 +193,10 @@ impl NodeRpcClient {
         let (outcome, evidence, leg) = self.call_routed::<P>(target, &choice, req, opts).instrument(span).await;
         let mut delete = resolution.delete;
         // The third Proxy validity condition is the carrier's own fact (connections.md section
-        // 8): the carried call that answers `carrier-edge-lost` deletes the Proxy it travelled.
+        // 8): the carried call that answers `connection-lost` deletes the Proxy it travelled.
         if let (RpcOutcome::NotSent(n), EffectiveRoute::ViaPeer { proxy, .. }) = (&outcome, &resolution.route) {
-            if matches!(n.reason(), NotSentReason::CarrierEdgeLost(_)) {
-                delete = Some((proxy.clone(), INVALID_CARRIER_EDGE_LOST));
+            if matches!(n.reason(), NotSentReason::ConnectionLost(_)) {
+                delete = Some((proxy.clone(), INVALID_CONNECTION_LOST));
             }
         }
         ConnectedCall { outcome, evidence, leg, route: resolution.route, delete }

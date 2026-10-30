@@ -48,7 +48,7 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
         (ConnectionsDeleting { reason: "d".into() }, "09 01 64".into()),
         (Malformed { kind: MalformedKind::Corrupt }, "0a 02".into()),
         (Unauthorized { reason: "u".into() }, "0b 01 75".into()),
-        (CarrierEdgeLost { reason: "e".into() }, "0c 01 65".into()),
+        (ConnectionLost { reason: "e".into() }, "0c 01 65".into()),
         (NoInnerBudget { remaining_ms: 5, reserve_ms: 100 }, "0d 05 64".into()),
     ];
     assert_eq!(fixtures.len() as u32, Forward::REPLY_VARIANTS);

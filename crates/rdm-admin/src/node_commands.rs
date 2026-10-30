@@ -282,7 +282,7 @@ pub fn unreachable_of(cause: &rdm_core::outcome::NotSentReason) -> Option<Unreac
         R::Connection(_) => "connect-failed",
         R::Deadline => "connect-timed-out",
         R::Resolve(_) | R::NoActiveRoute => "endpoint-unresolved",
-        R::StreamBudget | R::FrameNotSent | R::AdmissionBlocked(_) | R::Carried(_) | R::CarrierEdgeLost(_) | R::CarrierNoBudget { .. } | R::NotForwardable { .. } => return None,
+        R::StreamBudget | R::FrameNotSent | R::AdmissionBlocked(_) | R::Carried(_) | R::ConnectionLost(_) | R::CarrierNoBudget { .. } | R::NotForwardable { .. } => return None,
     };
     Some(Unreachable { reason, detail: format!("{cause:?}") })
 }

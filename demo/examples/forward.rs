@@ -7,7 +7,7 @@
 //! routes for the caller. So the caller decides: here it calls `Direct` first and, when that ends
 //! `NotSent` (the request provably reached no handler, so sending it again cannot run it twice), sends
 //! the same call through a carrier. A carried call that never committed at the receiver ends `NotSent`
-//! too, naming the carrier's account (`Carried`, `CarrierEdgeLost`, `CarrierNoBudget`).
+//! too, naming the carrier's account (`Carried`, `ConnectionLost`, `CarrierNoBudget`).
 //!
 //! The call is `node.config.update`: the node's whole config, sent to the fabric-primary for the node's
 //! exact birth. The carrier is a node the caller reaches and that reaches the receiver; here, by

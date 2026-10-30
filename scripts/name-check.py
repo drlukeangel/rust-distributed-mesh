@@ -13,7 +13,9 @@ RETIRED = {"drain", "drains", "draining", "drained", "park", "parked", "parking"
            "seat", "seats", "seated", "unseat", "authority", "authorities", "authoritative", "authorizes",
            "cohort", "cohorts", "lane", "lanes", "sticky", "book", "books", "roll", "rolls", "rolled", "rolling", "climb", "climbs", "climbed", "climbing", "round", "rounds",
            # Q211: the Build's ordered list is steps, one item a step
-           "recipe", "recipes"}
+           "recipe", "recipes",
+           # Q297: edge is gossip's word; a connection is a Direct or a Proxy (gossip's code defines no edge name)
+           "edge", "edges"}
 DEF = re.compile(r'\b(?:fn|struct|enum|mod|trait|type|const|static)\s+([A-Za-z_][A-Za-z0-9_]*)')
 def words(name):
     parts = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name).lower().split('_')

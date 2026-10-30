@@ -82,7 +82,7 @@ impl ServerBuilder {
 
     /// [`Self::serve_forward`] for a carrier that records its own Direct edges: a forward whose
     /// inner call ends `NotSent` at the dial while `edges` reports this carrier's own edge to the
-    /// final target not Active is answered [`ForwardReply::CarrierEdgeLost`] (connections.md §8),
+    /// final target not Active is answered [`ForwardReply::ConnectionLost`] (connections.md §8),
     /// so the origin learns the third Proxy validity condition from the carried call itself.
     pub fn serve_forward_with_edges(self, client: Arc<NodeRpcClient>, edges: Arc<dyn CarrierEdges>) -> Self {
         self.serve_forward_with(client, Some(edges))
@@ -207,14 +207,14 @@ async fn carry_once(
             match edge {
                 Some(reason) => {
                     tracing::info_span!(
-                        "rdm.node_rpc.request.reject.via-carrier-edge-lost",
+                        "rdm.node_rpc.request.reject.via-connection-lost",
                         inner_op,
                         target = %target,
                         caller = %peer.endpoint_id,
                         edge = %reason
                     )
                     .in_scope(|| tracing::info!("the carrier's own Direct edge to the final target is not Active"));
-                    rdm_core::reply::forward::carrier_edge_lost(reason)
+                    rdm_core::reply::forward::connection_lost(reason)
                 }
                 None => rdm_core::reply::forward::inner_not_sent(format!("{:?}", n.reason()), NotSentCause::from_reason(n.reason())),
             }

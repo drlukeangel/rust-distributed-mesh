@@ -3093,7 +3093,7 @@ async fn a_fabric_primary_whose_attempt_another_admin_superseded_mid_run_sends_n
 }
 
 /// CONTRACT (build.md §4.4 gate 6; Q221 X: "The one exception is the operation mesh-investigation.md's
-/// decision step names on a node-admin of the unheard mesh: carrier-edge-lost admits the same-Build
+/// decision step names on a node-admin of the unheard mesh: connection-lost admits the same-Build
 /// node.create of a node-admin into that mesh ... nothing else in it is exempt"): mesh2 is held unheard
 /// with its recovery decided, and the Build accepted while it was heard deletes mesh2's second
 /// node-admin. That delete is an operation on a node-admin of the unheard mesh but not the decision

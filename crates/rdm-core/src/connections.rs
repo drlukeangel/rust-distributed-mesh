@@ -19,7 +19,7 @@
 //! ones the topology view holds now (a superseded one is targeted by name) and the carrier's own Direct
 //! edge to the destination is Active. The incarnations reach the source through the topology view
 //! ([`CurrentIncarnations`]); the carrier's edge is the carrier's own fact, learned from the
-//! carried call that returns `carrier-edge-lost` (connections.md section 8), never held here.
+//! carried call that returns `connection-lost` (connections.md section 8), never held here.
 //! A Direct fact naming a destination process the topology view no longer holds is not current either.
 
 use crate::ids::{IncarnationId, NodeId};
@@ -482,7 +482,7 @@ pub enum CarrierPolicy {
 }
 
 /// The carrier's own Direct edge to the destination is not Active: the carried call answered it.
-pub const INVALID_CARRIER_EDGE_LOST: &str = "carrier-edge-lost";
+pub const INVALID_CONNECTION_LOST: &str = "connection-lost";
 /// The carrier's edge names another carrier process than the Proxy recorded.
 pub const INVALID_CARRIER_SUPERSEDED: &str = "carrier-incarnation-superseded";
 /// The carrier's edge names another destination process than the Proxy recorded.
@@ -534,10 +534,10 @@ pub struct RouteResolution {
 /// Why `proxy` is not valid now over `held`, or `None` when it is. The destination and carrier
 /// processes it recorded must be the ones the topology view holds at their paths now. The carrier's own
 /// Direct edge to the destination is not judged here: it is the carrier's fact, and the carried
-/// call answers `carrier-edge-lost` when it is not Active.
+/// call answers `connection-lost` when it is not Active.
 pub fn proxy_invalid(held: &ConnectionsHeld, proxy: &NodeConnection) -> Option<&'static str> {
     let Some(carrier) = proxy.carrier.as_ref() else {
-        return Some(INVALID_CARRIER_EDGE_LOST);
+        return Some(INVALID_CONNECTION_LOST);
     };
     if held.end_superseded(&proxy.destination) == Some(true) {
         return Some(INVALID_DESTINATION_SUPERSEDED);
@@ -617,7 +617,7 @@ pub fn resolve_for_carriers(
 /// this node and the destination left out, in path order, starting at
 /// `spread(source, destination, destination incarnation) % len` and wrapping. Spread by source,
 /// never "freshest wins", and the same in every process. No connection fact is read: the carrier's
-/// own Direct decides, and a carrier without one refuses by name (`carrier-edge-lost`), the source
+/// own Direct decides, and a carrier without one refuses by name (`connection-lost`), the source
 /// then asking the next. Empty when the protocol does not proxy or no candidate stands.
 pub fn carrier_order(
     own: &PathName,

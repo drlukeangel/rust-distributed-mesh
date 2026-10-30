@@ -547,7 +547,7 @@ rdm.node_rpc.request.reject.via-malformed
 rdm.node_rpc.request.reject.via-protocol-violation
 rdm.node_rpc.request.reject.via-frame-not-sent
 rdm.node_rpc.request.reject.via-not-forwardable
-rdm.node_rpc.request.reject.via-carrier-edge-lost
+rdm.node_rpc.request.reject.via-connection-lost
 rdm.node_rpc.request.reject.via-forward-budget-spent
 rdm.node_rpc.request.update.via-call
 rdm.node_rpc.request.update.via-context-dropped
@@ -678,7 +678,7 @@ pub enum ForwardReply {
     ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
-    CarrierEdgeLost { reason: String },
+    ConnectionLost { reason: String },
     NoInnerBudget { remaining_ms: u64, reserve_ms: u64 },
 }
 
@@ -699,7 +699,7 @@ pub enum NotSentCause {
     Deadline,
     FrameNotSent,
     Carried,
-    CarrierEdgeLost,
+    ConnectionLost,
     CarrierNoBudget {
         remaining_ms: u64,
         reserve_ms: u64,
@@ -714,7 +714,7 @@ pub enum NotSentCause {
 pub enum ResolveFailure { Unknown, Gone, Unavailable }
 ```
 
-The `cause` field is appended after `reason` in each of these two variants. It is filled from the inner call’s typed outcome, never from its explanation. The origin rebuilds the typed `NotSentReason` or `IndeterminateReason` from `cause` and keeps `reason` as explanation. A receiving birth that was re-created is `UNAVAILABLE` with detail `receiver-gone`; an owner’s bound lapsing is `DEADLINE_EXCEEDED`, before or after commit; a lost reply or non-fault reset after commit is `UNKNOWN`. `INTERNAL_RPC_FAILURE` is `INTERNAL`. The carrier’s own `CarrierEdgeLost` and failed inner dial are `UNAVAILABLE`; `NotForwardable` is `FAILED_PRECONDITION`. These codes describe the typed result; they change neither dispatch certainty nor delivery obligations. This is the Q40 Forward-only wire change; the 14 reply positions stand, and no legacy decoder is kept.
+The `cause` field is appended after `reason` in each of these two variants. It is filled from the inner call’s typed outcome, never from its explanation. The origin rebuilds the typed `NotSentReason` or `IndeterminateReason` from `cause` and keeps `reason` as explanation. A receiving birth that was re-created is `UNAVAILABLE` with detail `receiver-gone`; an owner’s bound lapsing is `DEADLINE_EXCEEDED`, before or after commit; a lost reply or non-fault reset after commit is `UNKNOWN`. `INTERNAL_RPC_FAILURE` is `INTERNAL`. The carrier’s own `ConnectionLost` and failed inner dial are `UNAVAILABLE`; `NotForwardable` is `FAILED_PRECONDITION`. These codes describe the typed result; they change neither dispatch certainty nor delivery obligations. This is the Q40 Forward-only wire change; the 14 reply positions stand, and no legacy decoder is kept.
 
 The fourth, last request field `remaining_ms` is a postcard varint of whole milliseconds.
 The source measures it immediately before writing the frame, after carrier resolution and
@@ -728,7 +728,7 @@ See `crates/rdm-transport/src/client.rs::open` and
 Reply position 13 is NoInnerBudget; REPLY_VARIANTS is 14. If remaining minus reserve is
 <= 0, the carrier emits `rdm.node_rpc.request.reject.via-forward-budget-spent`, makes no
 inner call and returns NoInnerBudget. The source maps it to NotSent(CarrierNoBudget).
-The carrier returns CarrierEdgeLost directly from its failed dial; its connection-fact
+The carrier returns ConnectionLost directly from its failed dial; its connection-fact
 write happens after the reply and is never on the reply path. Outer and inner calls emit
 `rdm.node_rpc.request.update.via-call`; outer serving emits
 `rdm.node_rpc.request.serve.via-direct`, and carried inner serving emits

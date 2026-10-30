@@ -5,7 +5,7 @@
 //! last direct backbone receipt from that mesh (`Rungs::configured()`): `probe 1` at `2/3` of the
 //! staleness floor (each node-admin probed direct, then `Forward { ProbeNodeState }` through up to two
 //! live members of that mesh at once), the silent `mark` at `1` floor, `probe 2` at `4/3` floor, and the
-//! `decide` step at `2` floors. When a live member answers the carried probe with `carrier-edge-lost`
+//! `decide` step at `2` floors. When a live member answers the carried probe with `connection-lost`
 //! (it cannot reach its own node-admin), `Step::Decide` recovers the mesh's node-admins as an attempt of
 //! the current Build; once the new mesh-primary reports its checklist complete, the fabric returns from
 //! `degraded` to `ready`.
@@ -55,9 +55,9 @@ async fn main() -> Result<()> {
     );
     let mut ladder = Ladder::new(rungs);
     for (at, outcome) in [
-        (rungs.probe1, Some(ProbeOutcome::CarrierEdgeLost)),
+        (rungs.probe1, Some(ProbeOutcome::ConnectionLost)),
         (rungs.mark, None),
-        (rungs.probe2, Some(ProbeOutcome::CarrierEdgeLost)),
+        (rungs.probe2, Some(ProbeOutcome::ConnectionLost)),
         (rungs.decide, None),
     ] {
         for step in ladder.step("peer-mesh", at) {

@@ -345,8 +345,8 @@ pub fn busy(reason: String) -> ForwardReply { ForwardReply::Busy { reason } }
 pub fn connections_deleting(reason: String) -> ForwardReply { ForwardReply::ConnectionsDeleting { reason } }
 /// Construct the typed malformed outcome.
 pub fn malformed(kind: MalformedKind) -> ForwardReply { ForwardReply::Malformed { kind } }
-/// Construct the typed carrier-edge-lost outcome.
-pub fn carrier_edge_lost(reason: String) -> ForwardReply { ForwardReply::CarrierEdgeLost { reason } }
+/// Construct the typed connection-lost outcome.
+pub fn connection_lost(reason: String) -> ForwardReply { ForwardReply::ConnectionLost { reason } }
 /// Construct the typed no-inner-budget outcome.
 pub fn no_inner_budget(remaining_ms: u64, reserve_ms: u64) -> ForwardReply { ForwardReply::NoInnerBudget { remaining_ms, reserve_ms } }
 }

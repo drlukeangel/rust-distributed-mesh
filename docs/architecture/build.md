@@ -579,7 +579,7 @@ mesh1's node-admins are all lost, its members live (mesh1 holds a node, so it is
     -> node.create of a node-admin into mesh1 under the same logical FabricId + MeshId
 ```
 
-[Mesh investigation](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh) owns the sequence: the fabric-primary's carrier-edge-lost verdict creates one node-admin under the mesh's MeshId and runs its work as attempts of the same Build (§4.1). The fabric-primary is not the local Build executor: the joining node-admin is the local executor for its own mesh, and while it is `Pending` it executes only work the fabric-primary dispatches for that mesh, never another mesh's or fabric-wide work ([Role-neutral execution](#role-neutral-execution-and-policy)). A surviving runtime in another provider control domain is handled by [deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain).
+[Mesh investigation](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh) owns the sequence: the fabric-primary's connection-lost verdict creates one node-admin under the mesh's MeshId and runs its work as attempts of the same Build (§4.1). The fabric-primary is not the local Build executor: the joining node-admin is the local executor for its own mesh, and while it is `Pending` it executes only work the fabric-primary dispatches for that mesh, never another mesh's or fabric-wide work ([Role-neutral execution](#role-neutral-execution-and-policy)). A surviving runtime in another provider control domain is handled by [deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain).
 
 ### 12.3 Replace a mesh intentionally
 

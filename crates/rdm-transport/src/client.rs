@@ -79,7 +79,7 @@ pub struct CallOptions {
     /// otherwise waits for its answer within its budget. Its owner retargets, never this runtime.
     pub once: bool,
     /// The owner answers from its first unsent attempt (a carrier's one inner call: node-rpc.md
-    /// §36.1, and the envelope's Forward, "CarrierEdgeLost directly from its failed dial"): a dial
+    /// §36.1, and the envelope's Forward, "ConnectionLost directly from its failed dial"): a dial
     /// or reach that fails before the commit cut ends the call `NotSent`, never resent. Once
     /// committed the request is owed as any other.
     pub unsent_is_final: bool,
@@ -148,7 +148,7 @@ pub struct CallEvidence {
     /// The connection came from the pool rather than a dial this call waited on.
     pub reused: bool,
     /// The dial to the node ended with no connection, and why: the very fact the connection
-    /// observer was handed (`direct_failed`). A carrier answers `CarrierEdgeLost` from this.
+    /// observer was handed (`direct_failed`). A carrier answers `ConnectionLost` from this.
     pub dial_failure: Option<String>,
 }
 

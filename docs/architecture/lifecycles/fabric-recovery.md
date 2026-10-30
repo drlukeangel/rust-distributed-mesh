@@ -186,7 +186,7 @@ No node-admin is alive, the fabric's other nodes alive or not. Nothing inside th
   is rafka-time from the moment it starts. If any node answers, it is not this case: the launched admin
   joins the live fabric and takes rafka-time from the fabric-primary that exists.
 - No node is alive to read topology from or to ping, so the topology read, the own-mesh sweep
-  and carrier-edge-lost of the sequence above never arise. Every node comes back through
+  and connection-lost of the sequence above never arise. Every node comes back through
   [node recovery](node-recovery.md): node.delete of the exited instance, then node.create at the
   same path.name, with a new node.id over the inherited data dir. The members of any mesh with
   no mesh-primary run in process at the fabric-primary

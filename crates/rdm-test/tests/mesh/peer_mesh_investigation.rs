@@ -232,16 +232,16 @@ fn result(dir: &std::path::Path, v: Value) {
 /// At probe 1's rung (20 s unheard at the default floor) it sends probe 1 to each node-admin, the
 /// exact mesh-primary first: direct, then a Ping to the members and, through the member that
 /// answered, a Forward carrying `ProbeNodeState`; the member cannot reach its own node-admin and
-/// answers `carrier-edge-lost`. At the mark (30 s) the mesh is marked silent (nothing is sent), at
+/// answers `connection-lost`. At the mark (30 s) the mesh is marked silent (nothing is sent), at
 /// probe 2's rung (40 s) probe 2 prefers another member and answers the same. At the decision (60 s)
-/// the latest probe being `carrier-edge-lost` is the verdict: the fabric primary authors
+/// the latest probe being `connection-lost` is the verdict: the fabric primary authors
 /// FabricStatus `degraded` and runs node.create of a node-admin into the mesh, under the same Build and
 /// the existing MeshId; the fabric returns to ready when the mesh has its primary again. What must NOT
 /// happen: a node-admin created before the decision's rung, a new MeshId or Build id, a surviving member created again, a degraded fabric
 /// before the verdict.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes() {
-    let cell = "a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes";
+async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes() {
+    let cell = "a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
@@ -338,7 +338,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
         // commits and loses its reply (`Indeterminate`, unreachable). Its next dial fails at the dial,
         // which is the edge-lost answer. Probe 2 is the one that decides.
         let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail").contains("Indeterminate");
-        assert!(attr(p, "outcome") == "carrier-edge-lost" || stale_pool, "the member cannot reach its own node-admin: {p:#?}");
+        assert!(attr(p, "outcome") == "connection-lost" || stale_pool, "the member cannot reach its own node-admin: {p:#?}");
         assert!(attr(p, "member").split(',').all(|m| survivors.contains(&m.to_string())) && survivors.contains(&attr(p, "carrier")), "members of {} were asked and one carried it: {p:#?}", f.lost);
         // iroh's local view of each node-admin asked is a diagnostic on the probe span (R-CK1:
         // observation stays, separate from the decision); nothing decides on it.
@@ -353,7 +353,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
     assert_ne!(attr(probes[0], "carrier"), attr(probes[1], "carrier"), "probe 2 prefers another carrier");
 
     let verdicts = f.verdicts(&spans);
-    let verdict = verdicts.iter().find(|v| attr(v, "outcome") == "carrier-edge-lost").unwrap_or_else(|| panic!("the verdict is carrier-edge-lost: {verdicts:#?}"));
+    let verdict = verdicts.iter().find(|v| attr(v, "outcome") == "connection-lost").unwrap_or_else(|| panic!("the verdict is connection-lost: {verdicts:#?}"));
     assert!(unheard(verdict) >= rungs().decide, "the decision is at {:?} unheard, not before: {:?}", rungs().decide, unheard(verdict));
     let creates = f.admin_creates(&spans);
     assert_eq!(creates.len(), 1, "one node.create of a node-admin: {creates:#?}");
@@ -375,7 +375,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge
         .chain(named(&spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "role") == "stop" && at_ns(sp) >= at_ns(verdict)).map(at_ns))
         .min()
         .unwrap_or_else(|| panic!("{fp} heard {} again after its node-admin was created, or gave up the role", f.lost));
-    let drifts: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-carrier-edge-lost").into_iter().filter(|sp| attr(sp, "primary") == fp && attr(sp, "mesh") == f.lost).collect();
+    let drifts: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-connection-lost").into_iter().filter(|sp| attr(sp, "primary") == fp && attr(sp, "mesh") == f.lost).collect();
     let while_unheard: Vec<&&Value> = drifts.iter().filter(|sp| at_ns(sp) >= at_ns(verdict) && at_ns(sp) < heard_again).collect();
     assert_eq!(while_unheard.len(), 1, "one attempt while {} is held unheard, for its first recovering node-admin: {while_unheard:#?}", f.lost);
     assert!(attr(while_unheard[0], "node") == format!("{}.admin.1", f.lost) && attr(while_unheard[0], "action") == "steps" && attr(while_unheard[0], "reason") == "steps", "the verdict runs node.create of the first node-admin in path order, a single step of the same Build: {:#?}", while_unheard[0]);
@@ -617,13 +617,13 @@ async fn a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_o
 /// CONTRACT (#2803 detection): a probe that finds the node-admin cut off from its members and a later
 /// probe that finds it answering do not add up to a node.create: the latest probe decides. Both
 /// node-admins of the peer mesh are frozen (SIGSTOP: every member's dial to them fails, so probe 1 is
-/// `carrier-edge-lost`) while every UDP path between the fabric primary's mesh and the peer mesh's
+/// `connection-lost`) while every UDP path between the fabric primary's mesh and the peer mesh's
 /// node-admins is cut (netfault; the mesh is unheard). After probe 1 the node-admins are continued:
 /// probe 2 reaches them through a member and they answer, `admin-alive`. No node.create, no degraded
 /// fabric, no third probe.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost() {
-    let cell = "an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost";
+async fn an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost() {
+    let cell = "an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
@@ -696,7 +696,7 @@ async fn an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones
 /// CONTRACT (#2803 detection): two peer meshes that lose their node-admins at the same time are two
 /// investigations. The estate has three meshes of two node-admins and two rpc nodes; the node-admins
 /// of the two meshes the fabric primary does not belong to are killed together. Each mesh is
-/// probed twice by its own members, each decided `carrier-edge-lost` and given its node-admin once, under its own
+/// probed twice by its own members, each decided `connection-lost` and given its node-admin once, under its own
 /// MeshId; neither is probed through the other's members.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin() {
@@ -760,10 +760,10 @@ async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_e
         for (i, p) in probes.iter().enumerate() {
             // A member may still hold a pooled connection to the killed node-admin: probe 1 over it
             // commits and loses its reply (`Indeterminate`, unreachable). The node.create is decided only
-            // on the LATEST probe being carrier-edge-lost, so probe 2 must be.
+            // on the LATEST probe being connection-lost, so probe 2 must be.
             let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail").contains("Indeterminate");
-            assert!(attr(p, "outcome") == "carrier-edge-lost" || stale_pool, "{m}: {p:#?}");
-            assert!(i == 0 || attr(p, "outcome") == "carrier-edge-lost", "{m}: the latest probe decides the node.create: {p:#?}");
+            assert!(attr(p, "outcome") == "connection-lost" || stale_pool, "{m}: {p:#?}");
+            assert!(i == 0 || attr(p, "outcome") == "connection-lost", "{m}: the latest probe decides the node.create: {p:#?}");
             assert!(attr(p, "carrier").starts_with(&format!("{m}.rpc.")), "{m} is probed through its own members only: {p:#?}");
         }
     }

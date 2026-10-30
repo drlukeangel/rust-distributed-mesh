@@ -421,7 +421,7 @@ impl ConnectionsStorage for SlowIndex {
 
 /// CONTRACT (#2803 detection; Q169): the carrier names its edge from the dial that just failed,
 /// from the dial's own outcome, however long the fact's write takes, so a member that cannot reach
-/// its own node-admin says `carrier-edge-lost` every time, never "not sent" for want of a write. The
+/// its own node-admin says `connection-lost` every time, never "not sent" for want of a write. The
 /// read of its held edges never waits for a write: until the Failed row lands it holds no fact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_carrier_names_the_edge_a_dial_has_just_failed_however_slow_the_write() {

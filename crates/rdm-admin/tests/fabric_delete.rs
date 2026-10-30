@@ -16,7 +16,7 @@
 //!      creates no `node-admin`: every birth's node row is written `Deleted` on that proof, the mesh
 //!      status row and `mesh.storage` row are written `Dead` by the fabric-primary as acting primary
 //!      with no survivor (`R-MD1`), and `MeshDeleted` and `MeshLeft` are recorded.
-//!    - Ordinary members live while all `node-admin`s are proven exited (`carrier-edge-lost`)
+//!    - Ordinary members live while all `node-admin`s are proven exited (`connection-lost`)
 //!      records `AcceptedRoster` and the exited admin's `TerminateRuntime` receipt, selects the next
 //!      free `node-admin` path (`leaving_mesh_admin_path`), and once that one `node-admin` is
 //!      created into the mesh under its existing `MeshId` on the same Build, amends the roster
@@ -465,7 +465,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
 /// 1. No member answers and none runs: every member is deleted by its node.delete (its node row
 ///    `Deleted`), the mesh row is written `Dead` as acting primary with no survivor, and `MeshDeleted`
 ///    and `MeshLeft` are recorded without commanding anything or creating a `node-admin`.
-/// 2. Members live (`carrier-edge-lost`: the `node-admin`s unreached while ordinary members live)
+/// 2. Members live (`connection-lost`: the `node-admin`s unreached while ordinary members live)
 ///    deletes the node-admins, records `AcceptedRoster` + predecessor, selects `mesh2.admin.2` via
 ///    `leaving_mesh_admin_path`, and once `mesh2.admin.2` is created into `mesh2` under its own
 ///    `MeshId` on the same Build, amends the roster (`RosterAmended`), adopts held state, runs
@@ -574,7 +574,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         assert!(steps.iter().all(|r| !r.operation.starts_with(&format!("{op_m2}/"))), "no receipt is written under a key outside node.delete's: {:?}", steps.iter().map(|r| r.operation.clone()).collect::<BTreeSet<_>>());
     }
 
-    // ---- Arm 3 (Members live / carrier-edge-lost: create one node-admin into mesh2) ----
+    // ---- Arm 3 (Members live / connection-lost: create one node-admin into mesh2) ----
     {
         let m2_a1 = node_record("mesh2.admin.1", false, false);
         let m2_r1 = node_record("mesh2.rpc.1", true, false);
@@ -991,7 +991,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         observed.write().await.nodes.retain(|n| n.name != m3_a1.name && n.name != m3_r1.name);
         observed.write().await.meshes.iter_mut().find(|m| m.name == "mesh3").unwrap().status = ScopeStatus::Dead;
 
-        // Fault 2 (`mesh2` carrier-edge-lost: `mesh2.admin.1` exited while `mesh2.rpc.1` is still
+        // Fault 2 (`mesh2` connection-lost: `mesh2.admin.1` exited while `mesh2.rpc.1` is still
         // running): `unanswered_mesh_delete` deletes `mesh2.admin.1` and returns `CreateAdmin` for
         // `mesh2.admin.2`. Once `mesh2.admin.2` is created, it amends the roster, deletes `mesh2.rpc.1`,
         // records `MeshDeleted`, and is deleted last by the fabric-primary.

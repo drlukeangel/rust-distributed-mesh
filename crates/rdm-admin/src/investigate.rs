@@ -14,7 +14,7 @@
 //!             30 s   mark       the mesh is silent (nothing is sent)
 //!             40 s   probe 2    the same, another carrier preferred
 //!             60 s   decision   opens once the probes finished; recovery only if the latest
-//!                               probe answered carrier-edge-lost
+//!                               probe answered connection-lost
 //! ```
 //!
 //! An answer from a node-admin stops it (`admin-alive`); a backbone receipt cancels it
@@ -72,7 +72,7 @@ pub enum ProbeOutcome {
     /// The mesh's node-admin answered the carried probe (it re-asserted its presence).
     AdminAlive,
     /// A node answered the Ping but reports it cannot reach its own node-admin.
-    CarrierEdgeLost,
+    ConnectionLost,
     /// No node answered, or the carried call ended any other way.
     #[default]
     Unreachable,
@@ -83,7 +83,7 @@ impl ProbeOutcome {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::AdminAlive => "admin-alive",
-            Self::CarrierEdgeLost => "carrier-edge-lost",
+            Self::ConnectionLost => "connection-lost",
             Self::Unreachable => "unreachable",
         }
     }
@@ -117,7 +117,7 @@ pub enum Step {
         /// How long the mesh has gone unheard, in milliseconds.
         unheard_ms: u64,
     },
-    /// The decision: `recover` only when the latest probe answered `carrier-edge-lost`.
+    /// The decision: `recover` only when the latest probe answered `connection-lost`.
     Decide {
         /// Whether the mesh's node-admins are recovered.
         recover: bool,
@@ -326,10 +326,10 @@ impl Ladder {
             st.in_flight = Some(2);
             out.push(Step::Probe { n: 2, unheard_ms, ticket: st.ticket });
         } else if unheard >= r.decide {
-            // The latest completed probe decides; an older carrier-edge-lost never overrides a
+            // The latest completed probe decides; an older connection-lost never overrides a
             // newer unreachable.
             let latest = st.probes[1].or(st.probes[0]).unwrap_or(ProbeOutcome::Unreachable);
-            let recover = latest == ProbeOutcome::CarrierEdgeLost;
+            let recover = latest == ProbeOutcome::ConnectionLost;
             st.verdict = Some(recover);
             out.push(Step::Decide { recover, latest, unheard_ms });
         }
@@ -357,7 +357,7 @@ pub(crate) fn direct_budget(interval: Duration) -> Duration {
 }
 
 /// The carried probe outlasts the carrier's one inner call (made with `CallOptions::default`) by two
-/// intervals, so the carrier's answer, carrier-edge-lost included, reaches the origin before it gives
+/// intervals, so the carrier's answer, connection-lost included, reaches the origin before it gives
 /// up: an inner dial to a dead node-admin runs to the inner call's whole budget.
 pub(crate) fn carried_budget(interval: Duration) -> Budget {
     match CallOptions::default().budget {
@@ -560,7 +560,7 @@ fn forget_unheard_meshes(ladder: &Mutex<Ladder>, heard: &BTreeSet<String>) {
 }
 
 /// The fabric returns to ready when the mesh the fabric primary gave a new node-admin (the
-/// carrier-edge-lost verdict's, or the fully crashed mesh's) has reported for its checklist: its current
+/// connection-lost verdict's, or the fully crashed mesh's) has reported for its checklist: its current
 /// node-admin primary, a birth the decision did not find, declared the Mesh ready to this fabric
 /// primary after the decision (mesh-investigation.md step 7: "Only on that report, the fabric-primary
 /// clears the degraded health observation"). A ready primary of a newer birth in the view, with no
@@ -709,7 +709,7 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
                 if recover {
                     let verdict_ms = w.topology_view.clock().now_rafka_ms();
                     let lost = view.nodes_of_type(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.incarnation_id.clone()).collect();
-                    w.records.open_mesh_recovery(&me, crate::admin::PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: Some(verdict_ms), opened_at: Instant::now(), lost }, "carrier-edge-lost", true);
+                    w.records.open_mesh_recovery(&me, crate::admin::PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: Some(verdict_ms), opened_at: Instant::now(), lost }, "connection-lost", true);
                 }
             }
             Step::Cancel { unheard_ms, probes } => {
@@ -725,13 +725,13 @@ fn verdict(me: &str, mesh: &str, outcome: &str, unheard_ms: u64, why: &str) {
 }
 
 /// What one node-admin's `unreached` says of the mesh (mesh-investigation.md step 5). Only a carrier
-/// saying its own edge to the node-admin is lost (`InnerNotSent`, the tickle's `carrier-edge-lost`)
-/// is `carrier-edge-lost`, and that carrier is named; a carrier that cannot be reached, refuses, or
+/// saying its own edge to the node-admin is lost (`InnerNotSent`, the tickle's `connection-lost`)
+/// is `connection-lost`, and that carrier is named; a carrier that cannot be reached, refuses, or
 /// loses the call says nothing of the node-admin, so `unreachable`, naming the first carrier that
 /// answered anything at all (a reply that was not the exact birth's, or an `Indeterminate`), or none.
 pub(crate) fn classify_unreached(unreached: &Unreached) -> (ProbeOutcome, Option<String>) {
-    if let Some(PeerProbe { carrier, .. }) = unreached.peers.iter().find(|p| matches!(p.end, ProbeEnd::CarrierEdgeLost(_))) {
-        return (ProbeOutcome::CarrierEdgeLost, Some(carrier.clone()));
+    if let Some(PeerProbe { carrier, .. }) = unreached.peers.iter().find(|p| matches!(p.end, ProbeEnd::ConnectionLost(_))) {
+        return (ProbeOutcome::ConnectionLost, Some(carrier.clone()));
     }
     (ProbeOutcome::Unreachable, unreached.peers.iter().find(|p| p.end.reached_a_process()).map(|p| p.carrier.clone()))
 }
@@ -772,14 +772,14 @@ pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, primary: Option
 
 /// What one probe found over every node-admin it asked, in the order asked: any node-admin
 /// answering is `admin-alive` (the mesh has a node-admin; mesh-investigation.md step 4); with none
-/// answering it is `carrier-edge-lost` only when the carrier reported its edge lost to every one of
+/// answering it is `connection-lost` only when the carrier reported its edge lost to every one of
 /// them (step 5: the recovery recovers every node-admin of the mesh, so each must be reported
 /// unreachable from inside it); any other end says nothing of that node-admin, so `unreachable`.
 pub(crate) fn fold_admin_outcomes(outcomes: &[ProbeOutcome]) -> ProbeOutcome {
     if outcomes.contains(&ProbeOutcome::AdminAlive) {
         ProbeOutcome::AdminAlive
-    } else if !outcomes.is_empty() && outcomes.iter().all(|o| *o == ProbeOutcome::CarrierEdgeLost) {
-        ProbeOutcome::CarrierEdgeLost
+    } else if !outcomes.is_empty() && outcomes.iter().all(|o| *o == ProbeOutcome::ConnectionLost) {
+        ProbeOutcome::ConnectionLost
     } else {
         ProbeOutcome::Unreachable
     }
@@ -819,7 +819,7 @@ impl TickleCalls for WatchCalls<'_> {
     async fn via_peer(&self, carrier: &Node, admin: &Node, req: &StatusRequest) -> ProbeEnd {
         // A carrier this admin cannot reach ends the kick within one direct probe's budget (the
         // connect and send), as the probe's member Ping did; a carrier that took the kick has the whole
-        // carried budget for its answer, carrier-edge-lost included (mesh-investigation.md steps 1, 3).
+        // carried budget for its answer, connection-lost included (mesh-investigation.md steps 1, 3).
         let budget = match carried_budget(self.0.interval) {
             Budget::Overall(reply) => Budget::Split { send: direct_budget(self.0.interval), reply },
             other => other,
@@ -998,7 +998,7 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:17
     /// "One investigation per peer mesh, owned by the fabric-primary. Let t be the elapsed monotonic time
     /// since the fabric-primary's last valid direct backbone receipt from mesh-x."
-    /// CONTRACT (#2803 detection): two carrier-edge-lost probes decide a recovery at 30 intervals, with
+    /// CONTRACT (#2803 detection): two connection-lost probes decide a recovery at 30 intervals, with
     /// the probes at 10 and 20 and the silent mark between them at 15; nothing before.
     #[test]
     fn a_peer_mesh_known_from_topology_alone_is_watched_from_the_fabric_primary() {
@@ -1023,11 +1023,11 @@ mod tests {
     /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
     /// finish first; no silence-only path marks the mesh deleted."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:46
-    /// "- **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+    /// "- **Members live.** The latest probe answers `connection-lost`: a mesh-x member reports that
     /// it cannot reach its own node-admin. Record the verdict before opening the node.create attempt."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
     /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
-    /// fabric is alive, so carrier-edge-lost cannot arise."
+    /// fabric is alive, so connection-lost cannot arise."
     /// CONTRACT (R-D1: loss of peer-mesh control-plane visibility targets lifecycle mutation for every
     /// node in that mesh; mesh-investigation.md: "Let t be the elapsed monotonic time since the
     /// fabric-primary's last valid direct backbone receipt from mesh-x"; step 5: "No answer from any
@@ -1047,15 +1047,15 @@ mod tests {
             "a role taken a moment ago: the ladder stepped nothing, t is 7 s, the mesh is targeted"
         );
         assert_eq!(l.peer_mesh_unheard("mesh1", Some(Duration::from_millis(200))), None, "heard within the tracking rung: no peer_mesh_unheard");
-        // The ladder steps the mesh: probe 1, probe 2, both carrier-edge-lost, then the decision.
+        // The ladder steps the mesh: probe 1, probe 2, both connection-lost, then the decision.
         for _ in 0..3 {
             for s in l.step("mesh1", Duration::from_secs(7)) {
                 if let Step::Probe { n, ticket, unheard_ms } = s {
-                    l.probed("mesh1", ticket, n, CarrierEdgeLost, unheard_ms);
+                    l.probed("mesh1", ticket, n, ConnectionLost, unheard_ms);
                 }
             }
         }
-        assert!(l.recovery_decided("mesh1"), "two carrier-edge-lost probes decide the recovery");
+        assert!(l.recovery_decided("mesh1"), "two connection-lost probes decide the recovery");
         assert_eq!(l.peer_mesh_unheard("mesh1", Some(Duration::from_secs(8))), Some(PeerMesh { unheard_ms: Some(8000), recovery_decided: true, unreachable_decided: false }), "the decided recovery is the ladder's");
         assert_eq!(l.peer_mesh_unheard("mesh9", None), None, "a mesh never carried on the backbone and never stepped: the ladder holds nothing");
     }
@@ -1072,52 +1072,52 @@ mod tests {
     /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
     /// finish first; no silence-only path marks the mesh deleted."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:46
-    /// "- **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+    /// "- **Members live.** The latest probe answers `connection-lost`: a mesh-x member reports that
     /// it cannot reach its own node-admin. Record the verdict before opening the node.create attempt."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:86
     /// "| unheard interval | Fabric-primary | direct backbone receipt absent | track mesh and last-heard time | `rdm.node_admin.mesh.update.via-unheard` (`mesh`, `at`) |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:87
-    /// "| 20 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | ProbeNodeState direct; else Ping a member and, on pong, Forward carrying ProbeNodeState | probe 1: admin answered (ends the investigation), carrier-edge-lost or unreachable | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=1`, `member`, `carrier`, `outcome`); RPC call/serve chain below |"
+    /// "| 20 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | ProbeNodeState direct; else Ping a member and, on pong, Forward carrying ProbeNodeState | probe 1: admin answered (ends the investigation), connection-lost or unreachable | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=1`, `member`, `carrier`, `outcome`); RPC call/serve chain below |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:88
     /// "| 30 s | Fabric-primary | no frame | shared mesh silent mark only | `rdm.node_admin.mesh.update.via-unheard` (`mesh`, `at`) |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:89
     /// "| 40 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | as probe 1 | probe 2, prefer a different carrier member | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=2`, `member`, `carrier`, `outcome`); RPC call/serve chain below |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:91
-    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |"
+    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | connection-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=connection-lost or unreachable`, `at`) |"
     #[test]
-    fn two_carrier_edge_lost_probes_decide_a_recovery_at_thirty_intervals() {
-        let log = walk(&mut ladder(), [CarrierEdgeLost, CarrierEdgeLost]);
+    fn two_connection_lost_probes_decide_a_recovery_at_thirty_intervals() {
+        let log = walk(&mut ladder(), [ConnectionLost, ConnectionLost]);
         assert_eq!(at(&log, |s| matches!(s, Step::Track { .. })), vec![2]);
         assert_eq!(at(&log, |s| matches!(s, Step::Probe { n: 1, .. })), vec![10]);
         assert_eq!(at(&log, |s| matches!(s, Step::Mark { .. })), vec![15]);
         assert_eq!(at(&log, |s| matches!(s, Step::Probe { n: 2, .. })), vec![20]);
-        assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: true, latest: CarrierEdgeLost, .. })), vec![30]);
+        assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: true, latest: ConnectionLost, .. })), vec![30]);
     }
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:36
     /// "3. At 40 s, probe 2 repeats probe 1 (exact mesh-primary first, then the other node-admins,
     /// each direct then via a peer), preferring a different carrier member. Record the latest completed probe's outcome; an older
-    /// `carrier-edge-lost` cannot override a newer unreachable outcome."
+    /// `connection-lost` cannot override a newer unreachable outcome."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:43
     /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
     /// finish first; no silence-only path marks the mesh deleted."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:46
-    /// "- **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+    /// "- **Members live.** The latest probe answers `connection-lost`: a mesh-x member reports that
     /// it cannot reach its own node-admin. Record the verdict before opening the node.create attempt."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
     /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
-    /// fabric is alive, so carrier-edge-lost cannot arise."
+    /// fabric is alive, so connection-lost cannot arise."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:91
-    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |"
-    /// CONTRACT: the latest completed probe decides. An older carrier-edge-lost never overrides a
+    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | connection-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=connection-lost or unreachable`, `at`) |"
+    /// CONTRACT: the latest completed probe decides. An older connection-lost never overrides a
     /// newer unreachable, and no answer at all holds.
     #[test]
     fn the_latest_probe_decides_and_unreachable_holds() {
-        for probes in [[CarrierEdgeLost, Unreachable], [Unreachable, Unreachable]] {
+        for probes in [[ConnectionLost, Unreachable], [Unreachable, Unreachable]] {
             let log = walk(&mut ladder(), probes);
             assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: false, latest: Unreachable, .. })), vec![30], "{probes:?}");
         }
-        let log = walk(&mut ladder(), [Unreachable, CarrierEdgeLost]);
+        let log = walk(&mut ladder(), [Unreachable, ConnectionLost]);
         assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: true, .. })), vec![30]);
     }
 
@@ -1193,7 +1193,7 @@ mod tests {
     /// finish first; no silence-only path marks the mesh deleted."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
     /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
-    /// fabric is alive, so carrier-edge-lost cannot arise."
+    /// fabric is alive, so connection-lost cannot arise."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:90
     /// "| any time | Fabric-primary / answering admin | admin answer or direct backbone receipt | stop / cancel | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome`, `at`) |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:166
@@ -1314,7 +1314,7 @@ mod tests {
                 async move {
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     ended.lock().unwrap().push((n, t0.elapsed().as_millis() as u64));
-                    Found { outcome: CarrierEdgeLost, ..Found::default() }
+                    Found { outcome: ConnectionLost, ..Found::default() }
                 }
             };
             log.extend(inv.tick("mesh2", t0.elapsed(), start).await);
@@ -1350,7 +1350,7 @@ mod tests {
                 calls.fetch_add(1, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 calls.fetch_add(1, Ordering::SeqCst);
-                Found { outcome: CarrierEdgeLost, ..Found::default() }
+                Found { outcome: ConnectionLost, ..Found::default() }
             }
         };
         let mut asked = false;
@@ -1378,7 +1378,7 @@ mod tests {
     /// CONTRACT (mesh-investigation.md step 4: a direct backbone receipt "cancels the investigation
     /// and resets the unheard interval"): a probe still running when its investigation is cancelled
     /// lands on nothing. The fresh interval makes its own probe 1, the cancelled interval's
-    /// carrier-edge-lost never stands in for it, and the cancel counts the probe that was in flight.
+    /// connection-lost never stands in for it, and the cancel counts the probe that was in flight.
     /// Must NOT happen: the fresh interval skipping probe 1 because the stale probe landed in it.
     #[test]
     fn a_probe_that_lands_after_its_investigation_was_cancelled_records_nothing() {
@@ -1388,7 +1388,7 @@ mod tests {
         // The fresh interval is tracked when the stale probe ends.
         let mut again: Vec<Step> = (1..=3).flat_map(|r| l.step("mesh2", tick(r))).collect();
         assert!(again.iter().any(|s| matches!(s, Step::Track { .. })), "the fresh interval is tracked: {again:?}");
-        assert_eq!(l.probed("mesh2", stale, 1, CarrierEdgeLost, ms(12)), None);
+        assert_eq!(l.probed("mesh2", stale, 1, ConnectionLost, ms(12)), None);
         again.extend((4..=10).flat_map(|r| l.step("mesh2", tick(r))));
         assert!(again.iter().any(|s| matches!(s, Step::Probe { n: 1, .. })), "the fresh interval makes its own probe 1: {again:?}");
         assert_eq!(cancel, vec![Step::Cancel { unheard_ms: 0, probes: 1 }], "a receipt cancels the investigation with its probe in flight");
@@ -1401,19 +1401,19 @@ mod tests {
     /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
     /// finish first; no silence-only path marks the mesh deleted."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:46
-    /// "- **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+    /// "- **Members live.** The latest probe answers `connection-lost`: a mesh-x member reports that
     /// it cannot reach its own node-admin. Record the verdict before opening the node.create attempt."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
     /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
-    /// fabric is alive, so carrier-edge-lost cannot arise."
+    /// fabric is alive, so connection-lost cannot arise."
     /// CONTRACT (mesh-investigation.md steps 4-5): over the node-admins one probe asked, any answer is
-    /// `admin-alive`; `carrier-edge-lost` only when every one of them was reported lost from inside
+    /// `admin-alive`; `connection-lost` only when every one of them was reported lost from inside
     /// the mesh; anything else, a timeout or an unreachable carrier included, is `unreachable`.
     #[test]
     fn a_probe_over_several_admins_is_edge_lost_only_when_every_admin_is() {
-        assert_eq!(fold_admin_outcomes(&[CarrierEdgeLost, AdminAlive]), AdminAlive);
-        assert_eq!(fold_admin_outcomes(&[CarrierEdgeLost, CarrierEdgeLost]), CarrierEdgeLost);
-        assert_eq!(fold_admin_outcomes(&[CarrierEdgeLost, Unreachable]), Unreachable);
+        assert_eq!(fold_admin_outcomes(&[ConnectionLost, AdminAlive]), AdminAlive);
+        assert_eq!(fold_admin_outcomes(&[ConnectionLost, ConnectionLost]), ConnectionLost);
+        assert_eq!(fold_admin_outcomes(&[ConnectionLost, Unreachable]), Unreachable);
         assert_eq!(fold_admin_outcomes(&[]), Unreachable);
     }
 
@@ -1428,10 +1428,10 @@ mod tests {
     /// after probe 1, no decision.
     #[test]
     fn an_answering_admin_stops_the_investigation() {
-        let log = walk(&mut ladder(), [AdminAlive, CarrierEdgeLost]);
+        let log = walk(&mut ladder(), [AdminAlive, ConnectionLost]);
         assert_eq!(at(&log, |s| matches!(s, Step::Stop { .. })), vec![10]);
         assert!(at(&log, |s| matches!(s, Step::Probe { n: 2, .. } | Step::Decide { .. })).is_empty(), "{log:?}");
-        let log = walk(&mut ladder(), [CarrierEdgeLost, AdminAlive]);
+        let log = walk(&mut ladder(), [ConnectionLost, AdminAlive]);
         assert_eq!(at(&log, |s| matches!(s, Step::Stop { .. })), vec![20]);
         assert!(at(&log, |s| matches!(s, Step::Decide { .. })).is_empty(), "{log:?}");
     }
@@ -1452,7 +1452,7 @@ mod tests {
         assert!(l.step("mesh2", tick(3)).iter().any(|s| matches!(s, Step::Track { .. })));
         assert!(l.step("mesh2", tick(0)).is_empty(), "heard before any probe: nothing to cancel loudly");
         let ticket = (0..=12).flat_map(|r| l.step("mesh2", tick(r))).find_map(|s| if let Step::Probe { n: 1, ticket, .. } = s { Some(ticket) } else { None }).expect("probe 1 at 10");
-        l.probed("mesh2", ticket, 1, CarrierEdgeLost, ms(12));
+        l.probed("mesh2", ticket, 1, ConnectionLost, ms(12));
         assert_eq!(l.step("mesh2", tick(0)), vec![Step::Cancel { unheard_ms: 0, probes: 1 }]);
         assert!(l.step("mesh2", tick(1)).is_empty());
         let again: Vec<Step> = (2..=10).flat_map(|r| l.step("mesh2", tick(r))).collect();
@@ -1465,7 +1465,7 @@ mod tests {
     fn a_peer_meshs_recovery_is_decided_only_by_a_recovery_decision() {
         let mut l = ladder();
         assert!(!l.recovery_decided("mesh2"), "not stepped yet");
-        walk(&mut l, [CarrierEdgeLost, CarrierEdgeLost]);
+        walk(&mut l, [ConnectionLost, ConnectionLost]);
         assert!(l.recovery_decided("mesh2"));
         let mut held = ladder();
         assert!(!held.unreachable_decided("mesh2"), "not stepped yet: nothing is decided either way");
@@ -1479,21 +1479,21 @@ mod tests {
     /// "5. At 60 s the decision step opens; reaching 60 s proves nothing by itself. Probes still outstanding
     /// finish first; no silence-only path marks the mesh deleted."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:46
-    /// "- **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+    /// "- **Members live.** The latest probe answers `connection-lost`: a mesh-x member reports that
     /// it cannot reach its own node-admin. Record the verdict before opening the node.create attempt."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
     /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
-    /// fabric is alive, so carrier-edge-lost cannot arise."
+    /// fabric is alive, so connection-lost cannot arise."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:91
-    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |"
+    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | connection-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=connection-lost or unreachable`, `at`) |"
     /// CONTRACT (mesh-investigation.md step 5): the 60 s decision on `unreachable` evidence is a hold the
     /// ladder exposes as its own fact, `unreachable_decided`, beside `recovery_decided` and never
     /// with it: the fabric-primary reads the provider's exited verdict of the mesh's node-admins only for
-    /// a mesh whose decision opened this way. A carrier-edge-lost decision is the recovery, not the hold.
+    /// a mesh whose decision opened this way. A connection-lost decision is the recovery, not the hold.
     /// A mesh heard again is decided neither way. Must NOT happen: the hold read as a recovery, or the
     /// fact surviving the silence.
     #[test]
-    fn an_unreachable_decision_is_exposed_as_a_hold_and_never_as_carrier_edge_lost() {
+    fn an_unreachable_decision_is_exposed_as_a_hold_and_never_as_connection_lost() {
         let mut l = ladder();
         walk(&mut l, [Unreachable, Unreachable]);
         assert!(l.unreachable_decided("mesh2") && !l.recovery_decided("mesh2"));
@@ -1501,8 +1501,8 @@ mod tests {
         assert_eq!((targeted.recovery_decided, targeted.unreachable_decided), (false, true), "the target reads the hold: {targeted:?}");
         assert_eq!(l.peer_mesh("mesh2").map(|p| (p.recovery_decided, p.unreachable_decided)), Some((false, true)));
         let mut recovered = ladder();
-        walk(&mut recovered, [CarrierEdgeLost, CarrierEdgeLost]);
-        assert!(recovered.recovery_decided("mesh2") && !recovered.unreachable_decided("mesh2"), "a carrier-edge-lost decision is the recovery");
+        walk(&mut recovered, [ConnectionLost, ConnectionLost]);
+        assert!(recovered.recovery_decided("mesh2") && !recovered.unreachable_decided("mesh2"), "a connection-lost decision is the recovery");
         assert_eq!(recovered.peer_mesh("mesh2").map(|p| (p.recovery_decided, p.unreachable_decided)), Some((true, false)));
         // A direct backbone receipt resets t: the mesh is decided neither way.
         assert!(matches!(l.step("mesh2", Duration::ZERO).as_slice(), [Step::Cancel { .. }]));
@@ -1515,13 +1515,13 @@ mod tests {
     #[test]
     fn a_ladder_dropped_with_the_fabric_primary_starts_over_for_the_next_fabric_primary() {
         let mut first = ladder();
-        walk(&mut first, [CarrierEdgeLost, CarrierEdgeLost]);
+        walk(&mut first, [ConnectionLost, ConnectionLost]);
         assert!(first.recovery_decided("mesh2"));
         first.clear();
         assert!(first.meshes().is_empty(), "nothing survives the role");
         let mut next = ladder();
         assert!(!next.recovery_decided("mesh2"), "the next primary has decided nothing yet");
-        let log = walk(&mut next, [CarrierEdgeLost, CarrierEdgeLost]);
+        let log = walk(&mut next, [ConnectionLost, ConnectionLost]);
         assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: true, .. })), vec![30], "it decides once, from its own 30 intervals");
     }
 
@@ -1534,7 +1534,7 @@ mod tests {
             let a = l.step("mesh2", tick(r));
             for s in a {
                 if let Step::Probe { n, unheard_ms, ticket } = s {
-                    l.probed("mesh2", ticket, n, CarrierEdgeLost, unheard_ms);
+                    l.probed("mesh2", ticket, n, ConnectionLost, unheard_ms);
                 }
             }
             // mesh3 is heard throughout.
@@ -1564,7 +1564,7 @@ mod tests {
     /// A probe's calls, recorded in the order made and answered as the cell says: a node-admin in
     /// `answers_direct` answers its direct `ProbeNodeState`, a node-admin in `answers_carried` answers
     /// the carried `ProbeNodeState` through the carrier `answering_carrier`; with `members_carry`,
-    /// every other carried call is the carrier's `carrier-edge-lost`, without it no member can be
+    /// every other carried call is the carrier's `connection-lost`, without it no member can be
     /// reached at all; `connected` are the members this node holds an Active Direct connection to.
     struct Recorder {
         made: Mutex<Vec<String>>,
@@ -1626,7 +1626,7 @@ mod tests {
             } else if self.answers_carried.contains(&admin.name.to_string()) && carrier.name.to_string() == self.answering_carrier {
                 Self::current(admin)
             } else {
-                ProbeEnd::CarrierEdgeLost(format!("{} cannot reach {}", carrier.name, admin.name))
+                ProbeEnd::ConnectionLost(format!("{} cannot reach {}", carrier.name, admin.name))
             }
         }
 
@@ -1684,7 +1684,7 @@ mod tests {
     /// "3. At 40 s, probe 2 repeats probe 1 (exact mesh-primary first, then the other node-admins,
     /// each direct then via a peer), preferring a different carrier member."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:87
-    /// "| 20 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | ProbeNodeState direct; else Ping a member and, on pong, Forward carrying ProbeNodeState | probe 1: admin answered (ends the investigation), carrier-edge-lost or unreachable | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=1`, `member`, `carrier`, `outcome`); RPC call/serve chain below |"
+    /// "| 20 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | ProbeNodeState direct; else Ping a member and, on pong, Forward carrying ProbeNodeState | probe 1: admin answered (ends the investigation), connection-lost or unreachable | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=1`, `member`, `carrier`, `outcome`); RPC call/serve chain below |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:89
     /// "| 40 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | as probe 1 | probe 2, prefer a different carrier member | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=2`, `member`, `carrier`, `outcome`); RPC call/serve chain below |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:150
@@ -1699,7 +1699,7 @@ mod tests {
     /// record names (node-admin 2) direct; it fails, so the carried ProbeNodeState goes through rpc 3
     /// (the one member held Active Direct) and rpc 1 at once; then node-admin 1 direct, and its own
     /// carried probes through the same two. Probe 2 repeats it preferring members probe 1 did not
-    /// carry through: rpc 1 and rpc 2. Every carrier answers carrier-edge-lost, so both probes find
+    /// carry through: rpc 1 and rpc 2. Every carrier answers connection-lost, so both probes find
     /// it, and each probe's span names every node-admin asked in that order, the leg and the carrier
     /// (the first asked that said its edge was lost). Must NOT happen: the first node-admin asked
     /// being the path-first one, a node-admin's carried probe before its direct one, one carrier
@@ -1744,9 +1744,9 @@ mod tests {
         let attr = |i: usize, k: &str| spans[i].attributes.get(k).cloned().unwrap_or_default();
         for (i, carrier) in [(0, "mesh2.rpc.3"), (1, "mesh2.rpc.1")] {
             assert_eq!(attr(i, "probe"), (i + 1).to_string());
-            assert_eq!(attr(i, "target"), format!("mesh2.admin.2=carrier-edge-lost(via {carrier}),mesh2.admin.1=carrier-edge-lost(via {carrier})"), "probe {}: every node-admin asked, in order, with its leg", i + 1);
+            assert_eq!(attr(i, "target"), format!("mesh2.admin.2=connection-lost(via {carrier}),mesh2.admin.1=connection-lost(via {carrier})"), "probe {}: every node-admin asked, in order, with its leg", i + 1);
             assert_eq!(attr(i, "carrier"), carrier, "probe {}", i + 1);
-            assert_eq!(attr(i, "outcome"), "carrier-edge-lost", "probe {}", i + 1);
+            assert_eq!(attr(i, "outcome"), "connection-lost", "probe {}", i + 1);
             assert_eq!(attr(i, "primary_record"), record.to_string(), "probe {}: ordered by the held primary record", i + 1);
             eprintln!("span rdm.node_admin.mesh.update.via-probe trace_id={} {:?}", spans[i].trace_id, spans[i].attributes);
         }
@@ -1837,7 +1837,7 @@ mod tests {
             calls(&["direct mesh2.admin.2", "via mesh2.rpc.1 > mesh2.admin.2", "via mesh2.rpc.2 > mesh2.admin.2", "direct mesh2.admin.1", "via mesh2.rpc.1 > mesh2.admin.1", "via mesh2.rpc.2 > mesh2.admin.1"]),
             "probe 1's carrier is asked last and left out while two other members stand"
         );
-        assert_eq!((found.outcome, found.carrier.as_str()), (CarrierEdgeLost, "mesh2.rpc.1"));
+        assert_eq!((found.outcome, found.carrier.as_str()), (ConnectionLost, "mesh2.rpc.1"));
         assert_eq!(carriers.lock().unwrap().get("mesh2").map(ToString::to_string).as_deref(), Some("mesh2.rpc.1"), "the carrier this probe went through is held for the next");
     }
 
@@ -1859,7 +1859,7 @@ mod tests {
         l.probed("mesh2", ticket, n, Unreachable, ms(10));
         l.step("mesh2", tick(15));
         let (n, ticket) = probe(l.step("mesh2", tick(20)));
-        l.probed("mesh2", ticket, n, CarrierEdgeLost, ms(20));
+        l.probed("mesh2", ticket, n, ConnectionLost, ms(20));
         assert_eq!(*rx.borrow(), 1, "probes asked and recorded and the mark move nothing the reconcile loop reads");
         l.step("mesh2", tick(30));
         assert!(l.recovery_decided("mesh2"));

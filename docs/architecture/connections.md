@@ -394,7 +394,7 @@ stable_hash(source, destination, destination_incarnation)
 ```
 
 and wrapping. The carrier's own Direct to the destination decides: a candidate without an Active one
-refuses by name (`carrier-edge-lost`, §8) and the source asks the next; when every candidate refuses, the
+refuses by name (`connection-lost`, §8) and the source asks the next; when every candidate refuses, the
 open ends with no active route. No connection fact is read to choose.
 
 The chosen carrier stays chosen until a named structural event invalidates it. A newly available carrier does
@@ -451,17 +451,17 @@ carrier incarnation     == recorded gw2 incarnation
 gw2 -> brk2             == Direct Active
 ```
 
-The two incarnations reach the source through the topology view. The carrier's Direct edge to the destination is
+The two incarnations reach the source through the topology view. The carrier's own Direct to the destination is
 the carrier's own fact and travels nowhere: when the carrier is asked to carry and its own latest Direct to
-the destination is not Active, it refuses by name (`carrier-edge-lost`: on a Proxy connection the tunnel's
+the destination is not Active, it refuses by name (`connection-lost`: on a Proxy connection the tunnel's
 refusal on its control stream, on a Node RPC call carried over the Proxy the Forward reply
-`CarrierEdgeLost`), and that refusal is how the source learns the edge is gone.
+`ConnectionLost`), and that refusal is how the source learns the carrier's Direct is gone.
 
 If any dependency is superseded, the source writes Proxy Disconnected with a named structural reason, for
 example:
 
 ```text
-carrier-edge-lost
+connection-lost
 carrier-incarnation-superseded
 destination-incarnation-superseded
 ```
@@ -756,7 +756,7 @@ new process birth.
 ### J. Carrier edge loss invalidates Proxy
 
 Drop the carrier's active Direct edge to destination. The carrier refuses the next carried call with
-`carrier-edge-lost`; the source writes Proxy Disconnected with that reason, stops selecting that Proxy, and
+`connection-lost`; the source writes Proxy Disconnected with that reason, stops selecting that Proxy, and
 either establishes another valid Proxy or exposes no active route.
 
 ### K. Sent request is never rerouted

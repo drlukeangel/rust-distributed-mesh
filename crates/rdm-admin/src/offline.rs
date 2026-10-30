@@ -209,7 +209,7 @@ pub enum ProbeEnd {
     Reply(rdm_core::status::StatusReply),
     /// The carrier could not carry the probe: its own edge to the node is not Active
     /// (`InnerNotSent`, node-tickle.md step 3), with the carrier's account of that edge.
-    CarrierEdgeLost(String),
+    ConnectionLost(String),
     /// Any other end: the Node RPC outcome's name (`NotSent`, `Indeterminate`, `Unserved`,
     /// `RejectedStale`) and what it says.
     Other {
@@ -228,7 +228,7 @@ impl ProbeEnd {
         match out {
             RpcOutcome::Reply(r) => Self::Reply(r.into_value()),
             RpcOutcome::NotSent(ns) => match ns.reason() {
-                NotSentReason::CarrierEdgeLost(edge) => Self::CarrierEdgeLost(edge.clone()),
+                NotSentReason::ConnectionLost(edge) => Self::ConnectionLost(edge.clone()),
                 other => Self::Other { end, detail: format!("not sent: {other:?}") },
             },
             _ => Self::Other { end, detail: detail_name.to_string() },
@@ -239,7 +239,7 @@ impl ProbeEnd {
     pub fn name(&self) -> String {
         match self {
             Self::Reply(r) => r.name().to_string(),
-            Self::CarrierEdgeLost(edge) => format!("carrier-edge-lost: {edge}"),
+            Self::ConnectionLost(edge) => format!("connection-lost: {edge}"),
             Self::Other { end, detail } => format!("{end}: {detail}"),
         }
     }
@@ -248,7 +248,7 @@ impl ProbeEnd {
     /// account of its edge): a `NotSent` or `RejectedStale` reached none.
     pub fn reached_a_process(&self) -> bool {
         match self {
-            Self::Reply(_) | Self::CarrierEdgeLost(_) => true,
+            Self::Reply(_) | Self::ConnectionLost(_) => true,
             Self::Other { end, .. } => !matches!(*end, "NotSent" | "RejectedStale"),
         }
     }
@@ -1538,7 +1538,7 @@ pub(crate) mod tests {
             for r in [StatusReply::NotReady { reason: "carrier not ready".into() }, current(&other), stopped(&other), StatusReply::RejectedStaleIncarnation { held: other.1.clone() }] {
                 assert!(!birth_answered(Some(&r), &b.0, &b.1), "{} is no answer from the exact birth", r.name());
             }
-            assert!(!birth_answered(None, &b.0, &b.1), "no reply (a deadline, carrier-edge-lost) is no answer");
+            assert!(!birth_answered(None, &b.0, &b.1), "no reply (a deadline, connection-lost) is no answer");
         }
 
         /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:30

@@ -1103,7 +1103,7 @@ fn own_attempt(p: &BuildProjection, mesh: &str) -> u32 {
     fabric.max(lane)
 }
 
-/// The node-admin the carrier-edge-lost verdict of `mesh` still owes a node.create (mesh-investigation.md
+/// The node-admin the connection-lost verdict of `mesh` still owes a node.create (mesh-investigation.md
 /// step 6), when the investigation decided the mesh's recovery: the node-admin the Build already carried
 /// across the target ([`crossed_admin`]) until its create completed since the mesh last executed its own
 /// work, and `first` (the mesh's first node-admin in path order) while the Build carried none.
@@ -1266,7 +1266,7 @@ impl DriveEnv {
 
     /// The restore the investigation's recovery verdict authorizes (R-D1; mesh-investigation.md steps
     /// 5-6; Q221): `op` is the decision step's operation on a node-admin of a peer mesh held unheard, the
-    /// node.create of that node-admin on a decided recovery (carrier-edge-lost) or on the fully crashed
+    /// node.create of that node-admin on a decided recovery (connection-lost) or on the fully crashed
     /// mesh's exited verdict ([`Self::crash_admits`]), and the Build carried no other admin of that mesh
     /// across the target ([`crossed_admin`]); no other operation of the mesh is exempt. The
     /// fabric-primary executes it, whatever else the mesh's view holds (an admin held silent

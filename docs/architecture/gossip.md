@@ -532,7 +532,7 @@ ORDINARY NODE -> OWN PRIMARY   top-up: pull the current full fabric topology it 
 **Forwarded topology carries topology, never liveness.** An ordinary node retains
 peer-mesh members as topology and never ages them to silent for lack of forwarded frames.
 Remote liveness is judged only where it is heard: node-admins use direct backbone receipt,
-and any node uses its own call results and connection facts, including `carrier-edge-lost`.
+and any node uses its own call results and connection facts, including `connection-lost`.
 A forwarded frame refreshes nobody's liveness, node-admins included. Source versions order
 topology; they are not liveness receipts. See the [peer-mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation).
 

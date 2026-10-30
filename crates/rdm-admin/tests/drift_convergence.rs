@@ -1498,12 +1498,12 @@ mod one_attempt_number {
         let opened = rdm_admin::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");
         let action = e.builds.current().await.unwrap().unwrap().action;
-        assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a single step: {action:?}");
+        assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the connection-lost verdict runs node.create of the mesh's first node-admin in path order, a single step: {action:?}");
     }
 }
 
 /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:61
-/// "6. A carrier-edge-lost verdict runs node.create of a node-admin into mesh-x, on the SAME accepted Build
+/// "6. A connection-lost verdict runs node.create of a node-admin into mesh-x, on the SAME accepted Build
 /// and mesh-x's own MeshId: a node-admin joining a live mesh."
 /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:178
 /// "The node-admin that step 5 or step 6 creates joins mesh-x under mesh-x's own MeshId and never mints another.
@@ -1515,7 +1515,7 @@ mod one_attempt_number {
 /// "| Fabric-primary | accepted Build / node.create | same Build attempt; the mesh's MeshId | `rdm.node_admin.node.update.via-build`, `rdm.node_admin.deployment.update.via-pipeline` |"
 /// CONTRACT (mesh-investigation.md step 6): a fabric primary that took the role holds a peer mesh it
 /// never heard on the backbone as `ready` from topology alone (topology is not liveness). Once the
-/// ladder has decided that mesh's recovery (`carrier-edge-lost`), the verdict opens the next attempt of
+/// ladder has decided that mesh's recovery (`connection-lost`), the verdict opens the next attempt of
 /// the accepted Build with node.create of the mesh's first node-admin, a single step whose reason is
 /// `steps`; the create's own target asks the provider about the lost admin and deletes it only on its
 /// exact exit, so the opening recovers nothing. Must NOT happen: the decided mesh
@@ -1620,15 +1620,15 @@ mod fully_crashed_mesh {
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
     /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
-    /// fabric is alive, so carrier-edge-lost cannot arise. The fabric-primary runs
+    /// fabric is alive, so connection-lost cannot arise. The fabric-primary runs
     /// [node investigation](node-investigation.md) on mesh-x's node-admins, and the verdict decides
     /// (Q111): reached, that node-admin is commanded back through node.mesh.join; any other verdict,
     /// the fabric-primary creates mesh-x's node-admin in process"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:61
-    /// "6. A carrier-edge-lost verdict runs node.create of a node-admin into mesh-x, on the SAME accepted Build
+    /// "6. A connection-lost verdict runs node.create of a node-admin into mesh-x, on the SAME accepted Build
     /// and mesh-x's own MeshId: a node-admin joining a live mesh."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:91
-    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |"
+    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | connection-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=connection-lost or unreachable`, `at`) |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:178
     /// "The node-admin that step 5 or step 6 creates joins mesh-x under mesh-x's own MeshId and never mints another.
     /// The mesh is still in the accepted topology, so the attempt belongs to the SAME accepted Build."
@@ -1643,7 +1643,7 @@ mod fully_crashed_mesh {
     /// node.create of the mesh's first node-admin (no new wire variant), and the drive runs it to the
     /// Build's completion; the opening rides `via-proven-drift`. Before the decision nothing opens.
     /// Must NOT happen: the held mesh waiting for ever (the opening needs the ladder's
-    /// carrier-edge-lost decision, which a mesh with no member to answer can never reach), or an
+    /// connection-lost decision, which a mesh with no member to answer can never reach), or an
     /// opening before the ladder's decision on silence.
     #[tokio::test]
     async fn every_node_admin_of_a_peer_mesh_held_unreachable_opens_the_one_step_create_and_the_drive_completes_it() {
@@ -1686,14 +1686,14 @@ mod fully_crashed_mesh {
     }
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:46
-    /// "- **Members live.** The latest probe answers `carrier-edge-lost`: a mesh-x member reports that
+    /// "- **Members live.** The latest probe answers `connection-lost`: a mesh-x member reports that
     /// it cannot reach its own node-admin. Record the verdict before opening the node.create attempt."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:48
     /// "- **No member answers.** Every node of mesh-x, its node-admins included, is unheard while the
-    /// fabric is alive, so carrier-edge-lost cannot arise."
+    /// fabric is alive, so connection-lost cannot arise."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:61
     /// "At that same moment, both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded)
-    /// are marked degraded (R-DG1), on either arm: the 60 s carrier-edge-lost verdict and the no-member-answers arm on
+    /// are marked degraded (R-DG1), on either arm: the 60 s connection-lost verdict and the no-member-answers arm on
     /// its verdict, sent under [gossip §3.2](../gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy).
     /// Probing itself sends no FabricStatus or MeshStatus."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:69
@@ -1703,14 +1703,14 @@ mod fully_crashed_mesh {
     /// fresh planned-birth checklist in [event-driven declarations](node-status.md#node-status-declaration).
     /// Only on that report, the fabric-primary clears the degraded health observation on both the mesh and the fabric."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:91
-    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |"
+    /// "| 60 s | Fabric-primary | the decision step opens; outstanding probes finish first | connection-lost: node.create of a node-admin; no member answers: node investigation of mesh-x's node-admins, then node.mesh.join or node.create in process on its verdict (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=connection-lost or unreachable`, `at`) |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:92
-    /// "| 60 s, carrier-edge-lost verdict | Fabric-primary / provider | same-Build node.create of a node-admin into mesh-x; MeshStatus and FabricStatus degraded (both arms, R-DG1) | mesh-x's MeshId; health marker | `rdm.node_admin.mesh.create.via-recovery` (`mesh`, `at`) |"
+    /// "| 60 s, connection-lost verdict | Fabric-primary / provider | same-Build node.create of a node-admin into mesh-x; MeshStatus and FabricStatus degraded (both arms, R-DG1) | mesh-x's MeshId; health marker | `rdm.node_admin.mesh.create.via-recovery` (`mesh`, `at`) |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:93
     /// "| new primary ready | Mesh-x primary; fabric-primary | MeshStatus ready; FabricStatus ready | fabric ready requires [States](states.md#states) completion | readiness evidence and status dissemination below |"
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:166
     /// "No status or lifecycle gossip is sent at the 20 s/40 s probes or the 30 s silent mark.
-    /// At the 60 s carrier-edge-lost verdict, or on the no-member-answers arm's verdict (both arms, R-DG1),
+    /// At the 60 s connection-lost verdict, or on the no-member-answers arm's verdict (both arms, R-DG1),
     /// both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded) are marked degraded, and travel as the
     /// [frame catalog](../gossip.md#31-frame-catalog) states. The joined node-admin, as mesh-primary, later
     /// authors its MeshStatus readiness after its fresh planned-birth checklist, which clears the degraded marker on both the
@@ -1718,7 +1718,7 @@ mod fully_crashed_mesh {
     /// CONTRACT (R-DG1; mesh-investigation.md steps 5-7): the fabric-primary gives a fully crashed
     /// mesh a new node-admin when it claims the create the provider's proof of every node admitted,
     /// and at that same moment authors the fabric `degraded` (the `peer_recovery` view the
-    /// carrier-edge-lost verdict opens a recovery in and the status projection reads): not before (an exit
+    /// connection-lost verdict opens a recovery in and the status projection reads): not before (an exit
     /// proof held for the ladder's decision opens nothing, and the attempt's opening alone gives the mesh
     /// nothing), naming the mesh and every node-admin the proof found. It is cleared only on the report of
     /// the new mesh-primary after that moment: not by the recovered mesh's view alone, not by a report of a
@@ -1808,7 +1808,7 @@ mod fully_crashed_mesh {
     }
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:65
-    /// "At that same moment, both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded) are marked degraded (R-DG1), on either arm: the 60 s carrier-edge-lost verdict and the no-member-answers arm on its verdict, sent under [gossip §3.2](../gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy)."
+    /// "At that same moment, both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded) are marked degraded (R-DG1), on either arm: the 60 s connection-lost verdict and the no-member-answers arm on its verdict, sent under [gossip §3.2](../gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy)."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:68
     /// "Probing itself sends no FabricStatus or MeshStatus."
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:166
@@ -1875,7 +1875,7 @@ mod fully_crashed_mesh {
             }
 
             // Verdict with verdict_rafka_ms = Some(60_000) and known revision 7 emits FabricStatus degraded and MeshStatus degraded.
-            assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: Some(60_000), opened_at: t0, lost: vec![peer_inc.clone()] }, "carrier-edge-lost", true));
+            assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: Some(60_000), opened_at: t0, lost: vec![peer_inc.clone()] }, "connection-lost", true));
             let arm1 = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, 60_000);
             assert_eq!(arm1.len(), 2, "verdict emits FabricStatus degraded and MeshStatus degraded: {arm1:?}");
             assert!(arm1.iter().any(|f| matches!(f.data(), Frame::FabricStatus { status, publisher, changed_at_rafka_ms: 60_000, .. } if status == "degraded" && publisher == "mesh1.admin.1")));
@@ -1891,7 +1891,7 @@ mod fully_crashed_mesh {
             // R4: a recovery record with verdict_rafka_ms = None, or a mesh with no known revision (no primary record, no held authored frame),
             // sends no MeshStatus for that mesh (never revision 0) and names it in rdm.node_admin.mesh.reject.via-no-revision.
             assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: None, opened_at: t0, lost: vec![peer_inc.clone()] }, "fully-crashed", false));
-            assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh3".into(), verdict_rafka_ms: Some(70_000), opened_at: t0, lost: vec![peer_inc] }, "carrier-edge-lost", true));
+            assert!(records.open_mesh_recovery(&me, rdm_admin::admin::PeerRecovery { mesh: "mesh3".into(), verdict_rafka_ms: Some(70_000), opened_at: t0, lost: vec![peer_inc] }, "connection-lost", true));
             let rejected = step(&records, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, 70_000);
             assert_eq!(rejected.len(), 1, "only FabricStatus degraded is sent when verdict_rafka_ms or revision is missing: {rejected:?}");
             assert!(matches!(rejected[0].data(), Frame::FabricStatus { status, publisher, changed_at_rafka_ms: 70_000, .. } if status == "degraded" && publisher == "mesh1.admin.1"));
@@ -1955,7 +1955,7 @@ async fn two_meshes_given_new_node_admins_keep_the_fabric_degraded_until_each_ne
 /// R-D1: a peer mesh the fabric primary holds unheard is held as a mesh. The provider's proof that one of
 /// its births exited is kept as evidence and authorizes no Restart, Replace or NodeDeleted; a heard mesh is
 /// repaired as ever; the hold ends with the silence and leaves nothing behind.
-/// A peer mesh whose recovery the ladder decided (`carrier-edge-lost`), after the verdict's create of
+/// A peer mesh whose recovery the ladder decided (`connection-lost`), after the verdict's create of
 /// its first node-admin ran.
 mod decided_mesh {
     use super::fully_crashed_mesh::HeldPeer;
@@ -2002,7 +2002,7 @@ mod decided_mesh {
         let heard_still_decided = move |m: &str| (m == peer).then_some(PeerMesh { unheard_ms: None, recovery_decided: true, unreachable_decided: false });
         let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s56-decided-mesh-rest");
         assert_eq!(pass(&e, &mut started, &mut held, &heard_still_decided).await, None, "the second node-admin is its mesh-primary's to recover while the decision is still held");
-        let opened: Vec<_> = ["rdm.node_admin.build.update.via-proven-drift", "rdm.node_admin.build.update.via-carrier-edge-lost"].iter().flat_map(|n| capture.spans(n)).collect();
+        let opened: Vec<_> = ["rdm.node_admin.build.update.via-proven-drift", "rdm.node_admin.build.update.via-connection-lost"].iter().flat_map(|n| capture.spans(n)).collect();
         assert!(opened.is_empty(), "no attempt was opened from here: {opened:?}");
         assert_eq!(pass(&e, &mut started, &mut held, &|_| None).await, None, "and once the decision is gone");
         let settled = e.builds.current().await.unwrap().unwrap();
@@ -2132,7 +2132,7 @@ mod unheard_mesh_hold {
         let opened = pass(&e, &mut started, &mut held, &decided).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decision releases the first recovering node-admin");
         let action = e.builds.current().await.unwrap().unwrap().action;
-        assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a single step: {action:?}");
+        assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the connection-lost verdict runs node.create of the mesh's first node-admin in path order, a single step: {action:?}");
         let first = e.node_id(&admins[0]).await;
         assert!(!held.iter().any(|(n, _)| n.as_str() == first), "the admin the decision released is not held");
         // The restore runs on the same Build (mesh-investigation.md step 6): its attempt is claimed for the

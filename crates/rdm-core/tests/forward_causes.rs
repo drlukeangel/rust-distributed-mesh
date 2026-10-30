@@ -75,7 +75,7 @@ fn every_not_sent_cause_has_a_hand_written_golden_and_rebuilds_its_fields() {
         (Deadline, Code::DeadlineExceeded, "03"),
         (FrameNotSent, Code::Unavailable, "04"),
         (Carried, Code::Unavailable, "05"),
-        (CarrierEdgeLost, Code::Unavailable, "06"),
+        (ConnectionLost, Code::Unavailable, "06"),
         (CarrierNoBudget { remaining_ms: 20, reserve_ms: 100 }, Code::Unavailable, "07 14 64"),
         (NotForwardable { op: 0x1B }, Code::FailedPrecondition, "08 1b"),
         (NoActiveRoute, Code::Unavailable, "09"),
@@ -99,7 +99,7 @@ fn every_not_sent_cause_has_a_hand_written_golden_and_rebuilds_its_fields() {
 }
 #[test]
 fn the_carriers_own_refusals_keep_their_codes() {
-    assert_eq!(ForwardReply::CarrierEdgeLost { reason: "same".into() }.code(), Code::Unavailable);
+    assert_eq!(ForwardReply::ConnectionLost { reason: "same".into() }.code(), Code::Unavailable);
     assert_eq!(ForwardReply::NotForwardable { op: 1 }.code(), Code::FailedPrecondition);
     assert_eq!(ForwardReply::InnerNotSent { reason: "same".into(), cause: NotSentCause::Connection }.code(), Code::Unavailable);
 }

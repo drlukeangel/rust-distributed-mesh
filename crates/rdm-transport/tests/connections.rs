@@ -1517,7 +1517,7 @@ async fn a_not_sent_direct_takes_its_carrier_from_the_topology_the_source_holds(
 }
 
 /// CONTRACT (Q227; connections.md §8): a carrier without its own Direct to the destination refuses
-/// by name (`carrier-edge-lost`), and the source takes the next carrier in the path order, which
+/// by name (`connection-lost`), and the source takes the next carrier in the path order, which
 /// carries it. Must NOT happen: the source ending on the first refusal while another carrier stands.
 #[tokio::test]
 async fn a_carrier_without_its_own_direct_refuses_by_name_and_the_source_takes_the_next() {
@@ -1825,7 +1825,7 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
         "destination acceptor must not yield a wrong-incarnation tunnel"
     );
 
-    // Case 3: Carrier cannot reach destination (carrier-edge-lost): the one carrier refused by name, so
+    // Case 3: Carrier cannot reach destination (connection-lost): the one carrier refused by name, so
     // the open ends with no active route (Q227), no Proxy Connected:
     let dead_dest = Birth {
         name: "mesh1.rpc.4".parse().unwrap(),

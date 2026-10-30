@@ -330,7 +330,7 @@ Do not collapse these operations into one generic "re-entry" rule.
 | WAL reset | no | not inherently | yes, only through its explicit reset/re-entry contract | reset lifecycle path |
 | Mesh join | yes | yes/a new primary may appear | yes | Build + Mesh/Fabric lifecycle transition |
 | Mesh remove | yes | yes as estate changes | yes | Build + Mesh/Fabric lifecycle transition |
-| node-admin joins a live mesh whose node-admins are all lost | no | yes (it becomes the mesh's successor primary) | **not by the join itself** (§7) | Build (the [mesh investigation](lifecycles/mesh-investigation.md) carrier-edge-lost verdict runs node.create) + the election + hydration |
+| node-admin joins a live mesh whose node-admins are all lost | no | yes (it becomes the mesh's successor primary) | **not by the join itself** (§7) | Build (the [mesh investigation](lifecycles/mesh-investigation.md) connection-lost verdict runs node.create) + the election + hydration |
 | Mesh replacement (mesh.delete, then a new mesh) | yes | yes | yes | Build + Mesh/Fabric lifecycle transition |
 | Day 0 | establishes the first accepted Build | the initial primaries | yes | lifecycle root + the election |
 

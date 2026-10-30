@@ -154,7 +154,7 @@ mod tests {
                 _probe: &StatusRequest,
             ) -> ProbeEnd {
                 if carrier.name.to_string() == "mesh1.rpc.2" {
-                    ProbeEnd::CarrierEdgeLost("edge dropped".into())
+                    ProbeEnd::ConnectionLost("edge dropped".into())
                 } else {
                     ProbeEnd::Reply(StatusReply::Blocked {
                         node_id: self.target_id.clone(),

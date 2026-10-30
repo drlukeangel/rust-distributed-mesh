@@ -128,7 +128,7 @@ pub enum NotSentCause {
     /// The carrier's own edge was lost.
     ///
     /// Position 6 on the wire.
-    CarrierEdgeLost,
+    ConnectionLost,
     /// The remaining budget did not exceed the reserve.
     ///
     /// Position 7 on the wire.
@@ -250,10 +250,10 @@ pub enum ForwardReply {
     /// The carrier made no inner call it could prove arrived: its own Direct edge to the final
     /// target is not Active (connections.md §8). `reason` names the carrier's latest Direct fact
     /// toward the target. The origin deletes its Proxy through this carrier with the structural
-    /// reason `carrier-edge-lost`.
+    /// reason `connection-lost`.
     ///
     /// Position 12 on the wire.
-    CarrierEdgeLost {
+    ConnectionLost {
         /// The carrier's latest Direct fact toward the target.
         reason: String,
     },
@@ -311,7 +311,7 @@ impl NotSentCause {
             R::Deadline => Self::Deadline,
             R::FrameNotSent => Self::FrameNotSent,
             R::Carried(_) => Self::Carried,
-            R::CarrierEdgeLost(_) => Self::CarrierEdgeLost,
+            R::ConnectionLost(_) => Self::ConnectionLost,
             R::CarrierNoBudget { remaining_ms, reserve_ms } => Self::CarrierNoBudget { remaining_ms: *remaining_ms, reserve_ms: *reserve_ms },
             R::NotForwardable { op } => Self::NotForwardable { op: *op },
             R::NoActiveRoute => Self::NoActiveRoute,
@@ -328,7 +328,7 @@ impl NotSentCause {
             Self::Deadline => R::Deadline,
             Self::FrameNotSent => R::FrameNotSent,
             Self::Carried => R::Carried(explanation),
-            Self::CarrierEdgeLost => R::CarrierEdgeLost(explanation),
+            Self::ConnectionLost => R::ConnectionLost(explanation),
             Self::CarrierNoBudget { remaining_ms, reserve_ms } => R::CarrierNoBudget { remaining_ms, reserve_ms },
             Self::NotForwardable { op } => R::NotForwardable { op },
             Self::NoActiveRoute => R::NoActiveRoute,
@@ -350,7 +350,7 @@ impl ForwardReply {
             Self::InnerUnserved { .. } => Code::Unimplemented,
             Self::InnerRejectedStale { .. } => Code::Aborted,
             Self::NotForwardable { .. } => Code::FailedPrecondition,
-            Self::CarrierEdgeLost { .. } | Self::NoInnerBudget { .. } | Self::NotReady { .. } | Self::Busy { .. } | Self::ConnectionsDeleting { .. } => Code::Unavailable,
+            Self::ConnectionLost { .. } | Self::NoInnerBudget { .. } | Self::NotReady { .. } | Self::Busy { .. } | Self::ConnectionsDeleting { .. } => Code::Unavailable,
             Self::PeerUnresolved { .. } => Code::NotFound,
             Self::Malformed { kind: MalformedKind::TooLarge | MalformedKind::TypesOverCap } => Code::ResourceExhausted,
             Self::Malformed { kind: MalformedKind::UnknownVariant } => Code::InvalidArgument,
@@ -386,7 +386,7 @@ impl NodeProtocol for Forward {
             ForwardReply::ConnectionsDeleting { .. } => "connections-deleting",
             ForwardReply::Malformed { .. } => "malformed",
             ForwardReply::Unauthorized { .. } => "unauthorized",
-            ForwardReply::CarrierEdgeLost { .. } => "carrier-edge-lost",
+            ForwardReply::ConnectionLost { .. } => "connection-lost",
             ForwardReply::NoInnerBudget { .. } => "no-inner-budget",
         }
     }
@@ -405,7 +405,7 @@ impl NodeProtocol for Forward {
             ForwardReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             ForwardReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             ForwardReply::Unauthorized { .. } => ReplyKind::Unauthorized,
-            ForwardReply::CarrierEdgeLost { .. } => ReplyKind::new(reply.code()),
+            ForwardReply::ConnectionLost { .. } => ReplyKind::new(reply.code()),
             ForwardReply::NoInnerBudget { .. } => ReplyKind::new(reply.code()),
         }
     }
@@ -455,7 +455,7 @@ mod tests {
             ForwardReply::ConnectionsDeleting { reason: "d".into() },
             ForwardReply::Malformed { kind: MalformedKind::Corrupt },
             ForwardReply::Unauthorized { reason: "u".into() },
-            ForwardReply::CarrierEdgeLost { reason: "e".into() },
+            ForwardReply::ConnectionLost { reason: "e".into() },
             ForwardReply::NoInnerBudget { remaining_ms: 5, reserve_ms: 100 },
         ];
         assert_eq!(replies.len() as u32, Forward::REPLY_VARIANTS);

@@ -116,7 +116,7 @@ async fn observed_legs(estate: &Estate, target_id: &str, carrier: &str) -> (Valu
 
 /// A leg reduced to what must be stable while the silence holds: the typed outcome and the leg.
 /// A ViaPeer leg is held to whether it replied: its certainty is the carrier's own edge fact,
-/// `NotSent(CarrierEdgeLost)`.
+/// `NotSent(ConnectionLost)`.
 fn leg_shape(l: &Value) -> Value {
     if l["route"] == "via-peer" {
         return json!({"replied": l["outcome"] == "Reply", "route": l["route"]});
@@ -853,12 +853,12 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     rec2.check("the Build gained no attempt but the hand-back's and the returning primary's after it", gained == explained, format!("attempts {attempt_before} -> {attempt_during} -> {attempt_after}: gained {gained:?}, hand-back attempts {handback_attempts:?} and their continuations {continued:?}"));
     rec2.check("no call reached the isolated node while it was silent: no serve span in the silent legs' traces", served_in_silence.is_empty() && !silent_traces.is_empty(), format!("{} silent traces, {} served", silent_traces.len(), served_in_silence.len()));
     rec2.check("the silent legs resolved Direct, ViaPeer and NoActiveRoute, none replying", silent_by("direct") == reads_n && silent_by("via-peer") == reads_n && silent_by("no-active-route") == reads_n && silent_resolves.iter().all(|sp| sp["attributes"]["outcome"] != "Reply"), format!("{:?}", silent_resolves.iter().map(|sp| (sp["attributes"]["route"].clone(), sp["attributes"]["outcome"].clone())).collect::<Vec<_>>()));
-    // A silent ViaPeer leg never replies and ends `NotSent(CarrierEdgeLost)` naming the carrier's
+    // A silent ViaPeer leg never replies and ends `NotSent(ConnectionLost)` naming the carrier's
     // edge to the target: the carrier bounds its inner call by the origin's remaining budget, so
     // its answer always arrives first. The sequence is recorded.
     let via: Vec<(String, String)> = silence.iter().map(|r| (s(&r["legs"]["via_peer"]["outcome"]), s(&r["legs"]["via_peer"]["reason"]))).collect();
-    let via_typed = via.iter().all(|v| v.0 == "NotSent" && v.1.contains(&format!("CarrierEdgeLost(\"{carrier} -> {target_name} ")));
-    rec2.check("each silent ViaPeer leg ends NotSent(CarrierEdgeLost) naming the carrier and the target", via_typed, format!("{via:?}"));
+    let via_typed = via.iter().all(|v| v.0 == "NotSent" && v.1.contains(&format!("ConnectionLost(\"{carrier} -> {target_name} ")));
+    rec2.check("each silent ViaPeer leg ends NotSent(ConnectionLost) naming the carrier and the target", via_typed, format!("{via:?}"));
     if cut == Cut::Node {
         let still: BTreeSet<(String, String)> = births(&nodes_during).into_iter().filter(|(n, _)| !isolated_set.contains(n.as_str())).collect();
         let want_rest: BTreeSet<(String, String)> = want_births.iter().filter(|(n, _)| !isolated_set.contains(n.as_str())).cloned().collect();
