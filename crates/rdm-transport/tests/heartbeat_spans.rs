@@ -73,6 +73,7 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         let seed = iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())));
         let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![seed], &[]).await.unwrap();
         let (da, db) = (digest("mesh1.rpc.1", &a.ep), digest("mesh1.rpc.2", &b.ep));
+        let started = std::time::Instant::now();
         let pa = ma.publish_every(Duration::from_millis(500), move || da.clone());
         let pb = mb.publish_every(Duration::from_millis(500), move || db.clone());
 
@@ -81,11 +82,15 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         pb.abort();
         tokio::time::sleep(Duration::from_millis(3500)).await;
         pa.abort();
+        // The heartbeat marks at the loop's start and every HEARTBEAT_EVERY after: as many as the window
+        // the loop ran holds, read from the clock, never from the sleeps (a loaded host stretches them).
+        let ran = started.elapsed();
 
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let beats: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-heartbeat" && s["attributes"]["node"] == "mesh1.rpc.1").collect();
         // ~6.5 s of 500 ms digests is 13 publishes: the heartbeat is the 5 s cadence, not the digest cadence.
-        assert_eq!(beats.len(), 2, "heartbeat spans of mesh1.rpc.1: {beats:#?}");
+        let due = (ran.as_millis() / rdm_transport::topology::HEARTBEAT_EVERY.as_millis()) as usize + 1;
+        assert!(beats.len() == due || beats.len() + 1 == due, "heartbeat spans of mesh1.rpc.1 over {ran:?} ({due} due at most, one fewer when the last mark falls at the window's edge): {beats:#?}");
         let last = beats.iter().max_by_key(|s| num(s, "digest_seq")).unwrap();
         assert_eq!(num(last, "peer_count"), 1, "the heartbeat counts the other member, not itself: {last}");
         assert!(num(last, "wall_time_ms") > 0 && last["attributes"].get("clock_skew_ms").is_some(), "{last}");
