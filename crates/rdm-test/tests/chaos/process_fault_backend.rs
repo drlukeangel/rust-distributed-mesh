@@ -370,9 +370,11 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let verdict = judge(&ev).unwrap_or_else(|r| panic!("the detector refused the held runtime: {r}"));
     let own = cap.spans();
     let fault_spans: Vec<&Value> = named(&own, "rdm.testkit.fault.update.via-process-signal");
-    for f in ["stop", "continue", "kill"] {
+    // The forged stop (refused) and the kill are signals; the hold is the tracer's.
+    for f in ["stop", "kill"] {
         assert!(fault_spans.iter().any(|sp| attr(sp, "fault") == f), "a `{f}` fault span was emitted by the backend");
     }
+    assert!(named(&own, "rdm.testkit.fault.update.via-process-trace").iter().any(|sp| attr(sp, "fault") == "hang"), "a `hang` fault span was emitted by the backend");
     let refused_spans = fault_spans.iter().filter(|sp| attr(sp, "outcome").contains("not_this_runtime") || attr(sp, "outcome").contains("foreign_domain")).count();
     assert!(refused_spans >= 2, "the refusals left spans");
     let verdict_span = named(&own, "rdm.testkit.wedge.resolve.via-detector");
