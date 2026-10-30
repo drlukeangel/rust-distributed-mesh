@@ -1,4 +1,4 @@
-//! e11.s4 — a product reads a cohort's seat from node-admin's view and never computes it.
+//! e11.s4 — a product reads a node-type primary seat from node-admin's view and never computes it.
 
 use rdm_core::{IncarnationId, NodeId, NodeKind};
 use rdm_client::{NodeStatus, NodeView};
@@ -44,8 +44,8 @@ fn the_primary_is_the_one_the_view_advertises_whatever_the_node_ids_order() {
     ];
     assert_eq!(primary_of(&view, "mesh1", NodeKind::Broker).map(|n| n.name.to_string()), Some("mesh1.broker.2".into()));
     assert_eq!(primary_of(&view, "mesh1", NodeKind::Gateway).map(|n| n.name.to_string()), Some("mesh1.gateway.1".into()));
-    assert_eq!(primary_of(&view, "mesh1", NodeKind::Compute), None, "a cohort the view holds no seat for");
-    assert_eq!(primary_of(&view, "mesh2", NodeKind::Broker), None, "another mesh's cohort");
+    assert_eq!(primary_of(&view, "mesh1", NodeKind::Compute), None, "a node type the view holds no seat for");
+    assert_eq!(primary_of(&view, "mesh2", NodeKind::Broker), None, "another mesh's node type");
     assert_eq!(fabric_primary(&view).map(|n| n.name.to_string()), Some("mesh1.admin.1".into()));
 }
 

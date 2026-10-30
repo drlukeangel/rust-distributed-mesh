@@ -227,10 +227,10 @@ impl MemberDoor {
         // names, R-RX5). The revision the successor's entry takes is the next after the record of its type
         // this node holds; holding none, it reads its mesh-primary's topology first, as a starting node does.
         let primary_view = self.topology_view.primaries();
-        if primary_view.cohort(&mesh, kind).is_none() {
+        if primary_view.node_type_primary(&mesh, kind).is_none() {
             self.read_own_mesh(me, &mesh).await;
         }
-        let revision = primary_view.cohort(&mesh, kind).map_or(0, |r| r.revision) + 1;
+        let revision = primary_view.node_type_primary(&mesh, kind).map_or(0, |r| r.revision) + 1;
         // Step 4 on the successor the mesh-primary's pre-check named (step 2): no election here (Q129).
         let Some(successor) = successor else {
             return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me} is a {node_type} primary: its mesh-primary's command names no successor"), rdm_core::outcome::Code::FailedPrecondition);
