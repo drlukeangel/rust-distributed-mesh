@@ -1991,7 +1991,7 @@ async fn a_recovery_answered_build_in_progress_is_opened_owed_to_its_mesh_and_cl
 /// the running one (red at 3ae979902, i143-rshape-soak-randomized-process: attempt 5 claimed over the
 /// running attempt 4, whose dispatch was then refused stale-claim and whose in-flight row stood for good).
 #[tokio::test]
-async fn a_fabric_lane_recovery_waits_for_the_running_fabric_attempt_and_is_opened_at_its_end() {
+async fn a_fabric_recovery_waits_for_the_running_fabric_attempt_and_is_opened_at_its_end() {
     use rdm_admin::accepted::AttemptAction;
     use rdm_admin::build_state::{AttemptOpened, BuildState};
     let builds = Arc::new(MemoryBuildStateAdapter::new());
