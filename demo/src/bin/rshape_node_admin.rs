@@ -11,7 +11,10 @@
 //! what it was told: the notices gate nothing, and a product puts its own work where the line is.
 //! `on_fabric_ready` also does the replica's own day-0 work, as Rafka's does its system creations: it
 //! produces one record to the `system` topic through a gateway ([`rshape_consumer::replica`]), under
-//! an operation id of the ready Build, so a notice repeated for one Build appends nothing twice.
+//! an operation id of the ready Build, so a notice repeated for one Build appends nothing twice; then
+//! it opens a data connection to each Ready broker of its mesh on the shape's data protocol
+//! (`rshape_consumer::data_alpn`), as Rafka's admin talks to its brokers. The admin registers that
+//! protocol and answers every stream a node opens to it (`echo <admin>: <bytes>`), as the role nodes do.
 use async_trait::async_trait;
 use rdm_admin::model::{IncarnationId, ProviderKind};
 use rdm_admin::storage::NodeRecord;
@@ -51,7 +54,55 @@ impl StorageBackend for ConsumerBackend {
 
 /// What the started admin hands over (`rdm_admin::entry::run_on_started`): its Node RPC client, its
 /// topology view and its mesh, where `on_fabric_ready` finds a gateway and calls it.
-type Own = Arc<OnceLock<(Arc<rdm_transport::NodeRpcClient>, rdm_transport::topology::TopologyView, String)>>;
+type Own = Arc<OnceLock<Started>>;
+
+/// The started admin's handles the notices use.
+struct Started {
+    client: Arc<rdm_transport::NodeRpcClient>,
+    view: rdm_transport::topology::TopologyView,
+    mesh: String,
+    name: String,
+    /// Its dialer on the shape's data protocol.
+    dialer: rdm_transport::connections::Dialer,
+}
+
+/// Answer every stream a node opens to this admin on the data protocol: `echo <admin>: <bytes>`.
+async fn answer(mut acceptor: rdm_transport::connections::Acceptor, own: String) {
+    while let Some(conn) = acceptor.accept().await {
+        let own = own.clone();
+        tokio::spawn(async move {
+            while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                let Ok(bytes) = recv.read_to_end(1 << 20).await else { break };
+                tracing::info!(target: "rshape", node = %own, peer = %conn.peer().name, bytes = bytes.len(), "a data-plane stream answered by the node-admin");
+                if send.write_all(format!("echo {own}: {}", String::from_utf8_lossy(&bytes)).as_bytes()).await.is_err() || send.finish().is_err() {
+                    break;
+                }
+            }
+        });
+    }
+}
+
+/// Open a data connection to each Ready broker of the admin's mesh and write one stream; each broker's
+/// answer is a log line. A broker that cannot be reached is named.
+async fn talk_to_brokers(started: &Started) {
+    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("kind", ["broker"]).eq("status", ["ready"]);
+    for broker in started.view.nodes_get(&filter).unwrap_or_default() {
+        let to = rdm_transport::connections::Birth { name: broker.node.name.clone(), node_id: broker.node.node_id.clone(), incarnation: broker.node.incarnation.clone() };
+        let answered = async {
+            let conn = started.dialer.open(&to).await.map_err(|e| format!("{e:?}"))?;
+            let (mut send, mut recv) = conn.open_bi().await.map_err(|e| format!("{e:?}"))?;
+            send.write_all(format!("from {}", started.name).as_bytes()).await.map_err(|e| format!("{e:?}"))?;
+            send.finish().map_err(|e| format!("{e:?}"))?;
+            let bytes = recv.read_to_end(1 << 16).await.map_err(|e| format!("{e:?}"))?;
+            Ok::<String, String>(String::from_utf8_lossy(&bytes).into_owned())
+        };
+        match tokio::time::timeout(Duration::from_secs(10), answered).await {
+            Ok(Ok(answer)) => tracing::info!(target: "rshape", broker = %to.name, %answer, "the node-admin's data connection to a broker answered"),
+            Ok(Err(e)) => tracing::warn!(target: "rshape", broker = %to.name, error = %e, "the node-admin's data connection to a broker failed"),
+            Err(_) => tracing::warn!(target: "rshape", broker = %to.name, "the node-admin's data connection to a broker did not answer within 10 s"),
+        }
+    }
+}
 
 /// The day-0 work of `ready`: one record to the `system` topic through a Ready gateway of this admin's
 /// mesh, asked again until a gateway acknowledges it. The operation id is the ready Build's, so a
@@ -60,13 +111,14 @@ async fn day_zero(own: Own, fabric_id: String, build_id: String) {
     let operation = format!("fabric-ready:{build_id}");
     let request = RecordsRequest::Produce { operation: operation.clone(), topic: "system".into(), record: format!("fabric {fabric_id} ready at Build {build_id}") };
     loop {
-        if let Some((client, view, mesh)) = own.get() {
-            let filter = rdm_core::filter::Filter::new().eq("mesh", [mesh.clone()]).eq("kind", ["gateway"]).eq("status", ["ready"]);
-            if let Some(gateway) = view.nodes_get(&filter).ok().and_then(|g| g.into_iter().next()) {
-                let (outcome, _) = client.call::<Records>(&rdm_transport::NodeTarget::ExactNode(gateway.node.node_id.clone()), &request, &rdm_transport::CallOptions::default()).await;
+        if let Some(started) = own.get() {
+            let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("kind", ["gateway"]).eq("status", ["ready"]);
+            if let Some(gateway) = started.view.nodes_get(&filter).ok().and_then(|g| g.into_iter().next()) {
+                let (outcome, _) = started.client.call::<Records>(&rdm_transport::NodeTarget::ExactNode(gateway.node.node_id.clone()), &request, &rdm_transport::CallOptions::default()).await;
                 if let rdm_core::outcome::RpcOutcome::Reply(reply) = outcome {
                     if let RecordsReply::Produced { offset, .. } = reply.value() {
-                        return tracing::info!(target: "rshape", %operation, gateway = %gateway.node.name, offset, "on_fabric_ready: the day-0 record is produced through the gateway");
+                        tracing::info!(target: "rshape", %operation, gateway = %gateway.node.name, offset, "on_fabric_ready: the day-0 record is produced through the gateway");
+                        return talk_to_brokers(started).await;
                     }
                 }
             }
@@ -118,11 +170,17 @@ async fn main() {
         SERVICE,
         // Its backend wraps RDM's file backend, registered under that backend's name (storage.md §2).
         |cfg| rdm_admin::storage_backend::TopologyStorageProviders::new().register(rdm_core::launch::TOPOLOGY_STORAGE_FILE, Arc::new(ConsumerBackend(rdm_admin::storage_backend::file_backend(cfg.store_dir.clone())))),
-        |cfg| Wiring { fabric_hooks: notices(own), certs: rdm_admin::entry::material_or_exit(SERVICE, cfg), ..Wiring::default() },
-        // The started admin hands its client and view over to the day-0 work.
+        |cfg| Wiring { fabric_hooks: notices(own), alpns: vec![rshape_consumer::data_alpn()], certs: rdm_admin::entry::material_or_exit(SERVICE, cfg), ..Wiring::default() },
+        // The started admin hands its client, view and data-protocol connections over to the day-0
+        // work, and answers the streams nodes open to it.
         move |running| {
-            let mesh = running.digest.lock().unwrap().node.name.mesh.clone();
-            let _ = started.set((running.node_rpc.client.clone(), running.topology_view.clone(), mesh));
+            let birth = running.birth();
+            let Ok(connections) = running.connections(&rshape_consumer::data_alpn().name) else {
+                return tracing::error!(target: "rshape", "the node-admin holds no data-protocol handle: it answers no stream and talks to no broker");
+            };
+            let (dialer, acceptor) = connections.split();
+            tokio::spawn(answer(acceptor, birth.name.to_string()));
+            let _ = started.set(Started { client: running.node_rpc.client.clone(), view: running.topology_view.clone(), mesh: birth.name.mesh.clone(), name: birth.name.to_string(), dialer });
         },
     )
     .await
