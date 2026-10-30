@@ -664,11 +664,27 @@ async fn an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones
     let story_end = f.stop().await;
     let spans = f.estate.spans();
     // A frozen node-admin keeps its sockets, so a member's pooled connection to it closes only when the
-    // connection idles out after the staleness floor. Probe 1 is made at two thirds of the floor
-    // unheard, inside it: the member still holds the pooled connection, the carried probe commits over
-    // it and loses its reply (`unreachable`, `Indeterminate`), the direct contact being cut.
-    assert_eq!(attr(&first, "outcome"), "unreachable", "a member still holds its pooled connection to the frozen node-admin at probe 1: {first:#?}");
-    assert!(attr(&first, "detail").contains("Indeterminate"), "the probe committed over the pooled connection and lost its reply: {first:#?}");
+    // connection idles out, a staleness floor after the admin's last packet (the endpoint's idle
+    // timeout): at the freeze, up to one backbone interval after the fabric-primary last heard it.
+    // Probe 1 is made at two thirds of the floor unheard and reaches the members once its direct
+    // contact has had its budget (two backbone intervals, `direct_budget`). Landing inside the floor
+    // whatever the freeze's moment, the member still holds the pooled connection, the carried probe
+    // commits over it and loses its reply (`unreachable`, `Indeterminate`); landing past the floor
+    // plus one interval, the member's dial to the frozen admin fails (`carrier-edge-lost`). In
+    // between (the test cadence: 2 s + 2 x 0.5 s at a 3 s floor) the freeze's moment decides, and
+    // either is the member's true answer.
+    let backbone = rdm_core::cadence::backbone_gossip_interval();
+    let carried_at = rungs().probe1 + backbone * 2;
+    let floor = rdm_core::cadence::staleness_floor();
+    let held = attr(&first, "outcome") == "unreachable" && attr(&first, "detail").contains("Indeterminate");
+    let lost = attr(&first, "outcome") == "carrier-edge-lost";
+    if carried_at < floor {
+        assert!(held, "a member still holds its pooled connection to the frozen node-admin at probe 1 (it lands at {carried_at:?}, inside the {floor:?} floor): {first:#?}");
+    } else if carried_at >= floor + backbone {
+        assert!(lost, "the member's pooled connection idled out before probe 1 (it lands at {carried_at:?}, past the {floor:?} floor and one {backbone:?} interval): {first:#?}");
+    } else {
+        assert!(held || lost, "probe 1 lands at {carried_at:?}, within one {backbone:?} interval of the {floor:?} floor: the member answers over its pooled connection (unreachable, Indeterminate) or its dial fails (carrier-edge-lost), nothing else: {first:#?}");
+    }
     assert_eq!(attr(&second, "outcome"), "admin-alive", "continued, they answer the second probe: {second:#?}");
     assert_eq!(f.probes_before(&spans, story_end).len(), 2, "no third probe: {:#?}", f.probes(&spans));
     assert!(f.admin_creates(&spans).is_empty(), "the latest probe decides: no node.create");
