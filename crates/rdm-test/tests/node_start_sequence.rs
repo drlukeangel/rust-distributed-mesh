@@ -77,7 +77,9 @@ fn passing() -> NodeHooks {
 }
 
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-fn launch_by(root: &Running, name: &str, dir: &std::path::Path, listeners: Vec<(String, std::net::SocketAddr)>) -> Launch {
+/// A launch of `name` by `root` over its own data dir `dir`, on the fabric's store root `store` (the
+/// root's): every admin of a fabric reads the one Build storage (Q292).
+fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store: &std::path::Path, listeners: Vec<(String, std::net::SocketAddr)>) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
@@ -93,7 +95,7 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path, listeners: Vec<(
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
         launcher: Some(Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
-        store_dir: dir.to_path_buf(),
+        store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
         issuing: None,
         roots: Vec::new(),
@@ -190,7 +192,7 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
         // A node-admin's first start: launched by the root.
-        let admin_launch = launch_by(&root, "mesh1.admin.2", &admin_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
+        let admin_launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
         let _ = root.runner.joins.expect(deployed(&admin_launch, None));
         let env = admin_launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
@@ -198,7 +200,7 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         until_ready("mesh1.admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
 
         // An rpc node's first start: launched by the root.
-        let rpc_launch = launch_by(&root, "mesh1.rpc.1", &rpc_dir, vec![]);
+        let rpc_launch = launch_by(&root, "mesh1.rpc.1", &rpc_dir, &root_dir, vec![]);
         let _ = root.runner.joins.expect(deployed(&rpc_launch, None));
         let rpc = rdm_test::node::start_pre_node_ready(&rpc_launch, passing(), |b, _| b).await.expect("the rpc node comes up");
         until_ready("mesh1.rpc.1 (first start)", || {
@@ -294,8 +296,7 @@ impl BuildStateAdapter for NoCurrentWhileHeld {
         self.inner.facts().await
     }
     async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        let facts = self.facts().await?;
-        Ok(match build { Some(b) => facts.into_iter().filter(|f| f.build_id() == b).collect(), None => facts })
+        self.inner.committed_facts(build).await
     }
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(id).await
@@ -362,7 +363,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
         held.store(true, Ordering::SeqCst);
 
         // A node-admin's first start, launched by the root: its join is answered with no Build.
-        let admin_launch = launch_by(&root, "mesh1.admin.2", &admin_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
+        let admin_launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
         let _ = root.runner.joins.expect(deployed(&admin_launch, None));
         let env = admin_launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");

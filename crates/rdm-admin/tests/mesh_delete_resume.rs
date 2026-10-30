@@ -150,8 +150,7 @@ impl BuildStateAdapter for WireBuilds {
         self.0.facts().await
     }
     async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        let facts = self.facts().await?;
-        Ok(match build { Some(b) => facts.into_iter().filter(|f| f.build_id() == b).collect(), None => facts })
+        self.0.committed_facts(build).await
     }
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.0.forget(id).await
@@ -1791,8 +1790,7 @@ impl BuildStateAdapter for CutBuilds<'_> {
         self.inner.facts().await
     }
     async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        let facts = self.facts().await?;
-        Ok(match build { Some(b) => facts.into_iter().filter(|f| f.build_id() == b).collect(), None => facts })
+        self.inner.committed_facts(build).await
     }
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(id).await
