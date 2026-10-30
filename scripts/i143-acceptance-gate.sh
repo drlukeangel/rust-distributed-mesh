@@ -269,6 +269,9 @@ for i in $(seq 0 $((NCELLS - 1))); do
         outcome=refused
         FAILED=$((FAILED + 1))
         refuse "$JOB/$cell: $reason"
+        # The cell's own words go into the gate's log with the refusal: its gate.log is overwritten by the
+        # next run of the same cell (an export after the release), so a red is read from here.
+        grep -m3 -A12 -E 'panicked at|^error(\[E[0-9]+\])?: ' "$dir/gate.log" 2>/dev/null | sed "s|^|i143-acceptance-gate: $JOB/$cell: |" >&2
     elif [ -n "$skip" ]; then
         outcome=skipped
         SKIPPED=$((SKIPPED + 1))
