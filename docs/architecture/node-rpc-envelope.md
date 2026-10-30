@@ -211,7 +211,7 @@ sees only the catalog.
 | `0x1C` | build-claim | rdm | live | canonical | `ClaimAttempt` |
 | `0x1D` | join | rdm | live | canonical | `JoinNode` |
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
-| `0x1F` | build-facts | rdm | live | canonical | `FetchBuildFacts`, `FetchCurrentBuild`, `FetchBuildSection` |
+| `0x1F` | build-facts | rdm | reserved | | |
 | `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete |
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`, `AlreadyApplied` |
 | `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `LeaveMesh`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the rustdoc of [`NodeCommand`](../../api/rdm_core/node_command/struct.NodeCommand.html) |
@@ -336,7 +336,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | Typed caller | Existing wire / execution component | Caller result / events | code |
 |---|---|---|---|
 | [node.create](lifecycles/node-create.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; first join on [JoinNode 0x1D](#join-op-0x1d-rdm); a held name answers NameHeld { by }; the create of a mesh's first node-admin is the mesh-absent arm, [mesh.create](lifecycles/mesh-create.md), with no call of its own | every FirstStart event ending node.started, then node.created | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → NodeJoined (Data) → NodeStarted (Terminal) | node.joined, node.started | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), the [Build floor read](#build-floor-read-op-0x1f-reserved) from the Build storage, [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → NodeJoined (Data) → NodeStarted (Terminal) | node.joined, node.started | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → ConnectionsDeleting (Data) → StopConnectionsDeleted (Data) → Leaving (Data) → StopMeshLeft (Data) → NodeStopped (Terminal); the stop is a workflow that calls `node.connection.delete { scope: All }` then `node.mesh.leave` and streams each one's acknowledgement and completion, and the mesh-primary writes each status from its frame | node.connection.deleted, node.stopped | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.delete](lifecycles/node-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's ops, then provider inspection, which is not a Node RPC | every stop event, then node.deleted | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.mesh.join](lifecycles/node-mesh-join.md) | The report is [JoinNode 0x1D](#join-op-0x1d-rdm); standalone, [Status 0x1B](#status-op-0x1b-rdm) `JoinMesh`, answered `MeshJoined { joined }`; inside node.start a step of the start's stream | node.mesh.joined; a refused report fails the primitive by the report's refusal | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
@@ -362,7 +362,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [fabric.delete](lifecycles/fabric-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow, one Build the fabric-primary drives: every mesh removed leaf-inward, its own mesh last | fabric.deleted from the fabric-primary, still alive; its own node.delete is a separate call from outside the fabric | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.primary.update](lifecycles/node-primary-update.md) | [0x21 PrimaryUpdate / PrimaryUpdated](#primaryupdate-op-0x21-rdm), the primary to its successor's exact birth | node.primary.updated { revisions }; RejectedConflictingPayload; on the commanded arm, `Failed { step, reason }` when the update ends failed | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | the same call, the fabric-primary as the `fabric` entry of `primaries` | node.fabric-primary.updated; the fabric arm's no-successor refusal | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
-| build.create/get/delete | [Build 0x20](#build-op-0x20-rdm); the fabric-primary accepts every Build and drives topology Builds; a mesh-primary drives drift attempts of the current Build inside its mesh. [ClaimAttempt 0x1C](#buildclaim-op-0x1c-rdm) is the attempt claim; [FetchBuildFacts 0x1F](#build-facts-op-0x1f-rdm) is the facts read | Started, step frames, Complete / Failed; reattachment reads; deletion result | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
+| build.create/get/delete | [Build 0x20](#build-op-0x20-rdm); the fabric-primary accepts every Build and drives topology Builds; a mesh-primary drives drift attempts of the current Build inside its mesh. [ClaimAttempt 0x1C](#buildclaim-op-0x1c-rdm) is the attempt claim; the Build's facts are read from the Build storage ([Build floor read](#build-floor-read-op-0x1f-reserved), Q292) | Started, step frames, Complete / Failed; reattachment reads; deletion result | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
 | build.attempt.run | [Build 0x20](#build-op-0x20-rdm); fabric-primary calls the named executor with the won claim | receipt replay, current Blocked, then live frames | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
 
 Codec evidence: `crates/rdm-core/src/status.rs::StatusRequest`
@@ -1279,65 +1279,25 @@ Uses: [node-admin create](lifecycles/node-create.md#ordinary-process-birth),
 [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh)
 and [fabric recovery](lifecycles/fabric-recovery.md#fabric-recovery).
 
-## Build-facts, op `0x1F`, rdm
+## Build floor read (op `0x1F` reserved)
 
-Contract source: `crates/rdm-core/src/build_facts.rs::BuildFactsRequest`
-and `crates/rdm-core/src/build_facts.rs::BuildFactsReply`;
-ledger: `crates/rdm-core/src/catalog.rs::core_ledger`.
-Direction: peer read between node-admins. RDM owns this server stream; it is not
-forwardable. A non-node-admin answers 421 UNSERVED_OP. Request ceiling 1024 bytes;
-reply ceiling 8 KiB. There is no cursor. REQUEST_VARIANTS is 3; REPLY_VARIANTS is 11. Positions are fixed in the shown order (FetchBuildFacts=0, FetchCurrentBuild=1, FetchBuildSection=2; Facts=0 through NoCurrentBuild=10), the two last appended, none reordered.
-
-```rust
-pub enum BuildFactsRequest {
-    FetchBuildFacts { build_id: String },
-    FetchCurrentBuild,
-    FetchBuildSection { build_id: Option<String>, mesh: String }, // none: the responder's current accepted Build
-}
-
-pub enum BuildFactsReply {
-    Facts { build_id: String, chunk_index: u32, chunk_count: u32, facts: Vec<u8> },
-    End { build_id: String, facts: u32, chunks: u32, complete: bool },
-    NotReady { reason: String },
-    UnknownBuild { build_id: String },
-    PeerUnresolved { reason: String },
-    Busy { reason: String },
-    ConnectionsDeleting { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
-    Started,
-    NoCurrentBuild { reason: String },
-}
-```
-
-The stream is Started, Facts*, End. Each Facts chunk is one Build-channel frame, at most
-4032 bytes. The caller accepts it only when End arrives, every chunk index in 0..chunks
-is present exactly once, and the fact count equals End.facts. complete=true only when
-the responder holds the Build fully. End.complete must be true for the Build to count as fetched. Missing, duplicated or incomplete evidence never
-counts. Facts are absorbed through the existing Build log.
-
-The accepted Build never travels whole: the fabric-primary records it whole (the store has no
-frame), and every read carries it as its sections, one per mesh (Q284). A mesh's section is the
-Build's id, fabric, `topology_storage_provider` and acceptance time, whether the Build deletes the
-fabric, every mesh the Build names by name and id, and that mesh's topology and pinned births; a
-Build naming no mesh travels as one section with none. FetchBuildFacts and FetchCurrentBuild carry
-every mesh's section; FetchBuildSection carries the named mesh's only, of the Build named or, naming
-none, of the responder's current accepted Build, selected once for the request, and its End is
-complete only with that section. A mesh's section fits one chunk. An admin folds the sections it
-holds into one topology that names every mesh of the Build; the whole acceptance replaces them.
+Op `0x1F` is reserved (Q292): never served, never reassigned. No call carries a Build's facts. A
+starting node-admin, a node-admin taking a primary role and an executor read the named Build's
+committed records from the Build storage ([Build](build.md)): fresh, the records the read obtained
+or an explicit error, never a cached projection, and an unreadable store is not an empty Build. The
+records are absorbed through the existing Build log.
 
 The [node start workflow](lifecycles/node-start.md) drives the read.
 The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer,
-unreadable-build, behind-floor. Every blocker reads `FetchBuildSection` of the admin's own mesh. no-pointer, which names no Build, reads it naming none: the responder selects its current accepted Build once for the request and streams that Build's facts, every chunk and End naming its id, or answers `NoCurrentBuild` and the blocker stays; every other blocker reads it of the Build it names. No blocker is read by a second JoinNode. It asks the fabric-primary first, then other node-admins,
-then the launcher. Read-only recovery is authorized and uses bounded backoff, 250 ms
-doubling to 4 s. Source: `crates/rdm-admin/src/fetch_build.rs::NodeAdminNotReady`,
+unreadable-build, behind-floor. Every blocker reads the Build storage: no-pointer, which names no
+Build, reads the storage's current Build, selected once for the read; every other blocker reads
+the Build it names. No blocker is read by a second JoinNode. A read that fails is made again with
+bounded backoff, 250 ms doubling to 4 s. Source: `crates/rdm-admin/src/fetch_build.rs::NodeAdminNotReady`,
 `crates/rdm-admin/src/fetch_build.rs::BACKOFF_BASE` and
-`crates/rdm-admin/src/fetch_build.rs::BACKOFF_CAP`.
-Responder spans: `rdm.node_admin.build.serve.via-fetch-facts`,
-`rdm.node_admin.build.reject.via-unservable-fact`. Requester spans:
-`rdm.node_admin.build.update.via-fetch-facts`, `rdm.node_admin.build.reject.via-fetch-incomplete`,
-`rdm.node_admin.build.reject.via-fetch-failed`.
-Generic RPC call/serve spans carry op=0x1F. Typed refusals are the reply variants above.
+`crates/rdm-admin/src/fetch_build.rs::BACKOFF_CAP`; the read is
+`crates/rdm-admin/src/build_state.rs::BuildStateAdapter::committed_facts`.
+Spans: `rdm.node_admin.build.update.via-read-committed`,
+`rdm.node_admin.build.reject.via-read-committed-failed`.
 
 ## Read, op `0x23`, rdm
 
@@ -1480,7 +1440,9 @@ Mechanism:
 `crates/rdm-admin/src/build_state.rs::StepOutcome` (Complete/Failed outcomes).
 
 build.attempt.run carries the stored BuildAttemptClaim { build_id, attempt,
-executor } plus the Won reply's context; its whole body is `AttemptRun` below.
+executor } plus the Won reply's context; its whole body is `AttemptRun` below. It names the Build
+and never carries a copy of it: the executor reads the Build's committed records from the Build
+storage before it plans (Q292).
 
 ### Build schema
 
@@ -1529,7 +1491,6 @@ pub enum BuildRequest {
         attempt: u32,
         executor: String,
         context: CallContext,
-        intent: Vec<Vec<u8>>, // the Build's facts as Build-channel frames, its acceptance as the sections of the meshes the run's operations act in (Q284)
         operations: Vec<Vec<u8>>,
         hand_off_to: Option<String>,
         mesh: Option<String>, // the attempt's mesh for a drift attempt, numbered (build_id, mesh, attempt); none for a topology attempt (Q118)

@@ -316,7 +316,7 @@ async fn current_committed(store: &dyn BuildStateAdapter) -> Result<(BuildId, Ve
 mod tests {
     use super::*;
 
-    /// CONTRACT: docs/architecture/node-rpc-envelope.md:1303 "The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer, unreadable-build, behind-floor. Every blocker reads `FetchBuildSection` of the admin's own mesh. no-pointer, which names no Build, reads it naming none: the responder selects its current accepted Build once for the request and streams that Build's facts, every chunk and End naming its id, or answers `NoCurrentBuild` and the blocker stays; every other blocker reads it of the Build it names. No blocker is read by a second JoinNode. It asks the fabric-primary first, then other node-admins, then the launcher. Read-only recovery is authorized and uses bounded backoff, 250 ms doubling to 4 s."
+    /// CONTRACT: docs/architecture/node-rpc-envelope.md "Build floor read (op `0x1F` reserved)": "The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer, unreadable-build, behind-floor. Every blocker reads the Build storage: no-pointer, which names no Build, reads the storage's current Build, selected once for the read; every other blocker reads the Build it names. [...] A read that fails is made again with bounded backoff, 250 ms doubling to 4 s."
     #[test]
     fn ready_blockers_select_typed_fetch_need_and_double_backoff_from_250ms_to_4s_cap() {
         let me: PathName = "mesh1.admin.2".parse().unwrap();
