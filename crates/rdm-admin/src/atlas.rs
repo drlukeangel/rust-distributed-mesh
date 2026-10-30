@@ -721,6 +721,41 @@ impl Atlas {
     /// context only): a birth an op deleted is not in it.
     pub(crate) fn apply(&self, t: &mut Topology) {
         t.nodes.retain_mut(|n| self.answer(n));
+        // A birth an op created whose record this atlas holds (a create's completion, `take_created`)
+        // is in the view acceptance decides from before the gossip view hears it (R-FA1: accepted or
+        // denied from the atlas, the gossip view context only), in place of a birth at its path.name
+        // that is no longer live: a node action on a path node recovery just re-created is decided on
+        // the replacement, never refused `node-not-live` on the deleted birth (rdm#239).
+        let held = self.held.lock().unwrap();
+        for r in held.records.values() {
+            let live = r.status.is_live() || r.status == NodeStatus::Starting;
+            let Some(b) = r.newest_birth().filter(|_| live) else { continue };
+            let deleted = held.effects.get(b.incarnation_id.as_str()).is_some_and(|e| e.lifecycle == Lifecycle::Deleted);
+            if deleted || t.nodes.iter().any(|n| n.node_id == r.node_id || (n.name == r.name && n.status.is_live())) {
+                continue;
+            }
+            t.nodes.retain(|n| n.name != r.name);
+            t.nodes.push(crate::model::Node {
+                name: r.name.clone(),
+                kind: r.name.kind,
+                mesh: r.name.mesh.clone(),
+                node_id: r.node_id.clone(),
+                endpoint_id: b.endpoint_id.clone(),
+                incarnation_id: Some(b.incarnation_id.clone()),
+                deployment_id: None,
+                provider: None,
+                data_dir: None,
+                status: r.status,
+                is_primary: false,
+                is_fabric_primary: false,
+                admin_api_base: None,
+                transport_addr: b.transport_addr,
+                listeners: b.listeners.clone(),
+                routable: false,
+                declared: None,
+                stopped: false,
+            });
+        }
     }
 
     /// `n`, a birth Build acceptance decides from ([`Self::apply`]; a node read answers [`Self::read`],
