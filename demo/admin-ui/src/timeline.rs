@@ -181,8 +181,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tl-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let lines = [
-            span("rdm.node_rpc.request.update.via-call", 3_000_000_000, json!({"node": "mesh1.rpc.1", "op": "27", "outcome": "Reply"})),
-            span("rdm.mesh.topology.update.via-snapshot-installed", 4_000_000_000, json!({"node": "mesh1.rpc.1"})),
+            span("rdm.node_rpc.request.update.via-call", 3_000_000_000, json!({"node": "mesh1.broker.1", "op": "27", "outcome": "Reply"})),
+            span("rdm.mesh.topology.update.via-snapshot-installed", 4_000_000_000, json!({"node": "mesh1.broker.1"})),
             span("rdm.node_admin.status.update.via-declare", 1_000_000_000, json!({"node": "mesh1.admin.1", "outcome": "applied"})),
         ];
         std::fs::write(dir.join("rdm-rpc-node.1-1.spans.jsonl"), lines.join("\n") + "\n").unwrap();

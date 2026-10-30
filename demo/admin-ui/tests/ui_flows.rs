@@ -33,7 +33,7 @@ fn stubs(dir: &std::path::Path) -> std::collections::BTreeMap<rdm_core::NodeKind
     let stub = dir.join("stub-node");
     std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-    [(rdm_core::NodeKind::NodeAdmin, stub.clone()), (rdm_core::NodeKind::RpcNode, stub)].into_iter().collect()
+    [(rdm_core::NodeKind::NodeAdmin, stub.clone()), (rdm_core::NodeKind::Gateway, stub.clone()), (rdm_core::NodeKind::Broker, stub)].into_iter().collect()
 }
 
 /// A Day-0 node-admin in this process, and the UI's typed client entered at its birth once its view names
@@ -94,7 +94,7 @@ async fn every_ui_topology_flow_is_one_build_in_node_admin() {
     let (_running, admin) = node_admin(&d).await;
     let timeline = Arc::new(Timeline::default());
     let ui = router(Some(admin.clone()), timeline.clone());
-    for (method, uri, body) in [("POST", "/api/bootstrap", None), ("POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"})))] {
+    for (method, uri, body) in [("POST", "/api/bootstrap", None), ("POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "broker"})))] {
         let (status, v) = call(&ui, method, uri, body).await;
         if status == StatusCode::UNPROCESSABLE_ENTITY && v["error"] == "build-in-progress" {
             // One Build in flight: the bootstrap is still reconciling, and the refusal names it.
@@ -115,7 +115,7 @@ async fn node_admin_refusals_reach_the_ui_with_their_reason() {
     let (_running, admin) = node_admin(&d).await;
     let timeline = Arc::new(Timeline::default());
     let ui = router(Some(admin), timeline.clone());
-    let (s, v) = call(&ui, "POST", "/api/nodes/mesh1.rpc.9/stop", None).await;
+    let (s, v) = call(&ui, "POST", "/api/nodes/mesh1.broker.9/stop", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown-node")), "{v}");
     let (s, v) = call(&ui, "DELETE", "/api/nodes/mesh1.admin.1", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("would-leave-mesh-without-admin")), "{v}");

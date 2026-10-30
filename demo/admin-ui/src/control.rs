@@ -9,9 +9,9 @@
 //! POST   /api/nodes/{name}/stop                  -> Stop (a restart is a stop, then a start: Q183)
 //! POST   /api/nodes/{name}/start                 -> Start
 //! DELETE /api/nodes/{name}                       -> RemoveNode
-//! POST   /api/bootstrap   [{meshes: [{name, node_admin, rpc_node?, gateway?, compute?, broker?}]}] -> one Build to that
+//! POST   /api/bootstrap   [{meshes: [{name, node_admin, gateway?, compute?, broker?}]}] -> one Build to that
 //!                                                   shape (no body: the MN shape), Reconcile
-//! POST   /api/meshes      {name, node_admin, rpc_node?, gateway?, compute?, broker?} -> Reconcile: the topology
+//! POST   /api/meshes      {name, node_admin, gateway?, compute?, broker?} -> Reconcile: the topology
 //!                                                   with the new mesh
 //! DELETE /api/meshes/{name}                      -> RemoveMesh
 //! POST   /api/builds/resubmit                    -> Reconcile: the current topology as it stands, each
@@ -51,8 +51,6 @@ struct MeshRequest {
     name: String,
     node_admin: u32,
     #[serde(default)]
-    rpc_node: u32,
-    #[serde(default)]
     gateway: u32,
     #[serde(default)]
     compute: u32,
@@ -64,7 +62,7 @@ impl MeshRequest {
     fn desired(&self) -> MeshDesired {
         MeshDesired::of(
             &self.name,
-            [(NodeKind::NodeAdmin, self.node_admin), (NodeKind::RpcNode, self.rpc_node), (NodeKind::Gateway, self.gateway), (NodeKind::Compute, self.compute), (NodeKind::Broker, self.broker)],
+            [(NodeKind::NodeAdmin, self.node_admin), (NodeKind::Gateway, self.gateway), (NodeKind::Compute, self.compute), (NodeKind::Broker, self.broker)],
         )
     }
 }
@@ -212,7 +210,8 @@ async fn bootstrap(State(c): State<Control>, body: axum::body::Bytes) -> Respons
     };
     let meshes = match &body {
         Some(b) if !b.meshes.is_empty() => b.meshes.iter().map(MeshRequest::desired).collect(),
-        _ => vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)])],
+        // The demo is a rafka replica (Q295): a gateway and brokers, never an RDM rpc node.
+        _ => vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::Gateway, 1), (NodeKind::Broker, 2)])],
     };
     let first = meshes.first().map(|m| m.name.clone()).unwrap_or_default();
     let desired = FabricDesired { fabric, meshes };

@@ -26,8 +26,8 @@ fn node(name: &str, fabric_primary: bool) -> (std::process::Child, NodeFacts, st
 #[tokio::test]
 async fn a_fault_aimed_at_the_fabric_primary_is_refused_by_name_and_signals_nothing() {
     let (mut fp, fp_facts, d1) = node("mesh1.admin.1", true);
-    let (mut rpc, rpc_facts, d2) = node("mesh1.rpc.1", false);
-    let nodes = [fp_facts, rpc_facts];
+    let (mut broker, broker_facts, d2) = node("mesh1.broker.1", false);
+    let nodes = [fp_facts, broker_facts];
     let chaos = Chaos::default();
     for action in ["kill", "stop"] {
         let r = chaos.fault(&nodes, "mesh1.admin.1", action, ready()).await;
@@ -37,17 +37,17 @@ async fn a_fault_aimed_at_the_fabric_primary_is_refused_by_name_and_signals_noth
     let cut = chaos.cut(&nodes, "mesh", "mesh1").await;
     assert_eq!(cut.detail["refusal"], FABRIC_PRIMARY_REFUSAL, "{cut:?}");
 
-    let not_ready = chaos.fault(&nodes, "mesh1.rpc.1", "kill", None).await;
+    let not_ready = chaos.fault(&nodes, "mesh1.broker.1", "kill", None).await;
     assert_eq!((not_ready.outcome, not_ready.detail["refusal"].as_str()), ("refused", Some("fabric-not-ready")), "a kill before the fabric is read ready is refused by name: {not_ready:?}");
-    assert!(matches!(proc_state(rpc.id()), Some('S' | 'R')), "the refused kill signalled nothing");
-    let stopped = chaos.fault(&nodes, "mesh1.rpc.1", "stop", ready()).await;
+    assert!(matches!(proc_state(broker.id()), Some('S' | 'R')), "the refused kill signalled nothing");
+    let stopped = chaos.fault(&nodes, "mesh1.broker.1", "stop", ready()).await;
     assert_eq!((stopped.outcome, stopped.detail["state_after"].as_str()), ("applied", Some("T")), "{stopped:?}");
-    let resumed = chaos.fault(&nodes, "mesh1.rpc.1", "continue", ready()).await;
+    let resumed = chaos.fault(&nodes, "mesh1.broker.1", "continue", ready()).await;
     assert_eq!(resumed.outcome, "applied", "{resumed:?}");
-    let killed = chaos.fault(&nodes, "mesh1.rpc.1", "kill", ready()).await;
+    let killed = chaos.fault(&nodes, "mesh1.broker.1", "kill", ready()).await;
     assert_eq!((killed.outcome, killed.detail["exited"].as_bool()), ("applied", Some(true)), "{killed:?}");
-    let _ = rpc.wait();
-    let again = chaos.fault(&nodes, "mesh1.rpc.1", "kill", ready()).await;
+    let _ = broker.wait();
+    let again = chaos.fault(&nodes, "mesh1.broker.1", "kill", ready()).await;
     assert_eq!((again.outcome, again.detail["refusal"].as_str()), ("refused", Some("already_exited")), "a refusal carries the kit's reason: {again:?}");
     assert_eq!(chaos.faults().len(), 8, "every action, applied or refused, is on the record");
     let _ = fp.kill();

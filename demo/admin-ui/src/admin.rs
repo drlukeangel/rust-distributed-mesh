@@ -110,7 +110,7 @@ impl Admin {
             paths.retain(|p, _| meshes.iter().any(|m| m.name == p.mesh));
         }
         for m in meshes {
-            for (kind, want) in [(NodeKind::NodeAdmin, m.node_admin), (NodeKind::RpcNode, m.rpc_node), (NodeKind::Broker, m.broker), (NodeKind::Gateway, m.gateway), (NodeKind::Compute, m.compute)] {
+            for (kind, want) in [(NodeKind::NodeAdmin, m.node_admin), (NodeKind::Broker, m.broker), (NodeKind::Gateway, m.gateway), (NodeKind::Compute, m.compute)] {
                 let mut have: Vec<u32> = paths.keys().filter(|p| p.mesh == m.name && p.kind == kind).map(|p| p.ordinal).collect();
                 have.sort_unstable();
                 let keep = current.primaries.iter().find(|p| p.mesh == m.name && p.kind == kind).map(|p| p.ordinal);
@@ -134,7 +134,7 @@ impl Admin {
     /// The counts `current` holds of `mesh`.
     fn counts_of(current: &Current, mesh: &str) -> MeshDesired {
         let of = |kind: NodeKind| current.paths.keys().filter(|p| p.mesh == mesh && p.kind == kind).count() as u32;
-        MeshDesired { name: mesh.into(), node_admin: of(NodeKind::NodeAdmin), rpc_node: of(NodeKind::RpcNode), broker: of(NodeKind::Broker), gateway: of(NodeKind::Gateway), compute: of(NodeKind::Compute) }
+        MeshDesired { name: mesh.into(), node_admin: of(NodeKind::NodeAdmin), rpc_node: 0, broker: of(NodeKind::Broker), gateway: of(NodeKind::Gateway), compute: of(NodeKind::Compute) }
     }
 
     fn carrier(&self) -> BuildCarrier {
@@ -201,7 +201,8 @@ impl Admin {
         let mut grown = Self::counts_of(&current, mesh);
         match kind {
             NodeKind::NodeAdmin => grown.node_admin += 1,
-            NodeKind::RpcNode => grown.rpc_node += 1,
+            // The demo is a rafka replica (Q295): it runs no RDM rpc node.
+            NodeKind::RpcNode => return Err(CallEnd::Rejected { reason: "unknown-kind".into(), detail: "the demo runs no rpc node: spawn a gateway, a broker or a compute".into() }),
             NodeKind::Broker => grown.broker += 1,
             NodeKind::Gateway => grown.gateway += 1,
             NodeKind::Compute => grown.compute += 1,
