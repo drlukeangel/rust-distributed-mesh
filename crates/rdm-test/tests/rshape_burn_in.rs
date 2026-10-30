@@ -6244,14 +6244,21 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     }
     let silent_at = now_ns();
     // Each of them in the other mesh re-feeds each victim whose mesh it hears nothing of: its coverage of a
-    // peer-mesh admin is its own backbone receipt only, and a victim's receipts stopped.
+    // peer-mesh admin is its own backbone receipt only, and a victim's receipts stopped. The one exception
+    // is the observer that investigates the victim itself: the fabric-primary, for an unheard mesh-primary
+    // once the election names its successor (node-recovery.md step 2). Since Q273 its inspect reads the
+    // cut victim running and its ladder ends unreached within moments of the mark, and the recovery that
+    // follows takes the birth out of its view before its own backbone re-feed is due: its ladder for the
+    // victim's exact birth is its repair.
     for v in &victims {
-        let (vn, vmesh) = (s(&v["name"]), s(&v["mesh"]));
+        let (vn, vmesh, vid) = (s(&v["name"]), s(&v["mesh"]), s(&v["node_id"]));
         for o in observers.iter().filter(|o| o["mesh"] != vmesh.as_str()) {
             let on = s(&o["name"]);
-            wait_for(&format!("{on} re-feeds the silent {vn}"), bound, || async {
+            wait_for(&format!("{on} re-feeds the silent {vn}, or investigates it to its recovery"), bound, || async {
                 let spans = f.estate.spans();
-                refeeds(&spans, cut_at).into_iter().any(|sp| sp["attributes"]["node"] == on.as_str() && sp["attributes"]["peer_node"] == vn.as_str()).then_some(())
+                let refed = refeeds(&spans, cut_at).into_iter().any(|sp| sp["attributes"]["node"] == on.as_str() && sp["attributes"]["peer_node"] == vn.as_str());
+                let investigated = named(&spans, "rdm.node.tickle.returns-unknown.via-unreached").into_iter().any(|sp| start_ns(sp) >= cut_at && sp["attributes"]["caller"] == on.as_str() && sp["attributes"]["node_id"] == vid.as_str());
+                (refed || investigated).then_some(())
             })
             .await;
         }
