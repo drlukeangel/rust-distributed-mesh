@@ -646,3 +646,23 @@ fn export_manifest_refuses_to_certify_a_learning_receipt() {
     let ok = estate.certify(CANDIDATE, &parity);
     assert!(ok.eligible, "{ok:#?}");
 }
+
+/// CONTRACT (PRD §14, "an ignored cell proves nothing"): a run's ignored count says a §14 cell did not run
+/// only when the cell itself is `#[ignore]`d in its source; libtest ignores no other test, so a cell with
+/// no `#[ignore]` in a run that ignored other cells ran. A source that cannot be read proves nothing.
+#[test]
+fn a_cell_is_ignored_only_when_its_own_source_says_so() {
+    let root = std::env::temp_dir().join(format!("export-ignored-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("crates/pkg/tests")).unwrap();
+    std::fs::write(
+        root.join("crates/pkg/tests/cells.rs"),
+        "#[tokio::test]\n/// runs\nasync fn runs_cell() {}\n\n#[ignore = \"why\"]\n#[tokio::test]\nasync fn ignored_cell() {}\n",
+    )
+    .unwrap();
+    let ignored = |cell: &str| rafka_mesh_audit::export::ignored_in_source(&root, cell);
+    assert!(!ignored("crates/pkg/tests/cells.rs::runs_cell"), "a cell with no #[ignore] ran");
+    assert!(ignored("crates/pkg/tests/cells.rs::ignored_cell"), "an #[ignore]d cell did not");
+    assert!(ignored("crates/pkg/tests/cells.rs::absent_cell"), "a cell its source does not hold proves nothing");
+    assert!(ignored("crates/pkg/tests/gone.rs::runs_cell"), "an unreadable source proves nothing");
+    let _ = std::fs::remove_dir_all(&root);
+}

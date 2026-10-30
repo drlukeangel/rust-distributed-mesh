@@ -454,7 +454,7 @@ fn gate_proof(input: &CertifyInput<'_>, refusals: &mut Vec<Refusal>) -> (Vec<Cer
         for cell in input.cells {
             match resolve_cell(cell, first) {
                 Err(r) => refusals.push(r),
-                Ok((package, target, name)) => match prove_cell(&good, &package, &target, &name) {
+                Ok((package, target, name)) => match prove_cell(&good, &package, &target, &name, ignored_in_source(input.root, cell)) {
                     Ok((log, job)) => proven.push(ProvenCell { cell: cell.clone(), test: format!("{package}/{target}: {name}"), log, job }),
                     Err(CellUnproven::Ignored { log, job, summary }) => refusals.push(Refusal::CellJobIgnored { cell: cell.clone(), log, job, summary }),
                     Err(CellUnproven::NoJob(reason)) => {
@@ -700,8 +700,23 @@ fn summaries(log: &str) -> Vec<Summary> {
         .collect()
 }
 
+/// Whether the §14 `cell` (`<file>.rs::<test path>`, under `root`) is itself `#[ignore]`d in its source:
+/// only then does a run's ignored count say it did not run. Libtest ignores no test but an `#[ignore]`d
+/// one, so the ignored tests of a run that selects a cell carrying no `#[ignore]` are other cells.
+/// A source that cannot be read is read as ignored: nothing is proven from it.
+pub fn ignored_in_source(root: &Path, cell: &str) -> bool {
+    let Some((file, path)) = cell.split_once(".rs::") else { return true };
+    let Ok(text) = std::fs::read_to_string(root.join(format!("{file}.rs"))) else { return true };
+    let name = path.rsplit("::").next().unwrap_or(path);
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(at) = lines.iter().position(|l| l.contains(&format!("fn {name}("))) else { return true };
+    lines[..at].iter().rev().map(|l| l.trim()).take_while(|l| l.starts_with("#[") || l.starts_with("///") || l.starts_with("//")).any(|l| l.starts_with("#[ignore"))
+}
+
 /// The first job of a certified log that selects the test and whose summaries are clean, as (log, job).
-fn prove_cell(gates: &[GateRecord], package: &str, target: &str, name: &str) -> Result<(String, String), CellUnproven> {
+/// A summary that ignored tests proves the cell only when the cell itself is not `#[ignore]`d
+/// (`cell_ignored`, [`ignored_in_source`]).
+fn prove_cell(gates: &[GateRecord], package: &str, target: &str, name: &str, cell_ignored: bool) -> Result<(String, String), CellUnproven> {
     let mut ignored: Option<CellUnproven> = None;
     let mut why: Vec<String> = Vec::new();
     for gate in gates {
@@ -721,7 +736,7 @@ fn prove_cell(gates: &[GateRecord], package: &str, target: &str, name: &str) -> 
                 why.push(format!("{} ({}) selects it, but its log holds {} libtest summaries for {} executables", job.name, gate.name, sums.len(), job.runs.len()));
                 continue;
             }
-            if let Some(s) = sums.iter().find(|s| s.ignored > 0) {
+            if let Some(s) = sums.iter().find(|s| s.ignored > 0).filter(|_| cell_ignored) {
                 ignored.get_or_insert(CellUnproven::Ignored { log: gate.name.clone(), job: job.name.clone(), summary: s.line.clone() });
                 continue;
             }
