@@ -28,7 +28,8 @@ The Q290 tail on one candidate, 864aa4710 (fast GREEN on tree a70d27922, lane 3)
 | 00:49-01:21 | 1 | `i143-export-run.sh` at X (failure-finding) | 36ed1d0c8 | 60 of 64 ok. Refused: i143-2900-process, i143-2782-chaos-process, i143-2783-chaos-process (fixed in lane 3 already), and i143-rshape-adv-two-victims-process (D8) | lane 1 target/i143-export/36ed1d0c8…/run.log |
 | 01:21-01:35 | 1 | the scale jobs at X | 36ed1d0c8 | stopped (frozen, then killed, estates removed by lane path): they run rshape_burn_in.rs, which Y changes, so their evidence belongs at Y | — |
 | 01:40 | 3 | adv-two-victims, fixed, by name (the job's environment, cells.sh) | q273-cells | ok | — |
-| 01:43 | 3 | fast gate, landed: candidate Y | 90a6f531c | GREEN; Y differs from 864aa4710 outside demo/, docs/ and crates/rdm-test/tests only in nothing, and crates/rdm-test/tests/load not at all, so the load rows stand (D4) | gates-3-90a6f531c.log |
-| 01:45 | 3 | release, then export, then the 12 scale jobs at Y | 90a6f531c | running | gates-3-90a6f531crelease.log |
+| 01:43 | 3 | fast gate, landed: candidate Y | 90a6f531c | GREEN; Y differs from 864aa4710 only in demo/, docs/ and crates/rdm-test/tests (crates/rdm-test/tests/load unchanged), so the load rows stand (D4) | gates-3-90a6f531c.log |
+| 01:43-01:53 | 3 | release suite at Y | 90a6f531c | GREEN: 122 ok, 0 FAIL. With the fast gate's GREEN in the same lane, this meets the soaks' bar | gates-3-90a6f531crelease.log |
+| 01:53 | 3 | `i143-export-run.sh` at Y, then the 12 scale jobs | 90a6f531c | running | lane 3 target/i143-export/90a6f531…/run.log |
 | 00:50 | 3 | the four release cells, fixed (96ff6fd08), by name | q273-cells | 4 passed | — |
 | 00:51-00:56 | 3 | i143-2900-process, i143-2783-chaos-process, i143-2782-chaos-process, fixed (daf0861a0, then the 2783 span check), by their jobs | q273-cells | 3 ok | lane 3 target/i143-acceptance/jobs/ |
