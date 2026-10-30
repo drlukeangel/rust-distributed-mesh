@@ -840,7 +840,7 @@ impl Forwarder {
 
     pub(crate) fn publication_counter(&self) -> Arc<AtomicU64> { self.snapshots.clone() }
 
-    /// A forwarder that takes (or loses) the seat has published nothing: the first publication of
+    /// A forwarder that takes (or loses) the role has published nothing: the first publication of
     /// every source is a full.
     pub fn reset(&mut self) {
         self.published.clear();
@@ -930,7 +930,7 @@ impl Forwarder {
         self.published.remove(mesh);
     }
 
-    /// The first publication, on taking the seat, of every source in `held`, `(mesh, publisher,
+    /// The first publication, on taking the role, of every source in `held`, `(mesh, publisher,
     /// version, full)`: sets each source's last-published version to the one sent.
     pub fn fulls(&mut self, me: &str, held: &[(String, PublisherId, u64, Full)], now_ms: u64) -> Vec<Frame> {
         let mut out = Vec::new();

@@ -107,7 +107,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         assert_eq!(rest.len(), 4, "the new change is repeated four times after its first send");
         assert!(rest.iter().all(|(_, f)| ts(f) == 20 && status_of(f) == "ready"), "no repeat of the replaced change follows");
 
-        // Only the role holder authors: without the role nothing is sent; losing the role ends the sends still to come.
+        // Only the primary authors: without the role nothing is sent; losing the role ends the sends still to come.
         let mut not_primary = StatusPublisher::new(peer, StatusScope::Mesh("mesh2".into()));
         assert!(not_primary.observe("pending", Some(first_state.clone()), true, base, 1).is_none(), "a node that is not the primary authors nothing");
         not_primary.set_role(true);
@@ -207,9 +207,9 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         let backbone = Backbone::join(&gossip, &endpoint, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.announce_statuses("pending", "pending", true, true).await;
         assert!(topology_view.mesh_status("mesh1").is_none() && topology_view.fabric_status().is_none(), "a node holding no role publishes no status");
-        let holder = rdm_core::Primary { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };
-        topology_view.primaries().take(rdm_core::Seat::MeshPrimary, &holder);
-        topology_view.primaries().take(rdm_core::Seat::FabricPrimary, &holder);
+        let primary = rdm_core::Primary { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };
+        topology_view.primaries().take(rdm_core::PrimaryRole::MeshPrimary, &primary);
+        topology_view.primaries().take(rdm_core::PrimaryRole::FabricPrimary, &primary);
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
         // The mesh's first state, as a hand-off or the Day-0 self-apply holds it (Q272): Pending with no
@@ -466,7 +466,7 @@ fn successor_handed_ready_while_degraded_is_held_publishes_after_checklist_and_r
 /// replaces the marker, the join answer serves the successor's frame.
 #[test]
 fn fabric_primary_join_answer_serves_the_kept_lifecycle_frame_while_degraded_is_held_and_the_successors_frame_once_it_replaces_the_marker() {
-    use rdm_core::{Primary, PublisherId, Seat};
+    use rdm_core::{Primary, PrimaryRole, PublisherId};
     use rdm_transport::topology::{status_announcements, DigestView};
     use std::collections::HashMap;
 
@@ -482,10 +482,10 @@ fn fabric_primary_join_answer_serves_the_kept_lifecycle_frame_while_degraded_is_
     let x = 1_000;
 
     let digest_view = DigestView::default();
-    digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone(), revision: 1 });
-    digest_view.seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone(), revision: 1 });
-    digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh2".into(), node_id: lost_node.clone(), incarnation: lost_inc.clone(), revision: 3 });
-    digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh3".into(), node_id: lost_node.clone(), incarnation: lost_inc.clone(), revision: 2 });
+    digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone(), revision: 1 });
+    digest_view.primaries.take(PrimaryRole::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone(), revision: 1 });
+    digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh2".into(), node_id: lost_node.clone(), incarnation: lost_inc.clone(), revision: 3 });
+    digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh3".into(), node_id: lost_node.clone(), incarnation: lost_inc.clone(), revision: 2 });
 
     // mesh2 has a held ready frame (publisher mesh2.admin.1, changed_at X); mesh3 has none heard yet.
     let lost_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: lost_node, incarnation: lost_inc };
@@ -566,13 +566,13 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
         let author = rdm_core::PublisherId { node: me.to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let backbone = Backbone::join(&gossip, &endpoint, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
 
-        let holder1 = rdm_core::Primary { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };
+        let primary1 = rdm_core::Primary { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };
         let lost_node = NodeId::parse("0123456789aa").unwrap();
         let lost_inc = IncarnationId::parse("yrz49j303yaa").unwrap();
-        let holder2 = rdm_core::Primary { mesh: "mesh2".into(), node_id: lost_node.clone(), incarnation: lost_inc.clone(), revision: 3 };
-        topology_view.primaries().take(rdm_core::Seat::MeshPrimary, &holder1);
-        topology_view.primaries().take(rdm_core::Seat::FabricPrimary, &holder1);
-        topology_view.primaries().take(rdm_core::Seat::MeshPrimary, &holder2);
+        let primary2 = rdm_core::Primary { mesh: "mesh2".into(), node_id: lost_node.clone(), incarnation: lost_inc.clone(), revision: 3 };
+        topology_view.primaries().take(rdm_core::PrimaryRole::MeshPrimary, &primary1);
+        topology_view.primaries().take(rdm_core::PrimaryRole::FabricPrimary, &primary1);
+        topology_view.primaries().take(rdm_core::PrimaryRole::MeshPrimary, &primary2);
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
 

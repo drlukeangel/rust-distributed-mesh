@@ -673,7 +673,7 @@ mod discipline_sim {
 
     #[test]
     fn a_primary_change_retargets_to_the_new_primary() {
-        // The new holder's clock stands 300 ms ahead of the old one's: the follower steps to it.
+        // The new primary's clock stands 300 ms ahead of the old one's: the follower steps to it.
         let sim = Sim::new(0, 0);
         sim.run(0, 60_000, 2_000, &|_| Some(10), 1_000, &mut |_, _| {}, &mut quiet);
         let mut stepped = None;
@@ -684,7 +684,7 @@ mod discipline_sim {
                 stepped.get_or_insert(by_ms);
             }
         }
-        let by = stepped.expect("stepped to the new holder");
+        let by = stepped.expect("stepped to the new primary");
         assert!((285..=300).contains(&by), "{by}");
         let e = sim.err_ms(80_010);
         assert!((e - 290).abs() <= 15, "{e}");

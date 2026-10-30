@@ -8,11 +8,11 @@
 //! on the wire, so no new field: MeshTopology and MeshTopologyDelta: `published_at_rafka_ms` then
 //! `topology_version`, per mesh; Digest: `digest_seq`, per birth; lifecycle facts:
 //! `topology_version`." R-RX2: "One mesh has one publisher on the backbone: its mesh-primary ... No
-//! cross-publisher ordering rule and no seat-revision field are added." R-RX1: no receiver refuses an
+//! cross-publisher ordering rule and no primary-revision field are added." R-RX1: no receiver refuses an
 //! input because of who sent it.
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, Primary};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Primary, PrimaryRole};
 use rdm_transport::topology::{learn_addresses, Backbone, Frame, TopologyView, StatusEvent};
 use rdm_transport::snapshot::PublisherId;
 use serde_json::Value;
@@ -98,7 +98,7 @@ fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {
 
 /// CONTRACT (R-RX3; R-RX2; R-RX1): through real gossip on mesh1's channel, the ordinary member
 /// mesh1.rpc.1 holds mesh1's projection from its primary mesh1.admin.1, then from mesh1.admin.2 once
-/// the seat moved (its full, then its delta). Four frames, each published before what the member
+/// the role moved (its full, then its delta). Four frames, each published before what the member
 /// holds of its source and each sent once, arrive after it:
 /// - mesh1.admin.1's full of mesh1, stamped (`published_at_rafka_ms`) before the successor's, at a
 ///   higher `topology_version` than the successor holds;
@@ -111,7 +111,7 @@ fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {
 /// the channel, the frame, its source, the key held and the key offered. The member keeps the
 /// successor's projection at its version, holds no stop of mesh1.rpc.4, holds mesh1.rpc.2 at the
 /// newer heartbeat, and marks no source desynchronized. Must NOT happen: a frame refused for who
-/// published it (`via-predecessor-publisher`, `via-unseated-publisher`), an unknown-revision repair, the
+/// published it (`via-predecessor-publisher`, `via-non-primary-publisher`), an unknown-revision repair, the
 /// member switched back to the predecessor's projection, a late stop held.
 #[test]
 fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_the_receive_path() {
@@ -142,8 +142,8 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
             }
         }
 
-        // mesh1.admin.1 is seated and publishes: the member holds its projection.
-        bb1.hold_primary(Seat::MeshPrimary, primary_of(&p1_d, 1));
+        // mesh1.admin.1 is primary and publishes: the member holds its projection.
+        bb1.hold_primary(PrimaryRole::MeshPrimary, primary_of(&p1_d, 1));
         bb1.set_mesh_primary(true);
         bb1.publish(&m1, bb1.own_members(&m1)).await;
         until("the member to hold mesh1.admin.1's projection", || held_at_member().is_some_and(|(p, _)| p == pub1)).await;
@@ -152,9 +152,9 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let pred_stamp = m1.clock().now_rafka_ms();
         tokio::time::sleep(Duration::from_millis(5)).await;
 
-        // The seat moves to mesh1.admin.2: its full, then its delta.
+        // The role moves to mesh1.admin.2: its full, then its delta.
         bb1.set_mesh_primary(false);
-        bb2.hold_primary(Seat::MeshPrimary, primary_of(&p2_d, 2));
+        bb2.hold_primary(PrimaryRole::MeshPrimary, primary_of(&p2_d, 2));
         bb2.set_mesh_primary(true);
         bb2.publish(&m2, bb2.own_members(&m2)).await;
         until("the member to install the successor's full", || held_at_member().is_some_and(|(p, _)| p == pub2)).await;
@@ -234,7 +234,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         assert_eq!(said, expected, "each late frame is ignored by the receive path, by name: {ignored:#?}");
         let held_published_at: u64 = held_stamp.strip_prefix("published_at_rafka_ms=").and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or(0);
         assert!(held_published_at > pred_stamp && held_stamp.ends_with(&format!(" topology_version={v2}")), "the held key of mesh1 is the successor's, stamped after the late frames: {held_stamp}");
-        for refusal in ["rdm.mesh.topology.reject.via-predecessor-publisher", "rdm.mesh.topology.reject.via-unseated-publisher"] {
+        for refusal in ["rdm.mesh.topology.reject.via-predecessor-publisher", "rdm.mesh.topology.reject.via-non-primary-publisher"] {
             assert!(spans.iter().all(|s| s["name"] != refusal), "no frame is refused for who published it: {refusal}");
         }
         let mut lines = String::new();

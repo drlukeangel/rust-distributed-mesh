@@ -13,7 +13,7 @@
 //! stop as `rdm.mesh.topology.update.via-node-started`.
 
 use iroh::protocol::Router;
-use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, Primary};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Primary, PrimaryRole};
 use rdm_transport::topology::{learn_addresses, Backbone, DigestView, Frame, TopologyView, StatusEvent};
 use rdm_transport::snapshot::{chunks_of, Chunk, PublisherId};
 use serde_json::Value;
@@ -87,9 +87,9 @@ async fn publish_stopped(_p: &TopologyView, bb: &Backbone, stop: &LifecycleOp) {
     bb.publish_status_event(StatusEvent::Stopped, stop).await;
 }
 
-/// `m` holds `holder` as its mesh's seat record, as its entry read named it.
+/// `m` holds `node_id`/`incarnation` as its mesh's primary record, as its entry read named it.
 fn learn_mesh_primary(m: &TopologyView, mesh: &str, node_id: &NodeId, incarnation: &IncarnationId) {
-    m.learn_primaries(&[(Seat::MeshPrimary, Primary { mesh: mesh.into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 }, false)], "entry");
+    m.learn_primaries(&[(PrimaryRole::MeshPrimary, Primary { mesh: mesh.into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 }, false)], "entry");
 }
 
 /// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): the mesh-primary's
@@ -326,7 +326,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
 /// CONTRACT (node-status-heartbeat-connections.md R-HB1 "The version field": "Each status fact carries
 /// its subject's `topology_version`"; §A.2: "A status fact carries the `topology_version` at which its
 /// subject changed ... Receivers compare per subject"; §C "missed event repaired by top-up"): through
-/// real gossip, mesh1.rpc.2 (an own-mesh member holding its mesh-primary's seat) holds the primary's
+/// real gossip, mesh1.rpc.2 (an own-mesh member holding its mesh-primary's record) holds the primary's
 /// projection v1 listing mesh1.rpc.1 ready and takes the primary's `NodeStopped` event. No projection
 /// carrying the stop ever reaches it: the primary takes node.joined of the birth before its next
 /// publication, and the member is stopped through that publication. Its top-up (a topology read of the primary)

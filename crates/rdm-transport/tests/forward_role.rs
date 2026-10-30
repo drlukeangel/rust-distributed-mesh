@@ -4,8 +4,8 @@
 //! CONTRACT: a node-admin of mesh1 that is not its primary hears a peer mesh's topology on the
 //! backbone and holds each new version of it, and puts nothing of it onto mesh1's channel: no
 //! forwarded full, no forwarded delta, and a member reached only through it holds no version of
-//! that source. The same admin given the seat forwards at its next publication, and the member installs
-//! the source: the channel carried nothing before because the admin held no seat.
+//! that source. The same admin given the role forwards at its next publication, and the member installs
+//! the source: the channel carried nothing before because the admin held no role.
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
@@ -70,7 +70,7 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
     let dir = crate::evidence_dir();
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-transport-forward-role").expect("the cell's evidence file can be created");
     capture.run(4, async {
-        // mesh2's primary publishes on the backbone; mesh1.admin.2 (no seat) hears it there; mesh1.rpc.1
+        // mesh2's primary publishes on the backbone; mesh1.admin.2 (no role) hears it there; mesh1.rpc.1
         // is on mesh1's channel through mesh1.admin.2 alone.
         let (src, admin, rpc) = (node().await, node().await, node().await);
         let (src_addr, admin_addr) = (addr_of(&src.ep), addr_of(&admin.ep));
@@ -85,7 +85,7 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         let src_bb = Backbone::join(&src.gossip, &src.ep, &src_m, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let admin_bb = Backbone::join(&admin.gossip, &admin.ep, &admin_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
         src_bb.set_mesh_primary(true);
-        assert!(!admin_bb.is_mesh_primary(), "mesh1.admin.2 holds no seat");
+        assert!(!admin_bb.is_mesh_primary(), "mesh1.admin.2 holds no role");
         rpc_m.wait_for_neighbour().await;
 
         let ids: Vec<(NodeId, IncarnationId)> = (0..3).map(|_| (NodeId::mint(), IncarnationId::mint())).collect();
@@ -114,14 +114,14 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
             assert!(std::time::Instant::now() < deadline, "mesh1.admin.2 never held mesh2's next version");
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        // Its own publications publish nothing (no seat), and its mesh holds nothing of mesh2.
+        // Its own publications publish nothing (no role), and its mesh holds nothing of mesh2.
         for _ in 0..5 {
-            assert!(!admin_bb.publish(&admin_m, vec![]).await, "an admin with no seat publishes no mesh topology");
+            assert!(!admin_bb.publish(&admin_m, vec![]).await, "an admin with no role publishes no mesh topology");
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert_eq!(rpc_m.held_source_version("mesh2"), None, "a member reached only through a non-primary admin holds no version of mesh2 (it holds v{v2})");
 
-        // The same admin given the seat forwards at its next publication: the member installs mesh2.
+        // The same admin given the role forwards at its next publication: the member installs mesh2.
         admin_bb.set_mesh_primary(true);
         let installed = loop {
             seq += 1;
@@ -130,7 +130,7 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
             if let Some((_, v)) = rpc_m.held_source_version("mesh2") {
                 break v;
             }
-            assert!(std::time::Instant::now() < deadline, "the member never installed mesh2 once mesh1.admin.2 held the seat");
+            assert!(std::time::Instant::now() < deadline, "the member never installed mesh2 once mesh1.admin.2 held the role");
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         assert_eq!(installed, v2);
@@ -140,15 +140,15 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         }
         let all = capture.spans().expect("the cell's spans reached its evidence file");
         let role: Vec<&Value> = all.iter().filter(|s| s["name"] == "rdm.mesh.backbone.update.via-forwarder" && attr(s, "node") == "mesh1.admin.2" && attr(s, "role") == "start").collect();
-        assert_eq!(role.len(), 1, "the forwarder role started once, when the seat was given");
+        assert_eq!(role.len(), 1, "the forwarder role started once, when the role was given");
         let started = role[0]["start_unix_nano"].as_u64().unwrap();
         let forwards: Vec<(u64, String)> = all
             .iter()
             .filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.topology.update.via-forwarded-")) && attr(s, "node") == "mesh1.admin.2")
             .map(|s| (s["start_unix_nano"].as_u64().unwrap(), s["name"].as_str().unwrap().to_string()))
             .collect();
-        assert!(!forwards.is_empty(), "the seat holder forwarded");
-        assert!(forwards.iter().all(|(t, _)| *t >= started), "nothing was forwarded before the seat: {forwards:?}");
+        assert!(!forwards.is_empty(), "the mesh-primary forwarded");
+        assert!(forwards.iter().all(|(t, _)| *t >= started), "nothing was forwarded before the role: {forwards:?}");
         eprintln!("forward-role: trace of the role start {} span {}; forwards {:?}", role[0]["trace_id"], role[0]["span_id"], forwards.iter().map(|(_, n)| n).collect::<Vec<_>>());
     });
 }

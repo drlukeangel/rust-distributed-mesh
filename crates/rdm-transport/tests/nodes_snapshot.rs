@@ -11,7 +11,7 @@
 //! `digest_seq`, a Rafka-time stamp, a load or an unchanged republish. The forwarding primary
 //! derives the delta from the two fulls it holds, so one change is one delta from the version it
 //! last published into its Mesh, a missed intermediate version is one delta not a replay, a
-//! heartbeat-only Mesh produces no delta, and a seat change publishes a full first. A delta
+//! heartbeat-only Mesh produces no delta, and a role change publishes a full first. A delta
 //! applies only at exactly its base; a copy already applied is a no-op; any other desynchronizes
 //! that source alone. The same holds through real gossip between three endpoints: the source
 //! primary's backbone mesh topology, the forwarding primary, and an ordinary member of its Mesh.
@@ -423,9 +423,9 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let Forward::Delta(next) = fwd.source("mesh1.admin.1", "mesh2", &src, 45, &Full::new(d45, vec![], vec![]), 4) else { panic!("a further move is a delta") };
         let (_, _, base, to, _) = delta_of(&next);
         assert_eq!((base, to), (43, 45), "the base stays the last version published into the Mesh");
-        // A seat change publishes a full before any delta; a new source revision does too.
+        // A role change publishes a full before any delta; a new source revision does too.
         fwd.reset();
-        assert!(matches!(fwd.source("mesh1.admin.2", "mesh2", &src, 45, &f43, 5), Forward::Full(_)), "taking the seat: a full first");
+        assert!(matches!(fwd.source("mesh1.admin.2", "mesh2", &src, 45, &f43, 5), Forward::Full(_)), "taking the role: a full first");
         assert!(matches!(fwd.source("mesh1.admin.2", "mesh2", &publisher("mesh2.admin.2"), 1, &f41, 6), Forward::Full(_)), "a new source primary is a new revision: a full first");
         // A delta too large for one message is the full.
         let huge = Mesh::new("mesh2", 80);

@@ -30,7 +30,7 @@ pub enum RouteChoice {
     /// Dial the target's own endpoint.
     Direct,
     /// The exact carrier process connections chose: its logical id is dialled, never its path's
-    /// current holder, so a carrier replaced after resolution is refused rather than substituted.
+    /// current primary, so a carrier replaced after resolution is refused rather than substituted.
     /// Reach the target through a carrier.
     ViaPeer {
         /// The carrier's node id.

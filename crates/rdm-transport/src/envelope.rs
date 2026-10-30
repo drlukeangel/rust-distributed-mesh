@@ -118,7 +118,7 @@ fn date_ms(s: &str) -> Result<u64, WireError> {
 impl Context {
     /// Declare context from the owned author, held committed revision and authored time.
     /// A forwarding publication supplies its own birth as owner while retaining source.
-    pub fn authored(frame: &Frame, author: &Birth, seat_revision: u64, now_ms: u64) -> Self {
+    pub fn authored(frame: &Frame, author: &Birth, primary_revision: u64, now_ms: u64) -> Self {
         let frame = frame.data();
         let index = frame.kind_index();
         let kind = TYPES[index].to_string();
@@ -151,14 +151,14 @@ impl Context {
             }
             Frame::MeshStatus { mesh, changed_at_rafka_ms, .. } => {
                 time_ms = *changed_at_rafka_ms;
-                sequence = Some(format!("{}.{}", p(seat_revision), p(time_ms)));
-                identity = vec![mesh.clone(), seat_revision.to_string(), time_ms.to_string()];
+                sequence = Some(format!("{}.{}", p(primary_revision), p(time_ms)));
+                identity = vec![mesh.clone(), primary_revision.to_string(), time_ms.to_string()];
                 format!("mesh/{}/status", escaped(mesh))
             }
             Frame::FabricStatus { fabric, changed_at_rafka_ms, .. } => {
                 time_ms = *changed_at_rafka_ms;
-                sequence = Some(format!("{}.{}", p(seat_revision), p(time_ms)));
-                identity = vec![fabric.to_string(), seat_revision.to_string(), time_ms.to_string()];
+                sequence = Some(format!("{}.{}", p(primary_revision), p(time_ms)));
+                identity = vec![fabric.to_string(), primary_revision.to_string(), time_ms.to_string()];
                 format!("fabric/{fabric}/status")
             }
             Frame::Reserved15 { hook, .. } | Frame::Reserved16 { hook, .. } | Frame::Reserved17 { hook, .. } | Frame::Reserved18 { hook, .. } => {
@@ -172,7 +172,7 @@ impl Context {
                 format!("operation/{}/{}/{}/birth/{}/{}", escaped(&op.build_id), op.attempt, escaped(&op.operation), op.node_id, op.incarnation)
             }
             Frame::Concern { node_id, incarnation, observer, .. } => { identity = vec![node_id.to_string(), incarnation.to_string(), observer.clone()]; format!("birth/{}/{node_id}/{incarnation}", author.fabric) }
-            Frame::NewFabricPrimary { holder, .. } => { identity = vec![holder.node_id.to_string(), holder.incarnation.to_string()]; format!("fabric/{}/seat", author.fabric) }
+            Frame::NewFabricPrimary { primary, .. } => { identity = vec![primary.node_id.to_string(), primary.incarnation.to_string()]; format!("fabric/{}/primary", author.fabric) }
             Frame::Authored { .. } => unreachable!(),
         };
         let (trace, _) = sanitized_trace(crate::current_traceparent(), crate::current_tracestate());

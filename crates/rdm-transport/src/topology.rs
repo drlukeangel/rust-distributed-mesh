@@ -25,7 +25,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, StateHook, Seat, Primary, DELETED_RETENTION};
+use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, Primary, PrimaryRole, StateHook, DELETED_RETENTION};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -456,15 +456,15 @@ pub enum Frame {
         changed_at_rafka_ms: u64,
     },
     /// Reserved page position 10 (Luke Q23): its type is refused before decoding data. Gossip never
-    /// commands an investigation; the seat watch measures the holder's silence itself.
+    /// commands an investigation; the primary watch measures the primary's silence itself.
     ///
     /// Schema index 8, never a wire kind.
     Concern {
-        /// The seat whose holder looks silent.
-        seat: Seat,
-        /// The silent holder's node.
+        /// The role whose primary looks silent.
+        role: PrimaryRole,
+        /// The silent primary's node.
         node_id: NodeId,
-        /// The silent holder's exact birth.
+        /// The silent primary's exact birth.
         incarnation: IncarnationId,
         /// The mesh primary that marked the birth silent.
         observer: String,
@@ -511,13 +511,13 @@ pub enum Frame {
     ///
     /// Schema index 13, never a wire kind.
     NewFabricPrimary {
-        /// The committed holder: mesh, node, incarnation and the seat's revision.
-        holder: Primary,
-        /// The holder's endpoint key.
+        /// The committed primary: mesh, node, incarnation and the role's revision.
+        primary: Primary,
+        /// The primary's endpoint key.
         endpoint_id: String,
-        /// The holder's bound QUIC UDP address.
+        /// The primary's bound QUIC UDP address.
         transport_addr: std::net::SocketAddr,
-        /// The holder's control API base URL with its bound HTTP port, when it runs one.
+        /// The primary's control API base URL with its bound HTTP port, when it runs one.
         admin_api_base: Option<String>,
     },
     /// Reserved position (Q171): never sent; a receiver refuses it by name.
@@ -593,9 +593,9 @@ impl Frame {
     /// The original authored context, when this frame is ready for the wire.
     pub fn context(&self) -> Option<&crate::envelope::Context> { match self { Self::Authored { context, .. } => Some(context), _ => None } }
     /// Bind locally produced data to its explicitly supplied author's birth and held revision.
-    pub fn authored(self, author: &crate::envelope::Birth, seat_revision: u64, time_ms: u64) -> Self {
+    pub fn authored(self, author: &crate::envelope::Birth, primary_revision: u64, time_ms: u64) -> Self {
         if self.context().is_some() { return self; }
-        let context = crate::envelope::Context::authored(&self, author, seat_revision, time_ms);
+        let context = crate::envelope::Context::authored(&self, author, primary_revision, time_ms);
         Self::Authored { context, frame: Box::new(self) }
     }
     fn with_context(self, context: Option<crate::envelope::Context>) -> Self {
@@ -1162,15 +1162,15 @@ impl StatusView {
     }
 }
 
-/// The seat holders a node holds: each seat's record with the latest revision, until a record that
+/// The primaries a node holds: each role's record with the latest revision, until a record that
 /// supersedes it (`Primary::supersedes`). A record that does not is refused by name.
 #[derive(Debug, Clone)]
 pub struct PrimaryView {
-    inner: Arc<Mutex<HeldSeats>>,
-    /// Ticks whenever a record is held: whoever persists the records, or looks at the seats, wakes on it.
+    inner: Arc<Mutex<HeldRoles>>,
+    /// Ticks whenever a record is held: whoever persists the records, or looks at the primaries, wakes on it.
     changed: Arc<tokio::sync::watch::Sender<u64>>,
-    /// When this view was made: the fabric seat's record is held from then until `HeldSeats::fabric_since`
-    /// says it changed holder.
+    /// When this view was made: the fabric-primary's record is held from then until `HeldRoles::fabric_since`
+    /// says it changed primary.
     created: Instant,
 }
 
@@ -1181,59 +1181,59 @@ impl Default for PrimaryView {
 }
 
 #[derive(Debug, Default)]
-struct HeldSeats {
+struct HeldRoles {
     fabric: Option<Primary>,
-    /// When the fabric seat's record last changed holder here, by every writer (`put`).
+    /// When the fabric-primary's record last changed primary here, by every writer (`put`).
     fabric_since: Option<Instant>,
     meshes: HashMap<String, Primary>,
     /// Every other (mesh, node type) node-type primary record, by (mesh, kind).
     node_type_primaries: HashMap<(String, rdm_core::NodeKind), Primary>,
-    /// Seat holders' exact births a peer told this node are proven gone (an entry read): the proof
+    /// Primaries' exact births a peer told this node are proven gone (an entry read): the proof
     /// the peer holds, which this node never heard itself.
     gone: std::collections::HashSet<IncarnationId>,
     /// Each birth a record held here named before a record naming another birth replaced it, by the
-    /// record's seat and mesh: the primaries this view saw change, so a birth that was never primary
+    /// record's role and mesh: the primaries this view saw change, so a birth that was never primary
     /// here is told apart from one an update moved.
-    replaced: std::collections::HashSet<(Seat, String, IncarnationId)>,
+    replaced: std::collections::HashSet<(PrimaryRole, String, IncarnationId)>,
 }
 
-/// The seat and mesh a record of `seat` in `mesh` is held under: a mesh's node-admin type is its
+/// The role and mesh a record of `role` in `mesh` is held under: a mesh's node-admin type is its
 /// mesh-primary, and the fabric-primary is one per fabric.
-fn held_under(seat: Seat, mesh: &str) -> (Seat, String) {
-    match seat {
-        Seat::FabricPrimary => (Seat::FabricPrimary, String::new()),
-        Seat::MeshPrimary | Seat::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => (Seat::MeshPrimary, mesh.to_string()),
-        Seat::NodeTypePrimary(kind) => (Seat::NodeTypePrimary(kind), mesh.to_string()),
+fn held_under(role: PrimaryRole, mesh: &str) -> (PrimaryRole, String) {
+    match role {
+        PrimaryRole::FabricPrimary => (PrimaryRole::FabricPrimary, String::new()),
+        PrimaryRole::MeshPrimary | PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => (PrimaryRole::MeshPrimary, mesh.to_string()),
+        PrimaryRole::NodeTypePrimary(kind) => (PrimaryRole::NodeTypePrimary(kind), mesh.to_string()),
     }
 }
 
-impl HeldSeats {
-    /// The record held for `seat` of `mesh` (the mesh is ignored for the fabric seat).
-    fn get(&self, seat: Seat, mesh: &str) -> Option<Primary> {
-        match seat {
-            Seat::FabricPrimary => self.fabric.clone(),
-            Seat::MeshPrimary | Seat::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => self.meshes.get(mesh).cloned(),
-            Seat::NodeTypePrimary(kind) => self.node_type_primaries.get(&(mesh.to_string(), kind)).cloned(),
+impl HeldRoles {
+    /// The record held for `role` of `mesh` (the mesh is ignored for the fabric-primary role).
+    fn get(&self, role: PrimaryRole, mesh: &str) -> Option<Primary> {
+        match role {
+            PrimaryRole::FabricPrimary => self.fabric.clone(),
+            PrimaryRole::MeshPrimary | PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => self.meshes.get(mesh).cloned(),
+            PrimaryRole::NodeTypePrimary(kind) => self.node_type_primaries.get(&(mesh.to_string(), kind)).cloned(),
         }
     }
 
-    /// Hold `record` for `seat` of `mesh`.
-    fn put(&mut self, seat: Seat, mesh: &str, record: Primary) {
-        if let Some(held) = self.get(seat, mesh).filter(|h| h.incarnation != record.incarnation) {
-            let (seat, mesh) = held_under(seat, mesh);
-            self.replaced.insert((seat, mesh, held.incarnation));
+    /// Hold `record` for `role` of `mesh`.
+    fn put(&mut self, role: PrimaryRole, mesh: &str, record: Primary) {
+        if let Some(held) = self.get(role, mesh).filter(|h| h.incarnation != record.incarnation) {
+            let (role, mesh) = held_under(role, mesh);
+            self.replaced.insert((role, mesh, held.incarnation));
         }
-        match seat {
-            Seat::FabricPrimary => {
+        match role {
+            PrimaryRole::FabricPrimary => {
                 if self.fabric.as_ref().is_none_or(|held| held.node_id != record.node_id) {
                     self.fabric_since = Some(Instant::now());
                 }
                 self.fabric = Some(record);
             }
-            Seat::MeshPrimary | Seat::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => {
+            PrimaryRole::MeshPrimary | PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::NodeAdmin) => {
                 self.meshes.insert(mesh.to_string(), record);
             }
-            Seat::NodeTypePrimary(kind) => {
+            PrimaryRole::NodeTypePrimary(kind) => {
                 self.node_type_primaries.insert((mesh.to_string(), kind), record);
             }
         }
@@ -1242,7 +1242,7 @@ impl HeldSeats {
 
 /// What [`PrimaryView::take`] did with a record.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SeatTaken {
+pub enum RoleTaken {
     /// The record was held; `previous` is the record it superseded.
     Held {
         /// The record it superseded.
@@ -1258,23 +1258,23 @@ pub enum SeatTaken {
 }
 
 impl PrimaryView {
-    /// Hold `holder` for `seat` if it supersedes what is held.
-    pub fn take(&self, seat: Seat, holder: &Primary) -> SeatTaken {
+    /// Hold `primary` for `role` if it supersedes what is held.
+    pub fn take(&self, role: PrimaryRole, primary: &Primary) -> RoleTaken {
         let mut held = self.inner.lock().unwrap();
-        match held.get(seat, &holder.mesh) {
-            Some(c) if &c == holder => SeatTaken::Same,
-            Some(c) if !holder.supersedes(&c) => SeatTaken::Refused { held: c },
+        match held.get(role, &primary.mesh) {
+            Some(c) if &c == primary => RoleTaken::Same,
+            Some(c) if !primary.supersedes(&c) => RoleTaken::Refused { held: c },
             previous => {
-                held.put(seat, &holder.mesh, holder.clone());
+                held.put(role, &primary.mesh, primary.clone());
                 self.changed.send_modify(|v| *v += 1);
-                SeatTaken::Held { previous }
+                RoleTaken::Held { previous }
             }
         }
     }
 
-    /// How long this view has held the fabric seat's current holder as the holder: a holder is unheard
-    /// past the staleness floor only once its view has held it as the holder for a floor (a record
-    /// learned a moment ago, after a heal, names a holder whose silence predates it).
+    /// How long this view has held the fabric-primary's current primary as the primary: a primary is unheard
+    /// past the staleness floor only once its view has held it as the primary for a floor (a record
+    /// learned a moment ago, after a heal, names a primary whose silence predates it).
     pub fn fabric_held_for(&self) -> Duration {
         self.inner.lock().unwrap().fabric_since.unwrap_or(self.created).elapsed()
     }
@@ -1282,49 +1282,49 @@ impl PrimaryView {
     /// Hold every record of one node.primary.update together, under one lock: either every record
     /// supersedes the one held and all are held, or none is (the records a stale update names stay as
     /// they are). Returns what happened per record.
-    pub fn take_together(&self, records: &[(Seat, Primary)]) -> Vec<SeatTaken> {
+    pub fn take_together(&self, records: &[(PrimaryRole, Primary)]) -> Vec<RoleTaken> {
         let mut held = self.inner.lock().unwrap();
-        let decided: Vec<SeatTaken> = records
+        let decided: Vec<RoleTaken> = records
             .iter()
-            .map(|(seat, r)| match held.get(*seat, &r.mesh) {
-                Some(h) if &h == r => SeatTaken::Same,
-                Some(h) if !r.supersedes(&h) => SeatTaken::Refused { held: h },
-                previous => SeatTaken::Held { previous },
+            .map(|(role, r)| match held.get(*role, &r.mesh) {
+                Some(h) if &h == r => RoleTaken::Same,
+                Some(h) if !r.supersedes(&h) => RoleTaken::Refused { held: h },
+                previous => RoleTaken::Held { previous },
             })
             .collect();
-        if decided.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
-            return records.iter().map(|(seat, r)| SeatTaken::Refused { held: held.get(*seat, &r.mesh).unwrap_or_else(|| r.clone()) }).collect();
+        if decided.iter().any(|t| matches!(t, RoleTaken::Refused { .. })) {
+            return records.iter().map(|(role, r)| RoleTaken::Refused { held: held.get(*role, &r.mesh).unwrap_or_else(|| r.clone()) }).collect();
         }
-        for (seat, r) in records {
-            held.put(*seat, &r.mesh, r.clone());
+        for (role, r) in records {
+            held.put(*role, &r.mesh, r.clone());
         }
-        if decided.iter().any(|t| matches!(t, SeatTaken::Held { .. })) {
+        if decided.iter().any(|t| matches!(t, RoleTaken::Held { .. })) {
             self.changed.send_modify(|v| *v += 1);
         }
         decided
     }
 
-    /// Whether a record of `seat` in `mesh` held here named `incarnation` and a record naming another
+    /// Whether a record of `role` in `mesh` held here named `incarnation` and a record naming another
     /// birth replaced it: the birth was primary here and is no more.
-    pub fn replaced(&self, seat: Seat, mesh: &str, incarnation: &IncarnationId) -> bool {
-        let (seat, mesh) = held_under(seat, mesh);
-        self.inner.lock().unwrap().replaced.contains(&(seat, mesh, incarnation.clone()))
+    pub fn replaced(&self, role: PrimaryRole, mesh: &str, incarnation: &IncarnationId) -> bool {
+        let (role, mesh) = held_under(role, mesh);
+        self.inner.lock().unwrap().replaced.contains(&(role, mesh, incarnation.clone()))
     }
 
-    /// The fabric seat's held record.
+    /// The fabric-primary's held record.
     pub fn fabric(&self) -> Option<Primary> {
         self.inner.lock().unwrap().fabric.clone()
     }
 
 
-    /// Hold that the peer proved `incarnation`, a seat holder's birth, gone.
+    /// Hold that the peer proved `incarnation`, a primary's birth, gone.
     pub fn mark_gone(&self, incarnation: IncarnationId) {
         if self.inner.lock().unwrap().gone.insert(incarnation) {
             self.changed.send_modify(|v| *v += 1);
         }
     }
 
-    /// The seat holders' births this node was told are gone.
+    /// The primaries' births this node was told are gone.
     pub fn gone(&self) -> std::collections::HashSet<IncarnationId> {
         self.inner.lock().unwrap().gone.clone()
     }
@@ -1334,7 +1334,7 @@ impl PrimaryView {
         self.changed.subscribe()
     }
 
-    /// The held record of `mesh`'s primary seat.
+    /// The held record of `mesh`'s primary role.
     pub fn mesh(&self, mesh: &str) -> Option<Primary> {
         self.inner.lock().unwrap().meshes.get(mesh).cloned()
     }
@@ -1344,9 +1344,9 @@ impl PrimaryView {
         self.inner.lock().unwrap().meshes.iter().map(|(m, h)| (m.clone(), h.clone())).collect()
     }
 
-    /// The held record of `mesh`'s `kind` node-type primary seat (`node_admin`: its mesh-primary seat).
+    /// The held record of `mesh`'s `kind` node-type primary role (`node_admin`: its mesh-primary role).
     pub fn node_type_primary(&self, mesh: &str, kind: rdm_core::NodeKind) -> Option<Primary> {
-        self.inner.lock().unwrap().get(Seat::of_node_type(kind), mesh)
+        self.inner.lock().unwrap().get(PrimaryRole::of_node_type(kind), mesh)
     }
 
     /// Every other node type's primary record held, by (mesh, kind).
@@ -2672,7 +2672,7 @@ impl View {
             let own = d.node.name.mesh == self.mesh;
             // The primary authors its own mesh's statuses: a projection of its own mesh, on its own
             // channel or on the backbone (a predecessor's last mesh topology after this node took the
-            // seat), moves none of them.
+            // role), moves none of them.
             if own && authors && matches!(side, Side::MeshChannel | Side::Backbone) {
                 continue;
             }
@@ -2760,10 +2760,10 @@ impl View {
     }
 
     /// Hold a primary record this node elected or read (an entry read), if it supersedes the one held.
-    fn note_primary(&self, seat: Seat, holder: &Primary, via: &'static str) -> bool {
-        let SeatTaken::Held { previous } = self.digest_view.seats.take(seat, holder) else { return false };
+    fn note_primary(&self, role: PrimaryRole, primary: &Primary, via: &'static str) -> bool {
+        let RoleTaken::Held { previous } = self.digest_view.primaries.take(role, primary) else { return false };
         let previous = previous.as_ref().map(ToString::to_string).unwrap_or_default();
-        tracing::info_span!("rdm.mesh.primary.update.via-announcement", node = %self.current_name(), seat = seat.name(), holder = %holder, via, outcome = "held", previous = %previous)
+        tracing::info_span!("rdm.mesh.primary.update.via-announcement", node = %self.current_name(), role = role.name(), primary = %primary, via, outcome = "held", previous = %previous)
             .in_scope(|| tracing::info!("a primary record was held"));
         true
     }
@@ -2946,7 +2946,7 @@ impl TopologyView {
                     // projection, never on its heartbeat.
                     if let (Frame::Digest { .. }, Some(held)) = (frame.data(), carried.first()) {
                         let me_now = v.current_name();
-                        let verdict = crate::discipline::from_mesh_primary_digest(&v.mesh, &me_now, v.primary.load(Ordering::Relaxed), &v.digest_view.seats, held, fresh);
+                        let verdict = crate::discipline::from_mesh_primary_digest(&v.mesh, &me_now, v.primary.load(Ordering::Relaxed), &v.digest_view.primaries, held, fresh);
                         crate::discipline::offer(&observing, &me_now, "mesh-primary-digest", verdict);
                     }
                     carried
@@ -3176,7 +3176,7 @@ impl TopologyView {
     /// Hold (or drop) this node as its mesh's primary: while it is, it authors its own mesh's member
     /// statuses from what its members report to it and replays what it holds to a neighbour coming
     /// up; otherwise it takes them from its primary's projection (gossip.md §3.1 `MeshTopology`).
-    /// [`Backbone::set_mesh_primary`] sets it with the seat; a launcher that executes its mesh's
+    /// [`Backbone::set_mesh_primary`] sets it with the role; a launcher that executes its mesh's
     /// node lifecycle with no backbone sets it here.
     pub fn set_mesh_primary(&self, primary: bool) {
         self.view.primary.store(primary, Ordering::Relaxed);
@@ -3230,18 +3230,18 @@ impl TopologyView {
         }
     }
 
-    /// The seat holders this node holds.
+    /// The primaries this node holds.
     pub fn primaries(&self) -> &PrimaryView {
-        &self.view.digest_view.seats
+        &self.view.digest_view.primaries
     }
 
-    /// Hold the seat records an entry read named (`topology_read`): each only if it supersedes what
+    /// Hold the primary records an entry read named (`topology_read`): each only if it supersedes what
     /// this node holds.
-    pub fn learn_primaries(&self, records: &[(Seat, Primary, bool)], via: &'static str) {
-        for (seat, holder, gone) in records {
-            self.view.note_primary(*seat, holder, via);
+    pub fn learn_primaries(&self, records: &[(PrimaryRole, Primary, bool)], via: &'static str) {
+        for (role, primary, gone) in records {
+            self.view.note_primary(*role, primary, via);
             if *gone {
-                self.view.digest_view.seats.mark_gone(holder.incarnation.clone());
+                self.view.digest_view.primaries.mark_gone(primary.incarnation.clone());
             }
         }
     }
@@ -3539,7 +3539,7 @@ impl TopologyView {
         self.view.mesh_rx.lock().unwrap().held_version(mesh)
     }
 
-    /// This node's own Mesh's current primary node-admin: the birth its held seat record names
+    /// This node's own Mesh's current primary node-admin: the birth its held primary record names
     /// ([`DigestView::mesh_primary`]). The node tops up from it and from no other.
     pub fn mesh_primary(&self) -> Result<MeshDigest, NoMeshPrimary> {
         self.digest_view.mesh_primary(&self.view.mesh)
@@ -3587,7 +3587,7 @@ impl TopologyView {
         let primary = match self.mesh_primary() {
             Ok(primary) => primary,
             Err(no) => {
-                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = no.reason(), seat_holder = %no.primary().map(|h| h.to_string()).unwrap_or_default(), detail = %no)
+                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = no.reason(), primary = %no.primary().map(|h| h.to_string()).unwrap_or_default(), detail = %no)
                     .in_scope(|| tracing::info!("this Mesh's current primary cannot be addressed: nothing to top up from"));
                 return false;
             }
@@ -3684,24 +3684,24 @@ impl TopologyView {
 /// Why a node cannot address its Mesh's current primary: each a distinct fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoMeshPrimary {
-    /// The node holds no seat record of the mesh.
-    NoSeatRecord {
+    /// The node holds no primary record of the mesh.
+    NoPrimaryRecord {
         /// The mesh whose record is not held.
         mesh: String,
     },
     /// The record names a birth whose digest the node does not hold.
-    HolderNotHeld {
+    PrimaryNotHeld {
         /// The record held.
-        holder: Primary,
+        primary: Primary,
         /// The birth of the same node the node holds instead, when it holds one.
         held_incarnation: Option<IncarnationId>,
-        /// Whether the node holds the holder's node as deleted.
+        /// Whether the node holds the primary's node as deleted.
         deleted: bool,
     },
     /// The record's birth is held as proven gone.
-    HolderGone {
+    PrimaryGone {
         /// The record held.
-        holder: Primary,
+        primary: Primary,
     },
 }
 
@@ -3709,17 +3709,17 @@ impl NoMeshPrimary {
     /// The span reason naming this fact.
     pub fn reason(&self) -> &'static str {
         match self {
-            Self::NoSeatRecord { .. } => "no-seat-record-held",
-            Self::HolderNotHeld { .. } => "seat-holder-not-held",
-            Self::HolderGone { .. } => "seat-holder-gone",
+            Self::NoPrimaryRecord { .. } => "no-primary-record-held",
+            Self::PrimaryNotHeld { .. } => "primary-not-held",
+            Self::PrimaryGone { .. } => "primary-gone",
         }
     }
 
-    /// The seat record held, when one is.
+    /// The primary record held, when one is.
     pub fn primary(&self) -> Option<&Primary> {
         match self {
-            Self::NoSeatRecord { .. } => None,
-            Self::HolderNotHeld { holder, .. } | Self::HolderGone { holder } => Some(holder),
+            Self::NoPrimaryRecord { .. } => None,
+            Self::PrimaryNotHeld { primary, .. } | Self::PrimaryGone { primary } => Some(primary),
         }
     }
 }
@@ -3727,10 +3727,10 @@ impl NoMeshPrimary {
 impl std::fmt::Display for NoMeshPrimary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoSeatRecord { mesh } => write!(f, "no seat record of mesh {mesh} is held"),
-            Self::HolderNotHeld { holder, held_incarnation: Some(other), .. } => write!(f, "the seat record names {holder}; the node holds birth {} of that node instead", other.as_str()),
-            Self::HolderNotHeld { holder, held_incarnation: None, deleted } => write!(f, "the seat record names {holder}; no digest of that node is held{}", if *deleted { " (held deleted)" } else { "" }),
-            Self::HolderGone { holder } => write!(f, "the seat record names {holder}, a birth held as proven gone"),
+            Self::NoPrimaryRecord { mesh } => write!(f, "no primary record of mesh {mesh} is held"),
+            Self::PrimaryNotHeld { primary, held_incarnation: Some(other), .. } => write!(f, "the primary record names {primary}; the node holds birth {} of that node instead", other.as_str()),
+            Self::PrimaryNotHeld { primary, held_incarnation: None, deleted } => write!(f, "the primary record names {primary}; no digest of that node is held{}", if *deleted { " (held deleted)" } else { "" }),
+            Self::PrimaryGone { primary } => write!(f, "the primary record names {primary}, a birth held as proven gone"),
         }
     }
 }
@@ -3775,7 +3775,7 @@ pub struct Backbone {
     wake: Arc<tokio::sync::Notify>,
     /// This admin's exact identity as a publisher: its path name and the birth that holds it.
     publisher: PublisherId,
-    /// Set when the seat is taken: the next publication puts the full of every source into the Mesh.
+    /// Set when the role is taken: the next publication puts the full of every source into the Mesh.
     full_due: Arc<AtomicBool>,
     /// The version counter of this Mesh's topology, and the complete projection it was last bumped on.
     version: Arc<Mutex<SourceVersion>>,
@@ -3804,7 +3804,7 @@ fn observe_peer_degraded(
     node: &str,
     author: &crate::envelope::Birth,
     held_meshes: &HashMap<String, HeldStatus<MeshStatus>>,
-    seat_revisions: &HashMap<String, u64>,
+    primary_revisions: &HashMap<String, u64>,
     peer_pubs: &mut HashMap<String, StatusPublisher>,
     degraded_meshes: &[(String, Option<u64>)],
     now: Instant,
@@ -3823,7 +3823,7 @@ fn observe_peer_degraded(
     });
     let mut frames = Vec::new();
     for (peer_mesh, verdict_ms) in degraded_meshes {
-        let revision = seat_revisions
+        let revision = primary_revisions
             .get(peer_mesh)
             .copied()
             .or_else(|| held_revision(peer_mesh));
@@ -3858,8 +3858,8 @@ fn observe_peer_degraded(
 }
 
 /// The status frames `me` owes on this turn ([`Backbone::announce_statuses_with_degraded_meshes`]): its
-/// own mesh's while it holds its mesh-primary seat, the fabric's while it holds the fabric-primary
-/// seat, and each peer mesh `degraded_meshes` names as under recovery by this fabric-primary
+/// own mesh's while it holds its mesh-primary role, the fabric's while it holds the fabric-primary
+/// role, and each peer mesh `degraded_meshes` names as under recovery by this fabric-primary
 /// (`(mesh, verdict_rafka_ms)` from `Records::peer_recoveries`; mesh-investigation.md:65, states.md:12,
 /// R-DG1), authored at the revision of that mesh's Mesh row.
 #[allow(clippy::too_many_arguments)]
@@ -3884,12 +3884,12 @@ pub fn status_announcements(
     let heard_fabric = digest_view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
     let author = crate::envelope::Birth::publisher(fabric, me);
     let owned = |h: Primary| h.is_birth(&author.node, &author.incarnation).then_some((author.clone(), h.revision));
-    let seat_revisions: HashMap<String, u64> = degraded_meshes
+    let primary_revisions: HashMap<String, u64> = degraded_meshes
         .iter()
-        .filter_map(|(m, _)| Some((m.clone(), digest_view.seats.mesh(m)?.revision)))
+        .filter_map(|(m, _)| Some((m.clone(), digest_view.primaries.mesh(m)?.revision)))
         .collect();
-    mesh_pub.author = digest_view.seats.mesh(own_mesh).and_then(&owned);
-    fabric_pub.author = digest_view.seats.fabric().and_then(&owned);
+    mesh_pub.author = digest_view.primaries.mesh(own_mesh).and_then(&owned);
+    fabric_pub.author = digest_view.primaries.fabric().and_then(&owned);
     let mut frames: Vec<Frame> = [
         if mesh_pub.author.is_some() { mesh_pub.observe(mesh_status, heard_mesh, mesh_checklist, now, now_ms) } else { None },
         if fabric_pub.author.is_some() { fabric_pub.observe(fabric_status, heard_fabric, fabric_checklist, now, now_ms) } else { None },
@@ -3898,7 +3898,7 @@ pub fn status_announcements(
     .flatten()
     .collect();
     if fabric_pub.author.is_some() {
-        frames.extend(observe_peer_degraded(&me.node, &author, &held_meshes, &seat_revisions, peer_pubs, degraded_meshes, now));
+        frames.extend(observe_peer_degraded(&me.node, &author, &held_meshes, &primary_revisions, peer_pubs, degraded_meshes, now));
     } else {
         peer_pubs.clear();
     }
@@ -3956,7 +3956,7 @@ impl Backbone {
                 let taken = m.view.take_snapshot(&frame, &m.fabric, Side::Backbone, order);
                 // A mesh primary's clock follows its current fabric-primary's mesh topology.
                 if let Some(p) = &taken.publication {
-                    let verdict = crate::discipline::from_fabric_primary_members(&me, m.view.primary.load(Ordering::Relaxed), &m.view.digest_view.seats, &p.publisher, p.publisher_digest.as_ref(), p.published_at_rafka_ms);
+                    let verdict = crate::discipline::from_fabric_primary_members(&me, m.view.primary.load(Ordering::Relaxed), &m.view.digest_view.primaries, &p.publisher, p.publisher_digest.as_ref(), p.published_at_rafka_ms);
                     crate::discipline::offer(&m.clock, &me, "fabric-primary-mesh-topology", verdict);
                 }
                 for d in &taken.carried {
@@ -4118,11 +4118,11 @@ impl Backbone {
         let heard_fabric = digest_view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
         let author = crate::envelope::Birth::publisher(&self.fabric, &me);
         let owned = |h: Primary| h.is_birth(&author.node, &author.incarnation).then_some((author.clone(), h.revision));
-        let mesh_author = digest_view.seats.mesh(&self.mesh).and_then(&owned);
-        let fabric_author = digest_view.seats.fabric().and_then(&owned);
-        let seat_revisions: HashMap<String, u64> = degraded_meshes
+        let mesh_author = digest_view.primaries.mesh(&self.mesh).and_then(&owned);
+        let fabric_author = digest_view.primaries.fabric().and_then(&owned);
+        let primary_revisions: HashMap<String, u64> = degraded_meshes
             .iter()
-            .filter_map(|(m, _)| Some((m.clone(), digest_view.seats.mesh(m)?.revision)))
+            .filter_map(|(m, _)| Some((m.clone(), digest_view.primaries.mesh(m)?.revision)))
             .collect();
         let (mesh_frame, mesh_awaiting_checklist) = {
             let mut mesh_pub = self.mesh_status.lock().unwrap();
@@ -4140,7 +4140,7 @@ impl Backbone {
         let mut first: Vec<Frame> = [mesh_frame, fabric_frame].into_iter().flatten().collect();
         if is_fabric_primary {
             let mut peers = self.peer_mesh_status.lock().unwrap();
-            first.extend(observe_peer_degraded(&me.node, &author, &held_meshes, &seat_revisions, &mut peers, degraded_meshes, now));
+            first.extend(observe_peer_degraded(&me.node, &author, &held_meshes, &primary_revisions, &mut peers, degraded_meshes, now));
         } else {
             self.peer_mesh_status.lock().unwrap().clear();
         }
@@ -4170,7 +4170,7 @@ impl Backbone {
     /// Be (or stop being) this mesh's publisher and forwarder: its primary.
     pub fn set_mesh_primary(&self, primary: bool) {
         self.topology_view.set_mesh_primary(primary);
-        // A forwarder that takes (or loses) the seat has published nothing into its Mesh: the
+        // A forwarder that takes (or loses) the role has published nothing into its Mesh: the
         // first publication of every source after taking it is a full (gossip.md §3.3). The role,
         // its baseline and its term switch together under the forwarder's lock.
         let forwarder_changed = self.topology_view.forward_path.set_role(primary);
@@ -4302,7 +4302,7 @@ impl Backbone {
         let sleep = tokio::time::sleep_until(deadline);
         tokio::pin!(sleep);
         let digest_view = &topology_view.digest_view;
-        let (mut heard, mut births, mut overlays, mut primaries) = (digest_view.heard_changes(), digest_view.birth_changes(), digest_view.overlay_changes(), digest_view.seats.subscribe());
+        let (mut heard, mut births, mut overlays, mut primaries) = (digest_view.heard_changes(), digest_view.birth_changes(), digest_view.overlay_changes(), digest_view.primaries.subscribe());
         loop {
             heard.borrow_and_update();
             births.borrow_and_update();
@@ -4339,7 +4339,7 @@ impl Backbone {
     }
 
     /// The forwarded full of every source this primary holds (its own Mesh and each peer Mesh),
-    /// without loads, on taking the seat: the first publication of every source into this Mesh.
+    /// without loads, on taking the role: the first publication of every source into this Mesh.
     /// Nothing sends it again on a timer; a held source whose peer Mesh is unheard is not
     /// re-sent, so no member's coverage is renewed by a word its primary did not receive.
     pub async fn forward_fulls(&self) {
@@ -4416,8 +4416,8 @@ impl Backbone {
     /// This admin was elected primary, or, as its mesh's primary, recorded another node type's
     /// primary (R-MT1 Q3): it holds the record. No frame announces it: its next `Digest` carries it,
     /// and the mesh-primary's `MeshTopology` projection.
-    pub fn hold_primary(&self, seat: Seat, holder: Primary) {
-        self.topology_view.view.note_primary(seat, &holder, "own");
+    pub fn hold_primary(&self, role: PrimaryRole, primary: Primary) {
+        self.topology_view.view.note_primary(role, &primary, "own");
     }
 
 
@@ -4692,7 +4692,7 @@ pub struct DigestView {
     /// The staleness floor.
     staleness_floor: Duration,
     /// The primaries this node holds (a digest, a `MeshTopology` projection, an entry read): an input to every election.
-    pub seats: PrimaryView,
+    pub primaries: PrimaryView,
     /// The mesh and fabric statuses this node holds (`Frame::MeshStatus`, `Frame::FabricStatus`, a
     /// replay or an entry answer): application routing reads a birth's mesh status here.
     pub statuses: StatusView,
@@ -4870,7 +4870,7 @@ impl DigestView {
             accepted: Arc::new(tokio::sync::watch::Sender::new(0)),
             retention,
             staleness_floor,
-            seats: PrimaryView::default(),
+            primaries: PrimaryView::default(),
             statuses: StatusView::default(),
             on_mesh_deleted: MeshDeletedHook::default(),
         }
@@ -5053,7 +5053,7 @@ impl DigestView {
         self.stopped_carried(op, None)
     }
 
-    /// [`Self::stopped`], from a `NodeStopped` whose seated publisher changed the subject at
+    /// [`Self::stopped`], from a `NodeStopped` whose primary publisher changed the subject at
     /// `carried`'s version (`(publisher, topology_version)`): the stop is held as carried there, so a
     /// later projection of that publisher listing the birth moves past it even when no projection
     /// carrying the stop reached this view.
@@ -5301,8 +5301,8 @@ impl DigestView {
         self.member_statuses.lock().unwrap().get(node_id.as_str()).filter(|(inc, _)| inc == incarnation).map(|(_, s)| *s)
     }
 
-    /// This view's holder took its mesh's primary seat and adopts `status`, the state its mesh's
-    /// primary set for the own-mesh birth `incarnation` of `node_id` at `name`, as the seat's status
+    /// This view's holder took its mesh's primary role and adopts `status`, the state its mesh's
+    /// primary set for the own-mesh birth `incarnation` of `node_id` at `name`, as the primary's status
     /// rows hold it (node-status-heartbeat-connections.md §A.3: "the successor acquires the held member
     /// statuses and publishes a complete projection under its own revision before any delta";
     /// fabric-authority.md §7: a takeover hydrates the lifecycle state that exists, it is not a
@@ -5831,8 +5831,8 @@ impl DigestView {
     /// mesh at that record's revision, the fabric-primary at that record's, none it does not hold.
     pub fn recorded_primaries(&self, d: &mut MeshDigest) {
         let n = &d.node;
-        d.is_primary = self.seats.node_type_primary(&n.name.mesh, n.name.kind).filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
-        d.is_fabric_primary = self.seats.fabric().filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
+        d.is_primary = self.primaries.node_type_primary(&n.name.mesh, n.name.kind).filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
+        d.is_fabric_primary = self.primaries.fabric().filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
     }
 
     /// Hold the primary records `d` carries (gossip.md "A primary change on gossip"): its birth as its
@@ -5843,10 +5843,10 @@ impl DigestView {
         let n = &d.node;
         let record = |revision| Primary { mesh: n.name.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), revision };
         if let Some(revision) = d.is_primary {
-            self.seats.take(Seat::of_node_type(n.name.kind), &record(revision));
+            self.primaries.take(PrimaryRole::of_node_type(n.name.kind), &record(revision));
         }
         if let Some(revision) = d.is_fabric_primary {
-            self.seats.take(Seat::FabricPrimary, &record(revision));
+            self.primaries.take(PrimaryRole::FabricPrimary, &record(revision));
         }
     }
 
@@ -6233,19 +6233,19 @@ impl DigestView {
         self.inner.lock().unwrap().values().filter(|(_, _, heard)| *heard == Heard::Forwarded).map(|(d, _, _)| d.node.name.mesh.clone()).collect()
     }
 
-    /// `mesh`'s current primary node-admin: the exact birth the held seat record names, the
+    /// `mesh`'s current primary node-admin: the exact birth the held primary record names, the
     /// canonical LeadershipView's answer as its digest, its mesh-primary's projection or an entry read
     /// carried it), with that birth's latest digest. Its status and how long it has gone unheard
-    /// do not move the seat (only a new record or a proven loss does), so neither is read here.
+    /// do not move the role (only a new record or a proven loss does), so neither is read here.
     pub fn mesh_primary(&self, mesh: &str) -> Result<MeshDigest, NoMeshPrimary> {
-        let holder = self.seats.mesh(mesh).ok_or_else(|| NoMeshPrimary::NoSeatRecord { mesh: mesh.to_string() })?;
-        if self.seats.gone().contains(&holder.incarnation) {
-            return Err(NoMeshPrimary::HolderGone { holder });
+        let primary = self.primaries.mesh(mesh).ok_or_else(|| NoMeshPrimary::NoPrimaryRecord { mesh: mesh.to_string() })?;
+        if self.primaries.gone().contains(&primary.incarnation) {
+            return Err(NoMeshPrimary::PrimaryGone { primary });
         }
-        match self.get(&holder.node_id.to_string()) {
-            Some((d, _)) if d.node.incarnation == holder.incarnation => Ok(d),
-            Some((d, _)) => Err(NoMeshPrimary::HolderNotHeld { held_incarnation: Some(d.node.incarnation), deleted: false, holder }),
-            None => Err(NoMeshPrimary::HolderNotHeld { held_incarnation: None, deleted: self.is_deleted(&holder.node_id.to_string()), holder }),
+        match self.get(&primary.node_id.to_string()) {
+            Some((d, _)) if d.node.incarnation == primary.incarnation => Ok(d),
+            Some((d, _)) => Err(NoMeshPrimary::PrimaryNotHeld { held_incarnation: Some(d.node.incarnation), deleted: false, primary }),
+            None => Err(NoMeshPrimary::PrimaryNotHeld { held_incarnation: None, deleted: self.is_deleted(&primary.node_id.to_string()), primary }),
         }
     }
 
@@ -6412,19 +6412,19 @@ mod tests {
         da.is_primary = Some(3);
         da.is_fabric_primary = Some(7);
         assert!(digest_view.record(da.clone()));
-        let held = |seat| match seat { Seat::FabricPrimary => digest_view.seats.fabric(), _ => digest_view.seats.node_type_primary("mesh1", rdm_core::NodeKind::RpcNode) };
-        assert_eq!(held(Seat::NodeTypePrimary(rdm_core::NodeKind::RpcNode)), Some(Primary { mesh: "mesh1".into(), node_id: a.clone(), incarnation: ai.clone(), revision: 3 }));
-        assert_eq!(held(Seat::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a.clone(), 7)));
+        let held = |role| match role { PrimaryRole::FabricPrimary => digest_view.primaries.fabric(), _ => digest_view.primaries.node_type_primary("mesh1", rdm_core::NodeKind::RpcNode) };
+        assert_eq!(held(PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::RpcNode)), Some(Primary { mesh: "mesh1".into(), node_id: a.clone(), incarnation: ai.clone(), revision: 3 }));
+        assert_eq!(held(PrimaryRole::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a.clone(), 7)));
         let mut db = digest(&b, &bi, None, MemberStatus::Ready, 1);
         db.node.name = "mesh1.rpc.2".parse().unwrap();
         db.is_primary = Some(2);
         assert!(digest_view.record(db.clone()));
-        assert_eq!(held(Seat::NodeTypePrimary(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((a.clone(), 3)), "a lower revision replaces nothing");
+        assert_eq!(held(PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((a.clone(), 3)), "a lower revision replaces nothing");
         db.digest_seq += 1;
         db.is_primary = Some(4);
         assert!(digest_view.record(db));
-        assert_eq!(held(Seat::NodeTypePrimary(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((b, 4)), "a higher revision is the record held");
-        assert_eq!(held(Seat::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a, 7)), "the fabric-primary record is its own");
+        assert_eq!(held(PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::RpcNode)).map(|h| (h.node_id, h.revision)), Some((b, 4)), "a higher revision is the record held");
+        assert_eq!(held(PrimaryRole::FabricPrimary).map(|h| (h.node_id, h.revision)), Some((a, 7)), "the fabric-primary record is its own");
     }
 
     /// CONTRACT (gossip.md "A primary change on gossip": "the mesh-primary records it on the node's row
@@ -6439,7 +6439,7 @@ mod tests {
         let view = test_view("mesh1", "mesh1.rpc.1");
         let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
         // The member holds its mesh-primary from its entry read.
-        view.digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: publisher.node_id.clone(), incarnation: publisher.incarnation.clone(), revision: 1 });
+        view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: publisher.node_id.clone(), incarnation: publisher.incarnation.clone(), revision: 1 });
         let (me, my_inc) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
         let (other, other_inc) = (NodeId::parse("000000000003").unwrap(), IncarnationId::mint());
         assert!(view.digest_view.record(digest(&me, &my_inc, None, MemberStatus::Ready, 5)));
@@ -6450,7 +6450,7 @@ mod tests {
         let members = Frame::MeshTopology { mesh: "mesh1".into(), publisher, forwarded_by: Some("mesh1.admin.1".into()), topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![mine, theirs], in_flight: Vec::new(), deleted: Vec::new() };
         let heard = hear(&mut view.order.lock().unwrap(), &view, &members, &fabric, Side::MeshChannel);
         assert!(heard, "the projection is admitted");
-        assert_eq!(view.digest_view.seats.node_type_primary("mesh1", rdm_core::NodeKind::RpcNode), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's projection carries");
+        assert_eq!(view.digest_view.primaries.node_type_primary("mesh1", rdm_core::NodeKind::RpcNode), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's projection carries");
     }
 
     fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
@@ -6847,7 +6847,7 @@ mod tests {
 
     /// CONTRACT (gossip.md §3.1 `MeshTopology`; R-HB1): a non-primary node-admin of mesh1 takes its own
     /// mesh's statuses from its primary's backbone mesh topology, and a stop's end only when that
-    /// projection moves, in order, past the stop. Holding mesh1.rpc.1 stopped from the seated
+    /// projection moves, in order, past the stop. Holding mesh1.rpc.1 stopped from the
     /// primary's event, which carries v2 (the version its stop changed the birth at): v1
     /// again (a refresh at the version held, built before the stop) is refused by name; v2 carries
     /// the stop; v3 lists neither (the primary's stop cleared before it held the birth again) and
@@ -6888,8 +6888,8 @@ mod tests {
         assert!(view.digest_view.record(b(MemberStatus::ConnectionsDeleting, 2)));
         assert_eq!(status(), Some(MemberStatus::Ready), "a heartbeat moves no status");
 
-        // The event from the seated primary, carrying the version its stop changed the birth at (v2).
-        view.digest_view.seats.take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), revision: 1 });
+        // The event from the primary, carrying the version its stop changed the birth at (v2).
+        view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), revision: 1 });
         view.take(&StatusEvent::Stopped.frame(stop.clone(), publisher.clone(), 2), &fabric, "mesh-channel");
         assert!(view.digest_view.get(id.as_str()).is_none() && view.digest_view.in_flight() == vec![stop.clone()]);
         hear(&mut view.order.lock().unwrap(), &view, &mesh_topology(1, vec![b(MemberStatus::Ready, 1)], vec![]), &fabric, Side::Backbone);
@@ -6942,7 +6942,7 @@ mod tests {
     /// manage that birth"; §3.1 `MeshTopology`: "what every node-admin holds of every Mesh", where "for an
     /// own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its Digest and
     /// status from the projection"; node-recovery.md "Detection and proof" step 1: "Every node-admin
-    /// keeps the silence bookkeeping (`first_seen`), so a node-admin that takes the seat mid-window
+    /// keeps the silence bookkeeping (`first_seen`), so a node-admin that takes the role mid-window
     /// continues the window already running"): a node-admin of mesh1 that is not its primary, whose
     /// primary's projection lists mesh1.rpc.1 though the member's own Digest never reached it, holds
     /// the birth from that projection, unheard since it first held it. A later version listing it
@@ -7000,7 +7000,7 @@ mod tests {
     /// CONTRACT (gossip.md §3.1 `MeshTopology`: the mesh-primary is the author of its own mesh's
     /// statuses): the mesh-primary authors its own mesh's statuses, a rule keyed on the receiver's own
     /// role. A mesh topology of its own mesh from another publisher (a predecessor's last one, arriving
-    /// after this node took the seat), on the backbone or its own channel, moves none of them. Must NOT happen: the primary's authored status overwritten by a projection copy.
+    /// after this node took the role), on the backbone or its own channel, moves none of them. Must NOT happen: the primary's authored status overwritten by a projection copy.
     #[test]
     fn a_mesh_primary_takes_no_status_of_its_own_mesh_from_another_publishers_projection() {
         let fabric = FabricId::parse("fab000000001").unwrap();
@@ -7911,7 +7911,7 @@ mod tests {
     /// 379b4094c48d8b852890734790b7b222).
 
     /// Two node-admins of mesh1, both Ready: `(lower NodeId, higher NodeId)`, named admin.2 and
-    /// admin.1 so the seat can sit on either.
+    /// admin.1 so the role can sit on either.
     fn two_admins(digest_view: &DigestView, at: Instant) -> (MeshDigest, MeshDigest) {
         let (mut a, mut b) = (NodeId::mint(), NodeId::mint());
         if b < a {
@@ -7931,65 +7931,65 @@ mod tests {
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1):
     /// a non-admin node type's primary record is held under its own (mesh, kind), apart from the mesh-primary
-    /// seat of the same mesh, by the same supersede rule; a committed update of a node-type primary seat is held under the node type too. Must NOT happen: an rpc
+    /// role of the same mesh, by the same supersede rule; a committed update of a node-type primary role is held under the node type too. Must NOT happen: an rpc
     /// node-type primary's record overwriting the mesh-primary record of its mesh.
     #[test]
     fn a_node_type_primary_is_held_apart_from_its_meshs_mesh_primary() {
         use rdm_core::NodeKind;
-        let seats = PrimaryView::default();
+        let primaries = PrimaryView::default();
         let admin = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 };
         let rpc = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 };
-        assert!(matches!(seats.take(Seat::MeshPrimary, &admin), SeatTaken::Held { .. }));
-        assert!(matches!(seats.take(Seat::NodeTypePrimary(NodeKind::RpcNode), &rpc), SeatTaken::Held { previous: None }));
-        assert_eq!(seats.mesh("mesh1"), Some(admin.clone()), "the mesh-primary record stays its own");
-        assert_eq!(seats.node_type_primary("mesh1", NodeKind::RpcNode), Some(rpc.clone()));
-        assert_eq!(seats.node_type_primary("mesh1", NodeKind::NodeAdmin), Some(admin.clone()), "the node-admin node-type primary seat is the mesh-primary seat");
-        assert_eq!(seats.node_type_primary("mesh1", NodeKind::Broker), None);
+        assert!(matches!(primaries.take(PrimaryRole::MeshPrimary, &admin), RoleTaken::Held { .. }));
+        assert!(matches!(primaries.take(PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), &rpc), RoleTaken::Held { previous: None }));
+        assert_eq!(primaries.mesh("mesh1"), Some(admin.clone()), "the mesh-primary record stays its own");
+        assert_eq!(primaries.node_type_primary("mesh1", NodeKind::RpcNode), Some(rpc.clone()));
+        assert_eq!(primaries.node_type_primary("mesh1", NodeKind::NodeAdmin), Some(admin.clone()), "the node-admin node-type primary role is the mesh-primary role");
+        assert_eq!(primaries.node_type_primary("mesh1", NodeKind::Broker), None);
         let older = Primary { revision: 0, ..rpc.clone() };
-        assert!(matches!(seats.take(Seat::NodeTypePrimary(NodeKind::RpcNode), &older), SeatTaken::Refused { .. }), "an older record is refused by the one supersede rule");
+        assert!(matches!(primaries.take(PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), &older), RoleTaken::Refused { .. }), "an older record is refused by the one supersede rule");
         // An update of the node-type primary is held under the node type.
         let next = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
-        let op = LifecycleOp { name: "mesh1.rpc.1".parse().unwrap(), node_id: rpc.node_id.clone(), incarnation: rpc.incarnation.clone(), operation: "node.primary.update:b:stop".into(), build_id: "b".into(), attempt: 1, event_at_rafka_ms: 0, traceparent: None, tracestate: None };
-        let taken = seats.take_together(&[(Seat::NodeTypePrimary(NodeKind::RpcNode), next.clone())]);
-        assert!(matches!(taken.as_slice(), [SeatTaken::Held { .. }]), "{taken:?}");
-        assert_eq!(seats.node_type_primary("mesh1", NodeKind::RpcNode), Some(next));
-        assert_eq!(seats.mesh("mesh1"), Some(admin), "and the mesh-primary record is untouched");
+        let _op = LifecycleOp { name: "mesh1.rpc.1".parse().unwrap(), node_id: rpc.node_id.clone(), incarnation: rpc.incarnation.clone(), operation: "node.primary.update:b:stop".into(), build_id: "b".into(), attempt: 1, event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+        let taken = primaries.take_together(&[(PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), next.clone())]);
+        assert!(matches!(taken.as_slice(), [RoleTaken::Held { .. }]), "{taken:?}");
+        assert_eq!(primaries.node_type_primary("mesh1", NodeKind::RpcNode), Some(next));
+        assert_eq!(primaries.mesh("mesh1"), Some(admin), "and the mesh-primary record is untouched");
     }
 
     /// CONTRACT (gossip.md §3.3, R-A2): a member tops up from its own mesh's current primary, the
-    /// birth its held seat record names, never from an election of its own. With the seat on the
-    /// admin whose NodeId is the higher of two Ready admins, the member's primary is that holder.
+    /// birth its held primary record names, never from an election of its own. With the role on the
+    /// admin whose NodeId is the higher of two Ready admins, the member's primary is that primary.
     #[test]
     fn a_members_mesh_primary_is_the_recorded_primary_not_the_lowest_ready_admin() {
         let digest_view = DigestView::default();
-        let (_lower, holder) = two_admins(&digest_view, Instant::now());
-        digest_view.seats.take(Seat::MeshPrimary, &primary_of(&holder, 3));
+        let (_lower, primary) = two_admins(&digest_view, Instant::now());
+        digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 3));
         assert_eq!(digest_view.mesh_primary("mesh1").ok().map(|d| d.node.name.to_string()), Some("mesh1.admin.1".into()));
     }
 
-    /// CONTRACT (R-EL1): a holder that is ConnectionsDeleting keeps its seat, so the member still tops up from it.
+    /// CONTRACT (R-EL1): a primary that is ConnectionsDeleting keeps its role, so the member still tops up from it.
     #[test]
     fn a_connections_deleting_mesh_primary_is_still_the_members_mesh_primary() {
         let digest_view = DigestView::default();
-        let (lower, holder) = two_admins(&digest_view, Instant::now());
-        digest_view.seats.take(Seat::MeshPrimary, &primary_of(&lower, 3));
+        let (lower, primary) = two_admins(&digest_view, Instant::now());
+        digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&lower, 3));
         let mut connections_deleting = lower.clone();
         connections_deleting.status = MemberStatus::ConnectionsDeleting;
         connections_deleting.digest_seq += 1;
         connections_deleting.emitted_at_rafka_ms += 1;
         assert!(digest_view.record(connections_deleting));
-        let _ = holder;
+        let _ = primary;
         assert_eq!(digest_view.mesh_primary("mesh1").ok().map(|d| d.node.name.to_string()), Some("mesh1.admin.2".into()));
     }
 
-    /// CONTRACT: the seat holder's digest aged past the staleness floor does not move the seat:
-    /// only a new record or a proven loss does, so the member still addresses the holder.
+    /// CONTRACT: the primary's digest aged past the staleness floor does not move the role:
+    /// only a new record or a proven loss does, so the member still addresses the primary.
     #[test]
     fn a_mesh_primary_unheard_past_the_staleness_floor_is_still_the_members_mesh_primary() {
         let digest_view = DigestView::default();
         let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
         let (lower, _higher) = two_admins(&digest_view, long_ago);
-        digest_view.seats.take(Seat::MeshPrimary, &primary_of(&lower, 3));
+        digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&lower, 3));
         assert_eq!(digest_view.mesh_primary("mesh1").ok().map(|d| d.node.name.to_string()), Some("mesh1.admin.2".into()));
     }
 
@@ -7999,24 +7999,24 @@ mod tests {
     #[test]
     fn a_mesh_primary_that_cannot_be_addressed_names_why() {
         let digest_view = DigestView::default();
-        assert_eq!(digest_view.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::NoSeatRecord { mesh: "mesh1".into() });
+        assert_eq!(digest_view.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::NoPrimaryRecord { mesh: "mesh1".into() });
         let unheard = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 };
-        digest_view.seats.take(Seat::MeshPrimary, &unheard);
-        assert_eq!(digest_view.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::HolderNotHeld { holder: unheard, held_incarnation: None, deleted: false });
+        digest_view.primaries.take(PrimaryRole::MeshPrimary, &unheard);
+        assert_eq!(digest_view.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::PrimaryNotHeld { primary: unheard, held_incarnation: None, deleted: false });
 
         let digest_view = DigestView::default();
         let (lower, _) = two_admins(&digest_view, Instant::now());
         let mut earlier = primary_of(&lower, 2);
         earlier.incarnation = IncarnationId::mint();
-        digest_view.seats.take(Seat::MeshPrimary, &earlier);
+        digest_view.primaries.take(PrimaryRole::MeshPrimary, &earlier);
         let err = digest_view.mesh_primary("mesh1").unwrap_err();
-        assert_eq!((err.reason(), err.primary()), ("seat-holder-not-held", Some(&earlier)));
-        assert_eq!(err, NoMeshPrimary::HolderNotHeld { holder: earlier, held_incarnation: Some(lower.node.incarnation.clone()), deleted: false });
+        assert_eq!((err.reason(), err.primary()), ("primary-not-held", Some(&earlier)));
+        assert_eq!(err, NoMeshPrimary::PrimaryNotHeld { primary: earlier, held_incarnation: Some(lower.node.incarnation.clone()), deleted: false });
         let held = primary_of(&lower, 3);
-        digest_view.seats.take(Seat::MeshPrimary, &held);
+        digest_view.primaries.take(PrimaryRole::MeshPrimary, &held);
         assert_eq!(digest_view.mesh_primary("mesh1").map(|d| d.node.node_id), Ok(lower.node.node_id.clone()));
-        digest_view.seats.mark_gone(held.incarnation.clone());
-        assert_eq!(digest_view.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::HolderGone { holder: held });
+        digest_view.primaries.mark_gone(held.incarnation.clone());
+        assert_eq!(digest_view.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::PrimaryGone { primary: held });
     }
 
     /// Every span opened while the capture is the thread's subscriber: its name and its fields.
@@ -8313,7 +8313,7 @@ mod tests {
     ///   mesh topology is installed; mesh2.admin.1's last mesh topology, stamped before it, arrives after it
     ///   and is ignored; the deleted primary is not held again (rafka-v2 s41's red, trace
     ///   6cf5759abdce42d61c414560c772b308);
-    /// - on an ordinary node's mesh channel, mesh1.admin.2's full (after the seat moved) is installed
+    /// - on an ordinary node's mesh channel, mesh1.admin.2's full (after the role moved) is installed
     ///   over mesh1.admin.1's; mesh1.admin.1's full and delta stamped before it are each ignored;
     /// - no source is marked desynchronized: nothing is repaired, for nothing is missing.
     /// Must NOT happen: a receiver switched back to the earlier publication's projection; a frame
@@ -8338,7 +8338,7 @@ mod tests {
         assert_eq!(held(&peer, Side::Backbone, "mesh2"), Some((publisher_of(&admin2b), 1)), "the peer keeps the successor primary's mesh topology of mesh2");
         assert!(peer.digest_view.is_deleted(admin2.node.node_id.as_str()) && peer.digest_view.get(admin2.node.node_id.as_str()).is_none(), "the deleted primary is not held again");
 
-        // An ordinary node's mesh channel: mesh1's seat moves from mesh1.admin.1 to mesh1.admin.2.
+        // An ordinary node's mesh channel: mesh1's role moves from mesh1.admin.1 to mesh1.admin.2.
         let member = test_view("mesh1", "mesh1.rpc.9");
         let mut channel = crate::receive_order::ReceiveOrder::default();
         let (p1, p2, rpc1) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.admin.2", 1), birth_at("mesh1.rpc.1", 1));
@@ -8361,7 +8361,7 @@ mod tests {
     ///   holds mesh1.admin.1's v7 listing mesh1.admin.2 Ready and executed mesh1.admin.1's stop; v8,
     ///   carrying mesh1.admin.2's stop, is taken, so mesh1.admin.2 is held stopped, and mesh1.admin.1's
     ///   own entry in it is refused by the stop the fabric-primary executed (`via-stopped-birth`, door
-    ///   `projection`); mesh1.admin.3 takes the seat and its full, stamped after v8, is installed;
+    ///   `projection`); mesh1.admin.3 takes the role and its full, stamped after v8, is installed;
     ///   mesh1.admin.1's v9, stamped before that full, is ignored by the receive path;
     /// - an own-mesh member on its mesh channel holds mesh1.admin.1's stop from the fabric-primary's
     ///   event; mesh1.admin.1's v8, listing itself Ready, is taken. A lifecycle fact carries no
@@ -8434,11 +8434,11 @@ mod tests {
     /// CONTRACT (R-RX1, R-RX2, R-RX3, Luke 2026-10-12; gossip.md §3.3: "A new source primary begins a
     /// new revision, and a receiver installs a full of that revision before applying any of its deltas"): an
     /// ordinary node of mesh2 holds mesh1's forwarded projection of mesh1.admin.1's lost birth, and the
-    /// seat record its entry read gave it names that birth. mesh1 recovers as itself, its new primary
+    /// primary record its entry read gave it names that birth. mesh1 recovers as itself, its new primary
     /// birth publishes, and mesh2's primary forwards the new revision's full and then a delta: the full is
-    /// installed as a new revision and the delta applied, with no seat evidence for the new birth and no
+    /// installed as a new revision and the delta applied, with no primary evidence for the new birth and no
     /// repair. The lost birth's last full, stamped before the new revision's, arrives after it and is
-    /// ignored by the receive path. Must NOT happen: a publication refused for a publisher the seat
+    /// ignored by the receive path. Must NOT happen: a publication refused for a publisher the primary
     /// record does not name; a source marked desynchronized with nothing missing (mesh_recover
     /// `a_lost_mesh_recovers_as_itself_under_the_same_build`: mesh2.rpc.1-3 refused 35 frames each).
     #[test]
@@ -8447,11 +8447,11 @@ mod tests {
         let member = test_view("mesh2", "mesh2.rpc.1");
         let mut channel = crate::receive_order::ReceiveOrder::default();
         let (lost, recovered, rpc) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.admin.1", 1), birth_at("mesh1.rpc.1", 1));
-        assert!(matches!(member.digest_view.seats.take(Seat::MeshPrimary, &primary_of(&lost, 1)), SeatTaken::Held { .. }), "the entry read's seat record of mesh1");
+        assert!(matches!(member.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&lost, 1)), RoleTaken::Held { .. }), "the entry read's primary record of mesh1");
         assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&lost), Some("mesh2.admin.1"), 7, 1, vec![lost.clone(), rpc.clone()], vec![], vec![]), 70), &fabric, Side::MeshChannel));
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&lost), 7)));
         assert!(hear(&mut channel, &member, &stamped(snapshot_of("mesh1", &publisher_of(&recovered), Some("mesh2.admin.1"), 1, 2, vec![recovered.clone(), rpc.clone()], vec![], vec![]), 90), &fabric, Side::MeshChannel));
-        assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 1)), "the new revision's full is installed: no seat evidence is asked of its publisher");
+        assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 1)), "the new revision's full is installed: no primary evidence is asked of its publisher");
         let delta = Frame::MeshTopologyDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&recovered), base_version: 1, topology_version: 2, published_at_rafka_ms: 95, changed: vec![], removed: vec![rpc.node.node_id.to_string()], in_flight: vec![], deleted: vec![] };
         assert!(hear(&mut channel, &member, &delta, &fabric, Side::MeshChannel));
         assert_eq!(member.mesh_rx.lock().unwrap().held_version("mesh1"), Some((publisher_of(&recovered), 2)), "its delta applies at exactly its base");
@@ -8560,10 +8560,10 @@ mod tests {
     /// CONTRACT (R-RX1, Luke 2026-10-12: no receiver refuses an input because of who sent it; R-RX3:
     /// lifecycle facts order by `topology_version`, here per publisher and subject mesh, whose counter
     /// it is): a `NodeStopped` or `NodeDeleting` is taken for what it carries, from a
-    /// publisher with no seat record held, from one the held seat record does not name, and from one
+    /// publisher with no primary record held, from one the held primary record does not name, and from one
     /// held stopped. A fact below the newest its channel holds of the same publisher and mesh is
     /// ignored by the receive path. Must NOT happen: a status event refused for who published it
-    /// (`via-unseated-publisher`), or a source marked for repair by it.
+    /// (`via-non-primary-publisher`), or a source marked for repair by it.
     #[test]
     fn a_status_event_is_taken_whoever_published_it_and_one_below_the_newest_of_its_publisher_and_mesh_is_ignored() {
         use tracing_subscriber::layer::SubscriberExt;
@@ -8574,18 +8574,18 @@ mod tests {
         let subject = |path: &str| birth_at(path, 1);
         let event = |kind: StatusEvent, s: &MeshDigest, operation: &str, by: &MeshDigest, version: u64| kind.frame(op_at(&s.node.name.to_string(), &s.node.node_id, &s.node.incarnation, operation), publisher_of(by), version);
 
-        // No seat record held: taken.
+        // No primary record held: taken.
         let member = test_view("mesh1", "mesh1.rpc.9");
         let mut channel = crate::receive_order::ReceiveOrder::default();
         let s1 = subject("mesh1.rpc.1");
         assert!(hear(&mut channel, &member, &event(StatusEvent::Stopped, &s1, "node.stop:mesh1.rpc.1", &primary, 4), &fabric, Side::MeshChannel));
-        assert_eq!(member.digest_view.in_flight().len(), 1, "no seat record is asked for: the stop is held");
+        assert_eq!(member.digest_view.in_flight().len(), 1, "no primary record is asked for: the stop is held");
 
-        // The seat record names mesh1.admin.1: mesh1.admin.2's events are taken too.
-        assert!(matches!(member.digest_view.seats.take(Seat::MeshPrimary, &primary_of(&primary, 1)), SeatTaken::Held { .. }));
+        // The primary record names mesh1.admin.1: mesh1.admin.2's events are taken too.
+        assert!(matches!(member.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1)), RoleTaken::Held { .. }));
         let s2 = subject("mesh1.rpc.2");
         assert!(hear(&mut channel, &member, &event(StatusEvent::Deleting, &s2, "node.delete:mesh1.rpc.2", &other, 7), &fabric, Side::MeshChannel));
-        assert_eq!(member.digest_view.in_flight().len(), 2, "a publisher the seat record does not name moves its subject: {:?}", member.digest_view.in_flight());
+        assert_eq!(member.digest_view.in_flight().len(), 2, "a publisher the primary record does not name moves its subject: {:?}", member.digest_view.in_flight());
 
         // A publisher held stopped: its event is taken.
         assert!(member.digest_view.stopped(op_at("mesh1.admin.3", &stopped_admin.node.node_id, &stopped_admin.node.incarnation, "node.stop:mesh1.admin.3")));
@@ -8605,17 +8605,17 @@ mod tests {
         assert!(hear(&mut channel, &member, &fresh, &fabric, Side::MeshChannel), "a new fact at mesh1.admin.1's v5 is never ordered against mesh1.admin.2's v7");
         assert!(member.digest_view.in_flight().iter().any(|op| op.node_id == s4.node.node_id));
 
-        assert!(spans.named("rdm.mesh.topology.reject.via-unseated-publisher").is_empty(), "no status event is refused for who published it");
+        assert!(spans.named("rdm.mesh.topology.reject.via-non-primary-publisher").is_empty(), "no status event is refused for who published it");
         assert!(member.mesh_rx.lock().unwrap().desynced().is_empty(), "nothing is marked for repair");
     }
 
     /// CONTRACT (node-status-heartbeat-connections.md §C "late stopped after starting": "a NodeStopped
     /// older than the starting fact (lower `topology_version`) is refused"; §A.2 "Receivers compare per
     /// subject"; R-HB1 G1: "A receiver orders a fact only against facts of the same publisher revision"):
-    /// a member holds its seated primary's projection v5 listing mesh1.rpc.1 again after its start. The
+    /// a member holds its primary's projection v5 listing mesh1.rpc.1 again after its start. The
     /// primary's `NodeStopped` of that birth stamped v4 arrives late: it is refused by name, naming the
     /// held version, and the birth stays held. The same event stamped v6 (after the held projection) is
-    /// taken; so is a v4 stop from another seated publisher's revision (the fabric-primary's), which is
+    /// taken; so is a v4 stop from another primary publisher's revision (the fabric-primary's), which is
     /// never ordered against this projection. Must NOT happen: a late stop dropping a started birth.
     #[test]
     fn a_node_stopped_older_than_the_held_projection_of_its_publisher_listing_the_birth_is_refused_by_name() {
@@ -8628,8 +8628,8 @@ mod tests {
         let stop = op_at("mesh1.rpc.1", &rpc.node.node_id, &rpc.node.incarnation, "node.stop:mesh1.rpc.1");
         let member = |name: &str| {
             let v = test_view("mesh1", name);
-            v.digest_view.seats.take(Seat::MeshPrimary, &primary_of(&primary, 1));
-            v.digest_view.seats.take(Seat::FabricPrimary, &primary_of(&fabric_primary, 1));
+            v.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1));
+            v.digest_view.primaries.take(PrimaryRole::FabricPrimary, &primary_of(&fabric_primary, 1));
             v.take_snapshot(&snapshot_of("mesh1", &publisher_of(&primary), Some("mesh1.admin.1"), 5, 1, vec![primary.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel, &mut v.order.lock().unwrap());
             assert!(v.digest_view.record(rpc.clone()));
             v
@@ -8671,7 +8671,7 @@ mod tests {
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let view = test_view("mesh1", "mesh1.admin.2");
         let primary = birth_at("mesh1.admin.1", 1);
-        view.digest_view.seats.take(Seat::MeshPrimary, &primary_of(&primary, 1));
+        view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1));
         let rpc = birth_at("mesh1.rpc.1", 5);
         let stop = op_at("mesh1.rpc.1", &rpc.node.node_id, &rpc.node.incarnation, "node.stop:mesh1.rpc.1");
         assert!(view.digest_view.record(rpc.clone()));
@@ -8761,7 +8761,7 @@ mod tests {
         let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", clock, vec![], &[]).await.unwrap();
         let bb = Backbone::join(&gossip, &ep, &m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
-        // Clear `full_due` after initial seat take so publication 1 is a normal source full and publication 2 is a delta.
+        // Clear `full_due` after initial role take so publication 1 is a normal source full and publication 2 is a delta.
         bb.full_due.store(false, Ordering::Relaxed);
         let _ = racing.version_lock.set(bb.version.clone());
         let _ = racing.forwarder_lock.set(m.view.forwarder.clone());
@@ -8821,13 +8821,13 @@ mod tests {
     /// before the `Side::Read` `topology_version = 0` chunk, advancing `ReceiveOrder` to `v1` while
     /// `View::apply_full` recorded only `take_projected_status` for own-mesh members; `View::take_read_chunk`
     /// refused `v0` as `OlderThanHeld { held_version: 1, offered_version: 0 }` without recording the
-    /// own-mesh member digests into `DigestView`, leaving `mesh1.admin.2` with the seat record
+    /// own-mesh member digests into `DigestView`, leaving `mesh1.admin.2` with the primary record
     /// `mesh1:m1w2kypnr9xf@nejxnr0r5rwd (revision 1)` and `digest_view.get(primary) == None`, so top-up
-    /// refused `seat-holder-not-held`): when a `Side::Read` chunk of the node's own mesh arrives below
+    /// refused `primary-not-held`): when a `Side::Read` chunk of the node's own mesh arrives below
     /// the version already installed on `mesh-channel` / `backbone`, the projection in `mesh_rx` and
     /// `order` stays at `held_version` (`OlderThanHeld`), and the own-mesh member digests the read
     /// carries are still held in `DigestView` (preserving the projected status from `held_version`), so
-    /// the seat holder named by the read's `Seats` frame is held and `mesh_primary()` resolves it.
+    /// the primary named by the read's `Primaries` frame is held and `mesh_primary()` resolves it.
     #[test]
     fn an_own_mesh_topology_read_overtaken_by_gossip_keeps_the_newer_projection_and_holds_the_mesh_primarys_digest() {
         let fabric = FabricId::parse("fab000000001").unwrap();
@@ -8847,7 +8847,7 @@ mod tests {
         assert!(hear(&mut view.order.lock().unwrap(), &view, &gossip_v1, &fabric, Side::MeshChannel));
         assert_eq!(view.mesh_rx.lock().unwrap().held_version("mesh1"), Some((p.clone(), 1)));
 
-        // The in-flight topology read served at v0 arrives on Side::Read, followed by the seat record.
+        // The in-flight topology read served at v0 arrives on Side::Read, followed by the primary record.
         let read_v0 = crate::snapshot::Chunk {
             mesh: "mesh1".into(),
             publisher: p.clone(),
@@ -8867,8 +8867,8 @@ mod tests {
         );
         assert_eq!(view.mesh_rx.lock().unwrap().held_version("mesh1"), Some((p, 1)));
 
-        assert!(matches!(view.digest_view.seats.take(Seat::MeshPrimary, &primary_of(&primary, 1)), SeatTaken::Held { .. }));
-        let resolved = view.digest_view.mesh_primary("mesh1").expect("the seat holder's digest from the own-mesh topology read is held in the digest view");
+        assert!(matches!(view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &primary_of(&primary, 1)), RoleTaken::Held { .. }));
+        let resolved = view.digest_view.mesh_primary("mesh1").expect("the primary's digest from the own-mesh topology read is held in the digest view");
         assert_eq!(resolved.node.node_id, primary.node.node_id);
         assert_eq!(resolved.status, MemberStatus::Ready, "the projected status from v1 is preserved");
     }

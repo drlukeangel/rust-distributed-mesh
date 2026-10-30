@@ -1,7 +1,7 @@
 //! The path a forwarding mesh primary's frames take onto its own mesh channel.
 //!
 //! ONE ordered sender carries every frame the primary puts on its mesh channel for the backbone:
-//! the forwarder's decisions (the backbone receiver, the own-mesh publication, the seat fulls) and the
+//! the forwarder's decisions (the backbone receiver, the own-mesh publication, the role fulls) and the
 //! lifecycle frames it carries in. A decision is made under the forwarder's lock and queued while
 //! that lock is still held, so the queue's order is the decision order; a single task empties the
 //! queue, finishing every frame of a decision (a chunked full is one decision) before it takes the
@@ -10,7 +10,7 @@
 //! source and publisher, and one task sending one decision at a time keeps them in order and
 //! contiguous. The queue is unbounded and never drops: topology forwards are low-rate.
 //!
-//! Only the holder of the forwarder role (the mesh's primary) decides or carries anything. The role
+//! Only the mesh's primary (holding the forwarder role) decides or carries anything. The role
 //! and its term live under the forwarder's lock: taking or losing it clears the baseline and begins
 //! a new term in one step, every decision reads the role under that same lock, and each queued
 //! entry carries the term it was decided in. The sender drops an entry whose term is not the
@@ -18,7 +18,7 @@
 //!
 //! The forwarder advances its baseline when it decides, before the send. A frame the channel
 //! refuses, or a queue whose task is gone, sets `owes_full`: the next publication of the primary
-//! puts the full of every source into the mesh (the seat's mechanism), with no timer and no retry.
+//! puts the full of every source into the mesh (the role's mechanism), with no timer and no retry.
 
 use crate::topology::Frame;
 use crate::snapshot::{Forward, Forwarder, Full, PublisherId};
@@ -39,7 +39,7 @@ enum Job {
     Forwarded { me: String, revision: u64, source: Option<(String, PublisherId, u64)>, out: Forward },
     /// A lifecycle frame this primary carries into its mesh.
     Carried { me: String, revision: u64, frame: Frame },
-    /// A neighbour-up replay (statuses, seats, and the forwarder's published fulls), decided and
+    /// A neighbour-up replay (statuses, primaries, and the forwarder's published fulls), decided and
     /// queued under the forwarder's lock so no delta decided after it can pass it on the channel.
     Replayed { me: String, revision: Option<u64>, frames: Vec<Frame> },
 }
@@ -100,7 +100,7 @@ impl ForwardPath {
         now_ms
     }
 
-    /// The first publication of every source in `held` (taking the seat, or owing a full): one
+    /// The first publication of every source in `held` (taking the role, or owing a full): one
     /// decision, queued behind every frame queued before it.
     #[cfg(test)]
     pub(crate) fn fulls(&self, me: &str, node_mesh: &str, reason: &'static str, held: &[(String, PublisherId, u64, Full)], now_ms: u64) {
@@ -121,7 +121,7 @@ impl ForwardPath {
     }
 
     /// Take (`true`) or lose (`false`) the forwarder role: this mesh's primary. A forwarder that
-    /// takes or loses the seat has published nothing into its mesh: under the forwarder's lock its
+    /// takes or loses the role has published nothing into its mesh: under the forwarder's lock its
     /// baseline is cleared, a new term begins, and the first publication of every source after
     /// taking it is owed as a full (gossip.md §3.3). Returns whether the role changed.
     pub(crate) fn set_role(&self, on: bool) -> bool {
@@ -145,7 +145,7 @@ impl ForwardPath {
         self.enqueue(Job::Carried { me: me.to_string(), revision, frame });
     }
 
-    /// Queue a neighbour-up replay (statuses, seats, and the forwarder's published fulls) under
+    /// Queue a neighbour-up replay (statuses, primaries, and the forwarder's published fulls) under
     /// the forwarder's lock, behind every frame queued before it and ahead of any delta decided
     /// after it. Returns `(frames, full_chunks, bytes)`.
     pub(crate) fn replay(&self, me: &str, mut frames: Vec<Frame>, now_ms: impl FnOnce() -> u64) -> (usize, usize, usize) {
@@ -604,7 +604,7 @@ mod tests {
         );
     }
 
-    /// CONTRACT: a node that does not hold the role decides nothing: a source moving, a seat full
+    /// CONTRACT: a node that does not hold the role decides nothing: a source moving, a role full
     /// and a carried frame put nothing into the mesh, and leave no baseline behind.
     #[tokio::test]
     async fn a_node_without_the_role_forwards_nothing() {
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 11)], "the first publication after taking the role is a full, and nothing before it was sent");
     }
 
-    /// CONTRACT: every producer shares the one order: a seat full, a carried lifecycle frame, a
+    /// CONTRACT: every producer shares the one order: a role full, a carried lifecycle frame, a
     /// neighbour-up replay and a delta reach the channel in the order they were queued, whatever
     /// the first send takes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

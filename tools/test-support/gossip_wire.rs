@@ -39,7 +39,7 @@ pub fn golden(f: &Frame, old: &[u8]) -> Vec<u8> { golden_with_trace(f, old, None
 
 /// The optional standard pairs, supplied as literal expected W3C strings.
 pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Option<&str>) -> Vec<u8> {
-    let kinds = ["rdm.mesh.digest", "rdm.mesh.members", "rdm.mesh.members.delta", "rdm.node.deleting", "rdm.node.deleted", "rdm.node.restarting", "rdm.mesh.status", "rdm.fabric.status", "rdm.seat.seated", "rdm.mesh.concern", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.fabric.primary.new", "rdm.fabric.state.committing", "rdm.fabric.state.committed", "rdm.fabric.traffic.opening", "rdm.fabric.traffic.opened", "rdm.node.stopped", "rdm.node.primary.updated", "rdm.node.primary.updating"];
+    let kinds = ["rdm.mesh.digest", "rdm.mesh.members", "rdm.mesh.members.delta", "rdm.node.deleting", "rdm.node.deleted", "rdm.node.restarting", "rdm.mesh.status", "rdm.fabric.status", "rdm.reserved.8", "rdm.mesh.concern", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.fabric.primary.new", "rdm.fabric.state.committing", "rdm.fabric.state.committed", "rdm.fabric.traffic.opening", "rdm.fabric.traffic.opened", "rdm.node.stopped", "rdm.node.primary.updated", "rdm.node.primary.updating"];
     let kind = kinds[old[0] as usize];
     let a = author(); let mut source = format!("rdm://{}/{}/{}", a.fabric, a.node, a.incarnation);
     let mut seq = None; let mut ms = 1;
@@ -69,7 +69,7 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
             (format!("operation/{}/{}/{}/birth/{}/{}", esc(&o.build_id), o.attempt, esc(&o.operation), o.node_id, o.incarnation), vec![o.build_id.clone(), o.attempt.to_string(), o.operation.clone(), o.node_id.to_string(), o.incarnation.to_string()])
         }
         Frame::Concern { node_id, incarnation, observer, .. } => (format!("birth/{}/{node_id}/{incarnation}", a.fabric), vec![node_id.to_string(), incarnation.to_string(), observer.clone()]),
-        Frame::NewFabricPrimary { holder: h, .. } => (format!("fabric/{}/seat", a.fabric), vec![h.node_id.to_string(), h.incarnation.to_string()]),
+        Frame::NewFabricPrimary { primary: h, .. } => (format!("fabric/{}/primary", a.fabric), vec![h.node_id.to_string(), h.incarnation.to_string()]),
         _ => unreachable!(),
     };
     let mut attrs = vec![("specversion", "1.0".into()), ("id", format!("{kind}/{}", joined(identity))), ("source", source), ("type", kind.into()), ("subject", subject)];

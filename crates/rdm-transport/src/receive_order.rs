@@ -1,7 +1,7 @@
 //! Receive classification for gossip and topology-read installs. Decisions use the frame's
 //! declared subject, identity and ordering fields, never the transport sender.
 //!
-//! MeshStatus and FabricStatus compare the envelope's composite written-seat revision and
+//! MeshStatus and FabricStatus compare the envelope's composite written-primary revision and
 //! change-time sequence through [`admit_status_context`] under the status view's installation lock. A delayed predecessor loses
 //! by revision even with a later timestamp (R10). Within one held author/revision, [`admit_status`]
 //! preserves change-time ordering and the existing named duplicate/inconsistency outcomes.
