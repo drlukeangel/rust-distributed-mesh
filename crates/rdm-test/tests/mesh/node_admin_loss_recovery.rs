@@ -153,6 +153,22 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         }
     }
 
+    // The member's recovery runs to its end before the estate stops. Since Q273 its verdict is the
+    // inspect's (`exited`, no tickle), so its first submit can come before the recovery admin holds
+    // mesh2's role and is answered not-claimant and sent again, and the settled view above can be read
+    // while that create still waits for the node's Ready.
+    wait_for("the dead member's recovery completes", Duration::from_secs(60), || {
+        let estate = &estate;
+        let (victim, id) = (window_victim.clone(), victim_id.clone());
+        async move {
+            let spans = estate.spans();
+            named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+                .into_iter()
+                .any(|sp| s(&sp["attributes"]["node"]) == victim && s(&sp["attributes"]["node_id"]) == id && s(&sp["attributes"]["outcome"]).starts_with("complete"))
+                .then_some(())
+        }
+    })
+    .await;
     estate.enter_fabric_primary().await;
     estate.stop().await;
     let spans = estate.spans();

@@ -672,6 +672,9 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     estate.settles_to(&grown, Duration::from_secs(120)).await;
     let fabrics_after: Vec<String> = std::fs::read_dir(&store).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
     assert_eq!(fabrics_after, fabrics_before, "no second fabric on the store");
+    // The window the members are read over ends here: the estate's own stop below has every member
+    // declare ConnectionsDeleting, applied by the adopted primary, which is not the takeover's.
+    let stopped_at = now_ns();
     estate.stop().await;
 
     let spans = estate.spans();
@@ -685,7 +688,7 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     assert!(pulled.len() == 1 && attr(pulled[0], "source") == "pull", "rafka-time adopted from a live member: {pulled:#?}");
     let left: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
-        .filter(|sp| at(sp) >= lost_at && members.iter().any(|(m, _)| attr(sp, "node") == *m) && !attr(sp, "state").contains("Ready"))
+        .filter(|sp| at(sp) >= lost_at && at(sp) < stopped_at && members.iter().any(|(m, _)| attr(sp, "node") == *m) && !attr(sp, "state").contains("Ready"))
         .collect();
     assert!(left.is_empty(), "no member left ready: {left:#?}");
     println!("trace_id={}", claims[0]["trace_id"].as_str().unwrap_or(""));

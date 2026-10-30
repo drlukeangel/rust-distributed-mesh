@@ -1637,8 +1637,8 @@ async fn a_hung_node_admin_member_is_investigated_by_its_mesh_primary_and_re_cre
     let held_down: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-offline-hold-down-opened").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
     assert!(held_down.is_empty(), "nothing holds between the ladder nobody answered and the recovery: {held_down:?}");
     let ladders: Vec<&Value> = named(&spans, "rdm.node.tickle.returns-unknown.via-unreached").into_iter().filter(|sp| sp["attributes"]["caller"] == mesh_primary.as_str() && sp["attributes"]["node_id"] == before["node_id"]).collect();
-    assert_eq!(ladders.len(), 1, "one ladder, then the inspection: {ladders:?}");
-    assert_eq!(s(&ladders[0]["attributes"]["next"]), "inspect", "the ladder nobody answered goes to the inspection: {}", ladders[0]);
+    assert_eq!(ladders.len(), 1, "the inspection, then one ladder (Q273): {ladders:?}");
+    assert_eq!(s(&ladders[0]["attributes"]["next"]), "verdict", "the inspection read it running, so the ladder nobody answered ends in the verdict (node-investigation.md step 4, Q273): {}", ladders[0]);
     eprintln!("node-admin member cell: {node} (birth {}) recovered by {mesh_primary}: trace {} | new birth {}", s(&before["node_id"]), s(&recovery["trace_id"]), s(&after["node_id"]));
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
     estate.settles_to(&[("mesh1", 2, 1)], Duration::from_secs(30)).await;
@@ -2087,12 +2087,14 @@ fn num_attr(sp: &Value, k: &str) -> u64 {
 /// CONTRACT (#3051 acceptance 2, node-recovery.md "Detection and proof" step 1: "Every node-admin
 /// keeps the silence bookkeeping (`first_seen`), so a node-admin that takes the role mid-window
 /// continues the window already running"): a member of mesh2 (two node-admins, its mesh-primary not
-/// the fabric-primary) is killed; once mesh2's primary has run tickle ladder 1 for it, that primary is
+/// the fabric-primary) is hung (every task but the leader held by a tracer: the provider reads it running,
+/// so node investigation's inspect, first since Q273, leaves it to the tickles; a killed member is
+/// decided `exited` at the inspect with no ladder at all); once mesh2's primary has run tickle ladder 1 for it, that primary is
 /// stopped, which hands mesh2's role to its second admin. The new mesh-primary tickles on the window
 /// it has kept since before it took the role (its ladder names a `first_seen_ms` earlier than the
 /// role change by a probe delay or more, never a window opened at the role), reaches TRUE OFFLINE,
-/// asks the provider, and its submit follows the one recovery to `complete`: a new node.id at the
-/// path over the same endpoint key. The old primary is stopped mid-ladder, once its direct probe has
+/// on the inspect's `running`, and its submit follows the one recovery to `complete`: a new node.id at the
+/// path over a newly allocated data dir, so a new endpoint key (node-investigation.md "Data dir"). The old primary is stopped mid-ladder, once its direct probe has
 /// ended and before its ladder is folded (node-recovery.md step 3: a ladder nobody answers is the
 /// recovery at once, Q181). Must NOT happen: the window restarted at the role change, the recovery
 /// submitted by the stopped primary, or a proven-drift attempt for the member.
@@ -2107,12 +2109,13 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let standby = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != mp.as_str()).expect("mesh2's second admin")["name"]);
     const NODE: &str = "mesh2.rpc.1";
     let before = estate.node_value(NODE).await;
-    estate.kill_node(NODE).await;
+    let rt = exact_runtime(&estate, NODE).await;
+    let _held = rt.hang().expect("the exact runtime is hung");
 
     // The ladder on the mesh-primary that holds the role now, mid-way: its direct probe ended. Due by
     // node-recovery.md steps 1-2: the silence (one floor after the last digest heard: offline.rs
     // `silent_set` derives the mark from it), the loop's pass half a floor after the mark (on the
-    // gossip-interval grid: up to one interval late), then the direct probe to a killed process, which
+    // gossip-interval grid: up to one interval late), the inspect (`running`), then the direct probe to a hung process, which
     // spends its whole dial: the connection's idle timeout, the staleness floor (R-T8), inside the
     // call's 10 s budget. Then the export's 200 ms schedule and this cell's read of it (one gossip
     // interval). Its probes through the peers still run: the ladder is not folded yet.
@@ -2146,7 +2149,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     assert_eq!(s(&recovery["attributes"]["submitter"]), standby, "the new mesh-primary submitted the recovery: {recovery}");
     assert_eq!(s(&recovery["attributes"]["mesh"]), "mesh2", "an attempt of mesh2's lane, opened by the new mesh-primary itself: {recovery}");
     let after = until_node_where(&estate, NODE, &format!("{NODE} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
-    assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same transport key, loaded from the inherited data dir");
+    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a verdict other than exited re-creates over a newly allocated data dir, so a new transport key");
 
     let spans = estate.spans();
     let taken_ns = start(&role);
@@ -2164,7 +2167,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
         .into_iter()
         .find(|sp| sp["attributes"]["node_id"] == before["node_id"] && sp["attributes"]["inspector"] == standby.as_str())
         .unwrap_or_else(|| panic!("{standby}'s provider inspection of {NODE}"));
-    assert_eq!(s(&inspection["attributes"]["verdict"]), "exited", "{inspection}");
+    assert_eq!(s(&inspection["attributes"]["verdict"]), "running", "{inspection}");
     assert!(!named(&spans, "rdm.node_admin.build.update.via-node-recovery").iter().any(|sp| sp["attributes"]["submitter"] == mp.as_str() && s(&sp["attributes"]["outcome"]).starts_with("complete")), "the stopped primary recovered nothing");
     let drift: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(NODE)).collect();
     assert!(drift.is_empty(), "the fabric-primary opened a drift attempt for a member: {drift:?}");
