@@ -1482,6 +1482,15 @@ impl DriveEnv {
                 };
                 (p.attempt, holder, self.door.contexts.get(&id, p.attempt).await.ok().flatten().unwrap_or_default())
             } else {
+                // A taken-over attempt ends with its proven-exited executor: its hold on that executor's
+                // mesh goes first, before anything this pass claims (a role move's own attempt
+                // included), so no later attempt in that mesh is refused naming an attempt that ended
+                // (R-BI7 caveat 3).
+                if take_over {
+                    if let Some(lost) = p.executor.as_deref().and_then(parse_path) {
+                        self.release_mesh(&id, p.attempt, &lost).await;
+                    }
+                }
                 // The teardown opens once every open attempt of the Builds it interrupts has ended and
                 // each of them has its terminal (build.md §1).
                 if p.deletes_fabric() {
@@ -1510,13 +1519,6 @@ impl DriveEnv {
                     Ok(true) => continue,
                     Ok(false) => {}
                     Err(end) => return end,
-                }
-                // A taken-over attempt ends with its proven-exited executor: its hold on that
-                // executor's mesh goes before the next attempt takes the mesh.
-                if take_over {
-                    if let Some(lost) = p.executor.as_deref().and_then(parse_path) {
-                        self.release_mesh(&id, p.attempt, &lost).await;
-                    }
                 }
                 // The meshes whose own mesh-primary executes what is left of them are sent their sections,
                 // all at once (Q250); the fabric lane then plans what is left again.
