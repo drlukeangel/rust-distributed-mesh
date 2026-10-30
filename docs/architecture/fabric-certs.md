@@ -124,7 +124,7 @@ internally on policy ([fabric.ca.renew](lifecycles/fabric-ca-renew.md)): a new C
 anchor, every issuer re-minted, nothing pushed to any node but the ordinary renewals. The anchor itself
 rotates only on the app's or a person's call with a new root
 ([fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op)), through an
-overlap in which every node trusts both anchors (`node.roots.update`), and the old one is retired once
+overlap in which every node trusts both anchors (`node.roots.update`), and the old one is replaced once
 nothing chains to it.
 
 ## Custody

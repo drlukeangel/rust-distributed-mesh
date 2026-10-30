@@ -63,7 +63,7 @@ What an operation is admitted against, gate by gate and the source each reads, i
 | [node.primary.update](lifecycles/node-primary-update.md) | Moving the primary of the nodes of one type in one mesh to its successor, first in every stop, delete, replace or `node.connection.delete { scope: All }` of a primary |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | Moving the fabric-primary, the first step of a mesh.delete of its mesh |
 | [fabric.ca.renew](lifecycles/fabric-ca-renew.md) | RDM's CA rotated internally on policy under the same anchor: every issuer re-minted, no node's trust set touched |
-| [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | The trust anchor rotated on a caller's new root, through an overlap in which every node trusts both, then the CA re-minted under it and the old anchor retired |
+| [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | The trust anchor rotated on a caller's new root, through an overlap in which every node trusts both, then the CA re-minted under it and the old anchor replaced |
 | [Recovery](lifecycles/fabric-recovery.md) | Launching a node-admin again after the loss of every node-admin; the loss of the fabric-primary while a node-admin lives: the fabric recovery workflow, one mechanism from its own mesh or the backbone, nobody taking the role |
 | [fabric.delete](lifecycles/fabric-delete.md) | Deleting the fabric, mesh by mesh, the fabric-primary's own mesh last |
 

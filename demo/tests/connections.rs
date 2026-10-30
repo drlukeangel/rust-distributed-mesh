@@ -298,7 +298,7 @@ async fn establish_direct_edge(
 /// What the node's `node.connection.get` answers for a stream Proxy that is still open after its
 /// route was replaced by Direct (connections.md §10: the tunnel outlives the Proxy's
 /// `Disconnected(direct-restored)` write).
-const TUNNEL_PAST_ITS_ROUTE: &str = "route: retired";
+const TUNNEL_PAST_ITS_ROUTE: &str = "route: deleted";
 
 /// `node.connection.get { node }` of the exact birth `node`, sent by `root`'s Node RPC client, answered
 /// within `bound`. The node answers once every observation handed to its connections writer has

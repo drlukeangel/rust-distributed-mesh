@@ -773,7 +773,7 @@ mod tests {
     }
 
     /// CONTRACT: docs/architecture/connections.md:325
-    /// "A valid active Proxy overrides an active Direct until the proxy is durably retired"
+    /// "A valid active Proxy overrides an active Direct until the proxy is durably deleted"
     /// CONTRACT: docs/architecture/connections.md:482
     /// "A reconnect series exists when the latest Direct record for this source and destination is Failed for the
     /// current destination incarnation and no newer Direct Connected supersedes it."

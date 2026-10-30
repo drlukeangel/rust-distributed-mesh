@@ -880,7 +880,7 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
     let triggers = named("rdm.node_admin.connection.update.via-accept-trigger");
     assert_eq!(triggers.len(), 1);
     assert_eq!(triggers[0]["attributes"]["outcome"], "coalesced", "the accept while pending coalesced into the due-time item: {:?}", triggers[0]);
-    let deletes = named("rdm.node_admin.connection.update.via-retirement");
+    let deletes = named("rdm.node_admin.connection.delete.via-direct-restored");
     assert_eq!(deletes.len(), 1);
     assert_eq!(deletes[0]["attributes"]["outcome"], "landed");
     let spent = named("rdm.node_admin.connection.remove.via-recovery-attempt");
@@ -948,7 +948,7 @@ fn attr(sp: &serde_json::Value, k: &str) -> Option<String> {
 /// span: an observed Proxy Connected (`via-observed`), a reconnect attempt of a failing series
 /// (`via-recovery-dial`, the series' round and the attempt's ordinal, one above the latest Failed
 /// row's), the attempt's Direct Connected (`via-observed`), the Proxy's `Disconnected
-/// (direct-restored)` (`via-retirement`), a first Direct Failed toward another destination
+/// (direct-restored)` (`via-direct-restored`), a first Direct Failed toward another destination
 /// (`via-observed`, its round and ordinal 1) and a connections delete's drop
 /// (`via-connection-delete`). Every transition span names source, destination, kind, state and
 /// reason; every Proxy transition its carrier; every Direct Failed and every reconnect attempt its
@@ -989,7 +989,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
     });
     let _ = std::fs::remove_dir_all(&dir);
     let named = |n: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == n).collect() };
-    let transitions: Vec<&serde_json::Value> = ["rdm.node_admin.connection.update.via-observed", "rdm.node_admin.connection.update.via-retirement", "rdm.node_admin.connection.update.via-connection-delete"].into_iter().flat_map(named).collect();
+    let transitions: Vec<&serde_json::Value> = ["rdm.node_admin.connection.update.via-observed", "rdm.node_admin.connection.delete.via-direct-restored", "rdm.node_admin.connection.update.via-connection-delete"].into_iter().flat_map(named).collect();
     let kinds: Vec<(String, String, Option<String>)> = transitions.iter().map(|sp| (sp["name"].as_str().unwrap().rsplit('.').next().unwrap().to_string(), format!("{}->{}", attr(sp, "source").unwrap_or_default(), attr(sp, "destination").unwrap_or_default()), attr(sp, "state"))).collect();
     assert_eq!(transitions.len(), 5, "five transitions landed (Proxy Connected, Direct Connected, Proxy Disconnected, Direct Failed, the drop): {kinds:?}");
     for sp in &transitions {
@@ -1005,7 +1005,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
             assert!(!attr(sp, "reason").unwrap().is_empty(), "a Failed or Disconnected transition names its reason: {sp}");
         }
     }
-    let delete = named("rdm.node_admin.connection.update.via-retirement");
+    let delete = named("rdm.node_admin.connection.delete.via-direct-restored");
     assert_eq!(delete.iter().map(|sp| (attr(sp, "kind"), attr(sp, "state"), attr(sp, "reason"), attr(sp, "outcome"))).collect::<Vec<_>>(), vec![(Some("proxy".into()), Some("disconnected".into()), Some("direct-restored".into()), Some("landed".into()))], "{delete:?}");
     let drop = named("rdm.node_admin.connection.update.via-connection-delete");
     assert_eq!(drop.iter().map(|sp| (attr(sp, "destination"), attr(sp, "kind"), attr(sp, "state"))).collect::<Vec<_>>(), vec![(Some(names.2.clone()), Some("direct".into()), Some("disconnected".into()))], "{drop:?}");

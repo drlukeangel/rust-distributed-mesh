@@ -327,7 +327,7 @@ pub struct FabricView {
     #[serde(default)]
     pub previous_topology_storage_providers: Vec<String>,
     /// The root rotation as the Fabric row's roots row names it (fabric-ca-renew.md): its phase, the
-    /// old anchor's bound, and whether that bound passed with the rotation not retired. `None` while no
+    /// old anchor's bound, and whether that bound passed with the rotation not updated. `None` while no
     /// rotation was accepted.
     #[serde(default)]
     pub roots: Option<RootsView>,
@@ -338,14 +338,14 @@ pub struct FabricView {
 }
 
 /// `fabric.get`'s `roots { phase, expires_at }` (fabric-ca-renew.md "fabric.root.update, the caller
-/// op"): a rotation not retired by the old anchor's bound is `stalled`.
+/// op"): a rotation not updated by the old anchor's bound is `stalled`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootsView {
     /// The rotation's phase.
     pub phase: crate::status::RootsPhase,
     /// The old anchor's bound, rafka-time ms.
     pub expires_at: u64,
-    /// The bound passed and the rotation is not retired (`roots: stalled`).
+    /// The bound passed and the rotation is not updated (`roots: stalled`).
     pub stalled: bool,
 }
 

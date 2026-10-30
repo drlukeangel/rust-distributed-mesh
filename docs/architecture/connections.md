@@ -79,7 +79,7 @@ Two words for a call through a middle node, one per plane:
   its own mesh from the topology it holds (R-BI7) forwards nothing; it is its own attempt.
 - **Proxy** is the data plane's. A node that cannot open a direct path for traffic proves a
   two-hop path through one exact carrier and keeps it as a connection of its own: the `Proxy`
-  kind below, with its minted id, listed, deleted by name, retired by this subsystem. The
+  kind below, with its minted id, listed, deleted by name, deleted by this subsystem. The
   carrier carries traffic for as long as the connection stands.
 
 The same carrier can be both at once: forwarding one command and carrying one proxy connection
@@ -259,7 +259,7 @@ member                = hash(source, destination, alpn, kind)
 
 The exact hash helper may follow existing entity-framework conventions. What is normative is one latest
 member per `(source,destination,alpn,kind)`, never one member per connection-event id. Reachability is per
-protocol: a working ALPN proves nothing about another, and a reconnect on one never retires another's Proxy.
+protocol: a working ALPN proves nothing about another, and a reconnect on one never deletes another's Proxy.
 
 ### 3.2 Virtual topics
 
@@ -339,7 +339,7 @@ edge to the destination is learned from the carrier when it is asked to carry (�
 
 ### 5.1 Precedence
 
-A valid active Proxy overrides an active Direct until the proxy is durably retired:
+A valid active Proxy overrides an active Direct until the proxy is durably deleted:
 
 ```text
 if Proxy is active and valid and protocol permits its carrier:
@@ -360,8 +360,8 @@ dials it (§7), and a failed dial writes the first Failed of a series.
 This precedence provides ordered cutback. When a direct connection returns, traffic stays on the proven
 Proxy until `Proxy Disconnected(reason=direct-restored)` lands. Only then does Direct become effective.
 
-If the proxy-retirement write fails, continuing on the working proxy is safe. Node-base must retry the
-retirement write until it lands.
+If the proxy-delete write fails, continuing on the working proxy is safe. Node-base must retry the
+delete write until it lands.
 
 ### 5.2 Invocation snapshot
 
@@ -573,7 +573,7 @@ Failed attempts change no global liveness state and never ask node-admin to repl
 
 ---
 
-## 10. Any Direct Connected retires the Proxy
+## 10. Any Direct Connected deletes the Proxy
 
 Direct recovery is event-driven at truth transition, regardless of why the direct pooled connection opened.
 
@@ -600,7 +600,7 @@ it owes:
 Proxy Disconnected(reason=direct-restored)
 ```
 
-The proxy-retirement write is itself reconciled. If it fails, keep routing over Proxy and retry the write.
+The proxy-delete write is itself reconciled. If it fails, keep routing over Proxy and retry the write.
 A restarted node owes none: it holds no Proxy.
 
 This gives ordered restoration:
@@ -618,10 +618,10 @@ Proxy Disconnected durably lands
 Direct becomes effective for new invocations
 ```
 
-A stream Proxy (i148, a tunnel) outlives its retirement. `Proxy Disconnected(reason=direct-restored)` retires
+A stream Proxy (i148, a tunnel) outlives its delete. `Proxy Disconnected(reason=direct-restored)` deletes
 the route, so the next `open` goes Direct; the tunnel that is already open and its streams run to their own
 end. Until then it is a held connection (§4.2): `node.connection.get` lists it by its row id with
-`route: retired`, and `node.connection.delete { All | [ids] }` closes it by that id like any other. Its end
+`route: deleted`, and `node.connection.delete { All | [ids] }` closes it by that id like any other. Its end
 writes no second row; it is spanned `rdm.node.connection.delete.via-tunnel-ended`.
 
 ---
@@ -740,12 +740,12 @@ Direct becomes effective
 
 With Proxy active, make the destination dial the source first. Assert an accepted inbound connection from the
 destination is a recovery trigger: the source attempts its own direct connection, and only its Direct Connected
-creates the retirement obligation.
+creates the delete obligation.
 
-### H. Proxy retirement write failure is safe and retried
+### H. Proxy delete write failure is safe and retried
 
 Force the Proxy Disconnected durable write to fail after Direct Connected. Assert traffic stays on Proxy,
-node-base keeps a retirement obligation, and a later successful durable write moves new traffic to Direct.
+node-base keeps a delete obligation, and a later successful durable write moves new traffic to Direct.
 
 ### I. Destination/carrier incarnation fencing
 
@@ -791,14 +791,14 @@ policy; Rafka's, and where its copies lived before i148, are Rafka's pages.
 7. A node holds its own connection facts only, from the writes it made; it reads none from the store (Q227).
 8. Active Proxy state is source-owned and consumed by that source's effective route projection.
 9. Failed and Dead retry history is durable and indexed; the mesh-primary's node investigation reads it when it runs, and no other node holds it.
-10. A valid active Proxy overrides Direct until the Proxy is durably retired.
+10. A valid active Proxy overrides Direct until the Proxy is durably deleted.
 11. Every node owns repair of its own direct connections in node-base.
 12. Node-admin does not schedule or command local direct reconnect attempts.
 13. Reconnect is an internal durable reconciler, not a normal platform Job entity.
 14. The latest Direct Failed row a source holds is sufficient to compute its retry round, ordinal and next due time.
 15. A restart closes every connection the node held; the restarted node reads no row back and its reconnect backoff starts fresh (Q227).
-16. Only the source's own Direct Connected creates the proxy-retirement obligation; an accepted inbound connection from the destination is a recovery trigger (§13 G).
-17. Failed proxy-retirement writes are retried; routing safely remains on Proxy until retirement lands.
+16. Only the source's own Direct Connected creates the proxy-delete obligation; an accepted inbound connection from the destination is a recovery trigger (§13 G).
+17. Failed proxy-delete writes are retried; routing safely remains on Proxy until the delete lands.
 18. Destination and carrier process incarnations make stale route evidence refusable by name.
 19. A failed direct attempt is source-local reachability evidence, not global node-death proof.
 20. Customer traffic does not periodically probe Direct while a durable Proxy is active.

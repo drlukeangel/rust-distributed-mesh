@@ -74,7 +74,7 @@ sequenceDiagram
 A dialer that writes no cert within the floor is `no-credential`. A read the acceptor cannot complete
 (the stream reset, the connection gone) is neither verdict: nothing is written and the connection is
 gone on its own. Rafka's `rafka.mesh.auth.*` spans and its `RAFKA_NO_CERT` / `RAFKA_CA_PUBKEY` modes are
-retired with its accept loop; a fabric runs with certs or is started `NoCerts` by name.
+removed with its accept loop; a fabric runs with certs or is started `NoCerts` by name.
 
 ## Observability contract
 

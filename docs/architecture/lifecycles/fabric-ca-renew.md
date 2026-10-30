@@ -11,7 +11,7 @@ differently, and this page owns both:
   ordinary issuer and member renewals: the new CA chains to the same anchor, so every verifier's trust
   set is unchanged.
 - `fabric.root.update` rotates the anchor itself, only on the app's or a person's call with a new root,
-  through an overlap in which every node trusts both anchors (`node.roots.update`), and retires the old
+  through an overlap in which every node trusts both anchors (`node.roots.update`), and replaces the old
   one once nothing chains to it.
 
 Nothing is cut and nothing reconnects at any step of either.
@@ -36,9 +36,9 @@ Nothing is cut and nothing reconnects at any step of either.
 | Caller | The embedding app or a person, to the fabric-primary; a single call |
 | Request | `fabric.root.update { secret }`, the new anchor's secret |
 | Reply | `fabric.root.updated` once the rotation is accepted (the roots row `minted`); its progress is `fabric.get`'s `roots { phase, expires_at }`. Refused by name while a rotation is in flight (`rotation-in-progress`) and for a root already trusted (`root-already-trusted`) |
-| Phases | `minted` → `distributed` (both anchors trusted everywhere) → `ca-rotated` → `retired` (one anchor again); the roots row is durable and a successor continues from it |
-| Steps | 1 write the new root secret beside the old one on the fabric-primary; row `minted`; 2 `node.roots.update { roots: [old, new] }` to every node, admins first (the secret to admins, the public set to every other node); row `distributed`; 3 `fabric.ca.renew` under the new anchor, which re-mints every issuer; row `ca-rotated`; 4 wait until every cert row chains to the new anchor (at most one member TTL after step 3); 5 `node.roots.update { roots: [new] }` to every node; row `retired`; the old secret is destroyed everywhere |
-| Bound | The old anchor's own expiry: a rotation not retired by then is surfaced on `fabric.get` as `roots: stalled` |
+| Phases | `minted` → `distributed` (both anchors trusted everywhere) → `ca-rotated` → `updated` (one anchor again); the roots row is durable and a successor continues from it |
+| Steps | 1 write the new root secret beside the old one on the fabric-primary; row `minted`; 2 `node.roots.update { roots: [old, new] }` to every node, admins first (the secret to admins, the public set to every other node); row `distributed`; 3 `fabric.ca.renew` under the new anchor, which re-mints every issuer; row `ca-rotated`; 4 wait until every cert row chains to the new anchor (at most one member TTL after step 3); 5 `node.roots.update { roots: [new] }` to every node; row `updated`; the old secret is destroyed everywhere |
+| Bound | The old anchor's own expiry: a rotation not updated by then is surfaced on `fabric.get` as `roots: stalled` |
 | Never | A cert cut short, a status set, a frame published, a connection closed; a node that has not yet received a phase keeps the set it holds, which admits both anchors' chains throughout |
 | Spans | `rdm.node_admin.root.update.via-caller` (phase, root_expires_at, previous_root_expires_at, nodes, outcome) on the fabric-primary; `rdm.node.root.update.via-installed` (node, roots, phase, secret ∈ {`carried`, `public-only`}) on each node |
 
@@ -63,8 +63,8 @@ Nothing is cut and nothing reconnects at any step of either.
    renew under the new issuers at their own points ([node.cert.renew](node-cert-renew.md)).
 4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A
    member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits
-   rather than retiring an anchor something still chains to.
-5. `node.roots.update { [new] }` to every node. The row goes `retired` on the last receipt, and the old
+   rather than replacing an anchor something still chains to.
+5. `node.roots.update { [new] }` to every node. The row goes `updated` on the last receipt, and the old
    secret is destroyed on every admin.
 
 ## Mermaid sequence diagram
@@ -86,7 +86,7 @@ sequenceDiagram
     Note over F: 4. every cert row chains to the new anchor
     F->>N: 5. node.roots.update [new]
     N-->>F: node.roots.updated
-    Note over F: row retired; old secret destroyed
+    Note over F: row updated; old secret destroyed
 ```
 
 An internal `fabric.ca.renew` is step 3 alone, with no caller and no `node.roots.update`.
@@ -104,4 +104,4 @@ Trace propagation, step spans and correlation follow the
 [runtime spans](../node-rpc-envelope.md#runtime-spans). The cells, with the TTLs set to seconds in the
 test kit: an internal `fabric.ca.renew` with a dial admitted before, during and after and no
 `node.roots.update` span; a `fabric.root.update` through all five phases with a dial admitted at every
-phase, the spans and the roots row beside it, and a retire attempted before step 4 refused by name.
+phase, the spans and the roots row beside it, and an `updated` set attempted before step 4 refused by name.

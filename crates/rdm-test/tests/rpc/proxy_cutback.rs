@@ -197,7 +197,7 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     // name, the landing, then the Direct route.
     let spans = wait_for("the delete and route spans exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        let landed = named(&spans, "rdm.node_admin.connection.update.via-retirement").into_iter().any(|sp| sp["attributes"]["source"] == SOURCE && sp["attributes"]["outcome"] == "landed");
+        let landed = named(&spans, "rdm.node_admin.connection.delete.via-direct-restored").into_iter().any(|sp| sp["attributes"]["source"] == SOURCE && sp["attributes"]["outcome"] == "landed");
         (landed && route_span(&spans, SOURCE, c0, c1).is_some() && route_span(&spans, SOURCE, d0, d1).is_some()).then_some(spans)
     })
     .await;
@@ -229,7 +229,7 @@ async fn source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_
     assert_eq!(entry["attributes"]["outcome"], "landed", "{entry}");
     assert!(start(entry) >= start(dial), "the entry is the dial's");
     assert_eq!((s(&dial["attributes"]["fact"]), s(&dial["attributes"]["entry"])), ("connected".to_string(), s(&entry["attributes"]["entry"])), "the entry is the dial's own observation: {dial} {entry}");
-    let mut deletes: Vec<&Value> = named(&spans, "rdm.node_admin.connection.update.via-retirement").into_iter().filter(|sp| sp["attributes"]["source"] == SOURCE).collect();
+    let mut deletes: Vec<&Value> = named(&spans, "rdm.node_admin.connection.delete.via-direct-restored").into_iter().filter(|sp| sp["attributes"]["source"] == SOURCE).collect();
     deletes.sort_by_key(|sp| start(sp));
     let (refused, lands): (Vec<&Value>, Vec<&Value>) = deletes.iter().partition(|sp| sp["attributes"]["outcome"] == "refused");
     assert!(!refused.is_empty(), "the refused write is named on a span: {deletes:?}");

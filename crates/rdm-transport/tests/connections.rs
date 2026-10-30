@@ -2141,13 +2141,13 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
     assert_eq!(next_s.kind(), ConnectionKind::Direct);
     assert_eq!(next_d.kind(), ConnectionKind::Direct);
 
-    // 3. Before delete, held_open_tunnels lists the tunnel by its row id with `route: retired`,
+    // 3. Before delete, held_open_tunnels lists the tunnel by its row id with `route: deleted`,
     // and node.connection.delete by that id closes the tunnel without writing a second Disconnected row:
     let tunnel_id = tunnel_s.id().clone();
     let tunnel_list = source.registry.held_open_tunnels();
     assert_eq!(tunnel_list.len(), 1);
     assert_eq!(tunnel_list[0].id, tunnel_id);
-    assert_eq!(tunnel_list[0].reason.as_deref(), Some("route: retired"));
+    assert_eq!(tunnel_list[0].reason.as_deref(), Some("route: deleted"));
 
     let deleted = source
         .registry
@@ -2179,8 +2179,8 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
     dest.shutdown().await;
 }
 
-/// CONTRACT (connections.md §10: "A stream Proxy (i148, a tunnel) outlives its retirement ...
-/// `node.connection.get` lists it by its row id with `route: retired`, and `node.connection.delete
+/// CONTRACT (connections.md §10: "A stream Proxy (i148, a tunnel) outlives its delete ...
+/// `node.connection.get` lists it by its row id with `route: deleted`, and `node.connection.delete
 /// { All | [ids] }` closes it by that id like any other. Its end writes no second row; it is spanned
 /// `rdm.node.connection.delete.via-tunnel-ended`"): a tunnel opened through the carrier, its route
 /// then deleted by a Direct Connected (`Disconnected(direct-restored)` held), is closed by
@@ -2218,7 +2218,7 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
             reason: None,
             logged_at_ms: 100,
         });
-        assert_eq!(source.registry.held_open_tunnels().iter().map(|r| (r.id.clone(), r.reason.clone())).collect::<Vec<_>>(), vec![(tunnel.id().clone(), Some("route: retired".to_string()))], "the open tunnel is listed by its id, its route: retired");
+        assert_eq!(source.registry.held_open_tunnels().iter().map(|r| (r.id.clone(), r.reason.clone())).collect::<Vec<_>>(), vec![(tunnel.id().clone(), Some("route: deleted".to_string()))], "the open tunnel is listed by its id, its route: deleted");
         let deleted = source.registry.delete_connections(&ConnectionScope::Connections(vec![tunnel.id().clone()])).await;
         assert_eq!(deleted, vec![tunnel.id().clone()]);
         assert_eq!(tokio::time::timeout(Duration::from_secs(5), tunnel.closed()).await.unwrap(), Closed::ConnectionsDeleted);

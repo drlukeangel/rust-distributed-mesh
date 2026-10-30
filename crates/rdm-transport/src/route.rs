@@ -184,10 +184,10 @@ impl NodeRpcClient {
             own = %own,
             destination = %destination,
             route = resolution.route.token(),
-            retire = tracing::field::Empty,
+            deleted = tracing::field::Empty,
         );
         if let Some((_, why)) = &resolution.delete {
-            span.record("retire", *why);
+            span.record("deleted", *why);
         }
         let choice = RouteChoice::from(&resolution.route);
         let (outcome, evidence, leg) = self.call_routed::<P>(target, &choice, req, opts).instrument(span).await;

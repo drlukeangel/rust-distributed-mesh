@@ -407,12 +407,12 @@ pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Optio
     if let Some(record) = record {
         f.topology_storage_provider = record.topology_storage_provider.clone();
         f.previous_topology_storage_providers = record.previous_topology_storage_providers.clone();
-        // The rotation and the CA as the Fabric row names them; a rotation not retired by the old
+        // The rotation and the CA as the Fabric row names them; a rotation not updated by the old
         // anchor's bound is stalled (fabric-ca-renew.md "fabric.root.update, the caller op").
         f.roots = record.roots.as_ref().map(|r| rdm_core::views::RootsView {
             phase: r.phase,
             expires_at: r.expires_at,
-            stalled: r.phase != rdm_core::status::RootsPhase::Retired && now_ms.is_some_and(|now| r.expires_at > 0 && now >= r.expires_at),
+            stalled: r.phase != rdm_core::status::RootsPhase::Updated && now_ms.is_some_and(|now| r.expires_at > 0 && now >= r.expires_at),
         });
         f.ca = record.ca.as_ref().map(|c| rdm_core::views::CaView { expires_at: c.expires_at });
     }
@@ -431,10 +431,10 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:38
     /// "| Reply | `fabric.root.updated` once the rotation is accepted (the roots row `minted`); its progress is `fabric.get`'s `roots { phase, expires_at }`. Refused by name while a rotation is in flight (`rotation-in-progress`) and for a root already trusted (`root-already-trusted`) |"
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:41
-    /// "| Bound | The old anchor's own expiry: a rotation not retired by then is surfaced on `fabric.get` as `roots: stalled` |"
+    /// "| Bound | The old anchor's own expiry: a rotation not updated by then is surfaced on `fabric.get` as `roots: stalled` |"
     /// fabric-ca-renew.md ("its progress is `fabric.get`'s `roots { phase, expires_at }`"; "a rotation
-    /// not retired by then is surfaced on `fabric.get` as `roots: stalled`"): the Fabric row's roots and
-    /// CA rows are answered; a rotation past its bound and not retired is stalled, a retired one never.
+    /// not updated by then is surfaced on `fabric.get` as `roots: stalled`"): the Fabric row's roots and
+    /// CA rows are answered; a rotation past its bound and not updated is stalled, an updated one never.
     #[test]
     fn fabrics_get_carries_the_rotation_and_the_ca_and_names_a_rotation_past_its_bound_stalled() {
         use rdm_core::status::RootsPhase;
@@ -452,8 +452,8 @@ mod tests {
         let early = answer(RootsPhase::Distributed, 2_000);
         assert_eq!(early.roots, Some(rdm_core::views::RootsView { phase: RootsPhase::Distributed, expires_at: 3_000, stalled: false }));
         assert_eq!(early.ca, Some(rdm_core::views::CaView { expires_at: 9_000 }));
-        assert!(answer(RootsPhase::CaRotated, 3_000).roots.unwrap().stalled, "past its bound and not retired: stalled");
-        assert!(!answer(RootsPhase::Retired, 4_000).roots.unwrap().stalled, "a retired rotation is never stalled");
+        assert!(answer(RootsPhase::CaRotated, 3_000).roots.unwrap().stalled, "past its bound and not updated: stalled");
+        assert!(!answer(RootsPhase::Updated, 4_000).roots.unwrap().stalled, "an updated rotation is never stalled");
     }
 
     #[test]

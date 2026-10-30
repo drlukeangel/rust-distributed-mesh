@@ -503,14 +503,14 @@ async fn renew_ca(r: &Renewals, view: &Topology, now: u64) {
 /// live birth, node-admins first, the secret to the admins (row `distributed` on the last receipt);
 /// `distributed`, a new fabric CA signed by the new root, every mesh's issuer due under it (row
 /// `ca-rotated`); `ca-rotated`, once every live birth's member cert chains to the new root, the new
-/// root alone to every live birth (row `retired` on the last receipt, the old secret destroyed here as
+/// root alone to every live birth (row `updated` on the last receipt, the old secret destroyed here as
 /// on every admin). A birth not answered is sent again on the next tick; a birth born mid-rotation is
 /// sent the set its phase holds. One span per phase move, `rdm.node_admin.root.update.via-caller`.
 async fn rotate_roots(r: &Arc<Renewals>, view: &Topology) {
     use rdm_core::status::RootsPhase;
     let Some((_, fabric_id)) = r.fabric.get() else { return };
     let Some(row) = r.caches.fabric.get(fabric_id).and_then(|record| record.roots) else { return };
-    if row.phase == RootsPhase::Retired {
+    if row.phase == RootsPhase::Updated {
         return;
     }
     let (Some(old), Some(new)) = (row.roots.first().cloned(), row.roots.get(1).cloned()) else { return };
@@ -547,11 +547,11 @@ async fn rotate_roots(r: &Arc<Renewals>, view: &Topology) {
             if !distribute_roots(r, view, &both, RootsPhase::Distributed).await || !every_cert_under_new_ca(r, view).await {
                 return;
             }
-            if distribute_roots(r, view, &[new.clone()], RootsPhase::Retired).await {
-                move_to(RootsPhase::Retired).await;
+            if distribute_roots(r, view, &[new.clone()], RootsPhase::Updated).await {
+                move_to(RootsPhase::Updated).await;
             }
         }
-        RootsPhase::Retired => {}
+        RootsPhase::Updated => {}
     }
 }
 
@@ -1030,9 +1030,9 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:30
     /// "| Spans | `rdm.node_admin.ca.update.via-renewal` (ca_expires_at, previous_ca_expires_at, meshes, outcome) on the fabric-primary, and each `mesh.issuer.renew`'s spans |"
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:40
-    /// "| Steps | 1 write the new root secret beside the old one on the fabric-primary; row `minted`; 2 `node.roots.update { roots: [old, new] }` to every node, admins first (the secret to admins, the public set to every other node); row `distributed`; 3 `fabric.ca.renew` under the new anchor, which re-mints every issuer; row `ca-rotated`; 4 wait until every cert row chains to the new anchor (at most one member TTL after step 3); 5 `node.roots.update { roots: [new] }` to every node; row `retired`; the old secret is destroyed everywhere |"
+    /// "| Steps | 1 write the new root secret beside the old one on the fabric-primary; row `minted`; 2 `node.roots.update { roots: [old, new] }` to every node, admins first (the secret to admins, the public set to every other node); row `distributed`; 3 `fabric.ca.renew` under the new anchor, which re-mints every issuer; row `ca-rotated`; 4 wait until every cert row chains to the new anchor (at most one member TTL after step 3); 5 `node.roots.update { roots: [new] }` to every node; row `updated`; the old secret is destroyed everywhere |"
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:64
-    /// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits rather than retiring an anchor something still chains to."
+    /// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits rather than replacing an anchor something still chains to."
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:92
     /// "An internal `fabric.ca.renew` is step 3 alone, with no caller and no `node.roots.update`."
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:96

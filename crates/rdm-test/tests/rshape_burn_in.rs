@@ -5071,7 +5071,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
         let cut_route = route(w.4, w.5).unwrap_or_else(|| panic!("no route span for the call after the deletion"));
         assert_eq!(during_route["attributes"]["route"], "via-peer");
         assert_eq!(cut_route["attributes"]["route"], "direct");
-        let mut ret: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-retirement").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str()).collect();
+        let mut ret: Vec<&Value> = named(spans, "rdm.node_admin.connection.delete.via-direct-restored").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str()).collect();
         ret.sort_by_key(|sp| start_ns(sp));
         let (refused, lands): (Vec<&Value>, Vec<&Value>) = ret.iter().partition(|sp| sp["attributes"]["outcome"] == "refused");
         assert!(!refused.is_empty(), "the refused deletion write is named on a span");

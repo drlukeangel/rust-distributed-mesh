@@ -71,11 +71,11 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:59
     /// "2. `node.roots.update { [old, new] }` to every node of the fabric, node-admins first. From its install a node admits a chain to either anchor. The row goes `distributed` on the last receipt."
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:64
-    /// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits rather than retiring an anchor something still chains to."
+    /// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits rather than replacing an anchor something still chains to."
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:67
-    /// "5. `node.roots.update { [new] }` to every node. The row goes `retired` on the last receipt, and the old secret is destroyed on every admin."
+    /// "5. `node.roots.update { [new] }` to every node. The row goes `updated` on the last receipt, and the old secret is destroyed on every admin."
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:103
-    /// "Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans). The cells, with the TTLs set to seconds in the test kit: an internal `fabric.ca.renew` with a dial admitted before, during and after and no `node.roots.update` span; a `fabric.root.update` through all five phases with a dial admitted at every phase, the spans and the roots row beside it, and a retire attempted before step 4 refused by name."
+    /// "Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans). The cells, with the TTLs set to seconds in the test kit: an internal `fabric.ca.renew` with a dial admitted before, during and after and no `node.roots.update` span; a `fabric.root.update` through all five phases with a dial admitted at every phase, the spans and the roots row beside it, and an `updated` set attempted before step 4 refused by name."
     #[test]
     fn install_roots_accepts_one_or_two_roots_and_refuses_dropped_chained_root_or_invalid_keys() {
         let dir = std::env::temp_dir().join(format!("node-roots-update-{}", NodeId::mint()));
@@ -126,18 +126,18 @@ mod tests {
 
             // Dropping `old` while the birth's member cert still chains under `old` is refused `root-still-chained`.
             assert_eq!(
-                install_roots(&registry, "mesh1.rpc.1", &node_id, &incarnation, std::slice::from_ref(&new_hex), RootsPhase::Retired, false),
+                install_roots(&registry, "mesh1.rpc.1", &node_id, &incarnation, std::slice::from_ref(&new_hex), RootsPhase::Updated, false),
                 StatusReply::RejectedRootStillChained { root: old_hex.clone() }
             );
             assert_eq!(registry.roots().current(), vec![old_pub, new_pub], "both roots stay installed on root-still-chained refusal");
 
-            // Once the birth's member cert chains to `new`, installing `[new]` at `Retired` succeeds.
+            // Once the birth's member cert chains to `new`, installing `[new]` at `Updated` succeeds.
             let new_ca = CaKey::mint(&new, 3600, 2_000);
             let new_issuer = IssuingKey::mint(&new_ca, "mesh1", 2_000, 2_000_000).unwrap();
             let new_cert = cert_to_bytes(&issue(&new_issuer, &birth, 2_000, 900_000).unwrap());
             registry.set_member_cert(new_cert);
             assert_eq!(
-                install_roots(&registry, "mesh1.rpc.1", &node_id, &incarnation, std::slice::from_ref(&new_hex), RootsPhase::Retired, false),
+                install_roots(&registry, "mesh1.rpc.1", &node_id, &incarnation, std::slice::from_ref(&new_hex), RootsPhase::Updated, false),
                 StatusReply::RootsUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), roots: vec![new_hex.clone()] }
             );
             assert_eq!(registry.roots().current(), vec![new_pub]);
@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(installed.len(), 3, "expected 3 via-installed spans, got {installed:?}");
         assert_eq!(installed[0]["attributes"]["secret"].as_str(), Some("public-only"));
         assert_eq!(installed[1]["attributes"]["secret"].as_str(), Some("carried"));
-        assert_eq!(installed[2]["attributes"]["phase"].as_str(), Some("Retired"));
+        assert_eq!(installed[2]["attributes"]["phase"].as_str(), Some("Updated"));
         let rejected: Vec<_> = spans.iter().filter(|s| s["name"].as_str() == Some("rdm.node.root.reject.via-update")).collect();
         assert_eq!(rejected.len(), 4, "expected 4 reject.via-update spans, got {rejected:?}");
         let _ = std::fs::remove_dir_all(&dir);

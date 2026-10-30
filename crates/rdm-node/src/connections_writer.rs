@@ -486,7 +486,7 @@ impl ConnectionsWriter {
         let mut landed = 0;
         for row in owed {
             let span = tracing::info_span!(
-                "rdm.node_admin.connection.update.via-retirement",
+                "rdm.node_admin.connection.delete.via-direct-restored",
                 entry = %row.id,
                 source = %row.source.name,
                 destination = %row.destination.name,

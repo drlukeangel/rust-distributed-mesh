@@ -1040,7 +1040,7 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:10
 /// "- `fabric.ca.renew` rotates the CA internally, on policy, with nothing pushed to any node but the ordinary issuer and member renewals: the new CA chains to the same anchor, so every verifier's trust set is unchanged."
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:13
-/// "- `fabric.root.update` rotates the anchor itself, only on the app's or a person's call with a new root, through an overlap in which every node trusts both anchors (`node.roots.update`), and retires the old one once nothing chains to it."
+/// "- `fabric.root.update` rotates the anchor itself, only on the app's or a person's call with a new root, through an overlap in which every node trusts both anchors (`node.roots.update`), and replaces the old one once nothing chains to it."
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:17
 /// "Nothing is cut and nothing reconnects at any step of either."
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:23
@@ -1060,11 +1060,11 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:38
 /// "| Reply | `fabric.root.updated` once the rotation is accepted (the roots row `minted`); its progress is `fabrics.get`'s `roots { phase, expires_at }`. Refused by name while a rotation is in flight (`rotation-in-progress`) and for a root already trusted (`root-already-trusted`) |"
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:39
-/// "| Phases | `minted` → `distributed` (both anchors trusted everywhere) → `ca-rotated` → `retired` (one anchor again); the roots row is durable and a successor continues from it |"
+/// "| Phases | `minted` → `distributed` (both anchors trusted everywhere) → `ca-rotated` → `updated` (one anchor again); the roots row is durable and a successor continues from it |"
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:40
-/// "| Steps | 1 write the new root secret beside the old one on the fabric-primary; row `minted`; 2 `node.roots.update { roots: [old, new] }` to every node, admins first (the secret to admins, the public set to every other node); row `distributed`; 3 `fabric.ca.renew` under the new anchor, which re-mints every issuer; row `ca-rotated`; 4 wait until every cert row chains to the new anchor (at most one member TTL after step 3); 5 `node.roots.update { roots: [new] }` to every node; row `retired`; the old secret is destroyed everywhere |"
+/// "| Steps | 1 write the new root secret beside the old one on the fabric-primary; row `minted`; 2 `node.roots.update { roots: [old, new] }` to every node, admins first (the secret to admins, the public set to every other node); row `distributed`; 3 `fabric.ca.renew` under the new anchor, which re-mints every issuer; row `ca-rotated`; 4 wait until every cert row chains to the new anchor (at most one member TTL after step 3); 5 `node.roots.update { roots: [new] }` to every node; row `updated`; the old secret is destroyed everywhere |"
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:41
-/// "| Bound | The old anchor's own expiry: a rotation not retired by then is surfaced on `fabrics.get` as `roots: stalled` |"
+/// "| Bound | The old anchor's own expiry: a rotation not updated by then is surfaced on `fabrics.get` as `roots: stalled` |"
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:42
 /// "| Never | A cert cut short, a status set, a frame published, a connection closed; a node that has not yet received a phase keeps the set it holds, which admits both anchors' chains throughout |"
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:43
@@ -1086,13 +1086,13 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:61
 /// "3. `fabric.ca.renew` under the new anchor: a new CA signed by the new root, every mesh's issuer re-minted under it ([mesh.issuer.renew](mesh-issuer-renew.md)). The row goes `ca-rotated`. Members renew under the new issuers at their own points ([node.cert.renew](node-cert-renew.md))."
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:64
-/// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits rather than retiring an anchor something still chains to."
+/// "4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits rather than replacing an anchor something still chains to."
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:67
-/// "5. `node.roots.update { [new] }` to every node. The row goes `retired` on the last receipt, and the old secret is destroyed on every admin."
+/// "5. `node.roots.update { [new] }` to every node. The row goes `updated` on the last receipt, and the old secret is destroyed on every admin."
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:96
 /// "A node not reached in a phase is retried every tick; the phase does not advance without it, and nothing expires meanwhile that the overlap does not cover. A successor fabric-primary continues from the roots row and the CA row, and from its own copy of the root secret, which every node-admin holds ([custody](../fabric-certs.md#custody)). A successor that does not hold the CA the CA row names (a renewal whose step 2 had not reached it) never mints under a CA it does not hold: it runs `fabric.ca.renew` again from the root secret, and step 2 reaches every admin under the new CA."
 /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:103
-/// "Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans). The cells, with the TTLs set to seconds in the test kit: an internal `fabric.ca.renew` with a dial admitted before, during and after and no `node.roots.update` span; a `fabric.root.update` through all five phases with a dial admitted at every phase, the spans and the roots row beside it, and a retire attempted before step 4 refused by name."
+/// "Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans). The cells, with the TTLs set to seconds in the test kit: an internal `fabric.ca.renew` with a dial admitted before, during and after and no `node.roots.update` span; a `fabric.root.update` through all five phases with a dial admitted at every phase, the spans and the roots row beside it, and an `updated` set attempted before step 4 refused by name."
 #[test]
 fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() {
     let cell = "a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases";
@@ -1125,11 +1125,11 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
         };
         until("the rotation is distributed", BOUND, moved("Distributed")).await;
         until("the rotation is ca-rotated", BOUND, moved("CaRotated")).await;
-        until("the rotation is retired", BOUND * 2, moved("Retired")).await;
+        until("the rotation is updated", BOUND * 2, moved("Updated")).await;
 
         // fabric.get carries the rotation's progress and the CA under the new root.
-        let shown = until("fabric.get shows the rotation retired", BOUND, async || fabric_get(&root).await.filter(|f| f.roots.as_ref().is_some_and(|r| r.phase == RootsPhase::Retired))).await;
-        assert!(!shown.roots.as_ref().unwrap().stalled, "a rotation retired is not stalled: {:?}", shown.roots);
+        let shown = until("fabric.get shows the rotation updated", BOUND, async || fabric_get(&root).await.filter(|f| f.roots.as_ref().is_some_and(|r| r.phase == RootsPhase::Updated))).await;
+        assert!(!shown.roots.as_ref().unwrap().stalled, "a rotation updated is not stalled: {:?}", shown.roots);
         assert!(shown.ca.is_some(), "fabric.get carries the CA row: {shown:?}");
         let alone = vec![hex(&new.verifying_key())];
         for node in ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"] {
@@ -1143,7 +1143,7 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
             assert_eq!(std::fs::read_to_string(data.join(rdm_admin::certs::CA_SECRET_FILE)).unwrap().trim(), certs::encode_key(&new), "{who} keeps the new root as ca-secret");
             assert!(!data.join(rdm_admin::certs::NEXT_SECRET_FILE).exists(), "{who} keeps no ca-secret-next");
         }
-        // `retired` moves only once every member's cert row names an issuer under the new CA
+        // `updated` moves only once every member's cert row names an issuer under the new CA
         // (`every_cert_under_new_ca`): the member was renewed and installed it on the way.
         assert!(!renewals_of(&spans, "mesh1.rpc.1").into_iter().filter(|f| f.get("outcome").map(String::as_str) == Some("installed")).collect::<Vec<_>>().is_empty(), "the member was renewed under the new issuer before the old root was replaced");
         stop_all(vec![a], vec![root, second]).await;

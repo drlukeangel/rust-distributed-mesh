@@ -1932,7 +1932,7 @@ pub enum OriginateReply {
 
 ```rust
 pub enum OpOwner { Core, Product(String), Testkit }
-pub enum OpState { Live, Retired }
+pub enum OpState { Live, Reserved }
 
 pub struct LedgerEntry {
     pub op: u8,

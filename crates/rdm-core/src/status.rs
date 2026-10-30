@@ -763,7 +763,7 @@ impl std::fmt::Debug for RootSecretHex {
 }
 
 /// A root rotation's phase (fabric-ca-renew.md "fabric.root.update"): `minted` -> `distributed` (both
-/// anchors trusted everywhere) -> `ca-rotated` -> `retired` (one anchor again). Positional order is
+/// anchors trusted everywhere) -> `ca-rotated` -> `updated` (one anchor again). Positional order is
 /// part of the wire schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -783,7 +783,7 @@ pub enum RootsPhase {
     /// Every node trusts the new root alone; the old secret is destroyed.
     ///
     /// Position 3 on the wire.
-    Retired,
+    Updated,
 }
 
 /// Which mesh channel a `node.mesh.join` joined or a `node.mesh.leave` left

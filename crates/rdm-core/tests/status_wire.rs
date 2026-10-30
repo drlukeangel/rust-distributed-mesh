@@ -345,7 +345,7 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     // node.roots.update's phase (fabric-ca-renew.md "fabric.root.update").
     for (phase, expected) in [
         (rdm_core::status::RootsPhase::Minted, "00"), (rdm_core::status::RootsPhase::Distributed, "01"),
-        (rdm_core::status::RootsPhase::CaRotated, "02"), (rdm_core::status::RootsPhase::Retired, "03"),
+        (rdm_core::status::RootsPhase::CaRotated, "02"), (rdm_core::status::RootsPhase::Updated, "03"),
     ] { golden(phase, expected); }
     // DeclareNodeState's operation (i146 Q36): build_id | attempt | operation, and its Option.
     let op = DeclaredOperation { build_id: "b".into(), attempt: 2, operation: "node.stop:m".into() };

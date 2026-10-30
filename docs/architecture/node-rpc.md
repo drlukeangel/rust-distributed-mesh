@@ -199,7 +199,7 @@ pub trait StreamingNodeProtocol: NodeProtocol {
 
 ## 9. Protocol catalog and op allocation
 
-The op registry is the [sole op ledger](node-rpc-envelope.md#the-op-ledger): core rows are built into `rdm-core`, a product adds its rows through the server builder, and the build makes the served catalog once at boot. Op uniqueness, retired ops, unserved ops and postcard variant evolution are the [ledger](node-rpc-envelope.md#the-op-ledger), [Section 0](node-rpc-envelope.md#section-0-the-target) and [Section 2](node-rpc-envelope.md#section-2-the-body).
+The op registry is the [sole op ledger](node-rpc-envelope.md#the-op-ledger): core rows are built into `rdm-core`, a product adds its rows through the server builder, and the build makes the served catalog once at boot. Op uniqueness, reserved ops, unserved ops and postcard variant evolution are the [ledger](node-rpc-envelope.md#the-op-ledger), [Section 0](node-rpc-envelope.md#section-0-the-target) and [Section 2](node-rpc-envelope.md#section-2-the-body).
 
 A descriptor is the envelope's `NodeProtocol` declaration plus two runtime facts: unary or server-streaming, and its default admission (§17).
 
@@ -931,7 +931,7 @@ const FORWARDABLE: bool = false;
 
 If the effective connection projection says a direct-only protocol has only a Proxy route, the answer to the domain is `NoActiveRoute` for that protocol.
 
-The `Proxy` connection kind is not a Node RPC forwarding cache. The connection subsystem owns whether a Proxy exists, which exact carrier it names, whether it remains valid, and when it is retired. Node RPC only executes the selected carried invocation. A reply timeout or other `Indeterminate` Node RPC outcome does not, by itself, create or invalidate Proxy state.
+The `Proxy` connection kind is not a Node RPC forwarding cache. The connection subsystem owns whether a Proxy exists, which exact carrier it names, whether it remains valid, and when it is deleted. Node RPC only executes the selected carried invocation. A reply timeout or other `Indeterminate` Node RPC outcome does not, by itself, create or invalidate Proxy state.
 
 ### 36.1 Generic forward invocation
 
@@ -1146,4 +1146,4 @@ The following are architecture violations:
 - a `rafka-broker-rpc` pass-through crate with no independent domain abstraction;
 - moving reader/writer retry policy into the connections/reachability layer;
 - letting node-rpc choose a replica, role, carrier or fallback;
-- letting Node RPC persist or retire Proxy connection state.
+- letting Node RPC persist or delete Proxy connection state.

@@ -692,7 +692,7 @@ impl ConnectionsRegistry {
     }
 
     /// Still-open Proxy tunnels whose route in `held` was superseded by Direct restoration (§10),
-    /// tagged with `reason: Some("route: retired")` for `node.connection.get` and `node.connection.delete`.
+    /// tagged with `reason: Some("route: deleted")` for `node.connection.get` and `node.connection.delete`.
     pub fn held_open_tunnels(&self) -> Vec<NodeConnection> {
         let active = self.inner.active.lock().unwrap();
         let held = self.inner.sink.held();
@@ -707,7 +707,7 @@ impl ConnectionsRegistry {
                         .any(|r| r.id == row.id);
                     if !still_active_route {
                         let mut tunnel_view = row.clone();
-                        tunnel_view.reason = Some("route: retired".to_string());
+                        tunnel_view.reason = Some("route: deleted".to_string());
                         out.push(tunnel_view);
                     }
                 }
