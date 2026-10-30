@@ -32,7 +32,7 @@ fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
     n
 }
 
-/// One mesh: two node-admins (`fabric` holds the fabric seat) and three rpc nodes; `mesh1.rpc.1`
+/// One mesh: two node-admins (`fabric` holds the fabric-primary role) and three rpc nodes; `mesh1.rpc.1`
 /// and `mesh1.rpc.2` are stopped (Leaving, the process alive).
 fn view(fabric: &str) -> Topology {
     let mut nodes = vec![node("mesh1.admin.1", fabric == "mesh1.admin.1", fabric == "mesh1.admin.1"), node("mesh1.admin.2", fabric == "mesh1.admin.2", fabric == "mesh1.admin.2"), node("mesh1.rpc.3", true, false)];
@@ -341,7 +341,7 @@ async fn a_candidate_refused_build_in_progress_is_collected_on_a_later_sweep() {
 /// CONTRACT (§6.9 Who: "On a fabric-primary handover the successor sweeps from the same durable
 /// receipts"): the Build log of the old fabric-primary is held by its successor `mesh1.admin.2`.
 /// The successor ages `mesh1.rpc.1` from the same stop receipt (its time, never the handover's) and
-/// collects it; the old holder, no longer holding the fabric seat, sweeps nothing.
+/// collects it; the old primary, no longer holding the fabric-primary role, sweeps nothing.
 #[tokio::test]
 async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
@@ -351,7 +351,7 @@ async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
     let stopped_at = now(&first) - 10 * TTL.as_millis() as u64;
     period(&first, &builds, &old, true, stopped_at).await;
 
-    // The handover: mesh1.admin.2 holds the seat and the same Build log.
+    // The handover: mesh1.admin.2 holds the role and the same Build log.
     let mut moved = t.clone();
     for n in moved.nodes.iter_mut() {
         n.is_fabric_primary = n.name.to_string() == "mesh1.admin.2";

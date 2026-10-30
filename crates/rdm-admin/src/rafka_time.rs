@@ -31,8 +31,8 @@ pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str, rea
 
 /// How many reads one `fabric-primary` move owes before the pull ends unanswered, and the pause
 /// between them (grows by this much per attempt). Read-only spacing: nothing else retries.
-const SEAT_MOVE_ATTEMPTS: u32 = 12;
-const SEAT_MOVE_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+const ROLE_MOVE_ATTEMPTS: u32 = 12;
+const ROLE_MOVE_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// A `mesh-primary` pulls rafka-time once from the new `fabric-primary` each time the `fabric-primary`
 /// moves to another node (a record of a later revision naming another node;
@@ -45,36 +45,36 @@ const SEAT_MOVE_PAUSE: std::time::Duration = std::time::Duration::from_millis(25
 /// that moment: a primary superseded while the pull runs (a hand-over whose new primary was itself
 /// replaced) answers `served-by-a-replica` and is refused by name, and the next read goes to the
 /// primary that superseded it. A primary that never answers ends the pull with the time held.
-pub async fn run_seat_move_pull(
+pub async fn run_role_move_pull(
     time: RafkaTime,
     me: crate::model::PathName,
     me_id: NodeId,
     client: Arc<rdm_transport::NodeRpcClient>,
     topology_view: rdm_transport::topology::TopologyView,
 ) {
-    let seats = topology_view.primaries().clone();
-    let mut changed = seats.subscribe();
-    let mut last = seats.fabric().map(|h| (h.node_id, h.revision));
+    let primaries = topology_view.primaries().clone();
+    let mut changed = primaries.subscribe();
+    let mut last = primaries.fabric().map(|h| (h.node_id, h.revision));
     loop {
         if changed.changed().await.is_err() {
             return;
         }
-        let Some(holder) = seats.fabric() else { continue };
-        let now = Some((holder.node_id.clone(), holder.revision));
+        let Some(primary) = primaries.fabric() else { continue };
+        let now = Some((primary.node_id.clone(), primary.revision));
         if now == last {
             continue;
         }
-        let from = last.replace((holder.node_id.clone(), holder.revision));
+        let from = last.replace((primary.node_id.clone(), primary.revision));
         // The first record heard is not a move; and the fabric-primary pulls from no one.
         let Some((from_node, _)) = from else { continue };
-        if holder.node_id == me_id || from_node == holder.node_id {
+        if primary.node_id == me_id || from_node == primary.node_id {
             continue;
         }
-        if Puller::of(&seats, &me.mesh, &me_id) != Puller::MeshPrimary {
+        if Puller::of(&primaries, &me.mesh, &me_id) != Puller::MeshPrimary {
             continue;
         }
-        let span = tracing::info_span!("rdm.mesh.entry.resolve.via-fabric-primary-changed", node = %me, from = %from_node, to = %holder.node_id, to_mesh = %holder.mesh, revision = holder.revision, outcome = tracing::field::Empty, attempts = tracing::field::Empty, adopted_from_revision = tracing::field::Empty);
-        let (outcome, attempts, adopted_from) = pull_from_fabric_primary(&time, &me, &me_id, &client, &topology_view, holder).instrument(span.clone()).await;
+        let span = tracing::info_span!("rdm.mesh.entry.resolve.via-fabric-primary-changed", node = %me, from = %from_node, to = %primary.node_id, to_mesh = %primary.mesh, revision = primary.revision, outcome = tracing::field::Empty, attempts = tracing::field::Empty, adopted_from_revision = tracing::field::Empty);
+        let (outcome, attempts, adopted_from) = pull_from_fabric_primary(&time, &me, &me_id, &client, &topology_view, primary).instrument(span.clone()).await;
         span.record("outcome", outcome.as_str());
         span.record("attempts", attempts);
         if let Some(h) = adopted_from {
@@ -82,7 +82,7 @@ pub async fn run_seat_move_pull(
             // The record adopted from is the last move answered: a newer record is a newer move.
             last = Some((h.node_id, h.revision));
         }
-        span.in_scope(|| tracing::info!("the fabric seat moved: this mesh primary pulled rafka-time once from the new fabric-primary"));
+        span.in_scope(|| tracing::info!("the fabric-primary role moved: this mesh primary pulled rafka-time once from the new fabric-primary"));
     }
 }
 
@@ -95,31 +95,31 @@ async fn pull_from_fabric_primary(
     moved_to: rdm_core::Primary,
 ) -> (String, u32, Option<rdm_core::Primary>) {
     let mut last = String::from("no attempt");
-    let mut holder = moved_to;
-    for attempt in 1..=SEAT_MOVE_ATTEMPTS {
-        // The holder this admin's records name now: a seat that moved again is pulled from where it is.
+    let mut primary = moved_to;
+    for attempt in 1..=ROLE_MOVE_ATTEMPTS {
+        // The primary this admin's records name now: a role that moved again is pulled from where it is.
         if let Some(current) = topology_view.primaries().fabric() {
             if current.node_id == *me_id {
-                return ("kept: this admin took the fabric seat itself".into(), attempt - 1, None);
+                return ("kept: this admin took the fabric-primary role itself".into(), attempt - 1, None);
             }
-            holder = current;
+            primary = current;
         }
-        let read = crate::topology_read::read_topology(client, &rdm_transport::NodeTarget::ExactNode(holder.node_id.clone()), &me.to_string(), Some(&holder.mesh), None).await;
+        let read = crate::topology_read::read_topology(client, &rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), &me.to_string(), Some(&primary.mesh), None).await;
         match read {
             Ok(read) => {
-                let served_by = topology_view.digest_view.all().into_iter().find(|d| d.node.node_id == holder.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| holder.node_id.to_string());
+                let served_by = topology_view.digest_view.all().into_iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| primary.node_id.to_string());
                 match read.adopt_rafka_time(time, topology_view, &me.to_string(), &me.mesh, me_id, &served_by) {
-                    Ok(_) => return ("adopted".into(), attempt, Some(holder)),
+                    Ok(_) => return ("adopted".into(), attempt, Some(primary)),
                     Err(e) => last = e.to_string(),
                 }
             }
             Err(e) => last = e.to_string(),
         }
-        tokio::time::sleep(SEAT_MOVE_PAUSE * attempt).await;
+        tokio::time::sleep(ROLE_MOVE_PAUSE * attempt).await;
     }
-    tracing::info_span!("rdm.mesh.entry.reject.via-rafka-time-pull-unanswered", node = %me, to = %holder.node_id, attempts = SEAT_MOVE_ATTEMPTS, reason = %last)
+    tracing::info_span!("rdm.mesh.entry.reject.via-rafka-time-pull-unanswered", node = %me, to = %primary.node_id, attempts = ROLE_MOVE_ATTEMPTS, reason = %last)
         .in_scope(|| tracing::warn!("the fabric-primary did not serve rafka-time: this mesh primary keeps the rafka-time it holds"));
-    (format!("kept: {last}"), SEAT_MOVE_ATTEMPTS, None)
+    (format!("kept: {last}"), ROLE_MOVE_ATTEMPTS, None)
 }
 
 /// A node-admin with no launcher and no `JoinNode` to make whose store names other nodes takes

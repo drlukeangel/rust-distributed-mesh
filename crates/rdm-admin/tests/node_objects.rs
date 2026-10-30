@@ -192,9 +192,9 @@ fn node(name: &str, primary: bool) -> Node {
 }
 
 /// One mesh: `mesh1.admin.1` (the fabric-primary), `mesh1.rpc.1` and `mesh1.rpc.2`, which holds mesh1's
-/// rpc seat. The cells stop `mesh1.rpc.1`, which holds no seat, so no node.primary.update precedes
-/// the stop (proposal Part C1) and the drive's gate of this fixture, which moves no seat, is never
-/// asked to; a recovery of an exited birth moves no seat (`executor::seat_move`).
+/// rpc role. The cells stop `mesh1.rpc.1`, which holds no role, so no node.primary.update precedes
+/// the stop (proposal Part C1) and the drive's gate of this fixture, which moves no role, is never
+/// asked to; a recovery of an exited birth moves no role (`executor::role_move`).
 fn mn() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
@@ -252,11 +252,11 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         notices: rig.told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The Build door of `mesh1.admin.2`, a node-admin of the fabric that does not hold the fabric-primary
-/// seat (`mesh1.admin.1` holds it): its claim door carries its own birth's node id.
+/// role (`mesh1.admin.1` holds it): its claim door carries its own birth's node id.
 async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
     let mut t = mn();
     t.nodes.push(node("mesh1.admin.2", false));
@@ -289,7 +289,7 @@ async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         notices: rig.told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The fabric-primary's Build door over a Build log of its own: the executor writes its step
@@ -332,7 +332,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         notices: rig.told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: rdm_core::IncarnationId::mint() })
 }
 
 /// The one executor of the fixture is the fabric-primary itself.
@@ -1013,7 +1013,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
     eprintln!("span rdm.node_admin.build.reject.via-recovery-already-applied {}", applied[0]);
 }
 
-/// CONTRACT (R-ON8): a fabric-primary that took the seat after a Build ended holds no frame of it.
+/// CONTRACT (R-ON8): a fabric-primary that took the role after a Build ended holds no frame of it.
 /// Its re-submit is `AlreadyApplied` and the frames are read from the executor of the last attempt
 /// (`build.attempt.run` attaches to what that admin wrote itself), not from step facts the new
 /// fabric-primary's log may not hold yet.
@@ -1035,7 +1035,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         // The same Build log and executor under a fabric-primary that never drove this Build.
-        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), seats: before.seats.clone(), incarnation: before.incarnation.clone() });
+        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), primaries: before.primaries.clone(), incarnation: before.incarnation.clone() });
         let successor = serve(after).await;
         let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
@@ -1087,7 +1087,7 @@ fn a_build_sends_started_at_its_first_claim_then_ended_and_a_successor_that_adop
         let after_replay = rig.told.settled(2).await;
         assert_eq!(after_replay.len(), 2, "a replayed or re-read terminal sends no second notice: {after_replay:?}");
         // The same Build log under a fabric-primary that never drove this Build: it adopts it Complete.
-        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), seats: before.seats.clone(), incarnation: before.incarnation.clone() });
+        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), primaries: before.primaries.clone(), incarnation: before.incarnation.clone() });
         let successor = serve(after).await;
         let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
@@ -1231,7 +1231,7 @@ fn every_pipeline_step_is_named_by_the_client() {
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
-    // A node-admin's workflow is any node's: its seats move by node.primary.update before the operation
+    // A node-admin's workflow is any node's: its roles move by node.primary.update before the operation
     // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
     // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
     let admin: rdm_core::PathName = "mesh1.admin.2".parse().unwrap();
@@ -1387,7 +1387,7 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
     assert_eq!(spans_named(&spans, "rdm.node_admin.connection.delete.via-deleted-frame").len(), 1, "node.connections.deleted was delivered once");
 }
 
-/// CONTRACT: a Build call asked of a node-admin that does not hold the fabric-primary seat is refused
+/// CONTRACT: a Build call asked of a node-admin that does not hold the fabric-primary role is refused
 /// `not-fabric-primary`, naming the fabric-primary that admin sees, before either door admits anything,
 /// and the refusal has its own span as every other Build refusal has (one honest name per reason,
 /// `rdm.node_admin.build.reject.via-<reason>`): `rdm.node_admin.build.reject.via-not-fabric-primary` carrying the
@@ -1403,10 +1403,10 @@ fn a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_
     });
     match &end {
         Some(CallEnd::Rejected { reason, detail }) => {
-            assert_eq!(reason, "not-fabric-primary", "the admin without the seat refuses by name: {detail}");
+            assert_eq!(reason, "not-fabric-primary", "the admin without the role refuses by name: {detail}");
             assert!(detail.contains("names mesh1.admin.1"), "the refusal names the fabric-primary the admin sees: {detail}");
         }
-        other => panic!("a Build call to an admin without the fabric-primary seat ends Rejected not-fabric-primary, not {other:?}"),
+        other => panic!("a Build call to an admin without the fabric-primary role ends Rejected not-fabric-primary, not {other:?}"),
     }
     let spans = cap.spans();
     let refused = spans_named(&spans, "rdm.node_admin.build.reject.via-not-fabric-primary");

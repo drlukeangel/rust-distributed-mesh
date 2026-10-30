@@ -336,7 +336,7 @@ pub struct Records {
     /// verdict, or the fully crashed mesh's proof): the fabric is `degraded` from that moment until
     /// each such mesh's new primary has reported its checklist.
     pub(crate) peer_recovery: Mutex<BTreeMap<String, PeerRecovery>>,
-    /// The fabric-primary role was taken while the fabric was `degraded`: the new holder adopted
+    /// The fabric-primary role was taken while the fabric was `degraded`: the new primary adopted
     /// the status and keeps it until every mesh primary reports for its checklist (`crate::checklist`).
     pub(crate) adopted_degraded: std::sync::atomic::AtomicBool,
     /// This admin, as its mesh's primary, may declare its Mesh ready: it holds no adopted status
@@ -346,14 +346,14 @@ pub struct Records {
     /// digest status, the declare gate, the meshes this admin holds and a down op's receipt.
     pub wake: Arc<crate::status_declare::DeclareWake>,
     /// Poked each time the installed view changes: the hierarchy loop wakes on it to act on a
-    /// seat taken or a status that routing reads at once, not on its next checklist.
+    /// role taken or a status that routing reads at once, not on its next checklist.
     pub view_changed: tokio::sync::Notify,
     /// This admin does not hold the fabric-primary role and the last fabric status published is
     /// `degraded`: it serves that status, not a ready its own (absent) authority records imply.
     pub(crate) published_degraded: std::sync::atomic::AtomicBool,
     /// The topology view whose deleted births leave these records. Set once at start.
     pub(crate) digest_view: std::sync::OnceLock<DigestView>,
-    /// This admin is entering an existing mesh and has not yet been told who holds the seats: it
+    /// This admin is entering an existing mesh and has not yet been told who holds the roles: it
     /// computes none until its entry read has (ruling R-A2).
     pub(crate) entering: std::sync::atomic::AtomicBool,
     /// The fabric state this admin projects: the fabric-primary's own, the last
@@ -403,15 +403,15 @@ pub struct Records {
     /// that no create of it claimed. Set once at start.
     pub(crate) rows: std::sync::OnceLock<Arc<crate::node_rows::NodeRows>>,
     /// App declarations taken at a Join while this admin wrote no rows yet (a Day-0 admin before it
-    /// is Ready holds its mesh's seat by no view: Q59 = x), written with its first write after it
-    /// takes the seat.
+    /// is Ready holds its mesh's role by no view: Q59 = x), written with its first write after it
+    /// takes the role.
     pub(crate) held_declarations: Mutex<Vec<(rdm_core::MeshDigest, std::collections::BTreeSet<String>)>>,
-    /// What the provider holds recorded at a path (`crate::seat_revision::PathProbe`), asked for a node the
+    /// What the provider holds recorded at a path (`crate::path_investigation::PathProbe`), asked for a node the
     /// accepted topology names that no view and no durable runtime row holds a birth of. Set once at start.
-    pub(crate) path_probe: std::sync::OnceLock<Arc<dyn crate::seat_revision::PathProbe>>,
-    /// Where this admin's mesh's status rows live, read when this admin takes its mesh's seat
-    /// (`crate::status_rpc::SeatFold`). Set once at start.
-    pub(crate) status: std::sync::OnceLock<crate::status_rpc::SeatFold>,
+    pub(crate) path_probe: std::sync::OnceLock<Arc<dyn crate::path_investigation::PathProbe>>,
+    /// Where this admin's mesh's status rows live, read when this admin takes its mesh's role
+    /// (`crate::status_rpc::RoleFold`). Set once at start.
+    pub(crate) status: std::sync::OnceLock<crate::status_rpc::RoleFold>,
     /// This admin's Node RPC door, opened by an installed view ([`ServingDoor`]). Set once at start.
     pub(crate) door: std::sync::OnceLock<ServingDoor>,
     /// This admin's place on the backbone: it holds the meshes the installed view names, each deleted
@@ -502,19 +502,19 @@ impl Records {
             rows.declare_app_types(d, types).await.map(|_| true)
         } else {
             tracing::info_span!("rdm.node_admin.node.update.via-declaration-held", node = %rows.me(), subject = %d.node.name, node_id = %d.node.node_id, types = types.len())
-                .in_scope(|| tracing::info!("no writer of the mesh's rows yet: the declaration is held until this admin takes the seat"));
+                .in_scope(|| tracing::info!("no writer of the mesh's rows yet: the declaration is held until this admin takes the role"));
             self.held_declarations.lock().unwrap().push((d.clone(), types));
             Ok(false)
         }
     }
 
-    /// Write every declaration held for the seat this admin now holds; one still refused stays held.
+    /// Write every declaration held for the role this admin now holds; one still refused stays held.
     pub async fn write_held_declarations(&self) {
         let held: Vec<_> = std::mem::take(&mut *self.held_declarations.lock().unwrap());
         for (d, types) in held {
             match self.declare_app_types(&d, types.clone()).await {
                 Ok(()) => tracing::info_span!("rdm.node_admin.node.update.via-declaration-written", subject = %d.node.name, node_id = %d.node.node_id, types = types.len())
-                    .in_scope(|| tracing::info!("a declaration held before the seat is written beside the row")),
+                    .in_scope(|| tracing::info!("a declaration held before the role is written beside the row")),
                 Err(why) => {
                     tracing::info_span!("rdm.node_admin.node.reject.via-declaration-held", subject = %d.node.name, node_id = %d.node.node_id, detail = %why)
                         .in_scope(|| tracing::info!("the held declaration is still refused: kept"));
@@ -525,12 +525,12 @@ impl Records {
     }
 
     /// The probe of what the provider holds recorded at a path (set once, at start).
-    pub fn set_path_probe(&self, probe: Arc<dyn crate::seat_revision::PathProbe>) {
+    pub fn set_path_probe(&self, probe: Arc<dyn crate::path_investigation::PathProbe>) {
         let _ = self.path_probe.set(probe);
     }
 
     /// The probe of what the provider holds recorded at a path, once set.
-    pub fn path_probe(&self) -> Option<Arc<dyn crate::seat_revision::PathProbe>> {
+    pub fn path_probe(&self) -> Option<Arc<dyn crate::path_investigation::PathProbe>> {
         self.path_probe.get().cloned()
     }
 
@@ -550,7 +550,7 @@ impl Records {
     /// The facts on `mesh`'s births, on every mesh and on the fabric, which this admin (`name`, born as
     /// `me`) folds when it becomes `mesh`'s primary (set once, at start).
     pub fn set_status(&self, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>, fabric: Arc<dyn crate::fabric_storage::FabricStorage>, mesh: String, name: PathName, me: NodeId) {
-        let _ = self.status.set(crate::status_rpc::SeatFold::new(self.caches.clone(), nodes, meshes, fabric, mesh, name, me));
+        let _ = self.status.set(crate::status_rpc::RoleFold::new(self.caches.clone(), nodes, meshes, fabric, mesh, name, me));
     }
 
     /// The tick a waiter arms on to see the view change.
@@ -786,19 +786,19 @@ impl Records {
         }
     }
 
-    /// The admin has been told (or needs no telling of) who holds the seats: elections run.
+    /// The admin has been told (or needs no telling of) who holds the roles: elections run.
     pub fn set_entering(&self, entering: bool) {
         if self.entering.swap(entering, std::sync::atomic::Ordering::SeqCst) != entering {
             self.inputs_moved();
         }
     }
 
-    /// Whether this admin has not yet been told who holds the seats (its entry read has not answered).
+    /// Whether this admin has not yet been told who holds the roles (its entry read has not answered).
     pub fn is_entering(&self) -> bool {
         self.entering.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// A non-holder of the fabric-primary role serves the `degraded` status the holder published.
+    /// A admin that is not the fabric-primary serves the `degraded` status the fabric-primary published.
     pub fn published_degraded(&self) -> bool {
         self.published_degraded.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -866,7 +866,7 @@ impl Records {
             door.open_if_held(&t);
         }
         if *held != t {
-            // The seat of this admin's mesh taken with this view: its status rows are folded in
+            // The role of this admin's mesh taken with this view: its status rows are folded in
             // before the view is installed, so no decision reads the view against an empty record.
             if let Some(fold) = self.status.get() {
                 fold.on_install(&t, &self.declared, self.digest_view.get()).await;

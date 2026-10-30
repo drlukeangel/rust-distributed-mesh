@@ -44,7 +44,7 @@ pub struct ControlPlane {
     pub fabric_recovery: std::sync::OnceLock<crate::fabric_recovery::Reader>,
     /// This admin's primary view: a node-admin it holds as its mesh's primary replaced by the election is
     /// an unheard mesh-primary, the fabric-primary's to recover (node-recovery.md step 2).
-    pub seats: std::sync::OnceLock<rdm_transport::topology::PrimaryView>,
+    pub primaries: std::sync::OnceLock<rdm_transport::topology::PrimaryView>,
     /// What the fabric-primary's investigation holds of a peer mesh it has heard on the backbone
     /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
     /// stopped or deleted from here (R-D1). Set once by the admin that owns the ladder.
@@ -52,7 +52,7 @@ pub struct ControlPlane {
     /// Node investigation of one exact birth (node-investigation.md; Q107 item 1), the one primitive:
     /// gate 5 admits a delete of a birth neither stopped nor heard live only on its `exited` verdict
     /// (build.md §4.4; Q219). Set once by the admin that runs it; unset, no verdict is held.
-    pub investigation: std::sync::OnceLock<Arc<dyn crate::seat_revision::PathProbe>>,
+    pub investigation: std::sync::OnceLock<Arc<dyn crate::path_investigation::PathProbe>>,
     /// The connection facts this admin holds (set once by the admin that owns its connections
     /// writer): the active Directs of the fleet, and this admin's own latest Directs and Proxies.
     pub connections: std::sync::OnceLock<Arc<std::sync::Mutex<rdm_core::connections::ConnectionsHeld>>>,
@@ -124,7 +124,7 @@ impl ControlPlane {
             peer_mesh: std::sync::OnceLock::new(),
             investigation: std::sync::OnceLock::new(),
             fabric_recovery: std::sync::OnceLock::new(),
-            seats: std::sync::OnceLock::new(),
+            primaries: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
             claims: Arc::new(crate::storage::MemoryMeshStorage::default()),
             time,
@@ -613,8 +613,8 @@ impl ControlPlane {
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
-            // A Build whose plan would end a seat holder while no other node of its type in its mesh can
-            // take its seat is refused before it exists: node.primary.update has no successor (R-MT1, Q7).
+            // A Build whose plan would end a primary while no other node of its type in its mesh can
+            // take its role is refused before it exists: node.primary.update has no successor (R-MT1, Q7).
             if let Some(reject) = operations.iter().find_map(|op| {
                 let (node, action) = match op {
                     crate::build::BuildOperation::DeleteLiveNode { node, .. } => (node, "delete"),
@@ -652,7 +652,7 @@ impl ControlPlane {
                 .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
             // The Build is current the moment it is durable in the builds store: nothing else is written.
             // It is the door's last write: the reconcile loop drives a current Build at once, and its first
-            // step can move the fabric seat (a delete of this admin's own mesh), which refuses every gated
+            // step can move the fabric-primary role (a delete of this admin's own mesh), which refuses every gated
             // write after it, so the door answers the Build it accepted whatever the drive does next.
             let me = self.held_name().await;
             crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), &me.to_string(), "accepted").await.map_err(Refusal::State)?;
@@ -725,8 +725,8 @@ impl ControlPlane {
     /// acting on a path that holds no birth and that no earlier step makes
     /// (`crate::accepted::steps_action`); a step in a mesh held by its own drift attempt (R-BI7
     /// caveat 3); a step on a node of a peer mesh this fabric-primary holds unheard (R-D1); a
-    /// node.connection.delete, stop or delete of a seat holder while no other node of its type in its
-    /// mesh can take its seat (R-MT1, Q7).
+    /// node.connection.delete, stop or delete of a primary while no other node of its type in its
+    /// mesh can take its role (R-MT1, Q7).
     pub async fn open_steps_in(&self, span: tracing::Span, route: &'static str, steps: Vec<rdm_core::build::Step>) -> Result<Opened, Refusal> {
         let outer = tracing::Span::current();
         async {
@@ -770,7 +770,7 @@ impl ControlPlane {
                 let step_action = match step {
                     rdm_core::build::Step::Stop { .. } => Some("stop"),
                     rdm_core::build::Step::Delete { .. } => Some("delete"),
-                    // A seat holder's seats move at its node.connection.delete { All }, the first step of
+                    // A primary's roles move at its node.connection.delete { All }, the first step of
                     // a replace (node-connections-delete.md step 0; node-replace.md step 1).
                     rdm_core::build::Step::DeleteConnections { .. } => Some("node.connection.delete"),
                     _ => None,
@@ -876,7 +876,7 @@ impl ControlPlane {
                         return Err(Refusal::Reject(reject));
                     }
                 }
-                // A seat holder's seat moves by node.primary.update to another node-admin of its mesh;
+                // A primary's role moves by node.primary.update to another node-admin of its mesh;
                 // with none, the update has no other node of its type and the action is refused (R-MT1).
                 if kind != ActionKind::Start {
                     if let Some(reject) = last_admin(&path, kind.name(), &t) {
@@ -992,7 +992,7 @@ impl ControlPlane {
     /// [`Recovery::AlreadyApplied`] naming that workflow's attempt, whoever asks, and nothing is
     /// opened. A node-admin is node-recovered only while its mesh holds another live admin to recover
     /// it (mesh-recovery.md:8-9); otherwise it is mesh recovery. The claimant is the member's
-    /// recoverer, its mesh's primary node-admin as this admin's view holds the seat: any other admin
+    /// recoverer, its mesh's primary node-admin as this admin's view holds the role: any other admin
     /// is refused [`Refusal::NotClaimant`] naming who may claim. An attempt holding the mesh (a
     /// topology operation's claimed attempt there, or the mesh's own drift attempt) answers
     /// `BuildInProgress` naming the Build, the mesh and its claimant; an attempt in another mesh
@@ -1053,7 +1053,7 @@ impl ControlPlane {
             // Unheard as the primary: the view still names it, or the election has replaced it and the
             // fabric-primary runs its recovery "after the election has named the new mesh-primary"
             // (node-recovery.md step 2).
-            let replaced = self.seats.get().is_some_and(|seats| seats.replaced(rdm_core::Seat::MeshPrimary, &path.mesh, &incarnation));
+            let replaced = self.primaries.get().is_some_and(|primaries| primaries.replaced(rdm_core::PrimaryRole::MeshPrimary, &path.mesh, &incarnation));
             let unheard_mesh_primary = fabric_recovery.is_some()
                 || (path.kind == crate::model::NodeKind::NodeAdmin && (replaced || t.node_type_primary(&path.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == path && p.node_id == node_id && !p.status.is_live())));
             let recoverer = if let Some(fr) = &fabric_recovery {
@@ -1295,19 +1295,19 @@ impl ActionKind {
     }
 }
 
-/// The refusal of a `action` of `node` when `node` holds its mesh's primary seat or the fabric seat in
+/// The refusal of a `action` of `node` when `node` holds its mesh's primary role or the fabric-primary role in
 /// `t` and its node.primary.update has no successor (the approved proposal
 /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The no-successor cases": "refused by name,
 /// `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, until a secondary is available
 /// ... the workflow that commanded it ... fails by name with that reason. The one exception is
 /// R-MT1's: the delete of a mesh's only node skips the update"), or, for that delete, when the fabric
-/// seat it holds has no other mesh-primary to go to (C2 step 3): the same search the holder's
+/// role it holds has no other mesh-primary to go to (C2 step 3): the same search the holder's
 /// pre-check runs (`election::commanded_successor`), so nothing is admitted and no attempt opens. A
-/// node of any other type that holds its node-type primary seat is refused [`BuildReject::NoSecondary`] when no
-/// other node of its type in its mesh can take the seat (`election::commanded_node_type_successor`, Q7).
+/// node of any other type that holds its node-type primary role is refused [`BuildReject::NoSecondary`] when no
+/// other node of its type in its mesh can take the role (`election::commanded_node_type_successor`, Q7).
 fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject> {
     let target = t.node(node)?;
-    // The holder of any other node type's seat: its mesh-primary's node.primary.update needs another node
+    // The primary of any other node type: its mesh-primary's node.primary.update needs another node
     // of its type (Q7); the delete of a type's only node in its mesh skips the update, whether the node
     // leaves the topology (a removal) or is re-created at the same path.name (node recovery, an executable
     // replacement, the replace's Delete step): R5, node-primary-update.md "No-successor cases".
@@ -1321,22 +1321,22 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
         let refusal = crate::election::commanded_node_type_successor(&nodes, &crate::election::Incumbency::default(), target).err()?;
         return Some(BuildReject::NoSecondary { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string(), refusal });
     }
-    let fabric_seat = t.fabric_primary().is_some_and(|fp| fp.node_id == target.node_id);
-    let mesh_seat = t.node_type_primary(&node.mesh, crate::model::NodeKind::NodeAdmin).is_some_and(|p| p.node_id == target.node_id);
-    let moving = match (mesh_seat, fabric_seat) {
-        (true, true) => crate::election::Moving::BothSeats,
-        (true, false) => crate::election::Moving::MeshSeat,
+    let fabric_role = t.fabric_primary().is_some_and(|fp| fp.node_id == target.node_id);
+    let mesh_role = t.node_type_primary(&node.mesh, crate::model::NodeKind::NodeAdmin).is_some_and(|p| p.node_id == target.node_id);
+    let moving = match (mesh_role, fabric_role) {
+        (true, true) => crate::election::Moving::BothRoles,
+        (true, false) => crate::election::Moving::MeshRole,
         _ => return None,
     };
     // The delete of a mesh's only node, by a desired-state delete or by the node.delete route (the
-    // final primary a mesh.delete left alive, mesh-delete.md step 7), skips the update; a fabric seat on
+    // final primary a mesh.delete left alive, mesh-delete.md step 7), skips the update; a fabric-primary role on
     // it still moves, out of its mesh (C2 search step 2), and is refused with C2 step 3's text when no
     // other mesh-primary can take it.
     let moving = if action == "delete" && t.only_node(&node.mesh, &target.node_id) {
-        if !fabric_seat || (!t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead)) {
+        if !fabric_role || (!t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead)) {
             return None;
         }
-        crate::election::Moving::FabricSeatOutside
+        crate::election::Moving::FabricRoleOutside
     } else {
         moving
     };
@@ -1503,7 +1503,7 @@ pub struct InProgress {
     /// The mesh the holding attempt acts in, when known (a claimed attempt's).
     pub mesh: Option<String>,
     /// The admin that claimed the holding attempt, as its claim recorded it (never re-read from a
-    /// later seat view); `None` for an attempt not yet claimed or claimed before claimants were
+    /// later role view); `None` for an attempt not yet claimed or claimed before claimants were
     /// recorded.
     pub held_by: Option<String>,
 }
@@ -1600,18 +1600,18 @@ mod tests {
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1: "One
     /// primitive moves the primary of any (mesh, node_type) cohort ... A mesh-primary commands the
-    /// primaries of its mesh's other cohorts (Q3)"; step 1: "The holder is commanded from above, as a
+    /// primaries of its mesh's other cohorts (Q3)"; step 1: "The primary is commanded from above, as a
     /// step of the Build that stops, deletes, restarts, replaces ..."; Q7, ruled: "`node.primary.update`
     /// for a type with no other node of that type in the mesh is refused by name, `cannot transfer: no
     /// secondary of type <node_type> in mesh <mesh>` ... the commanding workflow fails with that reason";
     /// "a mesh's sole broker ... cannot be stopped or restarted until a secondary is Ready"):
-    /// mesh1.rpc.1 holds mesh1's rpc seat with mesh1.rpc.2 beside it, and mesh2.rpc.1 is mesh2's sole
-    /// rpc node. The stop of mesh1.rpc.1 moves its seat first (`executor::seat_move` names it) and no
-    /// admin executes the stop until it has; the stop of mesh1.rpc.2, which holds no seat, moves nothing
+    /// mesh1.rpc.1 holds mesh1's rpc role with mesh1.rpc.2 beside it, and mesh2.rpc.1 is mesh2's sole
+    /// rpc node. The stop of mesh1.rpc.1 moves its role first (`executor::role_move` names it) and no
+    /// admin executes the stop until it has; the stop of mesh1.rpc.2, which holds no role, moves nothing
     /// and its mesh's primary executes it. The Build door admits a stop of mesh1.rpc.1 and refuses a
     /// stop of mesh2.rpc.1 by name with Q7's text; its delete, by the node.delete route or the
     /// replace's Delete step, skips the update as its removal does (R5).
-    /// Must NOT happen: a cohort holder stopped with its seat unmoved, or the sole node of its type in a
+    /// Must NOT happen: a node-type primary stopped with its role unmoved, or the sole node of its type in a
     /// mesh stopped while its mesh has other nodes.
     #[test]
     fn an_rpc_node_type_primary_moves_before_its_stop_and_the_sole_node_of_its_type_is_refused_by_name() {
@@ -1624,13 +1624,13 @@ mod tests {
             nodes: vec![node("mesh1.admin.1", true, true), node("mesh1.rpc.1", true, false), node("mesh1.rpc.2", false, false), node("mesh2.admin.1", true, false), node("mesh2.rpc.1", true, false)],
         };
         let stop = |path: &str| crate::build::BuildOperation::StopNode { node: path.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: t.node(&path.parse().unwrap()).unwrap().incarnation_id.clone().unwrap() };
-        let holder = stop("mesh1.rpc.1");
-        assert_eq!(crate::executor::seat_move(&holder, &t).map(|m| m.holder.name.to_string()), Some("mesh1.rpc.1".to_string()), "the rpc seat moves before its holder's stop");
-        assert_eq!(crate::executor::executor_for(&holder, &t), None, "no admin executes the holder's stop until its seat moved");
+        let primary_stop = stop("mesh1.rpc.1");
+        assert_eq!(crate::executor::role_move(&primary_stop, &t).map(|m| m.primary.name.to_string()), Some("mesh1.rpc.1".to_string()), "the rpc role moves before its primary's stop");
+        assert_eq!(crate::executor::executor_for(&primary_stop, &t), None, "no admin executes the primary's stop until its role moved");
         let other = stop("mesh1.rpc.2");
-        assert_eq!(crate::executor::seat_move(&other, &t), None, "a node that holds no seat moves none");
+        assert_eq!(crate::executor::role_move(&other, &t), None, "a node that holds no primary role moves none");
         assert_eq!(crate::executor::executor_for(&other, &t).map(|p| p.to_string()), Some("mesh1.admin.1".to_string()), "its mesh's primary executes it");
-        assert!(last_admin(&"mesh1.rpc.1".parse().unwrap(), "stop", &t).is_none(), "mesh1's rpc holder has a secondary: admitted");
+        assert!(last_admin(&"mesh1.rpc.1".parse().unwrap(), "stop", &t).is_none(), "mesh1's rpc primary has a secondary: admitted");
         for action in ["stop"] {
             match last_admin(&"mesh2.rpc.1".parse().unwrap(), action, &t) {
                 Some(reject) => assert_eq!((reject.reason(), reject.to_string().as_str()), ("no-secondary", "cannot transfer: no secondary of type rpc-node in mesh mesh2"), "{action}"),
@@ -1639,14 +1639,14 @@ mod tests {
         }
         let delete_sole = crate::build::BuildOperation::DeleteLiveNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None, birth: None };
         assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t).is_none(), "deleting the sole member of a non-admin node type skips node.primary.update");
-        assert_eq!(crate::executor::seat_move(&delete_sole, &t), None, "deleting the sole member of a non-admin node type moves no seat");
+        assert_eq!(crate::executor::role_move(&delete_sole, &t), None, "deleting the sole member of a non-admin node type moves no role");
         // R5 (Luke 2026-10-24, arm (a); node-primary-update.md "No-successor cases": "the delete of a
         // type's only node in its mesh, whether the node leaves the topology (a removal) or is re-created
         // at the same `path.name`"): the replace's Delete step and the node.delete route of a
         // type's only node skip the update as a removal does, refused `no-secondary` at no step.
         assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t).is_none(), "the delete of a type's only node skips node.primary.update: {:?}", last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t));
         let delete_step = crate::build::BuildOperation::Step { step: rdm_core::build::Step::Delete { node: "mesh2.rpc.1".parse().unwrap() }, birth: None, entry: None };
-        assert_eq!(crate::executor::seat_move(&delete_step, &t), None, "the Build's delete of a type's only node moves no primary");
+        assert_eq!(crate::executor::role_move(&delete_step, &t), None, "the Build's delete of a type's only node moves no primary");
     }
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The
@@ -1676,8 +1676,8 @@ mod tests {
             other => panic!("{action} of {path} is refused last-admin: {other:?}"),
         };
         assert_eq!(refusal("mesh1.admin.1", "stop"), "cannot transfer: no secondary of type node-admin in mesh mesh1");
-        assert!(crate::executor::seat_move(&crate::build::BuildOperation::StopNode { node: only.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t).is_some_and(|m| m.mesh_seat), "stop of mesh1's only node never skips the seat move");
-        assert_eq!(crate::executor::seat_move(&crate::build::BuildOperation::DeleteLiveNode { node: only, exited: None, birth: None }, &t), None, "the delete of mesh1's only node skips the seat move");
+        assert!(crate::executor::role_move(&crate::build::BuildOperation::StopNode { node: only.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
+        assert_eq!(crate::executor::role_move(&crate::build::BuildOperation::DeleteLiveNode { node: only, exited: None, birth: None }, &t), None, "the delete of mesh1's only node skips the role move");
         assert_eq!(refusal("mesh2.admin.1", "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
     }
 
@@ -1687,10 +1687,10 @@ mod tests {
     /// `cannot transfer fabric-primary: no other node-admin Ready in mesh <mesh>, no other
     /// mesh-primary Ready` ... the commanding workflow fails with that reason"; C1: "the
     /// delete of a mesh's only node skips the update"): the fabric primary `mesh2.admin.1` is mesh2's
-    /// only node. Its delete skips node.primary.update, and its fabric seat moves out of
+    /// only node. Its delete skips node.primary.update, and its fabric role moves out of
     /// mesh2: with mesh1's primary Ready the Build door admits them; with no other
     /// mesh-primary Ready the door refuses them `last-admin` with C2 step 3's text.
-    /// Must NOT happen: a Build admitted whose fabric seat has nowhere to go.
+    /// Must NOT happen: a Build admitted whose fabric-primary role has nowhere to go.
     #[test]
     fn the_delete_of_a_fabric_primary_that_is_its_meshs_only_node_needs_another_ready_mesh_primary() {
         let mut t = Topology {
@@ -1703,7 +1703,7 @@ mod tests {
         };
         let fp: PathName = "mesh2.admin.1".parse().unwrap();
         for action in ["delete"] {
-            assert!(last_admin(&fp, action, &t).is_none(), "{action}: mesh1's Ready primary takes the fabric seat: {:?}", last_admin(&fp, action, &t));
+            assert!(last_admin(&fp, action, &t).is_none(), "{action}: mesh1's Ready primary takes the fabric-primary role: {:?}", last_admin(&fp, action, &t));
         }
         for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh1.admin.1") {
             n.status = NodeStatus::Pending;

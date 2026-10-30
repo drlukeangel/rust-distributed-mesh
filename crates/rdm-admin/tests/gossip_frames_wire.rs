@@ -140,8 +140,8 @@ fn frames() -> Vec<Frame> {
         Frame::NodeConnectionsDeleted { op: op("node.connection.delete:mesh2.rpc.2"), forwarded_by: None },
         Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 77 },
         Frame::FabricStatus { fabric: fabric(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: 78 },
-        Frame::Concern { seat: rdm_core::Seat::FabricPrimary, node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), observer: "mesh2.admin.1".into() },
-        Frame::NewFabricPrimary { holder: rdm_core::Primary { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
+        Frame::Concern { role: rdm_core::PrimaryRole::FabricPrimary, node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), observer: "mesh2.admin.1".into() },
+        Frame::NewFabricPrimary { primary: rdm_core::Primary { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
     ]
 }
 

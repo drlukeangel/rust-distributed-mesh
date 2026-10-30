@@ -52,7 +52,7 @@ fn a_stored_hex_deployment_id_is_refused_by_name() {
 #[test]
 fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans() {
     use rdm_core::ids::IdError;
-    use rdm_core::Seat;
+    use rdm_core::PrimaryRole;
     use rdm_admin::accepted::{AcceptedStore, FabricTopology};
     use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
     use rdm_admin::fabric_handover::update_operation;
@@ -108,7 +108,7 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
     }
 
     // Row key, stored BuildFact row and 0x20 Build carrier all carry the bare 12 characters, never `bid_...`.
-    let row_key = update_operation(Seat::MeshPrimary, &bare, 1, "node.stop:mesh1.admin.1");
+    let row_key = update_operation(PrimaryRole::MeshPrimary, &bare, 1, "node.stop:mesh1.admin.1");
     assert_eq!(row_key, format!("node.primary.update:{bare}:1:node.stop:mesh1.admin.1"));
     assert!(!row_key.contains("bid_"), "{row_key}");
     assert!(facts_json.contains(&format!("\"build_id\":\"{bare}\"")) && !facts_json.contains("bid_"), "{facts_json}");

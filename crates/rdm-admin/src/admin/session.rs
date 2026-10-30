@@ -777,7 +777,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         // of the mesh's nodes (a maker that has published no snapshot of its own mesh yet answers it
         // absent, node-rpc-envelope.md's Stored, yet its Primaries frame names the mesh's primary):
         // this admin enters an existing mesh, never waits for a Pending that is not its own (rdm#130).
-        let primary_elsewhere = read.seats.iter().any(|(seat, p, gone)| *seat == rdm_core::Seat::MeshPrimary && p.mesh == self.mesh && p.node_id != self.me_id && !gone);
+        let primary_elsewhere = read.primaries.iter().any(|(role, p, gone)| *role == rdm_core::PrimaryRole::MeshPrimary && p.mesh == self.mesh && p.node_id != self.me_id && !gone);
         if primary_elsewhere || map.iter().any(|n| n.name.mesh == self.mesh && n.node_id != self.me_id) {
             self.entering.store(true, std::sync::atomic::Ordering::SeqCst);
             let sweep = spawn_entry_sweep(&self.gate, self.entry.clone(), "maker", map, self.sweep.clone(), self.records.clone(), self.provider);
@@ -815,7 +815,7 @@ pub(crate) fn spawn_entry_sweep(
 ) -> tokio::task::JoinHandle<()> {
     gate.spawn(async move {
         let report = crate::reenter::enter_existing_mesh(&ctx, source, map).await;
-        // The entry read has told this admin what the mesh knows of its seats (or no one could).
+        // The entry read has told this admin what the mesh knows of its roles (or no one could).
         records.set_entering(false);
         // A reply proves a live exact birth: the view holds it (until the topology view speaks for
         // it), settled as Ready, in transition as its source held it (a Leaving

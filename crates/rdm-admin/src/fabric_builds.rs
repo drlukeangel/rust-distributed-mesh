@@ -94,12 +94,12 @@ pub struct FabricBuildStateAdapter {
 
 /// What the fabric-primary record this admin holds says of this birth's Build log.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SeatRecord {
+pub enum PrimaryRecord {
     /// The record names this birth, names none, or names a birth proven gone: it ends nothing.
     Open {
         /// The path.name of this birth when the record names it (from the digests held); `None`
         /// when the record names none or a birth proven gone.
-        holder: Option<String>,
+        primary: Option<String>,
     },
     /// The record names another live birth: this birth's authority ended at that record's revision.
     Moved {
@@ -113,17 +113,17 @@ pub enum SeatRecord {
 /// Where a Build log reads its target: the primary record this admin holds, and a receiver that wakes
 /// each time a record is held.
 #[derive(Clone)]
-pub struct SeatSource {
+pub struct PrimarySource {
     /// The record's answer for this birth, read now.
-    pub read: Arc<dyn Fn() -> SeatRecord + Send + Sync>,
-    /// Ticks whenever a seat record is held (`PrimaryView::subscribe`); none for a log with no seat.
+    pub read: Arc<dyn Fn() -> PrimaryRecord + Send + Sync>,
+    /// Ticks whenever a primary record is held (`PrimaryView::subscribe`); none for a log with no role.
     pub changed: Option<tokio::sync::watch::Receiver<u64>>,
 }
 
-impl SeatSource {
-    /// A Build log no seat record governs (a fixture with no topology view).
+impl PrimarySource {
+    /// A Build log no primary record governs (a fixture with no topology view).
     pub fn unrecorded() -> Self {
-        Self { read: Arc::new(|| SeatRecord::Open { holder: None }), changed: None }
+        Self { read: Arc::new(|| PrimaryRecord::Open { primary: None }), changed: None }
     }
 }
 
@@ -137,21 +137,21 @@ pub struct DecisionGate {
     node: String,
     decisions: Arc<tokio::sync::Mutex<()>>,
     /// The primary record this birth's target is read from.
-    seat: SeatSource,
+    role: PrimarySource,
 }
 
 impl DecisionGate {
-    /// A gate for `node`'s Build log, its seat read from `seat`.
-    pub fn new(node: String, seat: SeatSource) -> Self {
-        Self { node, decisions: Arc::default(), seat }
+    /// A gate for `node`'s Build log, its role read from `role`.
+    pub fn new(node: String, role: PrimarySource) -> Self {
+        Self { node, decisions: Arc::default(), role }
     }
 
-    /// Resolves once the seat record ends this birth's seat (at once when it already has;
-    /// never for a log no seat record governs).
+    /// Resolves once the primary record ends this birth's role (at once when it already has;
+    /// never for a log no primary record governs).
     pub async fn target_set(&self) {
-        let Some(mut changed) = self.seat.changed.clone() else { return std::future::pending().await };
+        let Some(mut changed) = self.role.changed.clone() else { return std::future::pending().await };
         loop {
-            if matches!((self.seat.read)(), SeatRecord::Moved { .. }) {
+            if matches!((self.role.read)(), PrimaryRecord::Moved { .. }) {
                 return;
             }
             if changed.changed().await.is_err() {
@@ -160,23 +160,23 @@ impl DecisionGate {
         }
     }
 
-    /// Enter the gate for one mutation: refused by name once the seat record names another live
+    /// Enter the gate for one mutation: refused by name once the primary record names another live
     /// birth.
     pub async fn enter(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, BuildStateError> {
         self.enter_naming().await.map(|(held, _)| held)
     }
 
-    /// [`Self::enter`], with the holder an open record names (`SeatRecord::Open::holder`), read
+    /// [`Self::enter`], with the primary an open record names (`PrimaryRecord::Open::primary`), read
     /// under the same lock.
     pub async fn enter_naming(&self) -> Result<(tokio::sync::MutexGuard<'_, ()>, Option<String>), BuildStateError> {
         let held = self.decisions.lock().await;
-        match (self.seat.read)() {
-            SeatRecord::Open { holder } => Ok((held, holder)),
-            SeatRecord::Moved { by, to } => Err(BuildStateError::SeatYielded { node: self.node.clone(), by, to }),
+        match (self.role.read)() {
+            PrimaryRecord::Open { primary } => Ok((held, primary)),
+            PrimaryRecord::Moved { by, to } => Err(BuildStateError::RoleYielded { node: self.node.clone(), by, to }),
         }
     }
 
-    /// The lock a seat commit on this admin holds across the record's move.
+    /// The lock a role commit on this admin holds across the record's move.
     pub fn decisions(&self) -> Arc<tokio::sync::Mutex<()>> {
         self.decisions.clone()
     }
@@ -184,17 +184,17 @@ impl DecisionGate {
 
 impl FabricBuildStateAdapter {
     /// The Build state of the admin named `node` over its Build journal `local`, its fabric-primary
-    /// decisions gated by `seat`. `location_view` names this admin's path.name as its view holds it.
-    pub fn new(local: Arc<dyn LocalBuildLog>, location_view: &rdm_transport::topology::LocationView, node: String, seat: SeatSource) -> Self {
-        Self { local, gate: DecisionGate::new(node, seat), location_view: location_view.clone() }
+    /// decisions gated by `role`. `location_view` names this admin's path.name as its view holds it.
+    pub fn new(local: Arc<dyn LocalBuildLog>, location_view: &rdm_transport::topology::LocationView, node: String, role: PrimarySource) -> Self {
+        Self { local, gate: DecisionGate::new(node, role), location_view: location_view.clone() }
     }
 
     /// Whether this admin's Build log still decides anything: refused by name once the committed
-    /// seat record names another live birth, else the holder the open record names. The
+    /// primary record names another live birth, else the primary the open record names. The
     /// fabric-primary's drive passes this before every dispatch; it holds the gate only for the
     /// check, because an attempt lasts as long as its steps and the target is kept.
     pub async fn target_check(&self) -> Result<Option<String>, BuildStateError> {
-        self.gate.enter_naming().await.map(|(_, holder)| holder)
+        self.gate.enter_naming().await.map(|(_, primary)| primary)
     }
 
     /// Resolves once this admin's Build log is targeted: the drive's wait on an executor's run ends
@@ -203,7 +203,7 @@ impl FabricBuildStateAdapter {
         self.gate.target_set().await
     }
 
-    /// The lock a seat commit on this admin holds across the record's move: a decision in flight
+    /// The lock a role commit on this admin holds across the record's move: a decision in flight
     /// commits wholly before the record moves, and every decision after it is refused by the record.
     pub fn decisions(&self) -> Arc<tokio::sync::Mutex<()>> {
         self.gate.decisions()
@@ -253,7 +253,7 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
 
-    /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the seat's own log.
+    /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the role's own log.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
         let _gate = self.gate.enter().await?;
         wire_shaped(&BuildFact::Claim(claim.clone()))?;
@@ -515,78 +515,78 @@ mod tests {
     }
 
     /// CONTRACT (proposal node-primary-update Part C1 step 5: "This is the commit. From this write the
-    /// holder is no longer primary"; Build dispatch from the old seat is refused `SeatYielded`, and nothing
+    /// primary is no longer primary"; Build dispatch from the old role is refused `RoleYielded`, and nothing
     /// else is written): the Build log reads its authority from the committed
-    /// fabric seat record. Once the record names another live birth, every decision is refused by
+    /// fabric primary record. Once the record names another live birth, every decision is refused by
     /// name, naming that birth's path.name from the digest view even when the projected view does not
     /// hold it yet, and a wait on the target resolves; no target write is made. A record naming a birth
     /// proven gone (a vacancy the election fills before this birth's own record lands) ends nothing.
-    /// What must NOT happen: a moved record that still lets the old seat decide, or a refusal naming
-    /// no admin while a digest of the holder is held.
+    /// What must NOT happen: a moved record that still lets the old role decide, or a refusal naming
+    /// no admin while a digest of the primary is held.
     #[tokio::test]
     async fn a_fabric_primary_record_naming_another_birth_refuses_this_admins_decisions_by_name() {
         use futures_util::FutureExt as _;
-        use rdm_core::{IncarnationId, NodeId, Seat, Primary};
-        let seats = rdm_transport::topology::PrimaryView::default();
+        use rdm_core::{IncarnationId, NodeId, PrimaryRole, Primary};
+        let primaries = rdm_transport::topology::PrimaryView::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let next = Primary { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 };
         let lost = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<IncarnationId>::new()));
         let source = {
-            let changed = Some(seats.subscribe());
-            let (seats, me, lost) = (seats.clone(), me.clone(), lost.clone());
+            let changed = Some(primaries.subscribe());
+            let (primaries, me, lost) = (primaries.clone(), me.clone(), lost.clone());
             // The digest view holds mesh2.admin.1; nothing here consults a projected view.
-            let read = std::sync::Arc::new(move || crate::seat_watch::fabric_seat_record(seats.fabric().as_ref(), &me, &lost.lock().unwrap(), |id| (id.as_str() == "100000000000").then(|| "mesh2.admin.1".to_string())));
-            SeatSource { read, changed }
+            let read = std::sync::Arc::new(move || crate::primary_watch::fabric_primary_record(primaries.fabric().as_ref(), &me, &lost.lock().unwrap(), |id| (id.as_str() == "100000000000").then(|| "mesh2.admin.1".to_string())));
+            PrimarySource { read, changed }
         };
         let gate = DecisionGate::new("mesh2.admin.2".into(), source);
-        seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
+        primaries.take(PrimaryRole::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
         assert!(gate.enter().await.is_ok(), "the record names this birth: it decides");
         assert!(gate.target_set().now_or_never().is_none(), "no target while the record names this birth");
-        seats.take(Seat::FabricPrimary, &next);
+        primaries.take(PrimaryRole::FabricPrimary, &next);
         lost.lock().unwrap().insert(next.incarnation.clone());
         assert!(gate.enter().await.is_ok(), "a record naming a birth proven gone ends nothing");
         lost.lock().unwrap().clear();
         match gate.enter().await {
-            Err(BuildStateError::SeatYielded { to, by, .. }) => {
-                assert_eq!(to.as_deref(), Some("mesh2.admin.1"), "the refusal names the holder the record names");
+            Err(BuildStateError::RoleYielded { to, by, .. }) => {
+                assert_eq!(to.as_deref(), Some("mesh2.admin.1"), "the refusal names the primary the record names");
                 assert!(by.contains("100000000000") && by.contains("revision 2"), "the reason names the record: {by}");
             }
-            other => panic!("the moved record must refuse the old seat's decision by name, got {:?}", other.map(|_| ())),
+            other => panic!("the moved record must refuse the old role's decision by name, got {:?}", other.map(|_| ())),
         }
         assert!(gate.target_set().now_or_never().is_some(), "a wait on the target resolves once the record moved");
     }
 
-    /// CONTRACT (R-A2 item 2): a seat commit on this admin waits for the decision in flight (it
+    /// CONTRACT (R-A2 item 2): a role commit on this admin waits for the decision in flight (it
     /// commits wholly before the record moves), and every decision after the move is refused by
     /// name.
     #[tokio::test]
     async fn a_fabric_primary_change_waits_for_the_decision_in_flight_and_refuses_every_later_one() {
-        use rdm_core::{IncarnationId, NodeId, Seat, Primary};
-        let seats = rdm_transport::topology::PrimaryView::default();
+        use rdm_core::{IncarnationId, NodeId, PrimaryRole, Primary};
+        let primaries = rdm_transport::topology::PrimaryView::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let source = {
-            let changed = Some(seats.subscribe());
-            let (seats, me) = (seats.clone(), me.clone());
-            SeatSource { read: std::sync::Arc::new(move || crate::seat_watch::fabric_seat_record(seats.fabric().as_ref(), &me, &Default::default(), |_| None)), changed }
+            let changed = Some(primaries.subscribe());
+            let (primaries, me) = (primaries.clone(), me.clone());
+            PrimarySource { read: std::sync::Arc::new(move || crate::primary_watch::fabric_primary_record(primaries.fabric().as_ref(), &me, &Default::default(), |_| None)), changed }
         };
-        seats.take(Seat::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
+        primaries.take(PrimaryRole::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
         let gate_ref = std::sync::Arc::new(DecisionGate::new("mesh1.admin.1".into(), source));
         let committed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let gate = gate_ref.enter().await.unwrap();
-        let (decisions, c, primary_view) = (gate_ref.decisions(), committed.clone(), seats.clone());
+        let (decisions, c, primary_view) = (gate_ref.decisions(), committed.clone(), primaries.clone());
         let moving = tokio::spawn(async move {
             let _held = decisions.lock_owned().await;
-            primary_view.take(Seat::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 });
+            primary_view.take(PrimaryRole::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 });
             c.load(std::sync::atomic::Ordering::SeqCst)
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(!moving.is_finished(), "the seat commit waits for the decision holding the gate");
+        assert!(!moving.is_finished(), "the role commit waits for the decision holding the gate");
         committed.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(gate);
         assert!(moving.await.unwrap(), "the record moved after the decision committed");
         let later = gate_ref.enter().await.map(|_| ());
         match later {
-            Err(BuildStateError::SeatYielded { node, by, to }) => {
+            Err(BuildStateError::RoleYielded { node, by, to }) => {
                 assert_eq!(node, "mesh1.admin.1");
                 assert!(by.contains("400000000000") && by.contains("no digest of that birth is held"), "the reason names the record and why no path.name is named: {by}");
                 assert_eq!(to, None);

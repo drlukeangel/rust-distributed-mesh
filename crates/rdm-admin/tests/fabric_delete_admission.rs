@@ -20,8 +20,8 @@ fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
 }
 
 /// Two meshes of two node-admins each, two rpc nodes in mesh1 and one in mesh2. `mesh1.admin.1` holds
-/// the fabric seat and mesh1's, `mesh2.admin.1` holds mesh2's, `mesh1.rpc.1` mesh1's rpc seat with
-/// `mesh1.rpc.2` its secondary: a stop, restart or replace of `mesh1.rpc.1` moves its seat by
+/// the fabric-primary role and mesh1's, `mesh2.admin.1` holds mesh2's, `mesh1.rpc.1` mesh1's rpc role with
+/// `mesh1.rpc.2` its secondary: a stop, restart or replace of `mesh1.rpc.1` moves its role by
 /// node.primary.update and is not refused for want of a secondary (proposal Part C1, Q7). The fabric
 /// is pending.
 fn view(status: ScopeStatus) -> Topology {

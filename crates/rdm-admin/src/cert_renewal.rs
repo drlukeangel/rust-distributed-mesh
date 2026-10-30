@@ -104,7 +104,7 @@ pub fn fabric_watch(view: &Topology, records: &crate::atlas::Atlas, now_ms: Opti
 }
 
 /// The births whose certs this admin, `me`, renews (node-cert-renew.md Caller): every other birth of
-/// a mesh whose primary seat it holds, and, holding the fabric seat, every other mesh's primary and
+/// a mesh whose primary role it holds, and, holding the fabric-primary role, every other mesh's primary and
 /// itself.
 fn renewed_by(view: &Topology, me: &NodeId) -> Vec<Node> {
     let mut out = Vec::new();

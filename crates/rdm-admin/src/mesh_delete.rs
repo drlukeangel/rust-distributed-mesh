@@ -606,7 +606,7 @@ pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate
 /// what the owner admitted decides. Admitted as the final primary at admission: the first run of the
 /// leave, and the owner's accepted roster is recorded as the `LeavingRoster`: the roster is captured
 /// once, by the owner (mesh-delete.md step 1), never again from this admin's view. Admitted by a `RosterAmended` (the admin
-/// the election seated, or the one node-admin the fabric-primary created when none survived): the
+/// the election in its role, or the one node-admin the fabric-primary created when none survived): the
 /// roster is the owner's accepted roster plus every amendment, used for this run and written
 /// nowhere, so the accepted roster is never recaptured. Any other final primary refuses the run by
 /// name, both births named.
@@ -716,7 +716,7 @@ pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&Rost
         .collect()
 }
 
-/// The read the leave's member workflows take before they run (R13: "Rebuild after a seat change
+/// The read the leave's member workflows take before they run (R13: "Rebuild after a role change
 /// reads the mesh's own rows"): the row of every roster birth `records` hold no record of, held by
 /// `rows`, the writer of the mesh's rows, so the birth's `Deleted` row, node.delete's `NodeDeleted`
 /// step's write (node-delete.md step 3), is written from the row its node holds; the admin created

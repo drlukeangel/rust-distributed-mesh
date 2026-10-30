@@ -299,7 +299,7 @@ fn tier_of(name: &str) -> BTreeMap<String, String> {
 }
 
 /// The view of a writer of mesh2's rows: `records`, with `primary` the mesh's primary node-admin (a
-/// live seat) and `fabric_primary` holding the fabric seat.
+/// live role) and `fabric_primary` holding the fabric-primary role.
 fn writer_view(records: &[Node], primary: Option<&str>, fabric_primary: Option<Node>) -> Topology {
     let mut nodes: Vec<Node> = records.iter().cloned().map(|mut n| {
         n.is_primary = Some(n.name.to_string().as_str()) == primary;
@@ -693,8 +693,8 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
 /// fabric-primary its executor, "as acting primary of a mesh that has no primary, writes its row
 /// deleted"), R-NS1 item 2 (from the stop of a mesh's last admin the fabric-primary is the writer of
 /// a mesh with no primary) and R-MD1 item 2 (mesh-left ensures the mesh row Dead). While the final
-/// primary holds its seat live, the fabric-primary writes none of mesh2's rows and a second claim of
-/// `mesh2.admin.1` is refused `name-held`; once it is stopped (its seat held) the
+/// primary holds its role live, the fabric-primary writes none of mesh2's rows and a second claim of
+/// `mesh2.admin.1` is refused `name-held`; once it is stopped (its role held) the
 /// fabric-primary writes its row Deleted, node id and config kept, as its node.delete's NodeDeleted
 /// step does; mesh-left puts the mesh row Dead as acting primary when no Dead row is held; and only
 /// then a new birth claims `mesh2.admin.1` over the Deleted row (`row-seeded`, seeded from it), its
@@ -726,10 +726,10 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         rows_written(&storage, &rows, std::slice::from_ref(&last)).await;
         // A live mesh2.admin.1 holds its name: a second birth's claim is refused.
         let second = rows.claim(&last.name, &NodeId::mint(), "node.create:mesh2.admin.1", None, None, ClaimFor::Create).await;
-        // Seated and live: the fabric-primary is not the writer of mesh2's rows.
+        // In its role and live: the fabric-primary is not the writer of mesh2's rows.
         view.write().await.nodes.iter_mut().filter(|n| n.name == last.name).for_each(|n| n.is_primary = true);
         let live = rows.deleted(&last, &deleting).await;
-        // Stopped, its seat still held (R-EL1): no primary for the writer rule (R-NS1 item 2).
+        // Stopped, its role still held (R-EL1): no primary for the writer rule (R-NS1 item 2).
         view.write().await.nodes.iter_mut().filter(|n| n.name == last.name).for_each(|n| {
             n.status = NodeStatus::Leaving;
             n.stopped = true;
@@ -752,7 +752,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
 
     assert!(matches!(&second, Err(RowRefused::NameHeld(h)) if h.by == last.node_id), "a live mesh2.admin.1 refuses a second claim: {second:?}");
-    assert!(live.is_err(), "while the final primary holds its seat live the fabric-primary writes none of mesh2's rows: {live:?}");
+    assert!(live.is_err(), "while the final primary holds its role live the fabric-primary writes none of mesh2's rows: {live:?}");
     stopped.unwrap_or_else(|e| panic!("once stopped, the fabric-primary writes the final primary's row Deleted as acting primary: {e}"));
     after.unwrap_or_else(|e| panic!("mesh-left writes its rows: {e}"));
     let row = row.expect("the final primary's row stays, readable at its path.name");
@@ -769,7 +769,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     }
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     let deleted: Vec<String> = named("rdm.node_admin.node.delete.via-node-row").iter().filter(|s| s["attributes"]["subject"] == FINAL).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
-    assert_eq!(deleted, ["not-mesh-primary", "row-deleted"], "refused while the final primary is live and seated, written once it is stopped: {deleted:?}");
+    assert_eq!(deleted, ["not-mesh-primary", "row-deleted"], "refused while the final primary is live and primary, written once it is stopped: {deleted:?}");
     let dead = named("rdm.node_admin.mesh.update.via-dead-row");
     assert!(dead.iter().any(|s| s["attributes"]["mesh_id"] == mesh_id.as_str() && s["attributes"]["outcome"] == "applied" && s["attributes"]["writer"] == "acting-primary"), "no Dead row held: the fabric-primary writes Dead as acting primary: {dead:#?}");
     let claims: Vec<String> = named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s["attributes"]["subject"] == FINAL).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
@@ -793,7 +793,7 @@ fn step_facts(facts: &[BuildFact]) -> Vec<BuildStepReceipt> {
 /// the final primary `mesh2.admin.1` runs the ordinary tier, `mesh2.rpc.2` exits and `mesh2.rpc.1`'s
 /// exit cannot be proven, then the final primary is lost. The fabric-primary records the lost
 /// primary's exact Exited first, then `RosterAmended { mesh2.admin.1 -> mesh2.admin.2 }` (the
-/// surviving admin the election seated); the identical amendment replays `AlreadyApplied` and a
+/// surviving admin the election in its role); the identical amendment replays `AlreadyApplied` and a
 /// second amendment for the same predecessor is refused by name. Attempt 2: the amended primary runs
 /// only `mesh2.rpc.1` (`mesh2.rpc.2` and the lost primary keep their receipts, nobody re-runs them),
 /// its manifest is accepted against the amended admission, a stale manifest naming the predecessor as
@@ -1476,16 +1476,16 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
     assert!(named("rdm.node_admin.mesh.resolve.via-retained-receipts").iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["retained"] == "2" && s["attributes"]["remaining"] == "1"));
 }
 
-/// CONTRACT (R11 form (b); node-recovery.md step 2-3, run by the seat watch: "A node-admin watching
-/// a silent seat holder (seat watch) runs this same ladder", then "the provider about the exact
+/// CONTRACT (R11 form (b); node-recovery.md step 2-3, run by the primary watch: "A node-admin watching
+/// a silent primary (primary watch) runs this same ladder", then "the provider about the exact
 /// runtime recorded at launch"): the node-admin the fabric-primary created for a leaving mesh holds
-/// the lost primary's seat record but never heard its digest (the primary was gone before the admin
-/// was born). Its seat watch reads the holder's runtime from the runtime row handed into its
+/// the lost primary's primary record but never heard its digest (the primary was gone before the admin
+/// was born). Its primary watch reads the holder's runtime from the runtime row handed into its
 /// nodes.storage at its create, the exact runtime recorded at launch. With no digest and no row the
 /// finding is unproven.
 #[test]
 fn a_created_admins_watch_reads_the_lost_primarys_runtime_from_its_runtime_row() {
-    use rdm_admin::seat_watch::{inspect_birth, Finding};
+    use rdm_admin::primary_watch::{inspect_birth, Finding};
     use rdm_admin::storage::{MemoryNodesStorage, NodesStorage, RuntimeRow};
     let lost = node(FINAL);
     let h = handle(FINAL, 49_001);
@@ -1556,7 +1556,7 @@ fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_topology_
 
 /// CONTRACT (mesh-delete.md, "Resume after the primary's loss", step 3: the new final primary "runs
 /// only the tiers without a terminal receipt"; R11: the accepted roster is immutable and decides what
-/// runs; R13: "Rebuild after a seat change reads the mesh's own rows"): the admin created for a
+/// runs; R13: "Rebuild after a role change reads the mesh's own rows"): the admin created for a
 /// leaving mesh with no admin left joined after `mesh2.rpc.1` stopped, so neither its view nor its
 /// the topology view holds that birth. The roster birth runs from the roster itself: its member workflow is
 /// handed a record naming exactly that birth (path.name, node id, incarnation), its exact Exited
@@ -2527,11 +2527,11 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         let outer_trace_id = trace_id(&root);
         let _in_root = root.enter();
 
-        // Fabric-primary change on the same trace when the deleting mesh holds the fabric-primary seat.
+        // Fabric-primary change on the same trace when the deleting mesh holds the fabric-primary role.
         tracing::info_span!(
-            "rdm.node_admin.seat.update.via-primary-update",
-            seat = "fabric-primary",
-            operation = %rdm_admin::fabric_handover::update_operation(rdm_core::Seat::FabricPrimary, build_id.as_str(), 1, &outer),
+            "rdm.node_admin.primary.update.via-primary-update",
+            role = "fabric-primary",
+            operation = %rdm_admin::fabric_handover::update_operation(rdm_core::PrimaryRole::FabricPrimary, build_id.as_str(), 1, &outer),
             outcome = "confirmed"
         )
         .in_scope(|| tracing::info!("node.fabric-primary.update confirmed before member delete"));
@@ -2736,7 +2736,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         "mesh.delete Build span correlates Build, attempt and mesh.delete:<mesh_id>"
     );
     assert!(
-        !on_trace(&trace_id, "rdm.node_admin.seat.update.via-primary-update").is_empty(),
+        !on_trace(&trace_id, "rdm.node_admin.primary.update.via-primary-update").is_empty(),
         "fabric-primary change runs on the same trace as mesh.delete"
     );
     for member in [FAILING, EXITING] {

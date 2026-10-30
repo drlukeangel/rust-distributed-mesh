@@ -2,7 +2,7 @@
 //! lifecycles/mesh-investigation.md "During `fabric.delete`", R-FS1 revised).
 //!
 //! 1. `crit:e12.s59.1`: `fabric.delete` of a two-mesh fabric runs `mesh.delete` on each mesh
-//!    leaf-inward (the fabric-primary's own mesh last, where the fabric seat stays put), deletes
+//!    leaf-inward (the fabric-primary's own mesh last, where the fabric-primary role stays put), deletes
 //!    each other mesh's final mesh-primary (`MeshLeft` + mesh row `Dead`), releases the fabric name
 //!    (`FabricStorage::release_name`) and reports `fabric.deleted` (`Complete` of
 //!    `fabric.delete:<fabric_id>`) while the fabric-primary remains alive for its separate
@@ -33,7 +33,7 @@ use rdm_admin::build_state::{AttemptOutcome, AttemptReason, BuildAccepted, Build
 use rdm_admin::control_plane::ControlPlane;
 use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RuntimeProof, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rdm_admin::executor::{executor_for, seat_move};
+use rdm_admin::executor::{executor_for, role_move};
 use rdm_admin::fabric_storage::{FabricIdentity, FabricStorage, MemoryFabricStorage};
 use rdm_admin::join::Joins;
 use rdm_admin::mesh_delete::{accepted_roster, amend_roster, complete_fabric_delete, handoff_verdict, leaving_roster, manifest_reference, members_exited, mesh_left_proof, mesh_left_rows, operation, owner_resume, record_completion, roster_records, roster_rows_read, unanswered_mesh_delete, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, UnansweredMeshOutcome, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
@@ -190,7 +190,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
 }
 
 /// crit:e12.s59.1 — `fabric.delete` of a two-mesh fabric runs `mesh.delete` leaf-inward (`mesh2`
-/// first, then the fabric-primary's own mesh `mesh1` last with the fabric seat kept on
+/// first, then the fabric-primary's own mesh `mesh1` last with the fabric-primary role kept on
 /// `mesh1.admin.1`), deletes `mesh2`'s final mesh-primary (`mesh2.admin.1`), releases the fabric
 /// name (`FabricStorage::release_name`), and reports `fabric.deleted` (`Complete` of
 /// `fabric.delete:<fabric_id>`) while `mesh1.admin.1` remains alive for its separate `node.delete`.
@@ -346,8 +346,8 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         .await
         .unwrap();
 
-    // Step 1b: now only mesh1 (the FP's own mesh) and DeleteFabric remain. On mesh1, seat_move is
-    // None (the fabric seat stays on mesh1.admin.1) and executor_for is mesh1.admin.1.
+    // Step 1b: now only mesh1 (the FP's own mesh) and DeleteFabric remain. On mesh1, role_move is
+    // None (the fabric-primary role stays on mesh1.admin.1) and executor_for is mesh1.admin.1.
     let proj = builds.read_build(&build_id).await.unwrap();
     let after_m2_left = plan_for_build(&proj, &*observed.read().await).operations;
     assert_eq!(
@@ -358,7 +358,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         ],
         "once mesh2 is MeshLeft, ShutdownMesh(mesh1) and DeleteFabric remain"
     );
-    assert_eq!(seat_move(&after_m2_left[0], &*observed.read().await), None, "the fabric seat stays on mesh1.admin.1 during its own mesh's mesh.delete");
+    assert_eq!(role_move(&after_m2_left[0], &*observed.read().await), None, "the fabric-primary role stays on mesh1.admin.1 during its own mesh's mesh.delete");
     assert_eq!(executor_for(&after_m2_left[0], &*observed.read().await), Some(m1_a1.name.clone()));
 
     // Execute ShutdownMesh(mesh1): mesh1.admin.1 deletes mesh1.rpc.1, commits mesh1 Dead in
@@ -422,7 +422,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let proj2 = builds.read_build(&build_id).await.unwrap();
     let fp_ops = plan_for_build(&proj2, &*observed.read().await).operations;
     assert_eq!(fp_ops, vec![BuildOperation::DeleteLiveNode { node: m1_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m1_a1) }], "attempt 2 plans only the fabric-primary's own node.delete");
-    assert_eq!(seat_move(&fp_ops[0], &*observed.read().await), None, "the last node of the last mesh moves no seat on its separate node.delete");
+    assert_eq!(role_move(&fp_ops[0], &*observed.read().await), None, "the last node of the last mesh moves no role on its separate node.delete");
     assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.name.clone()), "the fabric-primary executes its own final node.delete");
 
     let term_m1_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { build_id: build_id.clone(), attempt: 2, node: m1_a1.clone(), handle: handles["mesh1.admin.1"].clone(), unreached: false }).await.unwrap();
@@ -1126,13 +1126,13 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         observed.write().await.nodes.retain(|n| n.name != m2_r1.name && n.name != m2_a2.name);
         observed.write().await.meshes.iter_mut().find(|m| m.name == "mesh2").unwrap().status = ScopeStatus::Dead;
 
-        // Step 3: On the fabric-primary's own mesh (`mesh1`), `seat_move` is `None` (no
+        // Step 3: On the fabric-primary's own mesh (`mesh1`), `role_move` is `None` (no
         // `node.fabric-primary.update`), `mesh1.rpc.1` is deleted, `MeshDeleted` is recorded, and
         // `complete_fabric_delete` releases the fabric name and records `Complete` of
         // `fabric.delete:<fabric_id>` while `mesh1.admin.1` stays alive (`Ready`). Replaying
         // `complete_fabric_delete` on resume is idempotent.
         let shutdown_m1 = BuildOperation::ShutdownMesh { mesh: "mesh1".into(), mesh_id: id1.clone() };
-        assert_eq!(seat_move(&shutdown_m1, &*observed.read().await), None, "fabric seat stays on fabric-primary during its own mesh's delete");
+        assert_eq!(role_move(&shutdown_m1, &*observed.read().await), None, "fabric-primary role stays on fabric-primary during its own mesh's delete");
         let op_m1 = operation(&id1);
         let key_m1 = MeshDeleteKey {
             mesh_id: id1.clone(),

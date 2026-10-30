@@ -335,7 +335,7 @@ fn a_day0_claim_of_a_name_another_live_nodes_row_holds_is_refused_name_held_and_
 }
 
 /// CONTRACT: a birth no create of the writer claimed (one made before the writer took its mesh's
-/// seat) gets its row when the writer's view first holds it, from the record it holds (ops-naming
+/// role) gets its row when the writer's view first holds it, from the record it holds (ops-naming
 /// "Node data": "writes the whole row from that held record"), seeded from the `Deleted` row at its
 /// `path.name`. One `via-node-row` span, `moment` `arrival`, at the view install, names it.
 #[test]
@@ -359,11 +359,11 @@ fn a_birth_no_create_claimed_gets_its_row_seeded_when_the_writers_view_holds_it(
     assert_eq!((a["moment"].as_str(), a["node_id"].as_str(), a["seeded_from"].as_str(), a["outcome"].as_str()), (Some("arrival"), Some(born.as_str()), Some(old.as_str()), Some("row-seeded")), "{a:#?}");
 }
 
-/// CONTRACT: the store is read only to rebuild after a seat change (ops-naming "Node data"; R13:
-/// "Rebuild after a seat change reads the mesh's own rows"), and that rebuild never overwrites a row
-/// a node already holds: an admin that takes its mesh's primary seat writes the row of every member
+/// CONTRACT: the store is read only to rebuild after a role change (ops-naming "Node data"; R13:
+/// "Rebuild after a role change reads the mesh's own rows"), and that rebuild never overwrites a row
+/// a node already holds: an admin that takes its mesh's primary role writes the row of every member
 /// of that mesh but itself, and the row of a member that already holds its name stays exactly as
-/// written (a config the node has not applied yet is not wiped by the new holder's view). A member
+/// written (a config the node has not applied yet is not wiped by the new primary's view). A member
 /// with no row gets one. One `via-node-row` span per member: `row-held-by-node` for the held row,
 /// `row-written` for the new one.
 #[test]
@@ -387,17 +387,17 @@ fn a_take_over_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
         .await;
         (storage.record_at(&rpc1.name).await.unwrap(), written)
     });
-    assert_eq!(row, Some(once(&written)), "the row the node holds is untouched by the new holder's rebuild");
+    assert_eq!(row, Some(once(&written)), "the row the node holds is untouched by the new primary's rebuild");
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     let outcome = |name: &str| spans.iter().filter(|s| s["attributes"]["subject"] == name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
     assert_eq!(outcome("mesh1.rpc.1"), vec!["row-held-by-node"], "{spans:#?}");
     assert_eq!(outcome("mesh1.admin.2"), vec!["row-written"], "{spans:#?}");
 }
 
-/// CONTRACT (R13: "Rebuild after a seat change reads the mesh's own rows", and a rebuild never
+/// CONTRACT (R13: "Rebuild after a role change reads the mesh's own rows", and a rebuild never
 /// overwrites a row a node holds; R12: a stopped node is told nothing of a rename): mesh1.rpc.1 was
 /// stopped and renamed by node.update while stopped, so the one row it holds is at
-/// `mesh1.rpc.1.old`. An admin that takes mesh1's primary seat over a view that still lists that
+/// `mesh1.rpc.1.old`. An admin that takes mesh1's primary role over a view that still lists that
 /// stopped birth at the name it published (`mesh1.rpc.1`) writes no row for it: the node holds a
 /// row, found through its id index, and that row stays the node's only one. No second row at the
 /// bare name holds the name for a stopped birth, and the node's id index still names `.old`, where
@@ -439,11 +439,11 @@ fn a_take_over_on_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_on
 /// CONTRACT (proposal node-properties-own-commands.md §2.1 Claim and move: "a row whose
 /// `renamed_from` key still holds the same node id has a pending release, and the writer releases it
 /// ... It runs wherever a writer meets the row: ... a mesh-primary's rebuild from its mesh's rows after
-/// a seat change (R13)"; §2.4: "The writer that wrote the put may be gone; the row carries everything
+/// a role change (R13)"; §2.4: "The writer that wrote the put may be gone; the row carries everything
 /// the next one needs"; §7: "the writer lost between the put and the release: a successor
 /// mesh-primary's rebuild finds the row's `renamed_from` still held by the same node id and releases
 /// it"): a lost writer's rename of `mesh1.rpc.1` to `mesh1.rpc.9` put the row at `mesh1.rpc.9` carrying
-/// `renamed_from: mesh1.rpc.1` and never released `mesh1.rpc.1`. An admin taking mesh1's seat, whose
+/// `renamed_from: mesh1.rpc.1` and never released `mesh1.rpc.1`. An admin taking mesh1's role, whose
 /// view still lists the node at `mesh1.rpc.1`, rebuilds: it reads the node's row through the id index
 /// at `mesh1.rpc.9`, releases `mesh1.rpc.1`, and writes no row at the view's name. One
 /// `rdm.node_admin.name.update.via-pending-release` span says `released` with `moment=rebuild`;
@@ -485,7 +485,7 @@ fn a_take_over_rebuild_finishes_a_lost_writers_pending_release() {
 
 type Rebuilt = (BTreeMap<String, Option<NodeRow>>, Option<NodeStatus>, NodeId, NodeId, NodeId, NodeId, String);
 
-/// The rebuild cell's story: P's writes, then N's seat taken over one shared root.
+/// The rebuild cell's story: P's writes, then N's role taken over one shared root.
 async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         let d = std::env::temp_dir().join(format!("node-rows-shared-root-{}", NodeId::mint()));
         let root = rdm_admin::store_root::StoreRoot::at(&d.join("store"));
@@ -500,7 +500,7 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         }
         let rpc1 = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
         let (old_pred, deleted_pred) = (NodeId::mint(), NodeId::mint());
-        // P's writes, as its seat made them.
+        // P's writes, as its role made them.
         for row in [
             NodeRow { topology_storage_provider: None, name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None },
             NodeRow { topology_storage_provider: None, name: "mesh1.rpc.2.old".parse().unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None },
@@ -515,8 +515,8 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         records.set_rows(Arc::new(NodeRows::new(me.clone(), me_id, topology.clone(), n_store.clone())));
         let (successor, fresh) = (node("mesh1.rpc.2", false, false), node("mesh1.rpc.3", false, false));
         let (succ, fresh_id) = (successor.node_id.clone(), fresh.node_id.clone());
-        // N takes mesh1's seat (and the fabric seat P held with it): the mesh-primary writes its
-        // mesh's rows (R13), so the rebuild is the mesh seat's.
+        // N takes mesh1's role (and the fabric-primary role P held with it): the mesh-primary writes its
+        // mesh's rows (R13), so the rebuild is the mesh-primary role's.
         let after = {
             let mut t = topology.read().await.clone();
             for n in t.nodes.iter_mut() {
@@ -537,12 +537,12 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         (rows, view_status, succ, fresh_id, old_pred, deleted_pred, trace_id)
 }
 
-/// CONTRACT (R14 item 7 and acceptance "a mesh seat change: the successor rebuilds and holds the
+/// CONTRACT (R14 item 7 and acceptance "a mesh role change: the successor rebuilds and holds the
 /// predecessor's rows (Node rows, `.old`, Deleted, config)"): the predecessor P and the successor N
 /// are two admins with their own data dirs and their own store instances over one shared root. P
-/// held the seat and wrote the rows: a live member's row (status ConnectionsDeleting, config platinum), a
+/// held the role and wrote the rows: a live member's row (status ConnectionsDeleting, config platinum), a
 /// renamed predecessor's row moved to `mesh1.rpc.2.old` (Deleted, config bronze) and a deleted
-/// node's row at `mesh1.rpc.3` (Deleted, config silver). N takes the seat over a view whose live
+/// node's row at `mesh1.rpc.3` (Deleted, config silver). N takes the role over a view whose live
 /// digests hold mesh1.rpc.1 ready, a successor at mesh1.rpc.2 and a new node at mesh1.rpc.3. N's
 /// rebuild reads P's rows from the shared root: the live member's row stands untouched, the new
 /// node at the Deleted row's name is seeded silver, the successor is seeded bronze from the `.old`
@@ -679,9 +679,9 @@ mod writer {
     }
 
     /// CONTRACT (R-OW1, ruling text item 1: "The mesh-primary writes every row in its mesh, including its
-    /// own"; item 5: a seat transfer makes the successor the writer of every row of the mesh, the
-    /// predecessor's included, and rewrites nothing): an admin that takes its mesh's seat (and the
-    /// fabric seat) rebuilds the rows of its mesh's members from its view, its own birth included: its
+    /// own"; item 5: a role transfer makes the successor the writer of every row of the mesh, the
+    /// predecessor's included, and rewrites nothing): an admin that takes its mesh's role (and the
+    /// fabric-primary role) rebuilds the rows of its mesh's members from its view, its own birth included: its
     /// own row, absent, is written (`subject = mesh1.admin.1`, `node = mesh1.admin.1`, `row-written`)
     /// under its own node.id. A row a member already holds is left as it is. What must NOT happen: a
     /// mesh-primary that writes every member's row but its own, so its mesh's primary holds no row.

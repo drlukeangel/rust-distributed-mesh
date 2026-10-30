@@ -17,8 +17,8 @@
 //!
 //! A key is owed again when the authority is another node or a new incarnation of the same node.
 //! A Mesh declaration is owed by the Mesh's primary and a fabric event by the fabric-primary.
-//! When this admin no longer holds the seat that owes a key, the key is withdrawn: the seat's
-//! new holder owes it from its own view. A state completion is withdrawn too once the accepted
+//! When this admin no longer holds the role that owes a key, the key is withdrawn: the role's
+//! new primary owes it from its own view. A state completion is withdrawn too once the accepted
 //! Build has moved past its checklist (`FabricStates::withdraw_superseded`, before each sweep of
 //! sends): the completion of a superseded checklist is never sent.
 //! RejectedStaleBirth               this birth is superseded in the authority's view: done, named
@@ -155,7 +155,7 @@ pub struct Pending {
 }
 
 /// The declarer's state: what is owed, and what was answered by name, and by which authority. A
-/// key answered by one authority is owed again when the view names another: the seat moved, and
+/// key answered by one authority is owed again when the view names another: the role moved, and
 /// the new authority answers `AlreadyApplied` or applies it, never assumes it.
 #[derive(Debug, Default)]
 pub(crate) struct Declarer {
@@ -239,7 +239,7 @@ impl Declarer {
             .in_scope(|| tracing::info!("a start begins this birth's next cycle: its own state is owed afresh at node.started"));
     }
 
-    /// The open start stream reports Ready to this receiver; a later seat move still owes it.
+    /// The open start stream reports Ready to this receiver; a later role move still owes it.
     pub(crate) fn own_on_stream(&self, me: &PathName, node_id: &NodeId, incarnation: &IncarnationId, operation: &DeclaredOperation, receiver: &rdm_core::MeshDigest) {
         let key = Key::OwnState(incarnation.to_string(), NodeState::Ready);
         let request = StatusRequest::DeclareNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Ready, operation: Some(operation.clone()) };
@@ -283,7 +283,7 @@ impl Declarer {
     }
 
     /// A key answered by an authority the view no longer names is owed to the current one: another
-    /// node holds the seat, or the same node holds it in a new birth. What an authority applied for
+    /// node holds the role, or the same node holds it in a new birth. What an authority applied for
     /// a Mesh report is memory of its birth, so a restart (same NodeId, new incarnation) must be
     /// told again; an authority whose birth the view does not yet name changes nothing.
     pub(crate) fn reowe_moved(&self, me: &PathName, view: &Topology) {
@@ -371,7 +371,7 @@ impl Declarer {
 
     /// One sweep: send every declaration that is due to its authority as the view names it now.
     /// When the view names this admin, the declaration goes through this admin's own door
-    /// (`status_door`), decided exactly as a peer's would be; no seat is assumed. `addressed` is
+    /// (`status_door`), decided exactly as a peer's would be; no role is assumed. `addressed` is
     /// the authorities that sent this admin their down op since the last sweep.
     pub async fn sweep(self: &Arc<Self>, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, status_door: Option<&crate::status_rpc::StatusDoor>, addressed: &BTreeSet<NodeId>, wake: &Arc<DeclareWake>) {
         self.withdraw_unowned(me, me_id, view);
@@ -490,12 +490,12 @@ impl Declarer {
         }
     }
 
-    /// Withdraw every key whose owing seat the view no longer gives this admin: a Mesh key once
+    /// Withdraw every key whose owing role the view no longer gives this admin: a Mesh key once
     /// it is not its Mesh's admin primary. A
-    /// key withdrawn is forgotten whole, so holding the seat again owes it afresh. A view that
-    /// names no holder of the seat withdraws nothing: the seat is unknown, not moved.
+    /// key withdrawn is forgotten whole, so holding the role again owes it afresh. A view that
+    /// names no primary of the role withdraws nothing: the role is unknown, not moved.
     pub(crate) fn withdraw_unowned(&self, me: &PathName, me_id: &NodeId, view: &Topology) {
-        let holder = |key: &Key| match key {
+        let primary_of = |key: &Key| match key {
             Key::OwnState(..) => None,
             Key::Mesh(..) => Some(view.node_type_primary(&me.mesh, NodeKind::NodeAdmin)),
         };
@@ -504,7 +504,7 @@ impl Declarer {
             .lock()
             .unwrap()
             .keys()
-            .filter_map(|k| match holder(k) {
+            .filter_map(|k| match primary_of(k) {
                 Some(Some(n)) if &n.node_id != me_id => Some((k.clone(), n.name.to_string())),
                 _ => None,
             })
@@ -517,7 +517,7 @@ impl Declarer {
                 f.task.abort();
             }
             tracing::info_span!("rdm.node_admin.status.remove.via-primary-changed", node = %me, key = ?key, held_by = %held_by)
-                .in_scope(|| tracing::info!("the seat that owes this declaration is another admin's: withdrawn"));
+                .in_scope(|| tracing::info!("the role that owes this declaration is another admin's: withdrawn"));
         }
     }
 
@@ -656,7 +656,7 @@ mod tests {
         let d = Declarer::new();
         owe_all(&d);
         d.withdraw_unowned(&me, &id_of(&me.to_string()), &view("mesh1.admin.1", "mesh1.admin.1"));
-        assert_eq!(d.owed(), 2, "every seat is still this admin's");
+        assert_eq!(d.owed(), 2, "every role is still this admin's");
 
         d.withdraw_unowned(&me, &id_of(&me.to_string()), &view("mesh1.admin.2", "mesh1.admin.1"));
         let left: Vec<Key> = d.pending.lock().unwrap().keys().cloned().collect();
@@ -673,7 +673,7 @@ mod tests {
         d.withdraw_unowned(&me, &id_of(&me.to_string()), &view("mesh1.admin.2", "mesh1.admin.1"));
         assert_eq!(d.answered(&Key::Mesh("m1".into(), MeshState::Ready)), None, "forgotten whole");
         owe_all(&d);
-        assert!(d.pending.lock().unwrap().contains_key(&Key::Mesh("m1".into(), MeshState::Ready)), "owed again once the seat is back");
+        assert!(d.pending.lock().unwrap().contains_key(&Key::Mesh("m1".into(), MeshState::Ready)), "owed again once the role is back");
     }
 
     #[test]
@@ -880,7 +880,7 @@ mod tests {
     /// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets
     /// its status"): a node-admin that is not its mesh's primary owes its own node.started
     /// (DeclareNodeState(Ready)) to its own mesh's primary, not to the fabric-primary, and
-    /// once that primary answered, a move of the fabric seat owes it to nobody new. Must NOT happen:
+    /// once that primary answered, a move of the fabric-primary role owes it to nobody new. Must NOT happen:
     /// the declaration sent to the fabric-primary of another mesh.
     #[test]
     fn a_node_admin_owes_its_own_node_started_to_its_own_mesh_primary() {
@@ -898,7 +898,7 @@ mod tests {
         let moved = view("mesh1.admin.1", "mesh1.admin.1");
         let moved = Topology { nodes: moved.nodes.into_iter().map(|mut n| { if n.name == mesh1_primary.name { n.incarnation_id = mesh1_primary.incarnation_id.clone(); } n }).collect(), ..moved };
         d.reowe_moved(&me, &moved);
-        assert!(d.pending.lock().unwrap().is_empty(), "the fabric seat moved, its own mesh's primary did not: nothing is owed again");
+        assert!(d.pending.lock().unwrap().is_empty(), "the fabric-primary role moved, its own mesh's primary did not: nothing is owed again");
     }
 
     /// CONTRACT (node-status.md "Status report": a report "names the operation that produced the
@@ -1095,7 +1095,7 @@ mod tests {
     /// upward"): a mesh primary whose own Mesh status row is committed Leaving (delete-mesh admitted)
     /// owes `DeclareMeshState(Leaving)` to the fabric-primary, whether or not its checklist is done, so
     /// the fabric-primary's map holds the mesh's Leaving and hands it to an admin it creates for the
-    /// mesh. An admin that is not its mesh's primary owes none: the Mesh declaration is the seat's.
+    /// mesh. An admin that is not its mesh's primary owes none: the Mesh declaration is the role's.
     #[test]
     fn a_mesh_primary_whose_own_mesh_row_is_leaving_owes_the_fabric_primary_its_leaving() {
         let me: PathName = "mesh2.admin.1".parse().unwrap();
@@ -1126,10 +1126,10 @@ mod tests {
 
     /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): the view holds one row per
     /// path.name (`admin::project_at` keys it by `PathName`), so after a replace of the fabric-primary
-    /// the row at mesh1.admin.1 can be the deleted birth's, live and holding both seats, while the
-    /// re-born admin's own row is absent. The re-born admin decides its seats by the node id it was born
+    /// the row at mesh1.admin.1 can be the deleted birth's, live and holding both roles, while the
+    /// re-born admin's own row is absent. The re-born admin decides its roles by the node id it was born
     /// with: it owes no fabric event and no Mesh report, and withdraws the Mesh key it held, because
-    /// the seat is another birth's. What must NOT happen: the deleted birth's seats read as this
+    /// the role is another birth's. What must NOT happen: the deleted birth's roles read as this
     /// admin's, so it owes the fabric's readiness to every mesh primary as a fabric-primary it is not.
     #[test]
     fn a_re_born_admin_whose_view_names_its_superseded_birth_primary_owes_nothing_as_primary() {
@@ -1141,14 +1141,14 @@ mod tests {
         let mut re_born = node("mesh1.admin.1", false, false);
         re_born.node_id = NodeId::mint();
         assert_ne!(deleted.node_id, re_born.node_id, "a replace mints a new node id");
-        assert_eq!(v.fabric_primary().map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds the fabric seat in this view");
+        assert_eq!(v.fabric_primary().map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds the fabric-primary role in this view");
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
         owed_from_view(&d, &me, &re_born.node_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, None, |_| 7, &v, &ids);
-        assert_eq!(d.owed(), 0, "the deleted birth's seats owe this admin nothing: {:?}", d.pending.lock().unwrap().keys().collect::<Vec<_>>());
+        assert_eq!(d.owed(), 0, "the deleted birth's roles owe this admin nothing: {:?}", d.pending.lock().unwrap().keys().collect::<Vec<_>>());
         d.owe(mesh_key(), Receiver::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 });
         d.withdraw_unowned(&me, &re_born.node_id, &v);
-        assert_eq!(d.owed(), 0, "the mesh seat is the deleted birth's, not this admin's: the Mesh key is withdrawn");
+        assert_eq!(d.owed(), 0, "the mesh-primary role is the deleted birth's, not this admin's: the Mesh key is withdrawn");
     }
 
     /// CONTRACT: a burst of 5 pokes wakes the declarer once; a poke during a sweep is kept as the

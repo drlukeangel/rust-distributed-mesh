@@ -146,7 +146,7 @@ impl Topology {
     /// Whether the birth `node_id` is the only node of `mesh` (R-MT1: the delete of a mesh's only node
     /// skips node.primary.update). A member that is silent, or `Dead` by the true-offline mark alone,
     /// is still a node of the mesh; a deleted one has left the view. The one place that rule lives: the
-    /// Build door (`http`) and the drive (`executor::seat_move`) read it.
+    /// Build door (`http`) and the drive (`executor::role_move`) read it.
     pub fn only_node(&self, mesh: &str, node_id: &NodeId) -> bool {
         self.members().filter(|n| n.mesh == mesh).all(|n| n.node_id == *node_id)
     }
@@ -195,9 +195,9 @@ impl Topology {
         out
     }
 
-    /// The single primary of a node type in `mesh`, when exactly one member holds it: the seat the election
-    /// resolved from the seat records this view was decided against, whatever the holder's status.
-    /// Until the next election over this view, a ConnectionsDeleting, Leaving or silent holder is still
+    /// The single primary of a node type in `mesh`, when exactly one member holds it: the role the election
+    /// resolved from the primary records this view was decided against, whatever the holder's status.
+    /// Until the next election over this view, a ConnectionsDeleting, Leaving or silent primary is still
     /// the one named here. A caller that needs an admin it can reach checks the holder's
     /// status itself.
     pub fn node_type_primary(&self, mesh: &str, kind: NodeKind) -> Option<&Node> {
@@ -206,8 +206,8 @@ impl Topology {
         p.next().is_none().then_some(first)
     }
 
-    /// The fabric primary, when exactly one member holds the seat: the holder the election resolved
-    /// from the seat records, whatever its status, as [`Self::node_type_primary`].
+    /// The fabric primary, when exactly one member holds the role: the holder the election resolved
+    /// from the primary records, whatever its status, as [`Self::node_type_primary`].
     pub fn fabric_primary(&self) -> Option<&Node> {
         let mut p = self.members().filter(|n| n.is_fabric_primary);
         let first = p.next()?;
@@ -215,7 +215,7 @@ impl Topology {
     }
 
     /// The row of the node born as `node_id`, among every birth the view holds: how a node finds
-    /// itself (and a seat holder is told apart from another birth). Never by path.name, its shape
+    /// itself (and a primary is told apart from another birth). Never by path.name, its shape
     /// included: a replace or a recovery keeps the path.name and mints a new node id, the one row
     /// this view holds at a path ([`crate::admin::project_at`] keys it by `PathName`) can be the
     /// deleted birth's, and a node whose row its mesh-primary renamed `<path>.old` is still that
@@ -234,7 +234,7 @@ impl Topology {
         self.node_type_primary(mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == *node_id)
     }
 
-    /// The control endpoint of `mesh`'s seat holder (its admin primary's).
+    /// The control endpoint of `mesh`'s primary (its admin primary's).
     pub(crate) fn mesh_control_endpoint(&self, mesh: &str) -> Option<&str> {
         self.node_type_primary(mesh, NodeKind::NodeAdmin)?.admin_api_base.as_deref()
     }
@@ -459,9 +459,9 @@ mod tests {
         assert!(t.violations().contains(&TopologyViolation::FabricPrimaryCount(0)));
     }
 
-    /// CONTRACT: a seat holder marked silent after the election that named it is a view that has not
-    /// converged, and until the next election it is still the holder the view names and advertises. Must NOT happen: the readers dropping a silent holder,
-    /// so the mesh shows no primary while its seat record names one.
+    /// CONTRACT: a primary marked silent after the election that named it is a view that has not
+    /// converged, and until the next election it is still the holder the view names and advertises. Must NOT happen: the readers dropping a silent primary,
+    /// so the mesh shows no primary while its primary record names one.
     #[test]
     fn a_silent_primary_is_unconverged_and_still_the_named_primary() {
         let mut t = mn();
@@ -469,7 +469,7 @@ mod tests {
         let v = t.violations();
         assert!(v.contains(&TopologyViolation::PrimaryNotLive("mesh1.admin.1".parse().unwrap())), "{v:?}");
         assert!(v.contains(&TopologyViolation::NoNodeTypePrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");
-        assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the silent holder is still the one named");
+        assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the silent primary is still the one named");
         assert_eq!(t.mesh_control_endpoint("mesh1"), Some("http://127.0.0.1:18001"), "the holder's endpoint is the mesh's control endpoint");
     }
 

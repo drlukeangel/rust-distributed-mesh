@@ -1,7 +1,7 @@
-//! The status rows of a mesh live on the fabric's store root, written by the mesh's seat holder.
+//! The status rows of a mesh live on the fabric's store root, written by the mesh's primary.
 //! An admin holds them in its caches, hydrated at its create, start and join, and folds what its
-//! caches hold into what it applied when it takes the mesh's seat, reading no storage (Q227, Q260,
-//! node-identity-and-state.md §4.3); never at boot by an admin that does not hold the seat.
+//! caches hold into what it applied when it takes the mesh's role, reading no storage (Q227, Q260,
+//! node-identity-and-state.md §4.3); never at boot by an admin that does not hold the role.
 
 use rdm_admin::admin::Records;
 use rdm_admin::model::*;
@@ -31,7 +31,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// What an admin's create, start and join hydrate into its caches: its mesh's node rows, the Mesh
-/// records and the Fabric record, as the cell's store holds them now (Q227: the seat taker reads no
+/// records and the Fabric record, as the cell's store holds them now (Q227: the role taker reads no
 /// storage; what it folds is what its caches hold).
 async fn hydrate(records: &Records, nodes: &dyn rdm_admin::storage::NodesStorage, meshes: &dyn rdm_admin::storage::MeshStorage, fabric: &dyn rdm_admin::fabric_storage::FabricStorage) {
     for r in nodes.nodes("mesh1").await.unwrap() {
@@ -63,7 +63,7 @@ fn view(mesh_id: &MeshId, fabric_id: &FabricId) -> Topology {
     }
 }
 
-/// What B held before and after it took mesh1's seat, and the cell's trace id.
+/// What B held before and after it took mesh1's role, and the cell's trace id.
 struct Taken {
     before: rdm_admin::status_rpc::Declared,
     after: rdm_admin::status_rpc::Declared,
@@ -75,7 +75,7 @@ struct Taken {
 }
 
 async fn taken_over_one_root(trace_id: String) -> Taken {
-    let dir = std::env::temp_dir().join(format!("status-seat-fold-{}", NodeId::mint()));
+    let dir = std::env::temp_dir().join(format!("status-role-fold-{}", NodeId::mint()));
     let (mesh_id, fabric_id) = (MeshId::mint(), FabricId::mint());
     let mut before_view = view(&mesh_id, &fabric_id);
     before_view.nodes.push(node("mesh1.rpc.2", false, false));
@@ -101,7 +101,7 @@ async fn taken_over_one_root(trace_id: String) -> Taken {
     hydrate(&records, &*b_stores.nodes, &*b_stores.meshes, &*b_stores.fabric).await;
     records.set_status(b_stores.nodes, b_stores.meshes, b_stores.fabric, "mesh1".into(), "mesh1.admin.2".parse().unwrap(), b_id.clone());
     let topology = RwLock::new(Topology { nodes: Vec::new(), ..before_view.clone() });
-    // B installs views naming A the primary: it holds no seat and folds none of A's rows.
+    // B installs views naming A the primary: it holds no role and folds none of A's rows.
     records.install_projected(&topology, || before_view.clone()).await;
     // What B applied itself meanwhile: a later state for the other birth and an event of its own.
     {
@@ -110,7 +110,7 @@ async fn taken_over_one_root(trace_id: String) -> Taken {
         d.fabric.entry(fabric_id.clone()).or_default().push("b-own".into());
     }
     let before = records.declared.lock().unwrap().clone();
-    // A's birth is gone and B takes mesh1's seat.
+    // A's birth is gone and B takes mesh1's role.
     let mut after_view = before_view.clone();
     after_view.nodes.retain(|n| n.name.to_string() != "mesh1.admin.1");
     for n in after_view.nodes.iter_mut() {
@@ -126,12 +126,12 @@ async fn taken_over_one_root(trace_id: String) -> Taken {
 }
 
 /// CONTRACT (R14 :8 status is one of the interfaces "every writer and reader sees the same rows",
-/// :34 layout of the shared root; Q227, Q260: the seat taker folds what its caches hold, reading no storage;
+/// :34 layout of the shared root; Q227, Q260: the role taker folds what its caches hold, reading no storage;
 /// node-identity-and-state.md §4.3: the mesh-primary writes every status of its mesh): A, mesh1's
 /// primary, applied a Mesh status, a Fabric event and two node declared states, each a row on the
 /// fabric's store root. B, the other admin of mesh1 with its own store instance over that root,
-/// folds none of them while A holds the seat: what B holds is only what B applied. When B takes the
-/// seat, the view naming it mesh1's primary is installed with A's rows folded in, merged with what
+/// folds none of them while A holds the role: what B holds is only what B applied. When B takes the
+/// role, the view naming it mesh1's primary is installed with A's rows folded in, merged with what
 /// B applied: the greatest state per key (B's own later state stands over A's earlier row), the
 /// union of the events. One span, `rdm.node_admin.status.resolve.via-successor-fold`, names the mesh
 /// and the counts folded.
@@ -144,18 +144,18 @@ fn a_new_mesh_primary_folds_the_mesh_status_rows_and_a_secondary_folds_none() {
         tracing::Instrument::instrument(taken_over_one_root(trace_id), root_span).await
     });
     println!("mesh_primary_status_fold trace_id={}", t.trace_id);
-    assert_eq!(t.before.node(&t.rpc.0, &t.rpc.1), None, "a non-holder folds none of the primary's rows: {:#?}", t.before);
-    assert!(t.before.meshes.is_empty(), "a non-holder folds no Mesh status row: {:#?}", t.before);
-    assert_eq!(t.before.fabric.get(&t.fabric_id), Some(&vec!["b-own".to_string()]), "a non-holder holds only the events it applied: {:#?}", t.before);
-    assert_eq!(t.after.node(&t.rpc.0, &t.rpc.1), Some(NodeState::Ready), "the seat taker folds the primary's declared-state row: {:#?}", t.after);
+    assert_eq!(t.before.node(&t.rpc.0, &t.rpc.1), None, "a non-primary folds none of the primary's rows: {:#?}", t.before);
+    assert!(t.before.meshes.is_empty(), "a non-primary folds no Mesh status row: {:#?}", t.before);
+    assert_eq!(t.before.fabric.get(&t.fabric_id), Some(&vec!["b-own".to_string()]), "a non-primary holds only the events it applied: {:#?}", t.before);
+    assert_eq!(t.after.node(&t.rpc.0, &t.rpc.1), Some(NodeState::Ready), "the role taker folds the primary's declared-state row: {:#?}", t.after);
     assert_eq!(t.after.names.get(&t.rpc).map(|n| n.to_string()), Some("mesh1.rpc.1".to_string()), "and the path.name it was declared at");
     assert_eq!(t.after.node(&t.other.0, &t.other.1), Some(NodeState::ConnectionsDeleting), "the greatest state per birth: what B applied later stands over the row's Pending");
-    assert_eq!(t.after.meshes.get(&t.mesh_id), Some(&MeshState::Ready), "the seat taker folds the Mesh status row");
+    assert_eq!(t.after.meshes.get(&t.mesh_id), Some(&MeshState::Ready), "the role taker folds the Mesh status row");
     let mut events = t.after.fabric.get(&t.fabric_id).cloned().unwrap_or_default();
     events.sort();
     assert_eq!(events, vec!["b-own".to_string(), "shutdown-initiated:mesh1.admin.1".to_string()], "the union of the events, each once");
     let spans: Vec<Value> = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.status.resolve.via-successor-fold").collect();
-    assert_eq!(spans.len(), 1, "one fold, at the seat take: {spans:#?}");
+    assert_eq!(spans.len(), 1, "one fold, at the role take: {spans:#?}");
     let s = &spans[0];
     assert_eq!(s["trace_id"], t.trace_id.as_str(), "the fold is the cell's own story: {s:#}");
     for (k, v) in [("node", "mesh1.admin.2"), ("mesh", "mesh1"), ("node_declared_rows", "2"), ("mesh_status_rows", "1"), ("fabric_event_rows", "1")] {
@@ -195,9 +195,9 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
 /// state and republishes the adopted projection, manufacturing no transition; mesh-investigation.md "A
 /// node-admin joins the live mesh" step 4): B, an admin of mesh1 whose view holds `mesh1.rpc.1`'s
 /// heartbeat and no status for it (an admin entering a live mesh: its topology read installs nothing,
-/// reenter.rs), takes mesh1's seat. A, the primary before it, left a declared-state row for that exact
+/// reenter.rs), takes mesh1's role. A, the primary before it, left a declared-state row for that exact
 /// birth saying Ready, and one for `mesh1.rpc.2`, whose heartbeat B hears only after it took
-/// the seat. The fold of A's rows reaches B's view: both births are Ready there and in B's
+/// the role. The fold of A's rows reaches B's view: both births are Ready there and in B's
 /// member projection. `mesh1.rpc.1` declaring Ready to its new primary (R-S2: a declaration is
 /// owed again when the authority moved) is AlreadyApplied, and the view still says Ready. One
 /// `rdm.node_admin.status.update.via-successor-fold` per adopted birth names it, its prior and its status.
@@ -215,7 +215,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
         let trace_id = crate::mesh_delete_resume::trace_id(&root_span);
         tracing::Instrument::instrument(
             async move {
-                let dir = std::env::temp_dir().join(format!("status-seat-adopt-{}", NodeId::mint()));
+                let dir = std::env::temp_dir().join(format!("status-role-adopt-{}", NodeId::mint()));
                 let (mesh_id, fabric_id) = (MeshId::mint(), FabricId::mint());
                 let mut before_view = view(&mesh_id, &fabric_id);
                 before_view.nodes.push(node("mesh1.rpc.2", false, false));
@@ -227,7 +227,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                 for n in [&rpc1, &rpc2] {
                     { let (node_id, incarnation_id, name) = (n.node_id.clone(), n.incarnation_id.clone().unwrap(), n.name.clone()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRow::new(name.clone(), node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Ready); }).await.unwrap(); }
                 }
-                // B: its topology view's view, its seat fold over the same root.
+                // B: its topology view's view, its role fold over the same root.
                 let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
                 let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
                 let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
@@ -241,8 +241,8 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                 let status = |n: &Node| topology_view.digest_view.get(n.node_id.as_str()).map(|(d, _)| d.status);
                 let topology = Arc::new(RwLock::new(Topology { nodes: Vec::new(), ..before_view.clone() }));
                 records.install_projected(&topology, || before_view.clone()).await;
-                assert_eq!(status(&rpc1), Some(MemberStatus::Pending), "a member whose status B was never told is Pending while A holds the seat");
-                // A's birth is gone and B takes mesh1's seat.
+                assert_eq!(status(&rpc1), Some(MemberStatus::Pending), "a member whose status B was never told is Pending while A holds the primary role");
+                // A's birth is gone and B takes mesh1's role.
                 let mut after_view = before_view.clone();
                 after_view.nodes.retain(|n| n.name.to_string() != "mesh1.admin.1");
                 for n in after_view.nodes.iter_mut() {
@@ -254,7 +254,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                 records.install_projected(&topology, || after_view.clone()).await;
                 topology_view.set_mesh_primary(true);
                 let after_take = status(&rpc1);
-                assert!(topology_view.digest_view.record(heartbeat(&fabric_id, &rpc2)), "rpc.2's heartbeat is held after the seat take");
+                assert!(topology_view.digest_view.record(heartbeat(&fabric_id, &rpc2)), "rpc.2's heartbeat is held after the role take");
                 let rpc2_heard = status(&rpc2);
                 let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: b.incarnation_id.clone().unwrap(), node_id: b.node_id.clone() }, vec![]).await.unwrap();
                 let mut projected: Vec<(String, MemberStatus)> = backbone.own_members(&topology_view).into_iter().filter(|d| d.node.name.kind == rdm_core::NodeKind::RpcNode).map(|d| (d.node.name.to_string(), d.status)).collect();
@@ -303,7 +303,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
         .await
     });
     println!("mesh_primary_status_fold adopt trace_id={trace_id}");
-    assert_eq!(after_take, Some(MemberStatus::Ready), "the seat taker's view adopts the folded Ready of the birth it held Pending");
+    assert_eq!(after_take, Some(MemberStatus::Ready), "the role taker's view adopts the folded Ready of the birth it held Pending");
     assert_eq!(rpc2_heard, Some(MemberStatus::Ready), "a birth whose row was folded before its heartbeat arrived is held at the adopted status");
     assert_eq!(projected, vec![("mesh1.rpc.1".to_string(), MemberStatus::Ready), ("mesh1.rpc.2".to_string(), MemberStatus::Ready)], "the successor's member projection carries the adopted statuses");
     assert_eq!(declared, StatusReply::AlreadyApplied, "the member's re-declaration to its new primary is already held");
@@ -488,7 +488,7 @@ fn a_successor_ignores_declared_rows_for_births_it_does_not_hold() {
     });
 }
 
-/// What a mesh-primary folds from the stores as it takes `mesh` (`SeatFold::on_install`'s read): the
+/// What a mesh-primary folds from the stores as it takes `mesh` (`RoleFold::on_install`'s read): the
 /// facts on every mesh and on the fabric, and on every birth of `mesh`'s node records.
 async fn folded(nodes: &dyn rdm_admin::storage::NodesStorage, meshes: &dyn rdm_admin::storage::MeshStorage, fabric: &dyn rdm_admin::fabric_storage::FabricStorage, mesh: &str) -> rdm_admin::status_rpc::Declared {
     let (m, f, n) = (meshes.meshes().await.unwrap(), fabric.fabric().await.unwrap(), nodes.nodes(mesh).await.unwrap());

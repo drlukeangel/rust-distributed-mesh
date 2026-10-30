@@ -556,7 +556,7 @@ impl BuildStateAdapter for LaneBuilds {
 }
 
 /// A run of an attempt this admin holds itself while it acts as a step of the Build outside the
-/// executor (the holder's own node.primary.update, run from its drive: the approved proposal
+/// executor (the primary's own node.primary.update, run from its drive: the approved proposal
 /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 1, "as a step of the Build"; build.md
 /// "A live run is reattached, never re-claimed"). A call for the attempt while it is held reattaches to
 /// it and reads its terminal once [`HeldRun::finish`] says it.
@@ -791,7 +791,7 @@ impl RunDoor {
     }
 
     /// Hold the run of `attempt` of `build_id` on this admin while the Build's own step runs outside
-    /// the executor ([`HeldRun`]): a call for the attempt reattaches to it. The holder's seat update
+    /// the executor ([`HeldRun`]): a call for the attempt reattaches to it. The holder's role update
     /// is a topology attempt, so the run is the fabric lane's (`None`). `None` when a run of the
     /// attempt is already held here.
     pub fn hold(&self, build_id: &BuildId, attempt: u32) -> Option<HeldRun> {

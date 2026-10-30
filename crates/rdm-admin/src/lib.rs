@@ -68,7 +68,7 @@ pub mod deployment;
 pub mod drift;
 pub mod election;
 pub mod executor;
-pub mod seat_revision;
+pub mod path_investigation;
 pub mod atlas;
 pub(crate) mod refused_caller;
 pub mod fabric_builds;
@@ -102,7 +102,7 @@ pub mod rafka_time;
 pub mod readiness;
 pub(crate) mod reenter;
 pub mod checklist;
-pub mod seat_watch;
+pub mod primary_watch;
 /// Blocking pool offload helpers (`rdm_node::blocking`).
 pub use rdm_node::blocking;
 /// Atomic durable file writes (`rdm_node::durable_file`).

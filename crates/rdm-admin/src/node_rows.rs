@@ -33,8 +33,8 @@
 //! - Day 0 (R-OW1 item 2): the bootstrap admin, mesh1's primary, claims its own `path.name`
 //!   as the first write of its birth, before Ready ([`claim_day0_name`]).
 //! - A birth no create of this writer claimed (a birth made before this admin took its mesh's
-//!   seat, this admin's own included): written when the writer's view first holds it
-//!   ([`NodeRows::arrivals`]); an admin that takes a mesh's seat writes every member's row of that
+//!   role, this admin's own included): written when the writer's view first holds it
+//!   ([`NodeRows::arrivals`]); an admin that takes a mesh's role writes every member's row of that
 //!   mesh, its own included, and a row a node already holds is never overwritten.
 
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
@@ -221,7 +221,7 @@ impl WrittenRows {
     }
 
     /// Fill the copy of every record of `mesh` from `storage`, at the moment this admin takes the
-    /// writing of `mesh` (its mesh's seat; the fabric-primary for a mesh left with none): the records
+    /// writing of `mesh` (its mesh's role; the fabric-primary for a mesh left with none): the records
     /// as they stand then, never a copy held from before. Each is replaced under its node's lock.
     pub async fn fill(&self, storage: &dyn NodesStorage, mesh: &str) -> Result<usize, crate::storage_error::StorageError> {
         let all = storage.nodes(mesh).await?;
@@ -424,7 +424,7 @@ pub enum Claimed {
 }
 
 /// Whether `me_id` writes `mesh`'s node rows in view `t`: the mesh's primary node-admin, or the
-/// fabric-primary while the mesh has no primary. A stopped seat holder is no primary (R-NS1 item 2:
+/// fabric-primary while the mesh has no primary. A stopped primary is no primary (R-NS1 item 2:
 /// from the stop of a mesh's last admin the fabric-primary is the writer of a mesh with no primary):
 /// it writes nothing, stopped, and the fabric-primary writes as acting primary (mesh-delete.md step
 /// 7, the final primary's own row Deleted in its node.delete).
@@ -673,7 +673,7 @@ impl NodeRows {
     }
 
     /// Hold the row `node_id` holds at `name` as this writer's record of it, read from the store (R13:
-    /// "Rebuild after a seat change reads the mesh's own rows"), the same point read a claim or an
+    /// "Rebuild after a role change reads the mesh's own rows"), the same point read a claim or an
     /// arrival makes: a mesh leave's roster birth this writer's views never held (the admin created
     /// for a leaving mesh with no admin left joined after that birth stopped), whose `Deleted` row it
     /// is about to write. Nothing is written. `Ok(true)`: the row is held; `Ok(false)`: the store
@@ -906,7 +906,7 @@ impl NodeRows {
     /// The births of `now`, the view being installed over `prev`, whose rows this admin writes: the
     /// members of each mesh it writes for in `now` (its primary, or the fabric-primary's for a mesh
     /// with none), its own birth included (R-OW1). Every member of a mesh whose writing it took with this
-    /// install (the rebuild after a seat change, which never overwrites a row a node holds); else
+    /// install (the rebuild after a role change, which never overwrites a row a node holds); else
     /// each birth of that mesh this tenure's views have not held before. A birth is an arrival once
     /// per tenure: one the view dropped and holds again was written when it first arrived. Read
     /// under the view lock, so of two installs each sees the arrivals its own change made.
@@ -943,7 +943,7 @@ impl NodeRows {
         let taken: Vec<String> = std::mem::take(&mut *self.to_fill.lock().unwrap());
         for mesh in taken {
             // A mesh this take already filled (the mesh-primary's own, read whole as its status rows are
-            // folded, `crate::status_rpc::SeatFold::on_install`) is not read again.
+            // folded, `crate::status_rpc::RoleFold::on_install`) is not read again.
             let (filled, outcome) = if self.written.filled(&mesh) {
                 (Ok(self.written.rows_of(&mesh).len()), "held")
             } else {
@@ -993,7 +993,7 @@ impl NodeRows {
     /// stands (a rename may have moved it off the name the view holds, found through the id index), any
     /// release its `renamed_from` names finished when still pending (proposal
     /// node-properties-own-commands.md §2.1: "a mesh-primary's rebuild from its mesh's rows after a
-    /// seat change"); else the row seeded at the view's name ([`Self::put_seeded`]).
+    /// role change"); else the row seeded at the view's name ([`Self::put_seeded`]).
     async fn rebuilt_row(&self, me: &PathName, birth: &Node, span: &tracing::Span) -> Result<Claimed, RowRefused> {
         let holds = self.written.known_row(&*self.storage, &birth.node_id).await.map_err(|why| RowRefused::Unwritten(format!("{me}: {why}")))?;
         let claimed = match holds {
@@ -1588,7 +1588,7 @@ pub async fn move_row(storage: &dyn NodesStorage, written: &WrittenRows, me: &Pa
 
 /// The release a record's `renamed_from` names, finished when still pending (node-name-update.md: the
 /// old name's release "is finished by whichever writer next meets the row"): run by the writer that
-/// meets the record, a retry of the command or the mesh-primary's rebuild after a seat change
+/// meets the record, a retry of the command or the mesh-primary's rebuild after a role change
 /// (`moment`). A record that names no source, or whose source's claim no longer names its node, has
 /// nothing pending and nothing is done. Answers whether it released a name, or why the release failed.
 pub(crate) async fn finish_release(storage: &dyn NodesStorage, _written: &WrittenRows, me: &PathName, row: &NodeRow, moment: &'static str) -> Result<bool, String> {

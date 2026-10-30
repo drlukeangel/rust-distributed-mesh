@@ -54,7 +54,7 @@ impl DeploymentProvider for Exits {
     }
 }
 
-/// The stopped birth: every command or seat transfer sent to it is recorded. A stopped birth has
+/// The stopped birth: every command or role transfer sent to it is recorded. A stopped birth has
 /// cut its connections; anything sent to it is a defect of the delete.
 #[derive(Default)]
 struct Recorded {

@@ -2489,8 +2489,8 @@ mod tests {
     /// third step: nothing is copied after the create. It is planned whatever the view holds at the
     /// path (the exited birth unheard, nothing, or the new node live), never as a generic create, and
     /// no other member is swept. Every operation is executed by the exited birth's recoverer: a
-    /// member's mesh-primary; a mesh-primary's own recovery by the admin its mesh seats in its place,
-    /// never the exited primary the view may still seat. What is left is read from the Build's
+    /// member's mesh-primary; a mesh-primary's own recovery by the admin its mesh elects in its place,
+    /// never the exited primary the view may still role. What is left is read from the Build's
     /// receipts: once the delete's `NodeDeleted` names the exited birth and its `Complete` follows,
     /// the create; once the create's `Complete` follows, nothing. Another birth's `NodeDeleted`, a
     /// `NodeDeleted` with no `Complete`, and a `Complete` from before the deletion (the path's original
@@ -2570,8 +2570,8 @@ mod tests {
         let recovered = vec![original_create, deleted(4, &node_id, &from), complete(4, "node.delete"), complete(5, "node.create")];
         assert_eq!(keys(recovered.clone(), &mn()), Vec::<String>::new(), "created after the deletion: recovered, nothing is left");
         assert_eq!(keys(recovered, &gone), Vec::<String>::new(), "recovered, whatever the view holds");
-        // A mesh-primary's own recovery: the view may still seat the exited primary; every operation
-        // is executed by the admin its mesh seats in its place.
+        // A mesh-primary's own recovery: the view may still role the exited primary; every operation
+        // is executed by the admin its mesh elects in its place.
         let admin: PathName = "mesh1.admin.1".parse().unwrap();
         let mut o = mn();
         o.nodes.iter_mut().find(|x| x.name == admin).unwrap().status = NodeStatus::PendingReconnect;

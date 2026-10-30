@@ -235,7 +235,7 @@ impl Ladder {
     /// Has this ladder decided the recovery of `mesh`'s node-admins? A fabric primary holds that
     /// recovery back for every peer mesh it hears on the backbone until this is true: a node-admin
     /// whose runtime was proven exited is replaced when the ladder decides, not before, and a
-    /// fabric primary that took the seat a moment ago has decided nothing yet.
+    /// fabric primary that took the role a moment ago has decided nothing yet.
     pub(crate) fn recovery_decided(&self, mesh: &str) -> bool {
         self.meshes.get(mesh).is_some_and(|s| s.verdict == Some(true))
     }
@@ -261,8 +261,8 @@ impl Ladder {
     /// the backbone never carried here.
     /// A mesh heard on the backbone is targeted from the rung the ladder tracks it from
     /// ([`Rungs::track`]), whether or not the ladder has stepped it yet (a fabric-primary that took the
-    /// seat a moment ago has stepped nothing), and its decided recovery is the ladder's; a mesh the
-    /// backbone never carried is what the ladder holds of it (watched from the seat).
+    /// role a moment ago has stepped nothing), and its decided recovery is the ladder's; a mesh the
+    /// backbone never carried is what the ladder holds of it (watched from the role).
     pub fn peer_mesh_unheard(&self, mesh: &str, unheard: Option<Duration>) -> Option<PeerMesh> {
         match unheard {
             Some(t) => (t >= self.rungs.track).then(|| PeerMesh { unheard_ms: Some(t.as_millis() as u64), recovery_decided: self.recovery_decided(mesh), unreachable_decided: self.unreachable_decided(mesh) }),
@@ -338,7 +338,7 @@ impl Ladder {
 
     /// Probe `n` of `mesh`'s investigation `ticket` found `outcome`. An answering node-admin stops
     /// the investigation.
-    /// A probe of an investigation since cancelled, forgotten or dropped with the seat, or one this
+    /// A probe of an investigation since cancelled, forgotten or dropped with the role, or one this
     /// investigation is not waiting on, records nothing.
     pub fn probed(&mut self, mesh: &str, ticket: u64, n: u8, outcome: ProbeOutcome, unheard_ms: u64) -> Option<Step> {
         let st = self.meshes.get_mut(mesh).filter(|st| st.ticket == ticket && st.in_flight == Some(n))?;
@@ -376,7 +376,7 @@ pub struct Watch {
     pub gate: crate::stop_gate::StopGate,
     /// This admin's `path.name`.
     pub me: PathName,
-    /// The node id this admin was born with: whether it holds the fabric seat is decided by it.
+    /// The node id this admin was born with: whether it holds the fabric-primary role is decided by it.
     pub me_id: crate::model::NodeId,
     /// The length of a backbone interval.
     pub interval: Duration,
@@ -421,11 +421,11 @@ fn local_now_ms() -> u64 {
 pub async fn run(w: Watch) {
     let w = Arc::new(w);
     let inv = Investigations::new(w.me.to_string(), w.ladder.clone(), w.gate.clone());
-    // When this admin took the fabric-primary seat: a peer mesh it has never heard is unheard from then.
+    // When this admin took the fabric-primary role: a peer mesh it has never heard is unheard from then.
     let mut never_since: BTreeMap<String, Instant> = BTreeMap::new();
     let mut was_fabric_primary = false;
     // The role the ladder's state was built in: a decision taken as the fabric-primary (on a peer mesh) is
-    // not the backbone rule's decision on the fabric seat's mesh once the seat has moved elsewhere.
+    // not the backbone rule's decision on the fabric-primary role's mesh once the role has moved elsewhere.
     let mut ladder_role_fabric_primary: Option<bool> = None;
     let mut wait = w.interval;
     loop {
@@ -479,7 +479,7 @@ pub async fn run(w: Watch) {
         let heard = digest_view.backbone_meshes();
         let current_never = never_heard(&view, &me.mesh, &heard);
         never_since.retain(|m, _| current_never.contains(m));
-        // The clock of a mesh never heard starts once the accepted Build is settled: from the seat,
+        // The clock of a mesh never heard starts once the accepted Build is settled: from the role,
         // and from each settling, because a mesh the Build is still birthing has not had its chance
         // to be heard; once started for a settled mesh, it runs across a subsequent Build targeted on it.
         match (w.settled)().await {
@@ -527,9 +527,9 @@ pub async fn run(w: Watch) {
     }
 }
 
-/// The mesh this admin, a mesh-primary that does not hold the fabric seat, investigates while the
-/// fabric-primary is unheard: the fabric seat record's mesh, when it is not this admin's own (its own
-/// mesh's standby is the seat watch's arm, node-recovery.md step 2) and the record's birth is held off
+/// The mesh this admin, a mesh-primary that does not hold the fabric-primary role, investigates while the
+/// fabric-primary is unheard: the fabric primary record's mesh, when it is not this admin's own (its own
+/// mesh's standby is the primary watch's arm, node-recovery.md step 2) and the record's birth is held off
 /// ready in this admin's view. `None` otherwise.
 fn fabric_primary_mesh_to_investigate(w: &Watch, view: &Topology, me: &PathName) -> Option<String> {
     if !view.is_mesh_primary(&me.mesh, &w.me_id) {
@@ -545,7 +545,7 @@ fn fabric_primary_mesh_to_investigate(w: &Watch, view: &Topology, me: &PathName)
 
 /// The peer meshes the view holds nodes of that the backbone has never carried to this admin: it
 /// learned them from topology alone, which is not liveness (R-G2), so nothing says whether they are
-/// alive. An admin that took the fabric-primary seat watches them from the moment it took it.
+/// alive. An admin that took the fabric-primary role watches them from the moment it took it.
 pub(crate) fn never_heard(view: &Topology, me_mesh: &str, heard: &BTreeSet<String>) -> BTreeSet<String> {
     view.members().map(|n| n.mesh.clone()).filter(|m| m != me_mesh && !heard.contains(m)).collect()
 }
@@ -629,7 +629,7 @@ impl Investigations {
                     node = %me,
                     mesh = %mesh,
                     probe = n,
-                    seat_record = empty,
+                    primary_record = empty,
                     target = empty,
                     member = empty,
                     carrier = empty,
@@ -661,7 +661,7 @@ fn land(me: &str, span: &tracing::Span, ladder: &Mutex<Ladder>, mesh: &str, tick
     // this stop, emits its `heard-again` after this verdict, never before it.
     let mut held = ladder.lock().unwrap();
     let stop = held.probed(mesh, ticket, n, found.outcome, unheard_ms);
-    span.record("seat_record", found.seat_record.as_str());
+    span.record("primary_record", found.primary_record.as_str());
     span.record("target", found.target.as_str());
     span.record("member", found.members.as_str());
     span.record("carrier", found.carrier.as_str());
@@ -681,7 +681,7 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
     let at = local_now_ms().saturating_sub(unheard.as_millis() as u64);
     let start = |n: u8| {
         let (w, view, mesh) = (w.clone(), view.clone(), mesh.clone());
-        async move { probe(&WatchCalls(&w), &w.carriers, &view, w.topology_view.digest_view.seats.mesh(&mesh), &mesh, n).await }
+        async move { probe(&WatchCalls(&w), &w.carriers, &view, w.topology_view.digest_view.primaries.mesh(&mesh), &mesh, n).await }
     };
     let steps = inv.tick(&mesh, unheard, start).await;
     for step in steps {
@@ -749,18 +749,18 @@ pub(crate) struct Found {
     pub(crate) iroh_known: String,
     /// The addresses iroh used for each node-admin asked, as `iroh_known`.
     pub(crate) iroh_active: String,
-    /// The mesh-primary seat record the probe ordered its node-admins by, or `none` held.
-    pub(crate) seat_record: String,
+    /// The mesh-primary record the probe ordered its node-admins by, or `none` held.
+    pub(crate) primary_record: String,
 }
 
 /// The node-admins of `mesh` a probe carries `ProbeNodeState` to, in the order it asks them: the
-/// exact mesh-primary the held seat record `seat` names first (its birth, the record's, R-EL1a),
+/// exact mesh-primary the held primary record `primary` names first (its birth, the record's, R-EL1a),
 /// then the mesh's other node-admins in path order (mesh-investigation.md step 1). With no record
 /// held, path order. Only exact births are asked: a probe names `(node.id, incarnation)`.
-pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, seat: Option<&rdm_core::seat::Primary>) -> Vec<Node> {
+pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, primary: Option<&rdm_core::role::Primary>) -> Vec<Node> {
     let mut admins: Vec<Node> = view.nodes_of_type(mesh, NodeKind::NodeAdmin).filter(|a| a.incarnation_id.is_some()).cloned().collect();
     admins.sort_by_key(|a| a.name.to_string());
-    if let Some(record) = seat.filter(|r| r.mesh == mesh) {
+    if let Some(record) = primary.filter(|r| r.mesh == mesh) {
         if let Some(i) = admins.iter().position(|a| a.node_id == record.node_id) {
             let mut primary = admins.remove(i);
             primary.incarnation_id = Some(record.incarnation.clone());
@@ -863,16 +863,16 @@ pub(crate) fn investigation_carriers(view: &Topology, mesh: &str, connected: imp
 }
 
 /// Probe `mesh`'s node-admins (mesh-investigation.md steps 1 and 3) through `calls`: the one tickle
-/// ladder (node-tickle.md) over the exact mesh-primary the held seat record `record` names first,
+/// ladder (node-tickle.md) over the exact mesh-primary the held primary record `record` names first,
 /// then over each other node-admin (`admins_in_probe_order`): `ProbeNodeState` direct and, when that
 /// fails, carried by up to two members of the mesh at once ([`investigation_carriers`]). The first
 /// node-admin that answers ends the probe. `carriers` holds the carrier each mesh's latest probe went
 /// through; probe 2 prefers other members.
-pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BTreeMap<String, PathName>>, view: &Topology, record: Option<rdm_core::seat::Primary>, mesh: &str, _n: u8) -> Found {
-    let seat_record = record.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
+pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BTreeMap<String, PathName>>, view: &Topology, record: Option<rdm_core::role::Primary>, mesh: &str, _n: u8) -> Found {
+    let primary_record = record.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
     let admins = admins_in_probe_order(view, mesh, record.as_ref());
     if admins.is_empty() {
-        return Found { detail: format!("the view holds no node-admin of {mesh}"), seat_record, ..Found::default() };
+        return Found { detail: format!("the view holds no node-admin of {mesh}"), primary_record, ..Found::default() };
     }
     // The carrier probe 2 prefers to avoid is the one that carried probe 1 (`calls.carriers` reads it
     // from `carriers`); the carrier this probe went through lands there once it ends, never while it runs.
@@ -939,7 +939,7 @@ pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BT
         }
     }
     let carrier = carrier.unwrap_or_default();
-    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked.join(","), carrier, detail: details.join("; "), iroh_known: iroh_known.join(";"), iroh_active: iroh_active.join(";"), seat_record }
+    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked.join(","), carrier, detail: details.join("; "), iroh_known: iroh_known.join(";"), iroh_active: iroh_active.join(";"), primary_record }
 }
 
 #[cfg(test)]
@@ -1044,7 +1044,7 @@ mod tests {
         assert_eq!(
             l.peer_mesh_unheard("mesh1", Some(Duration::from_secs(7))),
             Some(PeerMesh { unheard_ms: Some(7000), recovery_decided: false, unreachable_decided: false }),
-            "a seat taken a moment ago: the ladder stepped nothing, t is 7 s, the mesh is targeted"
+            "a role taken a moment ago: the ladder stepped nothing, t is 7 s, the mesh is targeted"
         );
         assert_eq!(l.peer_mesh_unheard("mesh1", Some(Duration::from_millis(200))), None, "heard within the tracking rung: no peer_mesh_unheard");
         // The ladder steps the mesh: probe 1, probe 2, both carrier-edge-lost, then the decision.
@@ -1276,12 +1276,12 @@ mod tests {
     /// choosing the first target, a probe that asks only one node-admin, or another mesh's admin.
     #[test]
     fn a_probe_asks_the_recorded_mesh_primary_first_then_the_other_admins() {
-        use rdm_core::seat::Primary;
+        use rdm_core::role::Primary;
         let v = view_of(vec![admin("mesh2.admin.1", false), admin("mesh2.admin.3", false), admin("mesh2.admin.2", true), admin("mesh1.admin.1", true)]);
         let a3 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.3").unwrap().clone();
         let names = |order: Vec<Node>| order.iter().map(|a| a.name.to_string()).collect::<Vec<_>>();
         let record = Primary { mesh: "mesh2".into(), node_id: a3.node_id.clone(), incarnation: a3.incarnation_id.clone().unwrap(), revision: 4 };
-        assert_eq!(names(admins_in_probe_order(&v, "mesh2", Some(&record))), vec!["mesh2.admin.3", "mesh2.admin.1", "mesh2.admin.2"], "the seat record's holder first, then the others in path order, and nothing of another mesh; never the view's is_primary");
+        assert_eq!(names(admins_in_probe_order(&v, "mesh2", Some(&record))), vec!["mesh2.admin.3", "mesh2.admin.1", "mesh2.admin.2"], "the primary record's primary first, then the others in path order, and nothing of another mesh; never the view's is_primary");
         assert_eq!(names(admins_in_probe_order(&v, "mesh2", None)), vec!["mesh2.admin.1", "mesh2.admin.2", "mesh2.admin.3"], "no record held: path order, the view's is_primary choosing nothing");
         let newer = Primary { incarnation: crate::model::IncarnationId::mint(), revision: 5, ..record };
         let order = admins_in_probe_order(&v, "mesh2", Some(&newer));
@@ -1509,7 +1509,7 @@ mod tests {
         assert!(!l.unreachable_decided("mesh2") && !l.recovery_decided("mesh2"), "heard again: the hold is over");
     }
 
-    /// CONTRACT (#2803 detection): a fabric primary that loses its seat drops every investigation;
+    /// CONTRACT (#2803 detection): a fabric primary that loses its role drops every investigation;
     /// the next one starts from its own view, so nothing it decided is decided again, and a mesh it
     /// never heard on the backbone is not held back at all.
     #[test]
@@ -1518,7 +1518,7 @@ mod tests {
         walk(&mut first, [CarrierEdgeLost, CarrierEdgeLost]);
         assert!(first.recovery_decided("mesh2"));
         first.clear();
-        assert!(first.meshes().is_empty(), "nothing survives the seat");
+        assert!(first.meshes().is_empty(), "nothing survives the role");
         let mut next = ladder();
         assert!(!next.recovery_decided("mesh2"), "the next primary has decided nothing yet");
         let log = walk(&mut next, [CarrierEdgeLost, CarrierEdgeLost]);
@@ -1652,13 +1652,13 @@ mod tests {
         admin(name, false)
     }
 
-    /// The peer mesh mesh2 of the probe cells: node-admins 1 and 2, the held mesh-primary seat record
+    /// The peer mesh mesh2 of the probe cells: node-admins 1 and 2, the held mesh-primary primary record
     /// naming node-admin 2 (so the exact mesh-primary is not the first in path order), rpc members 1
     /// to 3, and this admin's own mesh1, never asked.
-    fn mesh2() -> (Arc<Topology>, rdm_core::seat::Primary) {
+    fn mesh2() -> (Arc<Topology>, rdm_core::role::Primary) {
         let v = view_of(vec![admin("mesh1.admin.1", true), member("mesh1.rpc.1"), admin("mesh2.admin.1", true), admin("mesh2.admin.2", false), member("mesh2.rpc.1"), member("mesh2.rpc.2"), member("mesh2.rpc.3")]);
         let a2 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.2").unwrap().clone();
-        let record = rdm_core::seat::Primary { mesh: "mesh2".into(), node_id: a2.node_id.clone(), incarnation: a2.incarnation_id.clone().unwrap(), revision: 3 };
+        let record = rdm_core::role::Primary { mesh: "mesh2".into(), node_id: a2.node_id.clone(), incarnation: a2.incarnation_id.clone().unwrap(), revision: 3 };
         (Arc::new(v), record)
     }
 
@@ -1695,7 +1695,7 @@ mod tests {
     /// two eligible live peers of the node's mesh, both sent at once"; step 3: "probe 2 repeats probe
     /// 1 (exact mesh-primary first, then the other node-admins, each direct then via a peer),
     /// preferring a different carrier member"). The driver makes probes 1 and 2 of one investigation
-    /// at their rungs through the probe's calls, recorded in order. Probe 1: the exact birth the seat
+    /// at their rungs through the probe's calls, recorded in order. Probe 1: the exact birth the role
     /// record names (node-admin 2) direct; it fails, so the carried ProbeNodeState goes through rpc 3
     /// (the one member held Active Direct) and rpc 1 at once; then node-admin 1 direct, and its own
     /// carried probes through the same two. Probe 2 repeats it preferring members probe 1 did not
@@ -1732,7 +1732,7 @@ mod tests {
         assert_eq!(
             made[0],
             calls(&["direct mesh2.admin.2", "via mesh2.rpc.3 > mesh2.admin.2", "via mesh2.rpc.1 > mesh2.admin.2", "direct mesh2.admin.1", "via mesh2.rpc.3 > mesh2.admin.1", "via mesh2.rpc.1 > mesh2.admin.1"]),
-            "probe 1: the seat record's exact mesh-primary first, then the other node-admin, each direct, then carried through two members at once (the Active Direct member first)"
+            "probe 1: the primary record's exact mesh-primary first, then the other node-admin, each direct, then carried through two members at once (the Active Direct member first)"
         );
         assert_eq!(
             made[1],
@@ -1747,7 +1747,7 @@ mod tests {
             assert_eq!(attr(i, "target"), format!("mesh2.admin.2=carrier-edge-lost(via {carrier}),mesh2.admin.1=carrier-edge-lost(via {carrier})"), "probe {}: every node-admin asked, in order, with its leg", i + 1);
             assert_eq!(attr(i, "carrier"), carrier, "probe {}", i + 1);
             assert_eq!(attr(i, "outcome"), "carrier-edge-lost", "probe {}", i + 1);
-            assert_eq!(attr(i, "seat_record"), record.to_string(), "probe {}: ordered by the held seat record", i + 1);
+            assert_eq!(attr(i, "primary_record"), record.to_string(), "probe {}: ordered by the held primary record", i + 1);
             eprintln!("span rdm.node_admin.mesh.update.via-probe trace_id={} {:?}", spans[i].trace_id, spans[i].attributes);
         }
         assert_eq!(attr(0, "member"), "mesh2.rpc.3,mesh2.rpc.1", "probe 1 asked the Active Direct member first");

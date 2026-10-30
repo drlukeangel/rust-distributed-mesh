@@ -722,7 +722,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             // Day 0 (R-OW1 item 2): the bootstrap admin, its mesh's primary, claims its own path.name,
             // the first write of its birth, before Ready (`claim_day0_name`). A name another
             // node holds refuses the start by name. A recovery start (both primary flags) is no Day 0: its row
-            // is written when it holds its mesh's seat, as every member's is (`NodeRows::arrivals`).
+            // is written when it holds its mesh's role, as every member's is (`NodeRows::arrivals`).
             if !cfg.mesh_primary && !cfg.fabric_primary {
                 // The row records what this birth runs (build-deployment.md §2.3): its running executable,
                 // hashed now; there is no configured sha to hold it to.
@@ -785,7 +785,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let claim_slot: crate::build_claim::ClaimSlot = Arc::new(std::sync::OnceLock::new());
     // The births this admin deployed and awaits a `JoinNode` from, and the door that answers it.
     let joins = Arc::new(crate::join::Joins::over(nodes_storage.clone()));
-    // The runner, once built: the seat watch registers a seat holder heard again through it (Q87).
+    // The runner, once built: the primary watch registers a primary heard again through it (Q87).
     let runner_slot: Arc<std::sync::OnceLock<Arc<AdminRunner>>> = Arc::default();
     let heard_again_slot: crate::heard_again::HeardAgainSlot = Arc::default();
     let join_slot: crate::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
@@ -1108,7 +1108,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // named, or none answers), this admin is the only node, the fabric-primary, and its own clock
                 // is rafka-time from the start (fabric-recovery.md "Nothing alive"; origin-ordering.md): every
                 // node the store names is re-created through node recovery, never waited for, so each is gone
-                // from every seat here.
+                // from every role here.
                 if !rafka_time.is_adopted() {
                     let contacts: Vec<crate::reenter::MapNode> = super::rows_writer::recorded_births(&*mesh_storage, &*nodes_storage, &cfg.mesh)
                         .await
@@ -1127,7 +1127,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                         Ok(_) => {}
                         Err(_) if alone => {
                             for incarnation in gone {
-                                topology_view.digest_view.seats.mark_gone(incarnation);
+                                topology_view.digest_view.primaries.mark_gone(incarnation);
                             }
                             crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_NOTHING_ALIVE);
                             sole_node_root = true;
@@ -1202,9 +1202,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     }
                 }
                 let mut tasks_early: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-                // When the fabric seat moves to another holder, this admin, if it is a mesh primary, pulls
+                // When the fabric role moves to another primary, this admin, if it is a mesh primary, pulls
                 // rafka-time once from the new fabric-primary.
-                tasks_early.push(stop_gate.spawn(crate::rafka_time::run_seat_move_pull(rafka_time.clone(), name.clone(), node_id.clone(), node_rpc.client.clone(), topology_view.clone())));
+                tasks_early.push(stop_gate.spawn(crate::rafka_time::run_role_move_pull(rafka_time.clone(), name.clone(), node_id.clone(), node_rpc.client.clone(), topology_view.clone())));
                 // A delta that does not follow what this admin holds desynchronizes that source of its mesh
                 // channel; it tops up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each
                 // such mesh, as every node does. Held behind the gate: a stopped admin tops up nothing, and a
@@ -1219,7 +1219,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     crate::admin::rows_writer::take_recorded_primaries(&*mesh_storage, &*nodes_storage, &cfg.mesh, topology_view.primaries()).await.map_err(storage_err)?;
                 }
                 if let Some(own) = &inherited {
-                    topology_view.digest_view.seats.mark_gone(own.incarnation_id.clone());
+                    topology_view.digest_view.primaries.mark_gone(own.incarnation_id.clone());
                 }
                 // The current Build: Day 0 accepts the first Build itself; every other admin reads it from
                 // the store root, its entry pull naming it.
@@ -1227,17 +1227,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 let records = Arc::new(Records { caches: caches.clone(), ..Records::default() });
                 records.set_me(node_id.clone());
                 // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a sweep on every
-                // seat change.
+                // role change.
                 {
-                    let seats = topology_view.primaries().clone();
+                    let primaries = topology_view.primaries().clone();
                     let mut writer = FabricRowsWriter::new((node_id.clone(), incarnation.clone()), fabric_identity.clone(), fabric_storage.clone());
-                    let mut changed = seats.subscribe();
+                    let mut changed = primaries.subscribe();
                     let stop = stop_gate.clone();
                     tasks_early.push(tokio::spawn(async move {
                         loop {
                             // Held here while the admin is stopped: its own wait, outside every lock.
-                            let turn = stop.turn("seat-rows").await;
-                            writer.sweep(&seats).await;
+                            let turn = stop.turn("primary-rows").await;
+                            writer.sweep(&primaries).await;
                             drop(turn);
                             if changed.changed().await.is_err() {
                                 return;
@@ -1249,7 +1249,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // what this admin applied when it becomes its mesh's primary.
                 records.set_status(nodes_storage.clone(), mesh_storage.clone(), fabric_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
                 records.set_digest_view(topology_view.digest_view.clone());
-                let builds = Arc::new(FabricBuildStateAdapter::new(journal.clone(), &topology_view.location_view(), name.to_string(), fabric_seat_source(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, view_slot.clone())));
+                let builds = Arc::new(FabricBuildStateAdapter::new(journal.clone(), &topology_view.location_view(), name.to_string(), fabric_primary_source(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, view_slot.clone())));
                 // Only the fabric-primary, fabric recovery's executor in its place, or an admin started with
                 // no launcher while no live birth holds the fabric-primary record reads the Build records
                 // from here on (Q227); a launched admin's start reads none (Q242).
@@ -1363,7 +1363,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let entering = Arc::new(std::sync::atomic::AtomicBool::new(entering_existing_mesh));
 
                             // A restart that enters its mesh from its durable map elects nobody until its entry read has
-                            // told it who holds the seats.
+                            // told it who holds the roles.
                             records.set_entering(entering_existing_mesh && cfg.launch.is_none());
                             let _ = records.contacts.set(nodes_storage.clone());
                             // A fabric primary recovered from its data dir holds its durable topology as its map (rule 5):
@@ -1421,7 +1421,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 );
                                 let _ = control.storage_changes.set(storage_changes.clone());
                                 // The claim door: this admin decides a fabric-lane claim only while it holds the fabric-primary
-                                // seat, and its own mesh's drift-lane claim only while it holds its mesh's primary seat (R-BI7).
+                                // role, and its own mesh's drift-lane claim only while it holds its mesh's primary role (R-BI7).
                                 let claim_door = Arc::new(crate::build_claim::ClaimDoor {
                                     me: name.clone(),
                                     node_id: node_id.clone(),
@@ -1443,7 +1443,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let _ = control.fabric_recovery.set(
                                     crate::fabric_recovery::reader(digest_view.clone(), records.clone()),
                                 );
-                                let _ = control.seats.set(digest_view.seats.clone());
+                                let _ = control.primaries.set(digest_view.primaries.clone());
                                 {
                                     let (me, digest_view, records, fabric, fabric_id, provider) = (
                                         name.clone(),
@@ -1690,7 +1690,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 decisions: builds.decisions(),
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, digest_view.clone(), records.clone()),
                                 finish_writes: finish_writes.clone(),
-                                looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()), commands: Some(commands.clone()) },
+                                looker: crate::primary_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()), commands: Some(commands.clone()) },
                             });
                             let _ = handover_slot.set(handover.clone());
                             // The drives of the Builds this admin drives (`build_drive`): its executor ends its own
@@ -1745,7 +1745,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let _ = control.investigation.set(runner.clone());
                             let _ = mesh_deleter.set(Arc::new(MeshDeleteDoor { runner: runner.clone() }));
                             // The Build family on `0x20`: the executor's door for `build.attempt.run` and the fabric-primary's
-                            // drive of every Build. The same admin holds both; which one a call reaches depends on the seat.
+                            // drive of every Build. The same admin holds both; which one a call reaches depends on the role.
                             let drive_env = {
                                 let exec = Arc::new(BuildExecutor { executor: name.to_string(), builds: builds_dyn.clone(), topology: control.topology.clone(), runner: runner.clone() });
                                 let run_door = Arc::new(crate::build_run::RunDoor {
@@ -1763,7 +1763,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     builds: builds_dyn.clone(),
                                     door: claim_door.clone(),
                                     dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
-                                    gate: Arc::new(SeatGate { builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone(), meshes: mesh_storage.clone() }),
+                                    gate: Arc::new(RoleGate { builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone(), meshes: mesh_storage.clone() }),
                                     departure: Arc::new(ProviderDeparture {
                                         me: name.clone(),
                                         topology: control.topology.clone(),
@@ -1777,7 +1777,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let _ = control.node_rows.set(nodes_storage.clone());
                                 let _ = control.node_id.set(node_id.clone());
                                 records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_fabric_recovery(crate::fabric_recovery::reader(digest_view.clone(), records.clone())).with_configs(configs_slot.clone()).with_written(written.clone())));
-                                let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: topology_view.primaries().clone(), incarnation: incarnation.clone() }));
+                                let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, primaries: topology_view.primaries().clone(), incarnation: incarnation.clone() }));
                                 env
                             };
 
@@ -2099,7 +2099,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 tasks.push(spawn_entry_sweep(&stop_gate, entry_ctx.clone(), source, map, sweep_slot.clone(), records.clone(), policy.provider));
                             }
                             // Authority-capable Ready: this admin commits `Ready` (and so
-                            // becomes eligible for every seat) only once it can manage every birth it
+                            // becomes eligible for every role) only once it can manage every birth it
                             // holds: each live member publishes a runtime fact this admin's provider
                             // adopts in its own control domain, and the Day-0 admin holds a Complete
                             // receipt for every step of its own adoption. Until then it publishes
@@ -2267,8 +2267,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     let t = project_decided(&fabric_name, &fabric_id, view_provider, &digest_view, &records, &decided, &reads);
                                                     // The election's result this admin holds: its digest carries it and, as its
                                                     // mesh's writer, it records it on the rows.
-                                                    for (seat, holder) in seat_announcements(&t, &mesh_name, (&node_id, &incarnation), &decided) {
-                                                        backbone_ready.hold_primary(seat, holder);
+                                                    for (role, primary) in role_announcements(&t, &mesh_name, (&node_id, &incarnation), &decided) {
+                                                        backbone_ready.hold_primary(role, primary);
                                                     }
                                                     // The current Build the not-ready check above found held: the Ready span names it,
                                                     // so "it held the current Build before Ready" is read off the Ready itself.
@@ -2495,7 +2495,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
 
                                                 // The offline tickle (node-recovery.md "Detection and proof"): every admin keeps the silence
-                                                // bookkeeping; the one holding its mesh's primary seat tickles each node of its own mesh the
+                                                // bookkeeping; the one holding its mesh's primary role tickles each node of its own mesh the
                                                 // topology shows PendingReconnect, half a floor after the mark, with the one ladder
                                                 // (node-tickle.md, `offline::tickle`): the probe (op 27) direct, and when it does not answer,
                                                 // the same probe through up to two peers at once on the ViaPeer route, the leads the store's
@@ -2526,7 +2526,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let callers = Arc::new(crate::refused_caller::RefusedCallers::new(node_id.clone(), recovery.clone(), heard_again_slot.clone()));
                                                 callers.watch_views(records.subscribe_view());
                                                 control.atlas.refused_callers(callers);
-                                                // Fabric recovery (Q122): started by the seat watch in the fabric-primary's own mesh, and by mesh
+                                                // Fabric recovery (Q122): started by the primary watch in the fabric-primary's own mesh, and by mesh
                                                 // investigation's decision step from the backbone.
                                                 let fabric_recovery = Arc::new(
                                                     crate::fabric_recovery::FabricRecoveryDoor::new(
@@ -2535,7 +2535,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         control.topology.clone(),
                                                         digest_view.clone(),
                                                         records.clone(),
-                                                        crate::seat_watch::Looker {
+                                                        crate::primary_watch::Looker {
                                                             me: name.clone(),
                                                             me_id: node_id.clone(),
                                                             topology_view: topology_view.clone(),
@@ -2609,13 +2609,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // them this tick makes the view's rebuild due where it is made (Q254).
                                                 let offline_before = records.offline.lock().unwrap().clone();
                                                 let view = topology.read().await.clone();
-                                                let holds_seat = view.is_mesh_primary(&mesh, &me_id);
+                                                let holds_role = view.is_mesh_primary(&mesh, &me_id);
                                                 // The births only a durable runtime row names: the mesh-primary's alone, from its mesh's
                                                 // rows read once as it takes the role (`TenureRows`); an admin that is no primary reads
                                                 // none. A birth the view holds is marked from this admin's own digest view, so a
                                                 // successor tickles on the window already running.
                                                 let durable = {
-                                                    let rows = tenure_rows.for_tick(holds_seat, &*recovery.nodes_storage, &recovery.held_name(), &mesh).await;
+                                                    let rows = tenure_rows.for_tick(holds_role, &*recovery.nodes_storage, &recovery.held_name(), &mesh).await;
                                                     let planned = records.planned();
                                                     durable_births(&view, rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.digest_view.is_deleted(id))
                                                 };
@@ -2623,7 +2623,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let mut watched = watched_births(&view, &me_id, &mesh, &durable);
                                                 // A node-admin the election replaced as this mesh's primary is the fabric-primary's to
                                                 // investigate and recover (node-recovery.md step 2), never this tick's.
-                                                watched.retain(|_, n| !(n.kind == NodeKind::NodeAdmin && n.incarnation_id.as_ref().is_some_and(|i| recovery.digest_view.seats.replaced(rdm_core::Seat::MeshPrimary, &mesh, i))));
+                                                watched.retain(|_, n| !(n.kind == NodeKind::NodeAdmin && n.incarnation_id.as_ref().is_some_and(|i| recovery.digest_view.primaries.replaced(rdm_core::PrimaryRole::MeshPrimary, &mesh, i))));
                                                 // One reading of the clocks for the tick: each birth's mark is read from the view at it.
                                                 let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
                                                 // node-tickle.md step 1: a birth a command never reached for a reachability reason is
@@ -2665,7 +2665,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let report = tickle
                                                     .tick(
                                                         now_ms,
-                                                        holds_seat,
+                                                        holds_role,
                                                         silent,
                                                         |id: &str| in_view.contains(id),
                                                         floor.as_millis() as u64 / 2,
@@ -2720,7 +2720,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         written.insert(node.node_id.clone(), fact);
                                                     }
                                                 };
-                                                if holds_seat {
+                                                if holds_role {
                                                     for (id, n) in &watched {
                                                         if n.status == NodeStatus::PendingReconnect {
                                                             write(id, Some(NodeStatus::PendingReconnect), &mut written).await;
@@ -2743,7 +2743,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // A held birth heard again by its digest is commanded back through node.mesh.join
                                                     // too (Q87: the view returns on the bare digest, its cert, time and cache do not):
                                                     // by the mesh-primary, on its own task.
-                                                    if holds_seat {
+                                                    if holds_role {
                                                         if let (Some(heard_again), Some(mut n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
                                                             // The tick held this birth off its mesh (it was tickled and returned): the view's
                                                             // ready, when it shows one, is the birth's own last word before the
@@ -2761,9 +2761,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // mark after its own write and removes what it wrote (`RecoverySubmitter::offline`).
                                                     records.offline.lock().unwrap().retain(|(nid, _)| nid.as_str() != id);
                                                     // The silence row is written and removed by the mesh-primary
-                                                    // (node-identity-and-state.md): an admin that does not hold the seat hears the
+                                                    // (node-identity-and-state.md): an admin that does not hold the role hears the
                                                     // return and clears only its own records.
-                                                    if !holds_seat {
+                                                    if !holds_role {
                                                         continue;
                                                     }
                                                     write(id, None, &mut written).await;
@@ -2773,7 +2773,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // commanded back through node.mesh.join (Q87): its commanded start runs on its own
                                                     // task, after the ladder's fold. Only the mesh-primary commands its members
                                                     // (commands go down); every admin keeps the bookkeeping.
-                                                    if report.answered_current.contains(id) && holds_seat {
+                                                    if report.answered_current.contains(id) && holds_role {
                                                         if let (Some(heard_again), Some(mut n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
                                                             // Held off its mesh in the tick's eyes (it was kicked and answered): the view's
                                                             // ready is its last word before the silence (Q87).
@@ -2803,7 +2803,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 {
                                                     let offline = records.offline.lock().unwrap().clone();
                                                     let now = std::time::Instant::now();
-                                                    for n in recovery_due(holds_seat, &mesh, &watched, &offline) {
+                                                    for n in recovery_due(holds_role, &mesh, &watched, &offline) {
                                                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                                                         let birth = (n.node_id.clone(), incarnation);
                                                         if !recovery.take_eligible(&birth, now, &in_flight) {
@@ -2819,7 +2819,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // durable facts each tick, whether or not the view still holds it (a workflow
                                                     // whose delete completed deleted it) and whoever submitted it before. One submit
                                                     // per birth in flight, whichever way it is due, and on the same backoff.
-                                                    let owed_now = recovery.owed_submits(holds_seat, &mesh).await;
+                                                    let owed_now = recovery.owed_submits(holds_role, &mesh).await;
                                                     let owed_births: HashSet<(NodeId, IncarnationId)> = owed_now.iter().map(|o| (o.node_id.clone(), o.incarnation.clone())).collect();
                                                     for owed in owed_now {
                                                         let birth = (owed.node_id.clone(), owed.incarnation.clone());
@@ -2834,11 +2834,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // A birth owed nothing now (heard again, gone from the view or replaced at its
                                                     // path.name, or this admin no longer its mesh-primary) keeps no backoff: unheard
                                                     // again, it is eligible at once (Q209).
-                                                    recovery.forget_resubmits(|birth| holds_seat && (offline.contains(birth) || owed_births.contains(birth)));
+                                                    recovery.forget_resubmits(|birth| holds_role && (offline.contains(birth) || owed_births.contains(birth)));
                                                     // A second birth another executor made at a path.name of this mesh across a cut:
                                                     // superseded, its row written deleted and its NodeDeleted published, so its next
                                                     // digest is a deleted birth heard again (node-investigation.md, Q142).
-                                                    if holds_seat {
+                                                    if holds_role {
                                                         for op in recovery.superseded_births(&view, &mesh).await {
                                                             runner.lifecycle_events.deleted(&op).await;
                                                         }
@@ -2846,7 +2846,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // A deleted birth of this mesh heard again by its own digest: refused by every
                                                     // view, and deleted or re-admitted by its path.name and this admin's atlas (Q207,
                                                     // node-investigation.md).
-                                                    if let (true, Some(callers)) = (holds_seat, control_atlas.callers().cloned()) {
+                                                    if let (true, Some(callers)) = (holds_role, control_atlas.callers().cloned()) {
                                                         for d in recovery.digest_view.returned_births().into_iter().filter(|d| d.node.name.mesh == mesh) {
                                                             let (recovery, callers, atlas) = (recovery.clone(), callers.clone(), control_atlas.clone());
                                                             // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
@@ -2870,10 +2870,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
 
                                     // Cert renewal (node-cert-renew.md, mesh-issuer-renew.md): on every gossip interval, the
-                                    // births this admin's seats make it the issuing authority of are renewed from their cert rows;
-                                    // holding the fabric seat, each mesh's issuer, sent to that mesh's primary; holding a mesh's
-                                    // primary seat, the issuer it installed carried to its mesh's other admins. Whoever holds a
-                                    // seat continues the schedule from the rows; a stopped admin renews nothing.
+                                    // births this admin's roles make it the issuing authority of are renewed from their cert rows;
+                                    // holding the fabric-primary role, each mesh's issuer, sent to that mesh's primary; holding a mesh's
+                                    // primary role, the issuer it installed carried to its mesh's other admins. Whoever holds a
+                                    // role continues the schedule from the rows; a stopped admin renews nothing.
                                     {
                                         let own_cert = own_commands.clone();
                                         let renewals = crate::cert_renewal::Renewals::new(
@@ -2922,11 +2922,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         }));
                                     }
 
-                                    // The seat watch (ruling R-A2): a silent seat holder is looked at, never replaced for being
+                                    // The primary watch (ruling R-A2): a silent primary is looked at, never replaced for being
                                     // silent. Each admin measures silence in its own view and looks at the exact runtime;
                                     // no gossip frame commands the investigation.
                                     {
-                                        let watch = crate::seat_watch::Watch {
+                                        let watch = crate::primary_watch::Watch {
                                             gate: stop_gate.clone(),
                                             me: name.clone(),
                                             me_id: node_id.clone(),
@@ -2934,12 +2934,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             topology_view: topology_view.clone(),
                                             topology: control.topology.clone(),
                                             records: records.clone(),
-                                            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()), commands: Some(commands.clone()) },
+                                            looker: crate::primary_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()), commands: Some(commands.clone()) },
                                             recovery: Some(recovery.clone()),
                                             fabric_recovery: fabric_recovery.clone(),
                                         };
                                         // Not behind the gate: it reads the view; it is held at its own wait (`Watch::gate`).
-                                        tasks.push(tokio::spawn(crate::seat_watch::run(watch)));
+                                        tasks.push(tokio::spawn(crate::primary_watch::run(watch)));
                                     }
 
                                     // The open lifecycle overlays, derived from the Build facts inside each append to this admin's
@@ -2961,7 +2961,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     let hierarchy;
                                     let anti_entropy;
                                     // What the hierarchy hands the mesh topology anti-entropy: a role it took is held for
-                                    // writing until its seat is announced (`roles`), the anti-entropy is told once it
+                                    // writing until its role is announced (`roles`), the anti-entropy is told once it
                                     // is (`roles_moved`).
                                     let roles = Arc::new(tokio::sync::RwLock::new(()));
                                     let roles_moved = Arc::new(tokio::sync::Notify::new());
@@ -2974,7 +2974,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (roles, roles_moved) = (roles.clone(), roles_moved.clone());
                                         let (backbone, topology_view, topology, me, mesh) = (backbone.clone(), topology_view.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone());
                                         let (view_fabric, view_fabric_id, view_provider, view_digest_view) = (cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, digest_view.clone());
-                                        let (seat_node_id, seat_incarnation) = (node_id.clone(), incarnation.clone());
+                                        let (role_node_id, role_incarnation) = (node_id.clone(), incarnation.clone());
                                         let adapter = runner.builds.clone();
                                         let records = records.clone();
                                         let fabric_states = states_slot.get().cloned().expect("the fabric states are built before the hierarchy runs");
@@ -3054,10 +3054,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 records.set_heard_dead(topology_view.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
                                                     topology_view.digest_view.all().into_iter().find(|d| d.node.name.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
                                                 });
-                                                // Decide on the view as it is now: a cached view can predate the seat record this admin holds
-                                                // (a hand-over just taken), and a seat is announced from the decision, never from a stale one.
-                                                // The seat records are read once per decision: the projection elects from them and
-                                                // the announcement below supersedes only them (`seat_announcements`).
+                                                // Decide on the view as it is now: a cached view can predate the primary record this admin holds
+                                                // (a hand-over just taken), and a role is announced from the decision, never from a stale one.
+                                                // The primary records are read once per decision: the projection elects from them and
+                                                // the announcement below supersedes only them (`role_announcements`).
                                                 // Read under the view's write lock, as the projection always was: the installed
                                                 // view is never older than the records it replaces.
                                                 let mut decided = crate::election::Incumbency::default();
@@ -3082,22 +3082,22 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         records.inputs_moved();
                                                     }
                                                 }
-                                                let mesh_primary = t.is_mesh_primary(&mesh, &seat_node_id);
+                                                let mesh_primary = t.is_mesh_primary(&mesh, &role_node_id);
                                                 // The mesh's rows on the shared root follow its mesh-primary, and a mesh with no
                                                 // primary's follow the fabric-primary (`MeshRowsWriter`, `crate::node_rows::writes_for`).
                                                 let written: std::collections::BTreeSet<String> = t
                                                     .members()
                                                     .map(|n| n.mesh.clone())
-                                                    .filter(|m| *m != mesh && crate::node_rows::writes_for(&t, &seat_node_id, m))
+                                                    .filter(|m| *m != mesh && crate::node_rows::writes_for(&t, &role_node_id, m))
                                                     .chain(mesh_primary.then(|| mesh.clone()))
                                                     .collect();
                                                 writes_tx.send_if_modified(|held| std::mem::replace(held, written.clone()) != written);
-                                                let fabric_primary = t.is_fabric_primary(&seat_node_id);
+                                                let fabric_primary = t.is_fabric_primary(&role_node_id);
                                                 // A role taken or given up this turn is held from the anti-entropy until its
-                                                // seat is announced below: a role's first mesh topology follows its seat record.
+                                                // role is announced below: a role's first mesh topology follows its primary record.
                                                 let announcing = if (mesh_primary, fabric_primary) != (was_mesh_primary, was_fabric_primary) { Some(roles.write().await) } else { None };
                                                 // The declarations held before this admin wrote rows (Q59 = x) are its first write
-                                                // after it takes a seat that writes them.
+                                                // after it takes a role that writes them.
                                                 // Taking the mesh-primary role opens the read of the accepted Build from the fabric-primary; the
                                                 // fabric-primary itself reads none (it is the read's source); giving the role up ends it (Q276).
                                                 if mesh_primary && !was_mesh_primary && !fabric_primary {
@@ -3105,15 +3105,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 } else if !mesh_primary || fabric_primary {
                                                     build_read_owed = false;
                                                 }
-                                                let took_a_writing_seat = (mesh_primary && !was_mesh_primary) || (fabric_primary && !was_fabric_primary);
+                                                let took_a_writing_role = (mesh_primary && !was_mesh_primary) || (fabric_primary && !was_fabric_primary);
                                                 was_mesh_primary = mesh_primary;
                                                 backbone.set_mesh_primary(mesh_primary);
                                                 backbone.set_fabric_primary(fabric_primary);
-                                                if took_a_writing_seat {
+                                                if took_a_writing_role {
                                                     records.write_held_declarations().await;
                                                 }
                                                 // Taking the fabric-primary role while the fabric is degraded adopts degraded: the
-                                                // new holder authors no ready on a topology reading.
+                                                // new primary authors no ready on a topology reading.
                                                 if fabric_primary && !was_fabric_primary {
                                                     let adopted = topology_view.fabric_status().is_some_and(|s| s.status == "degraded");
                                                     records.set_adopted_degraded(adopted);
@@ -3154,21 +3154,21 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     records.set_published_degraded(false);
                                                     crate::investigate::restore_peer_recovery(&me, &records, &t);
                                                 } else {
-                                                    // The seat is released in one place and one order: the published `degraded` is
+                                                    // The role is released in one place and one order: the published `degraded` is
                                                     // held before the authority records it replaces are cleared, so no projection
-                                                    // between the two answers ready for a fabric the holder published degraded.
+                                                    // between the two answers ready for a fabric the primary published degraded.
                                                     records.set_published_degraded(topology_view.fabric_status().is_some_and(|s| s.status == "degraded"));
                                                     records.clear_peer_recoveries();
                                                     records.set_adopted_degraded(false);
                                                 }
                                                 was_fabric_primary = fabric_primary;
                                                 // The fabric-primary's change through the fabric states, one non-blocking step per turn
-                                                // of this loop; every other admin serves the state the holder published.
+                                                // of this loop; every other admin serves the state the primary published.
                                                 fabric_states.change_step(crate::fabric_status::ChangeInputs { is_fabric_primary: fabric_primary, heard: topology_view.fabric_status().as_ref().map(|f| f.status.as_str()), view: &t, current: &read }).await;
                                                 // The election's result this admin holds when a primary changes: the mesh-primary
                                                 // first, then the fabric-primary (R-A2); its digest carries it and the rows record it.
-                                                for (seat, holder) in seat_announcements(&t, &mesh, (&seat_node_id, &seat_incarnation), &decided) {
-                                                    backbone.hold_primary(seat, holder);
+                                                for (role, primary) in role_announcements(&t, &mesh, (&role_node_id, &role_incarnation), &decided) {
+                                                    backbone.hold_primary(role, primary);
                                                 }
                                                 if let Some(announced) = announcing {
                                                     drop(announced);

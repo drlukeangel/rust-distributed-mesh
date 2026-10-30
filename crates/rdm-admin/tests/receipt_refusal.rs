@@ -1,7 +1,7 @@
 //! i143.e12.s33 functional: a step whose receipt the Build state refuses is not complete. The
 //! receipt is the step's durable commit (node-recovery.md "Failure and receipts": durable step
 //! outcomes are `Complete` or `Failed { step, reason }`), and a receipt that is not written to the
-//! executor's own log (a fact with no wire shape, a targeted seat, a failed local write) fails the
+//! executor's own log (a fact with no wire shape, a targeted role, a failed local write) fails the
 //! step by name: its span, and the pipeline's error naming the step and the refusal. Nothing after
 //! it runs. A Build
 //! the run cannot read at its start fails the run by name before any step (CLAUDE.md: "never written"
@@ -339,7 +339,7 @@ async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rdm_admin::build_st
         .bind()
         .await
         .unwrap();
-    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::new(local, &rdm_transport::topology::LocationView::new(&endpoint, name).unwrap(), name.into(), rdm_admin::fabric_builds::SeatSource::unrecorded());
+    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::new(local, &rdm_transport::topology::LocationView::new(&endpoint, name).unwrap(), name.into(), rdm_admin::fabric_builds::PrimarySource::unrecorded());
     (endpoint, builds)
 }
 

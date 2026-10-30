@@ -626,37 +626,37 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
 /// node type's primary rides its digest and its mesh-primary's projection, not the read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_is_served_with_the_adopted_rafka_time_and_the_nodes_primaries() {
-    use rdm_core::{NodeKind, Seat, Primary};
+    use rdm_core::{NodeKind, PrimaryRole, Primary};
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
     let t = target_of(&caller, &server);
-    let held = |seat| (seat, Primary { mesh: "mesh1".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
+    let held = |role| (role, Primary { mesh: "mesh1".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
 
     let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     let served = read.rafka_time.expect("every accepted read carries rafka-time");
     assert!((5_000_000..5_060_000).contains(&served.ms), "the node's adopted time, not an OS clock: {}", served.ms);
     assert_eq!(served.kind, None, "a node that is no primary answers none");
 
-    let (seat, holder) = held(Seat::MeshPrimary);
-    server.topology_view.primaries().take(seat, &holder);
-    let rpc_holder = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
-    let broker_holder = Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 3 };
-    server.topology_view.primaries().take(Seat::NodeTypePrimary(NodeKind::RpcNode), &rpc_holder);
-    server.topology_view.primaries().take(Seat::NodeTypePrimary(NodeKind::Broker), &broker_holder);
+    let (role, primary) = held(PrimaryRole::MeshPrimary);
+    server.topology_view.primaries().take(role, &primary);
+    let rpc_primary = Primary { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
+    let broker_primary = Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 3 };
+    server.topology_view.primaries().take(PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), &rpc_primary);
+    server.topology_view.primaries().take(PrimaryRole::NodeTypePrimary(NodeKind::Broker), &broker_primary);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     assert_eq!(read.rafka_time.unwrap().kind, Some(PrimaryKind::MeshPrimary));
-    assert_eq!(caller.topology_view.primaries().mesh("mesh1"), Some(holder.clone()));
+    assert_eq!(caller.topology_view.primaries().mesh("mesh1"), Some(primary.clone()));
     // The read carries the mesh-primaries and the fabric-primary (node-rpc-envelope.md `Primaries`); every
     // other type's primary rides its digest and its mesh-primary's projection (`is_primary`).
-    assert_eq!(caller.topology_view.primaries().node_type_primary("mesh1", NodeKind::RpcNode), None, "another type's primary is not carried by the read: {rpc_holder:?}");
-    assert_eq!(caller.topology_view.primaries().node_type_primary("mesh2", NodeKind::Broker), None, "nor a peer mesh's: {broker_holder:?}");
+    assert_eq!(caller.topology_view.primaries().node_type_primary("mesh1", NodeKind::RpcNode), None, "another type's primary is not carried by the read: {rpc_primary:?}");
+    assert_eq!(caller.topology_view.primaries().node_type_primary("mesh2", NodeKind::Broker), None, "nor a peer mesh's: {broker_primary:?}");
 
-    let (seat, holder) = held(Seat::FabricPrimary);
-    server.topology_view.primaries().take(seat, &holder);
+    let (role, primary) = held(PrimaryRole::FabricPrimary);
+    server.topology_view.primaries().take(role, &primary);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap();
     assert_eq!(read.rafka_time.unwrap().kind, Some(PrimaryKind::FabricPrimary), "the fabric-primary outranks the mesh-primary it also is");
-    assert_eq!(caller.topology_view.primaries().fabric(), Some(holder));
+    assert_eq!(caller.topology_view.primaries().fabric(), Some(primary));
     server.ep.close().await;
     caller.ep.close().await;
 }
@@ -679,14 +679,14 @@ async fn a_node_holding_no_rafka_time_answers_not_ready_by_name() {
 
 // @feature: node-lifecycle
 /// CONTRACT: a member adopts the rafka-time of whichever node answers; a mesh primary adopts only
-/// from a fabric-primary seat, and refuses the answer of a replica (`served-by-a-replica`) or of
+/// from a fabric-primary role, and refuses the answer of a replica (`served-by-a-replica`) or of
 /// another mesh primary (`a-mesh-primary-takes-only-the-fabric-primary`) by name, keeping the
 /// time it holds.
 #[test]
 fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_fabric_primarys() {
     let cap = capture("rafka-time-verdict");
     cap.run(async {
-        use rdm_core::{Seat, Primary};
+        use rdm_core::{PrimaryRole, Primary};
         use rdm_admin::rafka_time::Refusal;
         use rdm_admin::topology_read::TimeNotAdopted;
         let fabric = FabricId::mint();
@@ -695,8 +695,8 @@ fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_
         caller.time.adopt(9_000_000);
         let t = target_of(&caller, &server);
         let caller_id = NodeId::mint();
-        // The caller holds its mesh's primary seat in its own records.
-        caller.topology_view.primaries().take(Seat::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: caller_id.clone(), incarnation: IncarnationId::mint(), revision: 1 });
+        // The caller holds its mesh's primary role in its own records.
+        caller.topology_view.primaries().take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: caller_id.clone(), incarnation: IncarnationId::mint(), revision: 1 });
         let pull = || async {
             let read = get_topology(&caller.client, &t, "mesh2", &caller.topology_view, None, None).await.unwrap();
             read.adopt_rafka_time(&caller.time, &caller.topology_view, "mesh1.admin.2", "mesh1", &caller_id, "mesh2.rpc.1")
@@ -704,10 +704,10 @@ fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_
         assert_eq!(pull().await.unwrap_err(), TimeNotAdopted::Refused(Refusal::ServedByAReplica));
         assert!(caller.time.now_ms() >= 9_000_000 && caller.time.now_ms() < 9_060_000, "the replica's 5 000 000 was not taken");
 
-        server.topology_view.primaries().take(Seat::MeshPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
+        server.topology_view.primaries().take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
         assert_eq!(pull().await.unwrap_err(), TimeNotAdopted::Refused(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary));
 
-        server.topology_view.primaries().take(Seat::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
+        server.topology_view.primaries().take(PrimaryRole::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
         let adopted = pull().await.unwrap();
         assert_eq!(adopted.previous_ms.map(|p| p >= 9_000_000), Some(true));
         assert!(adopted.stalls_ms > 3_000_000, "the fabric-primary's earlier time is behind: the reader stalls, it never steps back: {adopted:?}");
@@ -772,7 +772,7 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
 fn mesh_primary_pulls_rafka_time_from_new_fabric_primary_on_primary_change_into_shared_handle() {
     let cap = capture("rafka-time-shared-handle-pull");
     cap.run(async {
-        use rdm_core::{Primary, Seat};
+        use rdm_core::{Primary, PrimaryRole};
         let fabric = FabricId::mint();
         let (new_fp, mesh2_primary) = (
             node(&fabric, "mesh1", "mesh1.admin.2", |b| b).await,
@@ -785,7 +785,7 @@ fn mesh_primary_pulls_rafka_time_from_new_fabric_primary_on_primary_change_into_
             &snap("mesh1", &publisher("mesh1.admin.2"), 1, vec![own_digest(&new_fp, &fabric)]),
         );
         new_fp.topology_view.primaries().take(
-            Seat::FabricPrimary,
+            PrimaryRole::FabricPrimary,
             &Primary {
                 mesh: "mesh1".into(),
                 node_id: new_fp.resolved.node_id.clone(),
@@ -797,7 +797,7 @@ fn mesh_primary_pulls_rafka_time_from_new_fabric_primary_on_primary_change_into_
         let t = target_of(&mesh2_primary, &new_fp);
         let mesh2_primary_id = mesh2_primary.resolved.node_id.clone();
         mesh2_primary.topology_view.primaries().take(
-            Seat::MeshPrimary,
+            PrimaryRole::MeshPrimary,
             &Primary {
                 mesh: "mesh2".into(),
                 node_id: mesh2_primary_id.clone(),
@@ -859,7 +859,7 @@ fn mesh_primary_pulls_rafka_time_from_new_fabric_primary_on_primary_change_into_
 fn a_one_mesh_topology_read_answers_what_the_whole_read_answers_for_that_mesh_under_concurrent_readers() {
     let cap = capture("one-mesh-matches-whole-concurrent");
     cap.run(async {
-        use rdm_core::{Primary, Seat};
+        use rdm_core::{Primary, PrimaryRole};
         use std::sync::atomic::{AtomicUsize, Ordering};
         let fabric = FabricId::mint();
         let server = node(&fabric, "mesh1", "mesh1.admin.1", |b| b).await;
@@ -901,14 +901,14 @@ fn a_one_mesh_topology_read_answers_what_the_whole_read_answers_for_that_mesh_un
         hold(&server.topology_view, &snap("mesh2", &pub2, 7, m2));
         hold(&server.topology_view, &snap("mesh3", &pub3, 11, m3));
 
-        let fp_holder = Primary { mesh: "mesh1".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 2 };
-        let mp1 = fp_holder.clone();
+        let fp_primary = Primary { mesh: "mesh1".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 2 };
+        let mp1 = fp_primary.clone();
         let mp2 = Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: lost_inc.clone(), revision: 4 };
         let mp3 = Primary { mesh: "mesh3".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 5 };
-        server.topology_view.primaries().take(Seat::FabricPrimary, &fp_holder);
-        server.topology_view.primaries().take(Seat::MeshPrimary, &mp1);
-        server.topology_view.primaries().take(Seat::MeshPrimary, &mp2);
-        server.topology_view.primaries().take(Seat::MeshPrimary, &mp3);
+        server.topology_view.primaries().take(PrimaryRole::FabricPrimary, &fp_primary);
+        server.topology_view.primaries().take(PrimaryRole::MeshPrimary, &mp1);
+        server.topology_view.primaries().take(PrimaryRole::MeshPrimary, &mp2);
+        server.topology_view.primaries().take(PrimaryRole::MeshPrimary, &mp3);
 
         // First: a single-mesh read of a held snapshot does not build the stored map, and reads gone once.
         let probe = node(&fabric, "mesh1", "mesh1.rpc.9", |b| b).await;
@@ -952,16 +952,16 @@ fn a_one_mesh_topology_read_answers_what_the_whole_read_answers_for_that_mesh_un
                 _ => None,
             };
             let exp = expected.clone();
-            let seats_expected = whole.seats.clone();
-            let fp_expected = fp_holder.clone();
+            let primaries_expected = whole.primaries.clone();
+            let fp_expected = fp_primary.clone();
             let mp1_expected = mp1.clone();
             let mp2_expected = mp2.clone();
             let mp3_expected = mp3.clone();
             tasks.push(tokio::spawn(async move {
                 let read = get_topology(&client, &t, "mesh1", &view, ask, None).await.unwrap();
                 assert_eq!(read.rafka_time.expect("rafka-time served").kind, Some(PrimaryKind::FabricPrimary));
-                assert_eq!(read.seats, seats_expected, "every read answers the exact same primary records and gone flags as the whole read");
-                assert!(read.seats.iter().any(|(s, p, gone)| *s == Seat::MeshPrimary && *p == mp2_expected && *gone), "mp2 is marked gone in read.seats");
+                assert_eq!(read.primaries, primaries_expected, "every read answers the exact same primary records and gone flags as the whole read");
+                assert!(read.primaries.iter().any(|(s, p, gone)| *s == PrimaryRole::MeshPrimary && *p == mp2_expected && *gone), "mp2 is marked gone in read.roles");
                 match ask {
                     Some(m) => {
                         assert_eq!(read.meshes, 1);

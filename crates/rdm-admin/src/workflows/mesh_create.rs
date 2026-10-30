@@ -264,7 +264,7 @@ mod tests {
         // (`mesh1.admin.1`) executes `CreateMesh` and `CreateNode` of `mesh2.admin.1` on its own
         // (`first_admin_of` is true only for `mesh2.admin.1`); once `mesh2.admin.1` is Ready,
         // `mesh2.rpc.1` is never created by the fabric-primary (`executor_for` is `None` until the
-        // election seats `mesh2.admin.1`, and `Some("mesh2.admin.1")` once it is mesh-primary).
+        // election names `mesh2.admin.1`, and `Some("mesh2.admin.1")` once it is mesh-primary).
         let initial_plan = plan(&build_proj.topology, &settled_view, None);
         assert!(initial_plan.operations.contains(&BuildOperation::CreateMesh {
             mesh: "mesh2".into(),
@@ -298,19 +298,19 @@ mod tests {
             Some("mesh1.admin.1".into()),
             "fabric-primary is maker and executor of mesh2's first node-admin"
         );
-        let mut view_with_m2_admin_unseated = settled_view.clone();
-        view_with_m2_admin_unseated.meshes.push(Mesh {
+        let mut view_without_m2_primary = settled_view.clone();
+        view_without_m2_primary.meshes.push(Mesh {
             id: Some(mesh2_id.clone()),
             name: "mesh2".into(),
             status: ScopeStatus::Pending,
         });
-        view_with_m2_admin_unseated
+        view_without_m2_primary
             .nodes
             .push(ready_node("mesh2.admin.1", false, false));
         assert_eq!(
-            crate::executor::executor_for(&create_m2_rpc, &view_with_m2_admin_unseated),
+            crate::executor::executor_for(&create_m2_rpc, &view_without_m2_primary),
             None,
-            "once mesh2.admin.1 is born, the fabric-primary does not create mesh2's other nodes while waiting for mesh2's own primary seat"
+            "once mesh2.admin.1 is born, the fabric-primary does not create mesh2's other nodes while waiting for mesh2's own primary role"
         );
 
         let mut view_with_m2_primary = settled_view.clone();
@@ -411,7 +411,7 @@ mod tests {
         )
         .await
         .expect("free mesh name is claimed");
-        // Mesh-primary (`mesh2.admin.1`) re-claiming the same MeshId at seat take is idempotent (`Held`).
+        // Mesh-primary (`mesh2.admin.1`) re-claiming the same MeshId at role take is idempotent (`Held`).
         let primary_claim = crate::admin::claim_mesh_name(
             &meshes_free,
             &records.caches,
@@ -488,7 +488,7 @@ mod tests {
     /// docs/architecture/lifecycles/mesh-create.md:57-58 "8. The mesh-primary creates mesh2's other nodes as attempts of the same Build, at once: a create that fails stops none of the others (Q245)."
     /// docs/architecture/lifecycles/mesh-create.md:61-63 "Once that state is newly on the mesh's record the mesh-primary calls on_mesh_ready once, a notice that gates nothing (rdm.node_admin.mesh.update.via-on-mesh-ready)."
     /// docs/architecture/lifecycles/mesh-create.md:100-102 "A repeat of the same apply answers AlreadyApplied; an apply that names a mesh the receiver does not hold answers RejectedStaleMesh { held }; a state the mesh cannot move to answers RejectedInvalidMeshTransition { current }."
-    /// docs/architecture/lifecycles/mesh-create.md:187-190 "Observability contract: Create (node.create's spans as maker and executor), Join (node.mesh.join), Mesh Pending (the Ping, then ApplyMeshState(Pending)'s call span), Seat and name (rdm.mesh.election.resolve.via-recompute; the name claim; the mesh row write)"
+    /// docs/architecture/lifecycles/mesh-create.md:187-190 "Observability contract: Create (node.create's spans as maker and executor), Join (node.mesh.join), Mesh Pending (the Ping, then ApplyMeshState(Pending)'s call span), PrimaryRole and name (rdm.mesh.election.resolve.via-recompute; the name claim; the mesh row write)"
     #[test]
     fn mesh_create_steps_2_to_7_issuer_join_channel_ping_pending_ready_election_and_spans() {
         let capture = crate::span_capture::Capture::new(
@@ -809,7 +809,7 @@ mod tests {
                     && s.attributes.get("node").map(String::as_str) == Some("mesh2.admin.1")
                     && s.attributes.get("outcome").map(String::as_str) == Some("row-written")
             }),
-            "seat and name claim emits rdm.node_admin.mesh.create.via-mesh-row: {row_spans:?}"
+            "role and name claim emits rdm.node_admin.mesh.create.via-mesh-row: {row_spans:?}"
         );
     }
 

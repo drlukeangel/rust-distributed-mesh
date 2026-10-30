@@ -639,30 +639,30 @@ pub enum BuildReject {
         /// The node-admin named.
         node: String,
     },
-    /// The Build would stop, delete the connections of or delete a seat holder (its
+    /// The Build would stop, delete the connections of or delete a primary (its
     /// mesh's primary, or the fabric-primary) whose node.primary.update has no successor (the approved proposal
     /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The no-successor cases", Q7 ruled
-    /// Luke 2026-10-12): refused by name with Q7's exact text, the holder stays primary and nothing is
+    /// Luke 2026-10-12): refused by name with Q7's exact text, the primary stays primary and nothing is
     /// admitted.
     LastAdmin {
-        /// The seat holder the Build would end.
+        /// The primary the Build would end.
         node: String,
         /// Its mesh.
         mesh: String,
         /// What the Build would do to it (`node.connection.delete`, `stop`, `delete`).
         action: String,
         /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, or the
-        /// fabric seat's `cannot transfer fabric-primary: ...` naming both searches.
+        /// fabric-primary role's `cannot transfer fabric-primary: ...` naming both searches.
         refusal: String,
     },
     /// The Build would stop, delete the connections of or delete the holder of its
-    /// cohort's seat, a node type other than node-admin, while no other node of its type is in its mesh
+    /// cohort's role, a node type other than node-admin, while no other node of its type is in its mesh
     /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The
     /// no-successor cases", Q7 ruled Luke 2026-10-12: "a mesh's sole broker ... cannot be stopped or
     /// restarted until a secondary is Ready"): refused by name with Q7's exact text, the holder
     /// stays primary and nothing is admitted.
     NoSecondary {
-        /// The seat holder the Build would end.
+        /// The primary the Build would end.
         node: String,
         /// Its mesh.
         mesh: String,

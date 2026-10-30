@@ -289,7 +289,7 @@ struct Investigation {
 }
 
 #[async_trait::async_trait]
-impl rdm_admin::seat_revision::PathProbe for Investigation {
+impl rdm_admin::path_investigation::PathProbe for Investigation {
     async fn investigate(&self, node: &Node) -> Finding {
         match &self.exited {
             Some((id, incarnation)) if *id == node.node_id && Some(incarnation) == node.incarnation_id.as_ref() => Finding::Exited { code: Some(137) },

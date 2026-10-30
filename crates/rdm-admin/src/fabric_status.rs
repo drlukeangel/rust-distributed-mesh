@@ -189,19 +189,19 @@ impl FabricStates {
         let mut change = self.change.lock().await;
         let heard_state = inputs.heard.and_then(|h| FabricState::parse(h).or_else(|| (h == "degraded").then_some(FabricState::Ready)));
         if !inputs.is_fabric_primary {
-            // A non-holder serves the state the holder published and runs nothing.
+            // A non-primary serves the state the fabric-primary published and runs nothing.
             *change = Change::default();
             self.env.records.set_fabric_state(heard_state.unwrap_or(FabricState::Pending));
             return;
         }
         let me = self.held_name_in(inputs.view);
         if !change.adopted {
-            // The seat was taken: the state the previous holder published is adopted, not re-decided.
+            // The role was taken: the state the previous primary published is adopted, not re-decided.
             change.adopted = true;
             let adopted = heard_state.unwrap_or(FabricState::Pending);
             self.env.records.set_fabric_state(adopted);
             tracing::info_span!("rdm.node_admin.fabric.update.via-state-adopted", node = %me, state = adopted.as_str(), heard = inputs.heard.unwrap_or("none"), "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the fabric-primary seat was taken: the published state is adopted"));
+                .in_scope(|| tracing::info!("the fabric-primary role was taken: the published state is adopted"));
         }
         // A step that moved the fabric is followed by the next at once. Every step is decided on the
         // turn's one read of the current Build.
@@ -1208,7 +1208,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn successor_fabric_primary_keeps_degraded_until_every_mesh_primary_reports_for_its_checklist() {
-        // The seat moved to mesh2's primary while mesh1 was being recovered; the new holder adopted degraded.
+        // The role moved to mesh2's primary while mesh1 was being recovered; the new primary adopted degraded.
         let (me, recovered) = (member("mesh2.admin.1", true, true), member("mesh1.admin.2", true, false));
         let v = view(vec![me.clone(), recovered.clone()]);
         let records = Arc::new(Records::default());
@@ -1224,7 +1224,7 @@ mod tests {
         records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(IncarnationId::mint()), Instant::now());
         let done = fabric_states.adopted_step(awaiting, inputs());
         assert!(!done.fabric && records.adopted_degraded(), "a report of another birth is not the current primary's");
-        // The current primary re-declares to the new holder: the checklist is complete and degraded clears.
+        // The current primary re-declares to the new primary: the checklist is complete and degraded clears.
         records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(recovered.incarnation_id.clone().unwrap()), Instant::now());
         let done = fabric_states.adopted_step(awaiting, inputs());
         assert!(done.fabric && !records.adopted_degraded(), "every mesh primary reported for this checklist");

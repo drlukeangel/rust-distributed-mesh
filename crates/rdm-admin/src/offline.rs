@@ -579,7 +579,7 @@ type Birth = (String, Option<crate::model::IncarnationId>);
 #[derive(Default)]
 pub(crate) struct OfflineTickle {
     /// Every node held as silent: node id -> the instant (ms) it was first seen silent. Kept
-    /// whether or not this node-admin holds the seat.
+    /// whether or not this node-admin holds the role.
     first_seen: HashMap<String, u64>,
     /// Silent nodes whose tickle has settled (answered, or true offline): not tickled again until
     /// they leave and re-enter the silent set.
@@ -589,7 +589,7 @@ pub(crate) struct OfflineTickle {
     /// The ladder in flight for each exact birth, at most one: a birth whose ladder runs is not
     /// tickled again until a tick folds the ladder.
     running: HashMap<Birth, LadderRun>,
-    /// This node-admin's path.name, named on every span it emits: a seat handed over mid-window is
+    /// This node-admin's path.name, named on every span it emits: a role handed over mid-window is
     /// read from which admin ran each ladder.
     observer: String,
     /// The admin's stop gate: a stop deletes the ladders in flight.
@@ -631,7 +631,7 @@ impl OfflineTickle {
         (self.running.len(), self.running.values().filter(|r| r.task.is_finished()).count())
     }
 
-    /// One tick. `holds_seat` is this node-admin's primary seat, sampled once for the tick;
+    /// One tick. `holds_role` is this node-admin's primary role, sampled once for the tick;
     /// `silent` is this tick's silent set (every `PendingReconnect` node it watches); `in_view` says
     /// whether the tick still watches a node id at all, in its view or through the durable rows that
     /// name a birth not yet in it (a node that left the silent set is heard again only if it does); `now_ms` is the tick's start instant, and an instant inside the tick
@@ -645,12 +645,12 @@ impl OfflineTickle {
     /// starts runs beside the loop, at once for every member due, so each member's connect is made
     /// half a floor after its own mark (step 2), whatever another member's connect spends; the first
     /// tick after a ladder ends folds what it found, and nothing is decided before that. A ladder ends
-    /// with its birth's silence and with the seat: its probes are dropped and nothing of it is folded.
+    /// with its birth's silence and with the role: its probes are dropped and nothing of it is folded.
     #[allow(clippy::too_many_arguments)]
     pub async fn tick<P, T, TF, O, OF>(
         &mut self,
         now_ms: u64,
-        holds_seat: bool,
+        holds_role: bool,
         silent: Vec<SilentNode>,
         in_view: P,
         probe_delay_ms: u64,
@@ -668,11 +668,11 @@ impl OfflineTickle {
         let mut report = OfflineTickReport::default();
         let silent_ids: HashSet<String> = silent.iter().map(|n| n.node_id.clone()).collect();
         // A birth this tick does not list silent (heard again, gone, or another birth now at its node
-        // id), and every birth while this admin does not hold the seat: its ladder's probes are
-        // dropped (step 2: an answer "cancels the probes still running"; a new holder runs its own).
+        // id), and every birth while this admin does not hold the role: its ladder's probes are
+        // dropped (step 2: an answer "cancels the probes still running"; a new primary runs its own).
         let births: HashSet<Birth> = silent.iter().map(|n| (n.node_id.clone(), n.incarnation.clone())).collect();
         self.running.retain(|birth, ladder| {
-            let keep = holds_seat && births.contains(birth);
+            let keep = holds_role && births.contains(birth);
             if !keep {
                 ladder.task.abort();
             }
@@ -695,7 +695,7 @@ impl OfflineTickle {
                 report.gone.push(id);
             }
         }
-        if holds_seat {
+        if holds_role {
             self.settled.retain(|id| silent_ids.contains(id));
         } else {
             self.settled.clear();
@@ -705,7 +705,7 @@ impl OfflineTickle {
         for n in &silent {
             self.first_seen.entry(n.node_id.clone()).or_insert(n.marked_at_ms.unwrap_or(now_ms));
         }
-        if !holds_seat {
+        if !holds_role {
             return report;
         }
         // Every ladder that ended since the last tick, folded in the order the silent set lists its birth.
@@ -782,7 +782,7 @@ impl OfflineTickle {
             }
         }
         for SilentNode { node_id: id, path, incarnation, .. } in silent {
-            // The mark (or, with none, the instant this admin first saw the node silent): a seat taken
+            // The mark (or, with none, the instant this admin first saw the node silent): a role taken
             // mid-window tickles on it.
             let seen_at = self.first_seen.get(&id).copied().unwrap_or(now_ms);
             if now_ms.saturating_sub(seen_at) < probe_delay_ms || self.settled.contains(&id) {
@@ -835,7 +835,7 @@ impl OfflineTickle {
 /// A stop cancels it where it stands, the view lock it holds or waits on included, and does not
 /// wait for it (`StopGate::until_stopped`); a submit it already made is answered AlreadyApplied or
 /// BuildInProgress when it comes again. The birth leaves `in_flight` either way, so the first tick
-/// that finds it due again, after a start or at the seat's next holder, submits it again.
+/// that finds it due again, after a start or at the role's next primary, submits it again.
 pub(crate) fn spawn_recovery_follower<F>(gate: &crate::stop_gate::StopGate, in_flight: std::sync::Arc<std::sync::Mutex<HashSet<(crate::model::NodeId, crate::model::IncarnationId)>>>, birth: (crate::model::NodeId, crate::model::IncarnationId), follow: F) -> tokio::task::JoinHandle<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
@@ -959,19 +959,19 @@ pub(crate) mod tests {
         }
     }
 
-    async fn tick(t: &mut OfflineTickle, now: u64, seat: bool, set: Vec<SilentNode>, direct: bool, via: ViaPeerVerdict) -> OfflineTickReport {
-        tick_observed(t, now, seat, set, direct, via, &std::sync::atomic::AtomicUsize::new(0)).await
+    async fn tick(t: &mut OfflineTickle, now: u64, role: bool, set: Vec<SilentNode>, direct: bool, via: ViaPeerVerdict) -> OfflineTickReport {
+        tick_observed(t, now, role, set, direct, via, &std::sync::atomic::AtomicUsize::new(0)).await
     }
 
     /// `tick`, counting every iroh observation read in `reads`. One ladder as the loop runs it, at
     /// one clock reading `now`: the tick that starts what is due, the ladders it started run to their
     /// end beside it (every probe here answers at once), and the next tick, which folds them. The
     /// two ticks' reports, joined in order.
-    async fn tick_observed(t: &mut OfflineTickle, now: u64, seat: bool, set: Vec<SilentNode>, direct: bool, via: ViaPeerVerdict, reads: &std::sync::atomic::AtomicUsize) -> OfflineTickReport {
+    async fn tick_observed(t: &mut OfflineTickle, now: u64, role: bool, set: Vec<SilentNode>, direct: bool, via: ViaPeerVerdict, reads: &std::sync::atomic::AtomicUsize) -> OfflineTickReport {
         let once = async |t: &mut OfflineTickle| {
             t.tick(
                 now,
-                seat,
+                role,
                 set.clone(),
                 |_| true,
                 PROBE_DELAY,
@@ -1501,7 +1501,7 @@ pub(crate) mod tests {
         }
 
         /// CONTRACT (R-SW1 acceptance 3; node-tickle.md "a stopped node answers CurrentStopped"): a
-        /// stopped holder's `CurrentStopped` through a peer is the birth's answer and ends the ladder;
+        /// stopped primary's `CurrentStopped` through a peer is the birth's answer and ends the ladder;
         /// a carrier's own refusal before it is not an answer.
         #[tokio::test(start_paused = true)]
         async fn a_stopped_primary_answering_current_through_a_peer_ends_the_ladder() {
@@ -1682,7 +1682,7 @@ pub(crate) mod tests {
     }
 
     /// CONTRACT (node-recovery.md "Detection and proof" step 2: "Half a floor after the mark it makes
-    /// one QUIC connect"; step 1: "a node-admin that takes the seat mid-window continues the window
+    /// one QUIC connect"; step 1: "a node-admin that takes the role mid-window continues the window
     /// already running"): the window runs from the mark, the instant the birth went unheard past the
     /// staleness floor, not from the tick that first lists it. A birth marked at 0 and first listed
     /// by a tick 700 ms later is tickled by the tick at half a floor after the mark, and the ladder's
@@ -1696,9 +1696,9 @@ pub(crate) mod tests {
         let r = tick(&mut t, PROBE_DELAY, true, marked("a"), false, no_path()).await;
         assert_eq!(r.tickled, vec!["a".to_string()], "one connect half a floor after the mark, not half a floor after the tick that first listed it");
         assert!(t.is_offline("a"), "the ladder nobody answered holds the birth offline");
-        // A node-admin that takes the seat later still runs on the mark its own view holds.
+        // A node-admin that takes the role later still runs on the mark its own view holds.
         let mut successor = OfflineTickle::new();
-        assert!(tick(&mut successor, 700, false, marked("a"), false, no_path()).await.tickled.is_empty(), "not the seat: bookkeeping only");
+        assert!(tick(&mut successor, 700, false, marked("a"), false, no_path()).await.tickled.is_empty(), "not the role: bookkeeping only");
         let r = tick(&mut successor, PROBE_DELAY, true, marked("a"), false, no_path()).await;
         assert_eq!(r.tickled, vec!["a".to_string()], "the successor tickles on the window from the mark");
     }
@@ -1753,9 +1753,9 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn only_the_primary_tickles_and_a_new_primary_keeps_the_window() {
         let mut t = OfflineTickle::new();
-        assert!(tick(&mut t, 0, false, silent("a"), false, no_path()).await.tickled.is_empty(), "not the seat: bookkeeping only");
+        assert!(tick(&mut t, 0, false, silent("a"), false, no_path()).await.tickled.is_empty(), "not the role: bookkeeping only");
         let r = tick(&mut t, PROBE_DELAY, true, silent("a"), true, no_path()).await;
-        assert_eq!(r.tickled, vec!["a".to_string()], "the window started before this admin took the seat");
+        assert_eq!(r.tickled, vec!["a".to_string()], "the window started before this admin took the role");
     }
 
     /// CONTRACT (node-recovery.md step 2: "Half a floor after the mark it runs node investigation on the

@@ -1,39 +1,39 @@
-//! Incumbency, seat sources, and topology view projection.
+//! Incumbency, role sources, and topology view projection.
 
 use super::*;
 
-/// What an election takes beside the nodes: the seat records this admin holds, and the births gone. A
+/// What an election takes beside the nodes: the primary records this admin holds, and the births gone. A
 /// birth is gone when its departure was heard (its node.delete), when a later birth announced that it
-/// replaced it (`supersedes`), or when the seats hold it gone. Silence, an unreachable path and the
+/// replaced it (`supersedes`), or when the roles hold it gone. Silence, an unreachable path and the
 /// observer-inferred `Dead` are not.
 pub(crate) fn incumbency_of(digest_view: &DigestView, _records: &Records) -> crate::election::Incumbency {
     let mut lost: std::collections::HashSet<IncarnationId> = digest_view.deleted().into_iter().map(|op| op.incarnation).collect();
     lost.extend(digest_view.superseded());
-    lost.extend(digest_view.seats.gone());
-    crate::election::Incumbency { fabric: digest_view.seats.fabric(), meshes: digest_view.seats.meshes(), node_type_primaries: digest_view.seats.node_type_primaries(), lost }
+    lost.extend(digest_view.primaries.gone());
+    crate::election::Incumbency { fabric: digest_view.primaries.fabric(), meshes: digest_view.primaries.meshes(), node_type_primaries: digest_view.primaries.node_type_primaries(), lost }
 }
 
 /// What this birth's Build log reads its target from: the fabric-primary record `digest_view` holds, the
-/// election's result this admin installed, judged by [`crate::seat_watch::fabric_seat_record`] against the births proven gone (the
+/// election's result this admin installed, judged by [`crate::primary_watch::fabric_primary_record`] against the births proven gone (the
 /// lost set every election takes, [`incumbency_of`]) and named from the digests `digest_view` holds.
 ///
 /// While the fabric-primary is unavailable, the fabric recovery workflow's executor writes that attempt's
 /// Build records (build.md §5.3, Q122): for it, the record naming the lost birth is open, naming no
-/// holder. `view` is this admin's view once it is built.
-pub(crate) fn fabric_seat_source(digest_view: &DigestView, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::fabric_builds::SeatSource {
-    let changed = Some(digest_view.seats.subscribe());
+/// primary. `view` is this admin's view once it is built.
+pub(crate) fn fabric_primary_source(digest_view: &DigestView, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::fabric_builds::PrimarySource {
+    let changed = Some(digest_view.primaries.subscribe());
     let (digest_view, records, me_name) = (digest_view.clone(), records.clone(), me_name.to_string());
     let read = Arc::new(move || {
         let incumbency = incumbency_of(&digest_view, &records);
         let held_name = digest_view.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone());
         let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &digest_view))).is_some_and(|fr| fr.executor.as_ref().is_some_and(|e| e.to_string() == held_name) && incumbency.fabric.as_ref() == Some(&fr.target));
         if executes {
-            return crate::fabric_builds::SeatRecord::Open { holder: None };
+            return crate::fabric_builds::PrimaryRecord::Open { primary: None };
         }
         let name_of = |id: &NodeId| if *id == me.0 { Some(held_name.clone()) } else { digest_view.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
-        crate::seat_watch::fabric_seat_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, name_of)
+        crate::primary_watch::fabric_primary_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, name_of)
     });
-    crate::fabric_builds::SeatSource { read, changed }
+    crate::fabric_builds::PrimarySource { read, changed }
 }
 
 /// Whether this birth reads the Build records now ([`crate::build_state::LocalBuildLog::read_records_while`];
@@ -48,7 +48,7 @@ pub(crate) fn build_records_reader(digest_view: &DigestView, records: &Arc<Recor
     let (digest_view, records, me_name) = (digest_view.clone(), records.clone(), me_name.to_string());
     Arc::new(move || {
         let held_name = digest_view.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone());
-        let record = digest_view.seats.fabric();
+        let record = digest_view.primaries.fabric();
         if record.as_ref().is_some_and(|h| h.is_birth(&me.0, &me.1)) {
             return Some(held_name);
         }
@@ -61,29 +61,29 @@ pub(crate) fn build_records_reader(digest_view: &DigestView, records: &Arc<Recor
     })
 }
 
-/// The seats this admin announces from one decision of its hierarchy loop: each seat the projection
+/// The roles this admin announces from one decision of its hierarchy loop: each role the projection
 /// `t` gives it whose record names another birth, at the
-/// next revision over that record; and, while it is its mesh's primary, each other node type's seat of its
-/// mesh that `t` fills with a birth the node type's record does not name. The record is the one `t` was decided against (`decided`): a seat
+/// next revision over that record; and, while it is its mesh's primary, each other node type's role of its
+/// mesh that `t` fills with a birth the node type's record does not name. The record is the one `t` was decided against (`decided`): a role
 /// record held after the decision (a committed handover landing while the loop awaits) is the next
 /// decision's input, and is never superseded by this one (fabric-node-lifecycle-elections.md §4.4).
 /// The record this admin already holds for itself needs no announcement.
-pub(crate) fn seat_announcements(t: &Topology, mesh: &str, me: (&NodeId, &IncarnationId), decided: &crate::election::Incumbency) -> Vec<(rdm_core::Seat, rdm_core::Primary)> {
+pub(crate) fn role_announcements(t: &Topology, mesh: &str, me: (&NodeId, &IncarnationId), decided: &crate::election::Incumbency) -> Vec<(rdm_core::PrimaryRole, rdm_core::Primary)> {
     let mesh_primary = t.is_mesh_primary(mesh, me.0);
     let fabric_primary = t.is_fabric_primary(me.0);
     let mut said = Vec::new();
-    for (seat, holds) in [(rdm_core::Seat::MeshPrimary, mesh_primary), (rdm_core::Seat::FabricPrimary, fabric_primary)] {
+    for (role, holds) in [(rdm_core::PrimaryRole::MeshPrimary, mesh_primary), (rdm_core::PrimaryRole::FabricPrimary, fabric_primary)] {
         if !holds {
             continue;
         }
-        let held = if seat == rdm_core::Seat::FabricPrimary { decided.fabric.clone() } else { decided.meshes.get(mesh).cloned() };
+        let held = if role == rdm_core::PrimaryRole::FabricPrimary { decided.fabric.clone() } else { decided.meshes.get(mesh).cloned() };
         if held.as_ref().is_some_and(|h| h.is_birth(me.0, me.1)) {
             continue;
         }
-        said.push((seat, rdm_core::Primary { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
+        said.push((role, rdm_core::Primary { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
     }
     // The mesh-primary is its mesh's one row writer and sole author of member status (R-MT1 Q3): it
-    // says each other node type's seat the election filled with a birth the record does not name.
+    // says each other node type's role the election filled with a birth the record does not name.
     if mesh_primary {
         for kind in NodeKind::ALL.into_iter().filter(|k| *k != NodeKind::NodeAdmin) {
             let Some((node_id, incarnation)) = t.node_type_primary(mesh, kind).and_then(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))) else { continue };
@@ -91,7 +91,7 @@ pub(crate) fn seat_announcements(t: &Topology, mesh: &str, me: (&NodeId, &Incarn
             if held.is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
                 continue;
             }
-            said.push((rdm_core::Seat::NodeTypePrimary(kind), rdm_core::Primary { mesh: mesh.to_string(), node_id, incarnation, revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
+            said.push((rdm_core::PrimaryRole::NodeTypePrimary(kind), rdm_core::Primary { mesh: mesh.to_string(), node_id, incarnation, revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
         }
     }
     said
@@ -366,8 +366,8 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, di
     project_decided_at(fabric, fabric_id, provider, digest_view, records, &incumbency_of(digest_view, records), &ViewReads::none_at(now))
 }
 
-/// [`project_with`] with its seats decided against `decided`, the seat records and proven-gone births
-/// read once: a caller that acts on the projection's seats (the hierarchy loop announcing one)
+/// [`project_with`] with its roles decided against `decided`, the primary records and proven-gone births
+/// read once: a caller that acts on the projection's roles (the hierarchy loop announcing one)
 /// acts against the very records the projection was decided from, never a later read of them.
 pub(crate) fn project_decided(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, digest_view: &DigestView, records: &Records, decided: &crate::election::Incumbency, reads: &ViewReads) -> Topology {
     project_decided_at(fabric, fabric_id, provider, digest_view, records, decided, reads)
@@ -519,7 +519,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     // admin): listed as the projection carried it, never routable, its status the projection's while
     // it is within the staleness floor of this admin first holding it, and past the floor marked
     // `PendingReconnect` by this admin's own pruner (node-recovery.md "Detection and proof" step 1),
-    // so the window it keeps runs from that first hold, whichever admin takes the seat.
+    // so the window it keeps runs from that first hold, whichever admin takes the role.
     for (d, age) in digest_view.projected_unheard_at(now) {
         if &d.fabric_id != fabric_id {
             continue;
@@ -581,25 +581,25 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
     // exist yet is not in the view either: the view is what is observed, and the Build's plan is
     // `topology − observed`.
     let mesh_names: BTreeSet<String> = mesh_ids.keys().filter(|m| digest_view.accepted_has_mesh(m) != Some(false)).cloned().chain(topology.members().map(|n| n.mesh.clone())).collect();
-    // Every seat, by the one election function (`election`); through a fabric shutdown, the
-    // seats held when it was learned (`Seats`).
+    // Every role, by the one election function (`election`); through a fabric shutdown, the
+    // roles held when it was learned (`Primaries`).
     if records.is_entering() {
-        // Not told yet who holds the seats: this view elects nobody.
+        // Not told yet who holds the roles: this view elects nobody.
         for n in topology.nodes.iter_mut() {
             n.is_primary = false;
             n.is_fabric_primary = false;
         }
     } else {
-        // The election takes members: a replaced predecessor holds no seat.
+        // The election takes members: a replaced predecessor holds no role.
         let (mut members, predecessors): (Vec<Node>, Vec<Node>) = std::mem::take(&mut topology.nodes).into_iter().partition(|n| !n.name.old);
         crate::election::resolve_with(&mut members, decided);
         topology.nodes = members.into_iter().chain(predecessors).collect();
     }
     if topology.fabric_primary().is_some() {
         // The fabric primary authors `degraded` from the investigation's recovery decision until the
-        // recovered mesh's primary reports for its checklist (`crate::investigate`), and a successor holder
+        // recovered mesh's primary reports for its checklist (`crate::investigate`), and a successor primary
         // keeps an adopted `degraded` until every mesh primary reports (`crate::checklist`). An admin
-        // that holds no seat serves the `degraded` the holder published.
+        // that holds no role serves the `degraded` the primary published.
         let held = records.fabric_state();
         let degraded = records.peer_recovering() || records.adopted_degraded() || records.published_degraded();
         topology.fabric.status = if held == crate::fabric_state::FabricState::Ready && degraded { ScopeStatus::Degraded } else { held.scope() };
@@ -657,7 +657,7 @@ impl ViewWake {
         let inputs = digest_view
             .routing_watch()
             .watching("records", records.subscribe_inputs())
-            .watching("primaries", digest_view.seats.subscribe())
+            .watching("primaries", digest_view.primaries.subscribe())
             .watching("declared", declared)
             .watching("rows", records.caches.nodes.subscribe_names());
         Self { inputs }
@@ -688,9 +688,9 @@ pub(crate) async fn view_rebuild_due(wake: &mut ViewWake, gate: &crate::stop_gat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fabric_builds::SeatRecord;
+    use crate::fabric_builds::PrimaryRecord;
     use crate::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
-    use rdm_core::{Primary, Seat};
+    use rdm_core::{Primary, PrimaryRole};
 
     /// CONTRACT: docs/architecture/build.md:453
     /// "One writer per key: the fabric-primary writes the Fabric record and every topology attempt's Build facts"
@@ -706,11 +706,11 @@ mod tests {
         let me_name: PathName = "mesh1.admin.1".parse().unwrap();
         let view = Arc::new(std::sync::OnceLock::new());
 
-        // 1. `fabric_seat_source` and `build_records_reader`:
-        //    When no fabric primary is recorded, `fabric_seat_source` returns `Open { holder: None }`
+        // 1. `fabric_primary_source` and `build_records_reader`:
+        //    When no fabric primary is recorded, `fabric_primary_source` returns `Open { primary: None }`
         //    and `build_records_reader` returns `Some` when `unlaunched = true`, `None` when `unlaunched = false`.
-        let primary_src = fabric_seat_source(&dv, &records, (me_id.clone(), me_inc.clone()), &me_name, view.clone());
-        assert_eq!((primary_src.read)(), SeatRecord::Open { holder: None });
+        let primary_src = fabric_primary_source(&dv, &records, (me_id.clone(), me_inc.clone()), &me_name, view.clone());
+        assert_eq!((primary_src.read)(), PrimaryRecord::Open { primary: None });
 
         let reader_launched = build_records_reader(&dv, &records, (me_id.clone(), me_inc.clone()), &me_name, false, view.clone());
         let reader_unlaunched = build_records_reader(&dv, &records, (me_id.clone(), me_inc.clone()), &me_name, true, view.clone());
@@ -718,8 +718,8 @@ mod tests {
         assert_eq!(reader_unlaunched(), Some(me_name.to_string()));
 
         // When the fabric primary names this exact birth, both `primary_src` and `reader_launched` name `me_name`.
-        dv.seats.take(
-            Seat::FabricPrimary,
+        dv.primaries.take(
+            PrimaryRole::FabricPrimary,
             &Primary {
                 mesh: "mesh1".to_string(),
                 node_id: me_id.clone(),
@@ -727,14 +727,14 @@ mod tests {
                 revision: 1,
             },
         );
-        assert_eq!((primary_src.read)(), SeatRecord::Open { holder: Some(me_name.to_string()) });
+        assert_eq!((primary_src.read)(), PrimaryRecord::Open { primary: Some(me_name.to_string()) });
         assert_eq!(reader_launched(), Some(me_name.to_string()));
 
         // When a newer revision moves the fabric primary to another birth, `primary_src` reports `Moved` and `reader_launched` returns `None`.
         let other_id = NodeId::mint();
         let other_inc = IncarnationId::mint();
-        dv.seats.take(
-            Seat::FabricPrimary,
+        dv.primaries.take(
+            PrimaryRole::FabricPrimary,
             &Primary {
                 mesh: "mesh1".to_string(),
                 node_id: other_id,
@@ -742,7 +742,7 @@ mod tests {
                 revision: 2,
             },
         );
-        assert!(matches!((primary_src.read)(), SeatRecord::Moved { .. }));
+        assert!(matches!((primary_src.read)(), PrimaryRecord::Moved { .. }));
         assert_eq!(reader_launched(), None);
 
         // 2. `takes_path` and `row_name`:

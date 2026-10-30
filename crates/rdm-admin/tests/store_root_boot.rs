@@ -532,7 +532,7 @@ const BOOTS_WITHIN: Duration = Duration::from_secs(10);
 const RECOVERS_WITHIN: Duration = Duration::from_secs(30);
 
 /// CONTRACT (R-SB1, Luke 2026-10-13: "An admin started on an inherited root is fabric recovery: a new
-/// node.id and incarnation over the inherited directory (fabric-recovery.md:10), seated by the ordinary
+/// node.id and incarnation over the inherited directory (fabric-recovery.md:10), in its role by the ordinary
 /// rules from its rows", "a root holding the fabric's own record and the accepted topology (the admin
 /// boots from its own row, recovery mode, FabricId and MeshIds preserved)"; fabric-recovery.md: the
 /// re-created node-admin is a new node over its inherited data dir: a new node.id and incarnation, the

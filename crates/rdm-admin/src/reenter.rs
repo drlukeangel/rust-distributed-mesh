@@ -172,8 +172,8 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
                 // An entering admin adopts the rafka-time its entry read is served with, by the same rule as a join.
                 read.adopt_rafka_time(time, topology_view, &me.to_string(), &me.mesh, me_id, &node.name.to_string()).map_err(|e| format!("adopting rafka-time from {}: {e}", node.name))?;
             }
-            // The seats this node's mesh knows are held: an entering admin computes none before it has them.
-            topology_view.learn_primaries(&read.seats, "entry");
+            // The roles this node's mesh knows are held: an entering admin computes none before it has them.
+            topology_view.learn_primaries(&read.primaries, "entry");
             topology_view.join_peers_as("admin.reenter", vec![addr]).await.map_err(|e| format!("joining the mesh channel through {}: {e}", node.name))?;
             let fabric = read.installed.iter().flat_map(|m| m.members.iter()).find(|d| d.node.node_id == node.node_id).map(|d| d.fabric_id.clone());
             let Some(fabric) = fabric else {

@@ -1,10 +1,10 @@
-//! Seat gate, provider departure proofs, and the drift reconcile loop.
+//! PrimaryRole gate, provider departure proofs, and the drift reconcile loop.
 
 use super::*;
 
 /// The gates of the fabric-primary's drive: the Build log's target, read from the fabric-primary
 /// record this admin holds.
-pub(crate) struct SeatGate {
+pub(crate) struct RoleGate {
     pub(crate) builds: Arc<FabricBuildStateAdapter>,
     /// The control plane whose peer-mesh reader the investigation installs once its ladder runs
     /// (after the drive is built): read when asked, as the Build door reads it.
@@ -20,7 +20,7 @@ pub(crate) struct SeatGate {
 }
 
 #[async_trait::async_trait]
-impl crate::build_drive::Gate for SeatGate {
+impl crate::build_drive::Gate for RoleGate {
     async fn target(&self) -> Result<Option<String>, crate::build_state::BuildStateError> {
         self.builds.target_check().await
     }
@@ -35,41 +35,41 @@ impl crate::build_drive::Gate for SeatGate {
     /// fabric-primary commands a mesh-primary); any other type's primary through its mesh-primary, its
     /// commander; the fabric-primary's own primaries it moves itself, having nothing above it, both in
     /// one call when it is both ("Both primaries": the successor becomes both).
-    async fn update_primaries(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, run: u32, operation: &str) -> Result<(), crate::build_drive::SeatMoveEnd> {
+    async fn update_primaries(&self, m: &crate::executor::RoleMove, build_id: &crate::build::BuildId, attempt: u32, run: u32, operation: &str) -> Result<(), crate::build_drive::RoleMoveEnd> {
         use crate::election::Moving;
         use crate::fabric_handover::update_operation;
-        use rdm_core::Seat;
+        use rdm_core::PrimaryRole;
         let door = &self.handover;
-        if m.holder.node_id != door.node_id {
+        if m.primary.node_id != door.node_id {
             // A mesh-primary, commanded directly; any other type's primary, commanded through its
             // mesh-primary (this admin itself when it is that mesh-primary).
-            if m.mesh_seat || m.node_type_seat {
-                let seat = if m.node_type_seat { Seat::NodeTypePrimary(m.holder.kind) } else { Seat::MeshPrimary };
-                let update = update_operation(seat, build_id.as_str(), run, operation);
-                door.command_update_primary(&m.holder, build_id.as_str(), attempt, &update).await?;
+            if m.mesh_role || m.node_type_role {
+                let role = if m.node_type_role { PrimaryRole::NodeTypePrimary(m.primary.kind) } else { PrimaryRole::MeshPrimary };
+                let update = update_operation(role, build_id.as_str(), run, operation);
+                door.command_update_primary(&m.primary, build_id.as_str(), attempt, &update).await?;
             }
             return Ok(());
         }
-        // The fabric seat alone moves out of this admin's mesh (C2 search step 2: a mesh delete of its
-        // mesh, mesh-delete.md step 1), by node.fabric-primary.update; with the mesh seat, both move in
+        // The fabric-primary role alone moves out of this admin's mesh (C2 search step 2: a mesh delete of its
+        // mesh, mesh-delete.md step 1), by node.fabric-primary.update; with the mesh-primary role, both move in
         // node.primary.update's one row (Q1).
-        let (moving, seat) = match (m.mesh_seat, m.fabric_seat) {
-            (true, true) => (Moving::BothSeats, Seat::MeshPrimary),
-            (true, false) => (Moving::MeshSeat, Seat::MeshPrimary),
-            (false, true) => (Moving::FabricSeatOutside, Seat::FabricPrimary),
+        let (moving, role) = match (m.mesh_role, m.fabric_role) {
+            (true, true) => (Moving::BothRoles, PrimaryRole::MeshPrimary),
+            (true, false) => (Moving::MeshRole, PrimaryRole::MeshPrimary),
+            (false, true) => (Moving::FabricRoleOutside, PrimaryRole::FabricPrimary),
             (false, false) => return Ok(()),
         };
-        let update = update_operation(seat, build_id.as_str(), run, operation);
+        let update = update_operation(role, build_id.as_str(), run, operation);
         door.update_own_primaries(moving, build_id.as_str(), attempt, &update, m.successor.as_ref()).await?;
         Ok(())
     }
 
     async fn primaries_updated(&self, updates: &[crate::build_drive::PrecedingUpdate], build_id: &crate::build::BuildId, attempt: u32) -> Result<(), String> {
         for u in updates {
-            if u.holder.is_none() && u.mesh == self.handover.me.mesh {
+            if u.primary.is_none() && u.mesh == self.handover.me.mesh {
                 continue;
             }
-            self.handover.row_acknowledged(&u.mesh, &u.operation, u.holder.as_ref(), build_id.as_str(), attempt).await?;
+            self.handover.row_acknowledged(&u.mesh, &u.operation, u.primary.as_ref(), build_id.as_str(), attempt).await?;
         }
         Ok(())
     }
@@ -556,7 +556,7 @@ pub async fn reconcile_drift(
         }
         // So is a node-admin of a mesh with a live mesh-primary (mesh-recovery.md:8-9, "A lost member
         // of a mesh with a live mesh-primary is node recovery, driven by that mesh-primary"); a mesh
-        // primary's own loss by the admin its mesh seats. So is every node-admin of a peer mesh heard
+        // primary's own loss by the admin its mesh elects. So is every node-admin of a peer mesh heard
         // again whose recovery the ladder still holds decided: the decision released the mesh's first
         // recovering node-admin, which the verdict above opens, and nothing else of the mesh from here
         // (R-D1: "once mesh authority is restored, that mesh performs its own ordinary-node
@@ -599,7 +599,7 @@ pub async fn reconcile_drift(
     let short = crate::drift::shortfall(&current.topology, t, &exited);
     // One unheard birth per attempt, the ones whose runtime does not run first, then in path.name
     // order; the next pass takes the next remaining one. A runtime that runs may still answer: the
-    // create's target asks it before anything is created over it ([`crate::seat_revision::target`]).
+    // create's target asks it before anything is created over it ([`crate::path_investigation::target`]).
     let first_exited: Option<(&PathName, &crate::drift::ExitedBirth)> =
         proven.iter().filter(|(p, _)| short.iter().any(|s| s.exited.iter().any(|e| *e == p.to_string()))).min_by_key(|(p, b)| (b.verdict == "running", p.to_string()));
     // Surplus: a live birth of a kept Mesh the accepted topology does not name (a removal the

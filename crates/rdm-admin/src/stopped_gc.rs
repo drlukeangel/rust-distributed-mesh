@@ -137,7 +137,7 @@ pub struct Candidate {
 pub enum Swept {
     /// The ttl is blank: no sweep.
     Forever,
-    /// This admin does not hold the fabric seat: it sweeps nothing.
+    /// This admin does not hold the fabric-primary role: it sweeps nothing.
     NotFabricPrimary,
     /// Nothing is stopped longer than the ttl.
     Nothing,

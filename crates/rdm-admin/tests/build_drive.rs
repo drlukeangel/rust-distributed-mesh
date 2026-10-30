@@ -45,8 +45,8 @@ struct Switch {
     successor: Mutex<Option<String>>,
     /// Set with `targeted` by a cell that targets while a dispatch is in flight.
     target_tx: tokio::sync::watch::Sender<bool>,
-    /// The holder the open seat record names (this birth's path.name), when the cell sets one.
-    record_holder: Mutex<Option<String>>,
+    /// The primary the open primary record names (this birth's path.name), when the cell sets one.
+    recorded_primary: Mutex<Option<String>>,
     /// What the peer-mesh investigation holds per mesh, when the cell sets it.
     peer: Mutex<std::collections::HashMap<String, rdm_admin::investigate::PeerMesh>>,
     /// The meshes whose Mesh record is Dead, when the cell sets them.
@@ -71,7 +71,7 @@ async fn rows_of(topology: &rdm_admin::accepted::FabricTopology, view: &RwLock<T
 }
 
 impl Switch {
-    /// Target the Build log now, naming `successor` as the admin the committed transfer seated.
+    /// Target the Build log now, naming `successor` as the admin the committed transfer in its role.
     fn target_to(&self, successor: Option<&str>) {
         *self.successor.lock().unwrap() = successor.map(str::to_string);
         self.targeted.store(true, Ordering::SeqCst);
@@ -83,9 +83,9 @@ impl Switch {
 impl Gate for Switch {
     async fn target(&self) -> Result<Option<String>, BuildStateError> {
         if self.targeted.load(Ordering::SeqCst) {
-            Err(BuildStateError::SeatYielded { node: "mesh1.admin.1".into(), by: "leaving".into(), to: self.successor.lock().unwrap().clone() })
+            Err(BuildStateError::RoleYielded { node: "mesh1.admin.1".into(), by: "leaving".into(), to: self.successor.lock().unwrap().clone() })
         } else {
-            Ok(self.record_holder.lock().unwrap().clone())
+            Ok(self.recorded_primary.lock().unwrap().clone())
         }
     }
     async fn target_set(&self) {
@@ -149,7 +149,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let ran = Arc::new(Creates(Mutex::new(Vec::new()), builds.clone()));
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner(ran.clone(), topology.clone()));
     let proofs = Arc::new(crate::loopback::Proofs::default());
-    let switch = Arc::new(Switch { targeted: AtomicBool::new(false), successor: Mutex::new(None), target_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: Some(topology.clone()) });
+    let switch = Arc::new(Switch { targeted: AtomicBool::new(false), successor: Mutex::new(None), target_tx: tokio::sync::watch::channel(false).0, recorded_primary: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: Some(topology.clone()) });
     let me: PathName = "mesh1.admin.1".parse().unwrap();
     let told = crate::Told::default();
     let env = Arc::new(DriveEnv {
@@ -197,9 +197,9 @@ fn blocked_of(read: &[Read]) -> Vec<BuildReply> {
 }
 
 /// CONTRACT: a fabric-primary whose fabric-primary record names another live birth dispatches nothing.
-/// The Build log's target is checked before the claim: the drive ends `SeatLost` naming the target, no attempt is
-/// claimed, no executor is called, and the callers' streams end with the seat loss (the caller
-/// re-submits by the Build id at the new seat).
+/// The Build log's target is checked before the claim: the drive ends `RoleLost` naming the target, no attempt is
+/// claimed, no executor is called, and the callers' streams end with the role loss (the caller
+/// re-submits by the Build id at the new role).
 #[tokio::test]
 async fn a_fabric_primary_whose_record_names_another_birth_claims_and_dispatches_nothing() {
     let r = rig().await;
@@ -207,20 +207,20 @@ async fn a_fabric_primary_whose_record_names_another_birth_claims_and_dispatches
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match r.env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("is no longer the fabric-primary: "), "{why}"),
-        other => panic!("a targeted seat ends the drive SeatLost: {other:?}"),
+        DriveEnd::RoleLost(why) => assert!(why.contains("is no longer the fabric-primary: "), "{why}"),
+        other => panic!("a targeted role ends the drive RoleLost: {other:?}"),
     }
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 0, "no attempt was claimed");
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
     assert!(r.ran.0.lock().unwrap().is_empty());
-    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.why.contains("leaving") && loss.to.is_none()));
+    assert!(matches!(next_within(&mut reader).await, Some(Read::RoleLost(loss)) if loss.why.contains("leaving") && loss.to.is_none()));
 }
 
-/// CONTRACT: an admin knows the fabric-primary seat is its own by the node id it was born with,
-/// never by path.name. When its view shows another birth at its own path.name holding the seat (a
-/// successor or a deleted birth of that path), the drive ends `SeatLost` naming that birth, claims
-/// no attempt and calls no executor, and the callers' streams end naming the holder the committed
-/// seat record names (none here), never the view's.
+/// CONTRACT: an admin knows the fabric-primary role is its own by the node id it was born with,
+/// never by path.name. When its view shows another birth at its own path.name holding the role (a
+/// successor or a deleted birth of that path), the drive ends `RoleLost` naming that birth, claims
+/// no attempt and calls no executor, and the callers' streams end naming the primary the committed
+/// primary record names (none here), never the view's.
 #[tokio::test]
 async fn a_fabric_primary_whose_view_shows_another_birth_of_its_path_as_fabric_primary_dispatches_nothing() {
     let r = rig().await;
@@ -228,28 +228,28 @@ async fn a_fabric_primary_whose_view_shows_another_birth_of_its_path_as_fabric_p
     {
         let mut t = r.env.topology.write().await;
         let fp = t.nodes.iter_mut().find(|n| n.is_fabric_primary).expect("the view shows a fabric-primary");
-        assert_eq!(fp.name, r.env.me, "the seat is shown at this admin's own path.name");
+        assert_eq!(fp.name, r.env.me, "the role is shown at this admin's own path.name");
         fp.node_id = other.clone();
         fp.incarnation_id = Some(IncarnationId::mint());
     }
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match r.env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("does not hold the fabric-primary seat") && why.contains(other.as_str()), "the refusal names the birth that holds the seat: {why}"),
-        other => panic!("another birth of this path holding the seat ends the drive SeatLost: {other:?}"),
+        DriveEnd::RoleLost(why) => assert!(why.contains("does not hold the fabric-primary role") && why.contains(other.as_str()), "the refusal names the birth that holds the primary role: {why}"),
+        other => panic!("another birth of this path holding the primary role ends the drive RoleLost: {other:?}"),
     }
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 0, "no attempt was claimed");
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
     assert!(r.ran.0.lock().unwrap().is_empty());
-    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.is_none()), "the record names no holder");
+    assert!(matches!(next_within(&mut reader).await, Some(Read::RoleLost(loss)) if loss.to.is_none()), "the record names no primary");
 }
 
 /// CONTRACT (lifecycles/node-primary-update.md step 4: the successor becomes primary when it installs
 /// the election's result): the fabric-primary record this admin holds, never the view, names the
 /// fabric-primary. A fabric-primary whose record still names this birth
-/// while its view shows another admin holding the seat dispatches nothing, and the callers'
-/// streams end naming the holder the record names (this birth), never the view's; a record naming
-/// none names no holder.
+/// while its view shows another admin holding the role dispatches nothing, and the callers'
+/// streams end naming the primary the record names (this birth), never the view's; a record naming
+/// none names no primary.
 #[tokio::test]
 async fn a_fabric_primary_whose_view_shows_another_fabric_primary_names_the_records_never_the_views() {
     let r = rig().await;
@@ -259,65 +259,65 @@ async fn a_fabric_primary_whose_view_shows_another_fabric_primary_names_the_reco
             n.is_fabric_primary = n.name.to_string() == "mesh1.admin.2";
         }
     }
-    *r.switch.record_holder.lock().unwrap() = Some("mesh1.admin.1".into());
+    *r.switch.recorded_primary.lock().unwrap() = Some("mesh1.admin.1".into());
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match r.env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("does not hold the fabric-primary seat") && why.contains("the fabric-primary record it holds names mesh1.admin.1"), "the refusal names what the record names: {why}"),
-        other => panic!("a view showing another holder ends the drive SeatLost: {other:?}"),
+        DriveEnd::RoleLost(why) => assert!(why.contains("does not hold the fabric-primary role") && why.contains("the fabric-primary record it holds names mesh1.admin.1"), "the refusal names what the record names: {why}"),
+        other => panic!("a view showing another primary ends the drive RoleLost: {other:?}"),
     }
     let loss = match next_within(&mut reader).await {
-        Some(Read::SeatLost(loss)) => loss,
-        _ => panic!("the callers' streams end with the seat loss"),
+        Some(Read::RoleLost(loss)) => loss,
+        _ => panic!("the callers' streams end with the role loss"),
     };
-    assert_eq!(loss.to.as_deref(), Some("mesh1.admin.1"), "the seat loss names the record's holder, not the view's mesh1.admin.2: {loss:?}");
+    assert_eq!(loss.to.as_deref(), Some("mesh1.admin.1"), "the role loss names the record's primary, not the view's mesh1.admin.2: {loss:?}");
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
-    *r.switch.record_holder.lock().unwrap() = None;
+    *r.switch.recorded_primary.lock().unwrap() = None;
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
-    assert!(matches!(r.env.run(&drive).await, DriveEnd::SeatLost(why) if why.contains("the fabric-primary record it holds names none")));
-    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.is_none()), "a record naming none names no holder");
+    assert!(matches!(r.env.run(&drive).await, DriveEnd::RoleLost(why) if why.contains("the fabric-primary record it holds names none")));
+    assert!(matches!(next_within(&mut reader).await, Some(Read::RoleLost(loss)) if loss.to.is_none()), "a record naming none names no primary");
 }
 
 /// CONTRACT (lifecycles/node-primary-update.md step 4; Build dispatch from the old fabric-primary is
 /// refused `Targeted`): the fabric-primary record decides before the view does. A fabric-primary
-/// whose seat record moved is refused `Targeted` while its view still shows it as the holder and
-/// holds no row of the new one yet, and the callers' streams end naming the holder the record names,
+/// whose primary record moved is refused `Targeted` while its view still shows it as the primary and
+/// holds no row of the new one yet, and the callers' streams end naming the primary the record names,
 /// never the view's. No executor is called.
 #[tokio::test]
 async fn a_moved_fabric_primary_is_refused_whatever_its_view_shows_and_names_the_new_fabric_primary() {
     let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
-    assert!(r.env.topology.read().await.node(&"mesh2.admin.1".parse().unwrap()).is_none(), "the view holds no row of the new holder");
+    assert!(r.env.topology.read().await.node(&"mesh2.admin.1".parse().unwrap()).is_none(), "the view holds no row of the new primary");
     r.switch.target_to(Some("mesh2.admin.1"));
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match r.env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("is no longer the fabric-primary: "), "the target refused it, not the view: {why}"),
-        other => panic!("a targeted seat ends the drive SeatLost: {other:?}"),
+        DriveEnd::RoleLost(why) => assert!(why.contains("is no longer the fabric-primary: "), "the target refused it, not the view: {why}"),
+        other => panic!("a targeted role ends the drive RoleLost: {other:?}"),
     }
-    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh2.admin.1")));
+    assert!(matches!(next_within(&mut reader).await, Some(Read::RoleLost(loss)) if loss.to.as_deref() == Some("mesh2.admin.1")));
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
 }
 
-/// CONTRACT: node.primary.update names the new fabric-primary in the target itself. The old seat's view
+/// CONTRACT: node.primary.update names the new fabric-primary in the target itself. The old role's view
 /// is re-projected on its own clock, so right after the transfer it may still show this admin as the
 /// fabric-primary: the callers' streams still end naming the successor the update installed, never
-/// an empty seat read from a view that has not moved yet.
+/// an empty role read from a view that has not moved yet.
 #[tokio::test]
 async fn the_callers_streams_name_the_successor_a_primary_update_installed_while_the_view_shows_the_old_fabric_primary() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     t.nodes.push(node("mesh2.admin.1", true, false));
     let r = rig_for(t, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
-    assert_eq!(r.env.topology.read().await.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the view still shows the old seat");
+    assert_eq!(r.env.topology.read().await.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the view still shows the old role");
     *r.switch.successor.lock().unwrap() = Some("mesh2.admin.1".into());
     r.switch.targeted.store(true, Ordering::SeqCst);
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
-    assert!(matches!(r.env.run(&drive).await, DriveEnd::SeatLost(_)), "a targeted seat ends the drive SeatLost");
+    assert!(matches!(r.env.run(&drive).await, DriveEnd::RoleLost(_)), "a targeted role ends the drive RoleLost");
     match next_within(&mut reader).await {
-        Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh2.admin.1"), "the stream names the committed successor: {loss:?}"),
-        other => panic!("the reader ends with the seat loss, got {other:?}"),
+        Some(Read::RoleLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh2.admin.1"), "the stream names the committed successor: {loss:?}"),
+        other => panic!("the reader ends with the role loss, got {other:?}"),
     }
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
 }
@@ -368,13 +368,13 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_frames_noth
     );
 }
 
-/// CONTRACT (#3016; elections §5: the seat goes to "the lowest Ready NodeId of its own mesh";
+/// CONTRACT (#3016; elections §5: the role goes to "the lowest Ready NodeId of its own mesh";
 /// "Executor departure proof, never silence, is required before claiming the next attempt for its
-/// successor"): mesh2's seated admin, the claimed executor, is lost and proven exited; mesh2's other
-/// admin is held but silent, not yet seated. The fabric-primary of mesh1 does not take mesh2's
+/// successor"): mesh2's in its role admin, the claimed executor, is lost and proven exited; mesh2's other
+/// admin is held but silent, not yet in its role. The fabric-primary of mesh1 does not take mesh2's
 /// work: the drive stalls naming the held admin on its span, never on the caller's stream
 /// (node-rpc-envelope.md: Blocked's only source is the subject's Status `Blocked`), every re-run uses the departure already recorded
-/// (no second call to the lost executor, no second proof), and once mesh2.admin.2 holds the seat
+/// (no second call to the lost executor, no second proof), and once mesh2.admin.2 holds the role
 /// the next attempt is claimed for it.
 #[tokio::test]
 async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_for_its_election() {
@@ -413,9 +413,9 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the wait for mesh2's election frames no Blocked to the caller: no subject's Status Blocked reply made one");
     assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 3, "each pass proves the departure itself: nothing holds it between passes");
     let p = r.builds.read_build(&r.build).await.unwrap();
-    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh2.admin.1")), "nothing is claimed while mesh2's seat is held");
+    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh2.admin.1")), "nothing is claimed while mesh2's role is held");
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty() && r.ran.0.lock().unwrap().is_empty());
-    // mesh2.admin.2 is seated: the next attempt is its own.
+    // mesh2.admin.2 is primary: the next attempt is its own.
     for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.2") {
         n.status = NodeStatus::Ready;
         n.is_primary = true;
@@ -425,7 +425,7 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
     assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 4, "the run that claims attempt 2 proves the departure once more");
 }
 
-/// Births `mesh2.admin.1` anew in place of its exited birth when its create has run, seated as
+/// Births `mesh2.admin.1` anew in place of its exited birth when its create has run, in its role as
 /// mesh2's primary, as the restore of a mesh's first admin does.
 struct Recovered {
     ran: Arc<Creates>,
@@ -571,7 +571,7 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
 
 /// The R-D1 fixture: mesh2's only node-admin is proven exited (so the fabric-primary of mesh1 is
 /// the executor of mesh2's work in its view), mesh2 keeps its rpc node, the Build grows mesh2 to two
-/// admins and two rpc nodes, a restored `mesh2.admin.1` is seated as mesh2's primary, and the
+/// admins and two rpc nodes, a restored `mesh2.admin.1` is primary as mesh2's primary, and the
 /// investigation holds mesh2 unheard with its recovery decided.
 async fn recovery_rig() -> Rig {
     let mut t = view();
@@ -692,7 +692,7 @@ impl OperationRunner for Lands {
 }
 
 /// Two meshes: the fabric-primary `mesh1.admin.1` is mesh1's primary too, so it executes mesh1's
-/// members; mesh2's seated admin is proven exited and its other admin is held but silent
+/// members; mesh2's in its role admin is proven exited and its other admin is held but silent
 /// (PendingReconnect), so no admin executes mesh2's work in this view. The Build grows mesh1 by one
 /// rpc node and restores mesh2's two admins.
 async fn held_successor_rig(lands: bool) -> Rig {
@@ -716,7 +716,7 @@ async fn held_successor_rig(lands: bool) -> Rig {
 /// CONTRACT (elections §5, the same-mesh successor; R-A2: cross-mesh only when
 /// the whole cohort is proven lost): a run of the fabric-primary is cut before a later operation no
 /// admin executes in its view. The fabric-primary runs mesh1's rpc node and stops there: mesh2's
-/// admins are not carried by the run, and the drive stalls naming mesh2's held admin, whose seat the
+/// admins are not carried by the run, and the drive stalls naming mesh2's held admin, whose role the
 /// rest waits for.
 #[tokio::test]
 async fn a_run_is_cut_before_an_operation_of_a_mesh_whose_admin_is_held_and_the_rest_waits_for_its_election() {
@@ -724,7 +724,7 @@ async fn a_run_is_cut_before_an_operation_of_a_mesh_whose_admin_is_held_and_the_
     let drive = Drive::detached(r.build.clone());
     match r.env.run(&drive).await {
         DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "the stall names the held admin: {why}"),
-        other => panic!("mesh2's work waits for its own seat: {other:?}"),
+        other => panic!("mesh2's work waits for its own role: {other:?}"),
     }
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh1.rpc.2".to_string()], "the run was cut before mesh2's admins");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1)]);
@@ -823,15 +823,15 @@ async fn a_remote_executors_completed_operation_is_never_dispatched_again_before
 }
 
 /// Commits each operation's receipt and lands the created node live; the run of `mesh1.rpc.2` also
-/// seats mesh2's held admin as mesh2's primary, as a mesh whose seat is taken while another mesh's
+/// names mesh2's held admin as mesh2's primary, as a mesh whose role is taken while another mesh's
 /// run goes on.
-struct LandsAndSeats {
+struct LandsAndTakesRole {
     ran: Arc<Creates>,
     topology: Arc<RwLock<Topology>>,
 }
 
 #[async_trait::async_trait]
-impl OperationRunner for LandsAndSeats {
+impl OperationRunner for LandsAndTakesRole {
     async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
         self.ran.run(build, lane, attempt, op).await?;
         if let BuildOperation::CreateNode { node: p, .. } = op {
@@ -850,8 +850,8 @@ impl OperationRunner for LandsAndSeats {
 
 /// CONTRACT: a run handed back to the fabric-primary is claimed for the admin its view names for what
 /// is left, never for the fabric-primary to hand on unrun. The fabric-primary's run of mesh1's rpc
-/// node is cut before mesh2's admin (no admin of mesh2 is seated when it is planned) and handed back;
-/// by then mesh2's admin holds the seat. The next attempt is claimed for `mesh2.admin.2` directly: no
+/// node is cut before mesh2's admin (no admin of mesh2 is primary when it is planned) and handed back;
+/// by then mesh2's admin holds the role. The next attempt is claimed for `mesh2.admin.2` directly: no
 /// attempt of the fabric-primary carries nothing to it.
 #[tokio::test]
 async fn a_run_handed_back_is_claimed_for_the_admin_the_view_names_for_what_is_left() {
@@ -869,11 +869,11 @@ async fn a_run_handed_back_is_claimed_for_the_admin_the_view_names_for_what_is_l
     t.nodes.push(node("mesh2.rpc.1", false, false));
     let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rdm_core::NodeKind::NodeAdmin, admins), (rdm_core::NodeKind::RpcNode, rpcs)]);
     let change = TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh1", 2, 2), counts("mesh2", 2, 1)] } };
-    let r = rig_for(t, change, |ran, topology| Arc::new(LandsAndSeats { ran, topology })).await;
+    let r = rig_for(t, change, |ran, topology| Arc::new(LandsAndTakesRole { ran, topology })).await;
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh1.rpc.2".to_string(), "node.create:mesh2.admin.1".to_string()]);
-    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh2.admin.2".to_string(), 2)], "the hand-back is claimed for mesh2's seated admin");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh2.admin.2".to_string(), 2)], "the hand-back is claimed for mesh2's primary admin");
 }
 
 /// CONTRACT (node-rpc-envelope.md, Build op `0x20`: "An executor that cannot be reached is replaced
@@ -881,7 +881,7 @@ async fn a_run_handed_back_is_claimed_for_the_admin_the_view_names_for_what_is_l
 /// left): what counts as done is what an executor reported, by its run's verdict (`HandedOff` or
 /// `Converged`). `mesh1.admin.2` wrote the `Complete` receipt of `mesh1.rpc.2` in attempt 1 and was
 /// lost before its run ended: no verdict, and the view never held the node. Its departure is proven,
-/// mesh1 seats the fabric-primary, and attempt 2 creates `mesh1.rpc.2` with the rest of the plan: a lost run's
+/// mesh1 names the fabric-primary, and attempt 2 creates `mesh1.rpc.2` with the rest of the plan: a lost run's
 /// receipt does not make its node done.
 #[tokio::test]
 async fn a_lost_executors_unreported_receipt_does_not_make_its_operation_done() {
@@ -929,26 +929,26 @@ async fn an_executor_whose_view_lags_runs_the_first_operation_it_was_claimed_for
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 1);
 }
 
-/// The gate of a fabric-primary whose node.fabric-primary.update moves its seat to `mesh2.admin.1`:
-/// `move_seats` answers once the successor's installation is acknowledged, after which the committed
-/// record names `mesh2.admin.1` and the view shows it holding the seat. Every other gate is `inner`'s.
-struct SeatMoves {
+/// The gate of a fabric-primary whose node.fabric-primary.update moves its role to `mesh2.admin.1`:
+/// `update_primaries` answers once the successor's installation is acknowledged, after which the committed
+/// record names `mesh2.admin.1` and the view shows it holding the role. Every other gate is `inner`'s.
+struct RoleMoves {
     inner: Arc<Switch>,
     topology: Arc<RwLock<Topology>>,
-    /// Every move asked: `(holder, mesh seat, fabric seat, operation)`.
+    /// Every move asked: `(primary, mesh-primary role, fabric-primary role, operation)`.
     moved: Mutex<Vec<(String, bool, bool, String)>>,
 }
 
 #[async_trait::async_trait]
-impl Gate for SeatMoves {
+impl Gate for RoleMoves {
     async fn target(&self) -> Result<Option<String>, BuildStateError> {
         self.inner.target().await
     }
     async fn target_set(&self) {
         self.inner.target_set().await
     }
-    async fn update_primaries(&self, m: &rdm_admin::executor::SeatMove, _: &BuildId, _: u32, _: u32, operation: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
-        self.moved.lock().unwrap().push((m.holder.name.to_string(), m.mesh_seat, m.fabric_seat, operation.to_string()));
+    async fn update_primaries(&self, m: &rdm_admin::executor::RoleMove, _: &BuildId, _: u32, _: u32, operation: &str) -> Result<(), rdm_admin::build_drive::RoleMoveEnd> {
+        self.moved.lock().unwrap().push((m.primary.name.to_string(), m.mesh_role, m.fabric_role, operation.to_string()));
         for n in self.topology.write().await.nodes.iter_mut() {
             n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
         }
@@ -958,22 +958,22 @@ impl Gate for SeatMoves {
 }
 
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The last
-/// node-admin of a mesh": "If the mesh holds the fabric seat, that seat moves first by
+/// node-admin of a mesh": "If the mesh holds the fabric-primary role, that role moves first by
 /// `node.fabric-primary.update` with the departing mesh excluded (mesh-delete.md step 1)"; C1 step 1:
-/// "The holder is commanded from above, as a step of the Build"; step 8: "Only then does the commanding
+/// "The primary is commanded from above, as a step of the Build"; step 8: "Only then does the commanding
 /// Build continue"): a mesh delete whose fabric-primary sits inside the leaving mesh moves the fabric
-/// seat alone (the mesh seat stays, mesh.delete never updates it) from the drive, as a step of the
-/// attempt the holder claims for itself; that attempt ends `HandedOff` to the new seat once the move
-/// answered, and the drive ends `SeatLost` naming the new holder.
+/// role alone (the mesh-primary role stays, mesh.delete never updates it) from the drive, as a step of the
+/// attempt the primary claims for itself; that attempt ends `HandedOff` to the new role once the move
+/// answered, and the drive ends `RoleLost` naming the new primary.
 /// Must NOT happen: an operation dispatched at the leaving mesh's admin, the delete run there, or the
-/// attempt ending with no verdict or handed to any admin but the new seat.
+/// attempt ending with no verdict or handed to any admin but the new role.
 #[tokio::test]
 async fn a_mesh_delete_whose_fabric_primary_sits_inside_moves_the_fabric_primary_alone_in_its_own_attempt_handed_to_the_new_one() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     t.nodes.push(node("mesh2.admin.1", true, false));
     let r = rig_for(t, TopologyChange::RemoveMesh { mesh: "mesh1".into() }, |ran, _| ran).await;
-    let gate = Arc::new(SeatMoves { inner: r.switch.clone(), topology: r.env.topology.clone(), moved: Mutex::new(Vec::new()) });
+    let gate = Arc::new(RoleMoves { inner: r.switch.clone(), topology: r.env.topology.clone(), moved: Mutex::new(Vec::new()) });
     let env = Arc::new(DriveEnv {
         me: r.env.me.clone(),
         topology: r.env.topology.clone(),
@@ -989,13 +989,13 @@ async fn a_mesh_delete_whose_fabric_primary_sits_inside_moves_the_fabric_primary
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("is no longer the fabric-primary: "), "the drive ends at the target: {why}"),
-        other => panic!("the old seat holder's drive ends SeatLost once the seat moved: {other:?}"),
+        DriveEnd::RoleLost(why) => assert!(why.contains("is no longer the fabric-primary: "), "the drive ends at the target: {why}"),
+        other => panic!("the old primary's drive ends RoleLost once the role moved: {other:?}"),
     }
     let moved = gate.moved.lock().unwrap().clone();
     assert_eq!(moved.len(), 1, "one node.fabric-primary.update: {moved:?}");
-    let (holder, mesh_seat, fabric_seat, operation) = &moved[0];
-    assert_eq!((holder.as_str(), *mesh_seat, *fabric_seat), ("mesh1.admin.1", false, true), "the fabric seat alone moves from the fabric-primary: {moved:?}");
+    let (primary, mesh_role, fabric_role, operation) = &moved[0];
+    assert_eq!((primary.as_str(), *mesh_role, *fabric_role), ("mesh1.admin.1", false, true), "the fabric-primary role alone moves from the fabric-primary: {moved:?}");
     assert!(operation.starts_with("mesh.delete:"), "the update names the mesh delete it precedes: {operation}");
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no operation was dispatched: {:?}", r.dispatch.dispatched.lock().unwrap());
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran at the leaving mesh's admin: {:?}", r.ran.0.lock().unwrap());
@@ -1005,8 +1005,8 @@ async fn a_mesh_delete_whose_fabric_primary_sits_inside_moves_the_fabric_primary
         rdm_admin::build_state::BuildFact::Attempt(a) if a.build_id == r.build => Some((a.attempt, a.outcome)),
         _ => None,
     }).collect();
-    assert_eq!(verdicts, vec![(1, rdm_admin::build_state::AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() })], "the holder's attempt ends handed to the new seat, which claims the next");
-    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh2.admin.1")), "the callers' streams end naming the new seat");
+    assert_eq!(verdicts, vec![(1, rdm_admin::build_state::AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() })], "the holder's attempt ends handed to the new role, which claims the next");
+    assert!(matches!(next_within(&mut reader).await, Some(Read::RoleLost(loss)) if loss.to.as_deref() == Some("mesh2.admin.1")), "the callers' streams end naming the new role");
 }
 
 /// CONTRACT (R-ON8: the fabric-primary plans and dispatches): an executor runs exactly the
@@ -1027,7 +1027,7 @@ async fn an_executor_whose_view_lacks_a_just_launched_node_creates_only_what_the
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)]);
 }
 
-/// Seats `mesh2.admin.1` as mesh2's primary when its create has run, as the launch and join of the
+/// Primaries `mesh2.admin.1` as mesh2's primary when its create has run, as the launch and join of the
 /// first admin of a mesh do.
 struct MeshBirth {
     ran: Arc<Creates>,
@@ -1076,8 +1076,8 @@ impl OperationRunner for HeldOpen {
 
 /// CONTRACT (lifecycles/node-primary-update.md step 4): the fabric-primary record this admin holds is
 /// the target every decision is judged against. The target is set while the drive waits on an executor's run, and the
-/// record names another holder than that executor: the drive ends `SeatLost` at the target, without
-/// waiting for that run's stream to end, the callers' streams end naming the holder the record names,
+/// record names another primary than that executor: the drive ends `RoleLost` at the target, without
+/// waiting for that run's stream to end, the callers' streams end naming the primary the record names,
 /// and no later attempt is claimed.
 #[tokio::test]
 async fn a_fabric_primary_record_naming_another_birth_than_the_executor_ends_the_drive_naming_that_birth() {
@@ -1092,10 +1092,10 @@ async fn a_fabric_primary_record_naming_another_birth_than_the_executor_ends_the
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "attempt 1 is running at the executor");
     r.switch.target_to(Some("mesh2.admin.1"));
     let end = tokio::time::timeout(Duration::from_secs(5), running).await.expect("the drive ends at the target while the executor's run is still open").unwrap();
-    assert!(matches!(&end, DriveEnd::SeatLost(why) if why.contains("is no longer the fabric-primary: ")), "the target ends the drive SeatLost: {end:?}");
+    assert!(matches!(&end, DriveEnd::RoleLost(why) if why.contains("is no longer the fabric-primary: ")), "the target ends the drive RoleLost: {end:?}");
     match next_within(&mut reader).await {
-        Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh2.admin.1"), "the stream names the holder the record names: {loss:?}"),
-        other => panic!("the reader ends with the seat loss, got {other:?}"),
+        Some(Read::RoleLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh2.admin.1"), "the stream names the primary the record names: {loss:?}"),
+        other => panic!("the reader ends with the role loss, got {other:?}"),
     }
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "no later attempt was claimed");
@@ -1131,11 +1131,11 @@ impl rdm_admin::build_drive::Dispatcher for Fed {
 /// there"): the target is set while the drive waits on the executor's run, and the record names that
 /// executor: the run's own node.primary.update made it fabric-primary. The executor is the fabric-primary once it has
 /// installed the election's result, and it says so on the run's own stream, which it ends with
-/// FabricPrimaryMoved naming itself. Until then the callers' streams carry the run's frames and no seat loss;
-/// on the executor's FabricPrimaryMoved the drive ends `SeatLost` naming the executor, and no later attempt
+/// FabricPrimaryMoved naming itself. Until then the callers' streams carry the run's frames and no role loss;
+/// on the executor's FabricPrimaryMoved the drive ends `RoleLost` naming the executor, and no later attempt
 /// is claimed (the executor resumes the same attempt).
-/// Must NOT happen: a caller's stream ending with the seat loss, which sends the caller to the
-/// executor, before the executor's run said it holds the seat.
+/// Must NOT happen: a caller's stream ending with the role loss, which sends the caller to the
+/// executor, before the executor's run said it holds the role.
 #[tokio::test]
 async fn a_fabric_primary_record_naming_the_executor_ends_the_drive_on_its_fabric_primary_moved_frame_never_before() {
     use rdm_admin::build_drive::InnerItem;
@@ -1162,29 +1162,29 @@ async fn a_fabric_primary_record_naming_the_executor_ends_the_drive_on_its_fabri
     tokio::time::timeout(Duration::from_secs(5), fed.dispatched.notified()).await.expect("attempt 1 is dispatched");
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "attempt 1 runs at the executor");
-    // The executor's SeatTransfer step reached the holder, whose row is the target.
+    // The executor's PrimaryUpdated step reached the primary, whose row is the target.
     r.switch.target_to(Some("mesh1.admin.2"));
     let step = BuildReply::Step {
         build_id: r.build.to_string(),
         attempt: 1,
         operation: "node.stop:mesh1.admin.1".into(),
-        step: "SeatTransfer".into(),
+        step: "PrimaryUpdated".into(),
         receipt: None,
     };
     feed.send(InnerItem::Frame(step.clone())).unwrap();
     match next_within(&mut reader).await {
         Some(Read::Frame(f)) => assert_eq!(f, step, "the run's frame reaches the callers"),
-        other => panic!("before the executor says it holds the seat, the callers read the run's frames and no seat loss, got {other:?}"),
+        other => panic!("before the executor says it holds the primary role, the callers read the run's frames and no role loss, got {other:?}"),
     }
-    assert!(next_within(&mut reader).await.is_none(), "no seat loss before the executor's new-seat frame");
-    assert!(!running.is_finished(), "the drive waits for the executor's new-seat frame");
+    assert!(next_within(&mut reader).await.is_none(), "no role loss before the executor's new-primary frame");
+    assert!(!running.is_finished(), "the drive waits for the executor's new-primary frame");
     // The executor installed the election's result: its run's stream ends FabricPrimaryMoved.
     feed.send(InnerItem::Frame(BuildReply::FabricPrimaryMoved { build_id: r.build.to_string(), fabric_primary: Some("mesh1.admin.2".into()) })).unwrap();
-    let end = tokio::time::timeout(Duration::from_secs(5), running).await.expect("the drive ends on the executor's new-seat frame").unwrap();
-    assert!(matches!(&end, DriveEnd::SeatLost(why) if why.contains("is no longer the fabric-primary: ")), "the target ends the drive SeatLost: {end:?}");
+    let end = tokio::time::timeout(Duration::from_secs(5), running).await.expect("the drive ends on the executor's new-primary frame").unwrap();
+    assert!(matches!(&end, DriveEnd::RoleLost(why) if why.contains("is no longer the fabric-primary: ")), "the target ends the drive RoleLost: {end:?}");
     match next_within(&mut reader).await {
-        Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh1.admin.2"), "the stream names the executor the transfer seated: {loss:?}"),
-        other => panic!("the reader ends with the seat loss, got {other:?}"),
+        Some(Read::RoleLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh1.admin.2"), "the stream names the executor the transfer primary: {loss:?}"),
+        other => panic!("the reader ends with the role loss, got {other:?}"),
     }
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "no later attempt was claimed: the executor resumes attempt 1");
@@ -1203,7 +1203,7 @@ async fn terminal_of(drive: &Arc<Drive>) -> BuildReply {
 }
 
 /// CONTRACT (node-rpc-envelope.md "Caller execution and certainty": "a completed Build answers
-/// AlreadyApplied with its terminal frame; a running Build with a live holder returns that holder's
+/// AlreadyApplied with its terminal frame; a running Build with a live primary returns that primary's
 /// stream"): the drive that completed attempt N is the record of that run. A caller whose read of
 /// the Build predates the verdict of N (it showed attempt N running) is handed that drive, and
 /// nothing runs again; once attempt N+1 is opened on the complete Build (a restart reopens it), the
@@ -1483,7 +1483,7 @@ fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unprov
 
 /// CONTRACT (R-S2: event-driven, never once per pass; mesh-delete.md, "Failure and receipts"): an
 /// attempt of a leave that ends incomplete with nothing changed since it was claimed gets no next
-/// attempt from the drive, however many times the drive passes; one input moving (the seat of a
+/// attempt from the drive, however many times the drive passes; one input moving (the role of a
 /// member of the leaving mesh) gets exactly one. Attempt 1 ends incomplete, two passes claim nothing,
 /// the move opens attempt 2, which ends incomplete the same way and again claims nothing, and the
 /// next move opens attempt 3, which completes.
@@ -1627,7 +1627,7 @@ fn a_successor_drive_over_a_handed_back_build_claims_one_attempt_installs_the_wa
 /// CONTRACT (mesh-delete.md, "Resume after the primary's loss": the lost primary's Exited is recorded,
 /// the amendment admits the new primary, "the new mesh-primary gets a fresh claim and runs only the
 /// tiers without a terminal receipt"): a leave whose primary was lost records the exit and the
-/// amendment as receipts of its Build and ends incomplete because the new primary is not seated yet.
+/// amendment as receipts of its Build and ends incomplete because the new primary is not in its role yet.
 /// The receipts are what moved: the Build stays in progress and the drive claims the next attempt at
 /// once, with no wait for any other change, and that attempt completes the leave.
 /// Must NOT happen: the drive idling after an attempt that recorded receipts, or the Build failed.
@@ -1638,7 +1638,7 @@ fn a_leave_that_recorded_the_exit_and_the_amendment_before_it_ended_incomplete_i
     let (end, state, attempt, dispatched, steps) = cap.run(async {
         let root = tracing::info_span!("cell.leave-recorded-then-incomplete");
         let _in_root = root.enter();
-        let (r, mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete("mesh.delete: mesh2.admin.3 was created for mesh2 and holds no mesh-primary seat yet; the next attempt amends the roster for it".into()))).await;
+        let (r, mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete("mesh.delete: mesh2.admin.3 was created for mesh2 and holds no mesh-primary role yet; the next attempt amends the roster for it".into()))).await;
         mesh_deleter.progress.store(true, Ordering::SeqCst);
         mesh_deleter.once.store(true, Ordering::SeqCst);
         let end = r.env.run(&Drive::detached(r.build.clone())).await;
@@ -1731,16 +1731,16 @@ async fn a_drive_that_begins_once_its_admin_stopped_claims_and_dispatches_nothin
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "attempt 1 is claimed and run once the gate opened");
 }
 
-/// The view after the old holder `mesh1.admin.2` committed its seat row naming this admin, the
-/// fabric-primary `mesh1.admin.1`, its successor for both seats: this admin's view names it the
-/// holder of both, and the old holder holds none.
+/// The view after the old primary `mesh1.admin.2` committed its role row naming this admin, the
+/// fabric-primary `mesh1.admin.1`, its successor for both roles: this admin's view names it the
+/// primary of both, and the old primary holds none.
 fn view_after_the_row() -> Topology {
     let mut t = view();
     t.nodes = vec![node("mesh1.admin.1", true, true), node("mesh1.admin.2", false, false), node("mesh1.rpc.1", false, false)];
     t
 }
 
-/// A gate over the seat rows the fixture committed: each update a row records. It records every
+/// A gate over the role rows the fixture committed: each update a row records. It records every
 /// acknowledgement the drive asks for, with how many dispatches had been made when it asked, and
 /// refuses it with `refusal` when the cell sets one.
 struct Acknowledges {
@@ -1771,12 +1771,12 @@ impl Gate for Acknowledges {
     }
 }
 
-/// The Build removing the old holder `mesh1.admin.2` after its row, driven by this admin, its
+/// The Build removing the old primary `mesh1.admin.2` after its row, driven by this admin, its
 /// successor, through `Acknowledges` over that row (`refusal` set: the acknowledgement fails).
 async fn after_the_row(refusal: Option<&str>) -> (Rig, Arc<DriveEnv>, Arc<Acknowledges>, PrecedingUpdate) {
     let r = rig_for(view_after_the_row(), TopologyChange::RemoveNode { node: "mesh1.admin.2".parse().unwrap() }, |ran, _| ran).await;
     let op = "node.delete:mesh1.admin.2";
-    let row = PrecedingUpdate { mesh: "mesh1".into(), operation: rdm_admin::fabric_handover::update_operation(rdm_core::Seat::MeshPrimary, r.build.as_str(), 1, op), holder: Some("mesh1.admin.2".parse().unwrap()) };
+    let row = PrecedingUpdate { mesh: "mesh1".into(), operation: rdm_admin::fabric_handover::update_operation(rdm_core::PrimaryRole::MeshPrimary, r.build.as_str(), 1, op), primary: Some("mesh1.admin.2".parse().unwrap()) };
     let gate = Arc::new(Acknowledges { inner: r.switch.clone(), rows: vec![row.clone()], dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()), refusal: refusal.map(str::to_string) });
     let e = &r.env;
     let env = Arc::new(DriveEnv {
@@ -1797,12 +1797,12 @@ async fn after_the_row(refusal: Option<&str>) -> (Rig, Arc<DriveEnv>, Arc<Acknow
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 failure
 /// contract: "the next writer to read the row publishes 'updated'"; "The workflow continues only
 /// after the result is installed and acknowledged: node.primary.updated answered to the resuming
-/// executor's call, never a read alone"): this admin is the successor the old holder's committed
-/// row names, and its view already names it the holder of both seats, so no seat moves before the
-/// Build's operation on the old holder. The drive still asks its gate to acknowledge the update the
+/// executor's call, never a read alone"): this admin is the successor the old primary's committed
+/// row names, and its view already names it the primary of both roles, so no role moves before the
+/// Build's operation on the old primary. The drive still asks its gate to acknowledge the update the
 /// row records before it dispatches that operation: the acknowledgement is asked with no dispatch
 /// made, and the operation is dispatched once after it. Must NOT happen: the operation on the old
-/// holder dispatched on the view alone, before the update the row records is acknowledged.
+/// primary dispatched on the view alone, before the update the row records is acknowledged.
 #[tokio::test]
 async fn a_successor_whose_view_already_names_it_primary_acknowledges_the_rows_update_before_it_dispatches_on_the_old_primary() {
     let (r, env, gate, row) = after_the_row(None).await;
@@ -1810,7 +1810,7 @@ async fn a_successor_whose_view_already_names_it_primary_acknowledges_the_rows_u
     assert_eq!(env.run(&drive).await, DriveEnd::Terminal);
     let asked = gate.asked.lock().unwrap().clone();
     assert_eq!(asked.first(), Some(&(row.clone(), 0)), "the row's update is acknowledged before any dispatch: asked {asked:?}");
-    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1)], "the operation on the old holder is dispatched once, to this admin, its mesh's primary");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1)], "the operation on the old primary is dispatched once, to this admin, its mesh's primary");
     assert_eq!(r.ran.0.lock().unwrap().len(), 1, "it ran once: {:?}", r.ran.0.lock().unwrap());
 }
 
@@ -1818,7 +1818,7 @@ async fn a_successor_whose_view_already_names_it_primary_acknowledges_the_rows_u
 /// records that this admin cannot acknowledge (the successor's call fails, the row cannot be read)
 /// leaves the Build where it is: the drive stalls naming why on its span, frames nothing to the caller
 /// (node-rpc-envelope.md: Blocked's only source is the subject's Status `Blocked`), and dispatches nothing.
-/// Must NOT happen: the operation on the old holder dispatched past an update not acknowledged.
+/// Must NOT happen: the operation on the old primary dispatched past an update not acknowledged.
 #[tokio::test]
 async fn an_update_the_drive_cannot_acknowledge_stalls_the_drive_by_name_and_dispatches_nothing() {
     let (r, env, gate, row) = after_the_row(Some("the successor's call ended indeterminate")).await;
@@ -1835,7 +1835,7 @@ async fn an_update_the_drive_cannot_acknowledge_stalls_the_drive_by_name_and_dis
     assert_eq!(blocked_of(&waiting), Vec::<BuildReply>::new(), "the update not acknowledged frames no Blocked to the caller: the stall names it on its span");
 }
 
-/// The view before the holder's row: the fabric-primary `mesh1.admin.1` holds both seats, and
+/// The view before the primary's row: the fabric-primary `mesh1.admin.1` holds both roles, and
 /// `mesh1.admin.2` is the ready admin of its mesh that the update names its successor.
 fn view_primary_of_both() -> Topology {
     let mut t = view();
@@ -1843,11 +1843,11 @@ fn view_primary_of_both() -> Topology {
     t
 }
 
-/// The holder's own node.primary.update, run from its drive (`SeatGate::update_primaries` for its own
-/// seats): at the row the shared view names the successor the holder of both seats and the holder's
+/// The primary's own node.primary.update, run from its drive (`RoleGate::update_primaries` for its own
+/// roles): at the row the shared view names the successor the primary of both roles and the primary's
 /// Build log decides nothing more, naming it (`row` resolves: the successor installs and its drive may begin);
 /// then the update waits at steps 6-7 until the cell lets it go, and says "primary updated" (step 7).
-struct HolderUpdate {
+struct PrimaryUpdate {
     inner: Arc<Switch>,
     topology: Arc<RwLock<Topology>>,
     row: Arc<tokio::sync::Notify>,
@@ -1856,14 +1856,14 @@ struct HolderUpdate {
 }
 
 #[async_trait::async_trait]
-impl Gate for HolderUpdate {
+impl Gate for PrimaryUpdate {
     async fn target(&self) -> Result<Option<String>, BuildStateError> {
         self.inner.target().await
     }
     async fn target_set(&self) {
         self.inner.target_set().await
     }
-    async fn update_primaries(&self, _: &rdm_admin::executor::SeatMove, _: &BuildId, attempt: u32, _: u32, _: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
+    async fn update_primaries(&self, _: &rdm_admin::executor::RoleMove, _: &BuildId, attempt: u32, _: u32, _: &str) -> Result<(), rdm_admin::build_drive::RoleMoveEnd> {
         for n in self.topology.write().await.nodes.iter_mut() {
             let successor = n.name.to_string() == "mesh1.admin.2";
             (n.is_primary, n.is_fabric_primary) = (successor, successor);
@@ -1882,37 +1882,37 @@ impl Gate for HolderUpdate {
 /// commanding Build continue"; build proposal Part A, build.md:365: "The next attempt is claimed after
 /// the running attempt's terminal receipt (Complete, Failed or HandedOff), or, when the executor is
 /// lost with the attempt unfinished, after exact departure proof. A live run is reattached, never
-/// re-claimed"): the fabric-primary `mesh1.admin.1` holds both seats and its Build deletes it, so its
-/// drive moves both seats itself first. At its row the successor `mesh1.admin.2` holds the seats and
-/// its own drive of the same Build begins, while the holder is still at steps 6-7. The update is a
-/// step of the holder's attempt: the successor's drive reattaches to that attempt, claims nothing and
-/// dispatches nothing until it ends, and only after the holder said "primary updated" does the attempt
+/// re-claimed"): the fabric-primary `mesh1.admin.1` holds both roles and its Build deletes it, so its
+/// drive moves both roles itself first. At its row the successor `mesh1.admin.2` holds the roles and
+/// its own drive of the same Build begins, while the primary is still at steps 6-7. The update is a
+/// step of the primary's attempt: the successor's drive reattaches to that attempt, claims nothing and
+/// dispatches nothing until it ends, and only after the primary said "primary updated" does the attempt
 /// end `HandedOff` to the successor, which then claims the next attempt and runs the delete.
 /// Must NOT happen: the successor claiming an attempt, dispatching, or the delete running while the
-/// holder (alive) has not reached step 7.
+/// primary (alive) has not reached step 7.
 #[tokio::test(start_paused = true)]
 async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has_not_said_primary_updated() {
     let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
     let (row, let_go, events) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Semaphore::new(0)), Arc::new(Mutex::new(Vec::new())));
-    let holder_gate = Arc::new(HolderUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row: row.clone(), let_go: let_go.clone(), events: events.clone() });
+    let primary_gate = Arc::new(PrimaryUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row: row.clone(), let_go: let_go.clone(), events: events.clone() });
     let e = &r.env;
-    let holder = Arc::new(DriveEnv {
+    let primary = Arc::new(DriveEnv {
         me: e.me.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
         door: e.door.clone(),
         dispatcher: e.dispatcher.clone(),
-        gate: holder_gate,
+        gate: primary_gate,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
         notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     // The successor: its own door, gate and stop gate over the fixture's one Build log, view and store
-    // root (its mesh rows, `mesh_claims`, are the holder's).
+    // root (its mesh rows, `mesh_claims`, are the primary's).
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { targeted: AtomicBool::new(false), successor: Mutex::new(None), target_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: None });
+    let n_switch = Arc::new(Switch { targeted: AtomicBool::new(false), successor: Mutex::new(None), target_tx: tokio::sync::watch::channel(false).0, recorded_primary: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: None });
     let successor = Arc::new(DriveEnv {
         me: n_name.clone(),
         topology: e.topology.clone(),
@@ -1935,16 +1935,16 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has
     });
     let (p_drive, n_drive) = (Drive::detached(r.build.clone()), Drive::detached(r.build.clone()));
     let p_driving = tokio::spawn({
-        let (env, d) = (holder.clone(), p_drive.clone());
+        let (env, d) = (primary.clone(), p_drive.clone());
         async move { env.run(&d).await }
     });
-    tokio::time::timeout(Duration::from_secs(5), row.notified()).await.expect("the holder's update never wrote its row");
+    tokio::time::timeout(Duration::from_secs(5), row.notified()).await.expect("the primary's update never wrote its row");
     let mut n_driving = tokio::spawn({
         let (env, d) = (successor.clone(), n_drive.clone());
         async move { env.run(&d).await }
     });
     // Paused time moves on only once every task is idle: the successor's drive has gone as far as it
-    // can while the holder is at steps 6-7.
+    // can while the primary is at steps 6-7.
     let early = tokio::time::timeout(Duration::from_secs(60), &mut n_driving).await;
     let to_successor: Vec<(String, u32)> = r.dispatch.dispatched.lock().unwrap().iter().filter(|(to, _)| *to == n_name.to_string()).cloned().collect();
     assert!(r.ran.0.lock().unwrap().is_empty() && to_successor.is_empty() && early.is_err(), "while the holder had not said primary updated, the successor's drive dispatched {to_successor:?}, ran {:?}, and ended {early:?}; events {:?}", r.ran.0.lock().unwrap(), events.lock().unwrap());
@@ -1952,7 +1952,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has
     assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.1")), "the update runs in the holder's own attempt, and no other is claimed");
     let_go.add_permits(1);
     assert_eq!(tokio::time::timeout(Duration::from_secs(60), n_driving).await.expect("the successor's drive went on once the holder's attempt ended").unwrap(), DriveEnd::Terminal);
-    assert!(matches!(tokio::time::timeout(Duration::from_secs(60), p_driving).await.expect("the holder's drive ended").unwrap(), DriveEnd::SeatLost(_)), "the holder's drive ends at its row");
+    assert!(matches!(tokio::time::timeout(Duration::from_secs(60), p_driving).await.expect("the holder's drive ended").unwrap(), DriveEnd::RoleLost(_)), "the holder's drive ends at its row");
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!(p.attempt_executors.get(&1).map(String::as_str), Some("mesh1.admin.1"), "attempt 1 is the holder's: {:?}", p.attempt_executors);
     assert_eq!(p.attempt_executors.get(&2).map(String::as_str), Some("mesh1.admin.2"), "the successor claimed the next attempt after the holder's ended: {:?}", p.attempt_executors);
@@ -1966,7 +1966,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_primarys_update_has
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string(), "primary updated".into()]);
 }
 
-/// The holder's own node.primary.update refused before its row, as the door refuses it with no
+/// The primary's own node.primary.update refused before its row, as the door refuses it with no
 /// successor (`fabric_handover::update_primary` step 2: nothing said, cut off or written): the view is
 /// left as it is and the refusal is named as the admin's gate names a refused reply.
 struct RefusedUpdate {
@@ -1986,7 +1986,7 @@ impl Gate for RefusedUpdate {
     async fn target_set(&self) {
         self.inner.target_set().await
     }
-    async fn update_primaries(&self, m: &rdm_admin::executor::SeatMove, build: &BuildId, attempt: u32, run: u32, _: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
+    async fn update_primaries(&self, m: &rdm_admin::executor::RoleMove, build: &BuildId, attempt: u32, run: u32, _: &str) -> Result<(), rdm_admin::build_drive::RoleMoveEnd> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some((topology, builds, successor, calls)) = &self.gone_then_move {
             let claimed = builds.read_build(build).await.ok().and_then(|p| p.attempt_executors.get(&attempt).cloned());
@@ -1996,25 +1996,25 @@ impl Gate for RefusedUpdate {
                 recorded.len() == 1
             };
             if first {
-                return Err(rdm_admin::build_drive::SeatMoveEnd::Failed { step: "primary-update".into(), reason: GONE_REASON.into() , code: rdm_core::outcome::Code::FailedPrecondition });
+                return Err(rdm_admin::build_drive::RoleMoveEnd::Failed { step: "primary-update".into(), reason: GONE_REASON.into() , code: rdm_core::outcome::Code::FailedPrecondition });
             }
             for n in topology.write().await.nodes.iter_mut() {
-                if n.mesh == m.holder.mesh {
+                if n.mesh == m.primary.mesh {
                     let is_succ = n.name.to_string() == *successor;
-                    if m.mesh_seat {
+                    if m.mesh_role {
                         n.is_primary = is_succ && n.name.kind == NodeKind::NodeAdmin;
                     }
                 }
-                if m.fabric_seat {
+                if m.fabric_role {
                     n.is_fabric_primary = n.name.to_string() == *successor;
                 }
             }
-            if m.fabric_seat {
+            if m.fabric_role {
                 self.inner.target_to(Some(successor));
             }
             return Ok(());
         }
-        Err(rdm_admin::build_drive::SeatMoveEnd::Refused(format!("rejected-no-successor: RejectedNoSuccessor {{ reason: {NO_SECONDARY:?} }}")))
+        Err(rdm_admin::build_drive::RoleMoveEnd::Refused(format!("rejected-no-successor: RejectedNoSuccessor {{ reason: {NO_SECONDARY:?} }}")))
     }
 }
 
@@ -2022,21 +2022,21 @@ impl Gate for RefusedUpdate {
 /// contract: "Refused before the row (step 2, or the writer's own pre-check of the call's revision):
 /// refused by name, nothing changed, the Build's step fails by name. Nothing was cut off, so nothing
 /// is restored"; R-BI4: "Only an attempt that ended with a named terminal failure (Failed { step,
-/// reason }) makes the Build failed"): the fabric-primary `mesh1.admin.1` holds both seats and its
+/// reason }) makes the Build failed"): the fabric-primary `mesh1.admin.1` holds both roles and its
 /// Build deletes it, so it claims attempt 1 for itself and runs its own node.primary.update first,
 /// which is refused before the row with Q7's text. Attempt 1 ends `Failed`, its reason naming the
 /// refusal, and the drive ends at that terminal: nothing is dispatched or run and the view still names
-/// `mesh1.admin.1` the holder of both seats. No cut-off and no row is the refusing gate's own record
+/// `mesh1.admin.1` the primary of both roles. No cut-off and no row is the refusing gate's own record
 /// here (it wrote nothing); the door's refusal writing neither is
 /// `fabric_handover::a_transfer_with_no_successor_is_refused_with_q7s_exact_texts_and_nothing_moves`.
-/// Must NOT happen: the attempt handed back to the holder and the drive idle on a refusal (an
+/// Must NOT happen: the attempt handed back to the primary and the drive idle on a refusal (an
 /// incomplete attempt's arm), the update asked again, or the delete dispatched.
 #[tokio::test(start_paused = true)]
 async fn a_primarys_own_update_refused_before_the_row_fails_its_attempt_by_name_and_nothing_moves() {
     let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
     let gate = Arc::new(RefusedUpdate { inner: r.switch.clone(), calls: Default::default(), gone_then_move: None });
     let e = &r.env;
-    let holder = Arc::new(DriveEnv {
+    let primary = Arc::new(DriveEnv {
         me: e.me.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
@@ -2049,7 +2049,7 @@ async fn a_primarys_own_update_refused_before_the_row_fails_its_attempt_by_name_
         turns: e.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());
-    let end = tokio::time::timeout(Duration::from_secs(60), holder.run(&drive)).await.expect("the drive ends");
+    let end = tokio::time::timeout(Duration::from_secs(60), primary.run(&drive)).await.expect("the drive ends");
     let p = r.builds.read_build(&r.build).await.unwrap();
     let verdict: Vec<_> = r.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
         rdm_admin::build_state::BuildFact::Attempt(a) if a.build_id == r.build && a.attempt == 1 => Some(a.outcome),
@@ -2064,41 +2064,41 @@ async fn a_primarys_own_update_refused_before_the_row_fails_its_attempt_by_name_
     }
     assert_eq!(gate.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "the update was asked once");
     assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing ran or was dispatched: ran {:?}, dispatched {:?}", r.ran.0.lock().unwrap(), r.dispatch.dispatched.lock().unwrap());
-    let holder_node = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").map(|n| (n.is_primary, n.is_fabric_primary));
-    assert_eq!(holder_node, Some((true, true)), "the view still names the holder of both seats");
+    let primary_node = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").map(|n| (n.is_primary, n.is_fabric_primary));
+    assert_eq!(primary_node, Some((true, true)), "the view still names the primary of both roles");
 }
 
 /// CONTRACT (build.md: "The next attempt is claimed after the running attempt's terminal receipt
 /// (Complete, Failed or HandedOff)"; R-BI7 caveat 3, mesh_claims.rs: a mesh's in-flight row "is
 /// released at that attempt's verdict", by "the admin that durably recorded the verdict"): the
-/// fabric-primary `mesh1.admin.1` holds both seats and its Build deletes it, so it moves both seats in
+/// fabric-primary `mesh1.admin.1` holds both roles and its Build deletes it, so it moves both roles in
 /// the attempt it claims for itself, on mesh1's rows of the fabric's one store root, and that attempt
 /// ends `HandedOff` to the successor `mesh1.admin.2`. The successor's drive begins only after the
 /// attempt ended, so it reads the verdict and reattaches to nothing; it claims the next attempt on the
 /// same mesh1 rows and runs the delete.
-/// Must NOT happen: the successor's claim refused build-in-progress by the holder's ended attempt, its
+/// Must NOT happen: the successor's claim refused build-in-progress by the primary's ended attempt, its
 /// drive stalled on a mesh no attempt in flight holds.
 #[tokio::test(start_paused = true)]
 async fn a_successor_that_reads_the_primarys_attempt_ended_claims_the_next_attempt_on_the_mesh_the_primary_released() {
     let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
     let (row, events) = (Arc::new(tokio::sync::Notify::new()), Arc::new(Mutex::new(Vec::new())));
-    // The holder says primary updated as soon as its row is written: nothing holds it at steps 6-7.
-    let holder_gate = Arc::new(HolderUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row, let_go: Arc::new(tokio::sync::Semaphore::new(1)), events: events.clone() });
+    // The primary says primary updated as soon as its row is written: nothing holds it at steps 6-7.
+    let primary_gate = Arc::new(PrimaryUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row, let_go: Arc::new(tokio::sync::Semaphore::new(1)), events: events.clone() });
     let e = &r.env;
-    let holder = Arc::new(DriveEnv {
+    let primary = Arc::new(DriveEnv {
         me: e.me.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
         door: e.door.clone(),
         dispatcher: e.dispatcher.clone(),
-        gate: holder_gate,
+        gate: primary_gate,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
         notices: e.notices.clone(),
         turns: e.turns.clone(),
     });
     let p_drive = Drive::detached(r.build.clone());
-    assert!(matches!(tokio::time::timeout(Duration::from_secs(60), holder.run(&p_drive)).await.expect("the holder's drive ended"), DriveEnd::SeatLost(_)), "the holder's drive ends at its row");
+    assert!(matches!(tokio::time::timeout(Duration::from_secs(60), primary.run(&p_drive)).await.expect("the holder's drive ended"), DriveEnd::RoleLost(_)), "the holder's drive ends at its row");
     let p = r.builds.read_build(&r.build).await.unwrap();
     let handed: Vec<_> = r.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
         rdm_admin::build_state::BuildFact::Attempt(a) if a.build_id == r.build && a.attempt == 1 => Some(a.outcome),
@@ -2107,9 +2107,9 @@ async fn a_successor_that_reads_the_primarys_attempt_ended_claims_the_next_attem
     assert_eq!((p.attempt, handed), (1, vec![rdm_admin::build_state::AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }]), "the holder's attempt ended handed off to the successor before the successor's drive begins");
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { targeted: AtomicBool::new(false), successor: Mutex::new(None), target_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: None });
+    let n_switch = Arc::new(Switch { targeted: AtomicBool::new(false), successor: Mutex::new(None), target_tx: tokio::sync::watch::channel(false).0, recorded_primary: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: None });
     // The successor: its own door, gate and stop gate over the fixture's one Build log, view and store
-    // root (its mesh rows, `mesh_claims`, are the holder's).
+    // root (its mesh rows, `mesh_claims`, are the primary's).
     let successor = Arc::new(DriveEnv {
         me: n_name.clone(),
         topology: e.topology.clone(),
@@ -2140,8 +2140,8 @@ async fn a_successor_that_reads_the_primarys_attempt_ended_claims_the_next_attem
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string(), "primary updated".into()]);
 }
 
-/// The successor's gate in a holder-lost hand-over: each acknowledgement the drive asks for the rows
-/// the fixture committed, with whether the holder's departure was proven by then and how many
+/// The successor's gate in a primary-lost hand-over: each acknowledgement the drive asks for the rows
+/// the fixture committed, with whether the primary's departure was proven by then and how many
 /// dispatches had been made.
 struct AfterTheProof {
     inner: Arc<Switch>,
@@ -2170,33 +2170,33 @@ impl Gate for AfterTheProof {
 }
 
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 failure
-/// contract: "The holder lost after the row, before 'updated': the successor and every reader take the
-/// seat from the row; the next writer to read the row publishes 'updated'"; "A call that reached a
+/// contract: "The primary lost after the row, before 'updated': the successor and every reader take the
+/// role from the row; the next writer to read the row publishes 'updated'"; "A call that reached a
 /// process other than the named birth, a refusal or no answer is never an exited verdict"; build.md: the
 /// next attempt is claimed "when the executor is lost with the attempt unfinished, after exact
-/// departure proof"): the fabric-primary `mesh1.admin.1` holds both seats and moves them in its own
+/// departure proof"): the fabric-primary `mesh1.admin.1` holds both roles and moves them in its own
 /// attempt; it dies after its row, before it says "primary updated". Its successor `mesh1.admin.2`,
-/// holding the seats from the row, finds that attempt held by the holder and its call to it reaches
-/// nothing: only the holder's proven departure lets it claim the next attempt, and only then does it
+/// holding the roles from the row, finds that attempt held by the primary and its call to it reaches
+/// nothing: only the primary's proven departure lets it claim the next attempt, and only then does it
 /// acknowledge the row's update (the acknowledgement in which the successor, the next writer to read the
-/// row, says "primary updated" once the holder's exit is proven: fabric_handover.rs
-/// `a_successor_that_answered_the_holders_call_says_primary_updated_only_once_the_holder_is_proven_exited`),
+/// row, says "primary updated" once the primary's exit is proven: fabric_handover.rs
+/// `a_successor_that_answered_the_primaries_call_says_primary_updated_only_once_the_primary_is_proven_exited`),
 /// before it dispatches the delete.
-/// Must NOT happen: the successor claiming the holder's attempt over it on silence, the acknowledgement
+/// Must NOT happen: the successor claiming the primary's attempt over it on silence, the acknowledgement
 /// before the departure proof, or the delete dispatched before the acknowledgement.
 #[tokio::test(start_paused = true)]
 async fn a_fabric_primary_lost_after_its_row_has_exited_before_its_successor_acknowledges_the_row_and_dispatches() {
     let r = rig_for(view_primary_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
     let (row, let_go, events) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Semaphore::new(0)), Arc::new(Mutex::new(Vec::new())));
-    let holder_gate = Arc::new(HolderUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row: row.clone(), let_go, events: events.clone() });
+    let primary_gate = Arc::new(PrimaryUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row: row.clone(), let_go, events: events.clone() });
     let e = &r.env;
-    let holder = Arc::new(DriveEnv {
+    let primary = Arc::new(DriveEnv {
         me: e.me.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
         door: e.door.clone(),
         dispatcher: e.dispatcher.clone(),
-        gate: holder_gate,
+        gate: primary_gate,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
         notices: e.notices.clone(),
@@ -2204,11 +2204,11 @@ async fn a_fabric_primary_lost_after_its_row_has_exited_before_its_successor_ack
     });
     let p_drive = Drive::detached(r.build.clone());
     let p_driving = tokio::spawn({
-        let (env, d) = (holder.clone(), p_drive.clone());
+        let (env, d) = (primary.clone(), p_drive.clone());
         async move { env.run(&d).await }
     });
-    tokio::time::timeout(Duration::from_secs(5), row.notified()).await.expect("the holder's update never wrote its row");
-    // The holder dies after its row, before step 7: its process (the drive and the run it held) is gone,
+    tokio::time::timeout(Duration::from_secs(5), row.notified()).await.expect("the primary's update never wrote its row");
+    // The primary dies after its row, before step 7: its process (the drive and the run it held) is gone,
     // nothing answers at its address, and the provider proves its exact runtime exited.
     p_driving.abort();
     let _ = p_driving.await;
@@ -2216,9 +2216,9 @@ async fn a_fabric_primary_lost_after_its_row_has_exited_before_its_successor_ack
     r.proofs.exited.lock().unwrap().insert("mesh1.admin.1".into());
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
-    let n_switch = Arc::new(Switch { targeted: AtomicBool::new(false), successor: Mutex::new(None), target_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: None });
+    let n_switch = Arc::new(Switch { targeted: AtomicBool::new(false), successor: Mutex::new(None), target_tx: tokio::sync::watch::channel(false).0, recorded_primary: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: None });
     let op = "node.delete:mesh1.admin.1";
-    let update = PrecedingUpdate { mesh: "mesh1".into(), operation: rdm_admin::fabric_handover::update_operation(rdm_core::Seat::MeshPrimary, r.build.as_str(), 1, op), holder: Some("mesh1.admin.1".parse().unwrap()) };
+    let update = PrecedingUpdate { mesh: "mesh1".into(), operation: rdm_admin::fabric_handover::update_operation(rdm_core::PrimaryRole::MeshPrimary, r.build.as_str(), 1, op), primary: Some("mesh1.admin.1".parse().unwrap()) };
     let n_gate = Arc::new(AfterTheProof { inner: n_switch, rows: vec![update.clone()], proofs: r.proofs.clone(), dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()) });
     let successor = Arc::new(DriveEnv {
         me: n_name.clone(),
@@ -2242,21 +2242,21 @@ async fn a_fabric_primary_lost_after_its_row_has_exited_before_its_successor_ack
     });
     let n_drive = Drive::detached(r.build.clone());
     assert_eq!(tokio::time::timeout(Duration::from_secs(60), successor.run(&n_drive)).await.expect("the successor's drive ends"), DriveEnd::Terminal);
-    assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 1, "the holder's departure was proven once");
+    assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 1, "the primary's departure was proven once");
     assert_eq!(*n_gate.asked.lock().unwrap(), vec![(update, true, 0)], "the row's update was acknowledged once, after the departure proof and before any dispatch");
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt_executors.get(&1).map(String::as_str), p.attempt_executors.get(&2).map(String::as_str)), (Some("mesh1.admin.1"), Some("mesh1.admin.2")), "the successor claimed the attempt after the holder's: {:?}", p.attempt_executors);
-    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 2)], "nothing reached the lost holder; the delete was dispatched once, to the successor");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 2)], "nothing reached the lost primary; the delete was dispatched once, to the successor");
     assert_eq!(*r.ran.0.lock().unwrap(), vec![op.to_string()], "the delete ran once, at the successor");
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string()], "the holder never said primary updated");
 }
 
-const GONE_REASON: &str = "the new holder's process is gone, provider-confirmed, after the committed row: step primary-update; new holder mesh1 000000000003; moved mesh-primary (mesh1) revision 4; ordinary rule seated mesh-primary (mesh1): mesh1.admin.1; provider proof: the provider proved its exact birth exited with code 0";
+const GONE_REASON: &str = "the new primary's process is gone, provider-confirmed, after the committed row: step primary-update; new primary mesh1 000000000003; moved mesh-primary (mesh1) revision 4; ordinary rule primary mesh-primary (mesh1): mesh1.admin.1; provider proof: the provider proved its exact birth exited with code 0";
 
-/// A node.primary.update whose new holder's process is gone, provider-confirmed, after the row
+/// A node.primary.update whose new primary's process is gone, provider-confirmed, after the row
 /// (ruling R-PU2, Q10), then, in the next run, a transfer to `successor`: the first call ends
-/// `SeatMoveEnd::Failed` with the view unchanged (the ordinary rule seats the holder again), the next
-/// moves the requested seats to `successor`. Records `(attempt, run, claimed_before)` for each call.
+/// `RoleMoveEnd::Failed` with the view unchanged (the ordinary rule names the primary again), the next
+/// moves the requested roles to `successor`. Records `(attempt, run, claimed_before)` for each call.
 fn gone_after_row_then_moved(
     inner: Arc<Switch>,
     topology: Arc<RwLock<Topology>>,
@@ -2268,18 +2268,18 @@ fn gone_after_row_then_moved(
     (gate, calls)
 }
 
-/// CONTRACT (ruling R-PU2, Q8/Q9/Q10 + Luke 2026-10-13: when the new holder's process is gone,
+/// CONTRACT (ruling R-PU2, Q8/Q9/Q10 + Luke 2026-10-13: when the new primary's process is gone,
 /// provider-confirmed, after the committed row, the transfer step fails with `Failed { step, reason }`,
 /// the Build is Failed under R-BI4; recovery order (4) "The executor durably records Failed { step,
 /// reason } and ends the workflow; it never proceeds to P's stop. The terminal receipt goes through the
 /// Build journal"; (5) "The caller's resubmit opens the next attempt of the same Build ... under its
 /// own key, (build_id, run), never the Build id alone"): the fabric-primary `mesh1.admin.1` holds both
-/// seats and its Build removes it. Its own update in attempt 1 (run 1) ends with the new holder's
-/// process gone after the row and the ordinary rule seats it again: attempt 1 ends `Failed` at step
+/// roles and its Build removes it. Its own update in attempt 1 (run 1) ends with the new primary's
+/// process gone after the row and the ordinary rule names it again: attempt 1 ends `Failed` at step
 /// primary-update, the drive ends at that terminal, and nothing is dispatched or run. The caller's
 /// resubmit (a fresh drive of the failed Build) claims attempt 2, which opens run 2: its update is a
-/// new transfer (run 2), which moves the seats to `mesh1.admin.3`, and the drive goes on from the
-/// moved seat. Must NOT happen: the attempt handed back to the holder and the drive idle on it, the
+/// new transfer (run 2), which moves the roles to `mesh1.admin.3`, and the drive goes on from the
+/// moved role. Must NOT happen: the attempt handed back to the primary and the drive idle on it, the
 /// remove dispatched in attempt 1, or attempt 2's update keyed by run 1 (it would replay run 1's row).
 #[tokio::test(start_paused = true)]
 async fn a_primarys_own_update_whose_successors_process_is_gone_after_the_row_fails_and_the_resubmit_runs_a_new_transfer() {
@@ -2288,7 +2288,7 @@ async fn a_primarys_own_update_whose_successors_process_is_gone_after_the_row_fa
     let r = rig_for(t, TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
     let (gate, calls) = gone_after_row_then_moved(r.switch.clone(), r.env.topology.clone(), r.builds.clone(), "mesh1.admin.3");
     let e = &r.env;
-    let holder = Arc::new(DriveEnv {
+    let primary = Arc::new(DriveEnv {
         me: e.me.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
@@ -2301,7 +2301,7 @@ async fn a_primarys_own_update_whose_successors_process_is_gone_after_the_row_fa
         turns: e.turns.clone(),
     });
     let drive = Drive::detached(r.build.clone());
-    let end = tokio::time::timeout(Duration::from_secs(60), holder.run(&drive)).await.expect("the drive ends");
+    let end = tokio::time::timeout(Duration::from_secs(60), primary.run(&drive)).await.expect("the drive ends");
     let verdicts = |attempt: u32| {
         let builds = r.builds.clone();
         let build = r.build.clone();
@@ -2314,31 +2314,31 @@ async fn a_primarys_own_update_whose_successors_process_is_gone_after_the_row_fa
     };
     let first = verdicts(1).await;
     assert_eq!(end, DriveEnd::Terminal, "the failed step ends the drive at a terminal: verdicts {first:?}");
-    assert!(matches!(first.as_slice(), [rdm_admin::build_state::AttemptOutcome::Failed { reason , .. }] if reason.starts_with("the new holder's process is gone, provider-confirmed, after the committed row")), "attempt 1 failed with the plain-English reason: {first:?}");
+    assert!(matches!(first.as_slice(), [rdm_admin::build_state::AttemptOutcome::Failed { reason , .. }] if reason.starts_with("the new primary's process is gone, provider-confirmed, after the committed row")), "attempt 1 failed with the plain-English reason: {first:?}");
     match terminal_of(&drive).await {
-        BuildReply::Failed { attempt, step, reason, .. } => assert!(attempt == 1 && step == "primary-update" && reason.starts_with("the new holder's process is gone, provider-confirmed, after the committed row"), "{step}: {reason}"),
+        BuildReply::Failed { attempt, step, reason, .. } => assert!(attempt == 1 && step == "primary-update" && reason.starts_with("the new primary's process is gone, provider-confirmed, after the committed row"), "{step}: {reason}"),
         other => panic!("the drive's terminal is the failed step: {other:?}"),
     }
     assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "the remove is never reached: ran {:?}, dispatched {:?}", r.ran.0.lock().unwrap(), r.dispatch.dispatched.lock().unwrap());
     // The caller's resubmit: a drive of the failed Build claims its next attempt.
     let resubmit = Drive::detached(r.build.clone());
-    let _ = tokio::time::timeout(Duration::from_secs(60), holder.run(&resubmit)).await.expect("the resubmitted drive ends");
+    let _ = tokio::time::timeout(Duration::from_secs(60), primary.run(&resubmit)).await.expect("the resubmitted drive ends");
     assert_eq!(*calls.lock().unwrap(), vec![(1, 1, Some("mesh1.admin.1".into())), (2, 2, Some("mesh1.admin.1".into()))], "attempt 2 opens run 2: its update is a new transfer key");
     let second = verdicts(2).await;
-    assert!(matches!(second.as_slice(), [rdm_admin::build_state::AttemptOutcome::HandedOff { to }] if to == "mesh1.admin.3"), "attempt 2 moved the seats and handed the Build to mesh1.admin.3: {second:?}");
+    assert!(matches!(second.as_slice(), [rdm_admin::build_state::AttemptOutcome::HandedOff { to }] if to == "mesh1.admin.3"), "attempt 2 moved the roles and handed the Build to mesh1.admin.3: {second:?}");
 }
 
-/// CONTRACT (Q10 commanded arm: "When a commanded node.primary.update ends, the holder answers the
+/// CONTRACT (Q10 commanded arm: "When a commanded node.primary.update ends, the primary answers the
 /// fabric-primary with the Build carrier's own terminal, `Failed { step, reason }` (R-BI4; the
 /// envelope's only durable step outcomes are Complete and Failed). 0x21 gains that variant;
 /// `Incomplete` is not used for a step that ended. The FP fails the step on the variant, never on the
 /// reason's text ... The FP claims the attempt at the claim door BEFORE it commands"): the
 /// fabric-primary `mesh1.admin.1` drives a Build that removes `mesh2.admin.1`, mesh2's primary. There
 /// is no separate arm: the fabric-primary claims attempt 1 at the claim door before it commands
-/// `mesh2.admin.1`'s seat move. In run 1, the commanded move answers `Failed { step, reason }`: attempt
+/// `mesh2.admin.1`'s role move. In run 1, the commanded move answers `Failed { step, reason }`: attempt
 /// 1 ends `Failed`, the Build is `Failed`, and nothing is dispatched to mesh2. On the caller's
 /// resubmit, the fabric-primary claims attempt 2 (opening run 2) before commanding `mesh2.admin.1`'s
-/// seat move, which moves mesh2's seat to `mesh2.admin.3`, hands off attempt 2, and claims attempt 3
+/// role move, which moves mesh2's role to `mesh2.admin.3`, hands off attempt 2, and claims attempt 3
 /// for `mesh2.admin.3` to run the remove.
 #[tokio::test(start_paused = true)]
 async fn a_commanded_update_claims_the_attempt_first_and_when_it_ends_failed_fails_the_build_and_the_resubmit_opens_the_next_run() {
@@ -2371,7 +2371,7 @@ async fn a_commanded_update_claims_the_attempt_first_and_when_it_ends_failed_fai
         other => panic!("the drive's terminal is the failed step: {other:?}"),
     }
     assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing was dispatched when the commanded update ended Failed");
-    // The caller's resubmit opens run 2: attempt 2 is claimed before commanding, moves mesh2's seat to
+    // The caller's resubmit opens run 2: attempt 2 is claimed before commanding, moves mesh2's role to
     // mesh2.admin.3, and attempt 3 dispatches the remove to mesh2.admin.3.
     let resubmit = Drive::detached(r.build.clone());
     let end2 = tokio::time::timeout(Duration::from_secs(60), commander.run(&resubmit)).await.expect("the resubmitted drive ends");
@@ -2465,7 +2465,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             targeted: AtomicBool::new(false),
             successor: Mutex::new(None),
             target_tx: tokio::sync::watch::channel(false).0,
-            record_holder: Mutex::new(None),
+            recorded_primary: Mutex::new(None),
             peer: Mutex::new(Default::default()),
             dead: Mutex::new(Default::default()),
             view: None,
@@ -3061,7 +3061,7 @@ impl OperationRunner for ClaimedPastTheRun {
 /// step 4, Q160: a returning fabric-primary's writes are ignored and "it stops on its first read after the
 /// heal (Q109)"): the fabric-primary's run of attempt 1 ends `Failed` after mesh2.admin.1 won attempt 2.
 /// The drive reads the Build before it decides on the run's end: attempt 2 is the current attempt and not
-/// this admin's claim, so the end of attempt 1 decides nothing. The drive ends `SeatLost` naming
+/// this admin's claim, so the end of attempt 1 decides nothing. The drive ends `RoleLost` naming
 /// mesh2.admin.1, the callers' streams end with that move, and the Build stays in progress under attempt 2.
 /// What must NOT happen: the superseded attempt's `Failed` sent to the callers as the Build's terminal, or
 /// the Build read failed.
@@ -3073,7 +3073,7 @@ async fn a_fabric_primary_whose_attempt_another_admin_superseded_mid_run_sends_n
     let (capture, _guard) = crate::receipt_refusal::Capture::new("superseded-mid-run");
     let end = tokio::time::timeout(Duration::from_secs(2), r.env.run(&drive)).await.expect("the drive ends");
     match end {
-        DriveEnd::SeatLost(why) => assert!(why.contains("attempt 2") && why.contains("mesh2.admin.1"), "the end names the current attempt and its claimant: {why}"),
+        DriveEnd::RoleLost(why) => assert!(why.contains("attempt 2") && why.contains("mesh2.admin.1"), "the end names the current attempt and its claimant: {why}"),
         other => panic!("the superseded attempt's end decides nothing and the drive stops on its read: {other:?}"),
     }
     let mut reads = Vec::new();
@@ -3081,7 +3081,7 @@ async fn a_fabric_primary_whose_attempt_another_admin_superseded_mid_run_sends_n
         reads.push(read);
     }
     assert!(!reads.iter().any(|r| matches!(r, Read::Terminal(_))), "no terminal of the superseded attempt reaches the callers: {reads:?}");
-    assert!(reads.iter().any(|r| matches!(r, Read::SeatLost(loss) if loss.to.as_deref() == Some("mesh2.admin.1"))), "the callers are sent to mesh2.admin.1: {reads:?}");
+    assert!(reads.iter().any(|r| matches!(r, Read::RoleLost(loss) if loss.to.as_deref() == Some("mesh2.admin.1"))), "the callers are sent to mesh2.admin.1: {reads:?}");
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt, p.state, p.executor.as_deref()), (2, rdm_admin::build_state::BuildState::Running, Some("mesh2.admin.1")), "the Build stays in progress under attempt 2");
     let read = capture.spans("rdm.node_admin.build.reject.via-superseded-attempt");
@@ -3669,7 +3669,7 @@ async fn a_primary_update_the_view_does_not_show_stalls_the_drive_and_frames_not
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the update's wait frames no Blocked to the caller");
 }
 
-/// The holder's own node.primary.update that moves both primaries to `mesh1.admin.2` and the fabric
+/// The primary's own node.primary.update that moves both primaries to `mesh1.admin.2` and the fabric
 /// record with them, then ends without node.primary.updated (`Incomplete`).
 struct MovedUnanswered {
     inner: Arc<Switch>,
@@ -3684,13 +3684,13 @@ impl Gate for MovedUnanswered {
     async fn target_set(&self) {
         self.inner.target_set().await
     }
-    async fn update_primaries(&self, _: &rdm_admin::executor::SeatMove, _: &BuildId, _: u32, _: u32, _: &str) -> Result<(), rdm_admin::build_drive::SeatMoveEnd> {
+    async fn update_primaries(&self, _: &rdm_admin::executor::RoleMove, _: &BuildId, _: u32, _: u32, _: &str) -> Result<(), rdm_admin::build_drive::RoleMoveEnd> {
         for n in self.topology.write().await.nodes.iter_mut() {
             let successor = n.name.to_string() == "mesh1.admin.2";
             (n.is_primary, n.is_fabric_primary) = (successor, successor);
         }
         self.inner.target_to(Some("mesh1.admin.2"));
-        Err(rdm_admin::build_drive::SeatMoveEnd::Incomplete("the successor's answer was not read".into()))
+        Err(rdm_admin::build_drive::RoleMoveEnd::Incomplete("the successor's answer was not read".into()))
     }
 }
 
@@ -3719,7 +3719,7 @@ async fn a_primary_update_that_moved_the_primaries_without_its_answer_frames_not
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     let end = tokio::time::timeout(Duration::from_secs(60), env.run(&drive)).await.expect("the drive ends");
-    assert!(matches!(&end, DriveEnd::SeatLost(_)), "the drive ends at the record naming the successor: {end:?}");
+    assert!(matches!(&end, DriveEnd::RoleLost(_)), "the drive ends at the record naming the successor: {end:?}");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the unanswered update frames no Blocked to the caller");
 }
@@ -4313,7 +4313,7 @@ async fn build_drive_step_faults_recover_or_fail_as_the_page_specifies() {
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new());
 
     // Fault 2: Executor `mesh1.admin.2` is proven exited (`r.proofs.exited`), `mesh1.admin.1` takes
-    // the mesh-primary seat, and attempt 2 is cut mid-run after completing the first operation
+    // the mesh-primary role, and attempt 2 is cut mid-run after completing the first operation
     // (`node.create:mesh1.admin.2`). On the next pass, the completed receipt is reused (not run
     // twice) and the remaining operation (`node.create:mesh1.rpc.2`) completes (`DriveEnd::Terminal`).
     r.proofs.exited.lock().unwrap().insert("mesh1.admin.2".into());
@@ -4384,13 +4384,13 @@ async fn build_drive_step_faults_recover_or_fail_as_the_page_specifies() {
         "takeover attempts 2 and 3 send no duplicate started notice; attempt 3 completes and reopened attempt 4 fails: {told:?}"
     );
 
-    // Fault 4: Fabric-primary seat is yielded/targeted (`target_to(Some("mesh1.admin.2"))`).
-    // The drive refuses to claim or dispatch (`DriveEnd::SeatLost`) and ends the caller's stream
-    // with `Read::SeatLost` naming the successor.
+    // Fault 4: Fabric-primary role is yielded/targeted (`target_to(Some("mesh1.admin.2"))`).
+    // The drive refuses to claim or dispatch (`DriveEnd::RoleLost`) and ends the caller's stream
+    // with `Read::RoleLost` naming the successor.
     r.switch.target_to(Some("mesh1.admin.2"));
     let drive_lost = Drive::detached(r.build.clone());
     let mut lost_reader = drive_lost.reader(1);
-    assert!(matches!(r.env.run(&drive_lost).await, DriveEnd::SeatLost(why) if why.contains("is no longer the fabric-primary")));
-    assert!(matches!(next_within(&mut lost_reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh1.admin.2")));
+    assert!(matches!(r.env.run(&drive_lost).await, DriveEnd::RoleLost(why) if why.contains("is no longer the fabric-primary")));
+    assert!(matches!(next_within(&mut lost_reader).await, Some(Read::RoleLost(loss)) if loss.to.as_deref() == Some("mesh1.admin.2")));
     assert!(!capture.spans("rdm.node_admin.build.update.via-drive").is_empty());
 }

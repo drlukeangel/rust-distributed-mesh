@@ -275,7 +275,7 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     let other = birth("mesh2.rpc.2", NodeKind::RpcNode, "mesh2", false, false);
     let mesh2 = MeshId::mint();
     let mesh_ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh2.clone())].into_iter().collect();
-    // The receiver: mesh2's bootstrap admin, not yet any seat's holder.
+    // The receiver: mesh2's bootstrap admin, not yet any role's primary.
     let me = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
     let rig = rig(me, &[&fabric_primary, &not_primary, &member, &other], mesh_ids).await;
     let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
@@ -538,7 +538,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The adversary's cells: every refusal by its name, the durable row before the answer, the seat
+// The adversary's cells: every refusal by its name, the durable row before the answer, the role
 // and the birth moving under an in-flight declaration.
 
 /// Every span of `name` this cell emitted whose attributes carry the given pairs.
@@ -780,8 +780,8 @@ fn mesh_primary_refuses_every_backward_move_by_name() {
     });
 }
 
-/// CONTRACT (#2805, adversary): a declaration to a receiver that does not hold the seat it needs
-/// is refused naming the seat, whoever sends it (nothing checks who is calling, node-rpc.md §14); a
+/// CONTRACT (#2805, adversary): a declaration to a receiver that does not hold the role it needs
+/// is refused naming the role, whoever sends it (nothing checks who is calling, node-rpc.md §14); a
 /// node declaration to an admin that is no primary is refused naming the role it lacks before any
 /// subject is looked up, a subject no view holds included (rust-distributed-mesh#99);
 /// a stale Fabric id and a stale Mesh id are refused naming the id the receiver holds. What must
@@ -792,7 +792,7 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
-        // The receiver: a mesh1 admin that holds no seat.
+        // The receiver: a mesh1 admin that holds no role.
         let fp = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let rpc = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false);
         let other_admin = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
@@ -854,9 +854,9 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
 }
 
 /// CONTRACT (#2805, acceptance 10): an event applied by the fabric-primary stays applied when the
-/// seat moves. Each event applies once at the mesh primary on its natural key, whoever sends it
+/// role moves. Each event applies once at the mesh primary on its natural key, whoever sends it
 /// (node-rpc.md §14: nothing inside the mesh checks who is calling; the target that stops an old
-/// fabric-primary is its own moved seat record, at the sender): the old authority's repeat of an
+/// fabric-primary is its own moved primary record, at the sender): the old authority's repeat of an
 /// applied key and the new authority's are AlreadyApplied, a new event applies once, and a
 /// receiver restarted over its rows still answers both AlreadyApplied. What must NOT happen: an
 /// applied event applied twice, or a refusal naming the caller.
@@ -877,7 +877,7 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
         // Each event is the fabric-primary's fact on the fabric before it applies it at a mesh-primary.
         { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.events.push("ready".into()); store.fabric.put_fabric(&r).await.unwrap(); }
         assert_eq!(reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await), StatusReply::Applied);
-        // The seat moves: fp2 holds it, fp1 does not.
+        // The role moves: fp2 holds it, fp1 does not.
         {
             let mut t = rig.door.topology.write().await;
             for n in t.nodes.iter_mut() {
@@ -1131,11 +1131,11 @@ fn pending_handoff_waits_for_an_elected_mesh_primary_before_its_one_call() {
 }
 
 /// CONTRACT (#2805, acceptance 10 and the elected-primary legs of 4 and 5): the fabric primary is
-/// the admin with the lowest node id fabric-wide, so the seat moves to a newly born admin of
-/// another mesh. That new holder validates a Mesh declaration against the Mesh ids it hears in its
+/// the admin with the lowest node id fabric-wide, so the role moves to a newly born admin of
+/// another mesh. That new primary validates a Mesh declaration against the Mesh ids it hears in its
 /// view, not only against the ones its own Build created: a Mesh it never created is applied,
 /// whoever sends the declaration (node-rpc.md §14), and a Mesh id it holds neither way is refused
-/// `SubjectUnknown`. What must NOT happen: a perpetual refusal for a Mesh the new holder only heard
+/// `SubjectUnknown`. What must NOT happen: a perpetual refusal for a Mesh the new primary only heard
 /// of, or a refusal naming the caller.
 #[test]
 fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
@@ -1358,7 +1358,7 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
     assert_eq!(rows, ["ConnectionsDeleting:written", "ConnectionsDeleting:unchanged", "ConnectionsDeleted:written"], "the mesh-primary's row writes, in order: connections-deleted only from the Established completion");
 }
 
-/// What a mesh-primary folds from the stores as it takes `mesh` (`SeatFold::on_install`'s read): the
+/// What a mesh-primary folds from the stores as it takes `mesh` (`RoleFold::on_install`'s read): the
 /// facts on every mesh and on the fabric, and on every birth of `mesh`'s node records.
 async fn folded(nodes: &dyn rdm_admin::storage::NodesStorage, meshes: &dyn rdm_admin::storage::MeshStorage, fabric: &dyn rdm_admin::fabric_storage::FabricStorage, mesh: &str) -> rdm_admin::status_rpc::Declared {
     let (m, f, n) = (meshes.meshes().await.unwrap(), fabric.fabric().await.unwrap(), nodes.nodes(mesh).await.unwrap());

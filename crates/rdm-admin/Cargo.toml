@@ -42,7 +42,7 @@ path = "src/bin/rdm_node_admin.rs"
 required-features = ["file-backend"]
 
 [dev-dependencies]
-# seat_watch: the ladder cells run under paused time, so a probe's budget is exact, not a wall bound.
+# primary_watch: the ladder cells run under paused time, so a probe's budget is exact, not a wall bound.
 tokio = { workspace = true, features = ["test-util"] }
 # i143_acceptance_2805: each acceptance cell captures its own spans through the product pipeline into
 # an in-memory exporter installed on that cell's runtime threads, so cells sharing a test process never share one.

@@ -186,7 +186,7 @@ pub trait MeshStorage: Send + Sync {
     async fn take_in_flight(&self, mesh: &str, claim: &InFlight) -> Result<Taken, StorageError>;
     /// Release `mesh`'s in-flight row held for `attempt`, at that attempt's verdict: the row goes only
     /// while it names that attempt, so a release never removes another attempt's row. Its one writer
-    /// is the admin that durably recorded the verdict (the seat that holds the attempt's lane), so no
+    /// is the admin that durably recorded the verdict (the role that holds the attempt's lane), so no
     /// two releases of one row race.
     async fn release_in_flight(&self, mesh: &str, attempt: &InFlight) -> Result<(), StorageError>;
     /// The attempt holding `mesh`, when one does: a point read of its in-flight row.
@@ -1400,7 +1400,7 @@ mod tests {
         assert_eq!(crate::node_rows::take_name(&b, &name, &loser).await.unwrap(), Ok(()), "the claim over a Deleted holder's lock wins");
         assert_eq!(a.name_claim(&name).await.unwrap(), Some(loser.clone()));
         a.release_node_name(&name, &winner).await.unwrap();
-        assert_eq!(a.name_claim(&name).await.unwrap(), Some(loser), "the old holder's delayed release finds another claimant's lock and leaves it");
+        assert_eq!(a.name_claim(&name).await.unwrap(), Some(loser), "the old primary's delayed release finds another claimant's lock and leaves it");
     }
 
     /// CONTRACT (R-ML2 item 4 as amended: "the recreated mesh shares the name locks under locks/name/ and

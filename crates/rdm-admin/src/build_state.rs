@@ -139,7 +139,7 @@ pub struct BuildAttemptClaim {
     pub executor: String,
     /// The admin that decided the claim (a node-admin's path.name): the fabric-primary for a fabric-lane
     /// attempt, the mesh's own mesh-primary for a drift attempt. What a refusal names as the holder of
-    /// the attempt's mesh, as the claim recorded it (never re-read from a later seat view). A line
+    /// the attempt's mesh, as the claim recorded it (never re-read from a later role view). A line
     /// written before claimants were recorded carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claimant: Option<String>,
@@ -478,7 +478,7 @@ impl BuildProjection {
     }
 
     /// The first attempt of the run `attempt` belongs to (ruling R-PU2): the attempt the latest
-    /// `Opened` fact opened ([`Self::opened`]), or the first attempt of the Build. A seat update's
+    /// `Opened` fact opened ([`Self::opened`]), or the first attempt of the Build. A role update's
     /// transfer key is `(build_id, run)` ([`crate::fabric_handover::update_operation`]): the attempts
     /// of one run (hand-offs and take-overs) share it and replay its row; a new run makes a new one.
     pub fn run_of(&self, attempt: u32) -> u32 {
@@ -700,10 +700,10 @@ pub enum BuildStateError {
     },
     /// The fabric-primary record this admin holds names another live birth: this admin's Build log
     /// decides nothing from that record's revision on (the target stays set for this birth).
-    SeatYielded {
-        /// The admin whose Build log yielded the seat.
+    RoleYielded {
+        /// The admin whose Build log yielded the role.
         node: String,
-        /// The record that moved the seat, in words.
+        /// The record that moved the role, in words.
         by: String,
         /// The admin (path.name) the record names, when a digest of it is held.
         to: Option<String>,
@@ -717,7 +717,7 @@ impl std::fmt::Display for BuildStateError {
             Self::ConflictingIntent(id) => write!(f, "Build {id} was published with a different intent"),
             Self::Io(e) => write!(f, "build journal I/O: {e}"),
             Self::Unencodable(e) => write!(f, "Build fact cannot be sent: {e}"),
-            Self::SeatYielded { node, by, .. } => write!(f, "{node} is no longer the fabric-primary: {by}; its Build log decides nothing any more"),
+            Self::RoleYielded { node, by, .. } => write!(f, "{node} is no longer the fabric-primary: {by}; its Build log decides nothing any more"),
             Self::AttemptTaken { build_id, attempt, held, wanted } => {
                 write!(f, "attempt {attempt} of Build {build_id} is already open for {held}; this open asked for {wanted} and lost the number")
             }
@@ -3676,7 +3676,7 @@ mod tests {
             assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![], "submitted again and claimed: in flight");
             put(BuildFact::Attempt(failed(4, "node.create: PrepareStorage again"))).await;
         }
-        let j = open_at(&dir).await.unwrap(); // the admin restarted, or another took the seat
+        let j = open_at(&dir).await.unwrap(); // the admin restarted, or another took the role
         assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![owed(&r, 4, "node.create: PrepareStorage again")], "journal replay: the latest run's Failed attempt");
         for f in [
             BuildFact::Opened(open(&r, 5)),
@@ -4081,7 +4081,7 @@ mod tests {
     /// CONTRACT (the Build journal's read path; i144 e6, `fabric_primary.rs:204`): a read of the journal
     /// reads the store root without holding the writer, so a writer's turn never waits behind a
     /// reader's disk I/O. With the blocking pool's one thread held, a reader's sync is queued on
-    /// the disk; a writer's turn begun then takes the writer at once and names no holder. Must NOT
+    /// the disk; a writer's turn begun then takes the writer at once and names no primary. Must NOT
     /// happen: a writer's turn whose `held_by` names a reader, or a reader holding the writer across the
     /// disk.
     #[test]

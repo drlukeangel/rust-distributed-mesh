@@ -1,5 +1,5 @@
-//! A standalone node.connection.delete or stop of a seat-holding node-admin, run by the
-//! product's pipeline (`DeploymentPipeline`): the pipeline moves no seat (R-MT1: the fabric-primary's
+//! A standalone node.connection.delete or stop of a role-holding node-admin, run by the
+//! product's pipeline (`DeploymentPipeline`): the pipeline moves no role (R-MT1: the fabric-primary's
 //! drive moves it by node.primary.update before the operation is dispatched), and a command the birth
 //! never admitted completes nothing. The provider, the observer and the Build state are fixtures.
 
@@ -14,10 +14,10 @@ use rdm_admin::node_commands::NodeCommand;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-const DOMAIN: &str = "seat-transfer-step";
-const HOLDER: &str = "mesh1.admin.1";
+const DOMAIN: &str = "primary-update-step";
+const PRIMARY: &str = "mesh1.admin.1";
 
-/// The holder's runtime: running, never stopped here; nothing is launched.
+/// The primary's runtime: running, never stopped here; nothing is launched.
 struct Running;
 
 #[async_trait::async_trait]
@@ -75,7 +75,7 @@ impl TopologySink for NoView {
 }
 
 fn primary() -> Node {
-    let mut n = Node::allocated(HOLDER.parse().unwrap());
+    let mut n = Node::allocated(PRIMARY.parse().unwrap());
     n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = true;
@@ -83,7 +83,7 @@ fn primary() -> Node {
     n
 }
 
-/// The standalone workflow `workflow` (a node.connection.delete or a stop) of the seat-holding admin:
+/// The standalone workflow `workflow` (a node.connection.delete or a stop) of the role-holding admin:
 /// the pipeline's result, the commands the observer was asked to send, the Build's step receipts and
 /// the trace id.
 fn run_with(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String) {
@@ -110,8 +110,8 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
             seeds: vec![("executorkey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher { name: "mesh2.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
-            data_root: std::env::temp_dir().join(format!("seat-transfer-step-{}", NodeId::mint())),
-            store_dir: std::env::temp_dir().join(format!("seat-transfer-step-{}", NodeId::mint())),
+            data_root: std::env::temp_dir().join(format!("role-transfer-step-{}", NodeId::mint())),
+            store_dir: std::env::temp_dir().join(format!("role-transfer-step-{}", NodeId::mint())),
             issuing: None,
             roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
@@ -119,8 +119,8 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
             binding: None,
         };
         let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &observer, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let handle = DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60(&format!("dep-{HOLDER}"))).unwrap(), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };
-        let root = tracing::info_span!("cell.seat-transfer-step", build_id = %build_id.log(), node = HOLDER);
+        let handle = DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60(&format!("dep-{PRIMARY}"))).unwrap(), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };
+        let root = tracing::info_span!("cell.primary-update-step", build_id = %build_id.log(), node = PRIMARY);
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let r = {
             use tracing::Instrument;
@@ -143,7 +143,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
         (r, steps, trace_id)
     });
     let names: Vec<String> = cap.spans().iter().filter(|s| s["trace_id"] == trace_id.as_str()).map(|s| s["name"].as_str().unwrap_or("").to_string()).collect();
-    crate::assert_own_story(names.iter().map(String::as_str).filter(|n| *n != "cell.seat-transfer-step"));
+    crate::assert_own_story(names.iter().map(String::as_str).filter(|n| *n != "cell.primary-update-step"));
     println!("trace_id={trace_id} spans={names:?}");
     (r, observer.sent.into_inner().unwrap(), steps, trace_id)
 }
@@ -158,8 +158,8 @@ fn a_standalone_connections_delete_or_stop_whose_command_was_never_admitted_fail
         assert_eq!(sent, vec![workflow], "the {command} was asked for");
         let e = r.expect_err("a command that never reached the birth established nothing");
         assert_eq!(e.step, wait, "{e}");
-        assert!(e.reason.contains(HOLDER) && e.reason.contains(command) && e.reason.contains("NotSent"), "the failure names the birth, the command and the admission it got: {e}");
+        assert!(e.reason.contains(PRIMARY) && e.reason.contains(command) && e.reason.contains("NotSent"), "the failure names the birth, the command and the admission it got: {e}");
         assert!(!steps.iter().any(|(s, _)| s == "Complete"), "no Complete receipt: {steps:?}");
-        assert_eq!(steps.first().map(|(s, _)| s.as_str()), Some(if workflow == NodeCommand::DeleteConnections { DeleteStep::DeleteConnections.name() } else { DeleteStep::StopNode.name() }), "the pipeline moves no seat: its first step is the command's (R-MT1): {steps:?}");
+        assert_eq!(steps.first().map(|(s, _)| s.as_str()), Some(if workflow == NodeCommand::DeleteConnections { DeleteStep::DeleteConnections.name() } else { DeleteStep::StopNode.name() }), "the pipeline moves no role: its first step is the command's (R-MT1): {steps:?}");
     }
 }

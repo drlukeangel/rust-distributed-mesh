@@ -135,7 +135,7 @@ impl AttemptContexts {
 /// names the attempt, to its verdict; one `Lost` to an executor of another mesh releases the row it took
 /// here, because that attempt's verdict releases only its executor's mesh, and the loser runs nothing
 /// (build.md §5.2). Who may claim is the caller's rule
-/// ([`ClaimDoor`]'s seat check, the recovery door's recoverer), decided before this. `executor_birth`
+/// ([`ClaimDoor`]'s role check, the recovery door's recoverer), decided before this. `executor_birth`
 /// is the claim's executor's exact node id with the node rows it is read on, when the caller knows it.
 pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims: &dyn MeshStorage, contexts: &AttemptContexts, claim: &BuildAttemptClaim, mesh: &str, executor_birth: Option<(&dyn crate::storage::NodesStorage, &NodeId)>) -> BuildClaimReply {
     let lane = claim.mesh.as_deref();
@@ -234,11 +234,11 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
 pub struct ClaimDoor {
     /// This admin's path.name.
     pub me: PathName,
-    /// The node id this admin was born with: whether it holds the fabric seat is decided by it.
+    /// The node id this admin was born with: whether it holds the fabric-primary role is decided by it.
     pub node_id: NodeId,
     /// The admin's observed topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
-    /// This admin's Build log: the fabric-primary's own, when it holds the seat.
+    /// This admin's Build log: the fabric-primary's own, when it holds the role.
     pub builds: Arc<dyn BuildStateAdapter>,
     /// The observability contexts of the attempts it decided.
     pub contexts: Arc<AttemptContexts>,
@@ -260,7 +260,7 @@ impl ClaimDoor {
     }
 
     /// The reply of a receiver that may not claim in `lane` (R-BI7 caveat 2), decided from this
-    /// admin's view of the seats, never from who called: the fabric lane is the fabric-primary's, a
+    /// admin's view of the roles, never from who called: the fabric lane is the fabric-primary's, a
     /// mesh's drift lane that mesh's primary's. `mesh` is the mesh the attempt acts in, when known.
     async fn not_claimant(&self, lane: Option<&str>, mesh: Option<&str>) -> Option<BuildClaimReply> {
         let t = self.topology.read().await;
@@ -323,7 +323,7 @@ impl ClaimDoor {
         reply
     }
 
-    /// A request off the wire: the seat first (a receiver that may not claim in the request's lane
+    /// A request off the wire: the role first (a receiver that may not claim in the request's lane
     /// only names who may), then the executor the request names, at its exact birth as this admin's view
     /// holds it. Nothing checks who is calling (node-rpc.md §14): `peer` names the call, the claim
     /// is decided for the executor named. A node or birth the view does not hold is refused by name

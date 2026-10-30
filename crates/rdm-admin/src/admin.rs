@@ -107,7 +107,7 @@ mod tests {
     /// staleness floor starts node investigation on its birth as silence does"; Q181): a node-admin
     /// member of the mesh-primary's own mesh that is heard within the floor and leaves no command
     /// unanswered is not silent: the mesh-primary's tick neither watches it, marks it nor lists it
-    /// silent, and the seat watch does not investigate it. Must NOT happen: a live, heard node-admin
+    /// silent, and the primary watch does not investigate it. Must NOT happen: a live, heard node-admin
     /// tickled, investigated or replaced.
     #[test]
     fn a_heard_node_admin_member_that_answers_its_commands_is_not_investigated() {
@@ -131,8 +131,8 @@ mod tests {
         let silent = crate::offline::silent_set(view.members().filter(|n| n.node_id == member.node.node_id), &digest_view, now, now_ms, floor);
         assert!(silent.iter().all(|s| s.marked_at_ms.is_none()), "heard within the floor: no mark: {silent:?}");
         let me: PathName = "mesh1.admin.1".parse().unwrap();
-        let plan = crate::seat_watch::plan(&view, &me, &(me_id, primary.node.incarnation.clone()), &mut crate::seat_watch::Said::default(), &|_| false, &|_| false);
-        assert_eq!(plan, crate::seat_watch::Plan::default(), "the seat watch investigates no live node-admin");
+        let plan = crate::primary_watch::plan(&view, &me, &(me_id, primary.node.incarnation.clone()), &mut crate::primary_watch::Said::default(), &|_| false, &|_| false);
+        assert_eq!(plan, crate::primary_watch::Plan::default(), "the primary watch investigates no live node-admin");
     }
 
     #[tokio::test]
@@ -314,7 +314,7 @@ mod tests {
 
     /// The primaries the records on `nodes` hold, taken into a view that holds none.
     async fn primaries_recorded(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage) -> usize {
-        rows_writer::take_recorded_primaries(meshes, nodes, "mesh1", &DigestView::default().seats).await.unwrap()
+        rows_writer::take_recorded_primaries(meshes, nodes, "mesh1", &DigestView::default().primaries).await.unwrap()
     }
 
     /// The node ids of the births the records on `nodes` name to reach.
@@ -369,10 +369,10 @@ mod tests {
             assert_eq!(crate::reenter::get_topology(crate::reenter::TopologySource::DurableMap(&births)).await.unwrap(), want, "{backend}: the durable map is the births the records hold");
             // The recorded primaries, the own one included.
             let election = DigestView::default();
-            let taken = rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &election.seats).await.unwrap();
+            let taken = rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &election.primaries).await.unwrap();
             assert!((3..=4).contains(&taken), "{backend}: the mesh-primary's, the fabric-primary's and the rpc type's primary, the Deleted record's superseded: {taken}");
-            let held = |role, revision, d: &MeshDigest| matches!(election.seats.take(role, &rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }), rdm_transport::topology::SeatTaken::Same);
-            assert!(held(rdm_core::Seat::of_node_type(NodeKind::NodeAdmin), 3, &admin) && held(rdm_core::Seat::FabricPrimary, 1, &admin) && held(rdm_core::Seat::of_node_type(NodeKind::RpcNode), 2, &rpc), "{backend}: each recorded primary is held at its revision");
+            let held = |role, revision, d: &MeshDigest| matches!(election.primaries.take(role, &rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }), rdm_transport::topology::RoleTaken::Same);
+            assert!(held(rdm_core::PrimaryRole::of_node_type(NodeKind::NodeAdmin), 3, &admin) && held(rdm_core::PrimaryRole::FabricPrimary, 1, &admin) && held(rdm_core::PrimaryRole::of_node_type(NodeKind::RpcNode), 2, &rpc), "{backend}: each recorded primary is held at its revision");
         }
     }
 
@@ -502,20 +502,20 @@ mod tests {
         let lost_record = rdm_core::Primary { mesh: "mesh1".into(), node_id: lost.node.node_id.clone(), incarnation: lost.node.incarnation.clone(), revision: 1 };
         // The standby that launches the re-created birth: it holds the lost birth's records, and the birth gone.
         let server = DigestView::default();
-        server.seats.take(rdm_core::Seat::MeshPrimary, &lost_record);
-        server.seats.take(rdm_core::Seat::FabricPrimary, &lost_record);
-        server.seats.mark_gone(lost.node.incarnation.clone());
+        server.primaries.take(rdm_core::PrimaryRole::MeshPrimary, &lost_record);
+        server.primaries.take(rdm_core::PrimaryRole::FabricPrimary, &lost_record);
+        server.primaries.mark_gone(lost.node.incarnation.clone());
         // The Primaries frames its topology door serves (boot.rs: the records it holds, `gone` from its election's lost set).
         let lost_set = super::projection::incumbency_of(&server, &Records::default()).lost;
-        let mut served: Vec<(rdm_core::Seat, rdm_core::Primary, bool)> = server.seats.meshes().into_values().map(|p| (rdm_core::Seat::MeshPrimary, p)).chain(server.seats.fabric().map(|p| (rdm_core::Seat::FabricPrimary, p))).map(|(s, p)| { let gone = lost_set.contains(&p.incarnation); (s, p, gone) }).collect();
+        let mut served: Vec<(rdm_core::PrimaryRole, rdm_core::Primary, bool)> = server.primaries.meshes().into_values().map(|p| (rdm_core::PrimaryRole::MeshPrimary, p)).chain(server.primaries.fabric().map(|p| (rdm_core::PrimaryRole::FabricPrimary, p))).map(|(s, p)| { let gone = lost_set.contains(&p.incarnation); (s, p, gone) }).collect();
         served.sort_by_key(|(s, _, _)| s.name());
         assert_eq!(served.iter().map(|(s, p, g)| (s.name(), p.node_id.clone(), *g)).collect::<Vec<_>>(), vec![("fabric-primary", lost.node.node_id.clone(), true), ("mesh-primary", lost.node.node_id.clone(), true)], "the pull serves both of the lost birth's records, each gone");
         // The re-created birth takes them as `TopologyView::learn_primaries` does, then hears the standby's Ready.
         let digest_view = DigestView::default();
-        for (seat, primary, gone) in &served {
-            digest_view.seats.take(*seat, primary);
+        for (role, primary, gone) in &served {
+            digest_view.primaries.take(*role, primary);
             if *gone {
-                digest_view.seats.mark_gone(primary.incarnation.clone());
+                digest_view.primaries.mark_gone(primary.incarnation.clone());
             }
         }
         let recreated = digest("mesh1.admin.1", MemberStatus::Pending);
@@ -525,8 +525,8 @@ mod tests {
         assert!(view.iter().all(|n| !n.is_fabric_primary), "nor fabric-primary");
         // Fabric recovery's restore at revision 2.
         let restored = rdm_core::Primary { mesh: "mesh1".into(), node_id: recreated.node.node_id.clone(), incarnation: recreated.node.incarnation.clone(), revision: 2 };
-        digest_view.seats.take(rdm_core::Seat::MeshPrimary, &restored);
-        digest_view.seats.take(rdm_core::Seat::FabricPrimary, &restored);
+        digest_view.primaries.take(rdm_core::PrimaryRole::MeshPrimary, &restored);
+        digest_view.primaries.take(rdm_core::PrimaryRole::FabricPrimary, &restored);
         let mut view = vec![elected_node(&recreated, NodeStatus::Ready), elected_node(&standby, NodeStatus::Ready)];
         crate::election::resolve_with(&mut view, &super::projection::incumbency_of(&digest_view, &Records::default()));
         assert_eq!(mesh_primary_of(&view, "mesh1"), Some(recreated.node.node_id.clone()), "the restore names the re-created birth");
@@ -537,7 +537,7 @@ mod tests {
     /// predecessor is deleted; Q149 arm A): in a mesh whose deleted former primary's record still carries
     /// its older `is_primary`, the boot read holds the successor's later revision whatever order the
     /// records are read in, and the election names the successor. Must NOT happen: the Deleted record
-    /// pins the election to its obsolete holder.
+    /// pins the election to its obsolete primary.
     #[tokio::test]
     async fn a_deleted_former_primarys_older_record_never_overrides_its_successors() {
         for (backend, nodes, meshes) in record_stores("deleted-older-primary").await {
@@ -551,8 +551,8 @@ mod tests {
             writer.sweep(&[former.clone(), successor.clone(), other.clone()], &writing(&["mesh1"]), |_| false).await;
             crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &former.node.name, &former.node.node_id, None).await.ok().expect("the former primary's Deleted record");
             let digest_view = DigestView::default();
-            rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &digest_view.seats).await.unwrap();
-            assert_eq!(digest_view.seats.meshes().get("mesh1").map(|p| (p.node_id.clone(), p.revision)), Some((successor.node.node_id.clone(), 2)), "{backend}: the successor's later revision is held");
+            rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &digest_view.primaries).await.unwrap();
+            assert_eq!(digest_view.primaries.meshes().get("mesh1").map(|p| (p.node_id.clone(), p.revision)), Some((successor.node.node_id.clone(), 2)), "{backend}: the successor's later revision is held");
             let mut view = vec![elected_node(&successor, NodeStatus::Ready), elected_node(&other, NodeStatus::Ready)];
             crate::election::resolve_with(&mut view, &super::projection::incumbency_of(&digest_view, &Records::default()));
             assert_eq!(mesh_primary_of(&view, "mesh1"), Some(successor.node.node_id.clone()), "{backend}: the election names the successor");
@@ -710,9 +710,9 @@ mod tests {
             claimed(&*refusing.inner, d).await;
         }
         // The election's result this admin holds: itself mesh-primary at 3, mesh1.rpc.1 its type's primary at 2.
-        let holder = |d: &MeshDigest, revision| rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision };
-        digest_view.seats.take(rdm_core::Seat::MeshPrimary, &holder(&admin, 3));
-        digest_view.seats.take(rdm_core::Seat::NodeTypePrimary(NodeKind::RpcNode), &holder(&rpc, 2));
+        let primary_of = |d: &MeshDigest, revision| rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision };
+        digest_view.primaries.take(rdm_core::PrimaryRole::MeshPrimary, &primary_of(&admin, 3));
+        digest_view.primaries.take(rdm_core::PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), &primary_of(&rpc, 2));
         let writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), refusing.clone(), Arc::new(crate::storage::MemoryMeshStorage::default()), Default::default());
         let (_writes_tx, writes) = tokio::sync::watch::channel(writing(&["mesh1"]));
         let task = tokio::spawn(rows_writer::keep_mesh_rows(writer, digest_view.clone(), fabric1(), writes, crate::stop_gate::StopGate::new(), Arc::default()));
@@ -726,7 +726,7 @@ mod tests {
         .expect("the store refused the first sweep's writes");
         assert_eq!(at(std::sync::atomic::Ordering::SeqCst).1, 0, "nothing was acknowledged while the store refused");
         // The store recovers. No birth, digest or primary record changes from here.
-        let (births, primaries) = (*digest_view.birth_changes().borrow(), *digest_view.seats.subscribe().borrow());
+        let (births, primaries) = (*digest_view.birth_changes().borrow(), *digest_view.primaries.subscribe().borrow());
         refusing.refusing.store(false, std::sync::atomic::Ordering::SeqCst);
         tokio::time::timeout(Duration::from_secs(30), async {
             let addressed = async |d: &MeshDigest| newest_of(&*refusing.inner, d).await.is_some_and(|b| b.transport_addr.is_some());
@@ -736,7 +736,7 @@ mod tests {
         })
         .await
         .expect("the mesh-primary writes its owed rows on its own clock once the store recovers, with no topology change");
-        assert_eq!((*digest_view.birth_changes().borrow(), *digest_view.seats.subscribe().borrow()), (births, primaries), "no birth or primary changed while the rows were owed");
+        assert_eq!((*digest_view.birth_changes().borrow(), *digest_view.primaries.subscribe().borrow()), (births, primaries), "no birth or primary changed while the rows were owed");
         let row = async |d: &MeshDigest| newest_of(&*refusing.inner, d).await.expect("the member's record carries its birth");
         let (a, r) = (row(&admin).await, row(&rpc).await);
         assert_eq!((a.endpoint_id.as_ref(), a.transport_addr), (Some(&admin.node.endpoint_id), Some(admin.node.transport_addr)), "the mesh-primary's own record carries its birth's address");
@@ -776,9 +776,9 @@ mod tests {
         for d in [&admin, &rpc] {
             claimed(&*nodes.inner, d).await;
         }
-        let holder = |d: &MeshDigest, revision| rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision };
-        digest_view.seats.take(rdm_core::Seat::MeshPrimary, &holder(&admin, 3));
-        digest_view.seats.take(rdm_core::Seat::NodeTypePrimary(NodeKind::RpcNode), &holder(&rpc, 2));
+        let primary_of = |d: &MeshDigest, revision| rdm_core::Primary { mesh: "mesh1".into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision };
+        digest_view.primaries.take(rdm_core::PrimaryRole::MeshPrimary, &primary_of(&admin, 3));
+        digest_view.primaries.take(rdm_core::PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), &primary_of(&rpc, 2));
         let commands: Arc<crate::node_commands::CommandView> = Arc::default();
         let writer = MeshRowsWriter::new("mesh1.admin.1", "mesh1", mesh_id("mesh1"), nodes.clone(), Arc::new(crate::storage::MemoryMeshStorage::default()), Default::default());
         let (_writes_tx, writes) = tokio::sync::watch::channel(writing(&["mesh1"]));
@@ -793,7 +793,7 @@ mod tests {
         .expect("the rows writer writes the members' rows before the block");
         assert_eq!(commands.block().await, 0, "no command in flight at the block");
         let before = nodes.acknowledged.load(std::sync::atomic::Ordering::SeqCst);
-        digest_view.seats.take(rdm_core::Seat::NodeTypePrimary(NodeKind::RpcNode), &holder(&rpc, 4));
+        digest_view.primaries.take(rdm_core::PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), &primary_of(&rpc, 4));
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(nodes.acknowledged.load(std::sync::atomic::Ordering::SeqCst), before, "nothing is written while the mesh-primary is blocked");
         assert_eq!(is_primary(&rpc).await, Some(2), "the row still holds what was copied");
@@ -863,7 +863,7 @@ mod tests {
         let held = vec![p.clone(), q.clone(), recovered.clone(), other.clone()];
         let before = p_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
         tokio::join!(pw.sweep(&held, &not_primary, |_| false), qw.sweep(&held, &primary, |_| false));
-        assert_eq!(p_nodes.1.load(std::sync::atomic::Ordering::SeqCst), before, "the old holder writes nothing once the seat moved");
+        assert_eq!(p_nodes.1.load(std::sync::atomic::Ordering::SeqCst), before, "the old primary writes nothing once the role moved");
         assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 1, "the new mesh-primary writes the one record that differs: the new member's");
         let now: Vec<NodeId> = rows_writer::recorded_births(&*q_meshes, &*q_nodes, "mesh1").await.unwrap().into_iter().map(|b| b.node_id).collect();
         assert_eq!(now.len(), 3, "{now:?}");
@@ -887,7 +887,7 @@ mod tests {
     /// wins): on one shared root, mesh A's primary claims `mesh2` and writes its row and its member's
     /// address on its record. A second mesh under the same name (another MeshId) has its primary's
     /// sweeps refused by name: the row still names A, the second primary writes no record, and it claims
-    /// once per seat tenure: one `rdm.node_admin.mesh.create.via-mesh-row` span `name-held` naming A,
+    /// once per role tenure: one `rdm.node_admin.mesh.create.via-mesh-row` span `name-held` naming A,
     /// however many sweeps run. Must NOT happen: the second mesh's put overwriting A's row, its records
     /// written beside a refused claim, or a refused claim tried again on every birth change.
     // @feature: mesh-lifecycle
@@ -923,7 +923,7 @@ mod tests {
         assert_eq!(
             said,
             vec![(first.to_string(), "row-written".to_string(), String::new()), (second.to_string(), "name-held".to_string(), first.to_string())],
-            "one claim per seat tenure, the refusal naming the holder: {spans:?}"
+            "one claim per role tenure, the refusal naming the holder: {spans:?}"
         );
         eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
     }
@@ -1294,16 +1294,16 @@ mod tests {
         let (h_birth, o_birth) = (birth(1), birth(2));
         let capture = crate::span_capture::Capture::new("i143-3089-fabric-name-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let h_seats = rdm_transport::topology::PrimaryView::default();
-        h_seats.take(rdm_core::Seat::FabricPrimary, &h_birth);
+        let h_primaries = rdm_transport::topology::PrimaryView::default();
+        h_primaries.take(rdm_core::PrimaryRole::FabricPrimary, &h_birth);
         let mut hw = FabricRowsWriter::new((h_birth.node_id.clone(), h_birth.incarnation.clone()), holder.clone(), storage.clone());
-        hw.sweep(&h_seats).await;
+        hw.sweep(&h_primaries).await;
         assert_eq!(storage.fabric().await.unwrap().map(|r| r.identity()), Some(holder.clone()), "the holder's fabric-primary writes its identity once its claim won");
-        let o_seats = rdm_transport::topology::PrimaryView::default();
-        o_seats.take(rdm_core::Seat::FabricPrimary, &o_birth);
+        let o_primaries = rdm_transport::topology::PrimaryView::default();
+        o_primaries.take(rdm_core::PrimaryRole::FabricPrimary, &o_birth);
         let mut ow = FabricRowsWriter::new((o_birth.node_id.clone(), o_birth.incarnation.clone()), ours.clone(), storage.clone());
         for _sweep in 0..2 {
-            ow.sweep(&o_seats).await;
+            ow.sweep(&o_primaries).await;
         }
         assert_eq!(storage.fabric().await.unwrap().map(|f| f.fabric_id), Some(holder.fabric_id.clone()), "the held identity stands");
         let spans = capture.named("rdm.node_admin.fabric.create.via-fabric-row");
@@ -1843,9 +1843,9 @@ mod tests {
     /// CONTRACT (node-recovery.md "Failure and receipts": "the mesh-primary is the submitter that
     /// resubmits by `build_id`"; CLAUDE.md read rule: node-local state that should be the durable
     /// answer is replaced by the read): a submitter that holds nothing in memory (an admin that just
-    /// took the seat, or restarted) is owed the birth mesh2.rpc.1 by the durable facts alone: the
+    /// took the role, or restarted) is owed the birth mesh2.rpc.1 by the durable facts alone: the
     /// current Build holds that birth's run, whose attempt ended Failed after its delete, and the birth
-    /// is in no view. Nothing is owed while this admin does not hold the seat, nor to another mesh. The
+    /// is in no view. Nothing is owed while this admin does not hold the role, nor to another mesh. The
     /// submit span names the Failed attempt it follows, and nothing is inspected again. Must NOT
     /// happen: an owed recovery found only in a previous submitter's memory.
     // @feature: node-lifecycle
@@ -1903,7 +1903,7 @@ mod tests {
             gone_dirs: Arc::default(),
             resubmits: Arc::default(),
         };
-        assert_eq!(recovery.owed_submits(false, "mesh2").await, vec![], "nothing is owed by an admin that does not hold the seat");
+        assert_eq!(recovery.owed_submits(false, "mesh2").await, vec![], "nothing is owed by an admin that does not hold the role");
         assert_eq!(recovery.owed_submits(true, "mesh1").await, vec![], "another mesh's primary is owed none of mesh2's exits");
         let owed = recovery.owed_submits(true, "mesh2").await;
         assert_eq!(owed, vec![crate::build_state::OwedExit { path: path.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), attempt: 2, reason: "node.create: PrepareStorage".into() }], "read from the durable facts alone");
@@ -1992,7 +1992,7 @@ mod tests {
     /// holds deleting or deleted is not a member to recover, a primary lost mid-delete included: no
     /// recovery is submitted, and one `rdm.node_admin.build.reject.via-removal-announced` span names the
     /// mesh.delete. Must NOT
-    /// happen: mesh_lifecycle__mesh_delete_resume on f8001275, where mesh2's surviving admin, seated
+    /// happen: mesh_lifecycle__mesh_delete_resume on f8001275, where mesh2's surviving admin, in its role
     /// after its primary was killed mid-delete, submitted the recovery of that primary 220 times
     /// (trace 8b3d152a6a51c90fc06a4031cd055d37, refused while the Build reconciled).
     // @feature: mesh-lifecycle
@@ -2308,10 +2308,10 @@ mod tests {
         assert_eq!(t.mesh_view("mesh1").unwrap().status, ScopeStatus::Ready, "heard ready: a node not ready does not take the mesh back to pending");
     }
 
-    /// CONTRACT: an admin that does not hold the fabric-primary role (it lost the seat to a recovered
-    /// mesh's admin while the fabric was degraded) answers `GET /api/fabric` with the status the holder
-    /// published, `degraded`, until the holder publishes ready. Must NOT happen: `ready`
-    /// because its own authority records (cleared with the seat) are empty.
+    /// CONTRACT: an admin that does not hold the fabric-primary role (it lost the role to a recovered
+    /// mesh's admin while the fabric was degraded) answers `GET /api/fabric` with the status the fabric-primary
+    /// published, `degraded`, until the fabric-primary publishes ready. Must NOT happen: `ready`
+    /// because its own authority records (cleared with the role) are empty.
     #[test]
     fn a_secondary_projects_the_degraded_status_the_primary_published() {
         use MemberStatus::*;
@@ -2325,7 +2325,7 @@ mod tests {
         assert_eq!(t.fabric.status, ScopeStatus::Ready, "nothing published degraded: ready");
         records.set_published_degraded(true);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
-        assert_eq!(t.fabric.status, ScopeStatus::Degraded, "the holder published degraded and has not published ready");
+        assert_eq!(t.fabric.status, ScopeStatus::Degraded, "the fabric-primary published degraded and has not published ready");
     }
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:65
@@ -2388,7 +2388,7 @@ mod tests {
 
     /// CONTRACT (gossip.md §3.1 `NodeDeleted`: the birth is removed): a birth whose node.delete was
     /// heard leaves the view whatever its last digest said, so a mesh whose admins are all deleted has
-    /// no primary admin. Must NOT happen: a deleted admin holds its mesh's seat because its digest says
+    /// no primary admin. Must NOT happen: a deleted admin holds its mesh's role because its digest says
     /// ready.
     #[tokio::test]
     async fn a_deleted_birth_leaves_the_view_whatever_its_digest_says() {
@@ -2403,7 +2403,7 @@ mod tests {
         assert!(t.node_type_primary("mesh2", NodeKind::NodeAdmin).is_some());
         let t = depart(&digest_view, &records, &b).await;
         assert!(t.node(&"mesh2.admin.1".parse().unwrap()).is_none(), "the deleted birth left the view");
-        assert!(t.node_type_primary("mesh2", NodeKind::NodeAdmin).is_none(), "a deleted admin holds no seat");
+        assert!(t.node_type_primary("mesh2", NodeKind::NodeAdmin).is_none(), "a deleted admin holds no primary role");
     }
 
     /// CONTRACT (node-recovery.md "The mesh-primary is the reconciler for its own members";
@@ -2521,12 +2521,12 @@ mod tests {
     /// CONTRACT (node-recovery.md, Detection: "The mesh-primary's tick (every gossip interval) reads
     /// the members its view marks `PendingReconnect` (unheard past the staleness floor)"; "Detection
     /// and proof" step 1: "Every node-admin keeps the silence bookkeeping (`first_seen`), so a
-    /// node-admin that takes the seat mid-window continues the window already running"): an admin of
+    /// node-admin that takes the role mid-window continues the window already running"): an admin of
     /// mesh2 whose view holds mesh2.rpc.1 only from its mesh-primary's projection (the member's own
     /// digest never reached it) lists the birth in its view, never routable: with the projected
     /// status within one staleness floor of first holding it, and `PendingReconnect` past it. Its
     /// tick watches the birth, and the silence mark is the instant it first held it plus the floor,
-    /// so the window it keeps began before any seat change. Must NOT happen: the view holding no birth
+    /// so the window it keeps began before any role change. Must NOT happen: the view holding no birth
     /// of the member, so an heir's tick watches nothing and the member is never recovered.
     #[test]
     fn an_admin_lists_and_watches_an_own_mesh_birth_held_only_from_its_primarys_projection() {
@@ -2640,60 +2640,60 @@ mod tests {
         rdm_core::Primary { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
     }
 
-    /// CONTRACT (R-A2, the dw33-1 shape): the seat records an admin holds decide its projection. A
-    /// ready admin with a lower NodeId that appears, in any mesh, changes no seat; a view that has
-    /// not been told who holds the seats (an entering admin) elects nobody; the holder proven
-    /// exited, or replaced by a later birth that says so, hands the seat to its own mesh.
+    /// CONTRACT (R-A2, the dw33-1 shape): the primary records an admin holds decide its projection. A
+    /// ready admin with a lower NodeId that appears, in any mesh, changes no role; a view that has
+    /// not been told who holds the roles (an entering admin) elects nobody; the primary proven
+    /// exited, or replaced by a later birth that says so, hands the role to its own mesh.
     #[tokio::test]
     async fn the_projection_keeps_a_recorded_primary_and_elects_nobody_before_it_is_told() {
         use MemberStatus::*;
-        use rdm_core::Seat::{FabricPrimary, MeshPrimary};
+        use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary};
         let digest_view = DigestView::default();
-        let holder = with_id(digest("mesh1.admin.1", Ready), "500000000000");
+        let primary = with_id(digest("mesh1.admin.1", Ready), "500000000000");
         let sibling = with_id(digest("mesh1.admin.2", Ready), "800000000000");
-        for d in [&holder, &sibling] {
+        for d in [&primary, &sibling] {
             digest_view.record((*d).clone());
         }
-        digest_view.seats.take(MeshPrimary, &primary_of(&holder, 1));
-        digest_view.seats.take(FabricPrimary, &primary_of(&holder, 1));
+        digest_view.primaries.take(MeshPrimary, &primary_of(&primary, 1));
+        digest_view.primaries.take(FabricPrimary, &primary_of(&primary, 1));
         let records = Records::default();
-        let seat_names = |t: &Topology| (t.fabric_primary().map(|n| n.name.to_string()), t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()));
+        let role_names = |t: &Topology| (t.fabric_primary().map(|n| n.name.to_string()), t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
-        assert_eq!(seat_names(&t), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())));
+        assert_eq!(role_names(&t), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())));
 
         // A lower NodeId appears in another mesh and one in the incumbent mesh, both ready: nothing moves.
         digest_view.record(with_id(digest("mesh3.admin.1", Ready), "100000000000"));
         digest_view.record(with_id(digest("mesh1.admin.3", Ready), "200000000000"));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
-        assert_eq!(seat_names(&t), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())), "a lower NodeId never displaces a living holder");
+        assert_eq!(role_names(&t), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())), "a lower NodeId never displaces a living primary");
         assert_eq!(t.node_type_primary("mesh3", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh3.admin.1"));
 
-        // An entering admin has not been told who holds the seats: it computes none.
+        // An entering admin has not been told who holds the roles: it computes none.
         records.set_entering(true);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
-        assert!(t.nodes.iter().all(|n| !n.is_primary && !n.is_fabric_primary), "no seat before the entry read");
+        assert!(t.nodes.iter().all(|n| !n.is_primary && !n.is_fabric_primary), "no role before the entry read");
         records.set_entering(false);
 
         // Deleted: fabric recovery restores the fabric-primary (Q122): nobody, not mesh1's lowest Ready
         // admin and not mesh3's lower id, is fabric-primary or mesh1's primary meanwhile.
-        let t = depart(&digest_view, &records, &holder).await;
-        assert_eq!(seat_names(&t), (None, None));
+        let t = depart(&digest_view, &records, &primary).await;
+        assert_eq!(role_names(&t), (None, None));
     }
 
-    /// CONTRACT (R-A2; elections §3, Q122): a later birth that names the recorded holder's incarnation as
+    /// CONTRACT (R-A2; elections §3, Q122): a later birth that names the recorded primary's incarnation as
     /// the one it replaced proves that birth gone: the fabric-primary is fabric recovery's to restore, and
     /// nobody, not the lowest Ready admin of its mesh, holds either role meanwhile.
     #[test]
     fn a_later_birth_that_supersedes_the_primary_proves_it_gone() {
         use MemberStatus::*;
-        use rdm_core::Seat::{FabricPrimary, MeshPrimary};
+        use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary};
         let digest_view = DigestView::default();
-        let holder = with_id(digest("mesh1.admin.1", Ready), "500000000000");
-        digest_view.record(holder.clone());
-        digest_view.seats.take(MeshPrimary, &primary_of(&holder, 1));
-        digest_view.seats.take(FabricPrimary, &primary_of(&holder, 1));
+        let primary = with_id(digest("mesh1.admin.1", Ready), "500000000000");
+        digest_view.record(primary.clone());
+        digest_view.primaries.take(MeshPrimary, &primary_of(&primary, 1));
+        digest_view.primaries.take(FabricPrimary, &primary_of(&primary, 1));
         let mut recovered = with_id(digest("mesh1.admin.1", Pending), "900000000000");
-        recovered.node.supersedes = Some(holder.node.incarnation.clone());
+        recovered.node.supersedes = Some(primary.node.incarnation.clone());
         digest_view.record(recovered.clone());
         let ready = with_id(digest("mesh1.admin.2", Ready), "800000000000");
         digest_view.record(ready);
@@ -2702,20 +2702,20 @@ mod tests {
         assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()), None);
     }
 
-    /// The fabric-primary `mesh1.admin.1` (both seats of mesh1) and `mesh2`'s births `mesh2`, the
-    /// first seated as mesh2's primary at revision 1: the fabric-primary's view, its records holding
+    /// The fabric-primary `mesh1.admin.1` (both roles of mesh1) and `mesh2`'s births `mesh2`, the
+    /// first in its role as mesh2's primary at revision 1: the fabric-primary's view, its records holding
     /// its node-rows writer over `storage`, and its view projected from both.
     async fn fabric_primary_over(mesh2: &[MeshDigest], storage: Arc<crate::storage::MemoryNodesStorage>) -> (MeshDigest, DigestView, Arc<Records>, Arc<RwLock<Topology>>, Arc<crate::node_rows::NodeRows>) {
-        use rdm_core::Seat::{FabricPrimary, MeshPrimary};
+        use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary};
         let fp = with_id(digest("mesh1.admin.1", MemberStatus::Ready), "100000000000");
         let digest_view = DigestView::default();
         digest_view.record(fp.clone());
         for d in mesh2 {
             digest_view.record(d.clone());
         }
-        digest_view.seats.take(FabricPrimary, &primary_of(&fp, 1));
-        digest_view.seats.take(MeshPrimary, &primary_of(&fp, 1));
-        digest_view.seats.take(MeshPrimary, &primary_of(&mesh2[0], 1));
+        digest_view.primaries.take(FabricPrimary, &primary_of(&fp, 1));
+        digest_view.primaries.take(MeshPrimary, &primary_of(&fp, 1));
+        digest_view.primaries.take(MeshPrimary, &primary_of(&mesh2[0], 1));
         let records = Arc::new(Records::default());
         records.set_digest_view(digest_view.clone());
         let view = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)));
@@ -2828,7 +2828,7 @@ mod tests {
         }
         let meshes = crate::storage::MemoryMeshStorage::default();
         assert!(rows_writer::recorded_births(&meshes, &*storage, "mesh2").await.unwrap().is_empty(), "no address of the removed mesh's births stands");
-        assert_eq!(rows_writer::take_recorded_primaries(&meshes, &*storage, "mesh2", &DigestView::default().seats).await.unwrap(), 0, "nor any primary of them");
+        assert_eq!(rows_writer::take_recorded_primaries(&meshes, &*storage, "mesh2", &DigestView::default().primaries).await.unwrap(), 0, "nor any primary of them");
         let mesh1: Vec<String> = rows_writer::recorded_births(&meshes, &*storage, "mesh1").await.unwrap().into_iter().map(|b| b.name.to_string()).collect();
         assert_eq!(mesh1, vec!["mesh1.admin.1".to_string()], "another mesh's record is untouched");
         assert!(storage.node(&last.node.node_id).await.unwrap().is_some_and(|r| r.birth(&last.node.incarnation).is_some()), "the record keeps the birth's other facts");
@@ -2843,7 +2843,7 @@ mod tests {
     /// primary's exact Exited is proven and recorded first, then the fabric-primary creates the one
     /// node-admin of a mesh with no live admin; R11: record predecessor Exited first): the proven
     /// exit, recorded as its exited-verdict row and read by the install `admin_for_deleting_mesh` runs
-    /// before the create, vacates the lost holder's seat, so the fabric-primary is the writer of the mesh's
+    /// before the create, vacates the lost primary's role, so the fabric-primary is the writer of the mesh's
     /// rows and its claim of the created admin's name is written. Must NOT happen: the refusal of
     /// mesh_lifecycle::mesh_delete_no_survivor on 8803f84e ("AllocateIdentity failed: the name claim
     /// refused the birth ...: mesh1.admin.1 is not the writer of mesh2's node rows").
@@ -2857,13 +2857,13 @@ mod tests {
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let created: PathName = "mesh2.admin.2".parse().unwrap();
         let refused = rows.claim(&created, &NodeId::mint(), "node.create:mesh2.admin.2", None, None, crate::node_rows::ClaimFor::Create).await;
-        assert!(matches!(&refused, Err(crate::node_rows::RowRefused::NotMeshPrimary(_))), "unheld, the lost holder still writes mesh2's rows: {refused:?}");
+        assert!(matches!(&refused, Err(crate::node_rows::RowRefused::NotMeshPrimary(_))), "unheld, the lost primary still writes mesh2's rows: {refused:?}");
         depart(&digest_view, &records, &lost).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)).await;
         let born = NodeId::mint();
         match rows.claim(&created, &born, "node.create:mesh2.admin.2", None, None, crate::node_rows::ClaimFor::Create).await {
             Ok(crate::node_rows::Claimed::Written { row, .. }) => assert_eq!((row.node_id, row.status), (born, NodeStatus::Starting), "a create's claim writes the record starting"),
-            other => panic!("the fabric-primary claims the created admin's name once the lost holder's exit is held: {other:?}"),
+            other => panic!("the fabric-primary claims the created admin's name once the lost primary's exit is held: {other:?}"),
         }
         let mut outcomes: Vec<String> = capture.named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s.attributes.get("moment").map(String::as_str) == Some("claim")).map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
         outcomes.dedup();
@@ -2873,25 +2873,25 @@ mod tests {
     }
 
     /// CONTRACT (mesh-delete.md, "Resume after the primary's loss": the workflow goes to the admin
-    /// seated; gossip.md §3.1 `NodeDeleted`): mesh2's primary `mesh2.admin.1` is lost and
-    /// `mesh2.admin.2` is live. Once the lost holder's node.delete is heard, the seat is
+    /// in its role; gossip.md §3.1 `NodeDeleted`): mesh2's primary `mesh2.admin.1` is lost and
+    /// `mesh2.admin.2` is live. Once the lost primary's node.delete is heard, the role is
     /// `mesh2.admin.2`'s in the fabric-primary's view (the leave a later attempt resumes hands it the
-    /// workflow) and in its own, which hears the same departure and announces the seat at the next
+    /// workflow) and in its own, which hears the same departure and announces the role at the next
     /// revision. Must NOT happen: the no_survivor attempts refused "mesh2.admin.2 is live and holds no
-    /// seat yet" after mesh2.admin.1 was deleted (trace 5bc960a3e759a77cfb42ae6e9bc687d0).
+    /// role yet" after mesh2.admin.1 was deleted (trace 5bc960a3e759a77cfb42ae6e9bc687d0).
     // @feature: mesh-lifecycle
     #[tokio::test]
     async fn the_lost_primarys_departure_makes_the_live_admin_primary_in_the_fabric_primarys_view_and_its_own() {
-        use rdm_core::Seat::MeshPrimary;
+        use rdm_core::PrimaryRole::MeshPrimary;
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         let lost = with_id(digest("mesh2.admin.1", MemberStatus::Ready), "200000000000");
         let live = with_id(digest("mesh2.admin.2", MemberStatus::Ready), "300000000000");
         let (_fp, digest_view, records, view, _rows) = fabric_primary_over(&[lost.clone(), live.clone()], storage).await;
         let primary = |t: &Topology| t.node_type_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.name.to_string());
-        assert_eq!(primary(&*view.read().await).as_deref(), Some("mesh2.admin.1"), "unheld, the lost holder keeps its seat (R-EL1)");
+        assert_eq!(primary(&*view.read().await).as_deref(), Some("mesh2.admin.1"), "unheld, the lost primary keeps its role (R-EL1)");
         depart(&digest_view, &records, &lost).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)).await;
-        assert_eq!(primary(&*view.read().await).as_deref(), Some("mesh2.admin.2"), "held, the fabric-primary reads the live admin seated");
+        assert_eq!(primary(&*view.read().await).as_deref(), Some("mesh2.admin.2"), "held, the fabric-primary reads the live admin primary");
         // mesh2.admin.2's own view: the same departure, heard by its own digest view.
         let own = Records::default();
         own.set_digest_view(digest_view.clone());
@@ -2899,59 +2899,59 @@ mod tests {
         own.install_projected(&view2, || project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &own)).await;
         let decided = incumbency_of(&digest_view, &own);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &own, &decided, &ViewReads::none_at(std::time::Instant::now()));
-        assert_eq!(primary(&t).as_deref(), Some("mesh2.admin.2"), "mesh2.admin.2 reads itself seated");
-        let said = seat_announcements(&t, "mesh2", (&live.node.node_id, &live.node.incarnation), &decided);
-        assert!(said.iter().any(|(seat, h)| *seat == MeshPrimary && h.mesh == "mesh2" && h.is_birth(&live.node.node_id, &live.node.incarnation) && h.revision == 2), "mesh2.admin.2 announces mesh2's seat at the next revision: {said:?}");
+        assert_eq!(primary(&t).as_deref(), Some("mesh2.admin.2"), "mesh2.admin.2 reads itself primary");
+        let said = role_announcements(&t, "mesh2", (&live.node.node_id, &live.node.incarnation), &decided);
+        assert!(said.iter().any(|(role, h)| *role == MeshPrimary && h.mesh == "mesh2" && h.is_birth(&live.node.node_id, &live.node.incarnation) && h.revision == 2), "mesh2.admin.2 announces mesh2's role at the next revision: {said:?}");
     }
 
-    /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md §5 "a living holder keeps its seat"): the
-    /// view's readers name the primary the records this admin holds give, whatever its status. A holder that is Leaving (connections-deleted and stopped by its
-    /// Build) whose yield this observer has not heard yet keeps both seats; once the yield is held
+    /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md §5 "a living primary keeps its role"): the
+    /// view's readers name the primary the records this admin holds give, whatever its status. A primary that is Leaving (connections-deleted and stopped by its
+    /// Build) whose yield this observer has not heard yet keeps both roles; once the yield is held
     /// (node.primary.updated: both records at the next revision naming the successor), the readers name
     /// the successor. Must NOT happen: an observer reading a Leaving primary as no primary (an
     /// election with no winner while the record names P).
     #[test]
     fn a_leaving_primary_stays_both_primaries_in_the_readers_until_its_hand_over_is_held() {
         use MemberStatus::*;
-        use rdm_core::Seat::{FabricPrimary, MeshPrimary};
+        use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary};
         let digest_view = DigestView::default();
         let records = Records::default();
-        let holder = with_id(digest("mesh1.admin.1", Leaving), "500000000000");
+        let primary = with_id(digest("mesh1.admin.1", Leaving), "500000000000");
         let successor = with_id(digest("mesh1.admin.2", Ready), "800000000000");
         let other = with_id(digest("mesh2.admin.1", Ready), "300000000000");
-        for d in [&holder, &successor, &other] {
+        for d in [&primary, &successor, &other] {
             digest_view.record((*d).clone());
         }
-        digest_view.seats.take(MeshPrimary, &primary_of(&holder, 1));
-        digest_view.seats.take(FabricPrimary, &primary_of(&holder, 1));
-        digest_view.seats.take(MeshPrimary, &primary_of(&other, 1));
-        let seat_names = |t: &Topology| (t.fabric_primary().map(|n| n.name.to_string()), t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()));
+        digest_view.primaries.take(MeshPrimary, &primary_of(&primary, 1));
+        digest_view.primaries.take(FabricPrimary, &primary_of(&primary, 1));
+        digest_view.primaries.take(MeshPrimary, &primary_of(&other, 1));
+        let role_names = |t: &Topology| (t.fabric_primary().map(|n| n.name.to_string()), t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
         let flags = t.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").map(|n| (n.status, n.is_primary, n.is_fabric_primary));
-        assert_eq!(flags, Some((NodeStatus::Leaving, true, true)), "the election keeps the Leaving holder seated (R-EL1)");
-        assert_eq!(seat_names(&t), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())), "the readers name the Leaving holder until its yield is held");
-        assert!(t.is_fabric_primary(&holder.node.node_id) && t.is_mesh_primary("mesh1", &holder.node.node_id));
+        assert_eq!(flags, Some((NodeStatus::Leaving, true, true)), "the election keeps the Leaving primary primary (R-EL1)");
+        assert_eq!(role_names(&t), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())), "the readers name the Leaving primary until its yield is held");
+        assert!(t.is_fabric_primary(&primary.node.node_id) && t.is_mesh_primary("mesh1", &primary.node.node_id));
         assert_eq!(t.mesh_view("mesh1").and_then(|m| m.primary_admin).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"));
 
         // The yield is held: PrimaryUpdated's records name the successor at the next revisions.
-        digest_view.seats.take(MeshPrimary, &primary_of(&successor, 2));
-        digest_view.seats.take(FabricPrimary, &primary_of(&successor, 2));
+        digest_view.primaries.take(MeshPrimary, &primary_of(&successor, 2));
+        digest_view.primaries.take(FabricPrimary, &primary_of(&successor, 2));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
-        assert_eq!(seat_names(&t), (Some("mesh1.admin.2".into()), Some("mesh1.admin.2".into())), "the readers name the successor once the yield is held");
-        assert!(!t.is_fabric_primary(&holder.node.node_id) && !t.is_mesh_primary("mesh1", &holder.node.node_id));
+        assert_eq!(role_names(&t), (Some("mesh1.admin.2".into()), Some("mesh1.admin.2".into())), "the readers name the successor once the yield is held");
+        assert!(!t.is_fabric_primary(&primary.node.node_id) && !t.is_mesh_primary("mesh1", &primary.node.node_id));
     }
 
     /// CONTRACT (fabric-node-lifecycle-elections.md §4.4, lifecycles/node-primary-update.md step 3): the
-    /// committed next-revision seat record is the resolver's input and the incumbent yields fabric
-    /// authority. A hierarchy-loop decision is announced against the seat record it was decided
+    /// committed next-revision primary record is the resolver's input and the incumbent yields fabric
+    /// authority. A hierarchy-loop decision is announced against the primary record it was decided
     /// from: a committed handover that lands while the loop awaits (its change) is not
-    /// answered by the incumbent taking the seat back at the next revision. Must NOT happen: the
-    /// yielded incumbent announcing itself over the committed successor (the e3..e12 seat flap of
+    /// answered by the incumbent taking the role back at the next revision. Must NOT happen: the
+    /// yielded incumbent announcing itself over the committed successor (the e3..e12 role flap of
     /// the fabric-primary handover stem on f06c8197).
     #[tokio::test]
     async fn a_handover_committed_while_the_loop_awaits_is_not_taken_back_by_the_incumbent() {
         use MemberStatus::*;
-        use rdm_core::Seat::{FabricPrimary, MeshPrimary};
+        use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary};
         let digest_view = DigestView::default();
         let records = Records::default();
         let me = with_id(digest("mesh1.admin.1", Ready), "500000000000");
@@ -2960,17 +2960,17 @@ mod tests {
         for d in [&me, &sibling, &successor] {
             digest_view.record((*d).clone());
         }
-        digest_view.seats.take(MeshPrimary, &primary_of(&me, 1));
-        digest_view.seats.take(MeshPrimary, &primary_of(&successor, 1));
-        digest_view.seats.take(FabricPrimary, &primary_of(&me, 1));
+        digest_view.primaries.take(MeshPrimary, &primary_of(&me, 1));
+        digest_view.primaries.take(MeshPrimary, &primary_of(&successor, 1));
+        digest_view.primaries.take(FabricPrimary, &primary_of(&me, 1));
         let me_birth = (&me.node.node_id, &me.node.incarnation);
-        // The loop decides: this admin holds both of its seats, and their records already name it.
+        // The loop decides: this admin holds both of its roles, and their records already name it.
         let decided = incumbency_of(&digest_view, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"));
         // While the loop awaits its change, the committed transfer lands: mesh2.admin.1 at revision 2.
-        digest_view.seats.take(FabricPrimary, &primary_of(&successor, 2));
-        let said = seat_announcements(&t, "mesh1", me_birth, &decided);
+        digest_view.primaries.take(FabricPrimary, &primary_of(&successor, 2));
+        let said = role_announcements(&t, "mesh1", me_birth, &decided);
         assert!(said.is_empty(), "the yielded incumbent announces nothing over the committed successor: {said:?} (decided against {:?})", decided.fabric);
 
         // A legitimate succession is still announced: the recorded mesh-primary's birth deleted (the
@@ -2983,27 +2983,27 @@ mod tests {
         for d in [&me, &gone, &fabric] {
             digest_view.record((*d).clone());
         }
-        digest_view.seats.take(MeshPrimary, &primary_of(&gone, 5));
-        digest_view.seats.take(MeshPrimary, &primary_of(&fabric, 1));
-        digest_view.seats.take(FabricPrimary, &primary_of(&fabric, 1));
+        digest_view.primaries.take(MeshPrimary, &primary_of(&gone, 5));
+        digest_view.primaries.take(MeshPrimary, &primary_of(&fabric, 1));
+        digest_view.primaries.take(FabricPrimary, &primary_of(&fabric, 1));
         depart(&digest_view, &records, &gone).await;
         let decided = incumbency_of(&digest_view, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
-        let said = seat_announcements(&t, "mesh1", me_birth, &decided);
+        let said = role_announcements(&t, "mesh1", me_birth, &decided);
         let revisions: Vec<_> = said.iter().map(|(s, h)| (*s, h.node_id.clone(), h.revision)).collect();
         assert_eq!(revisions, vec![(MeshPrimary, me.node.node_id.clone(), 6)], "the successor of a deleted mesh-primary is its mesh's primary at the next revision (decided against {:?})", decided.meshes);
     }
 
     /// CONTRACT (lifecycles/node-primary-update.md "Writer": "for every other type the mesh-primary
-    /// records the node's row"; the mesh-primary is the sole author of member status): a mesh-primary announces the seat of each other node type of its mesh the election fills
-    /// with a birth its record does not name (a first election, a holder proven gone), at the next
-    /// revision over that record, and nothing while the record names the living holder. No other admin
-    /// announces a node-type primary seat. Must NOT happen: an rpc node-type primary seat that no record holds, so a
-    /// lower NodeId that later becomes Ready displaces the living holder.
+    /// records the node's row"; the mesh-primary is the sole author of member status): a mesh-primary announces the role of each other node type of its mesh the election fills
+    /// with a birth its record does not name (a first election, a primary proven gone), at the next
+    /// revision over that record, and nothing while the record names the living primary. No other admin
+    /// announces a node-type primary role. Must NOT happen: an rpc node-type primary role that no record holds, so a
+    /// lower NodeId that later becomes Ready displaces the living primary.
     #[tokio::test]
     async fn a_mesh_primary_announces_each_node_type_primary_the_election_fills_in_its_mesh() {
         use MemberStatus::*;
-        use rdm_core::Seat::{FabricPrimary, MeshPrimary, NodeTypePrimary};
+        use rdm_core::PrimaryRole::{FabricPrimary, MeshPrimary, NodeTypePrimary};
         let digest_view = DigestView::default();
         let records = Records::default();
         let me = with_id(digest("mesh1.admin.1", Ready), "500000000000");
@@ -3013,28 +3013,28 @@ mod tests {
         for d in [&me, &sibling, &rpc1, &rpc2] {
             digest_view.record((*d).clone());
         }
-        digest_view.seats.take(MeshPrimary, &primary_of(&me, 1));
-        digest_view.seats.take(FabricPrimary, &primary_of(&me, 1));
+        digest_view.primaries.take(MeshPrimary, &primary_of(&me, 1));
+        digest_view.primaries.take(FabricPrimary, &primary_of(&me, 1));
         let me_birth = (&me.node.node_id, &me.node.incarnation);
-        let node_type_said = |said: &[(rdm_core::Seat, rdm_core::Primary)]| said.iter().filter(|(s, _)| matches!(s, NodeTypePrimary(_))).map(|(s, h)| (*s, h.node_id.to_string(), h.revision)).collect::<Vec<_>>();
+        let node_type_said = |said: &[(rdm_core::PrimaryRole, rdm_core::Primary)]| said.iter().filter(|(s, _)| matches!(s, NodeTypePrimary(_))).map(|(s, h)| (*s, h.node_id.to_string(), h.revision)).collect::<Vec<_>>();
         // A first election: no record of the rpc node type, the lowest Ready fills it at revision 1.
         let decided = incumbency_of(&digest_view, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
-        let said = seat_announcements(&t, "mesh1", me_birth, &decided);
-        assert_eq!(node_type_said(&said), vec![(NodeTypePrimary(NodeKind::RpcNode), rpc1.node.node_id.to_string(), 1)], "the mesh-primary seats mesh1.rpc.1: {said:?}");
-        let sib = seat_announcements(&t, "mesh1", (&sibling.node.node_id, &sibling.node.incarnation), &decided);
-        assert!(node_type_said(&sib).is_empty(), "an admin that is not the mesh-primary announces no node-type primary seat: {sib:?}");
-        // The record names the living mesh1.rpc.2: it keeps the seat over the lower Ready NodeId and nothing is said.
-        digest_view.seats.take(NodeTypePrimary(NodeKind::RpcNode), &primary_of(&rpc2, 3));
+        let said = role_announcements(&t, "mesh1", me_birth, &decided);
+        assert_eq!(node_type_said(&said), vec![(NodeTypePrimary(NodeKind::RpcNode), rpc1.node.node_id.to_string(), 1)], "the mesh-primary roles mesh1.rpc.1: {said:?}");
+        let sib = role_announcements(&t, "mesh1", (&sibling.node.node_id, &sibling.node.incarnation), &decided);
+        assert!(node_type_said(&sib).is_empty(), "an admin that is not the mesh-primary announces no node-type primary role: {sib:?}");
+        // The record names the living mesh1.rpc.2: it keeps the role over the lower Ready NodeId and nothing is said.
+        digest_view.primaries.take(NodeTypePrimary(NodeKind::RpcNode), &primary_of(&rpc2, 3));
         let decided = incumbency_of(&digest_view, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         assert_eq!(t.node_type_primary("mesh1", NodeKind::RpcNode).map(|n| n.name.to_string()).as_deref(), Some("mesh1.rpc.2"));
-        assert!(node_type_said(&seat_announcements(&t, "mesh1", me_birth, &decided)).is_empty(), "a living recorded holder is not announced again");
-        // mesh1.rpc.2 proven exited: the seat goes to the lowest Ready, announced at the next revision.
+        assert!(node_type_said(&role_announcements(&t, "mesh1", me_birth, &decided)).is_empty(), "a living recorded primary is not announced again");
+        // mesh1.rpc.2 proven exited: the role goes to the lowest Ready, announced at the next revision.
         depart(&digest_view, &records, &rpc2).await;
         let decided = incumbency_of(&digest_view, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
-        let said = seat_announcements(&t, "mesh1", me_birth, &decided);
+        let said = role_announcements(&t, "mesh1", me_birth, &decided);
         assert_eq!(node_type_said(&said), vec![(NodeTypePrimary(NodeKind::RpcNode), rpc1.node.node_id.to_string(), 4)], "{said:?}");
     }
 
@@ -3189,7 +3189,7 @@ mod tests {
         let records = Arc::new(Records::default());
         digest_view.record(with_id(digest("mesh1.admin.1", MemberStatus::Ready), "100000000000"));
         let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)));
-        let me = topology.read().await.fabric_primary().expect("admin.1 holds the fabric seat").clone();
+        let me = topology.read().await.fabric_primary().expect("admin.1 holds the fabric-primary role").clone();
         let status_door = StatusDoor {
             certs: None,
             app_channels: None,
@@ -3586,7 +3586,7 @@ mod tests {
         wake.seen();
 
         let primary = rdm_core::Primary { mesh: "mesh1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), revision: 1 };
-        digest_view.seats.take(rdm_core::Seat::NodeTypePrimary(NodeKind::RpcNode), &primary);
+        digest_view.primaries.take(rdm_core::PrimaryRole::NodeTypePrimary(NodeKind::RpcNode), &primary);
         assert_eq!(due(&mut wake), Some("primaries"), "the rpc nodes' node-type primary record taken");
         wake.seen();
 

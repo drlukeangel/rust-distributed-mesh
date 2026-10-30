@@ -305,15 +305,15 @@ impl RecoverySubmitter {
 
     /// The births the tick submits again (node-recovery.md "Failure and receipts": "the mesh-primary
     /// is the submitter that resubmits by `build_id`"): none unless this admin holds its mesh's
-    /// primary seat (as [`recovery_due`]); else every
+    /// primary role (as [`recovery_due`]); else every
     /// birth of its own mesh whose node workflow in the accepted Build stopped at a Failed attempt and
     /// is not done, read from the durable facts on every tick (the current Build, then the
     /// Build log's index by that Build, `BuildStateAdapter::exits_owed`), whether or not the view still
     /// holds the birth and whichever admin submitted it before. Nothing of it is held between ticks: an
-    /// admin that takes the seat, or restarts, reads the same facts. A refused read is named on its
+    /// admin that takes the role, or restarts, reads the same facts. A refused read is named on its
     /// own span and owes nothing this tick.
-    pub(crate) async fn owed_submits(&self, holds_seat: bool, mesh: &str) -> Vec<crate::build_state::OwedExit> {
-        if !holds_seat {
+    pub(crate) async fn owed_submits(&self, holds_role: bool, mesh: &str) -> Vec<crate::build_state::OwedExit> {
+        if !holds_role {
             return Vec::new();
         }
         let me = self.held_name();
@@ -391,7 +391,7 @@ impl RecoverySubmitter {
     pub(crate) async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId, route: &'static str) -> Result<RecoveryEnd, String> {
         use crate::build_run::{Recovered, RecoveryNotRun};
         use rdm_core::build::BuildReply;
-        let door = self.door.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary seat but its Build door is not built yet", self.held_name()))?;
+        let door = self.door.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary role but its Build door is not built yet", self.held_name()))?;
         let opened = |o: &crate::control_plane::Opened, disposition: &str| {
             span.record("build_id", o.build_id.as_str());
             span.record("mesh", o.mesh.as_deref().unwrap_or(""));
@@ -615,10 +615,10 @@ pub fn heard_against(view: &Topology, watched: &BTreeMap<String, Node>) -> HashS
 }
 
 /// The watched births the tick inspects for recovery (node-recovery.md): none unless this admin
-/// holds its mesh's primary seat; else every watched birth of its own mesh (its secondary
+/// holds its mesh's primary role; else every watched birth of its own mesh (its secondary
 /// node-admins included, mesh-recovery.md:8-9) held TRUE OFFLINE at its exact incarnation.
-pub fn recovery_due(holds_seat: bool, mesh: &str, watched: &BTreeMap<String, Node>, offline: &HashSet<(NodeId, IncarnationId)>) -> Vec<Node> {
-    if !holds_seat {
+pub fn recovery_due(holds_role: bool, mesh: &str, watched: &BTreeMap<String, Node>, offline: &HashSet<(NodeId, IncarnationId)>) -> Vec<Node> {
+    if !holds_role {
         return Vec::new();
     }
     watched.values().filter(|n| n.mesh == mesh && n.incarnation_id.as_ref().is_some_and(|i| offline.contains(&(n.node_id.clone(), i.clone())))).cloned().collect()

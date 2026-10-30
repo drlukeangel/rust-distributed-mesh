@@ -2,7 +2,7 @@
 //!
 //! The admin's `Status` service runs in-process over a view fixture (one fabric, two meshes, this
 //! admin the primary of mesh1 and the fabric-primary); nodes declare over real Node RPC on
-//! loopback. The cells prove the decision table of `status_rpc`: which seat decides which
+//! loopback. The cells prove the decision table of `status_rpc`: which role decides which
 //! subject's declaration, whoever calls (node-rpc.md §14), the natural-key idempotency, forward-only transitions, stale births, and that `Applied` is on the
 //! subject's declared-state row in `status.storage` before it is answered. Certainty: a cut before the request
 //! commits is `NotSent` with nothing applied; a reply lost after the apply is `Indeterminate`,
@@ -257,10 +257,10 @@ async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_fi
     assert_eq!(rig.door.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Stopped));
 }
 
-/// CONTRACT: the authority is the seat the subject's declaration needs, never the caller
+/// CONTRACT: the authority is the role the subject's declaration needs, never the caller
 /// (node-rpc.md §14). rpc.2 sending rpc.1's declaration is decided for rpc.1, on rpc.1's row; a
 /// subject the view does not hold is `SubjectUnknown`; a birth the view no longer holds is stale; a
-/// subject of another mesh, a node-admin included, is refused naming the seat it needs: its own
+/// subject of another mesh, a node-admin included, is refused naming the role it needs: its own
 /// mesh's primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_deciding_primary_is_the_one_the_subject_needs_never_the_callers() {
@@ -284,8 +284,8 @@ async fn the_deciding_primary_is_the_one_the_subject_needs_never_the_callers() {
     assert_eq!(r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
     // A node-admin declares to its own mesh's primary (this admin is mesh1's): Applied.
     assert_eq!(reply(&call(&rig, admin2, &declare(admin2, NodeState::Ready)).await), StatusReply::Applied);
-    // A node-admin of another mesh is refused by the seat it needs, its own mesh's primary, though
-    // this admin holds the fabric seat (node-status.md: "A node reports to its mesh's primary").
+    // A node-admin of another mesh is refused by the role it needs, its own mesh's primary, though
+    // this admin holds the fabric-primary role (node-status.md: "A node reports to its mesh's primary").
     let r = reply(&call(&rig, m2admin, &declare(m2admin, NodeState::Ready)).await);
     assert_eq!(r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
 }
@@ -293,7 +293,7 @@ async fn the_deciding_primary_is_the_one_the_subject_needs_never_the_callers() {
 /// CONTRACT: nothing inside the mesh checks who is calling (node-rpc.md §14; node-rpc-envelope.md,
 /// Status: "Nothing inside the mesh checks who is calling"): a declaration from an endpoint this
 /// authority's view holds no birth for is decided for the subject the request names, on the
-/// receiver's own seat. The direction refusals stay, decided by the subject and the seat: a subject
+/// receiver's own role. The direction refusals stay, decided by the subject and the role: a subject
 /// the view does not hold is `SubjectUnknown`, a subject of a mesh this admin is not the primary of
 /// is `ReceiverNotPrimary`, and a birth the view no longer holds is `RejectedStaleIncarnation`.
 /// What must NOT happen: a refusal naming the caller (`SenderNotSubject`).
@@ -308,7 +308,7 @@ async fn a_declaration_from_an_endpoint_the_mesh_primary_never_heard_of_is_decid
     assert_eq!(reply(&call(&rig, &stranger, &declare(rpc1, NodeState::Ready)).await), StatusReply::Applied);
     let row = rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
     assert_eq!((row.state, row.name.clone()), (NodeState::Ready, rpc1.node.name.clone()), "the row is the subject's, at its own path.name");
-    // A node-admin's declaration reaches the fabric seat this admin holds.
+    // A node-admin's declaration reaches the fabric-primary role this admin holds.
     assert_eq!(reply(&call(&rig, &stranger, &declare(admin2, NodeState::Ready)).await), StatusReply::Applied);
     // A mesh's declaration reaches the fabric-primary for a mesh it holds.
     let m2 = StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: MeshState::Ready, changed_at_rafka_ms: 0 };
@@ -927,7 +927,7 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
 
 /// CONTRACT (ops-naming "Node data" :79: caller → the node's mesh-primary, Forward `0x1A` when not
 /// directly reachable): a caller that resolves only a carrier (mesh2's primary) reaches mesh1's
-/// primary through it, and mesh1's primary, which here does NOT hold the fabric seat, writes
+/// primary through it, and mesh1's primary, which here does NOT hold the fabric-primary role, writes
 /// mesh1.rpc.1's row and tells it: `ConfigUpdated`, the birth told once, and the caller's
 /// `via-connections` span names `via-peer` with carrier mesh2.admin.1 inside the via-config trace.
 #[test]
@@ -936,7 +936,7 @@ fn a_caller_reaches_the_nodes_mesh_primary_through_a_carrier_and_it_writes_and_a
     cap.run(async {
         let (rig, b) = rig().await;
         let (admin2, rpc1, rpc2, m2admin) = (&b["admin2"], &b["rpc1"], &b["rpc2"], &b["m2admin"]);
-        // The fabric seat is mesh1.admin.2's in this view: the receiver is mesh1's primary only.
+        // The fabric-primary role is mesh1.admin.2's in this view: the receiver is mesh1's primary only.
         for n in rig.topology.write().await.nodes.iter_mut() {
             n.is_fabric_primary = n.node_id == admin2.node.node_id;
         }

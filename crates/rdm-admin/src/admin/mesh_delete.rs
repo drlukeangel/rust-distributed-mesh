@@ -1,7 +1,7 @@
 //! The two sides of the mesh-delete workflow a runner executes (mesh-delete.md).
 //!
 //! The owner's side ([`AdminRunner::delete_mesh`]) is the fabric-primary: it owns the outer
-//! workflow `mesh.delete:<mesh_id>` once the fabric seat is outside the deleting mesh (the
+//! workflow `mesh.delete:<mesh_id>` once the fabric-primary role is outside the deleting mesh (the
 //! confirmed fabric-primary handover, `fabric_handover`). It captures the accepted roster and the
 //! final primary's provider access (refusing before anything is dismantled when it has none),
 //! publishes `mesh-leaving`, sends `DeleteMesh`, waits for the validated `MeshDeleted` handoff
@@ -87,16 +87,16 @@ impl AdminRunner {
 
     async fn delete_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), crate::executor::RunEnd> {
         // Where this owner resumes, from its own Build facts, before it calls anything; the run this
-        // attempt belongs to keys the fabric seat's update (ruling R-PU2).
+        // attempt belongs to keys the fabric-primary role's update (ruling R-PU2).
         let build = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?;
         let (steps, run) = (build.steps.clone(), build.run_of(attempt));
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.to_string() };
         for t in crate::build_state::primaries_taken(&steps) {
-            self.digest_view.seats.mark_gone(t.lost_incarnation.clone());
+            self.digest_view.primaries.mark_gone(t.lost_incarnation.clone());
             self.records.offline.lock().unwrap().insert((t.lost_node_id, t.lost_incarnation));
         }
-        // The view is projected now: a primary an earlier attempt deleted holds no seat here, so the
-        // admin created for its mesh, or the one that survived it, is read seated.
+        // The view is projected now: a primary an earlier attempt deleted holds no role here, so the
+        // admin created for its mesh, or the one that survived it, is read in its role.
         self.refresh_view().await;
         let view = self.topology.read().await.clone();
         match crate::mesh_delete::owner_resume(&steps, outer)? {
@@ -118,13 +118,13 @@ impl AdminRunner {
         // the leave opens only once this admin's view names a fabric-primary outside the mesh
         // ("`node.fabric-primary.updated` confirms the committed transfer before any member is
         // deleted"). During fabric.delete, on
-        // the fabric-primary's own mesh, the fabric-primary seat stays put so mesh.delete skips its
+        // the fabric-primary's own mesh, the fabric-primary role stays put so mesh.delete skips its
         // node.fabric-primary.update step (lifecycles/fabric-delete.md step 1).
         if !build.topology.meshes.is_empty() || mesh != self.me.mesh.as_str() {
-            let fabric_update = crate::fabric_handover::update_operation(rdm_core::Seat::FabricPrimary, build_id.as_str(), run, outer);
+            let fabric_update = crate::fabric_handover::update_operation(rdm_core::PrimaryRole::FabricPrimary, build_id.as_str(), run, outer);
             self.handover.fabric_primary_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: {e}"))?;
         }
-        // The workflow is handed to a live holder. A holder that is not live keeps its seat (R-EL1)
+        // The workflow is handed to a live primary. A primary that is not live keeps its role (R-EL1)
         // but cannot take the workflow: it goes to the lost-final-primary path below, which deletes it
         // before anything is amended (R11). During fabric.delete, an unanswered mesh with no prior
         // AcceptedRoster resolves by deleting its unreached births (R-FS1 revised).
@@ -198,7 +198,7 @@ impl AdminRunner {
     }
 
     /// Under an in-force fabric.delete, the mesh `mesh` with no live node-admin primary is deleted in
-    /// process at this executor, the holder of the fabric-primary's roles, and no node-admin is created for
+    /// process at this executor, the fabric-primary, and no node-admin is created for
     /// it (mesh-delete.md "Resume after the primary's loss" step 2, Q160): its roster is the AcceptedRoster
     /// receipt, captured once, from the mesh's node rows on the store, by the first executor that runs it
     /// and read by every later one; every birth without a terminal receipt is deleted, a live member by its
@@ -271,7 +271,7 @@ impl AdminRunner {
                         // workflow, and nothing of it is deleted here.
                         let seen = view.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
                         if let Some(n) = seen {
-                            if matches!(crate::seat_revision::PathProbe::investigate(self, &n).await, crate::node_investigation::Finding::Reached { .. }) {
+                            if matches!(crate::path_investigation::PathProbe::investigate(self, &n).await, crate::node_investigation::Finding::Reached { .. }) {
                                 return Err(RunEnd::Incomplete(format!("{outer}: {mesh}'s node-admin {} {} answers, so it is not lost; the next attempt hands the workflow to the admin the election names", b.node, b.incarnation_id)));
                             }
                         }
@@ -350,7 +350,7 @@ impl AdminRunner {
     /// node-admin it creates for the mesh (mesh-delete.md, "Resume after the primary's loss", steps
     /// 1-2): the lost final primary is deleted first, `TerminateRuntime` first when it runs; then the
     /// admin is created at a path no birth held,
-    /// into the existing mesh under its existing MeshId. A live admin not yet seated is no loss:
+    /// into the existing mesh under its existing MeshId. A live admin not yet in its role is no loss:
     /// the attempt ends and the next one hands that admin the workflow.
     async fn admin_for_deleting_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &MeshDeleteKey, steps: &[BuildStepReceipt], view: &Topology) -> Result<Node, RunEnd> {
         let outer = key.operation.as_str();
@@ -360,7 +360,7 @@ impl AdminRunner {
             return Err(RunEnd::failed(no_primary));
         };
         if let Some(live) = view.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.status.is_live()) {
-            return Err(RunEnd::Incomplete(format!("{no_primary}: its admin {} is live and holds no seat yet, so it is not lost; the next attempt hands the workflow to the admin seated", live.name)));
+            return Err(RunEnd::Incomplete(format!("{no_primary}: its admin {} is live and holds no primary role yet, so it is not lost; the next attempt hands the workflow to the admin primary", live.name)));
         }
         let lost = adm.final_primary.clone();
         match crate::mesh_delete::exit_receipts(steps, outer, std::slice::from_ref(&lost)).remove(&(lost.node_id.clone(), lost.incarnation_id.clone())) {
@@ -383,7 +383,7 @@ impl AdminRunner {
         for other in adm.roster.iter().filter(|b| **b != lost && b.node.parse::<PathName>().is_ok_and(|p| p.kind == NodeKind::NodeAdmin && p.mesh == mesh)) {
             self.delete_silent_admin(build_id, attempt, key, mesh, other, steps).await?;
         }
-        // The lost primary's departure vacates its seat in this view before the name of the admin
+        // The lost primary's departure vacates its role in this view before the name of the admin
         // created for the mesh is claimed: the claim's writer is the fabric-primary only while the
         // mesh has no primary (R11: the predecessor's delete first).
         self.refresh_view().await;
@@ -395,7 +395,7 @@ impl AdminRunner {
         created.map_err(|e| format!("{outer}: the node-admin {path} created for {mesh}, which has no live admin: {e}"))?;
         self.refresh_view().await;
         let now = self.topology.read().await.clone();
-        now.node_type_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| RunEnd::Incomplete(format!("{outer}: {path} was created for {mesh} and holds no mesh-primary seat yet; the next attempt amends the roster for it")))
+        now.node_type_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| RunEnd::Incomplete(format!("{outer}: {path} was created for {mesh} and holds no mesh-primary role yet; the next attempt amends the roster for it")))
     }
 
     /// node.create of `path`, the one node-admin of a leaving mesh no admin of which survives, into
@@ -416,7 +416,7 @@ impl AdminRunner {
         })?;
         let executable = self.predecessor_executable(path, predecessor).await?;
         match self.revise_predecessor(path).await {
-            crate::seat_revision::TargetOutcome::Clear { gone: None } => {}
+            crate::path_investigation::TargetOutcome::Clear { gone: None } => {}
             other => return Err(format!("{path} is not a path no birth held: the create door targeted {other:?}")),
         }
         let hand_off = self.mesh_state_hook(path, state)?;
@@ -440,7 +440,7 @@ impl AdminRunner {
     }
 
     /// The resume after the leaving mesh's final primary `adm.final_primary` was lost and `held`
-    /// (`primary`, the surviving admin the election seated or the one node-admin this fabric-primary
+    /// (`primary`, the surviving admin the election in its role or the one node-admin this fabric-primary
     /// created for the mesh) is its primary now (mesh-delete.md, "Resume after the primary's loss",
     /// steps 1-2; [`crate::mesh_delete::resume_after_loss`]): the lost birth's runtime is read from
     /// this admin's durable runtime row of it, never from the view, which drops a deleted birth.
@@ -511,7 +511,7 @@ impl AdminRunner {
         // workflow. Nothing is deleted or created for the mesh.
         let held = self.topology.read().await.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)).cloned();
         if let Some(n) = held {
-            if matches!(crate::seat_revision::PathProbe::investigate(self, &n).await, crate::node_investigation::Finding::Reached { .. }) {
+            if matches!(crate::path_investigation::PathProbe::investigate(self, &n).await, crate::node_investigation::Finding::Reached { .. }) {
                 return Err(RunEnd::Incomplete(format!("{outer}: {mesh}'s node-admin {} {} answers, so it survives; the next attempt hands the workflow to the admin the election names", b.node, b.incarnation_id)));
             }
         }
@@ -1195,7 +1195,7 @@ mod tests {
             decisions: Arc::default(),
             project_view: Arc::new(|| Box::pin(async {})),
             finish_writes: Arc::new(|| Box::pin(async {})),
-            looker: crate::seat_watch::Looker {
+            looker: crate::primary_watch::Looker {
                 me: me.clone(),
                 me_id: node_id.clone(),
                 topology_view: topology_view.clone(),

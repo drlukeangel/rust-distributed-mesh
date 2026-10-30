@@ -5,8 +5,8 @@
 //! "What follows"), the authority begins the birth's next cycle and commands `node.mesh.join` to it,
 //! back over its own call; the birth runs node.start steps 2 to 5 again on it and is published
 //! ready only once its hook has passed (node-mesh-join.md step 10). One function, run by
-//! the mesh-primary's offline ladder for its members and by the fabric-primary's seat watch for a
-//! held seat holder; nothing re-publishes a presence by hand. `AdminRunner` registers the birth's
+//! the mesh-primary's offline ladder for its members and by the fabric-primary's primary watch for a
+//! held primary; nothing re-publishes a presence by hand. `AdminRunner` registers the birth's
 //! join (as it does a stopped birth's) so the join door admits the report.
 
 use crate::model::{IncarnationId, Node};
@@ -28,7 +28,7 @@ fn commanded() -> &'static Mutex<HashMap<(String, String), Instant>> {
 }
 
 /// What an admin needs to command a birth back: this admin's client, Status door, Build state,
-/// runner (once built) and digest view: one function, run by the offline ladder and the seat watch.
+/// runner (once built) and digest view: one function, run by the offline ladder and the primary watch.
 pub struct HeardAgain {
     /// This admin's Node RPC client: the command goes out on it.
     pub client: Arc<NodeRpcClient>,
@@ -73,7 +73,7 @@ async fn command_mesh_join(
     node: &Node,
     incarnation: &IncarnationId,
 ) -> String {
-    // The Day-0 fabric-primary, and any fabric seat holder: no node above it to connect to (Luke,
+    // The Day-0 fabric-primary, and any fabric primary: no node above it to connect to (Luke,
     // Q87); it is never commanded back.
     if node.is_fabric_primary {
         return "fabric-primary: no authority above it".to_string();
@@ -237,7 +237,7 @@ mod tests {
     ///  primary or publishes a frame."
     /// CONTRACT (node-mesh-join.md, Commander: "the node's mesh-primary ...; the fabric-primary for a
     /// mesh-primary. Commands go down"; #3211 red 2, gate 19d4afbee release: mesh2.admin.1 stopped
-    /// publishing mesh2 at 484.371, held mesh2.admin.2's seat at 484.404, and commanded
+    /// publishing mesh2 at 484.371, held mesh2.admin.2's role at 484.404, and commanded
     /// `node.mesh.join:mesh2.admin.2` at 484.416): an admin commands a node of a mesh only as that
     /// mesh's primary, and a mesh-primary only as the fabric-primary. Must NOT happen: a former
     /// mesh-primary commanding the mesh's primary, or the fabric-primary commanding a peer mesh's node.

@@ -3,7 +3,7 @@
 //!
 //! A declaration reaches this admin over Node RPC (`Status`, op `0x1B`). Nothing inside the mesh
 //! checks who is calling (node-rpc.md §14): a declaration is decided for the subject the request
-//! names, as this admin's view holds it. The admin applies it only when it holds the seat the
+//! names, as this admin's view holds it. The admin applies it only when it holds the role the
 //! subject's declaration needs (`RejectedNotPrimary` names the receiver, never the caller),
 //! idempotently on the natural key, forward along the legal order, and answers what happened.
 //! `Applied` means the declared state is held in this admin's entity state and, for a node,
@@ -282,10 +282,10 @@ impl Declared {
 }
 
 /// The status rows of this admin's own mesh, which it folds into what it applied when it takes
-/// the mesh's seat.
-pub struct SeatFold {
+/// the mesh's role.
+pub struct RoleFold {
     /// The records this admin writes: the copy its create, start and join hydrated, which it folds when
-    /// it takes its mesh's seat (Q227, Q260).
+    /// it takes its mesh's role (Q227, Q260).
     caches: crate::record_cache::Caches,
     nodes: Arc<dyn crate::storage::NodesStorage>,
     meshes: Arc<dyn crate::storage::MeshStorage>,
@@ -294,12 +294,12 @@ pub struct SeatFold {
     /// This admin's `path.name`: what the fold span names it by, as every status span does.
     name: crate::model::PathName,
     me: NodeId,
-    /// Whether this admin holds the seat with the rows folded: cleared when a view names another
+    /// Whether this admin holds the role with the rows folded: cleared when a view names another
     /// holder, so each tenure folds once, at its start.
     folded: Mutex<bool>,
 }
 
-impl SeatFold {
+impl RoleFold {
     /// The facts on `mesh`'s births, on every mesh and on the fabric, folded by the admin `name`
     /// born as `me`.
     pub fn new(caches: crate::record_cache::Caches, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>, fabric: Arc<dyn crate::fabric_storage::FabricStorage>, mesh: String, name: crate::model::PathName, me: NodeId) -> Self {
@@ -366,7 +366,7 @@ impl SeatFold {
             fabric_event_rows = tracing::field::Empty,
             error = tracing::field::Empty,
         );
-        // A node-admin taking its mesh's seat reads no storage (Q227, Q242, Q260): it folds the records its
+        // A node-admin taking its mesh's role reads no storage (Q227, Q242, Q260): it folds the records its
         // create, start and join hydrated into its caches, the copy every later write of them starts from.
         // Storage is read only by a re-born fabric-primary that is the lone node of a single mesh.
         let read = Ok::<_, String>((self.caches.meshes.all(), self.caches.fabric.all().into_iter().next(), self.caches.nodes.rows_of(&self.mesh)));
@@ -382,20 +382,20 @@ impl SeatFold {
                 span.record("mesh_status_rows", meshes.iter().filter(|m| m.state().is_some()).count());
                 span.record("fabric_event_rows", fabric.as_ref().map_or(0, |f| f.events.len()));
                 *self.folded.lock().unwrap() = true;
-                span.in_scope(|| tracing::info!("this admin took its mesh's seat: the mesh's status rows are folded into what it applied"));
+                span.in_scope(|| tracing::info!("this admin took its mesh's role: the mesh's status rows are folded into what it applied"));
                 if let Some(digest_view) = digest_view {
                     span.in_scope(|| self.adopt_into(declared, digest_view, &me_name));
                 }
             }
             Err(e) => {
                 span.record("error", e.as_str());
-                span.in_scope(|| tracing::info!("this admin took its mesh's seat and could not read the mesh's status rows: it holds only what it applied"));
+                span.in_scope(|| tracing::info!("this admin took its mesh's role and could not read the mesh's status rows: it holds only what it applied"));
             }
         }
     }
 }
 
-impl SeatFold {
+impl RoleFold {
     /// Adopt into `digest_view` every birth of this admin's mesh that `declared` holds a state for ahead of
     /// what `digest_view` holds for that exact birth: the status its predecessor set, held by the successor.
     fn adopt_into(&self, declared: &Mutex<Declared>, digest_view: &rdm_transport::topology::DigestView, me_name: &crate::model::PathName) {
@@ -414,7 +414,7 @@ impl SeatFold {
                 continue;
             }
             let status = member_of_declared(state);
-            let outcome = match set_member_status(digest_view, MemberStatusReceipt::SeatFold { node_id: &node_id, incarnation: &incarnation, name: &name, state }) {
+            let outcome = match set_member_status(digest_view, MemberStatusReceipt::RoleFold { node_id: &node_id, incarnation: &incarnation, name: &name, state }) {
                 Ok(_) => "adopted",
                 Err(why) => why,
             };
@@ -429,7 +429,7 @@ impl SeatFold {
                 outcome,
                 "otel.kind" = "internal"
             )
-            .in_scope(|| tracing::info!("the seat taker holds the status its predecessor set for the member: its projection carries it"));
+            .in_scope(|| tracing::info!("the role taker holds the status its predecessor set for the member: its projection carries it"));
         }
     }
 }
@@ -468,10 +468,10 @@ pub enum MemberStatusReceipt<'a> {
         /// Its exact birth.
         incarnation: &'a IncarnationId,
     },
-    /// The seat fold: the state its predecessor set for the birth, as the mesh's status rows hold it,
-    /// adopted by the admin that took the mesh's seat (fabric-authority.md §7: hydration, not
+    /// The role fold: the state its predecessor set for the birth, as the mesh's status rows hold it,
+    /// adopted by the admin that took the mesh's role (fabric-authority.md §7: hydration, not
     /// transition).
-    SeatFold {
+    RoleFold {
         /// The node.
         node_id: &'a NodeId,
         /// Its exact birth.
@@ -487,7 +487,7 @@ pub enum MemberStatusReceipt<'a> {
 /// published from, from `receipt`, its cause: the one place this admin, as its members' status
 /// authority, writes a member's status. `Ok(true)` when the view holds the status for the birth;
 /// `Ok(false)` when it sets nothing (a birth of another mesh, or one the view holds nothing of);
-/// `Err` naming why a seat fold adopts nothing. The view's own span of each cause is its record.
+/// `Err` naming why a role fold adopts nothing. The view's own span of each cause is its record.
 pub fn set_member_status(digest_view: &rdm_transport::topology::DigestView, receipt: MemberStatusReceipt<'_>) -> Result<bool, &'static str> {
     use rdm_core::MemberStatus as M;
     match receipt {
@@ -499,7 +499,7 @@ pub fn set_member_status(digest_view: &rdm_transport::topology::DigestView, rece
         MemberStatusReceipt::NodeJoined { op, already: None } => Ok(digest_view.joined(op)),
         MemberStatusReceipt::StopAdmitted(op) => Ok(digest_view.admitted(op, M::Leaving)),
         MemberStatusReceipt::ConnectionsDeleting { node_id, incarnation } => Ok(digest_view.reported(node_id, incarnation, M::ConnectionsDeleting)),
-        MemberStatusReceipt::SeatFold { node_id, incarnation, name, state } => digest_view.adopt_status(node_id, incarnation, name, member_of_declared(state)).map(|_| true),
+        MemberStatusReceipt::RoleFold { node_id, incarnation, name, state } => digest_view.adopt_status(node_id, incarnation, name, member_of_declared(state)).map(|_| true),
     }
 }
 
@@ -520,7 +520,7 @@ pub struct StatusDoor {
     /// What publishes NodeStopped for a stop this admin recorded as its birth's mesh-primary (i146
     /// Q29, Q36); filled once the admin's backbone exists.
     pub stopped: Arc<OnceLock<StoppedPublisher>>,
-    /// The node id this admin was born with: how it finds its own row and its seats in a view
+    /// The node id this admin was born with: how it finds its own row and its roles in a view
     /// ([`Topology::own`]), never by `path.name`.
     pub node_id: NodeId,
     /// The fabric's minted id.
@@ -574,7 +574,7 @@ pub struct StatusDoor {
     /// it takes the declarations of the node re-created at the target's path.name, which its own node.create
     /// waits on (build.md §5.3).
     pub fabric_recovery: Arc<OnceLock<crate::fabric_recovery::Reader>>,
-    /// This admin's `node.config.update` door, served while it holds a mesh's primary seat (the writer
+    /// This admin's `node.config.update` door, served while it holds a mesh's primary role (the writer
     /// of that mesh's rows); filled once the admin's node-RPC client exists.
     pub configs: crate::node_config::NodeConfigsSlot,
     /// This admin's re-publish of its presence on the channel it is on (its digest published, no
@@ -653,7 +653,7 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
                     }
                 }
             };
-            // The receiver's seat: every kind, a node-admin included, reports to its mesh's primary,
+            // The receiver's role: every kind, a node-admin included, reports to its mesh's primary,
             // which sets its status (node-status.md "Status report"). While fabric recovery runs and the
             // mesh has no mesh-primary, its executor takes the declarations of the node it re-creates at
             // the target's path.name: its own node.create waits on them (build.md §5.3, Q122).
@@ -700,7 +700,7 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "fabric-primary".into() }), None);
             }
             // The subject Mesh, as this holder knows it: an id its own Build created, else the id a
-            // Mesh carries in the view. The fabric seat moves to whichever admin has the lowest node
+            // Mesh carries in the view. The fabric role moves to whichever admin has the lowest node
             // id, which may hold a Mesh it never created.
             let held = (door.mesh_ids)().values().any(|id| id == mesh_id) || view.meshes.iter().any(|m| m.id.as_ref() == Some(mesh_id));
             if !held {
@@ -730,7 +730,7 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
             }
             // The mesh's primary writes its status (node-identity-and-state.md 4.3): an admin whose view
             // names another admin the mesh's primary is not the receiver. One whose view names none
-            // yet is the admin the hand-off created, before its own seat shows in its view.
+            // yet is the admin the hand-off created, before its own role shows in its view.
             if let Some(primary) = view.node_type_primary(mesh_name, NodeKind::NodeAdmin).filter(|p| p.node_id != door.node_id) {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: format!("the mesh-primary of {mesh_name}, which this admin's view names {} ({})", primary.name, primary.node_id) }), None);
             }
@@ -882,7 +882,7 @@ impl StatusDoor {
     /// or this admin itself when its view names it as the authority. Decide over the view; an
     /// `Applied` node state is durable (the subject's row) before it is answered, and the live
     /// view shows it at once; one span per decision names op, sender, outcome and whether the
-    /// receiver holds its mesh's seat (accepting a Pending hand-off is not an election).
+    /// receiver holds its mesh's role (accepting a Pending hand-off is not an election).
     pub async fn apply(&self, sender: Option<crate::model::Node>, req: &StatusRequest) -> StatusReply {
         let peer = sender.as_ref().and_then(|n| n.endpoint_id.as_ref()).and_then(|e| e.0.parse::<iroh::PublicKey>().ok());
         self.apply_from(peer, sender, req).await
@@ -2912,7 +2912,7 @@ fn status_of_read_refusal(refusal: rdm_core::read::ReadReply) -> StatusReply {
 mod tests {
     use super::*;
 
-    /// What a mesh-primary folds from the stores as it takes `mesh` (`SeatFold::on_install`'s read): the
+    /// What a mesh-primary folds from the stores as it takes `mesh` (`RoleFold::on_install`'s read): the
     /// facts on every mesh and on the fabric, and on every birth of `mesh`'s node records.
     async fn folded(nodes: &dyn crate::storage::NodesStorage, meshes: &dyn crate::storage::MeshStorage, fabric: &dyn crate::fabric_storage::FabricStorage, mesh: &str) -> Declared {
         let (m, f, n) = (meshes.meshes().await.unwrap(), fabric.fabric().await.unwrap(), nodes.nodes(mesh).await.unwrap());
@@ -3571,7 +3571,7 @@ mod tests {
     /// its status"; states.md "Who sets each state": node Ready is set by "the node's
     /// mesh-primary" from "the node's node.started report"): a node-admin's declaration is applied by
     /// its own mesh's primary like every other kind's. mesh2's primary applies mesh2.admin.2's
-    /// Ready; the fabric-primary, of mesh1, refuses it naming the seat it needs, the
+    /// Ready; the fabric-primary, of mesh1, refuses it naming the role it needs, the
     /// mesh-primary of mesh2. Must NOT happen: a node-admin's status set by the fabric-primary.
     /// CONTRACT (Q11 = a; node-status.md "Status report": every kind reports to its mesh's primary, which
     /// sets its status): a mesh-primary decides a declaration for a birth its offline tick watches through
@@ -3711,7 +3711,7 @@ mod tests {
     /// ApplyMeshState is applied by the mesh's primary. A receiver whose view names ANOTHER admin
     /// its mesh's primary refuses it naming that holder, and applies nothing; the admin the view
     /// names applies it, and so does an admin of the mesh whose view names no primary of it yet
-    /// (the bootstrap admin at the hand-off, before its own seat shows in its view).
+    /// (the bootstrap admin at the hand-off, before its own role shows in its view).
     #[test]
     fn an_apply_mesh_state_at_an_admin_whose_view_names_another_primary_is_refused_naming_it() {
         let admin = |name: &str, mesh: &str, primary: bool, fabric_primary: bool| {
@@ -3731,34 +3731,34 @@ mod tests {
             meshes: Vec::new(),
             nodes,
         };
-        let seated = view(vec![fp.clone(), first.clone(), second.clone()]);
+        let with_primary = view(vec![fp.clone(), first.clone(), second.clone()]);
         let pending = StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
 
-        let (reply, effect) = decide(&mesh_primary_of(&second, seated.clone()), &seated, &Declared::default(), &pending);
+        let (reply, effect) = decide(&mesh_primary_of(&second, with_primary.clone()), &with_primary, &Declared::default(), &pending);
         assert!(
             matches!(&reply, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed.contains("mesh2.admin.1")) && effect.is_none(),
             "an admin whose view names mesh2.admin.1 mesh2's primary applies no Mesh status of mesh2: {reply:?}"
         );
 
-        let (reply, effect) = decide(&mesh_primary_of(&first, seated.clone()), &seated, &Declared::default(), &pending);
+        let (reply, effect) = decide(&mesh_primary_of(&first, with_primary.clone()), &with_primary, &Declared::default(), &pending);
         assert!(matches!(reply, R::Applied) && effect.is_some(), "the primary its view names applies it: {reply:?}");
 
-        let mut unseated_first = first.clone();
-        unseated_first.is_primary = false;
-        let unseated = view(vec![fp.clone(), unseated_first.clone(), second.clone()]);
-        let (reply, effect) = decide(&mesh_primary_of(&unseated_first, unseated.clone()), &unseated, &Declared::default(), &pending);
+        let mut non_primary_first = first.clone();
+        non_primary_first.is_primary = false;
+        let without_primary = view(vec![fp.clone(), non_primary_first.clone(), second.clone()]);
+        let (reply, effect) = decide(&mesh_primary_of(&non_primary_first, without_primary.clone()), &without_primary, &Declared::default(), &pending);
         assert!(matches!(reply, R::Applied) && effect.is_some(), "an admin of the mesh whose view names no primary of it applies it: {reply:?}");
     }
 
     /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): a replace or a recovery keeps the
     /// path.name and mints a new node id. The view holds one row per path.name (`admin::project_at`
     /// keys it by `PathName`), so until the deleted birth's digest goes non-live or departs, the row
-    /// at this admin's path can be the deleted birth's, live and seated, and this admin's own row is
+    /// at this admin's path can be the deleted birth's, live and in its role, and this admin's own row is
     /// absent. The authority finds itself by the node id it was born with: it decides nothing from
-    /// the deleted birth's seat and refuses naming the true reason, "a view holding this admin"; a
+    /// the deleted birth's role and refuses naming the true reason, "a view holding this admin"; a
     /// node command naming its node id goes on to the subject's own door (`NodeSelf::serve`, which
     /// checks the exact birth itself), here not yet filled. What must NOT happen: a member's
-    /// declaration `Applied` on the deleted birth's mesh-primary seat, or a node command naming this
+    /// declaration `Applied` on the deleted birth's mesh-primary role, or a node command naming this
     /// admin refused as "not the subject node itself".
     #[tokio::test]
     async fn a_mesh_primary_whose_view_holds_its_superseded_birth_at_its_path_answers_as_itself() {
@@ -3785,13 +3785,13 @@ mod tests {
             nodes: vec![deleted.clone(), member.clone(), owner.clone()],
         };
         assert_ne!(deleted.node_id, successor.node_id, "a replace mints a new node id");
-        assert_eq!(view.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds mesh1's seat in this view");
+        assert_eq!(view.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(deleted.node_id.clone()), "the deleted birth holds mesh1's role in this view");
         let door = mesh_primary_of(&successor, view.clone());
         let holding_me = |r: &StatusReply| matches!(r, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "a view holding this admin");
 
         let declare = StatusRequest::DeclareNodeState { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
         let (reply, effect) = decide(&door, &view, &Declared::default(), &declare);
-        assert!(holding_me(&reply) && effect.is_none(), "the deleted birth's seat is not this admin's: {reply:?}");
+        assert!(holding_me(&reply) && effect.is_none(), "the deleted birth's role is not this admin's: {reply:?}");
 
         let stop = StatusRequest::JoinMesh { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.mesh.join:mesh1.admin.1".into() };
         let reply = door.apply(Some(owner.clone()), &stop).await;

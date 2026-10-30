@@ -801,7 +801,7 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/fabric-ca-renew.md:53
     /// "| Launch | A launched node is written the current set at launch (`RDM_ROOTS`), the way `RDM_MESH_ID` is, so a node born mid-overlap trusts both; a launched node-admin is also written the root secret (`RDM_CA_SECRET`) and the current CA material (`RDM_FABRIC_CA_KEY`; the CA's cert travels inside the issuing cert) |"
     /// CONTRACT (fabric-certs.md §Custody: "Every node-admin holds the root secret ... written into its
-    /// launch environment beside its mesh's issuing material"; "a successor seated by election ...
+    /// launch environment beside its mesh's issuing material"; "a successor in its role by election ...
     /// mints and rotates from its own copy"): a root holder writes the root beside a mesh's issuing
     /// material into every admin's launch. An admin launched with both holds the root and its mesh's
     /// one issuer: it hands that same issuer on, never minting a second, and mints another mesh's

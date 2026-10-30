@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::seat_revision::TargetOutcome;
+use crate::path_investigation::TargetOutcome;
 
 /// The exact id of `mesh` a launch or a hand-off names: what this admin created (`records`), else what
 /// its view holds from the mesh's members, else the mesh's own row, a point read by its name in
@@ -528,7 +528,7 @@ impl AdminRunner {
     /// Target `path` before a new birth (`crate::target`): this admin answers the target's questions.
     pub(crate) async fn revise_predecessor(&self, path: &PathName) -> TargetOutcome {
         let prev = self.topology.read().await.node(path).cloned();
-        let out = crate::seat_revision::investigate_path(path, prev, self).await;
+        let out = crate::path_investigation::investigate_path(path, prev, self).await;
         if matches!(out, TargetOutcome::Clear { .. }) {
             self.handles.lock().unwrap().remove(path);
         }
@@ -1243,7 +1243,7 @@ impl AdminRunner {
         // exact pinned birth decides, and only its `exited` verdict deletes it as a crashed target
         // (node-delete.md), nothing sent to it and its exact runtime terminated.
         if let Some(n) = seen.as_ref().filter(|n| !n.stopped && n.status == crate::model::NodeStatus::Dead) {
-            let finding = crate::seat_revision::PathProbe::investigate(self, n).await;
+            let finding = crate::path_investigation::PathProbe::investigate(self, n).await;
             let admitted = crate::build::delete_admits(false, false, true, Some(&finding));
             tracing::info!(verdict = finding.name(), detail = %finding.detail(), crashed_target = admitted.is_some(), "node.delete of a birth the view marks Dead: node investigation of its exact birth decides whether its stop is composed");
             if admitted == Some(crate::build::DeleteAdmitted::Exited) {
@@ -1324,7 +1324,7 @@ impl AdminRunner {
 }
 
 #[async_trait::async_trait]
-impl crate::seat_revision::PathProbe for AdminRunner {
+impl crate::path_investigation::PathProbe for AdminRunner {
     /// Node investigation (the one primitive, Q107 item 1) on `node` from this admin's view: the leads,
     /// node.runtime.inspect over the one runtime resolution, then, unless it proved the runtime exited or
     /// os-stopped, the direct tickle and the same kick through peers (Q273).
@@ -2251,7 +2251,7 @@ mod tests {
             decisions: Arc::default(),
             project_view: Arc::new(|| Box::pin(async {})),
             finish_writes: Arc::new(|| Box::pin(async {})),
-            looker: crate::seat_watch::Looker {
+            looker: crate::primary_watch::Looker {
                 me: me.clone(),
                 me_id: node_id.clone(),
                 topology_view: topology_view.clone(),

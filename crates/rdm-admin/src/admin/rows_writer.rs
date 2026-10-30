@@ -51,7 +51,7 @@ pub(crate) struct MeshRowsWriter {
     pub(crate) meshes: Arc<dyn crate::storage::MeshStorage>,
     /// The records this admin writes, as it holds them.
     pub(crate) caches: crate::record_cache::Caches,
-    /// The claim of the mesh's name this seat tenure decided: `None` outside a tenure or before the
+    /// The claim of the mesh's name this role tenure decided: `None` outside a tenure or before the
     /// store answered it; `Some(Ok)` once it won; `Some(Err)` when it was refused (another mesh's
     /// live row holds the name, or this mesh is Dead): the mesh's rows stay unwritten for the tenure.
     pub(crate) claim: Option<Result<(), crate::storage::MeshClaimRefused>>,
@@ -142,7 +142,7 @@ impl MeshRowsWriter {
 /// R8).
 pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: DigestView, fabric: FabricId, mut writes: tokio::sync::watch::Receiver<std::collections::BTreeSet<String>>, stop: crate::stop_gate::StopGate, commands: Arc<crate::node_commands::CommandView>) {
     let mut births = digest_view.birth_changes();
-    let mut primaries = digest_view.seats.subscribe();
+    let mut primaries = digest_view.primaries.subscribe();
     let pacing = rdm_transport::delivery::Pacing::from_cadences();
     let mut owed_sweeps = 0u32;
     loop {
@@ -200,16 +200,16 @@ pub(crate) async fn recorded_births(meshes: &dyn crate::storage::MeshStorage, no
 /// record's included: an election input (elections §3), each
 /// held only when it supersedes the record held. The records record the role; the election decides it.
 /// The store root is the fabric's own, so every record on it is of this fabric.
-pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, seats: &rdm_transport::topology::PrimaryView) -> Result<usize, crate::storage_error::StorageError> {
+pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, primaries: &rdm_transport::topology::PrimaryView) -> Result<usize, crate::storage_error::StorageError> {
     let mut taken = 0;
     for r in crate::storage::records(meshes, nodes, own_mesh).await? {
         let Some(b) = r.newest_birth() else { continue };
         let record = |revision| rdm_core::Primary { mesh: r.name.mesh.clone(), node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone(), revision };
         if let Some(revision) = b.is_primary {
-            taken += usize::from(matches!(seats.take(rdm_core::Seat::of_node_type(r.name.kind), &record(revision)), rdm_transport::topology::SeatTaken::Held { .. }));
+            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::of_node_type(r.name.kind), &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
         }
         if let Some(revision) = b.is_fabric_primary {
-            taken += usize::from(matches!(seats.take(rdm_core::Seat::FabricPrimary, &record(revision)), rdm_transport::topology::SeatTaken::Held { .. }));
+            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::FabricPrimary, &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
         }
     }
     Ok(taken)
@@ -240,7 +240,7 @@ pub(crate) async fn own_mesh_row(meshes: &dyn crate::storage::MeshStorage, own: 
 /// mesh.create's claim of the mesh's name at its key (node-identity-and-state.md §2.7)
 /// ([`crate::storage::claim_mesh`]), made by `me`: the
 /// fabric-primary at CreateMesh, as the writer of a mesh with no primary (R13), the mesh's first
-/// durable write; and the mesh's primary when its seat tenure starts, which finds the mesh's own row
+/// durable write; and the mesh's primary when its role tenure starts, which finds the mesh's own row
 /// (the same MeshId re-claiming, idempotent). The Mesh row written, or this mesh's own row found
 /// standing, or refused by name. One `rdm.node_admin.mesh.create.via-mesh-row` span, `moment`
 /// `claim`. `Err`: the store did not answer, and nothing is decided.
@@ -448,15 +448,15 @@ pub(crate) async fn claim_fabric_name(storage: &dyn crate::fabric_storage::Fabri
 }
 
 /// `fabric/` on the fabric's store root, written by the fabric-primary alone (R14 item 2): while this
-/// birth holds the fabric seat it writes the Fabric identity it is configured for, so a seat that
-/// came to it from a lost holder still leaves the Fabric row on the store root. Who is primary is no `fabric/` row: it is the
+/// birth holds the fabric-primary role it writes the Fabric identity it is configured for, so a role that
+/// came to it from a lost primary still leaves the Fabric row on the store root. Who is primary is no `fabric/` row: it is the
 /// election's result, recorded as `is_primary` and `is_fabric_primary` on the node rows (build.md
 /// §5.3). The Fabric row carries no pointer to the newest Build (R-BI3). The claim of the
 /// fabric's name comes first: nothing else is written to `fabric/` until it wins, and a name another
 /// Fabric's identity holds leaves `fabric/` unwritten by this writer, named once. While it does not
-/// hold the seat it writes nothing to `fabric/`.
+/// hold the role it writes nothing to `fabric/`.
 pub(crate) struct FabricRowsWriter {
-    /// This admin's exact birth: it writes only while the fabric seat names it.
+    /// This admin's exact birth: it writes only while the fabric-primary role names it.
     pub(crate) me: (NodeId, IncarnationId),
     pub(crate) identity: crate::fabric_storage::FabricIdentity,
     pub(crate) storage: Arc<dyn crate::fabric_storage::FabricStorage>,
@@ -470,10 +470,10 @@ impl FabricRowsWriter {
         Self { me, identity, storage, claim: None }
     }
 
-    /// One sweep on the seat records `seats` holds: while the fabric seat names this birth, the claim
+    /// One sweep on the primary records `roles` holds: while the fabric-primary role names this birth, the claim
     /// of the fabric's name (which writes the identity row) until the store answers it.
-    pub(crate) async fn sweep(&mut self, seats: &rdm_transport::topology::PrimaryView) {
-        if !seats.fabric().is_some_and(|h| h.is_birth(&self.me.0, &self.me.1)) {
+    pub(crate) async fn sweep(&mut self, primaries: &rdm_transport::topology::PrimaryView) {
+        if !primaries.fabric().is_some_and(|h| h.is_birth(&self.me.0, &self.me.1)) {
             return;
         }
         let (storage, identity) = (&self.storage, &self.identity);

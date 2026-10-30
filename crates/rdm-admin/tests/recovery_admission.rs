@@ -279,8 +279,8 @@ fn deletion_receipts(lane: Option<&str>, kind: &str, build: &rdm_admin::build::B
 }
 
 /// A node-admin of the fabric whose store root is `root`, its Build journal as its file backend opens it on that root, its Build log gated by the
-/// fabric-primary record `seats` holds, judged for its own birth `me` as a booted admin judges it.
-async fn held_admin(name: &str, fabric: &FabricId, root: &std::path::Path, seats: &rdm_transport::topology::PrimaryView, me: (NodeId, IncarnationId)) -> (iroh::Endpoint, Arc<rdm_admin::fabric_builds::FabricBuildStateAdapter>) {
+/// fabric-primary record `roles` holds, judged for its own birth `me` as a booted admin judges it.
+async fn held_admin(name: &str, fabric: &FabricId, root: &std::path::Path, primaries: &rdm_transport::topology::PrimaryView, me: (NodeId, IncarnationId)) -> (iroh::Endpoint, Arc<rdm_admin::fabric_builds::FabricBuildStateAdapter>) {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::generate())
         .relay_mode(iroh::RelayMode::Disabled)
@@ -296,11 +296,11 @@ async fn held_admin(name: &str, fabric: &FabricId, root: &std::path::Path, seats
         rdm_admin::storage_backend::FileBackend::at(root).open(&scope).await.unwrap().builds
     };
     let read = {
-        let seats = seats.clone();
-        Arc::new(move || rdm_admin::seat_watch::fabric_seat_record(seats.fabric().as_ref(), &me, &Default::default(), |_| None))
+        let primaries = primaries.clone();
+        Arc::new(move || rdm_admin::primary_watch::fabric_primary_record(primaries.fabric().as_ref(), &me, &Default::default(), |_| None))
     };
-    let seat = rdm_admin::fabric_builds::SeatSource { read, changed: Some(seats.subscribe()) };
-    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::new(journal, &rdm_transport::topology::LocationView::new(&endpoint, name).unwrap(), name.into(), seat);
+    let role = rdm_admin::fabric_builds::PrimarySource { read, changed: Some(primaries.subscribe()) };
+    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::new(journal, &rdm_transport::topology::LocationView::new(&endpoint, name).unwrap(), name.into(), role);
     (endpoint, Arc::new(builds))
 }
 
@@ -321,10 +321,10 @@ async fn a_mesh_primary_that_is_not_the_fabric_primary_writes_no_drift_attempt_a
     std::fs::create_dir_all(&root).unwrap();
     let fp_node = t.node(&"mesh1.admin.1".parse().unwrap()).unwrap().clone();
     let mp_node = t.node(&"mesh2.admin.1".parse().unwrap()).unwrap().clone();
-    let seats = rdm_transport::topology::PrimaryView::default();
-    seats.take(rdm_core::Seat::FabricPrimary, &rdm_core::Primary { mesh: "mesh1".into(), node_id: fp_node.node_id.clone(), incarnation: fp_node.incarnation_id.clone().unwrap(), revision: 1 });
-    let (_fp_ep, fp) = held_admin("mesh1.admin.1", &t.fabric.id, &root, &seats, (fp_node.node_id.clone(), fp_node.incarnation_id.clone().unwrap())).await;
-    let (_mp_ep, mp) = held_admin("mesh2.admin.1", &t.fabric.id, &root, &seats, (mp_node.node_id.clone(), mp_node.incarnation_id.clone().unwrap())).await;
+    let primaries = rdm_transport::topology::PrimaryView::default();
+    primaries.take(rdm_core::PrimaryRole::FabricPrimary, &rdm_core::Primary { mesh: "mesh1".into(), node_id: fp_node.node_id.clone(), incarnation: fp_node.incarnation_id.clone().unwrap(), revision: 1 });
+    let (_fp_ep, fp) = held_admin("mesh1.admin.1", &t.fabric.id, &root, &primaries, (fp_node.node_id.clone(), fp_node.incarnation_id.clone().unwrap())).await;
+    let (_mp_ep, mp) = held_admin("mesh2.admin.1", &t.fabric.id, &root, &primaries, (mp_node.node_id.clone(), mp_node.incarnation_id.clone().unwrap())).await;
     let path: PathName = "mesh2.rpc.1".parse().unwrap();
     let exited = t.node(&path).unwrap().clone();
     let (node_id, birth) = (exited.node_id.clone(), exited.incarnation_id.clone().unwrap());
@@ -365,7 +365,7 @@ async fn a_mesh_primary_that_is_not_the_fabric_primary_writes_no_drift_attempt_a
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Two meshes: mesh1's node-admin holds the fabric-primary seat; mesh2's node-admin is mesh2's
+/// Two meshes: mesh1's node-admin holds the fabric-primary role; mesh2's node-admin is mesh2's
 /// mesh-primary and nothing more. Every node is in the accepted Build.
 fn two_meshes() -> Topology {
     let mut fp = node("mesh1.admin.1", true);
@@ -618,8 +618,8 @@ async fn a_topology_change_accepted_while_a_recovery_runs_is_the_current_build_a
     }
 }
 
-/// Two meshes: mesh1's node-admin holds the fabric-primary seat; mesh2 has two node-admins, and the
-/// one that holds mesh2's primary seat is `mesh2_primary`; mesh2's other members are live but
+/// Two meshes: mesh1's node-admin holds the fabric-primary role; mesh2 has two node-admins, and the
+/// one that holds mesh2's primary role is `mesh2_primary`; mesh2's other members are live but
 /// `mesh2.rpc.1`, which is exited (Dead). Every node is in the accepted Build.
 fn two_meshes_two_mesh2_admins(mesh2_primary: &str) -> Topology {
     let mut t = two_meshes();
@@ -641,7 +641,7 @@ fn two_meshes_two_mesh2_admins(mesh2_primary: &str) -> Topology {
 /// exact departure proof. A live run is reattached, never re-claimed"; mesh-recovery.md:8-9: a lost
 /// mesh-primary is node-recovered by its mesh's live primary): mesh2's primary `mesh2.admin.1`
 /// opens and claims the recovery of its exited member `mesh2.rpc.1` as attempt 1 of mesh2's lane and
-/// leaves mid-run (it runs nothing more). `mesh2.admin.2` takes mesh2's seat over the same Build log
+/// leaves mid-run (it runs nothing more). `mesh2.admin.2` takes mesh2's role over the same Build log
 /// and the same in-flight rows. While the lost primary is only silent (no exit of its exact birth
 /// recorded), every recovery the new primary opens is refused build-in-progress naming mesh2 and the
 /// lost claimant: silence is never departure. Once its exit is proven and recorded (the new primary's
@@ -681,7 +681,7 @@ async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_
     let deleted: PathName = "mesh2.admin.1".parse().unwrap();
     let deleted_birth = before.node(&deleted).unwrap().clone();
 
-    // mesh2.admin.2 holds mesh2's seat; in its view the lost primary is silent.
+    // mesh2.admin.2 holds mesh2's role; in its view the lost primary is silent.
     let mut after = two_meshes_two_mesh2_admins("mesh2.admin.2");
     after.nodes.iter_mut().filter(|n| n.name == deleted).for_each(|n| {
         n.node_id = deleted_birth.node_id.clone();
@@ -746,7 +746,7 @@ async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_
 /// after the running attempt's terminal receipt, or, with its executor lost, after exact departure
 /// proof): mesh2's primary `mesh2.admin.1` runs its member's recovery, attempt 1 of mesh2's lane, to
 /// its Converged verdict and is lost before it releases mesh2's in-flight row. `mesh2.admin.2`
-/// takes the seat: in its fold the lane holds nothing, but the row still names attempt 1 by the lost
+/// takes the role: in its fold the lane holds nothing, but the row still names attempt 1 by the lost
 /// primary. While the lost primary is only silent its recovery is refused build-in-progress naming
 /// it; once its exit is recorded, the new primary's recovery of it releases the row the deleted
 /// claimant left and opens and claims attempt 2 of mesh2's lane. Must NOT happen: mesh2 held for good
@@ -808,7 +808,7 @@ async fn an_in_flight_row_a_lost_mesh_primary_left_after_its_verdict_is_released
 /// claims its mesh's drift attempts on its mesh's rows; caveat 3: one attempt in flight per mesh):
 /// mesh2's primary `mesh2.admin.1` takes mesh2's in-flight row for attempt 1 of mesh2's lane and opens
 /// it with the recovery of its exited member `mesh2.rpc.1`, and is lost before it claims it. No one
-/// claimed attempt 1, and no executor ran it. `mesh2.admin.2` takes mesh2's seat over the same Build
+/// claimed attempt 1, and no executor ran it. `mesh2.admin.2` takes mesh2's role over the same Build
 /// log and rows. Its recovery of another birth (the lost primary's own) is refused build-in-progress
 /// naming mesh2 and the opener the row names: the open attempt holds the mesh. Its recovery of the
 /// member's exited birth is a second claimant of attempt 1: the row the opener took is its claim on the
@@ -937,7 +937,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
 /// 1 of mesh2's lane; its node.delete departs the birth (no view holds it after) and its create fails,
 /// so attempt 1 ends Failed. The primary resubmits: it takes mesh2's in-flight row for attempt 2 and
 /// opens it with the same recovery, and is lost before it claims it. `mesh2.admin.2` takes mesh2's
-/// seat over the same Build log and rows and records the lost primary's exit. The member is owed a
+/// role over the same Build log and rows and records the lost primary's exit. The member is owed a
 /// submit from attempt 1's Failed verdict: an open no one ran ends no run. The row the lost primary took
 /// is its claim on the store (build.md §5.2, Q142), released on its recorded departure; the owed submit
 /// then claims the open attempt 2 as it stands, and once claimed nothing is owed. Until then the lost primary's own recovery is refused
@@ -993,7 +993,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     let lane = builds.read_build(&b0).await.unwrap().lanes.get("mesh2").cloned().expect("mesh2's lane");
     assert_eq!((lane.state, lane.attempt, lane.opened, lane.claimant.as_deref()), (BuildState::Pending, 1, 2, None), "attempt 2 is open and unclaimed: {lane:?}");
 
-    // mesh2.admin.2 holds the seat; the member deleted its view; the lost primary is Dead in it.
+    // mesh2.admin.2 holds the role; the member deleted its view; the lost primary is Dead in it.
     let deleted: PathName = "mesh2.admin.1".parse().unwrap();
     let deleted_birth = before.node(&deleted).unwrap().clone();
     let deleted_incarnation = deleted_birth.incarnation_id.clone().unwrap();
@@ -1138,13 +1138,13 @@ fn unheard_mesh2_primary(second_admin: bool) -> (Topology, Topology) {
 /// The fabric-primary's primaries as they stand once mesh2's election replaced `unheard` with `named`:
 /// the record naming the unheard birth, then the one naming its successor at the next revision.
 fn election_replaced(fp: &ControlPlane, t: &Topology, unheard: &str, named: &str) {
-    let seats = rdm_transport::topology::PrimaryView::default();
+    let primaries = rdm_transport::topology::PrimaryView::default();
     for (revision, name) in [(1, unheard), (2, named)] {
         let n = t.node(&name.parse().unwrap()).unwrap();
-        seats.take(rdm_core::Seat::MeshPrimary, &rdm_core::Primary { mesh: "mesh2".into(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), revision });
+        primaries.take(rdm_core::PrimaryRole::MeshPrimary, &rdm_core::Primary { mesh: "mesh2".into(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), revision });
     }
-    assert!(seats.replaced(rdm_core::Seat::MeshPrimary, "mesh2", t.node(&unheard.parse().unwrap()).unwrap().incarnation_id.as_ref().unwrap()), "the record naming {named} replaced {unheard}'s");
-    let _ = fp.seats.set(seats);
+    assert!(primaries.replaced(rdm_core::PrimaryRole::MeshPrimary, "mesh2", t.node(&unheard.parse().unwrap()).unwrap().incarnation_id.as_ref().unwrap()), "the record naming {named} replaced {unheard}'s");
+    let _ = fp.primaries.set(primaries);
 }
 
 /// CONTRACT (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs it, without

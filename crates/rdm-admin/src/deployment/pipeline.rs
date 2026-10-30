@@ -1367,7 +1367,7 @@ impl DeploymentPipeline<'_> {
             }
         };
         // The receipt is the step's durable commit: a step whose receipt the Build state does not
-        // write to the executor's own log (a fact with no wire shape, a targeted seat, a failed local
+        // write to the executor's own log (a fact with no wire shape, a targeted role, a failed local
         // write) is not complete, and the run stops at it by name. A failed broadcast after the
         // local write is not a refusal: the Build state names it and the step is committed.
         let appended = self
@@ -2016,8 +2016,8 @@ impl DeploymentPipeline<'_> {
     }
 
     /// A standalone `node.connection.delete { All }` (node-connections-delete.md):
-    /// `node.connection.delete:<path>`. A node-admin target that held a seat had it moved by
-    /// node.primary.update before this runs (the fabric-primary's drive, `crate::executor::seat_move`);
+    /// `node.connection.delete:<path>`. A node-admin target that held a role had it moved by
+    /// node.primary.update before this runs (the fabric-primary's drive, `crate::executor::role_move`);
     /// the exact birth's mesh-primary sets connections-deleting at admission and holds the birth's
     /// `node.connection.deleted` with its receipt. The process keeps running; nothing
     /// stops it and nothing is deleted.
@@ -2265,7 +2265,7 @@ impl DeploymentPipeline<'_> {
             // Exited runs on from it: the exited verdict is a step already taken, and nothing is stopped.
             self.terminate_step_when(&mut run, &node, handle, unreached, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?
         } else if node.stopped {
-            // A delete of a stopped birth: its whole stop already ran (its seats moved, its connections delete
+            // A delete of a stopped birth: its whole stop already ran (its roles moved, its connections delete
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
             // fabricated again. The delete proceeds to the exact runtime's exited verdict
             // (lifecycles/node-delete.md 1-2, node-stop.md 6).

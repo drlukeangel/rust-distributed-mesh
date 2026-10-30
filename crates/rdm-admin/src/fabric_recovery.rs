@@ -30,7 +30,7 @@ use tracing::Instrument as _;
 /// node-admin is re-created at, and the admin that runs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FabricRecovery {
-    /// The fabric-primary record whose birth is not a heard holder.
+    /// The fabric-primary record whose birth is not a heard primary.
     pub target: Primary,
     /// The path.name that birth lived at: its node's in the view, else its digest's or its departure's.
     pub at: Option<PathName>,
@@ -42,7 +42,7 @@ pub struct FabricRecovery {
 }
 
 /// Fabric recovery in `view` with the records `inc` and the digest view `digest_view`; `None` while the fabric-primary
-/// record names a heard holder, or no record is held.
+/// record names a heard primary, or no record is held.
 pub fn of(view: &Topology, inc: &Incumbency, digest_view: &DigestView) -> Option<FabricRecovery> {
     let members: Vec<Node> = view.members().cloned().collect();
     let target = crate::election::fabric_recovery_target(&members, inc)?.clone();
@@ -184,11 +184,11 @@ pub async fn record_primaries_taken(builds: &dyn crate::build_state::BuildStateA
 pub fn fold_primaries_taken(digest_view: &DigestView, records: &crate::admin::Records, me: &Node, target: Option<&Primary>, transitions: &[crate::build_state::PrimariesTaken]) {
     let mut offline = records.offline.lock().unwrap();
     for t in transitions {
-        digest_view.seats.mark_gone(t.lost_incarnation.clone());
+        digest_view.primaries.mark_gone(t.lost_incarnation.clone());
         offline.insert((t.lost_node_id.clone(), t.lost_incarnation.clone()));
     }
     if let Some(target) = target {
-        digest_view.seats.mark_gone(target.incarnation.clone());
+        digest_view.primaries.mark_gone(target.incarnation.clone());
         offline.insert((target.node_id.clone(), target.incarnation.clone()));
     }
     drop(offline);
@@ -201,8 +201,8 @@ pub fn fold_primaries_taken(digest_view: &DigestView, records: &crate::admin::Re
         }
     }
     for (mesh, recorded_rev) in mesh_revs {
-        let rev = digest_view.seats.mesh(&mesh).map(|m| m.revision).unwrap_or(0).max(recorded_rev) + 1;
-        digest_view.seats.take(rdm_core::Seat::of_node_type(NodeKind::NodeAdmin), &Primary { mesh, node_id: me.node_id.clone(), incarnation: me_inc.clone(), revision: rev });
+        let rev = digest_view.primaries.mesh(&mesh).map(|m| m.revision).unwrap_or(0).max(recorded_rev) + 1;
+        digest_view.primaries.take(rdm_core::PrimaryRole::of_node_type(NodeKind::NodeAdmin), &Primary { mesh, node_id: me.node_id.clone(), incarnation: me_inc.clone(), revision: rev });
     }
 }
 
@@ -255,7 +255,7 @@ pub struct FabricRecoveryDoor {
     /// Its records.
     pub records: Arc<crate::admin::Records>,
     /// Node investigation on the lost birth, and its command back when reached.
-    pub looker: crate::seat_watch::Looker,
+    pub looker: crate::primary_watch::Looker,
     /// Node recovery's submit of the re-create.
     pub recovery: crate::admin::RecoverySubmitter,
     /// node.primary.update's door: the restore's call.
@@ -278,7 +278,7 @@ pub struct FabricRecoveryDoor {
 impl FabricRecoveryDoor {
     /// A door for the admin these name.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(me: PathName, me_id: NodeId, topology: Arc<tokio::sync::RwLock<Topology>>, digest_view: DigestView, records: Arc<crate::admin::Records>, looker: crate::seat_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot, launched_to_recover: bool, gate: crate::stop_gate::StopGate) -> Self {
+    pub fn new(me: PathName, me_id: NodeId, topology: Arc<tokio::sync::RwLock<Topology>>, digest_view: DigestView, records: Arc<crate::admin::Records>, looker: crate::primary_watch::Looker, recovery: crate::admin::RecoverySubmitter, handover: crate::fabric_handover::HandoverSlot, launched_to_recover: bool, gate: crate::stop_gate::StopGate) -> Self {
         Self { me, me_id, topology, digest_view, records, looker, recovery, handover, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None), gate }
     }
 
@@ -335,9 +335,9 @@ impl FabricRecoveryDoor {
     }
 
     /// The workflow for the fabric-primary record `target`, pass by pass until the node at its path.name
-    /// is restored, the record names a heard holder, or this admin no longer runs it. This admin's stop
+    /// is restored, the record names a heard primary, or this admin no longer runs it. This admin's stop
     /// ends it where it stands, a look or a submit in flight included: a stopping node takes no new
-    /// lifecycle step, and a signal's stop ends its process. After a start the seat watch's next turn decides
+    /// lifecycle step, and a signal's stop ends its process. After a start the primary watch's next turn decides
     /// again whether it runs here.
     async fn run(self: &Arc<Self>, target: Primary) {
         let me = self.held_name();
@@ -380,7 +380,7 @@ impl FabricRecoveryDoor {
         loop {
             let me = self.held_name();
             let Some(fr) = self.read().await.filter(|fr| fr.target == *target) else {
-                return "the fabric-primary record names a heard holder".into();
+                return "the fabric-primary record names a heard primary".into();
             };
             if !self.runs(&fr) {
                 return format!("{me} no longer runs it: {}", fr.executor.map(|e| e.to_string()).unwrap_or_else(|| "nobody does".into()));
@@ -518,7 +518,7 @@ impl FabricRecoveryDoor {
         };
         let prior = crate::build_state::primaries_taken(&delete.steps);
         let prior_mesh = prior.iter().filter(|t| t.mesh == target.mesh).map(|t| t.mesh_revision).max().unwrap_or(0);
-        let mesh_revision = self.digest_view.seats.mesh(&target.mesh).map(|m| m.revision).unwrap_or(0).max(prior_mesh) + 1;
+        let mesh_revision = self.digest_view.primaries.mesh(&target.mesh).map(|m| m.revision).unwrap_or(0).max(prior_mesh) + 1;
         // With an attempt won, the transition is recorded in it; with none claimed yet there is no attempt
         // to supersede, and the drive's claim of the first is the one claim (build.md §1).
         if let Some(attempt) = attempt {
@@ -575,8 +575,8 @@ impl FabricRecoveryDoor {
     /// (fabric-recovery.md step 4): node.primary.update's call on it, each record at its next revision.
     async fn restore(&self, target: &Primary, node: &Node) -> Result<Vec<rdm_node::member_handover::Entry>, rdm_core::handover::NodePrimaryUpdateReply> {
         let door = self.handover.get().cloned().ok_or_else(|| rdm_core::reply::handover::not_ready("this admin's node.primary.update door is not built yet".into()))?;
-        let seats = self.digest_view.seats.clone();
-        let mesh_record = seats.mesh(&target.mesh);
+        let primaries = self.digest_view.primaries.clone();
+        let mesh_record = primaries.mesh(&target.mesh);
         door.restore(target, mesh_record.as_ref(), node).await
     }
 }
@@ -624,7 +624,7 @@ mod tests {
     /// docs/architecture/lifecycles/fabric-recovery.md:48-50: "2. **Fabric recovery starts.** The executor
     /// names itself by the four questions on its own view, opens the attempt and broadcasts it. Any other
     /// admin that notices tells it; it acts only when its own view agrees; repeats answer `AlreadyApplied`."):
-    /// while the fabric-primary record names a heard Ready holder, `of` returns `None`. Once silence marks
+    /// while the fabric-primary record names a heard Ready primary, `of` returns `None`. Once silence marks
     /// the fabric-primary `PendingReconnect` (no provider verdict required), `of` names the lowest Ready
     /// node-admin in its own mesh (`own_mesh = true`), or the lowest Ready mesh-primary on the backbone when
     /// its own mesh has none (`own_mesh = false`), taking no primary role, and opening the attempt on the
@@ -835,12 +835,12 @@ mod tests {
         let steps = builds.read_build(&id).await.unwrap().steps;
         let transitions = crate::build_state::primaries_taken(&steps);
         fold_primaries_taken(&digest_view, &records, &ex2, Some(&target2), &transitions);
-        digest_view.seats.take(rdm_core::Seat::of_node_type(NodeKind::NodeAdmin), &Primary { mesh: "mesh2".into(), node_id: ex2.node_id.clone(), incarnation: ex2.incarnation_id.clone().unwrap(), revision: 2 });
-        digest_view.seats.take(rdm_core::Seat::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: ex2.node_id.clone(), incarnation: ex2.incarnation_id.clone().unwrap(), revision: 3 });
+        digest_view.primaries.take(rdm_core::PrimaryRole::of_node_type(NodeKind::NodeAdmin), &Primary { mesh: "mesh2".into(), node_id: ex2.node_id.clone(), incarnation: ex2.incarnation_id.clone().unwrap(), revision: 2 });
+        digest_view.primaries.take(rdm_core::PrimaryRole::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: ex2.node_id.clone(), incarnation: ex2.incarnation_id.clone().unwrap(), revision: 3 });
 
         let view = crate::admin::project("fabric1", &fabric_id, crate::model::ProviderKind::Process, &digest_view, &records);
         assert_eq!(view.node_type_primary("mesh1", NodeKind::NodeAdmin), None, "mesh1 has no live node-admin primary in mesh2.admin.2's view");
         assert_eq!(view.nodes_of_type("mesh1", NodeKind::NodeAdmin).find(|n| n.status.is_live()), None, "the lost mesh1.admin.1 is not live in mesh2.admin.2's view");
-        assert_eq!(digest_view.seats.mesh("mesh1").map(|p| (p.node_id, p.revision)), Some((ex2.node_id.clone(), 3)), "mesh2.admin.2 holds mesh1's mesh-primary record at the next revision");
+        assert_eq!(digest_view.primaries.mesh("mesh1").map(|p| (p.node_id, p.revision)), Some((ex2.node_id.clone(), 3)), "mesh2.admin.2 holds mesh1's mesh-primary record at the next revision");
     }
 }

@@ -49,7 +49,7 @@ pub struct BuildDoor {
     pub run: Arc<RunDoor>,
     /// The primary records this admin holds: node.primary.update's successor installs into it before
     /// the executor's next step runs, so it names this birth the fabric-primary before the view does.
-    pub seats: PrimaryView,
+    pub primaries: PrimaryView,
     /// This admin's exact birth (with `env.door.node_id`): what the primary view is read against.
     pub incarnation: IncarnationId,
 }
@@ -69,7 +69,7 @@ pub fn refusal_reply(r: Refusal) -> BuildReply {
         Refusal::NotPrimary(p) => rdm_core::reply::build::not_fabric_primary(p),
         Refusal::AttemptTaken(d) => rdm_core::reply::build::attempt_taken(d),
         Refusal::Unavailable(d) => rdm_core::reply::build::not_ready(d),
-        Refusal::State(BuildStateError::SeatYielded { node, by, .. }) => rdm_core::reply::build::seat_yielded(node, by),
+        Refusal::State(BuildStateError::RoleYielded { node, by, .. }) => rdm_core::reply::build::role_yielded(node, by),
         Refusal::State(e) => rdm_core::reply::build::not_ready(format!("the Build state: {e}")),
     }
 }
@@ -186,8 +186,8 @@ impl BuildDoor {
     /// Only the fabric-primary accepts a Build call; any other admin names the one it sees.
     async fn not_fabric_primary(&self) -> Option<BuildReply> {
         // Decided by the node id this admin was born with (its claim door's), never by path.name.
-        let seat = self.control.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
-        match seat {
+        let role = self.control.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
+        match role {
             Some((_, id)) if id == self.env.door.node_id => None,
             other => Some(rdm_core::reply::build::not_fabric_primary(other.map(|(n, _)| n.to_string()))),
         }
@@ -195,7 +195,7 @@ impl BuildDoor {
 
     /// Whether the primary view names this exact birth the fabric-primary.
     fn is_fabric_primary(&self) -> bool {
-        self.seats.fabric().is_some_and(|h| h.is_birth(&self.env.door.node_id, &self.incarnation))
+        self.primaries.fabric().is_some_and(|h| h.is_birth(&self.env.door.node_id, &self.incarnation))
     }
 
     /// This admin's currently held `path.name`: what its executor door (`RunDoor::held_name`) resolves.
@@ -454,7 +454,7 @@ impl BuildDoor {
         };
         // The drive's own record answers a Build that ended: the frames it took off the calls it
         // made. A drive still running answers by streaming. A fabric-primary with no drive of the
-        // Build (it took the seat after the Build ended) makes one, which attaches to the last
+        // Build (it took the role after the Build ended) makes one, which attaches to the last
         // attempt's executor and reads its frames.
         let held = self.drives.get(&id);
         if p.state == BuildState::Complete && held.as_ref().map(|d| d.ended()).unwrap_or(true) {
@@ -468,7 +468,7 @@ impl BuildDoor {
             Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me}: the current Build could not be read to admit Build {id}: {e}"))),
         }
         let disposition = if p.state == BuildState::Failed { Disposition::NextAttempt } else { Disposition::Attached };
-        // The drive is the one reader of the receipts: a drive this admin took up after a seat move
+        // The drive is the one reader of the receipts: a drive this admin took up after a role move
         // reads every earlier attempt's receipts at its first dispatch, in its own task.
         let drive = self.drives.ensure(&self.env, &id, p.attempt_to_drive());
         let sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt: from_attempt, disposition }).await?;
@@ -558,8 +558,8 @@ impl BuildDoor {
         // in its mesh, numbered there.
         let served = match mesh.as_deref() {
             lane if !held_at_start => {
-                let (seats, node_id, incarnation) = (self.seats.clone(), self.env.door.node_id.clone(), self.incarnation.clone());
-                let not_fabric_primary: crate::build_run::NotFabricPrimary = Arc::new(move || !seats.fabric().is_some_and(|h| h.is_birth(&node_id, &incarnation)));
+                let (primaries, node_id, incarnation) = (self.primaries.clone(), self.env.door.node_id.clone(), self.incarnation.clone());
+                let not_fabric_primary: crate::build_run::NotFabricPrimary = Arc::new(move || !primaries.fabric().is_some_and(|h| h.is_birth(&node_id, &incarnation)));
                 self.run
                     .attempt_run_reporting(lane, &id, attempt, &executor, &context, &intent, &plan, not_fabric_primary)
                     .await
@@ -588,8 +588,8 @@ impl BuildDoor {
                 while let Some(f) = reader.next().await {
                     if !held_at_start && self.is_fabric_primary() {
                         let me = self.held_name().await;
-                        tracing::info_span!("rdm.node_admin.build.update.via-fabric-primary-changed", build_id = %id.log(), attempt, node = %me, to = %me, detail = "this executor took the fabric-primary seat during the run: the old driver's stream ends with the new seat")
-                            .in_scope(|| tracing::info!("the inner stream ends with the new seat"));
+                        tracing::info_span!("rdm.node_admin.build.update.via-fabric-primary-changed", build_id = %id.log(), attempt, node = %me, to = %me, detail = "this executor took the fabric-primary role during the run: the old driver's stream ends with the new role")
+                            .in_scope(|| tracing::info!("the inner stream ends with the new role"));
                         return Ok(BuildReply::FabricPrimaryMoved { build_id: id.to_string(), fabric_primary: Some(me.to_string()) });
                     }
                     match f {
@@ -757,15 +757,15 @@ async fn started(sink: ReplySink<Build, NotStarted>, frame: BuildReply) -> Resul
     sink.started(frame).await.map_err(gone)
 }
 
-/// Read a drive's frames to the caller until its terminal. A seat that moved ends the stream with
-/// the typed `FabricPrimaryMoved` terminal naming the new seat: the caller re-submits the Build id there.
+/// Read a drive's frames to the caller until its terminal. A role that moved ends the stream with
+/// the typed `FabricPrimaryMoved` terminal naming the new role: the caller re-submits the Build id there.
 async fn stream_frames(mut sink: ReplySink<Build, rdm_transport::stream::Streaming>, mut reader: crate::build_drive::DriveReader) -> Result<BuildReply, HandlerFault> {
     while let Some(t) = reader.next().await {
         match t {
             Read::Frame(f) => sink.data(f).await.map_err(gone)?,
             Read::Terminal(t) => return Ok(t),
-            Read::SeatLost(loss) => {
-                tracing::info_span!("rdm.node_admin.build.update.via-fabric-primary-changed", build_id = %reader.build_id().log(), to = loss.to.as_deref().unwrap_or("none"), detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new seat"));
+            Read::RoleLost(loss) => {
+                tracing::info_span!("rdm.node_admin.build.update.via-fabric-primary-changed", build_id = %reader.build_id().log(), to = loss.to.as_deref().unwrap_or("none"), detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new role"));
                 return Ok(BuildReply::FabricPrimaryMoved { build_id: reader.build_id().to_string(), fabric_primary: loss.to });
             }
         }
@@ -1149,12 +1149,12 @@ mod tests {
             BuildReply::NotReady { ref reason } if reason == "wait"
         ));
         assert!(matches!(
-            refusal_reply(Refusal::State(BuildStateError::SeatYielded {
+            refusal_reply(Refusal::State(BuildStateError::RoleYielded {
                 node: "mesh1.admin.1".into(),
                 by: "revision 2".into(),
                 to: None,
             })),
-            BuildReply::SeatYielded { .. }
+            BuildReply::RoleYielded { .. }
         ));
 
         // 2. `with_entries` populates `EntrySpec` from the stored Build's accepted topology for create/config ops,

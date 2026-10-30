@@ -3,7 +3,7 @@
 //! Two node-admins of one fabric hold the fabric's Build records on its shared store root (build.md
 //! §5.3; Q185: no Build channel). Admin A is the fabric-primary: it accepts a Build, claims attempt 1,
 //! runs it, completes one operation and dies in the middle of the next. Admin B, never connected to
-//! A, reads the Build from the store root, takes the seat and drives the SAME build id (A's process
+//! A, reads the Build from the store root, takes the role and drives the SAME build id (A's process
 //! is gone with it): the attempt A held is dispatched to A, which answers nothing, and only after B
 //! holds proof of A's departure does it claim attempt 2. B re-plans against the observed topology,
 //! runs only what is left and completes the Build, under `rdm.node_admin.build.update.via-reconcile`.
@@ -76,7 +76,7 @@ fn observed() -> Topology {
     }
 }
 
-/// The view once A hands off its seats (`node.primary.update`) to B and exits: B holds mesh1 and
+/// The view once A hands off its roles (`node.primary.update`) to B and exits: B holds mesh1 and
 /// the fabric while A's runtime is unreachable until its exited verdict is read.
 async fn lose_a(topology: &RwLock<Topology>) {
     let mut t = topology.write().await;
@@ -202,7 +202,7 @@ async fn admin(root: &std::path::Path) -> Admin {
         use rdm_admin::storage_backend::StorageBackend as _;
         rdm_admin::storage_backend::FileBackend::at(root).open(&scope).await.unwrap().builds
     };
-    let builds = Arc::new(FabricBuildStateAdapter::new(local.clone(), &rdm_transport::topology::LocationView::new(&endpoint, "test-admin").unwrap(), "test-admin".into(), rdm_admin::fabric_builds::SeatSource::unrecorded()));
+    let builds = Arc::new(FabricBuildStateAdapter::new(local.clone(), &rdm_transport::topology::LocationView::new(&endpoint, "test-admin").unwrap(), "test-admin".into(), rdm_admin::fabric_builds::PrimarySource::unrecorded()));
     Admin { endpoint, builds, local, accepted }
 }
 

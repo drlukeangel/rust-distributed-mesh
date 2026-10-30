@@ -1,49 +1,49 @@
 //! Elections (`docs/architecture/fabric-node-lifecycle-elections.md`; ruling R-A2).
 //!
 //! An election is a projection of converged facts, not a voting protocol: no ballot, term, quorum,
-//! timer or election message exists. A seat stays with its holder until that holder yields, is known gone or
+//! timer or election message exists. A role stays with its primary until that primary yields, is known gone or
 //! unheard past the staleness floor. The facts an election takes are the topology's nodes and their statuses, the
-//! HOLDER RECORDS this observer holds ([`Incumbency`]: a seat's exact birth, gossiped when a seat
+//! PRIMARY RECORDS this observer holds ([`Incumbency`]: a role's exact birth, gossiped when a role
 //! changes hands and handed to a joiner in its entry), and the births known gone.
 //!
 //! The rules, one function ([`resolve_with`]):
-//! - A holder that lives keeps its seat. A lower NodeId never displaces it. Lives means the record's
+//! - A primary that lives keeps its role. A lower NodeId never displaces it. Lives means the record's
 //!   exact birth is in the view, not replaced by a later birth of its NodeId, and not known gone,
-//!   whatever its status: a `ConnectionsDeleting` or `Leaving` holder keeps the seat until its
-//!   explicit yield (a new holder record, PrimaryUpdated) is held (R-EL1). A holder this view holds
+//!   whatever its status: a `ConnectionsDeleting` or `Leaving` primary keeps the role until its
+//!   explicit yield (a new primary record, PrimaryUpdated) is held (R-EL1). A primary this view holds
 //!   unheard past the staleness floor (`PendingReconnect`, or an observer-inferred `Dead`) is superseded
 //!   (elections §5: "silence past the staleness floor supersedes it").
-//! - A holder whose record names a birth this view has not heard keeps its seat vacant for it.
-//! - A holder that yields, is known gone or is unheard past the floor hands the seat to its own
+//! - A primary whose record names a birth this view has not heard keeps its role vacant for it.
+//! - A primary that yields, is known gone or is unheard past the floor hands the role to its own
 //!   mesh: the lowest `Ready` NodeId among that mesh's nodes of its type fills it. A
 //!   canonical NodeId is a fixed-width Crockford value, so comparing the strings compares the values;
 //!   the id is random and its order means nothing but itself.
 //! - One exception, fabric recovery (§3, Q122): while the fabric record names a birth that is not a
-//!   heard holder, nobody is fabric-primary and no node-admin of that mesh is elected; the mesh's other
+//!   heard primary, nobody is fabric-primary and no node-admin of that mesh is elected; the mesh's other
 //!   types elect as ever. The workflow restores the node re-created at the target's path.name, whose
 //!   record then names it ([`fabric_recovery_target`], [`fabric_recovery_executor`]).
-//! - A seat with no record (a fabric's first election) is filled by the lowest Ready NodeId.
+//! - A role with no record (a fabric's first election) is filled by the lowest Ready NodeId.
 //!
 //! Ready time, ordinal, path, mesh name, MeshId, FabricId, incarnation order and transport identity
 //! are not election inputs. Every other node type (rpc, gateway, ...) is elected by the same rules over
-//! its own holder record (`Incumbency::node_type_primaries`), which its mesh's primary writes (R-MT1 Q3).
+//! its own primary record (`Incumbency::node_type_primaries`), which its mesh's primary writes (R-MT1 Q3).
 //!
 //! The hierarchy:
 //! - node-type election: the nodes of one kind in one mesh; node-admin owns
 //!   the elections of its own mesh's node types, ordinary nodes only publish their facts;
-//! - mesh primary: the holder of the mesh's node-admin primary, the same seat (no second election);
+//! - mesh primary: the primary of the mesh's node-admin primary, the same role (no second election);
 //! - fabric-primary election: the candidates are the mesh primaries, mesh primaries own it.
 //!
 //! Every observer holding the same records and facts computes the same winners; an observer that
-//! lacks a record learns it from the new holder's announcement, from an entry read, or from a
-//! neighbour's replay. A restarted node keeps its NodeId but is a later birth: the seat it held is
+//! lacks a record learns it from the new primary's announcement, from an entry read, or from a
+//! neighbour's replay. A restarted node keeps its NodeId but is a later birth: the role it held is
 //! vacant, and it holds none until a vacancy finds it the lowest Ready.
 //!
 //! An admin reports each change it owns (`ElectionLog`):
 //! `rdm.mesh.election.resolve.via-recompute` (its mesh's node types),
 //! `rdm.mesh.election.resolve.via-mesh-primary` (its mesh's primary), and,
 //! while it is a mesh primary, `rdm.mesh.election.resolve.via-fabric-recompute`: on each change
-//! of the fabric seat, and on becoming a mesh primary, when it takes ownership of the seat it was
+//! of the fabric-primary role, and on becoming a mesh primary, when it takes ownership of the role it was
 //! tracking.
 
 use crate::model::{Node, NodeKind, NodeStatus, PathName};
@@ -58,15 +58,15 @@ pub const ELECTION_KEY: &str = "node_id_crockford";
 
 pub use rdm_core::election::{elect, no_secondary, Candidate};
 
-/// What an election takes beside the nodes: the seat holders this observer holds, and the births
+/// What an election takes beside the nodes: the primaries this observer holds, and the births
 /// known gone.
 #[derive(Debug, Clone, Default)]
 pub struct Incumbency {
-    /// The fabric primary's holder record.
+    /// The fabric primary's primary record.
     pub fabric: Option<Primary>,
-    /// Each mesh's node-admin primary holder record, by mesh name.
+    /// Each mesh's node-admin primary primary record, by mesh name.
     pub meshes: BTreeMap<String, Primary>,
-    /// The holder record of every other (mesh, node type) node-type primary seat, by (mesh, kind)
+    /// The primary record of every other (mesh, node type) node-type primary role, by (mesh, kind)
     /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1). Written by
     /// the mesh's primary, the mesh's one row writer (R-MT1 Q3).
     pub node_type_primaries: BTreeMap<(String, NodeKind), Primary>,
@@ -81,9 +81,9 @@ impl Incumbency {
     }
 }
 
-/// What a view shows of a seat's recorded holder.
+/// What a view shows of a role's recorded primary.
 enum Holding {
-    /// The exact birth is in the view and keeps the seat.
+    /// The exact birth is in the view and keeps the role.
     Living(usize),
     /// The birth was replaced by a later one, is known gone, or is unheard past the staleness floor
     /// (elections §5).
@@ -105,8 +105,8 @@ fn holding(nodes: &[Node], h: &Primary, inc: &Incumbency) -> Holding {
 }
 
 /// The fabric-primary record fabric recovery restores (elections §3, Q122): the fabric record, while
-/// the birth it names is not a heard holder in `nodes` (unheard past the floor, known gone, replaced or
-/// not in the view). `None` with no record, or while its holder is heard.
+/// the birth it names is not a heard primary in `nodes` (unheard past the floor, known gone, replaced or
+/// not in the view). `None` with no record, or while its primary is heard.
 pub fn fabric_recovery_target<'a>(nodes: &[Node], inc: &'a Incumbency) -> Option<&'a Primary> {
     inc.fabric.as_ref().filter(|h| !matches!(holding(nodes, h, inc), Holding::Living(_)))
 }
@@ -126,14 +126,14 @@ fn lowest_ready(nodes: &[Node], members: &[usize], inc: &Incumbency) -> Option<u
     elect(&c).map(|k| members[k])
 }
 
-/// Mark each node type's primary and the fabric primary in `nodes`, with no holder record held: a
+/// Mark each node type's primary and the fabric primary in `nodes`, with no primary record held: a
 /// fabric's first election, and a hypothetical (a successor asked for before any connections delete).
 pub fn resolve(nodes: &mut [Node]) {
     resolve_with(nodes, &Incumbency::default())
 }
 
 /// Mark each node type's primary and the fabric primary in `nodes` by the rules in the module docs,
-/// given the seat holders held and the births known gone. `nodes` are members: a replaced
+/// given the primaries held and the births known gone. `nodes` are members: a replaced
 /// predecessor (`<path>.old`) is not passed (`Topology::members`).
 pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
     for n in nodes.iter_mut() {
@@ -148,8 +148,8 @@ pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
     for (i, n) in nodes.iter().enumerate() {
         node_types.entry((n.mesh.clone(), n.kind)).or_default().push(i);
     }
-    // Every node type by the one rule: its recorded holder while it lives, vacant while the view has not
-    // heard the recorded birth, else the lowest Ready. The node-admin type's seat is the mesh primary.
+    // Every node type by the one rule: its recorded primary while it lives, vacant while the view has not
+    // heard the recorded birth, else the lowest Ready. The node-admin type's role is the mesh primary.
     let mut winners = Vec::new();
     let mut mesh_primary: BTreeMap<String, usize> = BTreeMap::new();
     for ((mesh, kind), members) in &node_types {
@@ -180,7 +180,7 @@ pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
     }
 }
 
-/// The fabric seat, while no fabric recovery runs: the recorded holder while it lives and is its mesh's
+/// The fabric-primary role, while no fabric recovery runs: the recorded primary while it lives and is its mesh's
 /// primary; with no record, the lowest Ready mesh primary.
 fn elected_fabric_primary(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTreeMap<String, usize>) -> Option<usize> {
     let lowest_primary = |except: Option<&str>| {
@@ -193,7 +193,7 @@ fn elected_fabric_primary(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTree
         Holding::Unseen => return None,
         _ => {}
     }
-    // The holder lives but is not its mesh's primary in this view (a record this view has not caught up
+    // The primary lives but is not its mesh's primary in this view (a record this view has not caught up
     // with): its mesh keeps priority while any node-admin birth of it is not known gone or Leaving.
     let survives = |n: &Node| n.kind == NodeKind::NodeAdmin && n.mesh == h.mesh && !inc.is_lost(n) && n.status != NodeStatus::Leaving;
     if nodes.iter().any(survives) {
@@ -202,7 +202,7 @@ fn elected_fabric_primary(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTree
     lowest_primary(Some(h.mesh.as_str()))
 }
 
-/// The fabric-primary the leadership calculation seats once `mesh` is excluded from it (proposal Part
+/// The fabric-primary the leadership calculation names once `mesh` is excluded from it (proposal Part
 /// C2 search step 2: "the lowest NodeId among the other Ready mesh-primaries"): the excluded
 /// mesh holds no candidate, and the fabric record is the one the update vacates, so the lowest Ready
 /// mesh primary of another mesh wins. `None` when no other mesh has an eligible Ready mesh primary.
@@ -225,31 +225,31 @@ pub fn fabric_successor_after(nodes: &[Node], inc: &Incumbency, lost: &rdm_core:
     fabric_successor_excluding(nodes, inc, &lost.mesh)
 }
 
-/// The fabric seat's successor its holder names (elections §4.4: "or the successor the holder names
-/// (the re-created node-admin of the mesh that lost the seat, §4.3)"): `named`, when the fabric-successor
-/// resolution with the holder's mesh excluded holds it as a Ready node-admin that holds its own
-/// mesh's primary seat. Refused by name otherwise: in the holder's own mesh, unknown to the view, not
-/// Ready, or holding no mesh-primary seat.
-pub fn named_fabric_successor(nodes: &[Node], inc: &Incumbency, holder: &Node, named: &PathName) -> Result<Node, String> {
-    // The named successor may be in the holder's own mesh (Q89: the hand-back to the node at the lost
+/// The fabric-primary role's successor its primary names (elections §4.4: "or the successor the primary names
+/// (the re-created node-admin of the mesh that lost the role, §4.3)"): `named`, when the fabric-successor
+/// resolution with the primary's mesh excluded holds it as a Ready node-admin that holds its own
+/// mesh's primary role. Refused by name otherwise: in the primary's own mesh, unknown to the view, not
+/// Ready, or holding no mesh-primary role.
+pub fn named_fabric_successor(nodes: &[Node], inc: &Incumbency, primary: &Node, named: &PathName) -> Result<Node, String> {
+    // The named successor may be in the primary's own mesh (Q89: the hand-back to the node at the lost
     // fabric-primary's path.name): a Ready node-admin there is the one the row makes primary.
-    let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| named.mesh == holder.mesh || n.mesh != holder.mesh).cloned().collect();
+    let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| named.mesh == primary.mesh || n.mesh != primary.mesh).cloned().collect();
     let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), node_type_primaries: inc.node_type_primaries.clone(), lost: inc.lost.clone() };
     resolve_with(&mut hypothetical, &vacated);
     match hypothetical.into_iter().find(|n| n.name == *named) {
         Some(n) if n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::Ready => Ok(n),
-        Some(n) => Err(format!("cannot hand the fabric seat to {named}: {}'s view holds it {:?}", holder.name, n.status)),
-        None => Err(format!("cannot hand the fabric seat to {named}: {}'s view holds no such node-admin", holder.name)),
+        Some(n) => Err(format!("cannot hand the fabric-primary role to {named}: {}'s view holds it {:?}", primary.name, n.status)),
+        None => Err(format!("cannot hand the fabric-primary role to {named}: {}'s view holds no such node-admin", primary.name)),
     }
 }
 
-/// The successor a yielding holder computes for its node-type primary seat (R-MT1, node.primary.update: "the MP
-/// determines who is the next MP"; fabric-node-lifecycle-elections.md §4.1 and §5: "a holder that yields
-/// ... hands the seat to the lowest Ready NodeId of its own mesh"): the lowest Ready node of
-/// `holder`'s (mesh, kind) node type other than `holder`, not known gone. `None` when no other node of
-/// its type can take the seat.
-pub fn node_type_successor(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Option<Node> {
-    let members: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == holder.mesh && n.kind == holder.kind && n.node_id != holder.node_id).map(|(i, _)| i).collect();
+/// The successor a yielding primary computes for its node-type primary role (R-MT1, node.primary.update: "the MP
+/// determines who is the next MP"; fabric-node-lifecycle-elections.md §4.1 and §5: "a primary that yields
+/// ... hands the role to the lowest Ready NodeId of its own mesh"): the lowest Ready node of
+/// `primary`'s (mesh, kind) node type other than `primary`, not known gone. `None` when no other node of
+/// its type can take the role.
+pub fn node_type_successor(nodes: &[Node], inc: &Incumbency, primary: &Node) -> Option<Node> {
+    let members: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == primary.mesh && n.kind == primary.kind && n.node_id != primary.node_id).map(|(i, _)| i).collect();
     lowest_ready(nodes, &members, inc).map(|i| nodes[i].clone())
 }
 
@@ -271,43 +271,43 @@ pub fn node_type_of(kind: crate::model::NodeKind) -> &'static str {
     }
 }
 
-/// The successor the mesh-primary's pre-check names for a commanded node.primary.update of `holder`'s
-/// node-type primary seat, a node type that is not node-admin (proposal Part C1 step 2): the lowest Ready node of
-/// `holder`'s (mesh, kind) node type other than `holder`. `Err` is Q7's exact text naming its type and mesh.
-pub fn commanded_node_type_successor(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Result<Node, String> {
-    node_type_successor(nodes, inc, holder).ok_or_else(|| no_secondary(node_type_of(holder.kind), &holder.mesh))
+/// The successor the mesh-primary's pre-check names for a commanded node.primary.update of `primary`'s
+/// node-type primary role, a node type that is not node-admin (proposal Part C1 step 2): the lowest Ready node of
+/// `primary`'s (mesh, kind) node type other than `primary`. `Err` is Q7's exact text naming its type and mesh.
+pub fn commanded_node_type_successor(nodes: &[Node], inc: &Incumbency, primary: &Node) -> Result<Node, String> {
+    node_type_successor(nodes, inc, primary).ok_or_else(|| no_secondary(node_type_of(primary.kind), &primary.mesh))
 }
 
-/// Which seats a commanded node.primary.update moves from its primary (the approved proposal
+/// Which roles a commanded node.primary.update moves from its primary (the approved proposal
 /// node-primary-update-fabric-mesh-and-node-type.md, Part C).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Moving {
-    /// node.primary.update of the holder's mesh-primary seat.
-    MeshSeat,
-    /// The holder holds both seats and both move in one row to its same-mesh successor (Q1: "the one
-    /// row of C1 commits both seats to NA2 at their next revisions").
-    BothSeats,
-    /// node.fabric-primary.update with the holder's own mesh excluded (C2 search step 2, mesh.delete):
-    /// the mesh seat does not move.
-    FabricSeatOutside,
+    /// node.primary.update of the primary's mesh-primary role.
+    MeshRole,
+    /// The primary holds both roles and both move in one row to its same-mesh successor (Q1: "the one
+    /// row of C1 commits both roles to NA2 at their next revisions").
+    BothRoles,
+    /// node.fabric-primary.update with the primary's own mesh excluded (C2 search step 2, mesh.delete):
+    /// the mesh-primary role does not move.
+    FabricRoleOutside,
 }
 
 impl Moving {
-    /// The seats as a span names them.
+    /// The roles as a span names them.
     pub fn name(self) -> &'static str {
         match self {
-            Self::MeshSeat => "mesh-primary",
-            Self::BothSeats => "mesh-primary+fabric-primary",
-            Self::FabricSeatOutside => "fabric-primary",
+            Self::MeshRole => "mesh-primary",
+            Self::BothRoles => "mesh-primary+fabric-primary",
+            Self::FabricRoleOutside => "fabric-primary",
         }
     }
-    /// The mesh-primary seat moves.
+    /// The mesh-primary role moves.
     pub fn moves_mesh_primary(self) -> bool {
-        matches!(self, Self::MeshSeat | Self::BothSeats)
+        matches!(self, Self::MeshRole | Self::BothRoles)
     }
-    /// The fabric-primary seat moves.
+    /// The fabric-primary role moves.
     pub fn moves_fabric_primary(self) -> bool {
-        matches!(self, Self::BothSeats | Self::FabricSeatOutside)
+        matches!(self, Self::BothRoles | Self::FabricRoleOutside)
     }
 }
 
@@ -318,24 +318,24 @@ pub fn no_fabric_successor(mesh: &str) -> String {
     format!("cannot transfer fabric-primary: no other node-admin Ready in mesh {mesh}, no other mesh-primary Ready")
 }
 
-/// The successor the writer's pre-check names for a commanded transfer of `holder`'s seats (proposal
-/// Part C1 step 2; C2 "Successor search for the commanded transfer": "1. the holder's own
+/// The successor the writer's pre-check names for a commanded transfer of `primary`'s roles (proposal
+/// Part C1 step 2; C2 "Successor search for the commanded transfer": "1. the primary's own
 /// mesh: the lowest Ready node-admin NodeId there ... 2. only when that mesh has none, or it
 /// is the departing mesh under mesh.delete: the lowest NodeId among the other Ready
 /// mesh-primaries; 3. neither found: refused by name"). `Err` is the refusal's exact text (Q7): the
-/// mesh seat with no secondary names its type and mesh; the fabric seat with neither search finding
-/// one names both. A holder of both seats whose mesh has no secondary while another mesh's primary is
-/// Ready cannot move its mesh seat: Q7's mesh text. The ordinary election is untouched by this search.
-pub fn commanded_successor(nodes: &[Node], inc: &Incumbency, holder: &Node, moving: Moving) -> Result<Node, String> {
-    let admin = Node { kind: NodeKind::NodeAdmin, ..holder.clone() };
+/// mesh-primary role with no secondary names its type and mesh; the fabric-primary role with neither search finding
+/// one names both. A primary of both roles whose mesh has no secondary while another mesh's primary is
+/// Ready cannot move its mesh-primary role: Q7's mesh text. The ordinary election is untouched by this search.
+pub fn commanded_successor(nodes: &[Node], inc: &Incumbency, primary: &Node, moving: Moving) -> Result<Node, String> {
+    let admin = Node { kind: NodeKind::NodeAdmin, ..primary.clone() };
     match moving {
-        Moving::MeshSeat => node_type_successor(nodes, inc, &admin).ok_or_else(|| no_secondary(NODE_ADMIN_TYPE, &holder.mesh)),
-        Moving::BothSeats => match node_type_successor(nodes, inc, &admin) {
+        Moving::MeshRole => node_type_successor(nodes, inc, &admin).ok_or_else(|| no_secondary(NODE_ADMIN_TYPE, &primary.mesh)),
+        Moving::BothRoles => match node_type_successor(nodes, inc, &admin) {
             Some(n) => Ok(n),
-            None if fabric_successor_excluding(nodes, inc, &holder.mesh).is_none() => Err(no_fabric_successor(&holder.mesh)),
-            None => Err(no_secondary(NODE_ADMIN_TYPE, &holder.mesh)),
+            None if fabric_successor_excluding(nodes, inc, &primary.mesh).is_none() => Err(no_fabric_successor(&primary.mesh)),
+            None => Err(no_secondary(NODE_ADMIN_TYPE, &primary.mesh)),
         },
-        Moving::FabricSeatOutside => fabric_successor_excluding(nodes, inc, &holder.mesh).ok_or_else(|| no_fabric_successor(&holder.mesh)),
+        Moving::FabricRoleOutside => fabric_successor_excluding(nodes, inc, &primary.mesh).ok_or_else(|| no_fabric_successor(&primary.mesh)),
     }
 }
 
@@ -350,35 +350,35 @@ pub fn commanded_successor_in(t: &Topology, inc: &Incumbency, primary: &Node, mo
     commanded_successor(&nodes, inc, primary, moving)
 }
 
-/// A seat's holder as a span names it.
+/// A primary role's birth as a span names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Seat {
+struct PrimaryBirth {
     node_id: String,
     path: String,
     mesh: String,
 }
 
-impl Seat {
+impl PrimaryBirth {
     fn of(n: &Node) -> Self {
         Self { node_id: n.node_id.to_string(), path: n.name.to_string(), mesh: n.mesh.clone() }
     }
 }
 
-fn field<T>(s: &Option<Seat>, f: impl Fn(&Seat) -> &T) -> String
+fn field<T>(s: &Option<PrimaryBirth>, f: impl Fn(&PrimaryBirth) -> &T) -> String
 where
     T: ToString + ?Sized,
 {
     s.as_ref().map(|s| f(s).to_string()).unwrap_or_default()
 }
 
-/// What one admin last saw of the seats it owns; reports every change.
+/// What one admin last saw of the names it owns; reports every change.
 pub struct ElectionLog {
     /// This admin's path.
     observer: PathName,
-    last: Mutex<BTreeMap<NodeKind, Option<Seat>>>,
+    last: Mutex<BTreeMap<NodeKind, Option<PrimaryBirth>>>,
     /// `None` until the first view.
-    last_mesh: Mutex<Option<Option<Seat>>>,
-    last_fabric: Mutex<Option<Option<Seat>>>,
+    last_mesh: Mutex<Option<Option<PrimaryBirth>>>,
+    last_fabric: Mutex<Option<Option<PrimaryBirth>>>,
     /// Whether this admin was a mesh primary (an owner of the fabric election) at its last view.
     owned_fabric: Mutex<bool>,
 }
@@ -389,7 +389,7 @@ impl ElectionLog {
         Self { observer, last: Mutex::new(BTreeMap::new()), last_mesh: Mutex::new(None), last_fabric: Mutex::new(None), owned_fabric: Mutex::new(false) }
     }
 
-    /// Record `t`'s winners. Each change of a seat this admin owns, and each
+    /// Record `t`'s winners. Each change of a role this admin owns, and each
     /// first resolution, emits one span.
     pub fn observe(&self, t: &Topology) {
         self.observe_as(&self.observer, t)
@@ -399,11 +399,11 @@ impl ElectionLog {
     pub fn observe_as(&self, observer: &PathName, t: &Topology) {
         let mesh = observer.mesh.clone();
         let mut last = self.last.lock().unwrap();
-        let mut now: BTreeMap<NodeKind, Option<Seat>> = BTreeMap::new();
+        let mut now: BTreeMap<NodeKind, Option<PrimaryBirth>> = BTreeMap::new();
         for n in t.members().filter(|n| n.mesh == mesh) {
             let e = now.entry(n.kind).or_default();
             if n.is_primary {
-                *e = Some(Seat::of(n));
+                *e = Some(PrimaryBirth::of(n));
             }
         }
         for (kind, winner) in &now {
@@ -440,7 +440,7 @@ impl ElectionLog {
         *last = now.clone();
         drop(last);
 
-        // The mesh primary is the node-admin type's winner: the same seat.
+        // The mesh primary is the node-admin type's winner: the same role.
         let mesh_primary = now.get(&NodeKind::NodeAdmin).cloned().flatten();
         let mut last_mesh = self.last_mesh.lock().unwrap();
         if last_mesh.as_ref() != Some(&mesh_primary) {
@@ -462,7 +462,7 @@ impl ElectionLog {
         drop(last_mesh);
 
         // The fabric election is the mesh primaries' to own.
-        let fabric = t.fabric_primary().map(Seat::of);
+        let fabric = t.fabric_primary().map(PrimaryBirth::of);
         let mut last_fabric = self.last_fabric.lock().unwrap();
         let owner = mesh_primary.as_ref().is_some_and(|s| s.path == observer.to_string());
         let mut owned = self.owned_fabric.lock().unwrap();
@@ -495,7 +495,7 @@ impl ElectionLog {
             );
             span.in_scope(|| tracing::info!("fabric primary resolved"));
         }
-        // A non-owner still tracks the seat; it reports the seat when it becomes an owner and
+        // A non-owner still tracks the role; it reports the role when it becomes an owner and
         // every change after.
         *last_fabric = Some(fabric);
     }
@@ -528,7 +528,7 @@ mod tests {
         nodes.iter().filter(|n| n.is_fabric_primary).map(|n| n.name.to_string()).collect()
     }
 
-    /// CONTRACT: a replaced predecessor (`<path>.old`) holds no seat and is no candidate, even when its
+    /// CONTRACT: a replaced predecessor (`<path>.old`) holds no role and is no candidate, even when its
     /// digest still reads ready and its NodeId is the lowest: the successor at `<path>` is the node type's.
     #[test]
     fn a_renamed_predecessor_is_never_a_candidate_or_a_primary() {
@@ -612,8 +612,8 @@ mod tests {
             n.admin_api_base = Some(format!("http://host-{}:{}", 9 - i, 9000 + i));
         }
         resolve(&mut nodes);
-        assert_eq!((primaries(&nodes), fabric(&nodes)), plain, "the same seats with or without runtime metadata");
-        assert_eq!(fabric(&nodes), ["mesh1.admin.2"], "the lowest ready NodeId, on a container, still holds the seat");
+        assert_eq!((primaries(&nodes), fabric(&nodes)), plain, "the same roles with or without runtime metadata");
+        assert_eq!(fabric(&nodes), ["mesh1.admin.2"], "the lowest ready NodeId, on a container, still holds the primary role");
     }
 
     #[test]
@@ -630,7 +630,7 @@ mod tests {
         resolve(&mut nodes);
         assert_eq!(primaries(&nodes), ["mesh1.admin.3", "mesh2.admin.1"]);
         assert_eq!(fabric(&nodes), ["mesh2.admin.1"], "the fabric candidates are the mesh primaries only");
-        // The same node back under its NodeId retakes both seats once ready.
+        // The same node back under its NodeId retakes both roles once ready.
         nodes[1].status = NodeStatus::Ready;
         resolve(&mut nodes);
         assert_eq!(fabric(&nodes), ["mesh1.admin.2"]);
@@ -663,7 +663,7 @@ mod tests {
         assert_eq!(fabric(&a), fabric(&b));
     }
 
-    // ---- R-A2: a living holder keeps its seat; the holder record is an input. ----
+    // ---- R-A2: a living primary keeps its role; the primary record is an input. ----
 
     fn born(path: &str, node_id: &str, inc: &str, status: NodeStatus) -> Node {
         let mut n = Node::allocated(path.parse().unwrap());
@@ -696,7 +696,7 @@ mod tests {
     use NodeStatus::{ConnectionsDeleting, Leaving, Pending, PendingReconnect, Ready as Ready};
 
     /// CONTRACT (R-A2 cell 1): an admin with a lower NodeId appearing in another mesh leaves the
-    /// fabric primary where it is. Must NOT happen: the lower id taking the seat.
+    /// fabric primary where it is. Must NOT happen: the lower id taking the role.
     #[test]
     fn a_lower_node_id_in_another_mesh_never_displaces_the_fabric_primary() {
         let inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1)]);
@@ -707,7 +707,7 @@ mod tests {
     }
 
     /// CONTRACT (R-A2 cell 2): a lower NodeId appearing inside the incumbent mesh leaves the
-    /// healthy holder as the mesh primary and the fabric primary.
+    /// healthy primary as the mesh primary and the fabric primary.
     #[test]
     fn a_lower_node_id_inside_the_incumbent_mesh_never_displaces_the_healthy_primary() {
         let inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1)]);
@@ -718,7 +718,7 @@ mod tests {
     }
 
     /// CONTRACT (R-A2 cell 8): one incumbent admin still runs, Pending or silent included: no
-    /// other mesh takes the seat.
+    /// other mesh takes the role.
     #[test]
     fn one_surviving_incumbent_admin_blocks_a_cross_mesh_takeover() {
         for survivor in [Pending, PendingReconnect] {
@@ -730,8 +730,8 @@ mod tests {
         }
     }
 
-    /// CONTRACT (R-A2 cell 10): the old mesh recovers after another mesh took the seat: the new
-    /// holder keeps it, whatever ids the recovered admins hold.
+    /// CONTRACT (R-A2 cell 10): the old mesh recovers after another mesh took the role: the new
+    /// primary keeps it, whatever ids the recovered admins hold.
     #[test]
     fn the_old_mesh_recovering_never_reclaims_the_fabric_primary() {
         let inc = incumbency(primary("mesh3", "700000000000", "c1", 2), &[primary("mesh3", "700000000000", "c1", 1), primary("mesh1", "500000000000", "a1", 1)]);
@@ -742,9 +742,9 @@ mod tests {
     }
 
     /// CONTRACT (elections §4.3, §5): another mesh's view right after a takeover. The standby
-    /// mesh1.admin.2 took the fabric seat from the lost mesh1.admin.1 (record revision 2); this view
+    /// mesh1.admin.2 took the fabric-primary role from the lost mesh1.admin.1 (record revision 2); this view
     /// still holds mesh1's record naming the lost birth (revision 1) and holds the standby
-    /// PendingReconnect. With no Ready admin of its mesh left the seat waits in that mesh (mesh
+    /// PendingReconnect. With no Ready admin of its mesh left the role waits in that mesh (mesh
     /// investigation decides the backbone move): it never moves to another mesh on a status.
     #[test]
     fn a_living_primary_another_view_holds_silent_keeps_the_fabric_primary_in_its_mesh() {
@@ -757,10 +757,10 @@ mod tests {
             born("mesh2.admin.2", "270000000000", "b2", Ready),
         ];
         resolve_with(&mut nodes, &inc);
-        assert_ne!(fabric_name(&nodes).as_deref(), Some("mesh2.admin.1"), "the fabric seat left mesh1 while its holder lives: {:?}", fabric_name(&nodes));
+        assert_ne!(fabric_name(&nodes).as_deref(), Some("mesh2.admin.1"), "the fabric-primary role left mesh1 while its primary lives: {:?}", fabric_name(&nodes));
         nodes[1].status = Ready;
         resolve_with(&mut nodes, &inc);
-        assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.2"), "heard again, the holder is its mesh's primary and keeps the seat");
+        assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.2"), "heard again, the primary is its mesh's primary and keeps the role");
     }
 
     /// CONTRACT (elections §5: "silence past the staleness floor supersedes it"; §4.1): a mesh-primary
@@ -859,12 +859,12 @@ mod tests {
         assert_eq!(fabric_recovery_target(&heard, &inc), None, "a heard fabric-primary is restored by nothing");
     }
 
-    /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md sections 5-6): a seat moves only by an
-    /// explicit yield, a known loss or silence past the floor, never by a lifecycle status. A holder that is ConnectionsDeleting (a
+    /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md sections 5-6): a role moves only by an
+    /// explicit yield, a known loss or silence past the floor, never by a lifecycle status. A primary that is ConnectionsDeleting (a
     /// FabricShutdown this observer has not installed yet) or Leaving keeps both its
-    /// seats against a lower Ready NodeId of its own mesh. Must NOT happen: the observer reading the
-    /// status as a yield and seating the lower id (gate 144a45bd: mesh2.admin.2 seated itself over
-    /// the ConnectionsDeleting mesh2.admin.1 95 ms after that holder installed the shutdown).
+    /// roles against a lower Ready NodeId of its own mesh. Must NOT happen: the observer reading the
+    /// status as a yield and naming as primary the lower id (gate 144a45bd: mesh2.admin.2 in its role itself over
+    /// the ConnectionsDeleting mesh2.admin.1 95 ms after that primary installed the shutdown).
     #[test]
     fn a_connections_deleting_or_leaving_primary_stays_both_primaries() {
         let inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1)]);
@@ -878,7 +878,7 @@ mod tests {
 
     /// CONTRACT (section 4.4): the explicit hand-over's successor is the leadership calculation with
     /// the departing mesh excluded, whatever the incumbent's status: the lowest Ready mesh primary
-    /// of another mesh. Must NOT happen: the incumbent, still a living holder, selected as its own
+    /// of another mesh. Must NOT happen: the incumbent, still a living primary, selected as its own
     /// successor (no eligible successor, the hand-over blocked).
     #[test]
     fn the_handover_successor_is_the_lowest_ready_primary_outside_the_departing_mesh() {
@@ -892,12 +892,12 @@ mod tests {
                 born("mesh3.admin.1", "700000000000", "c1", Ready),
             ];
             let successor = fabric_successor_excluding(&nodes, &inc, "mesh1").map(|n| n.name.to_string());
-            assert_eq!(successor.as_deref(), Some("mesh3.admin.1"), "the lowest Ready mesh primary outside mesh1, its seats held ({status:?})");
+            assert_eq!(successor.as_deref(), Some("mesh3.admin.1"), "the lowest Ready mesh primary outside mesh1, its roles held ({status:?})");
         }
     }
 
-    /// CONTRACT (R-A2): a holder record names a birth this view has not heard: the seat waits for
-    /// it. A joiner that knows the record but not yet the holder's digest takes nothing.
+    /// CONTRACT (R-A2): a primary record names a birth this view has not heard: the role waits for
+    /// it. A joiner that knows the record but not yet the primary's digest takes nothing.
     #[test]
     fn a_primary_this_view_has_not_heard_is_held_vacant_for_it() {
         let inc = incumbency(primary("mesh1", "500000000000", "a1", 1), &[primary("mesh1", "500000000000", "a1", 1)]);
@@ -906,7 +906,7 @@ mod tests {
         assert_eq!(fabric_name(&nodes), None);
     }
 
-    /// CONTRACT (R-A2): mesh-primary seats follow the same rule in every mesh: a living holder
+    /// CONTRACT (R-A2): mesh-primary roles follow the same rule in every mesh: a living primary
     /// keeps it against a lower id; a vacancy is filled by the lowest Ready NodeId.
     #[test]
     fn the_mesh_primary_follows_the_same_rule_in_every_mesh() {
@@ -917,37 +917,37 @@ mod tests {
             born("mesh2.admin.2", "200000000000", "b2", Ready),
         ];
         resolve_with(&mut nodes, &inc);
-        assert_eq!(mesh_primary(&nodes, "mesh2").as_deref(), Some("mesh2.admin.1"), "the living holder of a non-fabric mesh keeps its seat too");
+        assert_eq!(mesh_primary(&nodes, "mesh2").as_deref(), Some("mesh2.admin.1"), "the living primary of a non-fabric mesh keeps its role too");
         // With no record for a mesh, the lowest Ready NodeId fills it.
         let mut fresh = vec![born("mesh2.admin.1", "900000000000", "b1", Ready), born("mesh2.admin.2", "200000000000", "b2", Ready)];
         resolve_with(&mut fresh, &Incumbency::default());
         assert_eq!(mesh_primary(&fresh, "mesh2").as_deref(), Some("mesh2.admin.2"));
     }
 
-    // ---- Every node type keeps a seat record (proposal Part B1, R-MT1: "same for NA as it is for RPC node"). ----
+    // ---- Every node type keeps a primary record (proposal Part B1, R-MT1: "same for NA as it is for RPC node"). ----
 
     fn rpc_primary(nodes: &[Node], mesh: &str) -> Option<String> {
         nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.kind == NodeKind::RpcNode).map(|n| n.name.to_string())
     }
 
-    fn with_rpc_primary(seat: Primary) -> Incumbency {
+    fn with_rpc_primary(record: Primary) -> Incumbency {
         let mut inc = incumbency(primary("mesh1", "900000000000", "a1", 1), &[primary("mesh1", "900000000000", "a1", 1)]);
-        inc.node_type_primaries.insert((seat.mesh.clone(), NodeKind::RpcNode), seat);
+        inc.node_type_primaries.insert((record.mesh.clone(), NodeKind::RpcNode), record);
         inc
     }
 
-    /// CONTRACT (Part B1, elections §5 "a living holder keeps its seat; a lower-NodeId candidate that
-    /// later becomes Ready never displaces it"): an rpc node type whose seat record names a living birth
-    /// keeps that holder against a lower Ready NodeId of the node type, as the node-admin type does.
-    /// Must NOT happen: the node type recomputed to its lowest Ready NodeId each checklist, so a seat that
+    /// CONTRACT (Part B1, elections §5 "a living primary keeps its role; a lower-NodeId candidate that
+    /// later becomes Ready never displaces it"): an rpc node type whose primary record names a living birth
+    /// keeps that primary against a lower Ready NodeId of the node type, as the node-admin type does.
+    /// Must NOT happen: the node type recomputed to its lowest Ready NodeId each checklist, so a role that
     /// node.primary.update moved to mesh1.rpc.2 falls back to mesh1.rpc.1 on the next projection.
     #[test]
     fn a_living_rpc_primary_stays_primary_over_a_lower_ready_node_id() {
         let inc = with_rpc_primary(primary("mesh1", "500000000000", "r2", 2));
         let mut nodes = vec![born("mesh1.admin.1", "900000000000", "a1", Ready), born("mesh1.rpc.1", "100000000000", "r1", Ready), born("mesh1.rpc.2", "500000000000", "r2", Ready)];
         resolve_with(&mut nodes, &inc);
-        assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.2"), "the recorded living holder keeps the rpc seat");
-        // A lifecycle status never yields it (R-EL1): a ConnectionsDeleting or Leaving holder keeps it.
+        assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.2"), "the recorded living primary keeps the rpc role");
+        // A lifecycle status never yields it (R-EL1): a ConnectionsDeleting or Leaving primary keeps it.
         for status in [ConnectionsDeleting, Leaving] {
             nodes[2].status = status;
             resolve_with(&mut nodes, &inc);
@@ -959,10 +959,10 @@ mod tests {
         assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.1"));
     }
 
-    /// CONTRACT (module docs, "A holder whose record names a birth this view has not heard keeps its
-    /// seat vacant for it"): an rpc node type's record naming a birth this view has not heard leaves the
+    /// CONTRACT (module docs, "A primary whose record names a birth this view has not heard keeps its
+    /// role vacant for it"): an rpc node type's record naming a birth this view has not heard leaves the
     /// node type with no primary. Must NOT happen: the lowest Ready rpc node advertised as primary while
-    /// the record names another living holder.
+    /// the record names another living primary.
     #[test]
     fn an_rpc_primary_recorded_but_unheard_is_held_vacant_for_it() {
         let inc = with_rpc_primary(primary("mesh1", "500000000000", "r2", 2));
@@ -971,10 +971,10 @@ mod tests {
         assert_eq!(rpc_primary(&nodes, "mesh1"), None);
     }
 
-    /// CONTRACT (elections §5: "a holder that yields or whose exact birth is known gone hands the seat
+    /// CONTRACT (elections §5: "a primary that yields or whose exact birth is known gone hands the role
     /// to the lowest Ready NodeId of its own mesh"; "restart preserves NodeId; a restarted
-    /// node ... never displaces the holder"): the recorded rpc holder known gone, or replaced by a later
-    /// birth of its NodeId, hands the seat to the node type's lowest Ready NodeId.
+    /// node ... never displaces the primary"): the recorded rpc primary known gone, or replaced by a later
+    /// birth of its NodeId, hands the role to the node type's lowest Ready NodeId.
     #[test]
     fn an_rpc_primary_proven_gone_or_restarted_hands_over_to_the_lowest_ready() {
         let mut inc = with_rpc_primary(primary("mesh1", "100000000000", "r1", 2));
@@ -985,6 +985,6 @@ mod tests {
         let inc = with_rpc_primary(primary("mesh1", "500000000000", "r2", 2));
         nodes[2] = born("mesh1.rpc.2", "500000000000", "r9", Ready);
         resolve_with(&mut nodes, &inc);
-        assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.1"), "a later birth of the holder's NodeId holds no seat");
+        assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.1"), "a later birth of the primary's NodeId holds no primary role");
     }
 }
