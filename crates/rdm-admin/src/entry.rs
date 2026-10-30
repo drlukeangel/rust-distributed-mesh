@@ -39,6 +39,18 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
 /// (`docs/architecture/storage.md` §2): every durable read and write of the node-admin goes through
 /// the boundaries the one its `topology_storage_provider` names opens.
 pub async fn run_on(service: &str, providers: impl FnOnce(&AdminConfig) -> crate::storage_backend::TopologyStorageProviders, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
+    run_on_started(service, providers, wiring, |_| {}).await
+}
+
+/// [`run_on`], handing the application its started admin once it is up (`started`, called once, after
+/// the admin announced itself and before it waits for its stop): an application's own work that calls
+/// other nodes from a Fabric notice keeps the admin's Node RPC client and topology view from here.
+pub async fn run_on_started(
+    service: &str,
+    providers: impl FnOnce(&AdminConfig) -> crate::storage_backend::TopologyStorageProviders,
+    wiring: impl FnOnce(&AdminConfig) -> Wiring,
+    started: impl FnOnce(&crate::admin::Running),
+) {
     // Heard from the first line: a stop that arrives while the admin boots ends the boot by name.
     listen_for_stop();
     // The bootstrap's first step (Q208): the configuration, which holds this admin's node id (its
@@ -99,6 +111,7 @@ pub async fn run_on(service: &str, providers: impl FnOnce(&AdminConfig) -> crate
     };
     drop(boot);
     running.announce();
+    started(&running);
 
     // Leave on a signal. A signal is a local stop: this admin leaves and nothing Fabric-wide follows.
     tokio::select! {
