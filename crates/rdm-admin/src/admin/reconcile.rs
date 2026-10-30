@@ -83,6 +83,10 @@ impl crate::build_drive::Gate for RoleGate {
     /// The birth this fabric-primary's atlas row holds at `path` (fabric-atlas.md R-FA1): the birth the
     /// path's node row names current as the ops left it, the record Build acceptance read, never the
     /// gossip view; `None` inside when no row is written at the path or an op deleted the birth.
+    async fn atlas_created(&self, build: &crate::build_state::BuildProjection) -> std::collections::BTreeSet<String> {
+        self.control.atlas.created_by(build)
+    }
+
     async fn atlas_birth(&self, path: &crate::model::PathName, observed: &crate::topology::Topology) -> Result<Option<crate::accepted::AtlasBirth>, String> {
         let row = self.control.atlas_row(path, observed).await.map_err(|r| format!("{}: {r:?}", self.handover.me))?;
         let birth = row.filter(|r| r.status != crate::model::NodeStatus::Deleted).and_then(|r| r.incarnation.map(|incarnation| crate::build::PinnedBirth { node_id: r.node_id, incarnation }));

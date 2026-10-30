@@ -603,6 +603,28 @@ impl Atlas {
         }
     }
 
+    /// The paths this atlas holds a create of Build `build` at (fabric-atlas.md R-FA1, R-FA2): accepted and
+    /// executing, or completed, its birth's record naming the create among its operations. A birth the
+    /// Build's own op created is not surplus to its accepted topology, which a recipe's `Create` step does
+    /// not change (Luke 2026-10-30: drift is decided from the atlas, not the topology), whichever mesh's
+    /// section ran it: the fabric-primary's atlas takes every section's receipts.
+    /// The completed creates are read from the Build's own receipts (`p`, its log), the source R-FA2
+    /// writes this atlas from, so a fabric-primary restarted inside the Build holds them too: its
+    /// accepted map is memory only.
+    pub(crate) fn created_by(&self, p: &BuildProjection) -> std::collections::BTreeSet<String> {
+        let build = &p.build_id;
+        let held = self.held.lock().unwrap();
+        let mut out: std::collections::BTreeSet<String> = held.accepted.iter().filter(|(_, a)| a.build_id == build.as_str() && a.operation.starts_with("node.create:")).map(|(p, _)| p.clone()).collect();
+        out.extend(p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == StepOutcome::Complete).filter_map(|s| s.operation.strip_prefix("node.create:").map(str::to_string)));
+        for r in held.records.values().filter(|r| !matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn)) {
+            let created = r.newest_birth().is_some_and(|b| b.operations.iter().any(|o| o.operation.operation.starts_with("node.create:") && crate::build::BuildId::parse(&o.operation.build_id).ok().as_ref() == Some(build)));
+            if created {
+                out.insert(r.name.to_string());
+            }
+        }
+        out
+    }
+
     /// Attempt `attempt` of `p` ended without completing: what it accepted is no longer executing.
     pub(crate) fn ended(&self, build_id: &crate::build::BuildId, attempt: u32) {
         self.held.lock().unwrap().accepted.retain(|_, a| !(a.build_id == build_id.as_str() && a.attempt <= attempt));

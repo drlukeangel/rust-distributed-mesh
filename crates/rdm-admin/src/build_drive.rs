@@ -45,6 +45,13 @@ use tracing::Instrument as _;
 /// The gates every claim and dispatch passes.
 #[async_trait::async_trait]
 pub trait Gate: Send + Sync {
+    /// The paths the fabric-primary's atlas holds a create of Build `_build` at (Luke 2026-10-30: drift
+    /// is decided from the atlas, not the topology): not surplus to its accepted topology (none, for a
+    /// gate with no atlas).
+    async fn atlas_created(&self, _build: &BuildProjection) -> std::collections::BTreeSet<String> {
+        std::collections::BTreeSet::new()
+    }
+
     /// The target of the Build log, read from the fabric-primary this admin's view holds (the election's
     /// result it installed): refused by name once it names another live birth; otherwise the path.name
     /// of the birth it names when that is this birth, `None` when it names none or a birth proven gone.
@@ -379,6 +386,9 @@ pub struct Drive {
     /// The Mesh rows the store held when this drive's pass last read them, for a fabric.delete's plan
     /// ([`Gate::mesh_rows`]); `None` for any other Build.
     mesh_rows: Mutex<Option<Vec<crate::storage::MeshRecord>>>,
+    /// The paths the fabric-primary's atlas held a create of this Build at when this drive's pass last
+    /// read it ([`Gate::atlas_created`]): never surplus to its accepted topology.
+    created: Mutex<std::collections::BTreeSet<String>>,
     /// The birth the fabric-primary's atlas row held at the path of the Build's standalone action when
     /// this drive's pass last read it ([`Gate::atlas_birth`]); `None` for any other attempt, or a gate
     /// with no atlas.
@@ -409,7 +419,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), again: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), again: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), created: Mutex::new(Default::default()), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -1033,7 +1043,8 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
     let t = stored.as_ref().unwrap_or(t);
     // A standalone action plans from the birth the atlas row held at this pass ([`Gate::atlas_birth`]).
     let atlas = drive.atlas.lock().unwrap().clone();
-    let plan = crate::accepted::plan_for_build_with(p, t, drive.recorded.lock().unwrap().as_ref(), atlas.as_ref());
+    let created = drive.created.lock().unwrap().clone();
+    let plan = crate::accepted::plan_for_build_created(p, t, drive.recorded.lock().unwrap().as_ref(), atlas.as_ref(), &created);
     let sections: HashSet<String> = drive.section_done.lock().unwrap().iter().filter(|(run, _)| *run == p.opened).map(|(_, key)| key.clone()).collect();
     plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a)) && !sections.contains(&op.key())).collect()
 }
@@ -1456,6 +1467,12 @@ impl DriveEnv {
                 None => None,
             };
             *drive.atlas.lock().unwrap() = atlas;
+            // The creates this Build's own ops made, as the atlas holds them, read at every pass before it
+            // plans: drift is decided from the atlas, not the topology (Luke 2026-10-30).
+            let created = self.gate.atlas_created(&p).await;
+            tracing::info_span!("rdm.node_admin.build.update.via-atlas-created", build_id = %id.log(), node = %me, paths = %created.iter().cloned().collect::<Vec<_>>().join(","))
+                .in_scope(|| tracing::info!("the paths this Build's own creates hold in the atlas: never surplus"));
+            *drive.created.lock().unwrap() = created;
             let crashed = self.unanswered_meshes(&p);
             // The claim's holder was proven exited by this pass: the next attempt is claimed without
             // calling the lost primary again.

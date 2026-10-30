@@ -800,7 +800,7 @@ fn reconciled(current: &FabricTopology, nodes: &[NodeSpec], recorded: &Recorded)
 /// what observed reality already satisfies is not planned. Creates come before deletions, meshes
 /// in name order, nodes in path order.
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
-    plan_with(topology, observed, action, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[], None, None)
+    plan_with(topology, observed, action, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[], None, None, &BTreeSet::new())
 }
 
 /// [`plan`] at a Build's acceptance, `held` the peer meshes the fabric-primary holds unheard (R-D1: a peer
@@ -810,7 +810,7 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
 /// changes there. The drive plans every pass without the hold and stops at such a path by name until the
 /// mesh is heard (Q221).
 pub fn plan_holding(topology: &FabricTopology, observed: &Topology, held: &BTreeSet<String>) -> BuildPlan {
-    plan_with(topology, observed, None, ActionProgress::default(), &BTreeSet::new(), held, &[], None, None)
+    plan_with(topology, observed, None, ActionProgress::default(), &BTreeSet::new(), held, &[], None, None, &BTreeSet::new())
 }
 
 /// How far an attempt's action got, from the Build's receipts. The view alone cannot say: a stopped
@@ -988,13 +988,20 @@ pub fn action_path(build: &crate::build_state::BuildProjection) -> Option<PathNa
 /// a stop removed until the restarted birth's digest arrives, and a stop the atlas admitted is not
 /// planned to nothing from it. `atlas` `None`: no atlas was read, and the view's birth is planned.
 pub fn plan_for_build_with(build: &crate::build_state::BuildProjection, observed: &Topology, recorded: Option<&Recorded>, atlas: Option<&AtlasBirth>) -> BuildPlan {
+    plan_for_build_created(build, observed, recorded, atlas, &BTreeSet::new())
+}
+
+/// [`plan_for_build_with`], with `created` the paths the fabric-primary's atlas holds a create of this
+/// Build at ([`crate::atlas::Atlas::created_by`]): a birth at one of them is not surplus to the accepted
+/// topology (Luke 2026-10-30: drift is decided from the atlas, not the topology).
+pub fn plan_for_build_created(build: &crate::build_state::BuildProjection, observed: &Topology, recorded: Option<&Recorded>, atlas: Option<&AtlasBirth>, created: &BTreeSet<String>) -> BuildPlan {
     let replacing = recorded.filter(|_| build.submitted_change.as_ref().is_some_and(TopologyChange::plans_replacements));
     // A replacement's progress is read from the receipts of the Build's own topology attempts: a create
     // an attempt carrying an action made (a recovery's, on the row's executable) replaced nothing, and
     // the path's replacement follows it as the next attempt's (proposal executable-bindings-at-create.md
     // rule 5: "never in the same attempt").
     let topology_steps: Vec<crate::build_state::BuildStepReceipt> = build.steps.iter().filter(|s| !build.attempt_actions.contains_key(&s.attempt)).cloned().collect();
-    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed), &BTreeSet::new(), &build.steps, replacing.map(|r| (r, topology_steps.as_slice())), atlas)
+    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed), &BTreeSet::new(), &build.steps, replacing.map(|r| (r, topology_steps.as_slice())), atlas, created)
 }
 
 /// The replacements `topology` owes against `observed` and `recorded` before any attempt ran: what a
@@ -1318,6 +1325,7 @@ fn plan_with(
     steps: &[crate::build_state::BuildStepReceipt],
     replacements: Option<(&Recorded, &[crate::build_state::BuildStepReceipt])>,
     atlas: Option<&AtlasBirth>,
+    created: &BTreeSet<String>,
 ) -> BuildPlan {
     let mut ops = Vec::new();
     // A termination of a deleted birth heard again is its one operation, the topology unchanged, until
@@ -1523,7 +1531,10 @@ fn plan_with(
     // repairs exactly its birth.
     // A Build that failed stops at its step, and resuming it or running its compensation steps is the
     // caller's (lifecycles/node-replace.md "Rollback").
-    let mut extra: Vec<&PathName> = surplus_births(topology, observed).filter(|_| action.is_none()).map(|n| &n.name).collect();
+    // A birth the fabric-primary's atlas holds a create of this Build at is not surplus: a recipe's
+    // `Create` step adds no path to the accepted topology, which only a forward Build or the gossiped
+    // topology finalizes (Luke 2026-10-30: drift is decided from the atlas, not the topology).
+    let mut extra: Vec<&PathName> = surplus_births(topology, observed).filter(|_| action.is_none()).map(|n| &n.name).filter(|p| !created.contains(&p.to_string())).collect();
     extra.sort();
     // Each delete carries the exact birth it acts on (build.md §4.4): the one its Build pinned at
     // acceptance, else, for a birth that became surplus after it (runtime drift: a failed create's node),
@@ -1791,7 +1802,7 @@ mod tests {
             executor: Some("mesh2.admin.1".into()),
         };
         assert_eq!(
-            plan_with(&compiled, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[mesh_deleted.clone()], None, None).operations,
+            plan_with(&compiled, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[mesh_deleted.clone()], None, None, &BTreeSet::new()).operations,
             vec![delete_of(&o, "mesh1.admin.1"), shutdown("mesh3"), shutdown("mesh2"), deleted],
             "step 2: mesh1's mesh.deleted stands, so its mesh-primary's node.delete takes its place"
         );
@@ -1806,7 +1817,7 @@ mod tests {
         let gdeleted = BuildOperation::DeleteFabric { fabric_id: gone.fabric.id.clone() };
         let begun = crate::build_state::BuildStepReceipt { attempt: 2, operation: "node.delete:mesh1.admin.1".into(), step: "TerminateRuntime".into(), output: None, ..mesh_deleted.clone() };
         assert_eq!(
-            plan_with(&compiled, &gone, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[mesh_deleted, begun], None, None).operations,
+            plan_with(&compiled, &gone, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[mesh_deleted, begun], None, None, &BTreeSet::new()).operations,
             vec![delete_of(&o, "mesh1.admin.1"), gshutdown("mesh3"), gshutdown("mesh2"), gdeleted],
             "the begun node.delete of a deleted mesh's final primary the view no longer holds is still owed"
         );
@@ -1915,7 +1926,7 @@ mod tests {
         assert_eq!(plan(&cur, &o, None).operations, vec![], "a deleted mesh with its last admin alive is planned by no Build");
         let open: BTreeSet<String> = ["mesh2".to_string()].into();
         assert_eq!(
-            plan_with(&cur, &o, None, ActionProgress::default(), &open, &BTreeSet::new(), &[], None, None).operations,
+            plan_with(&cur, &o, None, ActionProgress::default(), &open, &BTreeSet::new(), &[], None, None, &BTreeSet::new()).operations,
             vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2.clone() }],
             "the Build that admitted its mesh.delete and holds no completion resumes it"
         );
@@ -1942,7 +1953,7 @@ mod tests {
         let delete = AttemptAction::Delete { path: path.clone(), node_id: node_id.clone(), from_incarnation: birth.clone() };
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![delete_of(&o, "mesh2.admin.1")]);
         let finished = ActionProgress { started: true, finished: true, ..ActionProgress::default() };
-        assert_eq!(plan_with(&cur, &o, Some(&delete), finished, &BTreeSet::new(), &BTreeSet::new(), &[], None, None).operations, vec![], "nothing once its Complete names the birth");
+        assert_eq!(plan_with(&cur, &o, Some(&delete), finished, &BTreeSet::new(), &BTreeSet::new(), &[], None, None, &BTreeSet::new()).operations, vec![], "nothing once its Complete names the birth");
         o.nodes.retain(|n| n.name != path);
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![], "nothing once the view no longer holds it");
         let old: PathName = "mesh1.rpc.3.old".parse().unwrap();
@@ -1999,11 +2010,11 @@ mod tests {
             executor: Some("mesh1.admin.1".into()),
         };
         let steps = [held];
-        assert_eq!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &steps, None, None).operations, vec![delete_of(&o, "mesh1.rpc.3")], "once its Complete is receipted the stopped path's create is never planned again");
-        assert_eq!(plan_with(&pinned(t(&[("mesh1", 2, 3)]), &o), &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &steps, None, None).operations, vec![], "the settled topology with a held stopped birth plans nothing");
+        assert_eq!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &steps, None, None, &BTreeSet::new()).operations, vec![delete_of(&o, "mesh1.rpc.3")], "once its Complete is receipted the stopped path's create is never planned again");
+        assert_eq!(plan_with(&pinned(t(&[("mesh1", 2, 3)]), &o), &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &steps, None, None, &BTreeSet::new()).operations, vec![], "the settled topology with a held stopped birth plans nothing");
         let mut failed = steps[0].clone();
         failed.outcome = crate::build_state::StepOutcome::Failed { reason: "x".into(), code: rdm_core::outcome::Code::Unavailable };
-        assert!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[failed], None, None).operations.iter().any(|op| op.key() == "node.create:mesh1.rpc.1"), "a create that did not complete is planned again");
+        assert!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[failed], None, None, &BTreeSet::new()).operations.iter().any(|op| op.key() == "node.create:mesh1.rpc.1"), "a create that did not complete is planned again");
     }
 
     /// CONTRACT: a replaced predecessor (`<path>.old`) is neither the live birth at `<path>` nor a missing
