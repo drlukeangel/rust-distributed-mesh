@@ -230,9 +230,18 @@ attempt lost the killed process's batched span; the final cell observes export b
 while the separate 100-record clean/SIGKILL storage canary uses no telemetry wait. Source baseline
 was `4dbf01eba` plus the new schema/canary substrate; substrate commit is `2822b5186`.
 Logs are retained under lane 1 `target/evidence/i150/`; raw own-write trace ID:
-`c38df8a07ff405033cbf620b8177d93a`, JSONL retained; collector retrieval is not yet claimed.
+`c38df8a07ff405033cbf620b8177d93a`, JSONL retained; collector retrieval is not yet claimed for that earlier run. The post-land run exported and
+retrieved trace `15ecea45ac91e366af021edd0e449663` (41 spans); its own-write span records
+`outcome=durable` and 434 microseconds. Retrieved JSON is retained as
+`target/evidence/i150/jaeger-own-write.json`.
 The intermediate run refused stale binaries after a source edit during its build and is not
-counted as a behavioral RED or GREEN. No final gate, application-provider qualification, Rafka
+counted as a behavioral RED or GREEN. The first fast gate at `ca00b3b1a` ran in 393 s and reported 2513 passed,
+1 failed, 13 ignored in its test summaries. The sole failure was the new acceptance job's
+registration: the existing schema requires `i143-245-process`, the standard exact-test command,
+and an explicit test name for runner evidence. The registration was corrected and its focused
+audit test passed 1/1. The gate must run on that corrected commit; the red is not rerun unchanged.
+The 13 ignored cells are existing suite output, not new i150 acceptance.
+No final gate, application-provider qualification, Rafka
 integration, or full i150 acceptance is claimed by these focused passes.
 
 Stories below are the dispatchable gap list. Each starts BUILD, with implementation owner unassigned; no issues or agents are created by this document. Story completion requires its exact test, evidence and contract delta, not only merged code.

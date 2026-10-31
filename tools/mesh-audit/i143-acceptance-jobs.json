@@ -774,16 +774,17 @@
         }
       ]
     },
-    "i150-node-records-process": {
+    "i143-245-process": {
       "issue": 245,
       "layer": "process",
       "cells": [
         {
           "name": "own_properties_survive_node_restart",
           "source": "crates/rdm-test/tests/node_records.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/245/process/own_properties_survive_node_restart/estate scripts/cells.sh rdm-test main -- node_records::own_properties_survive_node_restart --exact",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/245/process/own_properties_survive_node_restart/estate cargo test -p rdm-test --test main node_records::own_properties_survive_node_restart -- --exact",
           "dir": "target/i143-acceptance/245/process/own_properties_survive_node_restart",
-          "evidence": "runner"
+          "evidence": "runner",
+          "test": "own_properties_survive_node_restart"
         }
       ]
     }
