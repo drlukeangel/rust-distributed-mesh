@@ -2590,9 +2590,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 };
                                                 *records.durable.lock().unwrap() = durable.clone();
                                                 let mut watched = watched_births(&view, &me_id, &mesh, &durable);
-                                                // A node-admin the election replaced as this mesh's primary is the fabric-primary's to
-                                                // investigate and recover (node-recovery.md step 2), never this tick's.
-                                                watched.retain(|_, n| !(n.kind == NodeKind::NodeAdmin && n.incarnation_id.as_ref().is_some_and(|i| recovery.digest_view.primaries.replaced(rdm_core::PrimaryRole::MeshPrimary, &mesh, i))));
+                                                // A node-admin the election replaced as this mesh's primary and unheard since is an
+                                                // unheard mesh-primary, the fabric-primary's to investigate and recover
+                                                // (node-recovery.md step 2), never this tick's; one heard after it was replaced is
+                                                // one more node-admin of this mesh, and its silence is this tick's.
+                                                let read_at = std::time::Instant::now();
+                                                watched.retain(|_, n| !(n.kind == NodeKind::NodeAdmin && n.incarnation_id.as_ref().is_some_and(|i| recovery.digest_view.unheard_since_replaced(&mesh, n.node_id.as_str(), i, read_at))));
                                                 // One reading of the clocks for the tick: each birth's mark is read from the view at it.
                                                 let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
                                                 // node-tickle.md step 1: a birth a command never reached for a reachability reason is

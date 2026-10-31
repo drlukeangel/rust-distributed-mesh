@@ -1192,9 +1192,9 @@ struct HeldRoles {
     /// the peer holds, which this node never heard itself.
     gone: std::collections::HashSet<IncarnationId>,
     /// Each birth a record held here named before a record naming another birth replaced it, by the
-    /// record's role and mesh: the primaries this view saw change, so a birth that was never primary
-    /// here is told apart from one an update moved.
-    replaced: std::collections::HashSet<(PrimaryRole, String, IncarnationId)>,
+    /// record's role and mesh, with the instant it was replaced here: the primaries this view saw
+    /// change, so a birth that was never primary here is told apart from one an update moved.
+    replaced: HashMap<(PrimaryRole, String, IncarnationId), Instant>,
 }
 
 /// The role and mesh a record of `role` in `mesh` is held under: a mesh's node-admin type is its
@@ -1221,7 +1221,7 @@ impl HeldRoles {
     fn put(&mut self, role: PrimaryRole, mesh: &str, record: Primary) {
         if let Some(held) = self.get(role, mesh).filter(|h| h.incarnation != record.incarnation) {
             let (role, mesh) = held_under(role, mesh);
-            self.replaced.insert((role, mesh, held.incarnation));
+            self.replaced.insert((role, mesh, held.incarnation), Instant::now());
         }
         match role {
             PrimaryRole::FabricPrimary => {
@@ -1308,7 +1308,13 @@ impl PrimaryView {
     /// birth replaced it: the birth was primary here and is no more.
     pub fn replaced(&self, role: PrimaryRole, mesh: &str, incarnation: &IncarnationId) -> bool {
         let (role, mesh) = held_under(role, mesh);
-        self.inner.lock().unwrap().replaced.contains(&(role, mesh, incarnation.clone()))
+        self.inner.lock().unwrap().replaced.contains_key(&(role, mesh, incarnation.clone()))
+    }
+
+    /// When a record of `role` in `mesh` naming `incarnation` was last replaced here, if it was.
+    pub fn replaced_at(&self, role: PrimaryRole, mesh: &str, incarnation: &IncarnationId) -> Option<Instant> {
+        let (role, mesh) = held_under(role, mesh);
+        self.inner.lock().unwrap().replaced.get(&(role, mesh, incarnation.clone())).copied()
     }
 
     /// The fabric-primary's held record.
@@ -6091,6 +6097,18 @@ impl DigestView {
         self.get_at(node_id, Instant::now())
     }
 
+    /// Whether `incarnation`, a birth of `node_id` this view saw replaced as `mesh`'s mesh-primary, has
+    /// gone unheard since it was replaced: an unheard mesh-primary, the fabric-primary's to investigate
+    /// (node-recovery.md step 2). A replaced birth heard after it was replaced is one more node-admin of
+    /// its mesh, and its later silence is its mesh-primary's.
+    pub fn unheard_since_replaced(&self, mesh: &str, node_id: &str, incarnation: &IncarnationId, now: Instant) -> bool {
+        let Some(replaced_at) = self.primaries.replaced_at(PrimaryRole::MeshPrimary, mesh, incarnation) else { return false };
+        match self.get_at(node_id, now).filter(|(d, _)| &d.node.incarnation == incarnation) {
+            Some((_, unheard)) => now.checked_sub(unheard).is_none_or(|heard| heard <= replaced_at),
+            None => true,
+        }
+    }
+
     /// The member's latest digest and how long it has gone unheard at `now`.
     pub fn get_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
         self.woken();
@@ -6451,6 +6469,30 @@ mod tests {
         let heard = hear(&mut view.order.lock().unwrap(), &view, &members, &fabric, Side::MeshChannel);
         assert!(heard, "the projection is admitted");
         assert_eq!(view.digest_view.primaries.node_type_primary("mesh1", rdm_core::NodeKind::RpcNode), Some(Primary { mesh: "mesh1".into(), node_id: me, incarnation: my_inc, revision: 1 }), "the member holds the record its mesh-primary's projection carries");
+    }
+
+    /// CONTRACT (node-recovery.md step 2: "Only the mesh-primary acts. ... For an unheard mesh-primary
+    /// the fabric-primary runs it"): a node-admin the election replaced as its mesh's primary while it
+    /// was unheard is an unheard mesh-primary; one heard after it was replaced is one more node-admin of
+    /// its mesh, and its later silence is its mesh-primary's.
+    /// Must NOT happen: a birth replaced by the election key while live, heard Ready again and then
+    /// silent, judged an unheard mesh-primary by the mesh-primary's view and investigated by no one.
+    #[test]
+    fn a_replaced_mesh_primary_heard_again_is_one_more_node_admin_of_its_mesh() {
+        let view = test_view("mesh1", "mesh1.admin.2");
+        let (old, old_inc) = (NodeId::parse("000000000009").unwrap(), IncarnationId::mint());
+        let (new, new_inc) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
+        let held = |id: &NodeId, inc: &IncarnationId, revision| Primary { mesh: "mesh1".into(), node_id: id.clone(), incarnation: inc.clone(), revision };
+        assert!(view.digest_view.record(digest(&old, &old_inc, None, MemberStatus::Ready, 1)));
+        view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &held(&old, &old_inc, 1));
+        assert!(!view.digest_view.unheard_since_replaced("mesh1", old.as_str(), &old_inc, Instant::now()), "a birth never replaced is no unheard mesh-primary");
+        std::thread::sleep(Duration::from_millis(2));
+        view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &held(&new, &new_inc, 2));
+        assert!(view.digest_view.unheard_since_replaced("mesh1", old.as_str(), &old_inc, Instant::now()), "replaced and unheard since: the fabric-primary's");
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(view.digest_view.record(digest(&old, &old_inc, None, MemberStatus::Ready, 2)));
+        assert!(!view.digest_view.unheard_since_replaced("mesh1", old.as_str(), &old_inc, Instant::now()), "heard after it was replaced: its mesh-primary's");
+        assert!(!view.digest_view.unheard_since_replaced("mesh1", old.as_str(), &IncarnationId::mint(), Instant::now()), "another birth at the node id was never replaced here");
     }
 
     fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {

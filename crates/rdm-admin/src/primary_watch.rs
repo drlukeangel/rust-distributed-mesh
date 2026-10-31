@@ -255,8 +255,10 @@ pub async fn run(w: Watch) {
         // heal names a birth whose silence here began before it). It takes no primary role and needs no probe.
         let held_a_floor = w.topology_view.primaries().fabric_held_for() >= w.topology_view.digest_view.staleness_floor();
         w.fabric_recovery.start_if_mine(held_a_floor, false).await;
-        let primaries = w.topology_view.primaries();
-        let was_mesh_primary = |n: &Node| n.incarnation_id.as_ref().is_some_and(|i| primaries.replaced(rdm_core::PrimaryRole::MeshPrimary, &n.mesh, i));
+        // An unheard mesh-primary: replaced by the election and unheard since (node-recovery.md step 2). One
+        // heard after it was replaced is one more node-admin of its mesh, its mesh-primary's to investigate.
+        let now = std::time::Instant::now();
+        let was_mesh_primary = |n: &Node| n.incarnation_id.as_ref().is_some_and(|i| w.topology_view.digest_view.unheard_since_replaced(&n.mesh, n.node_id.as_str(), i, now));
         let plan = plan(&view, &me, &me_birth, &mut said, &was_mesh_primary, &|n| w.looker.command_unanswered(n));
         let triggers = plan.investigate.into_iter().map(|n| (n, "silence")).chain(plan.unanswered.into_iter().map(|n| (n, "command-unanswered")));
         for (node, trigger) in triggers {
