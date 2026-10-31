@@ -864,7 +864,7 @@ mod tests {
     fn only_a_create_operation_names_the_node_it_creates() {
         let node: PathName = "mesh2.admin.1".parse().unwrap();
         assert_eq!(BuildOperation::CreateNode { node: node.clone(), over: None, executable: None, entry: None }.created_node(), Some(&node));
-        assert_eq!(BuildOperation::Step { step: Step::Create { node: node.clone(), executable: None }, birth: None, entry: None }.created_node(), Some(&node));
+        assert_eq!(BuildOperation::Step { step: Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: node.clone(), executable: None }, birth: None, entry: None }.created_node(), Some(&node));
         assert_eq!(BuildOperation::Step { step: Step::Stop { node: node.clone() }, birth: None, entry: None }.created_node(), None);
         assert_eq!(BuildOperation::Step { step: Step::Start { node: node.clone() }, birth: None, entry: None }.created_node(), None);
     }

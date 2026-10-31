@@ -206,6 +206,10 @@ pub enum Step {
     Create {
         /// The `path.name` the node is created at.
         node: PathName,
+        /// The owning mesh, independent of the path/name.
+        mesh: String,
+        /// The runtime kind the explicit executable serves.
+        kind: crate::NodeKind,
         /// The executable binding the Build fixes for the node (node-rpc-envelope.md "Build schema";
         /// node-replace.md step 3): whichever admin runs or resumes the step launches it, re-hashed at
         /// the launch, and the node's row records it beside `config`. Absent, the node runs the
@@ -1069,7 +1073,7 @@ mod tests {
             Step::Stop {
                 node: old_name.clone(),
             },
-            Step::Create {
+            Step::Create { mesh: "mesh1".into(), kind: crate::NodeKind::RpcNode,
                 node: name.clone(),
                 executable: Some(binding),
             },

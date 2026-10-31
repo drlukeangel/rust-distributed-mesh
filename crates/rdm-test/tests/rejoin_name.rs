@@ -57,6 +57,8 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric,
+            mesh: "mesh1".into(),
+            kind: rdm_core::NodeKind::RpcNode,
             name: born.clone(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),

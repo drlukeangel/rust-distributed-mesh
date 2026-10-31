@@ -416,6 +416,8 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric.clone(),
+            mesh: "mesh1".into(),
+            kind: rdm_core::NodeKind::RpcNode,
             name: name.clone(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),

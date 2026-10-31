@@ -587,7 +587,7 @@ impl BuildExecutor {
                 continue;
             }
             // Read before the run: once it ran, a first node-admin's create is no longer the mesh's first.
-            let first_admin = matches!(op, BuildOperation::CreateNode { node, .. } if self.topology.read().await.first_admin_of(node));
+            let first_admin = matches!(op, BuildOperation::CreateNode { node, .. } if self.topology.read().await.first_admin_of(node, &node.mesh, node.kind));
             match self.runner.run(&build.build_id, lane, attempt, op).await {
                 Ok(()) => {}
                 Err(RunEnd::Failed { reason, code }) => {
@@ -634,7 +634,7 @@ impl BuildExecutor {
         let now = self.held_name().await;
         let t = self.topology.read().await;
         ops.iter()
-            .take_while(|op| matches!(op, BuildOperation::CreateNode { node, .. } if !t.first_admin_of(node)) && (lane.is_some() || executor_for(op, &t).is_none_or(|to| to.to_string() == now)))
+            .take_while(|op| matches!(op, BuildOperation::CreateNode { node, .. } if !t.first_admin_of(node, &node.mesh, node.kind)) && (lane.is_some() || executor_for(op, &t).is_none_or(|to| to.to_string() == now)))
             .count()
     }
 
@@ -852,7 +852,7 @@ mod tests {
             let node: PathName = n.parse().unwrap();
             BuildOperation::Step { step: rdm_core::build::Step::Update { name: node.renamed(), node }, birth: None, entry: None }
         };
-        let make = |n: &str| BuildOperation::Step { step: rdm_core::build::Step::Create { node: n.parse().unwrap(), executable: None }, birth: None, entry: None };
+        let make = |n: &str| BuildOperation::Step { step: rdm_core::build::Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: n.parse().unwrap(), executable: None }, birth: None, entry: None };
         assert_eq!(who(&rename("mesh2.rpc.1"), &t), "mesh2.admin.1", "a Build's update of a member is its mesh primary's, the writer of its row");
         assert_eq!(who(&rename(m2), &t3), p2, "a Build's update of a non-primary admin is its mesh primary's");
         assert_eq!(who(&rename(p2), &moved), m2, "a Build's update of a former mesh primary after its node.connection.delete moved the role is the new mesh primary's");

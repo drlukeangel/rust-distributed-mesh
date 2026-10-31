@@ -22,6 +22,8 @@ fn launch(dir: &Path, fabric: &FabricId, name: &str, admin: &rdm_test::rig::Admi
         topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: fabric.clone(),
+        mesh: "mesh1".into(),
+        kind: rdm_core::NodeKind::Gateway,
         name: name.parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),

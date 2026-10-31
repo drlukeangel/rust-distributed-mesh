@@ -433,7 +433,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         );
 
         // 1. A held name at `mesh1.rpc.1` is refused at PrepareStorage before DeployRuntime is called.
-        let held_req = CreateRequest {
+        let held_req = CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             build_id: build_id.clone(),
             attempt: 1,
             node: held_path,
@@ -482,7 +482,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             config: BTreeMap::from([("role".into(), "worker".into())]),
             tags: std::collections::BTreeSet::from(["tier1".into()]),
         };
-        let create_req = CreateRequest {
+        let create_req = CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             build_id: build_id.clone(),
             attempt: 1,
             node: new_path.clone(),
@@ -944,7 +944,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             timeouts: fast_timeouts.clone(),
         };
         let created_cut = pipeline
-            .create(&CreateRequest {
+            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: build_id.clone(),
                 attempt: 1,
                 node: cut_path.clone(),
@@ -967,7 +967,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         //     and the name claim is withdrawn.
         *provider.deliver_join_on_inspect.lock().unwrap() = false;
         let lost_reply_err = pipeline
-            .create(&CreateRequest {
+            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: build_id.clone(),
                 attempt: 1,
                 node: fault_path.clone(),
@@ -996,7 +996,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             .unwrap();
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Exited { code: Some(137) };
         let kill_bind_err = pipeline
-            .create(&CreateRequest {
+            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: build_id.clone(),
                 attempt: 2,
                 node: fault_path.clone(),
@@ -1027,7 +1027,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Running;
         *observer.kill_on_first_ready_check.lock().unwrap() = Some(provider.clone());
         let kill_ready_err = pipeline
-            .create(&CreateRequest {
+            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: build_id.clone(),
                 attempt: 3,
                 node: fault_path.clone(),
@@ -1061,7 +1061,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Running;
         *observer.ready_ok.lock().unwrap() = false;
         let entered = observer.ready_entered.notified();
-        let req4 = CreateRequest {
+        let req4 = CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             build_id: build_id.clone(),
             attempt: 4,
             node: fault_path.clone(),
@@ -1100,7 +1100,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::OsStopped;
         *observer.ready_ok.lock().unwrap() = true;
         let resumed_created = pipeline
-            .create(&CreateRequest {
+            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: build_id.clone(),
                 attempt: 5,
                 node: fault_path.clone(),

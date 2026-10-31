@@ -135,6 +135,8 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric,
             fabric_id,
+            mesh: "mesh1".into(),
+            kind: rdm_core::NodeKind::NodeAdmin,
             name: "mesh1.admin.2".parse().unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),

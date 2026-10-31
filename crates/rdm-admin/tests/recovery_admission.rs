@@ -1672,7 +1672,7 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
         );
 
         let created_fresh = pipeline
-            .create(&CreateRequest {
+            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: build_id.clone(),
                 attempt: 2,
                 node: target_name.clone(),
@@ -1742,7 +1742,7 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
         );
 
         *observer.ready_err.lock().unwrap() = Some("not ready before cut".into());
-        let create_req_cut = CreateRequest {
+        let create_req_cut = CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             build_id: build_id_2.clone(),
             attempt: 1,
             node: target_name.clone(),

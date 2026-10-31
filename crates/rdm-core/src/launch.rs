@@ -15,6 +15,10 @@ pub const ENV_FABRIC: &str = "RDM_FABRIC";
 pub const ENV_FABRIC_ID: &str = "RDM_FABRIC_ID";
 /// The node's `path.name`.
 pub const ENV_NODE_NAME: &str = "RDM_NODE_NAME";
+/// The owning mesh, independent of the path/name.
+pub const ENV_MESH: &str = "RDM_MESH";
+/// The runtime kind registered by the executable.
+pub const ENV_NODE_KIND: &str = "RDM_NODE_KIND";
 /// Initial config and tags of this exact launch, as a JSON object.
 pub const ENV_NODE_PROPERTIES: &str = "RDM_NODE_PROPERTIES";
 /// The node's minted id.
@@ -189,6 +193,10 @@ pub struct InitialProperties {
 /// Everything a node needs to come up as the exact node node-admin allocated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
+    /// The owning mesh.
+    pub mesh: String,
+    /// The runtime kind the executable must serve.
+    pub kind: NodeKind,
     /// Entry-owned properties to initialize only when this node has no durable record.
     pub initial_properties: InitialProperties,
     /// The Fabric's name (its label) and its identity.
@@ -405,6 +413,8 @@ impl Launch {
         m.insert(ENV_FABRIC.into(), self.fabric.clone());
         m.insert(ENV_FABRIC_ID.into(), self.fabric_id.to_string());
         m.insert(ENV_NODE_NAME.into(), self.name.to_string());
+        m.insert(ENV_MESH.into(), self.mesh.clone());
+        m.insert(ENV_NODE_KIND.into(), self.kind.name().into());
         m.insert(ENV_NODE_PROPERTIES.into(), serde_json::to_string(&self.initial_properties).expect("string maps encode as JSON"));
         m.insert(ENV_NODE_ID.into(), self.node_id.to_string());
         m.insert(ENV_INCARNATION.into(), self.incarnation.to_string());
@@ -449,6 +459,12 @@ impl Launch {
             fabric: req(ENV_FABRIC)?,
             fabric_id: FabricId::parse(&req(ENV_FABRIC_ID)?).map_err(|e| format!("{ENV_FABRIC_ID}: {e}"))?,
             name: req(ENV_NODE_NAME)?.parse().map_err(|e| format!("{ENV_NODE_NAME}: {e}"))?,
+            mesh: req(ENV_MESH)?,
+            kind: {
+                let given = req(ENV_NODE_KIND)?;
+                NodeKind::ALL.into_iter().find(|kind| kind.name() == given)
+                    .ok_or_else(|| format!("{ENV_NODE_KIND} `{given}` is not a registered runtime kind"))?
+            },
             node_id: NodeId::parse(&req(ENV_NODE_ID)?).map_err(|e| format!("{ENV_NODE_ID}: {e}"))?,
             incarnation: IncarnationId::parse(&req(ENV_INCARNATION)?).map_err(|e| format!("{ENV_INCARNATION}: {e}"))?,
             supersedes: get(ENV_SUPERSEDES).filter(|s| !s.is_empty()).map(|s| IncarnationId::parse(&s).map_err(|e| format!("{ENV_SUPERSEDES}: {e}"))).transpose()?,
@@ -511,6 +527,8 @@ mod tests {
             (ENV_FABRIC.to_string(), "fabric1".to_string()),
             (ENV_FABRIC_ID.to_string(), FabricId::mint().to_string()),
             (ENV_NODE_NAME.to_string(), "mesh2.admin.1".to_string()),
+            (ENV_MESH.to_string(), "mesh2".to_string()),
+            (ENV_NODE_KIND.to_string(), "node_admin".to_string()),
             (ENV_NODE_ID.to_string(), NodeId::mint().to_string()),
             (ENV_INCARNATION.to_string(), IncarnationId::mint().to_string()),
             (ENV_TRANSPORT_ADDR.to_string(), "127.0.0.1:0".to_string()),
@@ -558,7 +576,9 @@ mod tests {
         let l = Launch { initial_properties: Default::default(), topology_storage_provider: TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
-            name: "mesh1.rpc.2".parse().unwrap(),
+            mesh: "mesh1".into(),
+            kind: crate::NodeKind::RpcNode,
+            name: "elsewhere.gateway.north".parse().unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: Some(IncarnationId::mint()),
@@ -576,6 +596,16 @@ mod tests {
         };
         let env = l.to_env();
         assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap(), l);
+        assert_eq!(env[ENV_MESH], "mesh1");
+        assert_eq!(env[ENV_NODE_KIND], "rpc_node");
+        for field in [ENV_MESH, ENV_NODE_KIND] {
+            let mut missing = env.clone();
+            missing.remove(field);
+            assert_eq!(Launch::from_env(|k| missing.get(k).cloned()).unwrap_err(), format!("{field} is required and must not be empty"));
+        }
+        let mut unknown_kind = env.clone();
+        unknown_kind.insert(ENV_NODE_KIND.into(), "unknown".into());
+        assert!(Launch::from_env(|k| unknown_kind.get(k).cloned()).unwrap_err().starts_with(ENV_NODE_KIND));
         assert!(Launch::from_env(|_| None).unwrap_err().contains("RDM_FABRIC is required"));
         // A launch with no store root is refused by name (R14 item 8).
         let mut no_store = env.clone();
@@ -643,6 +673,8 @@ mod tests {
         let base = Launch { initial_properties: Default::default(), topology_storage_provider: TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
+            mesh: "mesh1".into(),
+            kind: crate::NodeKind::RpcNode,
             name: "mesh1.rpc.2".parse().unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
@@ -703,6 +735,8 @@ mod tests {
             (ENV_FABRIC.to_string(), "fabric1".to_string()),
             (ENV_FABRIC_ID.to_string(), FabricId::mint().to_string()),
             (ENV_NODE_NAME.to_string(), "mesh1.gateway.1".to_string()),
+            (ENV_MESH.to_string(), "mesh1".to_string()),
+            (ENV_NODE_KIND.to_string(), "gateway".to_string()),
             (ENV_NODE_ID.to_string(), NodeId::mint().to_string()),
             (ENV_INCARNATION.to_string(), IncarnationId::mint().to_string()),
             (ENV_TRANSPORT_ADDR.to_string(), "127.0.0.1:0".to_string()),

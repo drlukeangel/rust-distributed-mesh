@@ -125,7 +125,7 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
             timeouts: timeouts(),
         };
         let created = pipeline
-            .create(&CreateRequest {
+            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: publish_build(&builds, add_node()).await,
                 attempt: 1,
                 node: "mesh1.rpc.1".parse().unwrap(),
@@ -184,7 +184,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             template: &template,
             timeouts: timeouts(),
         };
-        let create = |build_id| CreateRequest {
+        let create = |build_id| CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             build_id,
             attempt: 1,
             node: "mesh1.rpc.1".parse().unwrap(),

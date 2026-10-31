@@ -21,6 +21,8 @@ fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide, incarn
     Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: fabric.clone(),
+        mesh: "mesh1".into(),
+        kind: rdm_core::NodeKind::RpcNode,
         name: "mesh1.rpc.1".parse().unwrap(),
         node_id,
         incarnation,

@@ -25,6 +25,8 @@ fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_flush() {
     let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: FabricId::mint(),
+        mesh: "mesh1".into(),
+        kind: rdm_core::NodeKind::NodeAdmin,
         name: "mesh1.admin.2".parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),

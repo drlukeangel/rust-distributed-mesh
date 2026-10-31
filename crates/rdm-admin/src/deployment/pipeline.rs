@@ -914,6 +914,10 @@ impl LaunchTemplate {
 /// A request to create one node.
 #[derive(Debug, Clone)]
 pub struct CreateRequest {
+    /// The owning mesh supplied by the Build or exact predecessor.
+    pub mesh: String,
+    /// The runtime kind supplied by the same source.
+    pub kind: rdm_core::NodeKind,
     /// The Build.
     pub build_id: BuildId,
     /// The attempt.
@@ -1454,7 +1458,7 @@ impl DeploymentPipeline<'_> {
         self.create_with_claim(req, crate::node_rows::ClaimFor::Recovery, pre_node_ready, before_launch).await
     }
 
-    fn create_with_claim<'a>(&'a self, req: &'a CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'a>>) -> futures_util::future::BoxFuture<'a, Result<Created, PipelineError>> {
+    pub(crate) fn create_with_claim<'a>(&'a self, req: &'a CreateRequest, claim_for: crate::node_rows::ClaimFor, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'a>>) -> futures_util::future::BoxFuture<'a, Result<Created, PipelineError>> {
         use tracing::Instrument;
         let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt);
         // Boxed where it is made: the create's steps are one large state machine, and every caller (a
@@ -1733,7 +1737,7 @@ impl DeploymentPipeline<'_> {
                 step_span.record("awaiting", "entry-spec");
                 let held = self.builds.read_build(&req.build_id).await.map_err(|e| format!("{}: the accepted Build {} could not be read for the node's create spec; nothing is launched: {e}", req.node, req.build_id))?;
                 done_awaits.push("entry-spec");
-                let placed = held.topology.mesh(&req.node.mesh).and_then(|m| m.spec(&req.node)).map(|s| (s.storage_persistence, s.placement));
+                let placed = held.topology.node_spec(&req.node).map(|s| (s.storage_persistence, s.placement));
                 // A replace's successor takes its entry's config and tags, never its predecessor's (Q305).
                 let (tags, config) = match (of, &req.entry) {
                     (crate::node_rows::ClaimFor::Create | crate::node_rows::ClaimFor::Successor | crate::node_rows::ClaimFor::Replacement, Some(e)) => (e.tags.clone(), e.config.clone()),
@@ -1791,6 +1795,8 @@ impl DeploymentPipeline<'_> {
             topology_storage_provider: self.template.env.get(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER).cloned().unwrap_or_else(|| rdm_core::launch::TOPOLOGY_STORAGE_FILE.into()),
             fabric: self.template.fabric.clone(),
             fabric_id: self.template.fabric_id.clone(),
+            mesh: req.mesh.clone(),
+            kind: req.kind,
             name: req.node.clone(),
             node_id: id.node_id.clone(),
             incarnation: id.incarnation.clone(),
@@ -1806,7 +1812,7 @@ impl DeploymentPipeline<'_> {
             roots: self.template.roots.current(),
             connections_delete_deadline: self.template.connections_delete_deadline,
             // A node-admin is written every declared value it may launch with, beside the root (Q150).
-            declared: if req.node.kind == rdm_core::NodeKind::NodeAdmin { self.template.declared.custody() } else { Vec::new() },
+            declared: if req.kind == rdm_core::NodeKind::NodeAdmin { self.template.declared.custody() } else { Vec::new() },
         };
         // The launch environment; its TRACEPARENT is taken inside the
         // DeployRuntime step, so the runtime's boot span is that step's child.
@@ -1823,7 +1829,7 @@ impl DeploymentPipeline<'_> {
             for (k, v) in &self.template.env {
                 env.entry(k.clone()).or_insert_with(|| v.clone());
             }
-            ResolvedNodeLaunch { secrets: self.template.declared.set_on(req.node.kind), withhold: self.template.declared.names(),
+            ResolvedNodeLaunch { secrets: self.template.declared.set_on(req.kind), withhold: self.template.declared.names(),
                 node: req.node.clone(),
                 deployment_id: id.deployment_id.clone(),
                 executable: self.template.executable.clone(),
@@ -1947,6 +1953,9 @@ impl DeploymentPipeline<'_> {
             })
             .await?;
         let mut node = Node::allocated(req.node.clone());
+        node.mesh = req.mesh.clone();
+        node.kind = req.kind;
+        node.node_type = req.kind.node_type().into();
         node.node_id = id.node_id.clone();
         node.endpoint_id = Some(endpoint_id);
         node.incarnation_id = Some(id.incarnation.clone());
@@ -3261,7 +3270,7 @@ mod tests {
         let template = LaunchTemplate { roots: rdm_transport::connections::RootSet::new(vec![a]), ..cell_template("launch-roots") };
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let create = |node: &str| CreateRequest { build_id: build_id.clone(), attempt: 1, node: node.parse().unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let create = |node: &str| CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: node.parse().unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let _ = pipeline.create(&create("mesh1.rpc.1")).await.map(|_| ()).expect_err("the provider launches nothing");
         template.roots.replace(vec![a, b]);
         let _ = pipeline.create(&create("mesh1.rpc.2")).await.map(|_| ()).expect_err("the provider launches nothing");
@@ -3270,6 +3279,12 @@ mod tests {
         let written: Vec<Option<String>> = provider.envs.lock().unwrap().iter().map(|e| e.get(rdm_core::launch::ENV_ROOTS).cloned()).collect();
         let hex = |k: &rdm_core::certs::VerifyingKey| rdm_core::launch::encode_hex(k.as_bytes());
         assert_eq!(written, vec![Some(hex(&a)), Some(format!("{},{}", hex(&a), hex(&b))), None], "each launch carries the set as it stood at that launch");
+        let explicit = CreateRequest { mesh: "actual".into(), kind: rdm_core::NodeKind::Compute, ..create("elsewhere.gateway.north") };
+        let _ = pipeline.create(&explicit).await.expect_err("the provider launches nothing");
+        let env = provider.envs.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(env[rdm_core::launch::ENV_MESH], "actual");
+        assert_eq!(env[rdm_core::launch::ENV_NODE_KIND], "compute");
+        assert_eq!(env[rdm_core::launch::ENV_NODE_NAME], "elsewhere.gateway.north");
         let _ = std::fs::remove_dir_all(&template.data_root);
     }
 
@@ -3368,7 +3383,7 @@ mod tests {
         let template = cell_template("join-from-report");
         let timeouts = Timeouts { join: Duration::from_millis(1500), ready: Duration::from_millis(300), ..Timeouts::default() };
         let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts };
-        let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let err = pipeline.create(&req).await.map(|_| ()).expect_err("nothing answers Ready: the create ends at WaitForNodeReady");
         let steps: Vec<(String, StepOutcome)> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| (r.step, r.outcome)).collect();
         assert_eq!(err.step, CreateStep::WaitForNodeReady.name(), "WaitForMeshJoin completes from the accepted report with no digest in any view: {err}; receipts {steps:?}");
