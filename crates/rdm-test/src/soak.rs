@@ -1828,9 +1828,24 @@ impl Driver {
                     "view_status": at_path.first().map(|x| x["status"].clone()),
                     "births_at_path": at_path.len(),
                 }));
-                if at_path.len() != 1 {
+                // Two births at the path are never right. None is the instant between the recovery's
+                // delete of the held birth and its create of the replacement (node-recovery.md steps
+                // 3-4, a delete then a create): the path holds its replacement again within a floor,
+                // or the recovery has stalled.
+                let mut births = at_path.len();
+                if births == 0 {
+                    let est = &self.estate;
+                    births = wait_for_opt(&format!("{path}: a birth at the path again after the recovery's delete"), floor, || async {
+                        let n = est.node_values().await.iter().filter(|x| x["name"] == path.as_str()).count();
+                        (n > 0).then_some(n)
+                    })
+                    .await
+                    .unwrap_or(0);
+                    checks.push(json!({"held_ms": held_from.elapsed().as_millis() as u64, "births_at_path_again": births}));
+                }
+                if births != 1 {
                     entry["held_past_floors"] = json!({"hold_ms": hold.as_millis() as u64, "checks": checks});
-                    return Err(broken("silence-is-not-death", format!("{path} held {} ms: the path holds {} births", held_from.elapsed().as_millis(), at_path.len())));
+                    return Err(broken("silence-is-not-death", format!("{path} held {} ms: the path holds {births} births", held_from.elapsed().as_millis())));
                 }
                 if !targeted.is_empty() {
                     entry["held_past_floors"] = json!({"hold_ms": hold.as_millis() as u64, "checks": checks});
