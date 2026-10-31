@@ -731,6 +731,10 @@ impl StoreLog {
         let dispatch = tracing::dispatcher::get_default(|d| d.clone());
         blocking_io(move || {
             let mut guard = guard;
+            #[cfg(feature = "testkit-store")]
+            if let Some(door) = write_door::take(&inner.path, &key) {
+                tracing::dispatcher::with_default(&dispatch, || door.hold());
+            }
             tracing::dispatcher::with_default(&dispatch, || inner.fold_before_append(caller, &parent))?;
             inner.append_line(&mut *guard, &writer, &format, &key, &bytes)
         })
@@ -1358,6 +1362,74 @@ pub mod read_door {
             (at.admitted, at.released) = (true, true);
             self.changed.notify_all();
         }
+    }
+}
+
+/// A test-only hold before a store append, after its ordering lock is owned by the disk job.
+/// Dropping the caller does not release this hold or the append lock.
+#[cfg(feature = "testkit-store")]
+pub mod write_door {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Condvar, Mutex, OnceLock};
+
+    struct Held {
+        file: PathBuf,
+        key: String,
+        released: Mutex<bool>,
+        changed: Condvar,
+        entered: tokio::sync::watch::Sender<bool>,
+    }
+
+    /// A one-shot fault handle; dropping it releases the blocked append, even on test failure.
+    pub struct Door(Arc<Held>);
+
+    fn armed() -> &'static Mutex<Vec<Arc<Held>>> {
+        static ARMED: OnceLock<Mutex<Vec<Arc<Held>>>> = OnceLock::new();
+        ARMED.get_or_init(Default::default)
+    }
+
+    /// Hold the first append to this exact file and key. Other files and keys are unaffected.
+    pub fn arm(file: &Path, key: &str) -> Door {
+        let held = Arc::new(Held {
+            file: file.to_path_buf(), key: key.into(), released: Mutex::new(false),
+            changed: Condvar::new(), entered: tokio::sync::watch::Sender::new(false),
+        });
+        armed().lock().unwrap().push(held.clone());
+        Door(held)
+    }
+
+    pub(super) fn take(file: &Path, key: &str) -> Option<Door> {
+        let mut all = armed().lock().unwrap();
+        let at = all.iter().position(|d| d.file == file && d.key == key)?;
+        Some(Door(all.remove(at)))
+    }
+
+    impl Door {
+        pub(super) fn hold(&self) {
+            tracing::info_span!("rdm.testkit.fault.update.via-hold", cut = "store-append", file = %self.0.file.display(), key = %self.0.key)
+                .in_scope(|| tracing::info!("the append owns its ordering lock before the caller can be cancelled"));
+            self.0.entered.send_replace(true);
+            let mut released = self.0.released.lock().unwrap();
+            while !*released {
+                released = self.0.changed.wait(released).unwrap();
+            }
+        }
+
+        /// Wait until the disk job holds the append. Tests must supply their own wait deadline.
+        pub async fn entered(&self) {
+            let _ = self.0.entered.subscribe().wait_for(|v| *v).await;
+        }
+
+        /// Release this append, or disarm the fault if no append entered it.
+        pub fn release(&self) {
+            *self.0.released.lock().unwrap() = true;
+            self.0.changed.notify_all();
+            armed().lock().unwrap().retain(|d| !Arc::ptr_eq(d, &self.0));
+        }
+    }
+
+    impl Drop for Door {
+        fn drop(&mut self) { self.release(); }
     }
 }
 

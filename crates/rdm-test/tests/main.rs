@@ -348,3 +348,5 @@ async fn forward_gossip_probe(topology_view: &rdm_transport::topology::TopologyV
 
 mod app_channels;
 mod load;
+
+mod node_records;
