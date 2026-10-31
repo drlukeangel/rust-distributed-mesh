@@ -116,6 +116,34 @@ fn is(pid: u32, start: Option<u64>) -> bool {
     matches!(exact_group(PROC, pid, start), Group::Running | Group::OsStopped)
 }
 
+/// The stop ladder's wait: until `exited` answers yes, for at most `grace`; then `kill`, and up to
+/// two seconds more for the exit it forces. Only `exited` ends a wait: a runtime that cannot be read
+/// is waited on, never read as gone (deployment-provider.md §2.6).
+#[cfg(unix)]
+async fn wait_for_exit<E, F>(grace: Duration, mut exited: E, kill: impl FnOnce())
+where
+    E: FnMut() -> F,
+    F: std::future::Future<Output = bool>,
+{
+    let until = tokio::time::Instant::now() + grace;
+    loop {
+        if exited().await {
+            return;
+        }
+        if tokio::time::Instant::now() >= until {
+            kill();
+            for _ in 0..100 {
+                if exited().await {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// The process `start` names has exited: its group read over `proc` is `Gone`. A group that cannot
 /// be read whole is not proven exited (deployment-provider.md §2.6: unreadable or partial is
 /// `Unknown`): a stop waits on, as inspect answers it. [`is`] is the other question, whether a
@@ -531,23 +559,8 @@ impl DeploymentProvider for ProcessDeploymentProvider {
                 }
                 TerminationMode::Immediate => Duration::ZERO,
             };
-            let until = tokio::time::Instant::now() + grace;
-            loop {
-                if self.exited(pid, handle.start).await {
-                    break;
-                }
-                if tokio::time::Instant::now() >= until {
-                    signal(pid, libc::SIGKILL);
-                    for _ in 0..100 {
-                        if self.exited(pid, handle.start).await {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(20)).await;
-                    }
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+            let start = handle.start;
+            wait_for_exit(grace, || self.exited(pid, start), || { signal(pid, libc::SIGKILL); }).await;
         }
         Ok(())
     }
@@ -757,6 +770,32 @@ mod tests {
     ///  if the child belongs to this admin, `waitpid(pid, WNOHANG)`."
     /// CONTRACT: docs/architecture/lifecycles/node-runtime-inspect.md:52
     /// "4. The provider returns the typed answer: `Running` ... `OsStopped` ... `Exited` ... `Unavailable`"
+    /// CONTRACT (deployment-provider.md §2.6: task files present but unreadable or partial is
+    /// `Unknown`): the stop ladder waits on a runtime whose thread group cannot be read whole, and
+    /// ends when the group is gone, inside its grace and with no kill. Must NOT happen: the wait read
+    /// an unreadable group as exited and ended at once (the red at 56bf15655: TerminateRuntime failed
+    /// "still runs after the stop ladder" when a sibling task was still live).
+    #[tokio::test]
+    async fn the_stop_ladder_waits_on_an_unreadable_group_until_it_is_gone() {
+        let root = crate::test_support::tempdir("proc-fixture-ladder");
+        let proc = root.to_str().unwrap().to_string();
+        fixture_proc(&root, 700, 555, &[Some('Z'), None]);
+        let gone = root.join("700");
+        let exit = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            std::fs::remove_dir_all(gone).unwrap();
+        });
+        let killed = std::sync::atomic::AtomicBool::new(false);
+        let began = std::time::Instant::now();
+        let p = proc.clone();
+        wait_for_exit(Duration::from_secs(5), || { let p = p.clone(); async move { gone_at(&p, 700, Some(555)) } }, || killed.store(true, std::sync::atomic::Ordering::SeqCst)).await;
+        let waited = began.elapsed();
+        exit.await.unwrap();
+        assert!(waited >= Duration::from_millis(250), "the wait ended after {waited:?}, while the group was still unreadable");
+        assert!(waited < Duration::from_secs(5), "the wait ended at the group's exit, inside its grace: {waited:?}");
+        assert!(!killed.load(std::sync::atomic::Ordering::SeqCst), "a runtime that exits inside its grace is never killed");
+    }
+
     /// CONTRACT (deployment-provider.md §2.6, PRD i144 R3): read over a process filesystem, a pid
     /// whose `/proc/<pid>` is gone, or whose start token names another process, is `Gone` (the exact
     /// runtime exited); task files present but unreadable or partial are `Unreadable`, naming the file
