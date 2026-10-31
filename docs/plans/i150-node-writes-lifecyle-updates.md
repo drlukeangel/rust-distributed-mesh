@@ -378,6 +378,22 @@ workflow fixtures expecting the removed own-config callback/up-chain behavior. T
 owned by i150.e3.s4's deletion of the legacy routes/fixtures; they must pass before landing.
 The complete initiative, final gate, lifecycle takeover and Rafka integration remain BUILD.
 
+### Exact lifecycle subject lookup (2026-10-31)
+
+`NodeRecordsStorage::lifecycles_of(node.id)` returns the exact subject's writer records without
+inferring a mesh from its path. Provider selection remains persistence-only: the domain reader must
+resolve the explicit MeshId through the mesh record/name claim and choose the installed primary's
+exact birth. The file adapter uses `StoreLog::latest_under` over the existing ordered fold; it adds
+no persisted index or copied view. `latest_of` shares that range implementation with an empty prefix.
+The ordinary and admin provider handles forward this read through their existing current-provider
+handle. Lifecycle activation and installed-primary selection remain BUILD.
+
+`lifecycle-subject-range.log`: 12/12 node-record controls passed, 0.05 s. The late-writer contract
+also checks exact-subject enumeration with an unrelated subject/mesh present and absence for a
+missing ID, on file and memory backends. Architect 1 reviewed this read shape against R-NR2.
+The name check found an earlier new test identifier containing the retired word `round`; its name
+now says `encode_decode`. Final branch name check and the landing gate remain required.
+
 ### Shared property writer implementation evidence (2026-10-31)
 
 The node runtime now has one `NodePropertyWriter` shared by ordinary own-config and caller config

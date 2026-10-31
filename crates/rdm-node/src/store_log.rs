@@ -700,9 +700,17 @@ impl StoreLog {
 
     /// The latest line of every key of `kind`, in key order, after reading the tail.
     pub async fn latest_of(&self, kind: &str) -> Result<Vec<Line>, StorageError> {
+        self.latest_under(kind, "").await
+    }
+
+    /// The latest lines whose keys begin with `prefix`, in key order, after reading the tail.
+    /// Uses the existing ordered fold; no additional index or persisted copy is maintained.
+    pub async fn latest_under(&self, kind: &str, prefix: &str) -> Result<Vec<Line>, StorageError> {
         self.advance().await?;
-        let out: BTreeMap<String, Line> = self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).latest.iter().filter(|((k, _), _)| k == kind).map(|((_, key), l)| (key.clone(), l.clone())).collect();
-        Ok(out.into_values().collect())
+        Ok(self.0.fold.lock().unwrap_or_else(|e| e.into_inner()).latest
+            .range((kind.to_string(), prefix.to_string())..)
+            .take_while(|((held_kind, key), _)| held_kind == kind && key.starts_with(prefix))
+            .map(|(_, line)| line.clone()).collect())
     }
 
     /// Every line of the file, in file order, read whole from byte 0 (the raw log).
