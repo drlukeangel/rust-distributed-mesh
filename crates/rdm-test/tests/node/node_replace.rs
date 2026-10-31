@@ -1121,14 +1121,17 @@ async fn steps_naming_an_unknown_node_are_refused_unknown_node_naming_the_step_a
 /// active index, not erased from its row"): mesh2's primary tells `mesh2.rpc.1` a config and a tag,
 /// then the node is replaced up to the successor's create (no delete of the predecessor). The
 /// predecessor leaves its mesh, takes `<name>.old` live and is stopped there; the successor's claim at
-/// `<name>`, the name it released, puts its row with the config and the tag of the retained `.old` row
-/// (`seeded_from` the predecessor), then marks the retained row `inherited_by` the successor inside the
-/// same claim (its labels leave the tags index; the row keeps them). The successor's join under
-/// `<name>` hands it that config; node.get by the tag names the successor alone, while the predecessor
-/// stays retained at `<name>.old`.
+/// `<name>`, the name it released, puts its row with its Build entry's config and tags (Q305,
+/// node-replace.md "Properties"): this Build of steps takes its entry from its topology, which names
+/// none of the config and the tag the calls wrote, so the successor's row carries neither, never the
+/// retained `.old` row's (`seeded_from` the predecessor all the same). The claim then marks the
+/// retained row `inherited_by` the successor (its labels leave the tags index; the row keeps them). The
+/// successor's join under `<name>` hands it no config; node.get by the tag names nobody, while the
+/// predecessor stays retained at `<name>.old` with its tag on its row. Must NOT happen: the dead
+/// predecessor's config or tags copied onto the successor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_the_retained_row_leaves_the_tags_index() {
-    let (estate, _build) = two_mesh_estate("a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_the_retained_row_leaves_the_tags_index").await;
+async fn a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_its_create_and_the_retained_row_leaves_the_tags_index() {
+    let (estate, _build) = two_mesh_estate("a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_its_create_and_the_retained_row_leaves_the_tags_index").await;
     let nodes = estate.node_values().await;
     let (node, mesh_primary, fp) = placement(&nodes);
     let node_path = node.as_str();
@@ -1166,25 +1169,25 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
         (joined && marked).then_some(spans)
     })
     .await;
-    // Step 3: the successor's claim at the released name inherits from the retained row, then marks it.
+    // Step 3: the successor's claim at the released name writes its entry's properties (none here), then marks the retained row.
     let claim = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "claim").expect("the successor's claim").clone();
     let a = &claim["attributes"];
     assert_eq!(
         (s(&a["node"]), s(&a["subject"]), s(&a["outcome"]), s(&a["seeded_from"]), s(&a["keys"]), s(&a["tags"])),
-        (mesh_primary.clone(), node_path.to_string(), "row-seeded".to_string(), s(&before["node_id"]), "1".to_string(), "rabbit".to_string()),
-        "the mesh-primary puts the successor at {node_path} with the retained row's config and tag: {claim}"
+        (mesh_primary.clone(), node_path.to_string(), "row-seeded".to_string(), s(&before["node_id"]), "0".to_string(), "".to_string()),
+        "the mesh-primary puts the successor at {node_path} with its entry's config and tags, none, never the retained row's: {claim}"
     );
     assert!(named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().all(|sp| sp["attributes"]["node_id"] != after["node_id"]), "the successor is never renamed");
     let mark = named(&spans, "rdm.node_admin.node.update.via-inherited-row").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).expect("the retained row's mark").clone();
     let m = &mark["attributes"];
     assert_eq!((s(&m["subject"]), s(&m["inherited_by"]), s(&m["tags"]), s(&m["outcome"])), (old_name.clone(), s(&after["node_id"]), "rabbit".to_string(), "inherited".to_string()), "the retained row says who inherited it and keeps its tag: {mark}");
     assert_eq!(mark["parent_span_id"], claim["span_id"], "the mark is the claim's last write: {mark} under {claim}");
-    // The successor's join under the name hands it the row's config (node-start.md step 2).
+    // The successor's join under the name hands it the row's config, its entry's: none (node-start.md step 2).
     let joined = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["admitted_as"] == node_path).expect("the successor's join under the name").clone();
-    assert_eq!((s(&joined["attributes"]["outcome"]), s(&joined["attributes"]["config_keys"])), ("installed".to_string(), "1".to_string()), "the successor's join answer under {node_path} hands its row's config: {joined}");
-    let carried = wait_for(&format!("the successor at {node_path} carries the config"), Duration::from_secs(30), || async { let n = estate.node_value(node_path).await; (n["config"] == told_json).then_some(n) }).await;
-    assert_eq!(carried["node_id"], after["node_id"], "the successor carries it");
-    assert_eq!(estate.node_view(node_path).await.tags, labels, "the successor's row carries the predecessor's tag");
+    assert_eq!((s(&joined["attributes"]["outcome"]), s(&joined["attributes"]["config_keys"])), ("installed".to_string(), "0".to_string()), "the successor's join answer under {node_path} hands its row's config, none of the predecessor's: {joined}");
+    let carried = estate.node_value(node_path).await;
+    assert_eq!((carried["node_id"].clone(), carried["config"].clone()), (after["node_id"].clone(), json!({})), "the successor carries its entry's config, not the predecessor's {told_json}");
+    assert!(estate.node_view(node_path).await.tags.is_empty(), "the successor's row carries none of the predecessor's tags");
     let selected: Vec<String> = estate
         .nodes_obj()
         .await
@@ -1194,7 +1197,7 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_its_create_and_
         .into_iter()
         .map(|n| n.node_id.to_string())
         .collect();
-    assert_eq!(selected, vec![s(&after["node_id"])], "the tags index names the successor under the label, and not the retained predecessor");
+    assert!(selected.is_empty(), "the tags index names neither the successor, whose entry named no tag, nor the retained predecessor: {selected:?}");
     let retained = estate.node_values().await.into_iter().find(|n| n["name"] == old_name.as_str()).unwrap_or_else(|| panic!("the predecessor is retained at {old_name}"));
     assert_eq!(retained["node_id"], before["node_id"], "the retained {old_name} is the predecessor: {retained}");
     eprintln!("trace {}: via-node-row node={} subject={} seeded_from={} keys={} tags={}; via-inherited-row subject={} inherited_by={}; trace {}: via-join admitted_as={} config_keys={}", s(&claim["trace_id"]), mesh_primary, node_path, s(&a["seeded_from"]), s(&a["keys"]), s(&a["tags"]), old_name, s(&m["inherited_by"]), s(&joined["trace_id"]), node_path, s(&joined["attributes"]["config_keys"]));
