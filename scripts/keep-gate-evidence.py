@@ -19,6 +19,21 @@ def failed_cells(job_log: Path) -> list:
     return list(dict.fromkeys(n.rsplit("::", 1)[-1] for n in names))
 
 
+REGISTRY = Path("tools/mesh-audit/i143-acceptance-jobs.json")
+
+
+def acceptance_dirs(job: str) -> list:
+    """The cell directories of acceptance job `job` (the gate names an rshape job without its `i143-`
+    prefix), from the acceptance registry. A later run of the same job (the export after the release)
+    writes into them, so a refused job's are kept here with the gate's other evidence."""
+    if not REGISTRY.is_file():
+        return []
+    reg = json.loads(REGISTRY.read_text())
+    jobs = {**reg.get("jobs", {}), **{k: v for k, v in reg.get("rshape_jobs", {}).items() if k != "_contract"}}
+    found = jobs.get(job) or jobs.get("i143-" + job) or {}
+    return [Path(c["dir"]) for c in found.get("cells", []) if c.get("dir")]
+
+
 def keep(log: Path, artifacts: Path, destination: Path, testkit: Path) -> None:
     jobs = list(dict.fromkeys(re.findall(
         r"^FAIL(?:\([^\n)]+\))?\s+([A-Za-z0-9_.:-]+)(?:\s|$)",
@@ -49,12 +64,19 @@ def keep(log: Path, artifacts: Path, destination: Path, testkit: Path) -> None:
             if source.is_dir():
                 shutil.copytree(source, temporary / "testkit" / cell, symlinks=True)
                 kept_cells.append(cell)
+        kept_jobs = []
+        for job in jobs:
+            for source in acceptance_dirs(job):
+                if source.is_dir():
+                    shutil.copytree(source, temporary / "acceptance" / job / source.name, symlinks=True)
+                    kept_jobs.append(f"{job}/{source.name}")
         shutil.copy2(log, temporary / "gate.log")
         (temporary / "manifest.json").write_text(json.dumps({
             "gate_log": str(log.resolve()),
             "source_artifacts": str(artifacts.resolve()),
             "jobs": jobs,
             "testkit_cells": kept_cells,
+            "acceptance_cells": kept_jobs,
         }, indent=2) + "\n")
         temporary.rename(shared)
     finally:
