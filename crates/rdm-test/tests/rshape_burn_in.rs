@@ -2409,10 +2409,11 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mu
     let formation_rejections = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty()).filter(formation).count();
     let rejected_creates = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty() && !formation(sp)).count();
     // A write the cell sent to see it refused reaches a door only at the fabric-primary: a non-writer refuses it
-    // before either door. At the writer a refused restart is refused on the attempt-opening door
+    // before either door. At the writer a refused restart, and a restart's node.start refused while its mesh
+    // holds an attempt (sent again once it ends), are refused on the attempt-opening door
     // (`build.update.via-node-rpc`), every other refused write on the create door.
     let at_a_door: Vec<&Value> = a.refused_writes.iter().filter(|r| r["reply"] != "not-fabric-primary").collect();
-    let refused_opens = at_a_door.iter().filter(|r| r["route"].as_str() == Some("restart")).count();
+    let refused_opens = at_a_door.iter().filter(|r| matches!(r["route"].as_str(), Some("restart" | "node.start"))).count();
     let refused_deleted_restarts = a.events.iter().filter(|e| e["event"] == "deleted.restart-refused").count();
     let rejected_updates = updates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty()).count();
     assert_eq!(rejected_updates, refused_opens + refused_deleted_restarts, "every rejected attempt-opening write is a restart the cell sent the writer to be refused, or a restart of a deleted path, each asked for by the cell");
