@@ -69,7 +69,7 @@ fn naming(mut request: Vec<NodeSpec>, path: &str, executable: Option<&Binding>) 
     match request.iter_mut().find(|s| s.path == p) {
         Some(s) => s.executable = executable.cloned(),
         None => {
-            let mut s = NodeSpec::default_for(p);
+            let mut s = NodeSpec::default_for(p.clone(), &p.mesh, p.kind);
             s.executable = executable.cloned();
             request.push(s);
         }
@@ -518,7 +518,7 @@ async fn replaced(estate: &Estate, name: &str, was: &Member, next: &Binding) {
     let now = estate.until_node(name, &format!("{name} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != was.view.node_id).cloned()).await;
     assert_ne!(now.incarnation_id, was.view.incarnation_id, "{name}: a new birth");
     assert_eq!(exe_of(estate, name).await, next.executable, "{name} runs the executable its entry names");
-    if matches!(NodeSpec::default_for(was.view.name.clone()).storage_persistence, rdm_core::meta::StorageMeta::Persistent { .. }) {
+    if matches!(NodeSpec::default_for(was.view.name.clone(), &was.view.name.mesh, was.view.name.kind).storage_persistence, rdm_core::meta::StorageMeta::Persistent { .. }) {
         assert_eq!(now.endpoint_id, was.view.endpoint_id, "{name}: its endpoint key kept, loaded from its kept data dir");
         assert_eq!(estate.data_dir(name).await, was.data_dir, "{name}: created over its kept data dir");
     } else {

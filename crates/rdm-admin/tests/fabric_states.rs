@@ -186,7 +186,7 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
         // Quiesce background execution so the resize Build is observed at acceptance before any process spawns.
         running.gate().quiesce().await;
 
-        let mut rpc_spec = NodeSpec::default_for("mesh1.rpc.1".parse().unwrap());
+        let mut rpc_spec = NodeSpec::default_for("mesh1.rpc.1".parse().unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         rpc_spec.executable = Some(crate::test_executable(NodeKind::RpcNode));
 
         let resize_opened = running

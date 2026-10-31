@@ -143,6 +143,8 @@ struct WireMesh {
 /// store root's record of the accepted Build carries them.
 #[derive(Serialize, Deserialize)]
 struct WireSpec {
+    mesh: String,
+    kind: NodeKind,
     storage: WireStorage,
     placement: PlacementMeta,
 }
@@ -302,7 +304,7 @@ impl From<&NodeSpec> for WireSpec {
             StorageMeta::Ephemeral => WireStorage::Ephemeral,
             StorageMeta::Persistent { disposition } => WireStorage::Persistent { disposition },
         };
-        Self { storage, placement: m.placement }
+        Self { mesh: m.mesh.clone(), kind: m.kind, storage, placement: m.placement }
     }
 }
 impl WireSpec {
@@ -314,7 +316,7 @@ impl WireSpec {
             WireStorage::Ephemeral => StorageMeta::Ephemeral,
             WireStorage::Persistent { disposition } => StorageMeta::Persistent { disposition },
         };
-        NodeSpec { path, storage_persistence, placement: self.placement, executable: None, tags: Default::default(), config: Default::default() }
+        NodeSpec { path, mesh: self.mesh, kind: self.kind, storage_persistence, placement: self.placement, executable: None, tags: Default::default(), config: Default::default() }
     }
 }
 impl From<&MeshTopology> for WireMesh {

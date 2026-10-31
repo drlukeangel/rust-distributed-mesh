@@ -27,7 +27,7 @@ fn topology(rpcs: u32) -> FabricTopology {
     let mesh = t.meshes.get_mut("mesh1").unwrap();
     for i in 1..=rpcs {
         let path: PathName = format!("mesh1.rpc.{i}").parse().unwrap();
-        let mut spec = rdm_core::meta::NodeSpec::default_for(path.clone());
+        let mut spec = rdm_core::meta::NodeSpec::default_for(path.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
         spec.config.insert("note".into(), "n".repeat(256));
         spec.tags.insert(format!("t{}", i % 7));
         mesh.nodes.insert(path.clone());

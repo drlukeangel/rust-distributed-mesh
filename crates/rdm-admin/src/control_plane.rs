@@ -1842,7 +1842,7 @@ mod tests {
             let p: PathName = path.parse().unwrap();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            let mut spec = current.meshes["mesh1"].spec_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::NodeSpec { path: p.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: Default::default() });
+            let mut spec = current.meshes["mesh1"].spec_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::NodeSpec { mesh: p.mesh.clone(), kind: p.kind, path: p.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: Default::default() });
             spec.executable = Some(b);
             m.spec_by_path.insert(p, spec);
             next
@@ -1877,7 +1877,7 @@ mod tests {
         for (path, b) in created {
             let p: PathName = path.parse().unwrap();
             m.nodes.insert(p.clone());
-            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { path: p, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b.clone()), tags: Default::default(), config: Default::default() });
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: p.mesh.clone(), kind: p.kind, path: p, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b.clone()), tags: Default::default(), config: Default::default() });
         }
         (current, next)
     }
@@ -2000,7 +2000,7 @@ mod tests {
             let p: PathName = "mesh1.rpc.1".parse().unwrap();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { path: p, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b), tags: Default::default(), config: Default::default() });
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: p.mesh.clone(), kind: p.kind, path: p, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b), tags: Default::default(), config: Default::default() });
             next
         };
         let rows = crate::accepted::Recorded::new();

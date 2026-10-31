@@ -154,8 +154,8 @@ fn topology() -> FabricTopology {
     let mut m2 = MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2), (NodeKind::Broker, 1)]));
     let broker: PathName = "mesh2.broker.1".parse().unwrap();
     let rpc: PathName = "mesh2.rpc.1".parse().unwrap();
-    m2.set_spec(NodeSpec { storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for(broker) }).unwrap();
-    m2.set_spec(NodeSpec { storage_persistence: StorageMeta::Ephemeral, ..NodeSpec::default_for(rpc) }).unwrap();
+    m2.set_spec(NodeSpec { storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for(broker, "mesh2", NodeKind::Broker) }).unwrap();
+    m2.set_spec(NodeSpec { storage_persistence: StorageMeta::Ephemeral, ..NodeSpec::default_for(rpc, "mesh2", NodeKind::RpcNode) }).unwrap();
     t.meshes.insert("mesh2".into(), m2);
     // A Build message carries no topology_storage_provider (Q184: it is written in the records, like the
     // executable), so the shape that round-trips names none.
@@ -473,7 +473,7 @@ fn twelve_node_topology() -> FabricTopology {
             let id = p.kind.name().replace('-', "_");
             let executable = rdm_core::binding::Binding { launch_id: id.clone(), executable: format!("/opt/rafka/candidates/0123456789abcdef/{id}").into(), sha256: "ab".repeat(32), image: Some("rafka-node-runtime:0123456789abcdef".into()) };
             let config = [("zone".to_string(), "a".to_string())].into();
-            m.set_spec(NodeSpec { storage_persistence: StorageMeta::Ephemeral, executable: Some(executable), tags: ["zone_a".to_string()].into(), config, ..NodeSpec::default_for(p) }).unwrap();
+            m.set_spec(NodeSpec { storage_persistence: StorageMeta::Ephemeral, executable: Some(executable), tags: ["zone_a".to_string()].into(), config, ..NodeSpec::default_for(p.clone(), mesh, p.kind) }).unwrap();
         }
         t.meshes.insert(mesh.into(), m);
     }

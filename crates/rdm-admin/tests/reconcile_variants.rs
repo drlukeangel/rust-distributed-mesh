@@ -135,7 +135,7 @@ impl Variant {
                 r[i].storage_persistence = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
             }
             Self::NewPath => {
-                let mut s = NodeSpec::default_for(path("mesh1.rpc.2"));
+                let mut s = NodeSpec::default_for(path("mesh1.rpc.2"), "mesh1", rdm_core::NodeKind::RpcNode);
                 s.executable = Some(crate::test_executable(NodeKind::RpcNode));
                 r.push(s);
             }

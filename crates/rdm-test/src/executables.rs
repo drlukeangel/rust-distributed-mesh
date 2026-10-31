@@ -13,7 +13,7 @@
 
 use rdm_client::binding::{sha256_file, Binding, BindingSet};
 use rdm_client::{BuildCarrier, BuildId, Builds, Filter, LaunchKind as NodeKind, MeshDesired, NodeStatus, NodeView, PathName};
-use rdm_core::meta::{NodeSpec, PersistentDisposition, PlacementMeta, StorageMeta};
+use rdm_core::meta::NodeSpec;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -73,12 +73,8 @@ fn sha256_once(path: &Path) -> Result<String, String> {
 /// The create spec of `path`, a path the request creates: its storage by kind, written out (brokers and
 /// node-admins keep theirs across a restart and a delete; gateways, compute and proof rpc nodes are
 /// ephemeral), no placement, no tags, no config, and `executable`.
-pub fn created_spec(path: PathName, executable: Binding) -> NodeSpec {
-    let storage_persistence = match path.kind {
-        NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { disposition: PersistentDisposition::Preserve },
-        NodeKind::Gateway | NodeKind::Compute | NodeKind::RpcNode => StorageMeta::Ephemeral,
-    };
-    NodeSpec { path, storage_persistence, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default(), config: Default::default() }
+pub fn created_spec(path: PathName, mesh: &str, kind: NodeKind, executable: Binding) -> NodeSpec {
+    NodeSpec { executable: Some(executable), ..NodeSpec::default_for(path, mesh, kind) }
 }
 
 /// The counts of `mesh`, by kind, in the compiler's order.
@@ -106,7 +102,7 @@ impl Current {
         let [build] = <[rdm_client::Build; 1]>::try_from(current).map_err(|all| format!("build.get of the current Build at {} answered {} Builds, not one", carrier.fabric_primary(), all.len()))?;
         let mut topology: BTreeMap<String, BTreeMap<PathName, NodeSpec>> = BTreeMap::new();
         for spec in build.nodes {
-            topology.entry(spec.path.mesh.clone()).or_default().insert(spec.path.clone(), spec);
+            topology.entry(spec.mesh.clone()).or_default().insert(spec.path.clone(), spec);
         }
         // Every row in one read: node.get streams its rows on op 0x23 (Q285).
         let rows = rdm_client::Nodes::new(carrier.clone()).get(&rdm_client::Filter::new()).await.map_err(|e| format!("node.get at {}: {e}", carrier.fabric_primary()))?;
@@ -147,7 +143,7 @@ impl Current {
                 if spec.executable.is_none() {
                     spec.executable = Some(match self.row_executable(path) {
                         Some(b) => b,
-                        None => self.created_executable(path.kind, executables)?,
+                        None => self.created_executable(spec.kind, executables)?,
                     });
                 }
                 if let Some(row) = self.live_row(path) {
@@ -178,7 +174,7 @@ impl Current {
         for desired in meshes {
             let paths = by_mesh.entry(desired.name.clone()).or_default();
             for (kind, want) in counts(desired) {
-                let mut have: Vec<u32> = paths.keys().filter(|p| p.kind == kind).map(|p| p.ordinal).collect();
+                let mut have: Vec<u32> = paths.values().filter(|spec| spec.kind == kind).map(|spec| spec.path.ordinal).collect();
                 have.sort_unstable();
                 let keep = self.primary_ordinal(&desired.name, kind);
                 while (have.len() as u32) < want {
@@ -186,7 +182,7 @@ impl Current {
                     have.push(ordinal);
                     have.sort_unstable();
                     let path = PathName::new(&desired.name, kind, ordinal);
-                    paths.insert(path.clone(), created_spec(path, self.created_executable(kind, executables)?));
+                    paths.insert(path.clone(), created_spec(path, &desired.name, kind, self.created_executable(kind, executables)?));
                 }
                 while (have.len() as u32) > want {
                     let drop = have.iter().rev().copied().find(|o| Some(*o) != keep).or_else(|| have.last().copied()).expect("a member to drop");
@@ -252,12 +248,12 @@ mod tests {
     fn current() -> Current {
         let mut mesh: BTreeMap<PathName, NodeSpec> = BTreeMap::new();
         let admin: PathName = "mesh1.admin.1".parse().unwrap();
-        let mut admin_spec = created_spec(admin.clone(), binding("node_admin", "x"));
+        let mut admin_spec = created_spec(admin.clone(), "mesh1", NodeKind::NodeAdmin, binding("node_admin", "x"));
         admin_spec.executable = None;
         mesh.insert(admin, admin_spec);
         for o in 1..=3 {
             let p = PathName::new("mesh1", NodeKind::RpcNode, o);
-            mesh.insert(p.clone(), created_spec(p, binding("rpc_node", "r0")));
+            mesh.insert(p.clone(), created_spec(p, "mesh1", NodeKind::RpcNode, binding("rpc_node", "r0")));
         }
         let topology = [("mesh1".to_string(), mesh)].into_iter().collect();
         Current { based_on: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), topology, rows: vec![row("mesh1.admin.1", true, "a0"), row("mesh1.rpc.3", true, "r0")] }

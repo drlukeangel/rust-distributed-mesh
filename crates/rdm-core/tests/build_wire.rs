@@ -42,30 +42,28 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
         // position 14 is reserved (the removed change): `a_request_at_the_removed_change_position_is_an_unknown_variant`
         // the complete topology (proposal executable-bindings-at-create.md rule 1): the change's last
         // variant; based_on, then each node's create spec positional (Q166, NodeSpec): its path.name,
-        // storage's variant and its disposition, placement empty, the executable an Option of the binding,
-        // its image written even when none, the tag labels, then the application's config map. The bytes
-        // before each config are the entry's bytes before Q166 ((PathName, { storage, placement,
-        // executable, tags })); the map is appended: `00` when empty, else its length and each key and value.
+        // Explicit mesh and kind follow the path; storage, executable, tags and the whole config
+        // follow them. Neither ownership nor runtime kind is decoded from a path segment.
         (
             BuildRequest::Create {
                 submit: BuildSubmit::Change(BuildChange::Reconcile {
                     based_on: rdm_core::BuildId::parse("0123456789ab").unwrap(),
                     nodes: vec![
                         rdm_core::meta::NodeSpec {
-                            path: "m.admin.1".parse().unwrap(),
+                            path: "m.admin.1".parse().unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::NodeAdmin,
                             storage_persistence: rdm_core::meta::StorageMeta::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
                             placement: Default::default(),
                             executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
                             tags: ["t".to_string()].into(),
                             config: Default::default(),
                         },
-                        rdm_core::meta::NodeSpec { path: "m.rpc.1".parse().unwrap(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
+                        rdm_core::meta::NodeSpec { path: "m.rpc.1".parse().unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
                     ],
                     topology_storage_provider: None,
                 }),
             },
             // the fabric's topology_storage_provider appended last (storage.md §2): `00`, none named.
-            "00 00 0f 0c 303132333435363738396162 02 09 6d2e61646d696e2e31 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 00 07 6d2e7270632e31 00 00 00 01 01 6b 01 76 00",
+            "00 00 0f 0c 303132333435363738396162 02 09 6d2e61646d696e2e31 01 6d 00 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 00 07 6d2e7270632e31 01 6d 01 00 00 00 01 01 6b 01 76 00",
         ),
         // a complete topology naming the provider `file`: `01`, then the name.
         (
@@ -416,35 +414,28 @@ fn a_request_at_a_reserved_count_position_is_an_unknown_variant() {
     assert!(matches!(Build::decode_request(&bytes("00 00 0f 0c 303132333435363738396162 00 00")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { .. }) })), "Reconcile keeps position 15");
 }
 
-/// CONTRACT (Q166; node-rpc-envelope.md wire block: `Reconcile { based_on, nodes: Vec<NodeSpec> }`,
-/// `NodeSpec { path, storage_persistence, placement, executable, tags, config }`): a create spec with no config
-/// writes exactly the bytes the entry wrote before Q166 (`(PathName, { storage, placement, executable,
-/// tags })`, frozen below from the fixture of that shape) plus `00`, the empty map; a spec with a
-/// config appends the map's length and each key and value. A request written before Q166 does not
-/// decode against the spec: the positional codec has no trailing default, so a caller and the admin
-/// it calls carry the same spec.
+/// A create spec carries its owning mesh and runtime kind explicitly, followed by the complete
+/// properties. The full rebirth cut refuses a request written with the former entry shape.
 #[test]
-fn a_create_spec_without_config_writes_the_old_entry_bytes_and_a_config_appends_its_map() {
-    let before_q166 = [
-        ("m.admin.1", "09 6d2e61646d696e2e31 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74"),
-        ("m.rpc.1", "07 6d2e7270632e31 00 00 00"),
+fn a_create_spec_carries_explicit_ownership_and_the_complete_config_map() {
+    let fixtures = [
+        ("m.admin.1", "09 6d2e61646d696e2e31 01 6d 00 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 00"),
+        ("m.rpc.1", "07 6d2e7270632e31 01 6d 01 00 00 00 00"),
     ];
     let admin = rdm_core::meta::NodeSpec {
-        path: "m.admin.1".parse().unwrap(),
+        path: "m.admin.1".parse().unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::NodeAdmin,
         storage_persistence: rdm_core::meta::StorageMeta::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
         placement: Default::default(),
         executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
         tags: ["t".to_string()].into(),
         config: Default::default(),
     };
-    let rpc = rdm_core::meta::NodeSpec::default_for("m.rpc.1".parse().unwrap());
-    for ((path, old), spec) in before_q166.iter().zip([&admin, &rpc]) {
-        let mut expected = bytes(old);
-        expected.push(0x00);
-        assert_eq!(postcard::to_allocvec(spec).unwrap(), expected, "{path}: the entry's bytes before Q166, then the empty map");
+    let rpc = rdm_core::meta::NodeSpec::default_for("m.rpc.1".parse().unwrap(), "m", rdm_core::NodeKind::RpcNode);
+    for ((path, expected), spec) in fixtures.iter().zip([&admin, &rpc]) {
+        assert_eq!(postcard::to_allocvec(spec).unwrap(), bytes(expected), "{path}: explicit mesh, kind and complete properties");
     }
     let configured = rdm_core::meta::NodeSpec { config: [("k".to_string(), "v".to_string())].into(), ..rpc.clone() };
-    assert_eq!(postcard::to_allocvec(&configured).unwrap(), bytes("07 6d2e7270632e31 00 00 00 01 01 6b 01 76"));
+    assert_eq!(postcard::to_allocvec(&configured).unwrap(), bytes("07 6d2e7270632e31 01 6d 01 00 00 00 01 01 6b 01 76"));
     let old_request = bytes("00 00 0f 0c 303132333435363738396162 02 09 6d2e61646d696e2e31 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 07 6d2e7270632e31 00 00 00");
     assert!(Build::decode_request(&old_request).is_err(), "a request written before Q166 does not decode against the create spec");
 }
