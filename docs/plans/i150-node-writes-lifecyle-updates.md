@@ -246,6 +246,39 @@ integration, or full i150 acceptance is claimed by these focused passes.
 
 Stories below are the dispatchable gap list. Each starts BUILD, with implementation owner unassigned; no issues or agents are created by this document. Story completion requires its exact test, evidence and contract delta, not only merged code.
 
+### Shared property writer implementation evidence (2026-10-31)
+
+The node runtime now has one `NodePropertyWriter` shared by ordinary own-config and caller config
+application. Its admitted task owns serialization, provider admission, the actual put and local
+publication through caller cancellation. Property records carry the applied Build/operation set
+with the effect; attempts do not enter duplicate recognition. Reopening the file proves a repeated
+application preserves a later own update, while a different Build can still override it. Production
+Build commands do not carry those identities yet: e4 remains BUILD.
+
+The new record trait requires every returned put, including a failed one, to have finished its
+backend operation: it cannot still commit later. An error may conceal an already committed effect;
+the runtime invalidates its cached snapshot and resolves the exact record before another mutation.
+The file and memory adapters meet this contract. Rafka's current bounded writer does not establish
+it; e6 must retain and resolve the original operation, and cannot treat a current-value miss as
+proof that it never committed. No new helper retry or delivery queue is introduced. The existing
+runtime admits commands; this writer executes one at a time, without another deadline or retry.
+
+Both record kinds now enter provider copy inventory, including retained application identities.
+The admin handle exposes the same records through provider migration. Node startup refreshes bound
+addresses and declarations while preserving acknowledged config, tags and apply recognition.
+Focused storage evidence: ten node-record tests passed (0.04 s), including provider migration held
+behind a cancelled caller's actual append, four storage-copy controls passed
+(0.01 s), seven admin backend controls passed (0.50 s). The existing own-config controls passed
+(2.69 s) and the real-process recovery canary passed (14.52 s) before startup binding was added;
+those controls must run again after the coordinated route change.
+
+The in-place Build seed reached behavioral RED in 9.09 s: Build A applied config/tags, an own update
+stood after reattaching A, and Build B overrode the existing node. It then failed the assertion that
+own updates produce no upward config delivery. Retained log: `target/evidence/i150/build-seed-red.log`.
+The replacement portion and lost-reply runtime proof remain required. Removing the old route,
+activating current record reads and tag writes, lifecycle takeover, the reference migration, Rafka
+integration and final acceptance are still BUILD. This evidence is not full-initiative completion.
+
 ### e0 — Executable canaries and contract decisions precede implementation
 
 - **Goal → gap:** deliver R6,R8–R10,R15; source/design anchor: `Proposal R-NR2/R-NR5/R-NR8; estate.rs:647, :851, :958`.

@@ -47,6 +47,8 @@ pub const FABRIC_FILE: &str = "fabric.jsonl";
 pub const MESHES_FILE: &str = "meshes.jsonl";
 /// The nodes' store file: every node record's writes, runtime rows and tag rows.
 pub const NODES_FILE: &str = "nodes.jsonl";
+/// Node-owned properties and lifecycle records addressed by subject and writer birth.
+pub const NODE_RECORDS_FILE: &str = "node-records.jsonl";
 /// The connections' store file: every connection fact of every source.
 pub const CONNECTIONS_FILE: &str = "connections.jsonl";
 /// The builds' store file: every Build fact.

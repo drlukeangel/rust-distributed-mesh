@@ -13,7 +13,7 @@
 //! The copy's span is `rdm.node_admin.build.update.via-storage-copy` (i149 plan, "OTLP span-assertion
 //! bar"), with `build_id`, `change_id`, `source`, `destination`, `source_position`, `copied` and
 //! `outcome`:
-//! - `source_position`: how many lines of the old provider, over its five stores, the new provider
+//! - `source_position`: how many lines of the old provider, over its stores, the new provider
 //!   holds verified in source order when the copy ends (on a refusal, the lines verified before the
 //!   first mismatch);
 //! - `copied`: how many lines this copy appended to the new provider;
@@ -44,7 +44,7 @@ const DESTINATION: &str = "target";
 /// An application setting a node record carries: never in a refusal or a span.
 const APP_SETTING: &str = "app-setting-0f3a9c";
 
-const FILES: [(Store, &str); 5] = [(Store::Fabric, FABRIC_FILE), (Store::Meshes, MESHES_FILE), (Store::Nodes, NODES_FILE), (Store::Connections, CONNECTIONS_FILE), (Store::Builds, BUILDS_FILE)];
+const FILES: [(Store, &str); 6] = [(Store::Fabric, FABRIC_FILE), (Store::Meshes, MESHES_FILE), (Store::Nodes, NODES_FILE), (Store::Connections, CONNECTIONS_FILE), (Store::Builds, BUILDS_FILE), (Store::NodeRecords, rdm_node::node_records::NODE_RECORDS_FILE)];
 
 fn dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("rdm-storage-copy-{tag}-{}", NodeId::mint()));
@@ -171,6 +171,11 @@ impl History {
         b.append(&fp2, "build-record/1", &format!("{build}/opened/1"), &json!({"seq": 3, "fact": "opened", "attempt": 1})).await.unwrap();
         b.append(&fp2, "build-record/1", &format!("{build}/opened/2"), &json!({"seq": 4, "fact": "opened", "attempt": 2})).await.unwrap();
 
+        // Both i150 record kinds are history too, even when an old writer is no longer primary.
+        let records = log(&root, rdm_node::node_records::NODE_RECORDS_FILE).await;
+        records.append(&mp1, "node-properties/1", first.as_str(), &json!({"node_id": first, "config": {"setting": APP_SETTING}, "applied": [{"build_id": build, "operation": "node.config.update"}]})).await.unwrap();
+        records.append(&mp2, "node-lifecycle/1", &format!("{second}/{}/{}", mp2.node_id, mp2.incarnation_id), &json!({"node_id": second, "writer": {"node_id": mp2.node_id, "incarnation_id": mp2.incarnation_id}, "status": "ready", "owed": {"config": {"setting": APP_SETTING}}})).await.unwrap();
+
         Self { store_dir, root, fabric, fp1, fp2, gone, live, first, second }
     }
 
@@ -181,7 +186,7 @@ impl History {
 
 /// CONTRACT (storage.md §2 Copy: "appends every line of every store on the old provider to the new
 /// one in source order, dead births' and deleted nodes' records included"; i149 R5, R6): after the
-/// copy each of the new provider's five stores holds the old one's lines, in the old one's order,
+/// copy each of the new provider's stores holds the old one's lines, in the old one's order,
 /// each with the op its writer wrote it with. So every current value is the old one's, though the
 /// fabric's, a mesh's and a node's writer changed; a dead birth's connection facts are still that
 /// node's (a connections reader reads ownership from the op); the node at a path.name is the one the
