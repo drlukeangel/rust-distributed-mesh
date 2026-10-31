@@ -73,18 +73,23 @@ node-rpc-envelope.md:346. Every stored reference stores the two fields (node-ide
 §2.2). Durable format moved: the node records, the connection rows, the digest's `name`
 (digest.rs:14), `JoinNode`, the environment.
 
-**R-NR2. The node record is keyed by node.id; the lifecycle record by node.id and the primary
-change; the claim is the only record keyed by the pair.** A node id follows the instance
-(node-identity-and-state.md:132), so a record is a birth's record. A **primary change** (build.md:265)
-is numbered: one number per mesh and node type, stepped once by each successor when it becomes
-primary and recorded as its `is_primary` (today "the revision at which this birth is its node type's
-primary", nodes_storage.rs:120; the revision goes, the number stays, minted at the change and never
-per write). A lifecycle record of node X is written under the primary change its writer holds, so
-the predecessor's and the successor's writes of one node are two records, and a predecessor's
-delayed write changes only its own; it cannot destroy the successor's value. A reader resolves the
-mesh's current primary change, the highest recorded for its node-admin type, then reads
-`(node.id, that change)`; a node with no record under the current change is **unavailable**, never
-the predecessor's value and never an invented status. The node record carries no number of any
+**R-NR2. The node record is keyed by node.id; the lifecycle record by node.id and its writer's
+birth; the claim is the only record keyed by the pair.** A node id follows the instance
+(node-identity-and-state.md:132), so a record is a birth's record. A lifecycle record of node X is
+keyed `(X's node.id, the writing primary's node.id and incarnation)`, so the predecessor's and the
+successor's writes of one node are two records, and a predecessor's delayed write changes only its
+own; it cannot destroy the successor's value. No number is minted anywhere (Luke, 2026-10-31:
+"is_primary is 0 or 1, not a counter"): `is_primary` and `is_fabric_primary` are flags, and the role
+is the election's, which the record follows and never makes (node-primary-update.md:32). A reader
+resolves the mesh's current primary as RDM resolves it today, from the election's result it holds
+(the recorded primaries, `boot.rs:1188`; the view), never by comparing records, then reads
+`(node.id, that primary's birth)`; a node with no record under the current primary is
+**unavailable**, never the predecessor's value and never an invented status. The same birth losing
+and regaining the role reuses its key, and that is safe: a stale write is one in flight at the
+pause, which lands the moment the process resumes, before it can be heard, and being heard for the
+staleness floor's worth of intervals is what an election needs; so every stale write precedes the
+takeover writes of any later term of the same birth (R-NR8), which overwrite it. The node record
+carries no number of any
 kind. Path to
 node.id resolves through the claim (`name_claim`, storage.rs:625) and nowhere else; node.id to record
 is a point read (`node`, storage.rs:605). The `path.name` index entry (`index_path`, storage.rs:617)
@@ -122,7 +127,7 @@ what happens to it at a start (same node.id) and at a re-birth (new node.id):
 | `node_id`, `mesh_id`, `fabric_id`, `incarnation_id` | lifecycle | the lifecycle writer, using the launching admin's allocation | minted at the claim and launch | unchanged | new |
 | `status`, `declared`, `operations`, `silence`, `data_dir_lost`, `data_dir_unreadable` | lifecycle | the node's mesh-primary (states.md:21-36) | `starting` at the launch | `starting` again on the start command | `starting` on the new record |
 | `cert`, `signing_cert` | lifecycle | the mesh-primary as issuer (fabric-certs.md) | at the join | renewed, not reissued | issued anew |
-| `is_primary`, `is_fabric_primary` | lifecycle | the lifecycle writer, using the primary-change operation's result | the election; the value is the primary change's number (R-NR2) | unchanged | none until elected |
+| `is_primary`, `is_fabric_primary` | lifecycle | the lifecycle writer, using the primary-change operation's result | the election; a flag, 0 or 1 (R-NR2) | unchanged | none until elected |
 | `executable`, `storage_persistence`, `placement`, `topology_storage_provider`, `allocated`, `predecessor`, `renamed_from`, `inherited_by` | lifecycle | the lifecycle writer, at the claim or the apply | the Build entry; the allocation at the launch | unchanged | from the entry (replace) or retained from the predecessor's record (recovery, node-recovery.md:24-25); a new allocation on any verdict but `exited` |
 | `endpoint_id`, `transport_addr`, `listeners` | node | the node, at its bind | the operating system picks them | rewritten at every start | new |
 | `app_types` (`types`, `held`) | node | the node, at its join | its declaration | re-declared at the join | declared anew |
@@ -131,7 +136,7 @@ what happens to it at a start (same node.id) and at a re-birth (new node.id):
 | `revision` | — | gone | | | |
 | `writer` | both | the writer's birth, on every write, for the span | | | |
 
-The **lifecycle writer** is the mesh-primary for the primary change in the record's key.
+The **lifecycle writer** is the mesh-primary whose birth is in the record's key.
 The launching admin and the primary-change operation supply facts to that writer; they do not
 independently put the whole lifecycle record. This includes a node-admin's own fabric-primary flag.
 When the writer is the same process, it uses the same serialized write path. The existing
@@ -142,8 +147,8 @@ observed in the current implementation.
 
 The join report still carries the ports and the declared types to the mesh-primary (the join's
 check of the assigned listener names, CLAUDE.md `RDM_LISTENERS`); the record of them is the node's.
-`node.get` answers the two records as one node, as it answers the row today. A mesh-primary that has not yet learned it was superseded writes under its own primary change, a
-record no reader resolves to once the successor's number is recorded (R-NR2, R-NR8).
+`node.get` answers the two records as one node, as it answers the row today. A mesh-primary that has not yet learned it was superseded writes under its own birth, a record no
+reader resolves to once the election names the successor (R-NR2, R-NR8).
 
 **R-NR4. How a write reaches the primaries.** A primary learns a fact one of three ways, and the
 fact picks the way:
@@ -171,8 +176,8 @@ fact picks the way:
 | the node's own `node.config.update` | nothing; a local write | nothing |
 
 Acceptance (rdm#239) reads the pair's current lifecycle record through the claim at the moment it
-decides, never a view; it resolves the current primary change and its lifecycle record as
-R-NR2 and R-NR8 require. `node.get` is answered from the records, not a held atlas of node rows;
+decides, never a view; it resolves the current primary and its lifecycle record as R-NR2 and R-NR8
+require. `node.get` is answered from the records, not a held atlas of node rows;
 node-rpc-envelope.md:346's "never from the node store" inverts. The atlas keeps what is the
 fabric-primary's own: the Builds, the accepted topology, the in-flight rows.
 
@@ -221,17 +226,16 @@ same handle (unit 4). What is no longer called: `index_path`, `node_at`.
 Order is the writer's, not the provider's: a writer issues one put per key at a time and awaits its
 answer, durable (Q54), before the next, so one writer's writes at one key are serial by construction
 and no provider is asked to order anything. Two writers never share a key (R-NR3): a superseded primary and its successor write under two
-primary changes (R-NR2). A command delivered twice carries the same whole map and lands
+births (R-NR2). A command delivered twice carries the same whole map and lands
 the same record; an older command completing after a newer one is today's contract too
 (node-rpc-envelope.md:398: a config update "replaces the whole map, at any time", no precondition)
 and this proposal does not change it. How a provider keeps or compacts what it is given is the
 provider's.
 
-**R-NR8. Takeover.** A successor's first act as mesh-primary, after it steps the primary change and
-records its own `is_primary`, is to write each node of its mesh a lifecycle record under its change,
-from the durable evidence it has: the predecessor's records under the earlier change and what the
-successor holds (the join reports, the digest). The primary change may be recorded before every
-such record exists; a decision that needs a node's record is answered unavailable by name until
+**R-NR8. Takeover.** A successor's first act as mesh-primary, after it records its own `is_primary`,
+is to write each node of its mesh a lifecycle record under its own birth, from the durable evidence
+it has: the predecessor's records under the predecessor's birth and what the successor holds (the
+join reports, the digest). The election may name the successor before every such record exists; a decision that needs a node's record is answered unavailable by name until
 it is written, and never from a stale record. A successor that crashes halfway leaves records
 missing, which the next successor, or the same one on its start, writes the same way; nothing
 makes a stale record current. A read begun before a primary change can still be stale: the
@@ -267,7 +271,7 @@ Each is a page or ruling line this proposal changes, for Luke's yes on the exact
 | node-config-update.md:23 | a stopped node's update completes after the row write and arrives in its hydration sync | completes after the mesh-primary writes the owed map on the lifecycle record; the starting admin hands it in `RDM_NODE_PROPERTIES` (R-NR5) |
 | Q308 A | `Atlas::row` folds the index read | the index read is gone |
 | R-FA1 (fabric-atlas.md) | acceptance from the atlas over the view | acceptance reads the node record through the claim; the atlas keeps Builds, topology, in-flight |
-| node-primary-update.md:32, :57, :61; nodes_storage.rs:120 | `is_primary` "at the next revision on the successor's row" | `is_primary` is the primary change's number, stepped once per change (R-NR2) |
+| node-primary-update.md:32, :57, :61; nodes_storage.rs:120 | `is_primary` "at the next revision on the successor's row", `Option<u64>` | `is_primary` a flag on the successor's lifecycle record under its own birth; no revision (R-NR2) |
 | CLAUDE.md env table, `RDM_NODE_NAME` | the `path.name` (`mesh1.rpc.2`) | `RDM_NODE_PATH` (`mesh1.rpc`) and `RDM_NODE_NAME` (`2`) |
 | node-replace.md:17, :23, :32, :34, :40; node-identity-and-state.md:100, :127, :143 | the predecessor renamed `<name>.old` | the predecessor's path updated to `<path>.old`, its name kept |
 | node-rpc-envelope.md:388-390; node-name-update.md:5 | `path` immutable, `node.name.update` carries the name only | `node.name.update { path, name }`; the path moves only to `<path>.old` by a replace |
@@ -284,8 +288,7 @@ Each is a page or ruling line this proposal changes, for Luke's yes on the exact
    `node_at` deleted. Its cells: Q308's (a deleted birth's late write hides nothing) with the fold in
    `Atlas::row` removed, and rdm#239's (acceptance on a path recovery just re-created).
 3. **R-NR3 + R-NR8**, the two records and the takeover. The refusal, copies and revision come out
-   together with their replacement: the lifecycle key, the primary change's number and the takeover
-   writes. R-OW1's refusal, copies and revision removed; the node record and the
+   together with their replacement: the lifecycle key by writer birth and the takeover writes. R-OW1's refusal, copies and revision removed; the node record and the
    lifecycle record at one node.id, `node.get` answering them as one node.
    Its cells: a node's own write and its primary's write at one node.id, read back as one node by
    `node.get [id]`, neither write refused; and a predecessor paused mid-write, a successor elected and
@@ -336,8 +339,8 @@ Each attack, and where the requirements answer it. An attack the requirements do
 1. **An old mesh-primary writes after the primary moved.** Paused past the staleness floor, a
    successor elected and writing node X's lifecycle record, the old one resumes and writes a stale
    status; with no revision and a provider that keeps only the latest value, a shared key would lose
-   the good value, not hide it. Answered by R-NR2 and R-NR8: the two write two records, keyed by the
-   primary change each holds, and a reader resolves the current change first. The pre-check (a
+   the good value, not hide it. Answered by R-NR2 and R-NR8: the two write two records, keyed by each
+   writer's birth, and a reader resolves the current primary from the election first. The pre-check (a
    writer reads "I am primary", pauses, writes after the change) and the per-node conditional put
    (it checks a field that changes only after the takeover write) were both rejected for leaving
    that window; see "Decided".
@@ -412,12 +415,13 @@ Each attack, and where the requirements answer it. An attack the requirements do
 ## Decided
 
 **The superseded mesh-primary's late lifecycle write.** Decided X by the lead with architect 1,
-2026-10-31, Luke: "make the design". Lifecycle records are separate for each primary change (R-NR2,
+2026-10-31, Luke: "make the design". Lifecycle records are separate per writing primary's birth (R-NR2,
 R-NR8). The ceiling that forced it: an overwritable shared value, a stale writer no one refuses, and
 no ordering or atomic check cannot be correct together; one had to change, and separating the writes
 is the one that adds no revision to ordinary writes and no conditional operation to any store. The
-cost, stated plainly: lifecycle records keep an ownership identity, the primary change's number, one
-per change, never per write. Rejected: A, a writer's check before it writes (it can read "I am
+cost, stated plainly: lifecycle records keep an ownership identity, their writer's birth, already a
+field on every write today; no number is minted (Luke: "is_primary is 0 or 1, not a counter"), and
+the same birth's later term reusing its key is safe by the ordering in R-NR2. Rejected: A, a writer's check before it writes (it can read "I am
 primary", pause and write after the change; the takeover write can be overwritten after it lands;
 a span records the destruction and prevents nothing); B, a conditional put on a field of the node's
 record (it checks a value that changes only after the takeover write reaches that node, so it leaves
