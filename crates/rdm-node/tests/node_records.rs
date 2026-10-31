@@ -23,6 +23,7 @@ fn properties() -> NodeProperties {
         transport_addr: Some("127.0.0.1:45002".parse().unwrap()),
         listeners: vec![("data".into(), "127.0.0.1:45001".parse().unwrap())],
         app_types: None,
+        held: ["example.record".into()].into(),
     }
 }
 fn lifecycle(node_id: NodeId, writer: RecordBirth, mesh_id: MeshId) -> NodeLifecycle {

@@ -49,6 +49,21 @@ async fn own_properties_survive_node_restart() {
         "acknowledged-properties",
         &json!({"node_id": before.node_id, "config": expected}),
     );
+    // Evidence export is batched. Observe the completed write span before SIGKILL so this
+    // real-process canary retains its flame; storage durability is independently checked by
+    // the forced-exit storage canary, which performs no telemetry flush or wait.
+    let write_trace = wait_for(
+        "the acknowledged own-write span is exported",
+        Duration::from_secs(10),
+        || async {
+            estate
+                .spans_named(&["rdm.node.record.update.via-properties"])
+                .into_iter()
+                .find(|s| s["attributes"]["node_id"] == before.node_id.as_str())
+                .and_then(|s| s["trace_id"].as_str().map(str::to_string))
+        },
+    )
+    .await;
     estate.kill_node("mesh1.rpc.2").await;
     let recovered = wait_for(
         "a recovered node exposes the acknowledged config",
@@ -91,5 +106,10 @@ async fn own_properties_survive_node_restart() {
         .into_iter()
         .find(|s| s["attributes"]["node_id"] == before.node_id.as_str())
         .expect("the production own-write span proves this path executed");
-    estate.record_trace_url(written["trace_id"].as_str().expect("the write has a trace"));
+    assert_eq!(
+        written["trace_id"].as_str(),
+        Some(write_trace.as_str()),
+        "the retained flame is the observed own write"
+    );
+    estate.record_trace_url(&write_trace);
 }

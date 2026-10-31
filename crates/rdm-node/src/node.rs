@@ -86,6 +86,7 @@ pub struct RunningNode {
     /// The nodes' rows of the provider this birth writes, opened on the first read
     /// ([`RunningNode::node_row`]).
     node_rows: Arc<dyn crate::nodes_storage::NodeRowsStorage>,
+    node_records: Arc<dyn crate::node_records::NodeRecordsStorage>,
 }
 
 /// Bind each listener `assigned` names at its assigned address (port 0: the operating system selects
@@ -137,7 +138,7 @@ impl RunningNode {
 
     /// [`Self::config_update`] as a handle that outlives the borrow: what an application task holds.
     pub fn own_config(&self) -> OwnConfig {
-        OwnConfig { owed: self.owed_state.clone(), topology_view: self.topology_view.clone() }
+        OwnConfig { owed: self.owed_state.clone(), topology_view: self.topology_view.clone(), records: self.node_records.clone(), digest: self.digest.clone() }
     }
 
     /// The listeners this birth bound from its launch (`RDM_LISTENERS`), by name, held open for its
@@ -919,7 +920,7 @@ async fn start_booted(
                                     leave: None,
                                 }),
                             };
-                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, pre_node_ready_task: pre_node_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, reconciler, data_connections, listeners: bound_listeners.clone(), node_rows: node_rows.clone() });
+                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, topology_view, server, status, digest, node_rpc, owed_state, cancel, own, pre_node_ready: pre_node_ready_cell, pre_node_ready_task: pre_node_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, reconciler, data_connections, listeners: bound_listeners.clone(), node_rows: node_rows.clone(), node_records: topology_storage.node_records() });
                             Ok::<_, anyhow::Error>((parts, None))
                         })
                     },
@@ -1369,11 +1370,30 @@ impl NodeRowRead {
 pub struct OwnConfig {
     owed: Arc<OwedDeclarations>,
     topology_view: TopologyView,
+    records: Arc<dyn crate::node_records::NodeRecordsStorage>,
+    digest: MeshDigest,
 }
 
 impl OwnConfig {
     /// [`RunningNode::config_update`].
     pub async fn update(&self, config: std::collections::BTreeMap<String, String>) -> std::result::Result<rdm_core::status::StatusReply, rdm_client::CallEnd> {
+        use tracing::Instrument;
+        let digest = self.topology_view.reported(&self.digest);
+        let own_row = self.topology_view.own_row();
+        let record = crate::node_records::NodeProperties {
+            birth: crate::node_records::RecordBirth { node_id: digest.node.node_id.clone(), incarnation_id: digest.node.incarnation.clone() },
+            config: config.clone(), tags: own_row.as_ref().map(|r| r.tags.clone()).unwrap_or_default(),
+            endpoint_id: Some(digest.node.endpoint_id.clone()), transport_addr: Some(digest.node.transport_addr),
+            listeners: own_row.as_ref().map(|r| r.listeners.clone()).unwrap_or_default(),
+            held: own_row.as_ref().map(|r| r.held.clone()).unwrap_or_default(),
+            app_types: own_row.map(|r| crate::nodes_storage::AppTypes { incarnation: digest.node.incarnation.clone(), types: r.types }),
+        };
+        let span = tracing::info_span!("rdm.node.record.update.via-properties", node_id = %record.birth.node_id, incarnation_id = %record.birth.incarnation_id, node = %self.topology_view.node_name(), outcome = tracing::field::Empty);
+        if let Err(e) = self.records.put_properties(&record).instrument(span.clone()).await {
+            span.record("outcome", "failed");
+            return Err(rdm_client::CallEnd::Rejected { reason: "properties-unwritten".into(), detail: e.to_string() });
+        }
+        span.record("outcome", "durable");
         let answered = self.owed.owe_config(&self.topology_view, config);
         answered.await.map_err(|_| rdm_client::CallEnd::Rejected { reason: "abandoned".into(), detail: format!("{}: its own node.config.update was owed no more before its mesh-primary answered (a new cycle, or the node's end)", self.topology_view.node_name()) })
     }

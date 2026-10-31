@@ -104,6 +104,10 @@ An embedding application can publish its own properties durably, replace a node 
 
 ## § RED/GREEN evidence — acceptance by executable proof
 
+Executed first-increment cells are recorded under Implementation plan; they establish the
+storage substrate and own-record persistence only. The end-state rows below remain pending
+where route removal, new pair decoding or full Build application is not implemented.
+
 All names below are **planned** until e0 registers and discovers them. Every row is pending. Preserve the same behavioral assertion across baseline and implementation; schema adapters for baseline tests must be recorded.
 
 | Requirement / epic | Exact planned test and command | RED source SHA, test revision and expected assertion | GREEN source SHA and result | Evidence / trace / duration |
@@ -213,11 +217,23 @@ No new background retry loop, queue or gossip channel is authorized. Existing ca
 ## Implementation plan
 
 Initial implementation increment: `rdm-node::node_records` introduces split record schemas and
-provider-neutral persistence traits with memory/file adapters. The new records are not selected
-by the running node/admin yet. A test-only StoreLog append hold exposes cancellation ordering;
+provider-neutral persistence traits with memory/file adapters. The node's own config update now persists its property record before the existing admin delivery;
+admin reads/lifecycle selection and removal of that delivery route are still outstanding. A test-only StoreLog append hold exposes cancellation ordering;
 storage tests cover late writers, exact writer incarnation, clean process exit, forced process
 exit and corrupt evidence. This is foundation work for e0.s2/e2.s1–s2, not a claim that the feature
-seed, node-runtime canaries, or end-to-end migration are GREEN. Evidence is recorded after execution.
+seed, node-runtime canaries, or end-to-end migration are GREEN. Initial focused evidence (2026-10-31, lane 1): four node-record storage tests passed (0.04 s),
+28 store-log tests passed (0.21 s), two existing provider-change tests passed (0.50 s), and two
+existing own-config regression cells passed (2.63 s). The real-process canary
+`node_records::own_properties_survive_node_restart` reached RED at its missing node-owned record
+assertion (14.48 s), then passed after node persistence was connected (14.49 s). The first GREEN
+attempt lost the killed process's batched span; the final cell observes export before SIGKILL,
+while the separate 100-record clean/SIGKILL storage canary uses no telemetry wait. Source baseline
+was `4dbf01eba` plus the new schema/canary substrate; substrate commit is `2822b5186`.
+Logs are retained under lane 1 `target/evidence/i150/`; raw own-write trace ID:
+`c38df8a07ff405033cbf620b8177d93a`, JSONL retained; collector retrieval is not yet claimed.
+The intermediate run refused stale binaries after a source edit during its build and is not
+counted as a behavioral RED or GREEN. No final gate, application-provider qualification, Rafka
+integration, or full i150 acceptance is claimed by these focused passes.
 
 Stories below are the dispatchable gap list. Each starts BUILD, with implementation owner unassigned; no issues or agents are created by this document. Story completion requires its exact test, evidence and contract delta, not only merged code.
 
