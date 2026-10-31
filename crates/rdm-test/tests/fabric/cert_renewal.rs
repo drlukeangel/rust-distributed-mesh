@@ -124,7 +124,7 @@ fn deployed(by: &Running, launch: &Launch) {
     let fact = RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cert-renewal")).unwrap();
     fact.write_record(&launch.data_dir).unwrap();
     let key = rdm_node::node::load_or_mint_key(&launch.data_dir).unwrap();
-    let _ = by.runner.joins.expect(rdm_admin::join::Deployed {
+    let _ = by.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),

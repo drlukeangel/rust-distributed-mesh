@@ -78,7 +78,7 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store: &std::pat
 /// What `root` verifies the first join of `launch`'s birth against.
 fn deployed(launch: &Launch) -> Deployed {
     let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-    Deployed {
+    Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),

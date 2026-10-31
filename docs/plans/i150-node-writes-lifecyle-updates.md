@@ -494,6 +494,25 @@ conveniences still exist until that coordinated pair cut; no final compatibility
 Initial compiles caught integration-test crate paths, one shorthand-field fixture edit and one
 non-digest branch receiving digest assignments; these compiler errors are fixed, not behavioral REDs.
 
+### Join and lifecycle ownership evidence (2026-10-31)
+
+Deployment registration carries the explicit mesh and kind, and join validates both against the
+report. Lifecycle operations carry the subject mesh through their existing carriers; readers
+route by that field. Same-birth rename does not change it. Certificate issuance and verification
+check the explicit mesh, and admin signing dates follow the verified kind. Architect 1 found the
+two remaining name-derived certificate checks; both are corrected. The join cell exercises a
+misleading name and refuses wrong mesh/kind; its actual JoinDoor proof issues a certificate and
+records signing dates for an admin with an RPC-looking name in another apparent mesh.
+
+Proofs: `explicit-join-certs-reviewed.log` 9/9; `explicit-cert-owner.log` 23/23;
+`explicit-lifecycle-wire.log` 3/3 independent positional fixtures;
+`explicit-lifecycle-topology-wire.log` 6/6. These are ownership increment controls, not
+end-state lifecycle activation or pair-reference acceptance. The LC-only stopped projection
+uses its operation's mesh; its kind still awaits the lifecycle reader.
+
+Luke's completion deadline, received during implementation, is 2026-10-31 20:11 UTC
+(one hour from the 19:11 UTC clock observation). Final acceptance and landing remain owed.
+
 ### Shared property writer implementation evidence (2026-10-31)
 
 The node runtime now has one `NodePropertyWriter` shared by ordinary own-config and caller config

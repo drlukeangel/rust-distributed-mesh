@@ -506,6 +506,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             continue;
         }
         let mut n = Node::allocated(name.clone());
+        n.mesh = op.mesh.clone();
         n.node_id = op.node_id.clone();
         n.incarnation_id = Some(op.incarnation.clone());
         n.provider = Some(provider);

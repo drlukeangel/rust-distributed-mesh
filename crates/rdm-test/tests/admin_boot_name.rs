@@ -100,7 +100,7 @@ fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once
         let (boot, row): (PathName, PathName) = ("mesh1.admin.2".parse().unwrap(), "mesh1.admin.3".parse().unwrap());
         let launch = launch_by(&root, &boot.to_string(), &admin_dir);
         let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-        let _ = root.runner.joins.expect(Deployed {
+        let _ = root.runner.joins.expect(Deployed { mesh: row.mesh.clone(), kind: row.kind,
             name: row.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),

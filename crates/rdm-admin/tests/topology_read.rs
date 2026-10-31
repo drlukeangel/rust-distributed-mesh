@@ -490,7 +490,7 @@ fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overla
         open(&server, &fabric);
         let members: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh3", "rpc", k)).collect();
         let deleting = &members[1];
-        let op = rdm_core::LifecycleOp {
+        let op = rdm_core::LifecycleOp { mesh: deleting.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.delete:mesh3.rpc.2".into(),
@@ -530,7 +530,7 @@ fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
         open(&server, &fabric);
         let members: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh3", "rpc", k)).collect();
         let stopped = &members[1];
-        let op = rdm_core::LifecycleOp {
+        let op = rdm_core::LifecycleOp { mesh: stopped.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.stop:mesh3.rpc.2".into(),

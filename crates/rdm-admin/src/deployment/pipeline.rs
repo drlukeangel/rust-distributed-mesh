@@ -1868,7 +1868,7 @@ impl DeploymentPipeline<'_> {
         }
         let _forget = Forget(self.joins, id.node_id.clone(), req.build_id.to_string(), req.attempt);
         let reported = match handle.fact() {
-            Some(runtime) => Some(self.joins.expect(Deployed {
+            Some(runtime) => Some(self.joins.expect(Deployed { mesh: req.mesh.clone(), kind: req.kind,
                 name: req.node.clone(),
                 node_id: id.node_id.clone(),
                 incarnation: id.incarnation.clone(),
@@ -2211,7 +2211,7 @@ impl DeploymentPipeline<'_> {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
             let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: DeleteStep::NodeDeleting.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?;
-            let op = LifecycleOp {
+            let op = LifecycleOp { mesh: req.node.mesh.clone(),
                 build_id: req.build_id.to_string(),
                 attempt: req.attempt,
                 operation: run.operation.clone(),
@@ -2285,7 +2285,7 @@ impl DeploymentPipeline<'_> {
         // The pre-notice: this executor's journal holds its Claim for the attempt (it runs nothing
         // before that) and now records this operation; every node hears the node is being removed
         // and stops routing to it, while it stays found.
-        let op = LifecycleOp {
+        let op = LifecycleOp { mesh: node.mesh.clone(),
             build_id: req.build_id.to_string(),
             attempt: req.attempt,
             operation: run.operation.clone(),
@@ -2387,7 +2387,7 @@ impl DeploymentPipeline<'_> {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
             let mut node = req.node.clone();
-            let op = LifecycleOp {
+            let op = LifecycleOp { mesh: node.mesh.clone(),
                 build_id: req.build_id.to_string(),
                 attempt: req.attempt,
                 operation: run.operation.clone(),
@@ -2427,7 +2427,7 @@ impl DeploymentPipeline<'_> {
 
     /// The lifecycle op a command's gossip hook carries.
     fn command_op(&self, ctx: &CommandContext, node: &Node) -> Result<LifecycleOp, String> {
-        Ok(LifecycleOp {
+        Ok(LifecycleOp { mesh: node.mesh.clone(),
             build_id: ctx.build_id.clone(),
             attempt: ctx.attempt,
             operation: ctx.operation.clone(),

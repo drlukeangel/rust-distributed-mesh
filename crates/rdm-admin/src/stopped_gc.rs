@@ -431,7 +431,7 @@ mod tests {
         assert!(acts_on(&steps_action, &inc));
         assert!(!acts_on(&stop_action, &IncarnationId::mint()));
 
-        let op1 = LifecycleOp {
+        let op1 = LifecycleOp { mesh: path.mesh.clone(),
             build_id: build_id.to_string(),
             attempt: 1,
             operation: format!("node.stop:{path}"),

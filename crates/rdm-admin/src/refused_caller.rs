@@ -410,7 +410,7 @@ mod tests {
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
         // The join door, the caller's deployment held: its mesh-primary commanded it back before the delete.
         let joins = Arc::new(crate::join::Joins::default());
-        let deployed = crate::join::Deployed {
+        let deployed = crate::join::Deployed { mesh: caller.mesh.clone(), kind: caller.kind,
             name: caller.name.clone(),
             node_id: caller.node_id.clone(),
             incarnation: caller_inc.clone(),
@@ -517,7 +517,7 @@ mod tests {
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
         // The join door, the caller's deployment held: its mesh-primary commanded it back before the delete.
         let joins = Arc::new(crate::join::Joins::default());
-        let deployed = crate::join::Deployed {
+        let deployed = crate::join::Deployed { mesh: caller.mesh.clone(), kind: caller.kind,
             name: caller.name.clone(),
             node_id: caller.node_id.clone(),
             incarnation: caller_inc.clone(),
@@ -885,7 +885,7 @@ mod tests {
                         Err(r) => {
                             assert_eq!(sends, 1, "only the first send before NodeDeleted is refused: {r:?}");
                             let operation = format!("node.delete:{node}");
-                            let op = rdm_core::LifecycleOp { build_id: before_id.to_string(), attempt: before_attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: node.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+                            let op = rdm_core::LifecycleOp { mesh: node.mesh.clone(), build_id: before_id.to_string(), attempt: before_attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: node.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
                             fp_builds
                                 .append_step_receipt(&crate::build_state::BuildStepReceipt { mesh: None, build_id: before_id, attempt: before_attempt, operation, step: "NodeDeleted".into(), outcome: crate::build_state::StepOutcome::Complete, output: serde_json::to_value(&op).ok(), executor: None })
                                 .await

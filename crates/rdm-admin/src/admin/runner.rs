@@ -168,7 +168,7 @@ pub(crate) fn stopped_publisher(topology_view: TopologyView, backbone: Backbone,
     Arc::new(move |row: crate::status_rpc::Declaration, operation: rdm_core::status::DeclaredOperation| {
         let (topology_view, backbone, project) = (topology_view.clone(), backbone.clone(), project.clone());
         Box::pin(async move {
-            let op = rdm_core::LifecycleOp {
+            let op = rdm_core::LifecycleOp { mesh: topology_view.mesh_name().to_string(),
                 build_id: operation.build_id,
                 attempt: operation.attempt,
                 operation: operation.operation,
@@ -1130,7 +1130,7 @@ impl AdminRunner {
     pub(crate) fn deployed_for(&self, record: &Node, handle: &DeploymentHandle) -> Result<crate::join::Deployed, String> {
         let incarnation = record.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", record.name))?;
         let admitted = self.digest_view.stopped_digests().into_iter().find(|d| d.node.node_id == record.node_id && d.node.incarnation == incarnation);
-        Ok(crate::join::Deployed {
+        Ok(crate::join::Deployed { mesh: record.mesh.clone(), kind: record.kind,
             name: record.name.clone(),
             node_id: record.node_id.clone(),
             incarnation,
@@ -1179,7 +1179,7 @@ impl AdminRunner {
     pub(crate) fn deployed_for_live(&self, record: &Node, handle: &DeploymentHandle) -> Result<crate::join::Deployed, String> {
         let incarnation = record.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", record.name))?;
         let admitted = self.digest_view.get(record.node_id.as_str()).map(|(d, _)| d).filter(|d| d.node.incarnation == incarnation);
-        Ok(crate::join::Deployed {
+        Ok(crate::join::Deployed { mesh: record.mesh.clone(), kind: record.kind,
             name: record.name.clone(),
             node_id: record.node_id.clone(),
             incarnation,

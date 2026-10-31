@@ -179,7 +179,7 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
 #[test]
 fn a_snapshot_chunk_round_trips_with_its_digests_and_overlays() {
     let d = digest();
-    let op = LifecycleOp {
+    let op = LifecycleOp { mesh: "mesh1".into(),
         build_id: "b".into(),
         attempt: 1,
         operation: "node.delete:mesh1.rpc.2".into(),

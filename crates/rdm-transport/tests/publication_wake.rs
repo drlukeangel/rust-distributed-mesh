@@ -122,7 +122,7 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
 
         // Between two publications: the member's stop, as the mesh primary takes its own NodeStopped.
         let stopped = &digests[0];
-        let op = LifecycleOp {
+        let op = LifecycleOp { mesh: stopped.node.mesh.clone(),
             build_id: "b-s40".into(),
             attempt: 1,
             operation: format!("node.stop:{}", stopped.node.name),

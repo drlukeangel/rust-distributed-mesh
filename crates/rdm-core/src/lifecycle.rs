@@ -30,6 +30,8 @@ pub struct LifecycleOp {
     pub incarnation: IncarnationId,
     /// The node's `path.name`.
     pub name: PathName,
+    /// The subject owning mesh, independent of the path/name spelling.
+    pub mesh: String,
     /// When the event happened, in Rafka-time; evidence only, never liveness or order. One expiry
     /// reads it: a standalone stop's receipted op is the age of the birth's stopped period, which
     /// the stopped-node garbage collector compares with `stopped_node_ttl` (R-GC1).
@@ -48,13 +50,14 @@ pub struct LifecycleOp {
 
 impl PartialEq for LifecycleOp {
     fn eq(&self, other: &Self) -> bool {
-        let Self { build_id, attempt, operation, node_id, incarnation, name, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;
+        let Self { build_id, attempt, operation, node_id, incarnation, name, mesh, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;
         *build_id == other.build_id
             && *attempt == other.attempt
             && *operation == other.operation
             && *node_id == other.node_id
             && *incarnation == other.incarnation
             && *name == other.name
+            && *mesh == other.mesh
             && *event_at_rafka_ms == other.event_at_rafka_ms
     }
 }
@@ -114,7 +117,7 @@ mod tests {
 
     #[test]
     fn an_op_round_trips_and_its_key_is_the_operation_not_a_step() {
-        let op = LifecycleOp {
+        let op = LifecycleOp { mesh: "mesh2".into(),
             build_id: "b1".into(),
             attempt: 2,
             operation: "node.delete:mesh2.rpc.2".into(),

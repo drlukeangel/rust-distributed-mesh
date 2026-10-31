@@ -1560,7 +1560,7 @@ async fn a_durable_runtime_row_of_a_deleted_birth_opens_no_attempt() {
     for d in e.digest_view.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
         heard.record(d);
     }
-    heard.depart(rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: format!("node.delete:{lost}"), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None });
+    heard.depart(rdm_core::LifecycleOp { mesh: digest.node.mesh.clone(), build_id: "b".into(), attempt: 1, operation: format!("node.delete:{lost}"), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None });
     let mut t = e.view.read().await.clone();
     t.nodes.retain(|n| n.name.to_string() != lost);
     rdm_admin::election::resolve(&mut t.nodes);
@@ -2177,7 +2177,7 @@ async fn a_birth_whose_delete_the_build_receipted_is_not_surplus() {
         let extra = birth(&e.world, &e.digest_view, &e.view.read().await.fabric.id.clone(), "mesh1.rpc.9", None);
         e.view.write().await.nodes.push(extra.clone());
         if receipted {
-            let op = rdm_core::LifecycleOp {
+            let op = rdm_core::LifecycleOp { mesh: extra.mesh.clone(),
                 build_id: current.build_id.to_string(),
                 attempt: current.attempt,
                 operation: "node.delete:mesh1.rpc.9".into(),
@@ -2282,7 +2282,7 @@ mod refused_caller_terminate {
         // The recovery's node.delete of this exact birth receipted NodeDeleted in the current Build; this
         // fabric-primary's atlas holds no deleted row of it.
         let operation = format!("node.delete:{path}");
-        let op = rdm_core::LifecycleOp { build_id: before.build_id.to_string(), attempt: before.attempt, operation: operation.clone(), node_id: n.node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+        let op = rdm_core::LifecycleOp { mesh: path.mesh.clone(), build_id: before.build_id.to_string(), attempt: before.attempt, operation: operation.clone(), node_id: n.node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
         e.builds
             .append_step_receipt(&rdm_admin::build_state::BuildStepReceipt { mesh: None, build_id: before.build_id.clone(), attempt: before.attempt, operation, step: "NodeDeleted".into(), outcome: rdm_admin::build_state::StepOutcome::Complete, output: serde_json::to_value(&op).ok(), executor: None })
             .await

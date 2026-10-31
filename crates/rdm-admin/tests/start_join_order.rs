@@ -168,7 +168,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(4242), start: Some(1), container: None, domain: Some("i143-s52-start-order".into()) };
     let runtime = handle.fact().expect("the handle names its exact runtime");
-    let deployed = rdm_admin::join::Deployed {
+    let deployed = rdm_admin::join::Deployed { mesh: name.mesh.clone(), kind: name.kind,
         name: name.clone(),
         node_id: node.node_id.clone(),
         incarnation: incarnation.clone(),
@@ -322,7 +322,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
             domain: Some("start-fault-domain".into()),
         };
         let runtime = handle.fact().expect("exact runtime");
-        let deployed = rdm_admin::join::Deployed {
+        let deployed = rdm_admin::join::Deployed { mesh: name.mesh.clone(), kind: name.kind,
             name: name.clone(),
             node_id: node.node_id.clone(),
             incarnation: incarnation.clone(),

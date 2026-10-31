@@ -218,7 +218,7 @@ mod tests {
         let mesh1 = |t: &Topology| t.meshes.iter().find(|m| m.name == "mesh1").map(|m| (m.id.clone(), m.status));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
         assert_eq!(mesh1(&t), Some((Some(id.clone()), ScopeStatus::Dead)), "mesh.deleted accepted: mesh1 is deleted");
-        assert!(digest_view.stopped(rdm_core::LifecycleOp {
+        assert!(digest_view.stopped(rdm_core::LifecycleOp { mesh: last.node.mesh.clone(),
             build_id: "b7".into(),
             attempt: 1,
             operation: "node.stop:mesh1.admin.1".into(),
@@ -260,7 +260,7 @@ mod tests {
             // The view: the predecessor's digest held, the successor heard and then stopped.
             assert!(digest_view.record(predecessor.clone()));
             assert!(digest_view.record(successor.clone()));
-            assert!(digest_view.stopped(rdm_core::LifecycleOp {
+            assert!(digest_view.stopped(rdm_core::LifecycleOp { mesh: successor.node.mesh.clone(),
                 build_id: "b9".into(),
                 attempt: 9,
                 operation: "node.stop:mesh1.rpc.2".into(),
@@ -1869,7 +1869,7 @@ mod tests {
             step: step.into(),
             outcome: crate::build_state::StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 2, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { mesh: path.mesh.clone(), build_id: "b1".into(), attempt: 2, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }).unwrap()
             }),
             executor: Some("mesh2.admin.2".into()),
         };
@@ -1949,7 +1949,7 @@ mod tests {
             }
             // The tick's view, read before the announcement arrived.
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
-            let op = rdm_core::LifecycleOp {
+            let op = rdm_core::LifecycleOp { mesh: member.node.mesh.clone(),
                 build_id: "dbs8z9896j0f".into(),
                 attempt: 2,
                 operation: format!("{workflow}:mesh2.rpc.1"),
@@ -2056,7 +2056,7 @@ mod tests {
             digest_view.record(d);
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
-        let op = rdm_core::LifecycleOp {
+        let op = rdm_core::LifecycleOp { mesh: member.node.mesh.clone(),
             build_id: "9r7cpewghdkk".into(),
             attempt: 2,
             operation: "node.delete:mesh2.rpc.1".into(),
@@ -2131,7 +2131,7 @@ mod tests {
             digest_view.record(d);
         }
         let mesh = || Some("mesh2".to_string());
-        let recovery = |build: &str| rdm_core::LifecycleOp {
+        let recovery = |build: &str| rdm_core::LifecycleOp { mesh: member.node.mesh.clone(),
             build_id: build.into(),
             attempt: 1,
             operation: "node.delete:mesh2.rpc.1".into(),
@@ -2732,7 +2732,7 @@ mod tests {
     /// view.
     async fn depart(digest_view: &DigestView, records: &Records, d: &MeshDigest) -> Topology {
         records.set_digest_view(digest_view.clone());
-        digest_view.depart(rdm_core::LifecycleOp { build_id: "dbs8z9896j0f".into(), attempt: 1, operation: format!("node.delete:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None });
+        digest_view.depart(rdm_core::LifecycleOp { mesh: d.node.mesh.clone(), build_id: "dbs8z9896j0f".into(), attempt: 1, operation: format!("node.delete:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None });
         let view = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, digest_view, records));
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, digest_view, records)).await
     }
@@ -3233,7 +3233,7 @@ mod tests {
         let mut reported = with_id(digest("mesh1.admin.2", MemberStatus::Pending), "200000000000");
         reported.node.runtime = Some(runtime.clone());
         reported.data_dir = Some("/data/mesh1.admin.2".into());
-        let deployed = Deployed {
+        let deployed = Deployed { mesh: reported.node.mesh.clone(), kind: reported.node.kind,
             name: reported.node.name.clone(),
             node_id: reported.node.node_id.clone(),
             incarnation: reported.node.incarnation.clone(),
@@ -3319,7 +3319,7 @@ mod tests {
         let digest_view = DigestView::default();
         let held = digest("mesh1.rpc.1", MemberStatus::Ready);
         digest_view.record(held.clone());
-        assert!(digest_view.stopped(rdm_core::LifecycleOp {
+        assert!(digest_view.stopped(rdm_core::LifecycleOp { mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.stop:mesh1.rpc.1".into(),
@@ -3375,7 +3375,7 @@ mod tests {
         let digest_view = DigestView::default();
         let held = digest("mesh1.rpc.1", MemberStatus::Ready);
         digest_view.record(held.clone());
-        assert!(digest_view.stopped(rdm_core::LifecycleOp {
+        assert!(digest_view.stopped(rdm_core::LifecycleOp { mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.stop:mesh1.rpc.1".into(),
@@ -3551,7 +3551,7 @@ mod tests {
         assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_some(), "a birth saying ConnectionsDeleting makes the rebuild due at once");
 
         wake.seen();
-        let stop = rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let stop = rdm_core::LifecycleOp { mesh: rpc.node.mesh.clone(), build_id: "b1".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(digest_view.stopped(stop));
         assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
     }
@@ -3743,7 +3743,7 @@ mod tests {
         let digest_view = DigestView::default();
         let held = digest("mesh1.rpc.7", MemberStatus::Ready);
         digest_view.record(held.clone());
-        assert!(digest_view.stopped(rdm_core::LifecycleOp {
+        assert!(digest_view.stopped(rdm_core::LifecycleOp { mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.stop:mesh1.rpc.7".into(),
@@ -3819,7 +3819,7 @@ mod tests {
     fn a_successor_admin_lists_a_stopped_node_from_the_stop_overlay_it_read() {
         let digest_view = DigestView::default();
         let stopped = digest("mesh1.rpc.1", MemberStatus::Ready);
-        let stop = rdm_core::LifecycleOp {
+        let stop = rdm_core::LifecycleOp { mesh: stopped.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.stop:mesh1.rpc.1".into(),
@@ -3874,7 +3874,7 @@ mod tests {
         n.status = NodeStatus::Ready;
         launched.publish(n);
         assert!(project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &launched).node(&gone.node.name).is_some());
-        digest_view.depart(rdm_core::LifecycleOp {
+        digest_view.depart(rdm_core::LifecycleOp { mesh: gone.node.mesh.clone(),
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.delete:mesh1.rpc.3".into(),
@@ -3948,7 +3948,7 @@ mod tests {
         async fn view_over(me: &PathName, topology: &RwLock<Topology>, digest_view: &DigestView, records: &Records) -> Topology {
             records.install_read(me, topology, digest_view, &fabric1(), |reads| project_with("fabric1", &fabric1(), ProviderKind::Process, digest_view, records, reads)).await
         }
-        let deleted = |d: &MeshDigest| rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: format!("node.delete:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let deleted = |d: &MeshDigest| rdm_core::LifecycleOp { mesh: d.node.mesh.clone(), build_id: "b1".into(), attempt: 1, operation: format!("node.delete:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let digest_view = DigestView::default();
         let records = Records::default();

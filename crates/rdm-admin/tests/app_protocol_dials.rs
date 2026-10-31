@@ -103,7 +103,7 @@ fn launched_by(launcher: &Running, name: &str, kind: NodeKind, launcher_dir: &st
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         declared: Default::default(),
     };
-    let _ = launcher.runner.joins.expect(rdm_admin::join::Deployed {
+    let _ = launcher.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),

@@ -25,7 +25,7 @@ fn publisher() -> PublisherId {
 }
 
 fn op(operation: &str) -> LifecycleOp {
-    LifecycleOp {
+    LifecycleOp { mesh: "mesh1".into(),
         build_id: "66h8qrqvaajk".into(),
         attempt: 1,
         operation: operation.into(),
@@ -40,20 +40,20 @@ fn op(operation: &str) -> LifecycleOp {
 
 /// CONTRACT: `NodeConnectionsDeleting` is variant 10, `NodeLeaving` 11 and `NodeLeft` 12 and `NodeConnectionsDeleted` 13 of the topology
 /// frame, appended after `Concern` (9); each is the lifecycle op (build, attempt, operation,
-/// node id, incarnation, path.name, event instant) then the forwarding primary. What must NOT
+/// node id, incarnation, path.name, owning mesh, event instant) then the forwarding primary. What must NOT
 /// happen: a field moved, a variant inserted before the end, or a self-describing encoding.
 #[test]
 fn node_command_frames_match_the_frozen_wire_schema() {
     let fixtures = [
-        (Frame::NodeDeleted { op: op("node.delete:mesh1.rpc.1"), forwarded_by: None }, "04 0c363668387172717661616a6b 01 17 6e6f64652e64656c6574653a6d657368312e7270632e31 0c303132333435363738396162 0c397763707266677776746879 0b6d657368312e7270632e31 ac02 00"),
-        (Frame::NodeConnectionsDeleting { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0a 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
-        (Frame::NodeLeaving { op: op("stop-node:mesh1.rpc.1"), forwarded_by: Some("mesh2.admin.1".into()) }, "0b 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 010d6d657368322e61646d696e2e31"),
-        (Frame::NodeLeft { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None }, "0c 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
-        (Frame::NodeConnectionsDeleted { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0d 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
+        (Frame::NodeDeleted { op: op("node.delete:mesh1.rpc.1"), forwarded_by: None }, "04 0c363668387172717661616a6b 01 17 6e6f64652e64656c6574653a6d657368312e7270632e31 0c303132333435363738396162 0c397763707266677776746879 0b6d657368312e7270632e31 05 6d65736831 ac02 00"),
+        (Frame::NodeConnectionsDeleting { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0a 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31 05 6d65736831 ac02 00"),
+        (Frame::NodeLeaving { op: op("stop-node:mesh1.rpc.1"), forwarded_by: Some("mesh2.admin.1".into()) }, "0b 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31 05 6d65736831 ac02 010d6d657368322e61646d696e2e31"),
+        (Frame::NodeLeft { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None }, "0c 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31 05 6d65736831 ac02 00"),
+        (Frame::NodeConnectionsDeleted { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0d 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31 05 6d65736831 ac02 00"),
         // Reserved since Q183 (node.restart removed): its bytes stand at variant 5, never sent.
         (
             Frame::NodeRestarting { op: op("restart-node:mesh1.rpc.1"), forwarded_by: Some("mesh2.admin.1".into()), publisher: publisher(), topology_version: 300 },
-            "05 0c363668387172717661616a6b0118726573746172742d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 010d6d657368322e61646d696e2e31 0d6d657368312e61646d696e2e310c793073657939677277367933 0c 303132333435363738396162 ac02",
+            "05 0c363668387172717661616a6b0118726573746172742d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31 05 6d65736831 ac02 010d6d657368322e61646d696e2e31 0d6d657368312e61646d696e2e310c793073657939677277367933 0c 303132333435363738396162 ac02",
         ),
     ];
     for (frame, hex) in fixtures {
@@ -110,7 +110,7 @@ fn a_peer_mesh_primary_forwards_node_command_frames_and_the_own_mesh_does_not() 
 /// carries its subject's `topology_version` ... a named coordinated schema cut of the lifecycle
 /// frames"): the two status events keep their positions, `NodeDeleting` variant 3 and `NodeStopped`
 /// 22 (appended after the reserved position 21); `NodeRestarting` 5 is reserved (Q183). Each is the
-/// lifecycle op (build, attempt, operation, node id, incarnation, path.name, event instant), then the
+/// lifecycle op (build, attempt, operation, node id, incarnation, path.name, owning mesh, event instant), then the
 /// forwarding primary, then the publisher's exact identity (node, incarnation) and the
 /// `topology_version` at which its subject changed, appended after `forwarded_by`. A peer mesh's
 /// primary forwards each onto its own channel, preserving the op, the publisher and the version;
@@ -121,11 +121,11 @@ fn status_events_match_the_frozen_wire_schema_and_are_forwarded_with_their_publi
     let fixtures = [
         (
             Frame::NodeDeleting { op: op("retire-node:mesh1.rpc.1"), forwarded_by: None, publisher: publisher(), topology_version: 1 },
-            "03 0c363668387172717661616a6b01177265746972652d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00 0d6d657368312e61646d696e2e310c793073657939677277367933 0c 303132333435363738396162 01",
+            "03 0c363668387172717661616a6b01177265746972652d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31 05 6d65736831 ac02 00 0d6d657368312e61646d696e2e310c793073657939677277367933 0c 303132333435363738396162 01",
         ),
         (
             Frame::NodeStopped { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None, publisher: publisher(), topology_version: 300 },
-            "13 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00 0d6d657368312e61646d696e2e310c793073657939677277367933 0c 303132333435363738396162 ac02",
+            "13 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31 05 6d65736831 ac02 00 0d6d657368312e61646d696e2e310c793073657939677277367933 0c 303132333435363738396162 ac02",
         ),
     ];
     for (frame, hex) in fixtures {
