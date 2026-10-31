@@ -2560,8 +2560,9 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
 /// its own id"):
 /// 1. The predecessor `mesh1.rpc.2`, live and off its mesh with config `{zone: a}` and tags `{rabbit,
 ///    red}`, is renamed `mesh1.rpc.2.old` (step 2). The successor's claim at `mesh1.rpc.2`, the name it
-///    released (step 3, `ClaimFor::Successor`), carries `{zone: a}` and `{rabbit, red}` under the
-///    successor's id, and the retained row at `mesh1.rpc.2.old` is marked `inherited_by` the
+///    released (step 3, `ClaimFor::Successor`), carries its Build entry's `{zone: c}` and `{rabbit,
+///    red}` under the successor's id, never the predecessor's `{zone: a}` (Q305), and the retained row
+///    at `mesh1.rpc.2.old` is marked `inherited_by` the
 ///    successor: it keeps `{rabbit, red}` on the row while the active tags index names only the
 ///    successor.
 /// 2. The successor's later config and tags (`{zone: b, tier: gold}`, `{rabbit, blue}`) survive a
@@ -2570,7 +2571,7 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
 ///    back to `mesh1.rpc.2` stands there with `{zone: a}`, `{rabbit, red}` and no `inherited_by`,
 ///    `mesh1.rpc.2.old` is released, and the tags index names the predecessor again under its own id.
 #[test]
-fn a_replace_successor_inherits_the_retained_row_keeps_its_later_updates_on_a_repeated_claim_and_the_rollback_rename_restores_the_predecessor() {
+fn a_replace_successor_takes_its_entrys_properties_keeps_its_later_updates_on_a_repeated_claim_and_the_rollback_rename_restores_the_predecessor() {
     use rdm_admin::node_rows::{ClaimFor, NodeRows};
     use rdm_core::status::TagScope;
     let cap = capture();
@@ -2598,10 +2599,11 @@ fn a_replace_successor_inherits_the_retained_row_keeps_its_later_updates_on_a_re
         // Step 3: the successor's claim at the name the predecessor released.
         rig.topology.write().await.nodes.push(succ.node.clone());
         let rows = NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.topology.clone(), rig.nodes.clone()).with_written(rig.door.caches.nodes.clone());
-        let claim = || rows.claim(&base_name, &succ.node.node_id, "node.create:mesh1.rpc.2", None, None, ClaimFor::Successor);
+        let (entry_cfg, entry_tags): (BTreeMap<String, String>, _) = ([("zone".to_string(), "c".to_string())].into(), labels(&["rabbit", "red"]));
+        let claim = || rows.claim_spec(&base_name, &succ.node.node_id, "node.create:mesh1.rpc.2", None, None, &entry_tags, &entry_cfg, None, ClaimFor::Successor);
         assert!(matches!(claim().await, Ok(rdm_admin::node_rows::Claimed::Written { .. })), "the successor claims the released name");
         let succ_row = rig.nodes.record_at(&base_name).await.unwrap().expect("successor row at mesh1.rpc.2");
-        assert_eq!((succ_row.node_id.clone(), succ_row.config.clone(), succ_row.tags.clone()), (succ.node.node_id.clone(), pred_cfg.clone(), labels(&["rabbit", "red"])));
+        assert_eq!((succ_row.node_id.clone(), succ_row.config.clone(), succ_row.tags.clone()), (succ.node.node_id.clone(), entry_cfg.clone(), labels(&["rabbit", "red"])), "the successor's row is its entry's, never the predecessor's {{zone: a}}");
         let retained = rig.nodes.record_at(&old_name).await.unwrap().expect("retained predecessor row at mesh1.rpc.2.old");
         assert_eq!((retained.node_id.clone(), retained.tags.clone(), retained.inherited_by.clone()), (pred.node.node_id.clone(), labels(&["rabbit", "red"]), Some(succ.node.node_id.clone())));
         assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [succ.node.node_id.clone()].into(), "only the successor's id is in the active index after its claim");
