@@ -735,3 +735,51 @@ async fn a_remover_waits_on_the_names_mutex_and_proceeds_when_its_holder_dies() 
     assert!(tokio::time::timeout(std::time::Duration::from_secs(5), remover).await.expect("the removal proceeds once the holder is gone").unwrap().unwrap());
     assert_eq!(l.read(LockKind::Name, "mesh1.rpc.1").await.unwrap(), None);
 }
+
+/// CONTRACT (i150 R6): cancelling a caller must not release the disk job's ordering lock.
+/// A takeover append through the same store follows the unresolved append, and reopening the
+/// retained file returns the takeover value rather than the predecessor's late value.
+#[cfg(feature = "testkit-store")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_append_cannot_land_after_a_takeover_write() {
+    let path = file("append-takeover-order");
+    let store = StoreLog::open(&path, formats()).await.unwrap();
+    let door = write_door::arm(&path, "subject");
+    let old = {
+        let store = store.clone();
+        tokio::spawn(async move { store.append(&writer("regained"), "rec/1", "subject", &rec("old", 1)).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), door.entered()).await.expect("the old append reaches the disk boundary");
+    old.abort();
+    assert!(old.await.unwrap_err().is_cancelled(), "the client wait ended");
+    assert!(store.0.append.try_lock().is_err(), "the unresolved provider job still owns ordering after cancellation");
+    let takeover = {
+        let store = store.clone();
+        tokio::spawn(async move { store.append(&writer("regained"), "rec/1", "subject", &rec("takeover", 2)).await })
+    };
+    door.release();
+    tokio::time::timeout(std::time::Duration::from_secs(5), takeover).await.unwrap().unwrap().unwrap();
+    store.finish_issued_writes().await;
+    drop(store);
+    let reopened = StoreLog::open(&path, formats()).await.unwrap();
+    let latest: Rec = reopened.latest("rec", "subject").await.unwrap().unwrap().decode(&path).unwrap();
+    assert_eq!(latest, rec("takeover", 2), "same-birth regain is ordered by storage completion, never election timing");
+    let all = reopened.lines().await.unwrap();
+    assert_eq!(all.iter().map(|l| l.decode::<Rec>(&path).unwrap().name).collect::<Vec<_>>(), ["old", "takeover"]);
+}
+
+/// CONTRACT (i150 e0 fault substrate): an armed append fault cannot outlive its owning test.
+#[cfg(feature = "testkit-store")]
+#[tokio::test]
+async fn dropping_an_append_fault_releases_its_disk_job() {
+    let path = file("append-door-cleanup");
+    let store = StoreLog::open(&path, formats()).await.unwrap();
+    let door = write_door::arm(&path, "subject");
+    let put = {
+        let store = store.clone();
+        tokio::spawn(async move { store.append(&writer("cleanup"), "rec/1", "subject", &rec("value", 1)).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), door.entered()).await.unwrap();
+    drop(door);
+    tokio::time::timeout(std::time::Duration::from_secs(5), put).await.unwrap().unwrap().unwrap();
+}

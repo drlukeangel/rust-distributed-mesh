@@ -13,3 +13,6 @@ mod operations;
 mod storage_copy;
 #[cfg(feature = "file-backend")]
 mod storage_provider;
+
+#[cfg(feature = "file-backend")]
+mod node_records;
