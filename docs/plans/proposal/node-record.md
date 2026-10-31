@@ -85,12 +85,11 @@ resolves the mesh's current primary as RDM resolves it today, from the election'
 (the recorded primaries, `boot.rs:1188`; the view), never by comparing records, then reads
 `(node.id, that primary's birth)`; a node with no record under the current primary is
 **unavailable**, never the predecessor's value and never an invented status. The same birth losing
-and regaining the role reuses its key, and that is safe: a stale write is one in flight at the
-pause, which lands the moment the process resumes, before it can be heard, and being heard for the
-staleness floor's worth of intervals is what an election needs; so every stale write precedes the
-takeover writes the same birth makes if it is primary again later (R-NR8), which overwrite it. The node record
-carries no number of any
-kind. Path to
+and regaining the role reuses its lifecycle keys. Its takeover writes follow all earlier writes
+through the same serialized write path (R-NR6). The takeover cannot complete while an earlier
+write's outcome remains unresolved. An expired client wait does not prove that the provider can
+no longer commit that write. Election timing supplies no storage-ordering guarantee. The node
+record carries no number of any kind. Path to
 node.id resolves through the claim (`name_claim`, storage.rs:625) and nowhere else; node.id to record
 is a point read (`node`, storage.rs:605). The `path.name` index entry (`index_path`, storage.rs:617)
 and its reader `node_at` (storage.rs:606-609, "the node whose record was last written at it, a
@@ -293,7 +292,10 @@ Each is a page or ruling line this proposal changes, for Luke's yes on the exact
    Its cells: a node's own write and its primary's write at one node.id, read back as one node by
    `node.get [id]`, neither write refused; and a predecessor paused mid-write, a successor elected and
    taken over, the predecessor resumed and its write landed, every reader answering the successor's
-   value, the predecessor's record standing under its own change.
+   value, the predecessor's record standing under its own birth. Also delay an old put while that
+   same birth becomes reachable and regains the role, then release the put: the takeover write must
+   finish afterward and remain the value read. Include expiry of the old put's client wait while
+   its provider outcome remains unresolved; takeover must not bypass it.
 4. **R-NR5 + R-NR4's node part.** The node-side trait for the node record (R-NR6), bound beside
    `ConnectionsStorage`; the node writes its own record at start and on its own `node.config.update`;
    `properties_owed` on receipts; the owed map of a stopped node on the lifecycle record; the launching admin hands config and tags in the environment; a caller's
@@ -421,7 +423,7 @@ no ordering or atomic check cannot be correct together; one had to change, and s
 is the one that adds no revision to ordinary writes and no conditional operation to any store. The
 cost, stated plainly: lifecycle records keep an ownership identity, their writer's birth, already a
 field on every write today; no number is minted (Luke: "is_primary is 0 or 1, not a counter"), and
-the same birth, primary again later, reusing its key is safe by the ordering in R-NR2. Rejected: A, a writer's check before it writes (it can read "I am
+the same birth, primary again later, reuses its key only under the serialized-write ordering in R-NR2, never an assumption about resume or election timing (Luke approved, 2026-10-31). Rejected: A, a writer's check before it writes (it can read "I am
 primary", pause and write after the change; the takeover write can be overwritten after it lands;
 a span records the destruction and prevents nothing); B, a conditional put on a field of the node's
 record (it checks a value that changes only after the takeover write reaches that node, so it leaves
