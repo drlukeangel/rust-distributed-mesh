@@ -760,6 +760,7 @@ impl Atlas {
             t.nodes.push(crate::model::Node {
                 name: r.name.clone(),
                 kind: r.name.kind,
+                node_type: r.node_type().to_string(),
                 mesh: r.name.mesh.clone(),
                 node_id: r.node_id.clone(),
                 endpoint_id: b.endpoint_id.clone(),

@@ -155,6 +155,8 @@ pub struct Node {
     pub name: PathName,
     /// The node's kind.
     pub kind: NodeKind,
+    /// The immutable node type declared at creation, independent of its path and name.
+    pub node_type: String,
     /// The name of the node's mesh.
     pub mesh: String,
     /// The node's minted id.
@@ -207,6 +209,7 @@ impl Node {
     pub fn allocated(name: PathName) -> Self {
         Self {
             kind: name.kind,
+            node_type: name.kind.node_type().to_string(),
             mesh: name.mesh.clone(),
             name,
             node_id: NodeId::mint(),
@@ -240,17 +243,18 @@ impl Node {
 
     /// The node's `node_type`.
     pub fn node_type(&self) -> &str {
-        self.name.node_type()
+        &self.node_type
     }
 
     /// Set the node's `node_type` at creation (`node.create`), normalizing an empty string to
     /// [`crate::status::DEFAULT_NODE_TYPE`] (`"node"`) and refusing any value
     /// outside the shared identifier grammar by name (`node_type`).
-    pub fn with_node_type(self, node_type: &str) -> Result<Self, String> {
+    pub fn with_node_type(mut self, node_type: &str) -> Result<Self, String> {
         let normalized = crate::status::normalize_node_type(node_type);
         if let Some(reason) = crate::status::node_type_refusal(&normalized) {
             return Err(reason);
         }
+        self.node_type = normalized;
         Ok(self)
     }
 
@@ -357,4 +361,25 @@ pub struct FabricIdentity {
     pub fabric_id: FabricId,
     /// The fabric's name.
     pub name: String,
+}
+
+#[cfg(test)]
+mod node_type_tests {
+    use super::*;
+
+    // @feature: node-records
+    /// CONTRACT (i150 R1): a declared node type is stored as its own field; changing the
+    /// path/name cannot change that type, and a later type update is refused.
+    #[test]
+    fn a_declared_node_type_is_independent_of_the_path() {
+        let mut node = Node::allocated("mesh1.rpc.north".parse().unwrap()).with_node_type("application-worker").unwrap();
+        assert_eq!(node.node_type(), "application-worker");
+        node.name = "mesh2.gateway.south".parse().unwrap();
+        assert_eq!(node.node_type(), "application-worker");
+        assert!(node.update_node_type("gateway").unwrap_err().contains("application-worker"));
+        let encoded = serde_json::to_vec(&node).unwrap();
+        let decoded: Node = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.node_type(), "application-worker");
+        assert_eq!(Node::allocated(node.name).with_node_type("").unwrap().node_type(), crate::status::DEFAULT_NODE_TYPE);
+    }
 }

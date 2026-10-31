@@ -306,8 +306,10 @@ pub struct NodeLifecycle {
     pub path: String,
     /// The subject's name within that path.
     pub name: String,
-    /// The node type, never inferred from path or name.
-    pub node_type: rdm_core::NodeKind,
+    /// The runtime kind selected by its executable binding.
+    pub kind: rdm_core::NodeKind,
+    /// The immutable declared node type, never inferred from path or name.
+    pub node_type: String,
     /// The fabric to which the node belongs.
     pub fabric_id: rdm_core::FabricId,
     /// The mesh to which the node belongs.
