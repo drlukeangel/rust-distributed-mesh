@@ -1727,8 +1727,9 @@ impl DeploymentPipeline<'_> {
                 let held = self.builds.read_build(&req.build_id).await.map_err(|e| format!("{}: the accepted Build {} could not be read for the node's create spec; nothing is launched: {e}", req.node, req.build_id))?;
                 done_awaits.push("entry-spec");
                 let placed = held.topology.mesh(&req.node.mesh).and_then(|m| m.spec(&req.node)).map(|s| (s.storage_persistence, s.placement));
+                // A replace's successor takes its entry's config and tags, never its predecessor's (Q305).
                 let (tags, config) = match (of, &req.entry) {
-                    (crate::node_rows::ClaimFor::Create, Some(e)) => (e.tags.clone(), e.config.clone()),
+                    (crate::node_rows::ClaimFor::Create | crate::node_rows::ClaimFor::Successor, Some(e)) => (e.tags.clone(), e.config.clone()),
                     _ => Default::default(),
                 };
                 step_span.record("awaiting", "claim");

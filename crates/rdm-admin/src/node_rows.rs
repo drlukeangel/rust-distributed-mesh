@@ -401,8 +401,8 @@ pub enum ClaimFor {
     /// id in that one write (§8, recovery).
     Recovery,
     /// A Build's node.create of a replace's successor at the `<name>` its predecessor released
-    /// (node-replace.md step 3, Inherited): the row takes the config and the tags of the predecessor's
-    /// row, the retained `<name>.old` row or else the `Deleted` row at the key, its tags indexed under
+    /// (node-replace.md step 3, Properties): the row takes its Build entry's config and tags (Q305),
+    /// never the predecessor's; the predecessor's row, the retained `<name>.old` row or else the `Deleted` row at the key, seeds the rest, its labels leaving the active index, the successor's tags indexed under
     /// the new node's id in that one write, and the predecessor's `node_type`; a retained `.old` row is
     /// then marked inherited by the successor, its labels out of the active tags index.
     Successor,
@@ -569,8 +569,9 @@ impl NodeRows {
 
     /// [`Self::claim`] of a create whose create spec names `tags` and `config` (Q166, build.md §1; proposal
     /// executable-bindings-at-create.md rule 1): a plain create's row carries them, written at the claim,
-    /// so its first join hands it the config (node-config-update.md); a recovery's and a successor's
-    /// carry their seed's (node-replace.md "Inherited", node-recovery.md "Retained"). `placed`: the
+    /// so its first join hands it the config (node-config-update.md); a replace's successor's row carries
+    /// them too (node-replace.md "Properties", Q305); a recovery's carries its seed's (node-recovery.md
+    /// "Retained"). `placed`: the
     /// spec's storage and placement, written onto the row whatever the claim (build.md §1); `None`
     /// takes the seed's.
     #[allow(clippy::too_many_arguments)]
@@ -1318,18 +1319,22 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
             old
         }
     };
-    // The config and the tags are inherited together (Q166): a recovery's claim takes the Deleted
-    // record's at this name, a replace's successor the predecessor's record that seeds it; a plain
-    // create's are its create spec's (`own`, `created_with`), whatever row stood at the name before.
+    // The config and the tags of a Build's create, a replace's successor included, are its entry's
+    // (`own`, `created_with`; Q305): a Build provides the whole map of a node it replaces, never the
+    // predecessor's, and an empty one is empty. A recovery's claim takes the Deleted record's at this
+    // name (Q166) and an arrival's the seed's: no entry names them.
     let inherited = seed.as_ref().filter(|p| match of {
         ClaimFor::Create | ClaimFor::Arrival => false,
         ClaimFor::Recovery => p.name == *name && p.status == NodeStatus::Deleted,
         ClaimFor::Successor => p.name != *name || p.status == NodeStatus::Deleted,
     });
-    let tags = inherited.map(|p| p.tags.clone()).unwrap_or_else(|| if of == ClaimFor::Create { created_with.clone() } else { Default::default() });
+    let tags = match of {
+        ClaimFor::Create | ClaimFor::Successor => created_with.clone(),
+        ClaimFor::Arrival | ClaimFor::Recovery => inherited.map(|p| p.tags.clone()).unwrap_or_default(),
+    };
     let config = match of {
-        ClaimFor::Create => own.clone(),
-        ClaimFor::Arrival | ClaimFor::Recovery | ClaimFor::Successor => inherited.or(seed.as_ref()).map_or_else(|| own.clone(), |p| p.config.clone()),
+        ClaimFor::Create | ClaimFor::Successor => own.clone(),
+        ClaimFor::Arrival | ClaimFor::Recovery => inherited.or(seed.as_ref()).map_or_else(|| own.clone(), |p| p.config.clone()),
     };
     // The executable beside the config: the one the create launches (`executable`), else the seed's.
     let executable = executable.cloned().or_else(|| seed.as_ref().and_then(|p| p.executable.clone()));

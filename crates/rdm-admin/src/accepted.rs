@@ -1034,14 +1034,28 @@ pub(crate) fn replacement_pins(replacements: &[BuildOperation], pinned: &[(PathN
 /// and the entry does not. A property this Build already applied to a path is not planned again (the
 /// last write wins: build.md §1; node-config-update.md, admitted at any time): its config (with its
 /// storage and placement) once its `node.config.update` is `Complete`, its labels once its
-/// `node.tag.create` / `node.tag.delete` is, and every property once its plain create claimed the name (`PrepareStorage`, which writes the
-/// entry's onto the row: a create whose path no `node.delete` of this Build began, never a replacement's
-/// successor, which claims its seed's). A write the node or a caller makes after it stands until the
-/// next Build. A path `planned` creates, or whose executable the row does not record, is the create's or
+/// `node.tag.create` / `node.tag.delete` is, and every property once its create claimed the name (`PrepareStorage`, which writes the
+/// entry's onto the row: a plain create, or a replacement's successor whose minted node is the row's,
+/// Q305). A write the node or a caller makes after it stands until the next Build. A path `planned` creates, or whose executable the row does not record, is the create's or
 /// the replacement's, whose claim writes its properties.
 fn properties_owed(topology: &FabricTopology, recorded: &Recorded, steps: &[crate::build_state::BuildStepReceipt], planned: &[BuildOperation]) -> Vec<BuildOperation> {
     let receipted = |operation: &str, step: &str| steps.iter().any(|r| r.operation == operation && r.step == step && r.outcome == crate::build_state::StepOutcome::Complete);
-    let claimed = |path: &PathName| receipted(&format!("node.create:{path}"), "PrepareStorage") && !steps.iter().any(|r| r.operation == format!("node.delete:{path}"));
+    // The node this Build's create at `path` minted (its AllocateIdentity receipt's output).
+    let minted = |path: &PathName| {
+        steps
+            .iter()
+            .filter(|r| r.operation == format!("node.create:{path}") && r.step == "AllocateIdentity" && r.outcome == crate::build_state::StepOutcome::Complete)
+            .filter_map(|r| r.output.as_ref()?.get("node_id")?.as_str().map(str::to_string))
+            .last()
+    };
+    // A create that claimed the name wrote its entry's properties (Q305): a plain create's, and a
+    // replace's successor's once the node the claim minted is the row's node (an earlier birth at the
+    // path, or a recovery that applied no entry, proves nothing). Its predecessor's delete does not
+    // undo that evidence.
+    let claimed = |path: &PathName, row: &RecordedRow| {
+        receipted(&format!("node.create:{path}"), "PrepareStorage")
+            && (!steps.iter().any(|r| r.operation == format!("node.delete:{path}")) || minted(path).as_deref() == Some(row.node_id.as_str()))
+    };
     let replacing = paths_owed_replacement(topology, recorded);
     let mut ops = Vec::new();
     for (path, spec) in topology.meshes.values().flat_map(|m| m.spec_by_path.iter()) {
@@ -1049,7 +1063,7 @@ fn properties_owed(topology: &FabricTopology, recorded: &Recorded, steps: &[crat
         if replacing.contains(path) || planned.iter().any(|op| op.node() == Some(path)) {
             continue;
         }
-        if claimed(path) {
+        if claimed(path, row) {
             continue;
         }
         let config = row.config.as_ref().is_some_and(|c| *c != spec.config) || row.storage_persistence.is_some_and(|s| s != spec.storage_persistence) || row.placement.is_some_and(|p| p != spec.placement);
@@ -2943,10 +2957,14 @@ mod tests {
     /// config, tags, storage and placement onto the row) or its own `node.config.update` /
     /// `node.tag.*` completed; a write the node or a caller made after it stands. mesh1.rpc.1's entry
     /// names config {} and no label; its row carries {port: 7} and the label y, the node's own writes
-    /// after this Build created it: no operation. A replacement's successor claims its seed's properties,
-    /// never the entry's: the entry's are still applied. A later Build, whose receipts hold none of these,
-    /// applies the entry's config and tags. Must NOT happen: a later attempt of the Build that created
-    /// the node writing the node's own config back to the entry's.
+    /// after this Build created it: no operation. A replacement's successor's claim wrote its entry's
+    /// properties too (Q305, node-replace.md Properties): once the node its AllocateIdentity minted is the
+    /// row's, the predecessor's delete in the same Build does not undo that, and the successor's own
+    /// writes since stand; a create whose minted node is not the row's (an earlier birth at the path, or
+    /// a create that recorded no identity) proves nothing, and the entry's are applied. A later Build,
+    /// whose receipts hold none of these, applies the entry's config and tags. Must NOT happen: a later
+    /// attempt of the Build that created the node, a replacement's successor included, writing the
+    /// node's own config back to the entry's.
     #[test]
     fn a_property_this_build_applied_is_not_applied_again_and_a_later_write_stands() {
         let cur = t(&[("mesh1", 1, 1)]);
@@ -2965,8 +2983,14 @@ mod tests {
         let untagged = vec![receipt(1, "node.tag.delete:mesh1.rpc.1", "Complete", None)];
         assert_eq!(properties_owed(&cur, &own, &untagged, &[]), all[..1].to_vec(), "the label this Build deleted, written again since, stands; the config it never applied is applied");
         let b = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let replaced = vec![deleted_receipt(1, "mesh1.rpc.1", &b), receipt(2, create, "PrepareStorage", None), receipt(2, create, "Complete", None)];
-        assert_eq!(properties_owed(&cur, &own, &replaced, &[]), all, "a replacement's successor carries its seed's properties: the entry's are applied");
+        let successor = own[&rpc].node_id.clone();
+        let minted = |id: &NodeId| receipt(2, create, "AllocateIdentity", Some(serde_json::json!({ "node_id": id.as_str() })));
+        let replaced = vec![deleted_receipt(1, "mesh1.rpc.1", &b), minted(&successor), receipt(2, create, "PrepareStorage", None), receipt(2, create, "Complete", None)];
+        assert_eq!(properties_owed(&cur, &own, &replaced, &[]), vec![], "a replacement's successor's claim wrote its entry's properties: its own writes since stand");
+        let other = vec![deleted_receipt(1, "mesh1.rpc.1", &b), minted(&NodeId::mint()), receipt(2, create, "PrepareStorage", None)];
+        assert_eq!(properties_owed(&cur, &own, &other, &[]), all, "a create whose minted node is not the row's proves nothing of it: the entry's are applied");
+        let unnamed = vec![deleted_receipt(1, "mesh1.rpc.1", &b), receipt(2, create, "PrepareStorage", None)];
+        assert_eq!(properties_owed(&cur, &own, &unnamed, &[]), all, "a replacement's create that recorded no identity proves nothing: the entry's are applied");
         assert_eq!(properties_owed(&cur, &own, &[], &[]), all, "a later Build applies the entry's config and tags");
     }
 

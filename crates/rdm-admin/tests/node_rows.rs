@@ -1797,7 +1797,8 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
 
         // 5. Replace (node-replace.md steps 2-3): the predecessor moves to `mesh1.broker.north.old`
         //    (`north.old`), and the successor is created at `mesh1.broker.north`, the name it released,
-        //    its claim a successor's: it inherits `node_type`, `config` and `tags` from the retained row.
+        //    its claim a successor's: it inherits `node_type` from the retained row, and its `config` and
+    //    `tags` are its Build entry's (Q305: tier silver, never the retained row's gold).
         let old_key = north_key.renamed();
         assert_eq!((old_key.to_string().as_str(), old_key.path().as_str(), old_key.name().as_str(), old_key.node_type()), ("mesh1.broker.north.old", "mesh1.broker", "north.old", "broker"));
         assert_eq!(north_key.with_name("north.old").unwrap(), old_key);
@@ -1811,11 +1812,12 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
 
         let mut succ = node("mesh1.broker.north", false, false);
         succ.status = NodeStatus::Pending;
-        mp.rows.claim(&north_key, &succ.node_id, "node.create:mesh1.broker.north", None, None, ClaimFor::Successor).await.expect("the successor claims mesh1.broker.north");
+        let succ_tags: std::collections::BTreeSet<String> = ["blue".to_string()].into();
+        mp.rows.claim_spec(&north_key, &succ.node_id, "node.create:mesh1.broker.north", None, None, &succ_tags, &tier("silver"), None, ClaimFor::Successor).await.expect("the successor claims mesh1.broker.north");
         let succ_row = storage.record_at(&north_key).await.unwrap().expect("successor row at mesh1.broker.north");
         assert_eq!(
             (succ_row.node_id.clone(), succ_row.path().as_str(), succ_row.node_name().as_str(), succ_row.node_type(), &succ_row.config, &succ_row.tags),
-            (succ.node_id.clone(), "mesh1.broker", "north", "broker", &tier("gold"), &["blue".to_string()].into())
+            (succ.node_id.clone(), "mesh1.broker", "north", "broker", &tier("silver"), &succ_tags)
         );
         assert_eq!(mp.rows.node_type_of(&succ.node_id, &north_key), "broker", "replace copies predecessor node_type to successor");
         let retained_old = storage.record_at(&old_key).await.unwrap().expect("retained predecessor row at mesh1.broker.north.old");

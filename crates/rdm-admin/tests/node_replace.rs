@@ -65,7 +65,7 @@ impl Capture {
 /// with a new node.id, incarnation and the specified bin... A claim that finds `<name>` held is refused
 /// `NameHeld { by: node[1] }` and the Build stops at this step by name."
 #[test]
-fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_inherits_config_and_tags() {
+fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes_its_entrys_config_and_tags() {
     let capture = Capture::new("node_replace_inherits_config_and_tags");
     let _guard = tracing::dispatcher::set_default(&capture.dispatch);
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -170,16 +170,22 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_inher
             "mesh1.rpc.1 is free after rename_row"
         );
 
-        // 3. Successor node[2] claims `mesh1.rpc.1` with ClaimFor::Successor: inherits config and tags
-        //    from `mesh1.rpc.1.old`, indexes tags under succ1_id, and removes pred1_id from active tag index
-        //    while keeping tags on the retained `.old` row with `inherited_by = Some(succ1_id)`.
+        // 3. Successor node[2] claims `mesh1.rpc.1` with ClaimFor::Successor: its row takes its Build
+        //    entry's config and tags (Q305), never `mesh1.rpc.1.old`'s; it indexes the entry's tags under
+        //    succ1_id and removes pred1_id from the active tag index while keeping tags on the retained
+        //    `.old` row with `inherited_by = Some(succ1_id)`.
+        let entry_tags = BTreeSet::from(["tier-a".to_string(), "canary".to_string()]);
+        let entry_config = BTreeMap::from([("zone".to_string(), "b".to_string())]);
         let claimed1 = rows
-            .claim(
+            .claim_spec(
                 &name1,
                 &succ1_id,
                 "node.create:mesh1.rpc.1",
                 None,
                 Some(&v2_binding),
+                &entry_tags,
+                &entry_config,
+                None,
                 ClaimFor::Successor,
             )
             .await
@@ -192,8 +198,10 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_inher
             panic!("expected Claimed::Written");
         };
         assert_eq!(seeded_from, Some(pred1_id.clone()));
-        assert_eq!(succ1_row.config, pred1_row.config);
-        assert_eq!(succ1_row.tags, pred1_row.tags);
+        // Q305: the successor's config and tags are its Build entry's, never the predecessor's.
+        assert_ne!(pred1_row.config, entry_config, "the cell's entry differs from the predecessor's config");
+        assert_eq!(succ1_row.config, entry_config, "the successor's config is its entry's, not the predecessor's");
+        assert_eq!(succ1_row.tags, entry_tags, "the successor's tags are its entry's");
         assert_eq!(succ1_row.executable, Some(v2_binding.clone()));
 
         assert_eq!(
@@ -254,13 +262,18 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_inher
         );
 
         let succ2_id = NodeId::mint();
+        let entry2_tags = BTreeSet::from(["tier-c".to_string()]);
+        let entry2_config = BTreeMap::new();
         let claimed2 = rows
-            .claim(
+            .claim_spec(
                 &name2,
                 &succ2_id,
                 "node.create:mesh1.rpc.2",
                 None,
                 Some(&v2_binding),
+                &entry2_tags,
+                &entry2_config,
+                None,
                 ClaimFor::Successor,
             )
             .await
@@ -273,12 +286,26 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_inher
             panic!("expected Claimed::Written for succ2");
         };
         assert_eq!(seeded2, Some(pred2_id));
-        assert_eq!(succ2_row.config, pred2_row.config);
-        assert_eq!(succ2_row.tags, pred2_row.tags);
-        assert_eq!(
-            store.tagged("tier-b").await.unwrap(),
-            BTreeSet::from([succ2_id])
-        );
+        // Q305 over a Deleted predecessor too: an entry naming no config is an empty map, never the
+        // predecessor's, and its tags are the entry's.
+        assert_ne!(pred2_row.config, entry2_config, "the predecessor held config the entry does not name");
+        assert_eq!(succ2_row.config, entry2_config, "an empty entry config is empty: the predecessor's is not a fallback");
+        assert_eq!(succ2_row.tags, entry2_tags);
+        assert!(store.tagged("tier-b").await.unwrap().is_empty(), "the predecessor's label is not the successor's");
+        assert_eq!(store.tagged("tier-c").await.unwrap(), BTreeSet::from([succ2_id.clone()]));
+
+        // An executor lost after the row write and before its receipt (Q305): the gateway's own
+        // update writes the ports it bound, and the re-run of the claim (PrepareStorage again, the same
+        // birth) finds its own row and writes nothing over it. Must NOT happen: the re-run reseeding the
+        // row with the entry's config and erasing the gateway's ports.
+        let ports = BTreeMap::from([("rafka.kafka-endpoint".to_string(), "10.231.7.5:60371".to_string())]);
+        rows.written().update(&*store, &succ2_id, None, |r| r.config = ports.clone()).await.expect("the successor's own update").expect("its row");
+        let rerun = rows
+            .claim_spec(&name2, &succ2_id, "node.create:mesh1.rpc.2", None, Some(&v2_binding), &entry2_tags, &entry2_config, None, ClaimFor::Successor)
+            .await
+            .expect("the re-run claim");
+        assert!(matches!(rerun, Claimed::HeldByNode(_)), "the re-run finds its own birth's row: {rerun:?}");
+        assert_eq!(rdm_admin::node_rows::record_at(&*store, &name2).await.unwrap().expect("the successor's row").config, ports, "the gateway's own update stands over the re-run claim");
     });
 
     drop(rt);
@@ -290,6 +317,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_inher
         .collect();
     assert_eq!(
         outcomes,
-        vec!["inherited", "already-inherited", "none-retained"]
+        vec!["inherited", "already-inherited", "none-retained", "none-retained"],
+        "the re-run claim (Q305) reads the .old row again and finds none retained"
     );
 }

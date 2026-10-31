@@ -389,7 +389,7 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 | `status` | RDM | [node status](lifecycles/node-status.md) only | — | that status's own completion |
 | `path`, `mesh`, `node_type` | the create spec | nothing: immutable for the node's life. `node.name.update` carries the name only, so the path cannot move by construction | — | — |
 | `name` | the create spec | **`node.name.update { node_id, incarnation, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1) | `node.name.updated` |
-| `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the claim) and on replace (from the retained predecessor row at the cutover rename) | `node.tag.create { label \| [labels] }` adds; `node.tag.delete { All \| [labels] }` removes. Additive and removal commands on keyed label rows, not a replacement of a tags property | none | `node.tag.created` / `node.tag.deleted` |
+| `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the claim); on replace the successor's are its Build entry's, written at its claim | `node.tag.create { label \| [labels] }` adds; `node.tag.delete { All \| [labels] }` removes. Additive and removal commands on keyed label rows, not a replacement of a tags property | none | `node.tag.created` / `node.tag.deleted` |
 | `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own goes up through its mesh-primary; a Build whose spec names a different map applies it as a caller's, superseding the node's current map (build.md §1, Q236) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
 | `types` | the birth's [JoinNode](#join-op-0x1d-rdm): what it declared; empty for a node-admin | nothing: a different declaration is a restart. `node.get` answers it whole | — | — |
 | `held`, `held_hash` | RDM: the types the node has joined ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); equal to `types` for an ordinary node; for a node-admin the union of its nodes' declarations and what it read from other node-admins. `held_hash` is blake3 of the sorted set and rides the row's digest (32 bytes; no list rides gossip) | RDM, as members join; grows, never shrinks within a birth; never a put. `node.get` answers `held` whole | — | — |
@@ -406,9 +406,9 @@ and the topology read. Config is a map of name to value; a body that names a key
 last value, `admin_api_base` included. It is a field of the node record, held by the fabric-primary in its atlas, and never in the
 digest. RDM never reads it. The
 [config update sequence](lifecycles/node-config-update.md) is a single call, not a Build. A
-node's first config is its create spec's, written to its row at the claim; a node recovered or
-replaced at a path.name inherits the config of the row it takes over, with its tags; a rejoining
-node gets it back in its join answer.
+node's first config is its create spec's, written to its row at the claim; a node recovered at a
+path.name inherits the config of the row it takes over, with its tags; a replacement's successor starts
+with its Build entry's; a rejoining node gets it back in its join answer.
 
 The row's revision, stepped by the mesh-primary on every write of the row, orders every install of
 the map (Q235): `ApplyNodeConfig`, `ConfigUpdated` and `ConfigRowRefused` carry it with the map, and a

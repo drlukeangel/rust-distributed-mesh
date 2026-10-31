@@ -16,7 +16,7 @@ A Build provides durable resumable execution, not automatic rollback.
 | Successor | Created at `<name>` once the predecessor has released it: a re-birth, with a new node.id, incarnation and runtime; new port; key from its specified data dir; its `Create` step names its executable ([build-deployment.md](../build-deployment.md)) |
 | Predecessor | Its connections deleted, it leaves its mesh, then it is renamed `<name>.old` and stopped, or deleted |
 | Immutable exe | New bin/budgets require this new node, never a start of the stopped one |
-| Inherited | Config and tags are inherited from the retained `<name>.old` row, or from the Deleted predecessor row at `<name>` when the predecessor was deleted. The successor's tag-index entries use its own id. Retained predecessor labels are removed from the active index, not erased from its row. A repeated cutover keeps the successor's already-inherited values and never overwrites a later update. Nothing is copied later ([node properties](../node-rpc-envelope.md#node-properties)) |
+| Properties | The successor's row starts with its Build entry's config and tags, written at its claim (a Build's config is the whole map, a PUT: an entry naming no ports names none until the node's own update, so no row carries the predecessor's dead ports). The successor's tag-index entries use its own id. Retained predecessor labels are removed from the active index, not erased from its row. A later attempt of the same Build counts the successor as created and never writes the entry's properties over the node's or a caller's later update, which stands until the next Build. Nothing is copied from the predecessor ([node properties](../node-rpc-envelope.md#node-properties)) |
 | Data transfer | Rafka's own step; preserve its declared move/copy and commit boundary |
 | Name ownership | [The node owns its name](../node-identity-and-state.md#22-the-node-pathname-is-what-placement-stores--the-endpoint_id-is-resolved-at-dial-time) |
 | Name change | [node.name.update](node-name-update.md): claim, row first, node second, only under its rename precondition |
@@ -36,9 +36,9 @@ is connected to it and nothing routes to it; it is stopped after. A stopped node
 3. [node.create](node-create.md) of node[2] at `<name>`, free only because the row above moved the
    key: a re-birth with a new node.id, incarnation and the specified bin. The Build fixes the bin on its
    Create step, so every admin that runs or resumes the step launches that one, and the row
-   records it beside `config`. Its row inherits config and
-   tags from the predecessor row (the retained `<name>.old` row, or the Deleted row at `<name>`),
-   whose labels leave the active tags index. Its ready is the cutover: `path.name` now
+   records it beside `config`. Its row starts with its Build entry's config and
+   tags, written at its claim; the predecessor row's labels (the retained `<name>.old` row, or the Deleted row at `<name>`)
+   leave the active tags index. Its ready is the cutover: `path.name` now
    resolves to the successor. A claim that finds `<name>` held is refused `NameHeld { by: node[1] }`
    and the Build stops at this step by name.
 4. Rafka transfers its data as its own step. RDM interprets no application data.
@@ -69,7 +69,7 @@ forward:
   node.name.update(node[1], name.old) → row written, applied → node.name.updated
   node[1].stop → every stop event
     or node[1].delete → node.deleted
-  node.create(name) → every FirstStart event, config and tags inherited, node.created
+  node.create(name) → every FirstStart event, the entry's config and tags written at the claim, node.created
   Rafka data-transfer step
 rollback:
   node.connection.delete(node[2], All), node.mesh.leave(node[2]), node[2].delete → node.deleted
@@ -103,7 +103,7 @@ sequenceDiagram
     M-->>F: node.name.updated
     M->>N1: node[1].stop
     M-->>F: stop events
-    Note over M: node.create(name): a re-birth, inheriting config and tags from the predecessor row
+    Note over M: node.create(name): a re-birth, its row starting with the Build entry's config and tags
     M-->>F: FirstStart events; ready is the cutover
     Note over R: Rafka data-transfer step and commit boundary
     F-->>R: step frames, Complete
