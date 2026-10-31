@@ -131,6 +131,17 @@ pub enum NodeCommandRequest {
         /// The operation's declared identity.
         operation: String,
     },
+    /// Freeze this exact birth's property writer before a storage copy. Appended at wire position 5.
+    StorageBlock {
+        /// The commanded node.
+        node_id: NodeId,
+        /// The commanded incarnation.
+        incarnation: IncarnationId,
+        /// The storage change's Build.
+        build_id: String,
+        /// The exact change whose move or rollback releases this block.
+        change_id: crate::ChangeId,
+    },
 }
 
 impl NodeCommandRequest {
@@ -141,6 +152,7 @@ impl NodeCommandRequest {
             Self::StopNode { .. } => "stop-node",
             Self::StartNode { .. } => "start-node",
             Self::StorageStep { .. } => "storage-step",
+            Self::StorageBlock { .. } => "storage-block",
             Self::LeaveMesh { .. } => "leave-mesh",
         }
     }
@@ -148,7 +160,7 @@ impl NodeCommandRequest {
     /// The birth the command names.
     pub fn subject(&self) -> (&NodeId, &IncarnationId) {
         match self {
-            Self::DeleteConnections { node_id, incarnation, .. } | Self::StopNode { node_id, incarnation, .. } | Self::StartNode { node_id, incarnation, .. } | Self::StorageStep { node_id, incarnation, .. } | Self::LeaveMesh { node_id, incarnation, .. } => (node_id, incarnation),
+            Self::DeleteConnections { node_id, incarnation, .. } | Self::StopNode { node_id, incarnation, .. } | Self::StartNode { node_id, incarnation, .. } | Self::StorageBlock { node_id, incarnation, .. } | Self::StorageStep { node_id, incarnation, .. } | Self::LeaveMesh { node_id, incarnation, .. } => (node_id, incarnation),
         }
     }
 }
@@ -341,6 +353,10 @@ pub enum NodeCommandReply {
         /// The connections it still holds.
         connections: Vec<ConnectionId>,
     },
+    /// Property admission is closed and earlier writes are finished for this change.
+    /// Appended at wire position 23.
+    StorageBlocked,
+
 }
 
 impl NodeCommandReply {
@@ -365,6 +381,7 @@ impl NodeCommandReply {
             Self::Failed { .. } => "failed",
             Self::RejectedInvalidNodeTransition { .. } => "rejected-invalid-node-transition",
             Self::StorageStepped { .. } => "storage-stepped",
+            Self::StorageBlocked => "storage-blocked",
             Self::RejectedStaleChange { .. } => "rejected-stale-change",
             Self::Leaving { .. } => "leaving",
             Self::StopMeshLeft { .. } => "stop-mesh-left",
@@ -397,8 +414,8 @@ impl NodeProtocol for NodeCommand {
     /// A connections-deleting node still takes a command: a second `All` leaves an incomplete
     /// closure (node-connections-delete.md step 5).
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 5;
-    const REPLY_VARIANTS: u32 = 23;
+    const REQUEST_VARIANTS: u32 = 6;
+    const REPLY_VARIANTS: u32 = 24;
 
     type Request = NodeCommandRequest;
     type Reply = NodeCommandReply;
@@ -423,6 +440,7 @@ impl NodeProtocol for NodeCommand {
             NodeCommandReply::Failed { .. } => "failed",
             NodeCommandReply::RejectedInvalidNodeTransition { .. } => "rejected-invalid-node-transition",
             NodeCommandReply::StorageStepped { .. } => "storage-stepped",
+            NodeCommandReply::StorageBlocked => "storage-blocked",
             NodeCommandReply::RejectedStaleChange { .. } => "rejected-stale-change",
             NodeCommandReply::Leaving { .. } => "leaving",
             NodeCommandReply::StopMeshLeft { .. } => "stop-mesh-left",
@@ -433,7 +451,7 @@ impl NodeProtocol for NodeCommand {
 
     fn classify_reply(reply: &NodeCommandReply) -> ReplyKind {
         match reply {
-            NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeJoined | NodeCommandReply::NodeStarted | NodeCommandReply::StorageStepped { .. } => ReplyKind::Success,
+            NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeJoined | NodeCommandReply::NodeStarted | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked => ReplyKind::Success,
             NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } | NodeCommandReply::MeshLeft { .. } => ReplyKind::Success,
             // As Status 0x1B classifies the same refusal.
             NodeCommandReply::BusyHoldingConnections { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
@@ -481,7 +499,7 @@ impl StreamingProtocol for NodeCommand {
         match frame {
             NodeCommandReply::CommandAccepted { .. } => FrameKind::Started,
             NodeCommandReply::ConnectionsDeleting { .. } | NodeCommandReply::StopConnectionsDeleted { .. } | NodeCommandReply::Leaving { .. } | NodeCommandReply::StopMeshLeft { .. } | NodeCommandReply::NodeJoined => FrameKind::Data,
-            NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::MeshLeft { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } | NodeCommandReply::StorageStepped { .. } => FrameKind::Terminal,
+            NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::MeshLeft { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } | NodeCommandReply::StorageStepped { .. } | NodeCommandReply::StorageBlocked => FrameKind::Terminal,
             other => FrameKind::Refusal(NodeCommand::classify_reply(other)),
         }
     }

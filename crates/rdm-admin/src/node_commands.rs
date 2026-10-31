@@ -104,6 +104,25 @@ pub struct CommandView {
     row_writes: tokio::sync::Mutex<()>,
 }
 
+/// A tracked command uses the existing unanswered-command clock even if its caller is cancelled.
+pub struct CommandCall<'a> {
+    commands: &'a CommandView,
+    key: Option<CommandKey>,
+}
+
+impl CommandCall<'_> {
+    /// A named reply settles the call, whether it admitted or refused the command.
+    pub fn answered(mut self) {
+        self.commands.close_answered(&self.key.take().expect("tracked command is open"));
+    }
+}
+
+impl Drop for CommandCall<'_> {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.take() { self.commands.close_unanswered(&key); }
+    }
+}
+
 /// A view whose commanded births run their `node.connection.delete { All }` under the launch default.
 impl Default for CommandView {
     fn default() -> Self {
@@ -169,6 +188,13 @@ impl CommandView {
     /// or a stop) waits for its reply: the bound the birth runs it under, and 10 s for the rest of the step.
     pub fn connections_delete_reply(&self) -> Duration {
         self.connections_delete_deadline + Duration::from_secs(10)
+    }
+
+    /// Track a call through its named reply or its unanswered end. Cancellation keeps the
+    /// original send instant for the existing silence/investigation timers.
+    pub fn track(&self, key: CommandKey) -> CommandCall<'_> {
+        let _ = self.open(key.clone());
+        CommandCall { commands: self, key: Some(key) }
     }
 
     /// Open `key` before the command is sent (so a completion that races the reply finds it) and
@@ -538,4 +564,32 @@ mod tests {
         answered.close_answered(&later);
         assert_eq!(answered.unanswered_since(&k.node_id, &k.incarnation, floor, Instant::now() + floor * 2), None, "an answer to a later command ends it");
     }
+    // @feature: node-records
+    /// A cancelled storage call enters the existing unanswered clock at its original send.
+    #[tokio::test]
+    async fn a_cancelled_tracked_call_uses_the_existing_investigation_clock() {
+        let commands = std::sync::Arc::new(CommandView::default());
+        let k = key("storage-block:change");
+        let began = std::sync::Arc::new(tokio::sync::Notify::new());
+        let (c, request, n) = (commands.clone(), k.clone(), began.clone());
+        let before = Instant::now();
+        let task = tokio::spawn(async move {
+            let _call = c.track(request);
+            n.notify_one();
+            std::future::pending::<()>().await;
+        });
+        began.notified().await;
+        let sent_by = Instant::now();
+        assert!(commands.is_open(&k));
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(!commands.is_open(&k), "a cancelled call cannot hold command admission forever");
+        let floor = Duration::from_secs(30);
+        assert!(commands.unanswered_since(&k.node_id, &k.incarnation, floor, before + floor - Duration::from_millis(1)).is_none());
+        let since = commands.unanswered_since(&k.node_id, &k.incarnation, floor, sent_by + floor).expect("the existing floor makes investigation due");
+        assert!(before <= since && since <= sent_by, "use the original send, never cancellation time");
+        commands.track(k.clone()).answered();
+        assert!(commands.unanswered_since(&k.node_id, &k.incarnation, floor, sent_by + floor * 2).is_none(), "a later named reply ends the existing unanswered mark");
+    }
+
 }

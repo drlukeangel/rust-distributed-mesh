@@ -79,7 +79,21 @@ pub enum Carried {
 
 /// One storage step on the exact birth `node_id`, on the node command op 0x22: its terminal frame, or
 /// a refusal before its acceptance; `Err` names how the call ended with neither.
-pub async fn command(client: &rdm_transport::NodeRpcClient, node_id: &NodeId, command: &NodeCommandRequest) -> Result<NodeCommandReply, String> {
+pub async fn command(client: &rdm_transport::NodeRpcClient, commands: &crate::node_commands::CommandView, node_id: &NodeId, command: &NodeCommandRequest) -> Result<NodeCommandReply, String> {
+    let (build_id, change_id) = match command {
+        NodeCommandRequest::StorageBlock { build_id, change_id, .. } | NodeCommandRequest::StorageStep { build_id, change_id, .. } => (build_id, change_id),
+        _ => return Err("the storage command function accepts only storage commands".into()),
+    };
+    let tracked = commands.track(crate::node_commands::CommandKey {
+        build_id: build_id.clone(), attempt: 0, operation: format!("{}:{change_id}", command.op()),
+        node_id: node_id.clone(), incarnation: command.subject().1.clone(),
+    });
+    let result = command_reply(client, node_id, command).await;
+    if result.is_ok() { tracked.answered(); }
+    result
+}
+
+async fn command_reply(client: &rdm_transport::NodeRpcClient, node_id: &NodeId, command: &NodeCommandRequest) -> Result<NodeCommandReply, String> {
     let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
     let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..Default::default() };
     let mut stream = match client.call_stream::<NodeCommand>(&target, command, &opts).await {
@@ -308,6 +322,17 @@ impl StorageChanges {
     pub async fn block_mesh(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusDoor>>) -> Result<(), crate::executor::RunEnd> {
         let door = Self::door(status_door)?;
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-block", build_id = %build_id.log(), change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, in_flight = tracing::field::Empty, outcome = tracing::field::Empty);
+        // Nodes now own property writes. The primary's command block alone cannot make
+        // their old provider quiescent. Include stopped births and retained predecessors.
+        let subjects: Vec<_> = door.topology.read().await.births()
+            .filter(|node| node.mesh == mesh && node.status != crate::model::NodeStatus::Deleted)
+            .cloned().collect();
+        for subject in &subjects {
+            door.carry_storage_block(subject, build_id, &change.change_id).await
+                .map_err(|reason| crate::executor::RunEnd::Incomplete(format!("mesh.block:{mesh}: {reason}; the provider is not copied")))?;
+        }
+        // An unanswered freeze returns through the existing attempt hand-off while normal
+        // commands/recovery remain admitted. Only a completed freeze closes mesh commands.
         let in_flight = door.commands.block().await;
         if let Some(aggregate) = self.aggregate.get() {
             aggregate().await;
@@ -406,7 +431,7 @@ impl StorageChanges {
         self.move_own(&door, build_id, &change.change_id, &provider).await?;
         // Moved: this admin writes rows again, on the decided provider (its re-creates' rows among them).
         door.commands.release_rows();
-        let paths: Vec<PathName> = topology.read().await.members().filter(|n| n.mesh == mesh && n.node_id != self.node_id && n.status.is_live()).map(|n| n.name.clone()).collect();
+        let paths: Vec<PathName> = topology.read().await.births().filter(|n| n.mesh == mesh && n.node_id != self.node_id && n.status != crate::model::NodeStatus::Deleted).map(|n| n.name.clone()).collect();
         let ends = futures_util::future::join_all(paths.iter().map(|p| self.move_until(&door, &topology, build_id, &change.change_id, mesh, p, &provider, recreate))).await;
         let recreated = ends.iter().filter(|e| **e == PathEnd::Recreated).count();
         door.commands.unblock();

@@ -213,7 +213,7 @@ pub const PROVIDER_BANNED_TOKENS: &[&str] = &["NodeSpec", "StorageMeta", "Placem
 
 /// The internal wire paths (R-W1, Luke 2026-10-08): every gossip frame and every Node RPC frame is
 /// postcard. These sources carry no JSON codec in their non-test code.
-pub const NON_WIRE_CORE_FILES: &[&str] = &["binding.rs", "cadence.rs", "certs.rs", "connections.rs", "custody.rs", "digest.rs", "dto.rs", "ids.rs", "lifecycle.rs", "model.rs", "names.rs", "path.rs", "publisher.rs", "role.rs", "runtime.rs"];
+pub const NON_WIRE_CORE_FILES: &[&str] = &["binding.rs", "cadence.rs", "certs.rs", "connections.rs", "custody.rs", "digest.rs", "dto.rs", "ids.rs", "launch.rs", "lifecycle.rs", "model.rs", "names.rs", "path.rs", "publisher.rs", "role.rs", "runtime.rs"];
 pub const NON_WIRE_TRANSPORT_FILES: &[&str] = &["clock.rs", "discipline.rs", "evidence_capture.rs", "export.rs", "forward_path.rs", "framer.rs", "iroh_obs.rs", "lib.rs", "load.rs", "log_sink.rs", "logs.rs", "ops.rs", "pipeline.rs", "receive_order.rs", "span_capture.rs", "telemetry.rs", "test_span_capture.rs", "transport_diag.rs", "watchdog.rs"];
 pub const WIRE_SOURCES: &[&str] = &[
     "crates/rdm-transport/src/topology.rs",
@@ -278,8 +278,8 @@ pub const FORWARD_REPLIES: u32 = 14;
 pub const NODE_COMMAND: &str = "crates/rdm-core/src/node_command.rs";
 pub const NODE_COMMAND_WIRE: &str = "crates/rdm-core/tests/node_command_wire.rs";
 /// The frozen 0x22 counts.
-pub const NODE_COMMAND_REQUESTS: u32 = 5;
-pub const NODE_COMMAND_REPLIES: u32 = 23;
+pub const NODE_COMMAND_REQUESTS: u32 = 6;
+pub const NODE_COMMAND_REPLIES: u32 = 24;
 pub const STATUS_WIRE: &str = "crates/rdm-core/tests/status_wire.rs";
 pub const FRAMING: &str = "crates/rdm-core/src/framing.rs";
 /// The frozen transport-header goldens (node-rpc-envelope.md "Transport frames"): Request kind 0,
@@ -730,8 +730,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 root,
                 NODE_COMMAND_WIRE,
                 &[
-                    "fn the_requests_match_the_frozen_five_variant_wire_schema",
-                    "fn replies_match_the_frozen_twenty_three_variant_wire_schema",
+                    "fn the_requests_match_the_frozen_six_variant_wire_schema",
+                    "fn replies_match_the_frozen_twenty_four_variant_wire_schema",
                     "NodeCommand::REQUEST_VARIANTS",
                     "NodeCommand::REPLY_VARIANTS",
                 ],

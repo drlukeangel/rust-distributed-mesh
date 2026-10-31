@@ -679,6 +679,21 @@ impl NodeSelf {
     /// Serve the command on its caller's connection, which a stop spares and a start joins back over.
     pub async fn serve_node_command_on(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &NodeCommandRequest, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         use tracing::Instrument;
+        if let NodeCommandRequest::StorageBlock { incarnation, build_id, change_id, .. } = req {
+            if *incarnation != self.incarnation {
+                return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
+            }
+            let Some(storage) = self.storage_moves() else {
+                return rdm_core::reply::node_command::not_ready("this birth has no storage handle yet".into());
+            };
+            let Ok(build_id) = build_id.parse::<rdm_core::BuildId>() else {
+                return rdm_core::reply::node_command::not_ready("storage block names no valid Build ID".into());
+            };
+            if frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await.is_err() {
+                return rdm_core::reply::node_command::not_ready("caller gone before storage block acceptance".into());
+            }
+            return storage.block(&build_id, change_id).await;
+        }
         if let NodeCommandRequest::StorageStep { incarnation, build_id, change_id, provider, .. } = req {
             return self.serve_storage_step(incarnation, build_id, change_id, provider, frames).await;
         }

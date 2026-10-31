@@ -2391,7 +2391,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     let handle = moves.clone();
                                                     Box::pin(async move { handle.replace(&provider).await })
                                                 }),
-                                            ))
+                                            ).with_properties(configs_slot.get().expect("configs bound").own_properties().expect("own writer bound").clone()))
                                         });
                                         // The app protocols this admin opens connections on: what a renewed member cert
                                         // is installed on, and what node.connection.delete closes, as on every node.

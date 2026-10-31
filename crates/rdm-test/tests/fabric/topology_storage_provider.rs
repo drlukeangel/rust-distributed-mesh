@@ -982,6 +982,41 @@ async fn a_node_that_never_unblocks_is_recreated_on_the_new_provider() {
     estate.record_trace_url(&s(&switched["trace_id"]));
 }
 
+// @feature: node-records
+/// Before-copy nonresponse uses the existing command timer, investigation and recovery. The
+/// test never invokes recovery; the same storage Build resumes when its affected mesh changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unanswered_storage_block_uses_normal_investigation_before_copy() {
+    let test = "an_unanswered_storage_block_uses_normal_investigation_before_copy";
+    let (mut estate, _) = two_mesh_estate(test, &[]).await;
+    let old_id = node_id_of(&estate, ROLE).await;
+    let own = estate.probe(&["own-config", "--target", &format!("path:{ROLE}"), "--value", "source=before-pause"]);
+    assert_eq!(own["own_config"], "config-updated", "{own}");
+    let hold = hold_switch(&estate).await;
+    let paused = freeze(&estate, ROLE).await;
+    let (stream, build_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
+    hold.wait_held("switch").await;
+    let replacement = estate.node_view(ROLE).await;
+    assert_ne!(replacement.node_id.to_string(), old_id, "the normal investigation/recovery completes before the copy is entered");
+    assert_eq!(replacement.config, BTreeMap::from([("source".into(), "before-pause".into())]));
+    assert_eq!(replacement.topology_storage_provider.as_deref(), Some(FILE), "before copy the successor is created on the old provider");
+    let blocked = blocked_at(&estate, &build_id, "mesh2").await;
+    let before_copy = estate.spans();
+    assert!(of_build(&before_copy, SWITCH, &build_id, None).iter().all(|sp| sp["attributes"]["outcome"] != "inserted"), "no switch before the normal lifecycle and all blocks finish");
+    hold.release("switch").await;
+    estate.follow(stream).await;
+    let after = estate.node_view(ROLE).await;
+    assert_eq!(after.node_id, replacement.node_id);
+    assert_eq!(after.config, replacement.config);
+    assert_eq!(after.topology_storage_provider.as_deref(), Some(TOPOLOGY_STORAGE_TARGET));
+    thaw(&paused);
+    assert_eq!(estate.node_view(ROLE).await.node_id, replacement.node_id, "a returning deleted birth cannot become the current node");
+    estate.stop().await;
+    let spans = estate.spans();
+    assert!(named(&spans, "rdm.node_admin.node.update.via-true-offline").iter().any(|sp| attr(sp, "node_id") == old_id), "the existing investigation clock reaches its normal lifecycle verdict");
+    estate.record_trace_url(&s(&blocked["trace_id"]));
+}
+
 /// CONTRACT (storage.md §2 "Changing it" (Q198): step 4, "Each mesh-primary moves its nodes to the new
 /// provider, then replies `unblocked`"; "The previous provider is kept as it was at the switch, ...
 /// written no more"; i149 R19: "A node that will not block or unblock is a lost node (node-investigation.md,
