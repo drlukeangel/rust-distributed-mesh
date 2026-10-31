@@ -974,6 +974,7 @@ mod tests {
         let m2_admin1: PathName = "mesh2.admin.1".parse().unwrap();
         let m2_admin2: PathName = "mesh2.admin.2".parse().unwrap();
         let spec_for = |p: &PathName| NodeSpec {
+            mesh: p.mesh.clone(), kind: p.kind,
             path: p.clone(),
             storage_persistence: StorageMeta::Ephemeral,
             placement: PlacementMeta::default(),

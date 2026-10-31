@@ -409,6 +409,28 @@ attempted type update; 1/1 passed. `explicit-node-type-records.log`: 12/12 stora
 passed. The first compile identified the one exhaustive atlas constructor missing the new field;
 it now initializes it. This does not close the complete path/type migration.
 
+### Explicit Build entry ownership (2026-10-31)
+
+`NodeSpec` requires its owning `mesh` and runtime `kind`; counts expansion supplies them, and
+`StorageMeta::for_kind` owns the kind defaults. The accepted topology, complete-topology request,
+private Build wire spec and testkit request builder carry the same fields. Acceptance groups and
+validates by the explicit mesh, rejects duplicate pairs across meshes, counts by explicit kind,
+and removes actual members on shrink. Membership and executable lookup use accepted entries.
+A stored entry missing explicit ownership is refused by its missing field; no path inference
+fills that omission. The Build wire has independent frozen bytes for the new shape.
+
+Architect 1 found and reviewed the remaining path-derived validation and reconstructed-name
+shrink; both are fixed. `explicit-spec-ownership-fixtures.log`: 2/2 core metadata controls;
+`explicit-spec-wire.log`: 10/10 Build wire controls; `explicit-spec-accepted-complete.log`:
+40/40 acceptance controls; `explicit-spec-gossip-wire.log`: 3/3 Build/gossip codec controls.
+`explicit-spec-process-selected.log`: real-process named create/Build override control passed,
+1/1 in 10.59 s. The first process selection matched zero tests; it is not counted as proof.
+The misleading-path control covers explicit mesh/kind, membership, executable lookup, actual
+shrink, duplicate refusal and kind-change classification. This is an e1 substrate increment:
+launch, gossip, lifecycle operations, roster and pin ownership, section routing, and the path/name
+pair format remain BUILD. In particular, deleted/renamed subjects need the existing exact-birth
+pin to retain explicit mesh ownership; routing must never reconstruct it from their path.
+
 ### Shared property writer implementation evidence (2026-10-31)
 
 The node runtime now has one `NodePropertyWriter` shared by ordinary own-config and caller config

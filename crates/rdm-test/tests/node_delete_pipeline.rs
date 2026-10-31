@@ -134,7 +134,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         let mut release = common::add_node();
         let released = rdm_core::meta::NodeSpec {
             storage_persistence: rdm_core::meta::StorageMeta::Persistent { disposition: rdm_core::meta::PersistentDisposition::Release },
-            ..rdm_core::meta::NodeSpec::default_for(again.node.name.clone())
+            ..rdm_core::meta::NodeSpec::default_for(again.node.name.clone(), &again.node.name.mesh, again.node.name.kind)
         };
         release.meshes.get_mut("mesh1").unwrap().set_spec(released).unwrap();
         let again_build = publish_build(&builds, release).await;

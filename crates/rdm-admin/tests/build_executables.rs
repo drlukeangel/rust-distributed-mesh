@@ -276,7 +276,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
 
         // 1. A created path whose spec names no executable is refused by name at acceptance.
         let mut missing_specs = base_specs.clone();
-        missing_specs.push(NodeSpec::default_for("mesh1.gateway.1".parse().unwrap()));
+        missing_specs.push(NodeSpec::default_for("mesh1.gateway.1".parse().unwrap(), "mesh1", rdm_core::NodeKind::Gateway));
         let missing_res = cp
             .submit(
                 "test-missing-exe",
@@ -337,7 +337,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
         //    and replaces only mesh1.rpc.1 while creating mesh1.gateway.1 and leaving mesh1.admin.2 untouched.
         let mut valid_specs = base_specs.clone();
         valid_specs[rpc_idx].executable = Some(crate::test_executable(NodeKind::RpcNode));
-        let mut gw_spec = NodeSpec::default_for("mesh1.gateway.1".parse().unwrap());
+        let mut gw_spec = NodeSpec::default_for("mesh1.gateway.1".parse().unwrap(), "mesh1", rdm_core::NodeKind::Gateway);
         gw_spec.executable = Some(crate::test_executable(NodeKind::Gateway));
         valid_specs.push(gw_spec);
 

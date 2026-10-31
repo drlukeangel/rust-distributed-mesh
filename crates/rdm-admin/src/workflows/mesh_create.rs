@@ -179,6 +179,7 @@ mod tests {
             std::fs::write(&bin, format!("#!/bin/sh\n# {}\n", p.kind.name())).unwrap();
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
             rdm_core::meta::NodeSpec {
+                mesh: p.mesh.clone(), kind: p.kind,
                 path: p.clone(),
                 storage_persistence: rdm_core::meta::StorageMeta::Ephemeral,
                 placement: rdm_core::meta::PlacementMeta::default(),

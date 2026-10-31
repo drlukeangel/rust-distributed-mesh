@@ -1491,7 +1491,7 @@ pub async fn take_inherited_name(storage: &dyn NodesStorage, written: &WrittenRo
 /// carries `executable`, the binding the bootstrap admin's birth runs (build-deployment.md §2.3), as a
 /// create's claim carries a launched node's.
 pub async fn claim_day0_name(storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId, executable: Option<&rdm_core::binding::Binding>) -> Result<Claimed, RowRefused> {
-    own_claim(None, storage, written, name, node_id, "fabric-create", ClaimFor::Create, executable, Some(crate::accepted::root_placed(name))).await
+    own_claim(None, storage, written, name, node_id, "fabric-create", ClaimFor::Create, executable, Some(crate::accepted::root_placed())).await
 }
 
 /// The adoption launch's claim of its own new `path.name` under an in-force fabric.delete (Q159;
@@ -1507,7 +1507,7 @@ pub async fn claim_adopted_name(storage: &dyn NodesStorage, written: &WrittenRow
 /// [`claim_day0_name`] as a child of `boot` without entering `boot` (the boot root is never entered so
 /// background tasks spawned during start do not inherit it and its close time stays at `via-ready`).
 pub async fn claim_day0_name_in_boot(boot: &tracing::Span, storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId, executable: Option<&rdm_core::binding::Binding>) -> Result<Claimed, RowRefused> {
-    own_claim(Some(boot), storage, written, name, node_id, "fabric-create", ClaimFor::Create, executable, Some(crate::accepted::root_placed(name))).await
+    own_claim(Some(boot), storage, written, name, node_id, "fabric-create", ClaimFor::Create, executable, Some(crate::accepted::root_placed())).await
 }
 
 /// The claim of `name` by the admin born at it as `node_id`, the writer of its own row before it holds a

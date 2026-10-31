@@ -170,7 +170,7 @@ async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, Strin
     assert_eq!((record["config"].clone(), node.config), (json!({"zone": "a"}), zone), "{mesh}: a storage-only change leaves the config as it is");
 
     let (based_on, mut r, _) = verbatim(estate).await;
-    r.push(rdm_test::executables::created_spec(rpc2.parse().unwrap(), estate.executables.of(NodeKind::RpcNode)));
+    r.push(rdm_test::executables::created_spec(rpc2.parse().unwrap(), mesh, NodeKind::RpcNode, estate.executables.of(NodeKind::RpcNode)));
     row(estate, &format!("{mesh}: a new path"), based_on, r, Back::ToPending, rows).await;
     estate.until_node(&rpc2, &format!("{rpc2} ready"), BOUND, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).map(|_| ())).await;
 
@@ -218,7 +218,7 @@ async fn every_reconcile_variant_on_a_day0_fabric_completes_with_the_fabric_read
     day0_variants(&estate, &mut rows).await;
     // mesh1.rpc.1, so the rpc variants have a held path to act on.
     let (based_on, mut r, _) = verbatim(&estate).await;
-    r.push(rdm_test::executables::created_spec("mesh1.rpc.1".parse().unwrap(), estate.executables.of(NodeKind::RpcNode)));
+    r.push(rdm_test::executables::created_spec("mesh1.rpc.1".parse().unwrap(), "mesh1", NodeKind::RpcNode, estate.executables.of(NodeKind::RpcNode)));
     row(&estate, "mesh1: a new path, mesh1.rpc.1", based_on, r, Back::ToPending, &mut rows).await;
     rpc_variants(&estate, "mesh1", &mut rows).await;
     estate.stop().await;
@@ -238,7 +238,7 @@ async fn every_reconcile_variant_on_a_two_mesh_fabric_completes_with_the_fabric_
     let mut rows = Vec::new();
     let (based_on, mut r, _) = verbatim(&estate).await;
     for (p, kind) in [("mesh2.admin.1", NodeKind::NodeAdmin), ("mesh2.rpc.1", NodeKind::RpcNode)] {
-        r.push(rdm_test::executables::created_spec(p.parse().unwrap(), estate.executables.of(kind)));
+        r.push(rdm_test::executables::created_spec(p.parse().unwrap(), "mesh2", kind, estate.executables.of(kind)));
     }
     row(&estate, "mesh2 created, the Day-0 admin's entry kept naming none", based_on, r, Back::ToPending, &mut rows).await;
     estate.settles_to(&[("mesh1", 1, 0), ("mesh2", 1, 1)], BOUND).await;
