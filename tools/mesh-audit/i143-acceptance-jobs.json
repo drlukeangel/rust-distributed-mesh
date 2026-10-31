@@ -773,6 +773,19 @@
           "dir": "target/i143-acceptance/rt6/process/born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it"
         }
       ]
+    },
+    "i150-node-records-process": {
+      "issue": 245,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "own_properties_survive_node_restart",
+          "source": "crates/rdm-test/tests/node_records.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/245/process/own_properties_survive_node_restart/estate scripts/cells.sh rdm-test main -- node_records::own_properties_survive_node_restart --exact",
+          "dir": "target/i143-acceptance/245/process/own_properties_survive_node_restart",
+          "evidence": "runner"
+        }
+      ]
     }
   },
   "rshape_jobs": {

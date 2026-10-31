@@ -3,8 +3,10 @@
 ## i150 dependency — node-owned properties (2026-10-31)
 
 Implementation is tracked by [i150](i150-node-writes-lifecyle-updates.md), rdm#245, lane 1,
-branch `codex/i150-node-records`. The first increment builds split-record storage and the delayed
-append test seam. Runtime wiring, lifecycle takeover, Build application, Rafka integration and
+branch `codex/i150-node-records`. The first increment builds split-record storage, the delayed append test seam and node-side
+persistence before the existing config delivery. Focused storage cells (4), store-log cells (28),
+provider controls (2), own-config controls (2) and the real-process recovery canary (1) passed;
+this does not establish route removal or initiative completion. Runtime wiring, lifecycle takeover, Build application, Rafka integration and
 final gates remain owed; no i143 certification or export status is advanced by this entry.
 
 ## § Close-out plan (2026-10-17, the lead; Luke: "take stock of what's left in 143 and break it apart")

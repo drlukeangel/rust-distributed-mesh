@@ -35,6 +35,8 @@ pub struct NodeProperties {
     pub listeners: Vec<(String, std::net::SocketAddr)>,
     /// The application types the node declared at join.
     pub app_types: Option<crate::nodes_storage::AppTypes>,
+    /// The entities the node declared it holds at join.
+    pub held: BTreeSet<String>,
 }
 
 /// Lifecycle state for one subject, written only under its writer's own birth.

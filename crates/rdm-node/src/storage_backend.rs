@@ -17,6 +17,8 @@ pub struct NodeStorage {
     /// The nodes' rows, a point read by id or by `path.name` (query.md §1, Q237): the backend opens
     /// them on the first read, never at the node's start, join or create (Q227).
     pub node_rows: Arc<dyn NodeRowsStorage>,
+    /// Node-owned properties and writer-birth lifecycle records on this same backend.
+    pub node_records: Arc<dyn crate::node_records::NodeRecordsStorage>,
     /// Where the rows are written now, as the boot's span records it.
     pub writes_to: String,
 }
@@ -57,6 +59,7 @@ impl NodeStorageBackend for FileNodeBackend {
         let connections = crate::storage::FileConnectionsStorage::open(&root, &launch.name, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("connections storage: {e}"))?;
         Ok(NodeStorage {
             connections: Arc::new(connections),
+            node_records: Arc::new(crate::node_records::FileNodeRecords::open(&root).await.map_err(|e| format!("node records storage: {e}"))?),
             node_rows: Arc::new(crate::nodes_storage::FileNodeRowsOnFirstRead::at(root)),
             writes_to: "store-root".into(),
         })
@@ -160,6 +163,11 @@ impl NodeStorageHandle {
         Arc::new(NodeRowsThroughHandle(self.clone()))
     }
 
+    /// Split node records through this handle, so a provider move changes subsequent calls.
+    pub fn node_records(self: &Arc<Self>) -> Arc<dyn crate::node_records::NodeRecordsStorage> {
+        Arc::new(NodeRecordsThroughHandle(self.clone()))
+    }
+
     /// Replace the provider with the one this executable registers as `provider`, opened now, off the
     /// node's boot: from the swap every call goes to it, and this returns once every write admitted to
     /// the old provider has been answered there ("Finish outstanding writes"). A name the executable
@@ -213,6 +221,30 @@ impl NodeRowsStorage for NodeRowsThroughHandle {
     }
 }
 
+/// Split node records use the same migration admission as connection writes.
+struct NodeRecordsThroughHandle(Arc<NodeStorageHandle>);
+
+#[async_trait]
+impl crate::node_records::NodeRecordsStorage for NodeRecordsThroughHandle {
+    async fn put_properties(&self, record: &crate::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
+        let w = self.0.current.write();
+        w.node_records.put_properties(record).await
+    }
+    async fn properties(&self, node: &crate::model::NodeId) -> Result<Option<crate::node_records::NodeProperties>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().node_records.properties(node).await
+    }
+    async fn put_lifecycle(&self, record: &crate::node_records::NodeLifecycle) -> Result<(), crate::storage_error::StorageError> {
+        let w = self.0.current.write();
+        w.node_records.put_lifecycle(record).await
+    }
+    async fn lifecycle(&self, node: &crate::model::NodeId, writer: &crate::node_records::RecordBirth) -> Result<Option<crate::node_records::NodeLifecycle>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().node_records.lifecycle(node, writer).await
+    }
+    async fn lifecycles(&self, mesh: &crate::model::MeshId) -> Result<Vec<crate::node_records::NodeLifecycle>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().node_records.lifecycles(mesh).await
+    }
+}
+
 /// The nodes' rows of a process that holds none: every read is refused by name.
 struct NoNodeRows;
 
@@ -238,7 +270,7 @@ pub struct MemoryNodeBackend;
 #[async_trait]
 impl NodeStorageBackend for MemoryNodeBackend {
     async fn open(&self, _launch: &Launch) -> Result<NodeStorage, String> {
-        Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), node_rows: Arc::new(NoNodeRows), writes_to: "memory".into() })
+        Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), node_rows: Arc::new(NoNodeRows), node_records: Arc::new(crate::node_records::MemoryNodeRecords::default()), writes_to: "memory".into() })
     }
 }
 
