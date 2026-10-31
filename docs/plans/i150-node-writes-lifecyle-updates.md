@@ -394,6 +394,21 @@ missing ID, on file and memory backends. Architect 1 reviewed this read shape ag
 The name check found an earlier new test identifier containing the retired word `round`; its name
 now says `encode_decode`. Final branch name check and the landing gate remain required.
 
+### Explicit declared node type (2026-10-31)
+
+`Node` stores its declared `node_type` separately from its path/name and runtime `kind`.
+`with_node_type` persists the normalized declaration instead of only validating it; its getter
+and immutable-update refusal read that field. `NodeLifecycle` distinguishes runtime `kind` from
+the declared type string, so its schema can preserve a custom declaration. The existing atlas
+conversion initializes the field until its lifecycle replacement removes that copied-row path.
+The full explicit mesh/kind launch and gossip plumbing and free pair cut remain e1 BUILD.
+
+`node-type-explicit-field-fixed.log`: the custom type survives a path change, serialization and an
+attempted type update; 1/1 passed. `explicit-node-type-records.log`: 12/12 storage controls passed.
+`explicit-node-type-create.log`: the existing free-text create/stop/start/recovery/replace control
+passed. The first compile identified the one exhaustive atlas constructor missing the new field;
+it now initializes it. This does not close the complete path/type migration.
+
 ### Shared property writer implementation evidence (2026-10-31)
 
 The node runtime now has one `NodePropertyWriter` shared by ordinary own-config and caller config
