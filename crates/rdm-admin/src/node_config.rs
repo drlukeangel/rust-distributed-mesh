@@ -33,6 +33,7 @@ use std::sync::Arc;
 pub struct NodeConfigs {
     records: std::sync::OnceLock<Arc<dyn rdm_node::node_records::NodeRecordsStorage>>,
     own_properties: std::sync::OnceLock<rdm_node::node_records::NodePropertyWriter>,
+    own_channels: std::sync::OnceLock<rdm_transport::topology::TopologyView>,
     client: Arc<NodeRpcClient>,
     own: crate::status_rpc::Configure,
     one_at_a_time: tokio::sync::Mutex<()>,
@@ -136,11 +137,12 @@ impl NodeConfigs {
     /// The door over `client`; `own` holds this admin's config when it is the subject; `written` is
     /// the record the writer of this admin's mesh rows holds (`NodeRows::with_written`).
     pub fn new(client: Arc<NodeRpcClient>, own: crate::status_rpc::Configure, written: Arc<crate::node_rows::WrittenRows>) -> Self {
-        Self { records: Default::default(), own_properties: Default::default(), client, own, one_at_a_time: tokio::sync::Mutex::new(()), written, views: Default::default(), topology: Default::default(), pushes: Default::default() }
+        Self { own_channels: Default::default(), records: Default::default(), own_properties: Default::default(), client, own, one_at_a_time: tokio::sync::Mutex::new(()), written, views: Default::default(), topology: Default::default(), pushes: Default::default() }
     }
 
     /// Bind the configured provider's node records. Every access follows provider migration.
-    pub fn uses_records(&self, records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>) {
+    pub fn uses_records(&self, records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>, channels: rdm_transport::topology::TopologyView) {
+        let _ = self.own_channels.set(channels);
         let _ = self.own_properties.set(rdm_node::node_records::NodePropertyWriter::new(records.clone()));
         let _ = self.records.set(records);
     }
@@ -153,6 +155,50 @@ impl NodeConfigs {
     /// This admin's own serialized property writer, shared by local and downward updates.
     pub fn own_properties(&self) -> Option<&rdm_node::node_records::NodePropertyWriter> {
         self.own_properties.get()
+    }
+
+    fn own_snapshot(&self, subject: &crate::model::Node, config: std::collections::BTreeMap<String, String>) -> Option<rdm_node::node_records::NodeProperties> {
+        let channels = self.own_channels.get()?;
+        let row = channels.own_row();
+        Some(rdm_node::node_records::NodeProperties {
+            birth: rdm_node::node_records::RecordBirth { node_id: subject.node_id.clone(), incarnation_id: subject.incarnation_id.clone()? },
+            config, tags: row.as_ref().map(|r| r.tags.clone()).or_else(|| self.written.row_of(&subject.node_id).map(|r| r.tags)).unwrap_or_default(),
+            endpoint_id: subject.endpoint_id.clone(), transport_addr: subject.transport_addr, listeners: subject.listeners.clone(),
+            app_types: Some(rdm_node::nodes_storage::AppTypes { incarnation: subject.incarnation_id.clone()?, types: channels.app_types() }),
+            held: channels.held_types(), applied: Default::default(),
+        })
+    }
+
+    /// Persist this admin's actual binding before it may become Ready. Retained properties
+    /// take precedence for the same node ID; only the bound metadata is refreshed.
+    pub async fn bound_own(&self, subject: &crate::model::Node, properties: rdm_core::launch::InitialProperties) -> Result<(), String> {
+        let mut initial = self.own_snapshot(subject, properties.config)
+            .ok_or_else(|| format!("{}: own property writer is not bound", subject.name))?;
+        initial.tags = properties.tags;
+        let channels = self.own_channels.get().expect("own snapshot requires channels").clone();
+        self.own_properties.get().expect("production own writer is bound").bound(initial,
+            move |record| { channels.set_config(record.config.clone()); channels.set_tags(record.tags.clone()); })
+            .await.map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// An admin writes its own map locally through the same writer as downward commands.
+    pub async fn own_config(&self, subject: &crate::model::Node, config: std::collections::BTreeMap<String, String>) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
+        let initial = self.own_snapshot(subject, config.clone())?;
+        let writer = self.own_properties.get()?;
+        let channels = self.own_channels.get()?.clone();
+        Some(writer.update(initial, None, move |record| record.config = config,
+            move |record| channels.set_config(record.config.clone())).await.map(|written| StatusReply::ConfigUpdated {
+                node_id: written.record.birth.node_id, incarnation: written.record.birth.incarnation_id,
+                config: written.record.config, revision: 0,
+            }))
+    }
+
+    /// A downward tag command to this admin is a local write, with no command to its primary.
+    pub async fn own_tags(&self, subject: &crate::model::Node, change: rdm_node::node_records::TagChange) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
+        let channels = self.own_channels.get()?.clone();
+        let initial = self.own_snapshot(subject, channels.config().unwrap_or_default())?;
+        Some(self.own_properties.get()?.tags(initial, change, None,
+            move |record| channels.set_tags(record.tags.clone())).await)
     }
 
     /// The client this door tells births through: the mesh-primary's node.name.update tells a birth its
@@ -692,6 +738,31 @@ impl NodeConfigs {
                 return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
             }
             Some(_) => {}
+        }
+        if self.records().is_some() {
+            let applied = if node_id == me_id {
+                match self.own_config(subject, config.clone()).await {
+                    Some(result) => result.map_err(|error| error.to_string()),
+                    None => return rdm_core::reply::status::not_ready(format!("{me} has no own property writer yet")),
+                }
+            } else {
+                let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
+                NodeRpc::new(&self.client).config_apply(&birth, config.clone(), 0, &CallOptions::default()).await.map_err(|error| error.to_string())
+            };
+            match applied {
+                Ok(StatusReply::Applied | StatusReply::AlreadyApplied | StatusReply::ConfigUpdated { .. }) => {}
+                Ok(reply) => return reply,
+                Err(error) => return rdm_core::reply::status::bounded_config_not_applied(&subject.name.to_string(), "unanswered", &error),
+            }
+            if let Some((storage_persistence, placement)) = onto_row {
+                if let Err(error) = self.written.update(storage, node_id, None, |row| {
+                    row.storage_persistence = Some(storage_persistence);
+                    row.placement = Some(placement);
+                }).await {
+                    return rdm_core::reply::status::bounded_node_row_refused(&subject.name.to_string(), &error);
+                }
+            }
+            return StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), config: config.clone(), revision: 0 };
         }
         let _one = self.one_at_a_time.lock().await;
         // The record is the one this writer holds, its tags, facts and pending release kept: a config

@@ -525,6 +525,7 @@ mod tests {
             assert_eq!(minted.mesh, "mesh2");
 
             let launch = Launch {
+                initial_properties: Default::default(),
                 fabric: "fabric1".into(),
                 fabric_id: fabric_id.clone(),
                 name: "mesh2.admin.1".parse().unwrap(),

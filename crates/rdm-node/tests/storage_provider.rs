@@ -32,6 +32,7 @@ fn store_dir(tag: &str) -> PathBuf {
 
 fn launch(provider: &str, data_dir: &Path) -> Launch {
     Launch {
+        initial_properties: Default::default(),
         topology_storage_provider: provider.into(),
         fabric: "fabric1".into(),
         fabric_id: FabricId::mint(),

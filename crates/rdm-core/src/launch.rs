@@ -15,6 +15,8 @@ pub const ENV_FABRIC: &str = "RDM_FABRIC";
 pub const ENV_FABRIC_ID: &str = "RDM_FABRIC_ID";
 /// The node's `path.name`.
 pub const ENV_NODE_NAME: &str = "RDM_NODE_NAME";
+/// Initial config and tags of this exact launch, as a JSON object.
+pub const ENV_NODE_PROPERTIES: &str = "RDM_NODE_PROPERTIES";
 /// The node's minted id.
 pub const ENV_NODE_ID: &str = "RDM_NODE_ID";
 /// The id of the node's incarnation.
@@ -171,9 +173,21 @@ impl IssuingMaterial {
     }
 }
 
+/// Properties handed to a new node. Its durable node record takes precedence on a subsequent start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitialProperties {
+    /// The whole application config map supplied by the Build or recovered predecessor.
+    pub config: BTreeMap<String, String>,
+    /// The complete tag set supplied with that map.
+    pub tags: std::collections::BTreeSet<String>,
+}
+
 /// Everything a node needs to come up as the exact node node-admin allocated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
+    /// Entry-owned properties to initialize only when this node has no durable record.
+    pub initial_properties: InitialProperties,
     /// The Fabric's name (its label) and its identity.
     pub fabric: String,
     /// The fabric's minted id.
@@ -388,6 +402,7 @@ impl Launch {
         m.insert(ENV_FABRIC.into(), self.fabric.clone());
         m.insert(ENV_FABRIC_ID.into(), self.fabric_id.to_string());
         m.insert(ENV_NODE_NAME.into(), self.name.to_string());
+        m.insert(ENV_NODE_PROPERTIES.into(), serde_json::to_string(&self.initial_properties).expect("string maps encode as JSON"));
         m.insert(ENV_NODE_ID.into(), self.node_id.to_string());
         m.insert(ENV_INCARNATION.into(), self.incarnation.to_string());
         if let Some(s) = &self.supersedes {
@@ -426,6 +441,8 @@ impl Launch {
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
         let req = |k: &str| get(k).filter(|v| !v.trim().is_empty()).ok_or_else(|| format!("{k} is required and must not be empty"));
         Ok(Self {
+            initial_properties: get(ENV_NODE_PROPERTIES).map(|v| serde_json::from_str(&v)
+                .map_err(|_| format!("{ENV_NODE_PROPERTIES} does not parse as initial properties"))).transpose()?.unwrap_or_default(),
             fabric: req(ENV_FABRIC)?,
             fabric_id: FabricId::parse(&req(ENV_FABRIC_ID)?).map_err(|e| format!("{ENV_FABRIC_ID}: {e}"))?,
             name: req(ENV_NODE_NAME)?.parse().map_err(|e| format!("{ENV_NODE_NAME}: {e}"))?,
@@ -451,6 +468,28 @@ impl Launch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A launch preserves the entire config map and tag set, including separator characters
+    /// in values; malformed input is refused without echoing application values.
+    #[test]
+    fn initial_properties_round_trip_and_invalid_input_is_named() {
+        let mut env = admin_env_with_custody("");
+        let initial = InitialProperties {
+            config: [("listener.data".into(), "a,b=c\nwith spaces".into()), ("empty".into(), "".into())].into(),
+            tags: ["zone-a".into(), "v1.2~rc".into()].into(),
+        };
+        env.insert(ENV_NODE_PROPERTIES.into(), serde_json::to_string(&initial).unwrap());
+        let launch = Launch::from_env(|k| env.get(k).cloned()).unwrap();
+        assert_eq!(launch.initial_properties, initial);
+        let written = launch.to_env();
+        assert_eq!(Launch::from_env(|k| written.get(k).cloned()).unwrap(), launch);
+        for bad in ["{secret-value", "{\"unknown\":\"secret-value\"}"] {
+            env.insert(ENV_NODE_PROPERTIES.into(), bad.into());
+            let error = Launch::from_env(|k| env.get(k).cloned()).unwrap_err();
+            assert_eq!(error, format!("{ENV_NODE_PROPERTIES} does not parse as initial properties"));
+            assert!(!error.contains("secret-value"));
+        }
+    }
 
     /// CONTRACT (storage.md §2 Day 0: "`RDM_TOPOLOGY_STORAGE_PROVIDER`, `file` when unset"; "every launch:
     /// the launching admin, into the node's environment"): unset reads `file`, a name reads as given, an
@@ -512,7 +551,7 @@ mod tests {
 
     #[test]
     fn launch_round_trips_through_the_environment() {
-        let l = Launch { topology_storage_provider: TOPOLOGY_STORAGE_FILE.into(),
+        let l = Launch { initial_properties: Default::default(), topology_storage_provider: TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             name: "mesh1.rpc.2".parse().unwrap(),
@@ -597,7 +636,7 @@ mod tests {
     #[test]
     fn a_launch_carries_its_root_set_as_rdm_roots_and_refuses_one_that_is_no_key_by_name() {
         let (a, b) = (crate::certs::mint_key().verifying_key(), crate::certs::mint_key().verifying_key());
-        let base = Launch { topology_storage_provider: TOPOLOGY_STORAGE_FILE.into(),
+        let base = Launch { initial_properties: Default::default(), topology_storage_provider: TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             name: "mesh1.rpc.2".parse().unwrap(),

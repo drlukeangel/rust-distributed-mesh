@@ -140,6 +140,30 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     let Some(door) = configs else {
         return rdm_core::reply::status::not_ready(format!("{me} has no node-RPC client yet, and so no door its record changes take turns at: the tags of {} are not written", subject.name));
     };
+    if door.records().is_some() {
+        let change = match change {
+            Change::Create(labels) => rdm_node::node_records::TagChange::Create((*labels).clone()),
+            Change::Delete(scope) => rdm_node::node_records::TagChange::Delete((*scope).clone()),
+        };
+        let reply = if node_id == me_id {
+            match door.own_tags(subject, change).await {
+                Some(result) => result.map_err(|error| error.to_string()),
+                None => return rdm_core::reply::status::not_ready(format!("{me} has no own property writer yet")),
+            }
+        } else {
+            let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
+            let rpc = rdm_client::NodeRpc::new(door.client());
+            let options = rdm_transport::CallOptions::default();
+            match change {
+                rdm_node::node_records::TagChange::Create(labels) => rpc.tags_create(node_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &options).await,
+                rdm_node::node_records::TagChange::Delete(scope) => rpc.tags_delete(node_id, &rdm_transport::RouteChoice::Direct, &birth, &scope, &options).await,
+            }.map_err(|error| error.to_string())
+        };
+        return match reply {
+            Ok(reply) => reply,
+            Err(error) => rdm_core::reply::status::bounded_node_row_refused(&subject.name.to_string(), &error),
+        };
+    }
     // One change to a node record at a time, through the writer's held record: the row carries every
     // field the writer knows of it, the config included.
     let _one = door.one_at_a_time().await;

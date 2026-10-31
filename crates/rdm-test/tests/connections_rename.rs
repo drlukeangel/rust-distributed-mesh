@@ -59,7 +59,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             std::fs::create_dir_all(&dir).unwrap();
             RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
             let key = node::load_or_mint_key(&dir).unwrap();
-            let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
+            let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
                 fabric: "fabric1".into(),
                 fabric_id: fabric.clone(),
                 name: name.clone(),
@@ -286,7 +286,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
-        let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
+        let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric.clone(),
             name: born.clone(),

@@ -314,6 +314,7 @@ pub struct Records {
     /// never heard is adopted from, and the node rows the view reads a birth's name from when the
     /// birth does not publish it ([`RowNames`]).
     pub(crate) contacts: std::sync::OnceLock<Arc<dyn crate::storage::NodesStorage>>,
+    pub(crate) node_records: std::sync::OnceLock<Arc<dyn rdm_node::node_records::NodeRecordsStorage>>,
     /// The lifecycle states this admin applied as an authority (`status_rpc`): the view's
     /// `declared`, never its `status`.
     pub declared: Arc<Mutex<crate::status_rpc::Declared>>,

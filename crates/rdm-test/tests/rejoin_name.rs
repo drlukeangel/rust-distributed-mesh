@@ -54,7 +54,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_stops_and_starts_under_the_name_it_h
         let key = node::load_or_mint_key(&dir).unwrap();
         let born: PathName = "mesh1.rpc.1".parse().unwrap();
         let taken: PathName = born.renamed();
-        let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
+        let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric,
             name: born.clone(),

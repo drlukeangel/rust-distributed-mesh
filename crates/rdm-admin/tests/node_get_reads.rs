@@ -40,7 +40,7 @@ async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin
     let atlas = rdm_admin::atlas::Atlas::default();
     let meshes: Vec<String> = view.meshes.iter().map(|m| m.name.clone()).collect();
     atlas.fill(status, meshes).await.expect("the records are read");
-    rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin.1"), view, &loads, &atlas, planned, filter, &|_| {}).await
+    rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin.1"), view, &loads, &atlas, planned, filter, &|_| {}, None).await
 }
 
 /// CONTRACT (`docs/architecture/lifecycles/node-recovery.md:152` — "It writes the birth's durable

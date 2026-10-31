@@ -633,6 +633,7 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
     let (source, destination) = (root("admitted-source"), root("admitted-destination"));
     let initial = properties();
     let launch = rdm_core::launch::Launch {
+        initial_properties: Default::default(),
         topology_storage_provider: "file".into(),
         fabric: "fabric1".into(),
         fabric_id: FabricId::mint(),
@@ -733,4 +734,34 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
     drop(handle);
     std::fs::remove_dir_all(source).unwrap();
     std::fs::remove_dir_all(destination).unwrap();
+}
+
+// @feature: node-records
+/// Tag commands validate against the latest serialized set and preserve every other field.
+#[tokio::test]
+async fn tag_deltas_preserve_properties_and_refusals_change_nothing() {
+    use rdm_node::node_records::{NodePropertyWriter, TagChange};
+    use rdm_core::status::{StatusReply, TagScope, MAX_NODE_TAGS};
+    let records = std::sync::Arc::new(MemoryNodeRecords::default());
+    let writer = NodePropertyWriter::new(records.clone());
+    let mut initial = properties();
+    initial.tags = (0..MAX_NODE_TAGS).map(|n| format!("tag-{n}")).collect();
+    writer.bound(initial.clone(), |_| {}).await.unwrap();
+    let refused = writer.tags(initial.clone(), TagChange::Create(["extra".into()].into()), None, |_| panic!("a refused set is never published")).await.unwrap();
+    assert!(matches!(refused, StatusReply::RejectedTags { .. }), "{refused:?}");
+    assert_eq!(records.properties(&initial.birth.node_id).await.unwrap(), Some(initial.clone()));
+    let removed = writer.tags(initial.clone(), TagChange::Delete(TagScope::Labels(["tag-0".into(), "absent".into()].into())), None, |_| {}).await.unwrap();
+    assert!(matches!(removed, StatusReply::TagsDeleted { not_carried, .. } if not_carried == ["absent".into()].into()));
+    let added = writer.tags(initial.clone(), TagChange::Create(["extra".into(), "tag-1".into()].into()), None, |_| {}).await.unwrap();
+    assert!(matches!(added, StatusReply::TagsCreated { already_carried, .. } if already_carried == ["tag-1".into()].into()));
+    let mut expected = initial.clone();
+    expected.tags.remove("tag-0");
+    expected.tags.insert("extra".into());
+    assert_eq!(records.properties(&initial.birth.node_id).await.unwrap(), Some(expected.clone()));
+    let invalid = writer.tags(initial.clone(), TagChange::Create(["bad label".into()].into()), None, |_| panic!("invalid label was published")).await.unwrap();
+    assert!(matches!(invalid, StatusReply::RejectedTags { .. }));
+    assert_eq!(records.properties(&initial.birth.node_id).await.unwrap(), Some(expected));
+    writer.tags(initial.clone(), TagChange::Delete(TagScope::All), None, |_| {}).await.unwrap();
+    initial.tags.clear();
+    assert_eq!(records.properties(&initial.birth.node_id).await.unwrap(), Some(initial));
 }

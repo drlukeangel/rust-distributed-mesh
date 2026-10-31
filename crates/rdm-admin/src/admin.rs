@@ -4032,7 +4032,7 @@ mod tests {
         let env: std::collections::HashMap<String, String> = [("RDM_STORE_DIR", STORE_DIR), ("RDM_CONNECTIONS_DELETE_DEADLINE_MS", "soon")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let e = AdminConfig::from_env(|k| env.get(k).cloned()).err().expect("a bound that is no number was accepted");
         assert!(e.starts_with("RDM_CONNECTIONS_DELETE_DEADLINE_MS `soon`"), "{e}");
-        let launch = rdm_core::launch::Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
+        let launch = rdm_core::launch::Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             name: "mesh1.admin.2".parse().unwrap(),
@@ -4073,6 +4073,7 @@ mod tests {
         assert_ne!(adoption.node_id, day0.node_id, "an adoption launch is a new birth with its own node.id");
         let given = NodeId::mint();
         let launch = rdm_core::launch::Launch {
+            initial_properties: Default::default(),
             topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),

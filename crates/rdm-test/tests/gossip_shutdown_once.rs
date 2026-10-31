@@ -65,7 +65,7 @@ const ACTOR_TOOK_SHUTDOWN: &str = "received shutdown message, quit all topics";
 const SHUTDOWN_FAILED: &str = "error while shutting down gossip";
 
 fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide) -> Launch {
-    Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
+    Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: fabric.clone(),
         name: "mesh1.rpc.1".parse().unwrap(),

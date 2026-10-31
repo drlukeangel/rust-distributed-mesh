@@ -97,7 +97,7 @@ impl crate::build_drive::Gate for RoleGate {
         let Some(rows) = self.handover.records.contacts.get().cloned() else {
             return Err(format!("{}: no nodes.storage is open yet to read the node rows from", self.handover.me));
         };
-        crate::accepted::recorded_executables(&*rows, topology).await
+        crate::accepted::recorded_executables(&*rows, self.control.node_records.get().map(|r| &**r), topology).await
     }
 
     /// The meshes of `observed` whose Mesh record is Dead: one point read of each record the view does

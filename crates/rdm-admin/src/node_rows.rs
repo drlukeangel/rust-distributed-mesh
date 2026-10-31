@@ -894,7 +894,7 @@ impl NodeRows {
     async fn put_seeded(&self, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, tags: &std::collections::BTreeSet<String>, placed: Option<(rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
         let claimed = match self.written.known_row(&*self.storage, node_id).await {
             Ok(Some(held)) => Claimed::HeldByNode(held),
-            Ok(None) => seeded_put(&*self.storage, &self.written, me, name, node_id, status, own, allocated, executable, tags, placed, of, span, prefix).await?,
+            Ok(None) => seeded_put(&*self.storage, &self.written, self.configs.as_ref().and_then(|slot| slot.get()).and_then(|configs| configs.records()).map(|records| &**records), me, name, node_id, status, own, allocated, executable, tags, placed, of, span, prefix).await?,
             Err(e) => return Err(RowRefused::Unwritten(format!("{me}: the row {node_id} holds could not be read before its row at {name} was written: {e}"))),
         };
         if of == ClaimFor::Successor {
@@ -957,13 +957,8 @@ impl NodeRows {
                 let outcome = if filled.is_ok() { "filled" } else { "fill-refused" };
                 (filled, outcome)
             };
-            let pushed = filled.is_ok();
             tracing::info_span!("rdm.node_admin.node.update.via-records-filled", node = %me, mesh = %mesh, records = filled.as_ref().map(|n| *n as u64).unwrap_or(0), outcome, detail = %filled.err().map(|e| e.to_string()).unwrap_or_default(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("the writing of a mesh's records was taken: its records are read whole, once"));
-            // A successor owes every row's push up to the fabric-primary again, from the row (Q235 P3).
-            if let (true, Some(door)) = (pushed, self.configs.as_ref().and_then(|slot| slot.get())) {
-                door.owe_pushes(&me, &self.me_id, now, &mesh);
-            }
         }
         for birth in arrivals {
             let span = tracing::info_span!(
@@ -1300,7 +1295,7 @@ pub async fn write_deleted(storage: &dyn NodesStorage, written: &WrittenRows, na
 /// A record the same node holds already is left as it is. A recovery's record names the birth it
 /// replaced, the newest birth of the `Deleted` record at the name (`predecessor`).
 #[allow(clippy::too_many_arguments)]
-async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, created_with: &std::collections::BTreeSet<String>, placed: Option<(rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
+async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, properties: Option<&dyn rdm_node::node_records::NodeRecordsStorage>, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, created_with: &std::collections::BTreeSet<String>, placed: Option<(rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
     let _one = written.lock(node_id).await;
     let mut awaited = prefix.to_string();
     span.record("awaiting", "read-previous-row");
@@ -1314,7 +1309,7 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
     }
     // The `.old` record seeds the create at the name a replaced predecessor released (node-replace.md
     // step 3) and the create of an exited predecessor's successor at the path.
-    let seed = match previous {
+    let mut seed = match previous {
         Some(p) => Some(p),
         None => {
             span.record("awaiting", "read-old-row");
@@ -1324,6 +1319,16 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
             old
         }
     };
+    // Recovery inherits the predecessor's acknowledged properties from its own exact ID;
+    // a primary's cached lifecycle row cannot stand in for that node-owned record.
+    if matches!(of, ClaimFor::Arrival | ClaimFor::Recovery) {
+        if let (Some(properties), Some(seed)) = (properties, seed.as_mut()) {
+            if let Some(own) = properties.properties(&seed.node_id).await.map_err(|error| RowRefused::Unwritten(format!("{me}: predecessor {} properties could not be read: {error}", seed.node_id)))? {
+                seed.config = own.config;
+                seed.tags = own.tags;
+            }
+        }
+    }
     // The config and the tags of a Build's create, a replace's successor and a reconcile's replacement
     // included, are its entry's (`own`, `created_with`; Q305): a Build provides the whole map of a node it
     // replaces, never the predecessor's, and an empty one is empty. A recovery's claim takes the Deleted record's at this
@@ -1335,7 +1340,7 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
     });
     let tags = match of {
         ClaimFor::Create | ClaimFor::Successor | ClaimFor::Replacement => created_with.clone(),
-        ClaimFor::Arrival | ClaimFor::Recovery => inherited.map(|p| p.tags.clone()).unwrap_or_default(),
+        ClaimFor::Arrival | ClaimFor::Recovery => inherited.or(seed.as_ref()).map(|p| p.tags.clone()).unwrap_or_default(),
     };
     let config = match of {
         ClaimFor::Create | ClaimFor::Successor | ClaimFor::Replacement => own.clone(),
@@ -1538,7 +1543,7 @@ async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, w
         ),
     };
     let mut guard = ClaimGuard { span: span.clone(), done: false };
-    let r = tracing::Instrument::instrument(seeded_put(storage, written, name, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, executable, &std::collections::BTreeSet::new(), placed, of, &span, ""), span.clone()).await;
+    let r = tracing::Instrument::instrument(seeded_put(storage, written, None, name, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, executable, &std::collections::BTreeSet::new(), placed, of, &span, ""), span.clone()).await;
     guard.done = true;
     record_claim(&span, &r);
     span.in_scope(|| tracing::info!("node.create: the name claim decided"));
