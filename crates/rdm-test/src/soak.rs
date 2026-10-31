@@ -1867,17 +1867,34 @@ impl Driver {
         // A recovery that has acted on the held birth by the release (since Q273 an `os-stopped` runtime is
         // a verdict and is recovered within seconds: node-investigation.md) is read to its end: the path is
         // back only as the replacement, never as the birth being deleted.
-        let acting = !acted_rows(&acted_on(before, &(self.read)(&self.estate, &self.build_id).await, &path)).is_empty();
+        // Read at each poll, never once at the release: a recovery that opens its attempt in the same
+        // instant as the release (its verdict reached as the hold ends) acts on the held birth after
+        // the release, so the held birth's brief return as itself is not the end; the path is back only
+        // as the replacement once any recovery has acted.
         let back = {
             let est = &self.estate;
             let held_rt = hold_rt.clone();
             let back = wait_for_opt(&format!("{path} ready as its own birth, or as its replacement with the held runtime ended"), floor * 2 + Duration::from_secs(60), || async {
+                let acting = !acted_rows(&acted_on(before, &(self.read)(est, &self.build_id).await, &path)).is_empty();
                 est.node_value_opt(&path).await.filter(|x| {
                     x["status"] == "ready" && ((x["incarnation_id"] == inc.as_str() && !acting) || (x["node_id"] != n["node_id"] && held_rt.as_ref().is_none_or(|r| r.check().is_err())))
                 })
             })
             .await;
-            back.ok_or_else(|| broken("silence-is-not-death", format!("{path} is neither back as {inc} nor replaced with the held runtime ended after the release")))?
+            let back = back.ok_or_else(|| broken("silence-is-not-death", format!("{path} is neither back as {inc} nor replaced with the held runtime ended after the release")))?;
+            // A recovery that acted after the held birth was read back as itself (its attempt opened
+            // between that read and this one) is read to its end too: the path is back as the
+            // replacement.
+            let acted_since = !acted_rows(&acted_on(before, &(self.read)(est, &self.build_id).await, &path)).is_empty();
+            if back["node_id"] == n["node_id"] && acted_since {
+                wait_for_opt(&format!("{path} replaced with the held runtime ended, a recovery having acted"), floor * 2 + Duration::from_secs(60), || async {
+                    est.node_value_opt(&path).await.filter(|x| x["status"] == "ready" && x["node_id"] != n["node_id"] && held_rt.as_ref().is_none_or(|r| r.check().is_err()))
+                })
+                .await
+                .ok_or_else(|| broken("silence-is-not-death", format!("{path}: a recovery acted on {inc} after the release, and no replacement is ready with the held runtime ended")))?
+            } else {
+                back
+            }
         };
         let recreated = back["node_id"] != n["node_id"];
         entry["recreated"] = json!(recreated);
