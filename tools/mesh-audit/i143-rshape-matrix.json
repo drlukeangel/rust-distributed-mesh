@@ -821,7 +821,7 @@
       "covers": [
         "C12"
       ],
-      "canon": "connections.md section 8 (the carrier refuses carrier-edge-lost; that refusal is how the source learns the edge is gone) and section 9 J",
+      "canon": "connections.md section 8 (the carrier refuses connection-lost; that refusal is how the source learns the carrier's Direct is gone) and section 9 J",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-connection-process/mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-carrier-connection-process/mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"

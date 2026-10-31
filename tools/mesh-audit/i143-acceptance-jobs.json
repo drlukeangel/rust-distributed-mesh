@@ -707,10 +707,10 @@
       "layer": "process",
       "cells": [
         {
-          "name": "a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes",
+          "name": "a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes",
           "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes/estate cargo test -p rdm-test --test main peer_mesh_investigation::a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes -- --exact",
-          "dir": "target/i143-acceptance/2803-detect/process/a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes/estate cargo test -p rdm-test --test main peer_mesh_investigation::a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes"
         },
         {
           "name": "an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stops",
@@ -731,10 +731,10 @@
           "dir": "target/i143-acceptance/2803-detect/process/a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict"
         },
         {
-          "name": "an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost",
+          "name": "an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost",
           "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost/estate cargo test -p rdm-test --test main peer_mesh_investigation::an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost -- --exact",
-          "dir": "target/i143-acceptance/2803-detect/process/an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost/estate cargo test -p rdm-test --test main peer_mesh_investigation::an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost"
         },
         {
           "name": "two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin",
