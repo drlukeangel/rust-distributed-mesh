@@ -41,7 +41,7 @@ async fn terminate_birth(provider: &ProcessDeploymentProvider, row: &NodeView) -
     let fact = RuntimeFact::read_record(Path::new(dir)).ok_or_else(|| anyhow!("no runtime.json in {dir}"))?.map_err(|e| anyhow!(e))?;
     let handle = adopt(provider, &fact).map_err(|e| anyhow!(e))?;
     let pid = handle.pid.ok_or_else(|| anyhow!("{} has no pid", row.name))?;
-    provider.terminate(&handle, TerminationMode::Immediate).await.map_err(|e| anyhow!("{e}"))?;
+    provider.terminate(&handle, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.map_err(|e| anyhow!("{e}"))?;
     Ok(pid)
 }
 

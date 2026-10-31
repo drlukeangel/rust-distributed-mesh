@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
 
     let (provider, handle) = adopt_birth(&fp)?;
     println!("before: fabric-primary {} (node_id {}, incarnation {:?}, pid {:?}); executor {}", fp.name, fp.node_id, fp.incarnation_id, handle.pid, executor.name);
-    provider.terminate(&handle, TerminationMode::Immediate).await.map_err(|e| anyhow!("{e}"))?;
+    provider.terminate(&handle, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.map_err(|e| anyhow!("{e}"))?;
     println!("terminated {}; awaiting fabric recovery via {}", fp.name, executor.name);
 
     let obs_nodes = Nodes::new(peers.carrier_at(executor.name.clone()));

@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
     let provider = ProcessDeploymentProvider::new();
     let handle = adopt(&provider, &fact).map_err(|e| anyhow!(e))?;
     provider
-        .terminate(&handle, TerminationMode::Immediate)
+        .terminate(&handle, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step())
         .await
         .map_err(|e| anyhow!("{e}"))?;
     println!(

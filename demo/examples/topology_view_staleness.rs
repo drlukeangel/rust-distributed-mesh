@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
     // silence is all the view sees.
     let provider = ProcessDeploymentProvider::new();
     let handle = adopt(&provider, &fact).map_err(|e| anyhow!(e))?;
-    provider.terminate(&handle, TerminationMode::Immediate).await.map_err(|e| anyhow!("{e}"))?;
+    provider.terminate(&handle, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.map_err(|e| anyhow!("{e}"))?;
     let target_filter = Filter::new()
         .eq("path", [target.path()])
         .eq("name", [target.name()]);

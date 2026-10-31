@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
     );
 
     provider
-        .terminate(&handle, TerminationMode::Immediate)
+        .terminate(&handle, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step())
         .await
         .map_err(|e| anyhow!("{e}"))?;
     std::fs::remove_dir_all(&old_dir)?;

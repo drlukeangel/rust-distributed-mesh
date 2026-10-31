@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
     );
 
     provider
-        .terminate(&handle, TerminationMode::Immediate)
+        .terminate(&handle, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step())
         .await
         .map_err(|e| anyhow!("{e}"))?;
     let after_inspect = inspect_runtime(&provider, &fact, Some(dir), incarnation.as_str()).await;
