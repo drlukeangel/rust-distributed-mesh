@@ -375,6 +375,12 @@ impl<'a> NodeRpc<'a> {
         self.status(NodeOp::ConfigUpdate, birth, req, opts).await
     }
 
+    /// Apply a Build's entire entry to this exact birth through its own property writer.
+    pub async fn properties_apply(&self, birth: &ExactBirth, entry: rdm_core::properties::EntryProperties, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::ApplyNodeProperties { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), entry };
+        self.status(NodeOp::ConfigUpdate, birth, req, opts).await
+    }
+
     /// `node.tag.create` of `labels` on the exact birth, the caller's single call to the node's
     /// mesh-primary `mesh_primary` (R-TG1; node-rpc-envelope.md node.tags): it writes the node's row
     /// carrying them and puts each label's key of the tags index, and answers `TagsCreated` naming

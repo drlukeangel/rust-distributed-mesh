@@ -299,7 +299,7 @@ pub const PROBE_APPLY_CELLS: &str = "crates/rdm-test/tests/status_probe_apply.rs
 pub const COMMAND_ARMS: [&str; 9] = ["Admitted", "AlreadyAdmitted", "Stopped", "ConnectionsDeleted", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
 
 /// The frozen 0x1B counts.
-pub const STATUS_REQUESTS: u32 = 37;
+pub const STATUS_REQUESTS: u32 = 38;
 pub const STATUS_REPLIES: u32 = 63;
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {

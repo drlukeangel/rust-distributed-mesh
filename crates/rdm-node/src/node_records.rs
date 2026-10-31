@@ -44,14 +44,8 @@ pub struct NodeProperties {
     pub applied: BTreeSet<PropertyApplication>,
 }
 
-/// Existing Build and operation identities, scoped by the property record's node ID.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct PropertyApplication {
-    /// The Build applying the entry.
-    pub build_id: String,
-    /// The operation within that Build.
-    pub operation: String,
-}
+// Re-export the protocol identity so storage and command callers use the same type.
+pub use rdm_core::properties::PropertyApplication;
 
 /// One running node's serialized property write path. All its property commands use this
 /// instance. The task owning the lock also owns the provider call: cancelling a caller never
@@ -125,6 +119,24 @@ impl NodePropertyWriter {
             publish,
         )
         .await
+    }
+
+    /// Apply the whole Build entry through the same serialized writer as local changes.
+    /// Its recognition and both property fields are one durable effect.
+    pub async fn entry(
+        &self,
+        initial: NodeProperties,
+        entry: rdm_core::properties::EntryProperties,
+        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+    ) -> Result<PropertyWritten, StorageError> {
+        self.update_checked(initial, Some(entry.application), move |record| {
+            if let Some(reason) = rdm_core::status::tags_refusal(&entry.tags) {
+                return Err(StorageError::Refused { file: "node.tags".into(), reason });
+            }
+            record.config = entry.config;
+            record.tags = entry.tags;
+            Ok(())
+        }, publish).await
     }
 
     /// Decide tag deltas against the latest serialized property state. The label grammar and

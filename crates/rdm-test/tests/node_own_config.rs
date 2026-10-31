@@ -63,10 +63,28 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
         let later: BTreeMap<String, String> = [("source".into(), "own".into())].into();
         running.config_update(later.clone()).await.expect("the later own write answers");
         assert_eq!(running.topology_view.config(), Some(later.clone()));
+        // The same wire endpoint applies config and tags atomically for one Build entry.
+        let application = rdm_core::properties::PropertyApplication::entry(&rdm_core::BuildId::mint(), &launch.name);
+        let entry = rdm_core::properties::EntryProperties { application: application.clone(),
+            config: [("source".into(), "build".into())].into(), tags: ["build".into()].into() };
+        let apply = StatusRequest::ApplyNodeProperties { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), entry };
+        let (ack, _) = admin.observer.client.call::<rdm_core::status::Status>(&target, &apply, &rdm_transport::CallOptions::default()).await;
+        assert!(matches!(ack, rdm_core::outcome::RpcOutcome::Reply(ref r) if *r.value() == StatusReply::Applied), "{ack:?}");
+        drop(ack); // The caller retains no completion knowledge.
+        running.config_update(later.clone()).await.unwrap();
+        let tags = StatusRequest::CreateTags { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), labels: ["node".into()].into() };
+        let (ack, _) = admin.observer.client.call::<rdm_core::status::Status>(&target, &tags, &rdm_transport::CallOptions::default()).await;
+        assert!(matches!(ack, rdm_core::outcome::RpcOutcome::Reply(ref r) if matches!(r.value(), StatusReply::TagsCreated { .. })), "{ack:?}");
+        let (repeated, _) = admin.observer.client.call::<rdm_core::status::Status>(&target, &apply, &rdm_transport::CallOptions::default()).await;
+        assert!(matches!(repeated, rdm_core::outcome::RpcOutcome::Reply(ref r) if *r.value() == StatusReply::AlreadyApplied), "{repeated:?}");
+        assert_eq!(running.topology_view.config(), Some(later.clone()));
         use rdm_node::node_records::NodeRecordsStorage;
         let root = rdm_node::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).unwrap();
         let records = rdm_node::node_records::FileNodeRecords::open(&root).await.unwrap();
-        assert_eq!(records.properties(&launch.node_id).await.unwrap().unwrap().config, later);
+        let durable = records.properties(&launch.node_id).await.unwrap().unwrap();
+        assert_eq!(durable.config, later);
+        assert_eq!(durable.tags, ["build".into(), "node".into()].into());
+        assert_eq!(durable.applied, [application].into());
         assert!(admin.config_updates.lock().unwrap().is_empty());
         running.stop().await;
         let _ = std::fs::remove_dir_all(&dir);

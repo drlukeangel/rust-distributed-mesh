@@ -1863,7 +1863,7 @@ mod tests {
         }
         // A held path whose row already records the executable is not hashed again: its file may be gone.
         let gone = rdm_core::binding::Binding { executable: dir.join("gone"), ..admin.clone() };
-        let recorded: crate::accepted::Recorded = [("mesh1.admin.1".parse().unwrap(), crate::accepted::RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id: crate::model::NodeId::mint(), sha256: Some(gone.sha256.clone()) })].into();
+        let recorded: crate::accepted::Recorded = [("mesh1.admin.1".parse().unwrap(), crate::accepted::RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: crate::model::NodeId::mint(), sha256: Some(gone.sha256.clone()) })].into();
         assert_eq!(named_executable_refusal(&current, &with("mesh1.admin.1", gone), &recorded, ProviderKind::Process, &[]).await, None);
         assert_eq!(BuildReject::ExecutableRefused { node: "x".into(), detail: "y".into() }.reason(), "executable-refused");
         let _ = std::fs::remove_dir_all(&dir);

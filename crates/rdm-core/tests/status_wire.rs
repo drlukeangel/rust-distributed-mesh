@@ -30,7 +30,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_thirty_seven_variant_wire_schema() {
+fn requests_match_the_frozen_thirty_eight_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Stopped, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
@@ -95,6 +95,10 @@ fn requests_match_the_frozen_thirty_seven_variant_wire_schema() {
         (UpdateRoots { node_id: node(), incarnation: birth(), roots: vec!["ab".into()], phase: rdm_core::status::RootsPhase::Distributed, secret: Some(rdm_core::status::RootSecretHex("cd".into())) }, "230c3031323334353637383961620c397763707266677776746879010261620101026364"),
         // fabric.root.update, appended last: secret "ab"
         (UpdateRoot { secret: rdm_core::status::RootSecretHex("ab".into()) }, "24026162"),
+        (ApplyNodeProperties { node_id: node(), incarnation: birth(), entry: rdm_core::properties::EntryProperties {
+            application: rdm_core::properties::PropertyApplication { build_id: "b".into(), operation: "e".into() },
+            config: Default::default(), tags: Default::default(),
+        } }, "250c3031323334353637383961620c397763707266677776746879016201650000"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {

@@ -376,6 +376,21 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             timeouts: Timeouts::default(),
         };
 
+        // The entry target is a receipt decision, shared by config and tag steps.
+        let property_path: PathName = "mesh1.rpc.9".parse().unwrap();
+        let property_birth = rdm_admin::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        assert_eq!(pipeline.property_target(&build_id, 1, &property_path, async { Ok(property_birth.clone()) }).await.unwrap(), property_birth);
+        let failed_apply = pipeline.apply_in_place(&build_id, 1, &property_path,
+            format!("node.config.update:{property_path}"), "UpdateConfig", async { Err("reply lost after send".into()) }).await;
+        assert!(failed_apply.is_err());
+        for attempt in [1, 2] {
+            let pinned = pipeline.property_target(&build_id, attempt, &property_path, async { panic!("same entry must not repin after a failed child step") }).await.unwrap();
+            assert_eq!(pinned, property_birth);
+        }
+        let mut successor_view = view.read().await.clone();
+        successor_view.nodes.push(Node::allocated(property_path.clone()));
+        assert!(property_birth.held_in(&successor_view, "entry", &property_path).is_err(), "an unanswered old target is never replaced by the current path's new node");
+
         // Endpoint key (node-create.md:16): mint into a new data dir, or load the key from an
         // inherited data dir.
         let key_dir = data_root.join("inherited-key-check");

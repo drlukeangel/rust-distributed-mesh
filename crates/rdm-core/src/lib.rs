@@ -66,6 +66,7 @@ pub mod outcome;
 pub mod path;
 pub mod ping;
 pub mod protocol;
+pub mod properties;
 pub mod publisher;
 pub mod read;
 pub mod reconnect;

@@ -221,6 +221,10 @@ pub struct NodeRow {
     /// launch and carries none; a row written before allocations existed carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allocated: Option<Allocation>,
+    /// The immutable property snapshot selected by this exact claim, handed to its launch.
+    /// It includes application knowledge from the same read as recovered config and tags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_properties: Option<rdm_core::launch::InitialProperties>,
     /// The `path.name` a rename moved this row from (proposal node-properties-own-commands.md §2.1
     /// "Claim and move"), written by the put at the new key. While the key it names still holds this
     /// row's node, the release of that key is pending and the writer that meets the row releases it
@@ -323,7 +327,7 @@ pub struct Allocation {
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
     pub fn new(name: PathName, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None, revision: 0, writer: None }
+        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, initial_properties: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None, revision: 0, writer: None }
     }
 
     /// Write `to` as the node's status, set by its mesh-primary at the transition states.md "Who sets

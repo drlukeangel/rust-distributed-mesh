@@ -492,6 +492,46 @@ async fn a_lost_storage_acknowledgement_does_not_lose_apply_recognition() {
 }
 
 // @feature: node-records
+/// CONTRACT (i150 R8): an entire entry and its recognition are atomic even when the
+/// storage acknowledgement is lost. Later local config and tags survive that Build's repeat;
+/// the following Build replaces both whole fields, including empty values.
+#[tokio::test]
+async fn a_complete_entry_survives_a_lost_reply_and_later_local_changes() {
+    use rdm_core::properties::{EntryProperties, PropertyApplication};
+    use rdm_node::node_records::NodePropertyWriter;
+    use std::sync::Arc;
+    let store = Arc::new(LostAcknowledgement { records: Default::default(), lose: true.into() });
+    let writer = NodePropertyWriter::new(store.clone());
+    let initial = properties();
+    let entry = EntryProperties {
+        application: PropertyApplication { build_id: "build-a".into(), operation: "entry".into() },
+        config: [("source".into(), "build".into())].into(),
+        tags: ["build".into()].into(),
+    };
+    assert!(writer.entry(initial.clone(), entry.clone(), |_| panic!("unacknowledged write")).await.is_err());
+    let local = writer.update(initial.clone(), None, |record| {
+        assert_eq!(record.config["source"], "build");
+        assert_eq!(record.tags, ["build".into()].into());
+        record.config = [("source".into(), "node".into())].into();
+        record.tags = ["node".into()].into();
+    }, |_| {}).await.unwrap();
+    // A new writer also has to recognize the durable effect, independently of its cache.
+    let restarted = NodePropertyWriter::new(store.clone());
+    let repeated = restarted.entry(initial.clone(), entry, |_| {}).await.unwrap();
+    assert!(repeated.already_applied);
+    assert_eq!(repeated.record, local.record);
+    let empty = EntryProperties {
+        application: PropertyApplication { build_id: "build-b".into(), operation: "entry".into() },
+        config: Default::default(), tags: Default::default(),
+    };
+    let next = restarted.entry(initial, empty, |_| {}).await.unwrap();
+    assert!(!next.already_applied);
+    assert!(next.record.config.is_empty());
+    assert!(next.record.tags.is_empty());
+    assert_eq!(next.record.applied.len(), 2);
+}
+
+// @feature: node-records
 /// CONTRACT (i150 R13): migration copies complete properties, apply recognition and both
 /// lifecycle ownership keys. A fresh provider instance returns every value unchanged.
 #[tokio::test]
