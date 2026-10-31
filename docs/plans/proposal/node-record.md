@@ -88,7 +88,7 @@ resolves the mesh's current primary as RDM resolves it today, from the election'
 and regaining the role reuses its key, and that is safe: a stale write is one in flight at the
 pause, which lands the moment the process resumes, before it can be heard, and being heard for the
 staleness floor's worth of intervals is what an election needs; so every stale write precedes the
-takeover writes of any later term of the same birth (R-NR8), which overwrite it. The node record
+takeover writes the same birth makes if it is primary again later (R-NR8), which overwrite it. The node record
 carries no number of any
 kind. Path to
 node.id resolves through the claim (`name_claim`, storage.rs:625) and nowhere else; node.id to record
@@ -421,7 +421,7 @@ no ordering or atomic check cannot be correct together; one had to change, and s
 is the one that adds no revision to ordinary writes and no conditional operation to any store. The
 cost, stated plainly: lifecycle records keep an ownership identity, their writer's birth, already a
 field on every write today; no number is minted (Luke: "is_primary is 0 or 1, not a counter"), and
-the same birth's later term reusing its key is safe by the ordering in R-NR2. Rejected: A, a writer's check before it writes (it can read "I am
+the same birth, primary again later, reusing its key is safe by the ordering in R-NR2. Rejected: A, a writer's check before it writes (it can read "I am
 primary", pause and write after the change; the takeover write can be overwritten after it lands;
 a span records the destruction and prevents nothing); B, a conditional put on a field of the node's
 record (it checks a value that changes only after the takeover write reaches that node, so it leaves
