@@ -700,7 +700,7 @@ pub enum NotSentCause {
     FrameNotSent,
     Carried,
     ConnectionLost,
-    CarrierNoBudget {
+    ConnectionNoBudget {
         remaining_ms: u64,
         reserve_ms: u64,
     },
@@ -727,7 +727,7 @@ See `crates/rdm-transport/src/client.rs::open` and
 
 Reply position 13 is NoInnerBudget; REPLY_VARIANTS is 14. If remaining minus reserve is
 <= 0, the carrier emits `rdm.node_rpc.request.reject.via-forward-budget-spent`, makes no
-inner call and returns NoInnerBudget. The source maps it to NotSent(CarrierNoBudget).
+inner call and returns NoInnerBudget. The source maps it to NotSent(ConnectionNoBudget).
 The carrier returns ConnectionLost directly from its failed dial; its connection-fact
 write happens after the reply and is never on the reply path. Outer and inner calls emit
 `rdm.node_rpc.request.update.via-call`; outer serving emits

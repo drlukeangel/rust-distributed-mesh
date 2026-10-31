@@ -132,7 +132,7 @@ pub enum NotSentCause {
     /// The remaining budget did not exceed the reserve.
     ///
     /// Position 7 on the wire.
-    CarrierNoBudget {
+    ConnectionNoBudget {
         /// The origin's remaining milliseconds.
         remaining_ms: u64,
         /// The reply reserve in milliseconds.
@@ -312,7 +312,7 @@ impl NotSentCause {
             R::FrameNotSent => Self::FrameNotSent,
             R::Carried(_) => Self::Carried,
             R::ConnectionLost(_) => Self::ConnectionLost,
-            R::CarrierNoBudget { remaining_ms, reserve_ms } => Self::CarrierNoBudget { remaining_ms: *remaining_ms, reserve_ms: *reserve_ms },
+            R::ConnectionNoBudget { remaining_ms, reserve_ms } => Self::ConnectionNoBudget { remaining_ms: *remaining_ms, reserve_ms: *reserve_ms },
             R::NotForwardable { op } => Self::NotForwardable { op: *op },
             R::NoActiveRoute => Self::NoActiveRoute,
             R::AdmissionBlocked(_) => Self::AdmissionBlocked,
@@ -329,7 +329,7 @@ impl NotSentCause {
             Self::FrameNotSent => R::FrameNotSent,
             Self::Carried => R::Carried(explanation),
             Self::ConnectionLost => R::ConnectionLost(explanation),
-            Self::CarrierNoBudget { remaining_ms, reserve_ms } => R::CarrierNoBudget { remaining_ms, reserve_ms },
+            Self::ConnectionNoBudget { remaining_ms, reserve_ms } => R::ConnectionNoBudget { remaining_ms, reserve_ms },
             Self::NotForwardable { op } => R::NotForwardable { op },
             Self::NoActiveRoute => R::NoActiveRoute,
             Self::AdmissionBlocked => R::AdmissionBlocked(explanation),

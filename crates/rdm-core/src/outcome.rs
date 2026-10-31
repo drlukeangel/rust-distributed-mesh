@@ -247,7 +247,7 @@ pub enum NotSentReason {
     ConnectionLost(String),
     /// The origin's remaining budget did not exceed the carrier's reply reserve, so the carrier
     /// made no inner call. Both are whole milliseconds.
-    CarrierNoBudget {
+    ConnectionNoBudget {
         /// The origin's remaining budget.
         remaining_ms: u64,
         /// The carrier's reply reserve.
@@ -468,7 +468,7 @@ impl<R> RpcOutcome<R> {
                 NotSentReason::FrameNotSent => "frame-not-sent",
                 NotSentReason::Carried(_) => "carried",
                 NotSentReason::ConnectionLost(_) => "connection-lost",
-                NotSentReason::CarrierNoBudget { .. } => "carrier-no-budget",
+                NotSentReason::ConnectionNoBudget { .. } => "connection-no-budget",
                 NotSentReason::NotForwardable { .. } => "not-forwardable",
                 NotSentReason::NoActiveRoute => "no-active-route",
                 NotSentReason::AdmissionBlocked(_) => "admission-blocked",
@@ -721,7 +721,7 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
         ForwardReply::InnerIndeterminate { cause, reason } => indeterminate(cause.into_reason(reason)),
         ForwardReply::ConnectionLost { reason } => not_sent(NotSentReason::ConnectionLost(reason)),
         ForwardReply::NotForwardable { op } => not_sent(NotSentReason::NotForwardable { op }),
-        ForwardReply::NoInnerBudget { remaining_ms, reserve_ms } => not_sent(NotSentReason::CarrierNoBudget { remaining_ms, reserve_ms }),
+        ForwardReply::NoInnerBudget { remaining_ms, reserve_ms } => not_sent(NotSentReason::ConnectionNoBudget { remaining_ms, reserve_ms }),
         // The carrier refused the forward itself, before any inner call.
         ForwardReply::PeerUnresolved { reason }
         | ForwardReply::NotReady { reason }

@@ -26,7 +26,7 @@ fn trace_span_names(trace: &str) -> Vec<String> {
 /// A budget already spent down to the carrier's reserve when the frame is written.
 ///
 /// CONTRACT: the carrier makes no inner call and refuses by name before dispatch: the origin
-/// sees `NotSent(CarrierNoBudget)`, the target handled nothing, and the trace holds the
+/// sees `NotSent(ConnectionNoBudget)`, the target handled nothing, and the trace holds the
 /// carrier's `reject.via-forward-budget-spent` span and no `serve.via-carried-inner` span.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_budget_spent_to_the_reply_reserve_is_refused_by_name_with_no_inner_call() {
@@ -41,7 +41,7 @@ async fn a_budget_spent_to_the_reply_reserve_is_refused_by_name_with_no_inner_ca
     let trace = caller.context().span().span_context().trace_id().to_string();
     let (out, _) = tracing::Instrument::instrument(r.origin.call_via::<Probe>(&carrier, &target, &probe(b"late"), &overall(FORWARD_REPLY_RESERVE)), caller).await;
     assert!(
-        matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::CarrierNoBudget { reserve_ms, .. } if *reserve_ms == FORWARD_REPLY_RESERVE.as_millis() as u64)),
+        matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::ConnectionNoBudget { reserve_ms, .. } if *reserve_ms == FORWARD_REPLY_RESERVE.as_millis() as u64)),
         "{out:?}"
     );
     assert_eq!(r.handled.load(Ordering::SeqCst), handled_before, "no inner call reached the target");

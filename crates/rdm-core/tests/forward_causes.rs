@@ -76,7 +76,7 @@ fn every_not_sent_cause_has_a_hand_written_golden_and_rebuilds_its_fields() {
         (FrameNotSent, Code::Unavailable, "04"),
         (Carried, Code::Unavailable, "05"),
         (ConnectionLost, Code::Unavailable, "06"),
-        (CarrierNoBudget { remaining_ms: 20, reserve_ms: 100 }, Code::Unavailable, "07 14 64"),
+        (ConnectionNoBudget { remaining_ms: 20, reserve_ms: 100 }, Code::Unavailable, "07 14 64"),
         (NotForwardable { op: 0x1B }, Code::FailedPrecondition, "08 1b"),
         (NoActiveRoute, Code::Unavailable, "09"),
         (AdmissionBlocked, Code::Unavailable, "0a"),

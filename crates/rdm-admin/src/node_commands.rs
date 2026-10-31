@@ -282,7 +282,7 @@ pub fn unreachable_of(cause: &rdm_core::outcome::NotSentReason) -> Option<Unreac
         R::Connection(_) => "connect-failed",
         R::Deadline => "connect-timed-out",
         R::Resolve(_) | R::NoActiveRoute => "endpoint-unresolved",
-        R::StreamBudget | R::FrameNotSent | R::AdmissionBlocked(_) | R::Carried(_) | R::ConnectionLost(_) | R::CarrierNoBudget { .. } | R::NotForwardable { .. } => return None,
+        R::StreamBudget | R::FrameNotSent | R::AdmissionBlocked(_) | R::Carried(_) | R::ConnectionLost(_) | R::ConnectionNoBudget { .. } | R::NotForwardable { .. } => return None,
     };
     Some(Unreachable { reason, detail: format!("{cause:?}") })
 }
@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(named(R::Deadline), Some("connect-timed-out"));
         assert_eq!(named(R::Resolve(ResolveFailure::Unknown)), Some("endpoint-unresolved"));
         assert_eq!(named(R::NoActiveRoute), Some("endpoint-unresolved"));
-        for local in [R::Connection("request does not encode: too long".into()), R::StreamBudget, R::FrameNotSent, R::AdmissionBlocked("all".into()), R::NotForwardable { op: 0x1b }, R::CarrierNoBudget { remaining_ms: 1, reserve_ms: 2 }] {
+        for local in [R::Connection("request does not encode: too long".into()), R::StreamBudget, R::FrameNotSent, R::AdmissionBlocked("all".into()), R::NotForwardable { op: 0x1b }, R::ConnectionNoBudget { remaining_ms: 1, reserve_ms: 2 }] {
             assert_eq!(unreachable_of(&local), None, "{local:?} is local to the sender");
         }
     }
