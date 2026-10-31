@@ -377,6 +377,10 @@ pub trait NodeRecordsStorage: Send + Sync {
         node: &NodeId,
         writer: &RecordBirth,
     ) -> Result<Option<NodeLifecycle>, StorageError>;
+    /// Read the records of one exact subject across writer births. This lookup does not need
+    /// a path-derived mesh: the reader selects the installed primary using each record's mesh.
+    /// The store returns records only and never chooses a primary.
+    async fn lifecycles_of(&self, node: &NodeId) -> Result<Vec<NodeLifecycle>, StorageError>;
     /// List all stored lifecycle records for a mesh, including predecessor writers.
     /// Selection of the current writer remains the reader's responsibility.
     async fn lifecycles(&self, mesh: &rdm_core::MeshId)
@@ -428,6 +432,9 @@ impl NodeRecordsStorage for MemoryNodeRecords {
                 writer.incarnation_id.to_string(),
             ))
             .cloned())
+    }
+    async fn lifecycles_of(&self, node: &NodeId) -> Result<Vec<NodeLifecycle>, StorageError> {
+        Ok(self.lifecycle.lock().unwrap().values().filter(|record| record.node_id == *node).cloned().collect())
     }
     async fn lifecycles(
         &self,
@@ -525,6 +532,11 @@ impl NodeRecordsStorage for FileNodeRecords {
             .await?
             .map(|l| l.decode(self.log.path()))
             .transpose()
+    }
+    async fn lifecycles_of(&self, node: &NodeId) -> Result<Vec<NodeLifecycle>, StorageError> {
+        let prefix = format!("{node}/");
+        self.log.latest_under("node-lifecycle", &prefix).await?.into_iter()
+            .map(|line| line.decode(self.log.path())).collect()
     }
     async fn lifecycles(
         &self,

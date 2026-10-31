@@ -475,7 +475,7 @@ mod tests {
     /// A launch preserves the entire config map and tag set, including separator characters
     /// in values; malformed input is refused without echoing application values.
     #[test]
-    fn initial_properties_round_trip_and_invalid_input_is_named() {
+    fn initial_properties_encode_decode_and_invalid_input_is_named() {
         let mut env = admin_env_with_custody("");
         let initial = InitialProperties {
             config: [("listener.data".into(), "a,b=c\nwith spaces".into()), ("empty".into(), "".into())].into(),

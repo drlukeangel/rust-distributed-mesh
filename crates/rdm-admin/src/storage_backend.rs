@@ -542,6 +542,9 @@ impl rdm_node::node_records::NodeRecordsStorage for Through {
     async fn lifecycle(&self, node: &crate::model::NodeId, writer: &rdm_node::node_records::RecordBirth) -> Result<Option<rdm_node::node_records::NodeLifecycle>, crate::storage_error::StorageError> {
         self.0.current.read().stores().boundaries.node_records.lifecycle(node, writer).await
     }
+    async fn lifecycles_of(&self, node: &crate::model::NodeId) -> Result<Vec<rdm_node::node_records::NodeLifecycle>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().boundaries.node_records.lifecycles_of(node).await
+    }
     async fn lifecycles(&self, mesh: &crate::model::MeshId) -> Result<Vec<rdm_node::node_records::NodeLifecycle>, crate::storage_error::StorageError> {
         self.0.current.read().stores().boundaries.node_records.lifecycles(mesh).await
     }

@@ -77,6 +77,8 @@ async fn late_writer_contract(store: &dyn NodeRecordsStorage) {
     let mut late = old.clone();
     late.status = rdm_node::model::NodeStatus::Deleted;
     store.put_lifecycle(&late).await.unwrap();
+    let unrelated = lifecycle(NodeId::mint(), birth(), MeshId::mint());
+    store.put_lifecycle(&unrelated).await.unwrap();
     assert_eq!(
         store.lifecycle(&node, &current.writer).await.unwrap(),
         Some(current)
@@ -91,6 +93,10 @@ async fn late_writer_contract(store: &dyn NodeRecordsStorage) {
         "a missing current writer never falls back to another writer"
     );
     assert_eq!(store.lifecycles(&mesh).await.unwrap().len(), 2);
+    let subjects = store.lifecycles_of(&node).await.unwrap();
+    assert_eq!(subjects.len(), 2, "an exact subject read needs no inferred mesh or writer");
+    assert!(subjects.iter().all(|record| record.node_id == node));
+    assert!(store.lifecycles_of(&NodeId::mint()).await.unwrap().is_empty());
     assert!(store.lifecycles(&MeshId::mint()).await.unwrap().is_empty());
 }
 
@@ -426,6 +432,9 @@ impl NodeRecordsStorage for LostAcknowledgement {
         writer: &RecordBirth,
     ) -> Result<Option<NodeLifecycle>, rdm_node::storage_error::StorageError> {
         self.records.lifecycle(node, writer).await
+    }
+    async fn lifecycles_of(&self, node: &NodeId) -> Result<Vec<NodeLifecycle>, rdm_node::storage_error::StorageError> {
+        self.records.lifecycles_of(node).await
     }
     async fn lifecycles(
         &self,
