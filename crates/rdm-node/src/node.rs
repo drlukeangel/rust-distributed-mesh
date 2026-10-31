@@ -763,7 +763,7 @@ async fn start_booted(
                                         let handle = moves.clone();
                                         Box::pin(async move { handle.replace(&provider).await })
                                     }),
-                                ))
+                                ).with_properties(property_writer.clone()))
                             });
                             own.set_data_plane(data_plane.clone());
                             own.set_data_connections(data_connections.clone());

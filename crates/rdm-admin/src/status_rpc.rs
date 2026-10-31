@@ -1096,6 +1096,26 @@ impl StatusDoor {
         end
     }
 
+    /// Close one exact birth's own-property admission before the provider copy. Silence or
+    /// an unanswered command is never a successful block.
+    pub async fn carry_storage_block(&self, subject: &crate::model::Node, build_id: &crate::build::BuildId, change_id: &rdm_core::ChangeId) -> Result<(), String> {
+        use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
+        let incarnation = subject.incarnation_id.as_ref().ok_or_else(|| format!("{} has no exact incarnation to block", subject.name))?;
+        let result = if subject.node_id == self.node_id {
+            let moves = self.own.get().and_then(|own| own.storage_moves())
+                .ok_or_else(|| format!("{} has no storage handle to block", subject.name))?;
+            moves.block(build_id, change_id).await
+        } else {
+            let configs = self.configs.get().ok_or_else(|| "this admin has no client to block node properties".to_string())?;
+            let request = NodeCommandRequest::StorageBlock { node_id: subject.node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.to_string(), change_id: change_id.clone() };
+            crate::storage_change::command(configs.client(), &self.commands, &subject.node_id, &request).await?
+        };
+        match result {
+            NodeCommandReply::StorageBlocked => Ok(()),
+            other => Err(format!("{} ({}, {}) did not block its property writer: {}", subject.name, subject.node_id, incarnation, other.name())),
+        }
+    }
+
     /// A storage change's move (storage.md §2 "Changing it", step 4) of the birth `(node_id, incarnation)`
     /// of this admin's mesh onto `provider`, carried by this mesh-primary in its `mesh.unblock` to the
     /// exact birth on the node command op 0x22 (its own birth in-process). Once the birth moved, this
@@ -1119,10 +1139,10 @@ impl StatusDoor {
         // dropped, and the move is not done now.
         if let (Some(release), Some(configs)) = (self.command_frame_seam.as_ref().and_then(|seam| seam.hold_storage_step(&subject.name, change_id)), self.configs.get()) {
             if *node_id != self.node_id {
-                let (client, node) = (configs.client_arc(), node_id.clone());
+                let (client, commands, node) = (configs.client_arc(), self.commands.clone(), node_id.clone());
                 tokio::spawn(async move {
                     release.await;
-                    let _ = crate::storage_change::command(&client, &node, &command).await;
+                    let _ = crate::storage_change::command(&client, &commands, &node, &command).await;
                 });
                 return Carried::NotDone(format!("{me_name} holds the move of {} until its release", subject.name));
             }
@@ -1142,7 +1162,7 @@ impl StatusDoor {
             let Some(configs) = self.configs.get() else {
                 return Carried::NotDone(format!("{me_name} has no node-RPC client yet to carry the move to {}", subject.name));
             };
-            match crate::storage_change::command(configs.client(), node_id, &command).await {
+            match crate::storage_change::command(configs.client(), &self.commands, node_id, &command).await {
                 Ok(reply) => reply,
                 Err(e) => return Carried::Unanswered(format!("{me_name} carried the move to {}: {e}", subject.name)),
             }

@@ -62,6 +62,14 @@ pub struct NodePropertyWriter {
     current: std::sync::Arc<tokio::sync::Mutex<Option<NodeProperties>>>,
 }
 
+/// The existing property writer's admission lock retained through a provider copy and move.
+/// Releasing it invalidates the cached record while still excluding subsequent mutations.
+pub struct PropertyFreeze(tokio::sync::OwnedMutexGuard<Option<NodeProperties>>);
+
+impl Drop for PropertyFreeze {
+    fn drop(&mut self) { *self.0 = None; }
+}
+
 /// A durable property effect, or recognition of an earlier durable application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyWritten {
@@ -88,6 +96,12 @@ impl NodePropertyWriter {
             records,
             current: Default::default(),
         }
+    }
+
+    /// Close property admission and finish every earlier admitted put. The storage transition
+    /// owns this guard until its exact change moves or rolls back.
+    pub async fn freeze(&self) -> PropertyFreeze {
+        PropertyFreeze(self.current.clone().lock_owned().await)
     }
 
     /// Publish the actual bound addresses and join declaration at this start, preserving

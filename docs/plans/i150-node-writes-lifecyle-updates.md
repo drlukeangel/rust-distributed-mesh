@@ -269,11 +269,70 @@ Focused evidence at the current implementation checkout (uncommitted when execut
   map/set round-trip and named malformed-input refusal.
 - `local-stop-start.log`: strengthened same-birth stop/start application-map control passed, 0.87 s.
 
+Luke clarified during implementation: reuse the existing silence/unanswered-command timers,
+node investigation and recovery. Investigation reaches its existing lifecycle result: the node
+rejoins, or it is re-created. Storage migration adds no separate investigation verdict or indefinite
+unknown-investigation disposition and does not wait on a new proof-of-termination condition.
+Q110/Q111 and the shared lifecycle functions remain in force. No investigation or recovery timer
+was removed; only the obsolete own-config delivery backoff was deleted with that delivery route.
+
 Architect 1 identified that the existing storage-change block covered primary-issued writes,
 whereas direct own writes now require node-level admission freezing before copy. That extension
 and its cancellation/migration proof remain BUILD. Existing handle replacement counting alone is
 insufficient. No final gate, production Build application identity, lifecycle activation, pair
 migration or Rafka acceptance is claimed by these focused passes.
+
+### Storage block and existing investigation integration (2026-10-31)
+
+Node-owned property writes now participate in the existing storage change. `StorageBlock` is an
+appended NodeCommand request, with `StorageBlocked` as its completion. It retains the own writer's
+existing serialization lock through copy and the exact change's move or rollback. No additional
+queue, retry, timer or investigation verdict was introduced. The existing `StorageMoves` retains
+freeze/move transitions through caller cancellation, recognizes completed Build/change identities
+and destinations, refuses conflicting repeats, and admits a fresh birth already on the decided
+provider. Same-provider rollback releases its matching hold and invalidates cached properties.
+
+Both storage commands use `CommandView`'s existing unanswered-command clock, including cancellation
+at the original send instant. A failed freeze hands the attempt back before closing normal command
+admission, so the existing investigation/recovery can claim the mesh. Once every required freeze
+answers, the existing mesh command/row block completes. `build_drive::world` now includes the mesh
+of BlockStorage and UnblockStorage, so its existing changed-world wait resumes after recovery.
+
+Focused evidence at the working checkout (not a final committed gate):
+- `stopped-node-storage-command-fixed.log`: the actual stopped process answers the storage command
+  on its open Node RPC endpoint, holds an own write, releases it after rollback, and preserves it
+  through same-birth start; 1/1 passed, 0.86 s. An earlier compile failed on a test-only dependency
+  name; the test now uses the crate's existing futures-lite dependency.
+- `storage-command-clock.log`: 4/4 command clock/cancellation controls passed.
+- `storage-freeze-replay.log`: 2/2 retained-transition and exact-change controls passed.
+- `storage-block-normal-investigation-exact.log`: paused before migration; normal investigation and
+  recovery re-create it before the held copy is entered; inherited acknowledged properties remain;
+  the same storage Build completes on the destination; thawing the deleted birth cannot make it
+  current. 1/1 passed, 42.80 s. The first command used an incorrect module prefix and discovered zero
+  tests; only the corrected nonzero exact run counts.
+- `storage-freeze-recreate.log`: existing refused-move recreation control passed, 12.46 s.
+- `storage-freeze-rollback.log`: existing failed-copy rollback control passed, 12.03 s.
+- `storage-block-wire-fixed.log`: 5/5 wire/code controls passed. The preceding run exposed the omitted
+  independent expected-code fixture for the appended success reply; its RED log is retained.
+- `storage-freeze-role-restart.log`: existing switched and failed-copy physical restart cases
+  passed in the combined control, 85.29 s. This restarts the RPC role node, not the mesh-primary;
+  primary takeover coverage remains pending.
+- `launch-env-wire-boundary.log`: both wire-JSON negative controls passed, 14.97 s.
+- `storage-wire-ratchet-fixed.log`: planted wire-count violation control passed, 5.43 s. Earlier audit
+  found test-only tag assertions in the runtime scan and JSON environment encoding classified as
+  wire encoding. Assertions now compare the whole tag set; Launch is correctly classified as an
+  environment-only core type, alongside the existing custody codec. RPC codecs stay postcard.
+
+Retained process evidence is under the storage feature's normal artifact directory, with raw spans
+and node logs. Trace `a100cd1cd47f9122d79a1283f77baf58` was recorded locally; collector retrieval did
+not find it, so no retrieved Jaeger proof is claimed for that run. The final committed gate must
+export and retrieve its flame.
+
+Role acquisition remains a separate BUILD requirement: a newly acquired primary must restore an
+in-progress block from existing Build receipts before enabling lifecycle writers. Architect 1
+identified the existing hierarchy acquisition and explicit handover preparation boundary as the
+shared integration point. No new persisted counter/state machine is needed. This focused evidence
+does not close i150, its takeover requirement, or its Rafka integration.
 
 ### Shared property writer implementation evidence (2026-10-31)
 

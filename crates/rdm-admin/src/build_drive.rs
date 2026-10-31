@@ -1009,7 +1009,7 @@ fn failed_receipt(receipt: Option<&[u8]>) -> bool {
 fn world(drive: &Drive, p: &BuildProjection, t: &Topology, fabric_ready: bool) -> String {
     let first = left(drive, p, t).into_iter().next();
     let mesh = first.as_ref().and_then(|op| match op {
-        BuildOperation::CreateMesh { mesh, .. } | BuildOperation::ShutdownMesh { mesh, .. } => Some(mesh.clone()),
+        BuildOperation::CreateMesh { mesh, .. } | BuildOperation::ShutdownMesh { mesh, .. } | BuildOperation::BlockStorage { mesh, .. } | BuildOperation::UnblockStorage { mesh, .. } => Some(mesh.clone()),
         other => other.node().map(|n| n.mesh.clone()),
     });
     let mut members: Vec<String> = t
