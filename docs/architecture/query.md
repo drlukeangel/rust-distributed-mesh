@@ -37,6 +37,7 @@ node.get  [["tags", ["red"]], ["tags", ["eu"]]]                   a repeated pro
 node.get  [["config.region", ["eu-west"]], ["status", ["ready"]]]
 node.get  [["id", ["<node id>"]]]                                 one node
 node.get  []                                                      no filter: the fabric's topology
+node.get  [["!status", ["dead", "deleted"]]]                      every current node: a negated pair
 mesh.get [["name", ["mesh1"]]]
 node.connection.get { node: (<id>, <incarnation>) } [["state", ["connected"]]]
 ```
@@ -57,6 +58,9 @@ The matching rules:
 - **Match:** a set field (`tags`) matches when it contains the value; a string field matches exactly;
   `""` matches an empty string, never an absent one. A row without a property the schema has (a
   config key) does not match.
+- **Negate:** a property written `!<property>` negates its pair (Q306): the row matches when the
+  property is none of the values, a set field when it contains none of them, and a row without the
+  property matches. It ANDs with the other pairs and is refused as its positive pair is.
 - **Refused:** an unknown property, a value the field cannot take, an empty values list or a field that
   is not public is `INVALID_ARGUMENT`, naming the pair.
 - **Nothing matching** is `[]`, a mesh the fabric-primary does not hold included. Every matching row is

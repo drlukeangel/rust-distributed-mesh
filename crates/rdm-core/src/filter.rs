@@ -361,8 +361,10 @@ impl Row for ConnectionView {
     }
 }
 
-/// A read's filter (R-RD2): `(property, values)` pairs, AND across pairs, any-of within. Empty is no
-/// filter. On the wire as the pair list.
+/// A read's filter (R-RD2): `(property, values)` pairs, AND across pairs, any-of within. A property
+/// written `!<property>` negates its pair (Q306): the row matches when the property is none of the
+/// values, a row without it included (Kubernetes `notin`). Empty is no filter. On the wire as the pair
+/// list.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Filter {
     /// The pairs, in the caller's order.
@@ -378,6 +380,13 @@ impl Filter {
     /// This filter and one more pair: rows whose `property` is any of `values`.
     pub fn eq<S: Into<String>>(mut self, property: &str, values: impl IntoIterator<Item = S>) -> Self {
         self.pairs.push((property.to_string(), values.into_iter().map(Into::into).collect()));
+        self
+    }
+
+    /// This filter and one more negated pair (Q306): rows whose `property` is none of `values`, a row
+    /// without it included.
+    pub fn not<S: Into<String>>(mut self, property: &str, values: impl IntoIterator<Item = S>) -> Self {
+        self.pairs.push((format!("{NOT}{property}"), values.into_iter().map(Into::into).collect()));
         self
     }
 
@@ -400,7 +409,7 @@ impl Filter {
     }
 
     fn refusal_in(&self, schema: &Schema) -> Option<String> {
-        self.pairs.iter().find_map(|(property, values)| pair_refusal(schema, property, values).map(|why| format!("{}: the pair {} {why}", schema.read, pair(property, values))))
+        self.pairs.iter().find_map(|(property, values)| pair_refusal(schema, negated(property).1, values).map(|why| format!("{}: the pair {} {why}", schema.read, pair(property, values))))
     }
 
     /// Why this filter is refused for a node's local query of the topology it holds (query.md §2,
@@ -410,7 +419,7 @@ impl Filter {
     /// never a row: a row-only property is refused whatever rows would have matched.
     pub fn local_refusal(&self) -> Option<String> {
         self.refusal(Entity::Nodes).or_else(|| {
-            self.pairs.iter().find(|(property, _)| !GOSSIPED.contains(&property.as_str())).map(|(property, values)| {
+            self.pairs.iter().find(|(property, _)| !GOSSIPED.contains(&negated(property).1)).map(|(property, values)| {
                 format!(
                     "the topology a node holds: the pair {} names {property}, a property of the node's row that gossip does not carry (its properties: {}); read it with {}",
                     pair(property, values),
@@ -423,11 +432,26 @@ impl Filter {
 
     /// Whether `row` matches every pair. A filter is read through [`Self::refusal`] first.
     pub fn matches(&self, row: &impl Row) -> bool {
-        self.pairs.iter().all(|(property, values)| match row.value(property) {
-            Value::One(v) => values.contains(&v),
-            Value::Set(set) => values.iter().any(|v| set.contains(v)),
-            Value::Absent => false,
+        self.pairs.iter().all(|(property, values)| {
+            let (not, property) = negated(property);
+            let any = match row.value(property) {
+                Value::One(v) => values.contains(&v),
+                Value::Set(set) => values.iter().any(|v| set.contains(v)),
+                Value::Absent => false,
+            };
+            any != not
         })
+    }
+}
+
+/// The prefix that negates a pair's property (Q306; query.md).
+const NOT: char = '!';
+
+/// Whether `property` is negated, and the property it names.
+fn negated(property: &str) -> (bool, &str) {
+    match property.strip_prefix(NOT) {
+        Some(rest) => (true, rest),
+        None => (false, property),
     }
 }
 
@@ -505,6 +529,30 @@ mod tests {
     fn names(rows: &[NodeView], f: &Filter) -> Vec<String> {
         assert_eq!(f.refusal(Entity::Nodes), None, "{f:?}");
         rows.iter().filter(|r| f.matches(*r)).map(|r| r.name.to_string()).collect()
+    }
+
+    /// CONTRACT (Q306; query.md): a pair whose property is written `!<property>` matches a row whose
+    /// property is none of its values, a row without the property included (Kubernetes `notin`); a
+    /// negated set field (tags) matches a row carrying none of the values; it ANDs with every other
+    /// pair, positive or negated; and the schema refuses a negated pair as it refuses the positive one
+    /// (an unknown property, an empty values list). What must NOT happen: a negated pair read as
+    /// positive, a row lacking the property excluded by a negated pair, an unknown `!` property served.
+    #[test]
+    fn a_negated_pair_matches_every_row_whose_property_is_none_of_its_values() {
+        let mut dead = node("mesh1.broker.1", NodeKind::Broker, &["gold"], &[("zone", "eu-1")]);
+        dead.status = NodeStatus::Dead;
+        let ready = node("mesh1.gateway.1", NodeKind::Gateway, &["silver"], &[("zone", "us-2")]);
+        let bare = node("mesh2.gateway.1", NodeKind::Gateway, &[], &[]);
+        let rows = [dead.clone(), ready.clone(), bare.clone()];
+        assert_eq!(names(&rows, &Filter::new().not("status", ["dead", "deleted"])), ["mesh1.gateway.1", "mesh2.gateway.1"], "every status but dead and deleted");
+        assert_eq!(names(&rows, &Filter::new().not("config.zone", ["eu-1"])), ["mesh1.gateway.1", "mesh2.gateway.1"], "a row without the key matches a negated pair");
+        assert_eq!(names(&rows, &Filter::new().not("tags", ["gold", "silver"])), ["mesh2.gateway.1"], "a negated set field: none of the values carried");
+        assert_eq!(names(&rows, &Filter::new().not("status", ["dead"]).eq("kind", ["gateway"]).eq("mesh", ["mesh1"])), ["mesh1.gateway.1"], "a negated pair ANDs with positive pairs");
+        assert_eq!(Filter::new().not("status", ["dead"]).pairs, vec![("!status".to_string(), vec!["dead".to_string()])], "on the wire as a pair whose property carries the prefix");
+        let unknown = Filter::new().not("colour", ["red"]).refusal(Entity::Nodes).expect("an unknown negated property is refused");
+        assert!(unknown.contains("(!colour, [red])"), "{unknown}");
+        assert!(Filter { pairs: vec![("!status".into(), vec![])] }.refusal(Entity::Nodes).is_some(), "a negated pair with no value is refused");
+        assert!(Filter::new().not("status", ["no-such-status"]).refusal(Entity::Nodes).is_some(), "a value the field cannot take is refused negated too");
     }
 
     /// CONTRACT (Q167 R-RD2): a filter's pairs AND, a repeated property ANDs, the values of one pair

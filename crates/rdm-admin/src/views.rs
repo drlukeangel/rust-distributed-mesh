@@ -241,7 +241,7 @@ pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, records
 /// a successor, the retained `<name>.old` row, carries no active label, so a `tags` pair never names it;
 /// the row it is answered with keeps its labels. Every other pair is matched on the row as answered.
 fn matches_active(filter: &Filter, records: &Atlas, n: &NodeView) -> bool {
-    let names_tags = filter.pairs.iter().any(|(p, _)| p == "tags");
+    let names_tags = filter.pairs.iter().any(|(p, _)| p == "tags" || p == "!tags");
     if names_tags && !n.tags.is_empty() && records.record(&n.node_id).is_some_and(|r| r.inherited_by.is_some()) {
         let mut active = n.clone();
         active.tags.clear();
