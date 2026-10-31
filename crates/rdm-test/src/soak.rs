@@ -1612,7 +1612,18 @@ impl Driver {
                 let now_nodes = self.estate.node_values().await;
                 match judge_held_birth(&now_nodes, path, inc) {
                     HeldBirth::Ready => break,
-                    HeldBirth::Replaced => return Err(broken("silence-is-not-death", format!("{path} came back as another birth than {inc}: silence replaced a running runtime"))),
+                    // A recovery whose attempt acted on the held path after the release read (its verdict,
+                    // `os-stopped` read while held, is the one decision: node-investigation.md, Q273) replaced
+                    // it: a recreate read late, never silence replacing a running runtime.
+                    HeldBirth::Replaced => {
+                        let late = acted_rows(&acted_on(&before, &(self.read)(&self.estate, &self.build_id).await, path));
+                        if late.is_empty() {
+                            return Err(broken("silence-is-not-death", format!("{path} came back as another birth than {inc}: silence replaced a running runtime")));
+                        }
+                        entry["recreated"] = json!(true);
+                        entry["recreated_late"] = json!(late);
+                        break;
+                    }
                     HeldBirth::Returning if Instant::now() >= wait_until => {
                         return Err(broken("silence-is-not-death", format!("{path}: the released birth {inc} did not read ready within {}s", CONVERGE.as_secs())));
                     }
