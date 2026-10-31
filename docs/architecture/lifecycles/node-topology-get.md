@@ -5,9 +5,12 @@
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Op contracts](../node-rpc-envelope.md#the-op-ledger)
 
 An already-held member requests [node.topology.get](../node-rpc-envelope.md#topology-op-0x1e-rdm)
-from its OWN mesh-primary. It supplies its held source version under that schema, installs
-only complete snapshots, then resumes applicable deltas. The answer also carries the node's own
-whole row from its mesh-primary's Atlas, never the store; the node holds it on its own entry (Q234).
+from its own current mesh-primary when a differential cannot be applied to the state it holds.
+For this repair it requests the affected mesh with `since: None`: no publisher or version is
+sent. It installs a complete snapshot from the reply, then resumes applicable differentials. The answer also carries the node's own
+composed node view from the selected lifecycle record and its own property record, read from
+the shared backend. This startup context is not a second property owner; the node's writer
+preserves retained properties and application recognition (Q234).
 JoinNode is only a join and is
 never a topology re-read. Gossip gap detection schedules the read; it does not create a
 Build or change the target's meta.
@@ -17,15 +20,24 @@ Build or change the target's meta.
 `node.topology.get` maps to GetTopology on op 0x1E. It emits no lifecycle event and keeps
 the admitted endpoint and port.
 
+Startup is separate from gap repair: after the hook and required Build-facts check it makes
+one final topology request with no conditional source version. That reply supplies both complete
+topology and current Rafka-time before the node reports started. It does not fetch topology
+before the Build check or call this endpoint a second time solely to refresh time.
+
+The typed API has an optional conditional `since` field: the server answers `Unchanged` only
+when the supplied projection publisher and version both match. Neither the gap-repair request
+nor the final startup fetch supplies it. Its existence does not require a preliminary fetch.
+
 ## Command, completion and gossip messages
 
 This is a read/connection repair, not a stop, restart or new admission. It has no
 command/completion gossip hook, and the same running endpoint and birth are reused.
 
 ```text
-node.topology.get { mesh, since: held source version }     exact member → own mesh-primary
+node.topology.get { mesh: affected mesh, since: None }     exact member → own mesh-primary
   ← Started
-  ← Snapshot chunks | Unchanged | Stored
+  ← Snapshot chunks (the requested mesh); other reply variants follow the typed contract
   ← Primaries (each recorded primary the mesh-primary holds, gone or not)
   ← RafkaTime
   ← OwnRow (the reader's own whole row)
@@ -47,7 +59,7 @@ sequenceDiagram
     participant M as Mesh-primary
     N->>M: node.topology.get
     M-->>N: Started
-    M-->>N: complete Snapshot chunks or Unchanged
+    M-->>N: complete Snapshot chunks for the affected mesh
     M-->>N: End
     Note over N: Install complete source snapshots, then resume deltas
 ```

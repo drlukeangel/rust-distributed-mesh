@@ -1,6 +1,6 @@
 # Topology storage provider: overview
 
-`topology_storage_provider` names the backend RDM's five record stores are written to. An
+`topology_storage_provider` names the backend RDM's six record stores are written to. An
 application starts its fabric on a backend that exists on Day 0 (`file`) and, once its own store
 exists, moves RDM's records there with one Build, while every node keeps serving. The contract is
 [storage.md §2](../../architecture/storage.md#2-topology_storage_provider-where-rdms-records-go);
@@ -21,12 +21,18 @@ During a change the two differ; that difference is the change's progress. Cell:
 `a_customer_reads_each_nodes_topology_provider` (both read on a two-mesh fabric, beside
 `storage_persistence`, a separate property of the node: [storage.md §1](../../architecture/storage.md#1-storage_persistence-a-nodes-own-storage)).
 
-The five stores are `fabric.storage`, `mesh.storage`, `nodes.storage`, `connections.storage` and
-`builds.storage`. An application's own rows, events and data dirs are not among them.
+The six stores are `fabric.storage`, `mesh.storage`, `nodes.storage`, `connections.storage`,
+`builds.storage` and the `node-records` boundary (`NodeRecordsStorage`). The last contains
+node-owned properties and lifecycle records addressed by the writing primary's birth. Both kinds,
+including application-recognition and claim snapshots, belong to the same migration inventory.
+On the file backend they share `node-records.jsonl`. An application's own rows, events and data dirs
+are not among these stores. [i150](../../plans/i150-node-writes-lifecyle-updates.md) tracks removal
+of the old combined node rows and full application-provider acceptance; the six-store copy
+substrate alone does not establish that the lifecycle transition is complete.
 
 ## Providers and registration
 
-A provider is a backend implementing the five store traits, compiled into an executable and
+A provider is a backend supplying all six storage boundaries, compiled into an executable and
 registered in its wiring under a name. A name is bound to its place at registration: two places of
 one backend are two names. A node moves only between providers its own executable registers.
 

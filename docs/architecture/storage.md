@@ -53,21 +53,24 @@ A caller reads it as a field of the node's row, `node.get [storage_persistence: 
 
 ## 2. `topology_storage_provider`: where RDM's records go
 
-RDM's records are five stores, one per entity: `fabric.storage`, `mesh.storage`, `nodes.storage`,
-`connections.storage` and `builds.storage` ([build.md §5.3](build.md#53-node-admin-storage-boundaries)).
+RDM's records have six storage boundaries: `fabric.storage`, `mesh.storage`, `nodes.storage`,
+`connections.storage`, `builds.storage` and `node-records` (`NodeRecordsStorage`) ([build.md §5.3](build.md#53-node-admin-storage-boundaries)).
 They hold the fabric's topology and its history, what `fabric.get`, `mesh.get`, `node.get`,
 `node.connection.get` and `build.get` read: every record whole, every write appended, nothing ever
 removed, one writer per key ([node-identity-and-state.md §2.5](node-identity-and-state.md), R14). A
 node never names where a record goes: it hands the record to the store's trait, and the backend
 behind the trait knows where. Storage is persistence only; it stores and returns what it is given
-and decides nothing (Q109).
+and decides nothing (Q109). A property or lifecycle put retains the original backend operation
+until it is terminal. Every returned outcome, including an error, means that issued mutation can
+no longer commit later; an error may still conceal a committed value whose acknowledgement was
+lost. Caller cancellation or a transport deadline does not release serialization or prove absence.
 
-A **provider** is a backend implementing those five traits, compiled into an executable and
+A **provider** is a backend supplying all six storage boundaries, compiled into an executable and
 registered in its wiring by name:
 
 | provider | registered by | where the records go |
 |---|---|---|
-| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, with the `layout` marker and the `locks/` of the name claims and in-flight rows; every line a whole record with its writer's operation identity, the latest line for a key its current state, nothing removed |
+| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, `node-records.jsonl`, with the `layout` marker and the `locks/` of the name claims and in-flight rows; every line a whole record with its writer's operation identity, the latest line for a key its current state, nothing removed |
 | the application's | the application's binaries, at `start_on` | its own stores; Rafka binds the traits to its system topics |
 
 A name is bound to its place at registration. A node can move only between the providers its own
@@ -99,10 +102,15 @@ commands carry it, and a node refuses by name a command of an older one (`reject
 It is four steps:
 
 1. **Block.** The fabric-primary sends `mesh.block` to every mesh-primary. Each mesh-primary waits
-   until its in-flight commands complete, then replies `blocked` and gossips the current topology of
-   its mesh. A mesh-primary that has replied `blocked` issues no new command until it is unblocked.
+   until its in-flight commands complete and every required node, including a stopped node or
+   retained predecessor, has acknowledged its freeze. An unanswered freeze is resolved through
+   the existing unanswered-command clock and node investigation/recovery before `blocked`; no
+   second timer or unresolved-investigation state is added. It then replies `blocked` and
+   gossips the current topology of its mesh. A mesh-primary that has replied `blocked` issues no new command until it is unblocked.
 2. **Copy.** Once every mesh-primary has replied `blocked`, the fabric-primary appends every line of
-   every store on the old provider to the new one in source order, every name claim and in-flight row
+   all six stores on the old provider to the new one in source order, including both node-record
+   kinds, application recognition, immutable claim snapshots and unresolved property obligations;
+   every name claim and in-flight row
    with its exact claimant. A copy resumed after a lost answer appends nothing twice; a new provider
    holding lines the old one does not is refused by name, and nothing switches.
 3. **Switch.** The fabric-primary inserts `commit` for `(build_id, change_id)` on the new provider

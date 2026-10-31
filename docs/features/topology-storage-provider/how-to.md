@@ -42,8 +42,12 @@ let providers = NodeStorageProviders::file()
     .register("test-target", std::sync::Arc::new(FileNodeBackend::at(my_place)));
 ```
 
-An application's own backend implements the five store traits behind `rdm_admin::storage_backend::StorageBackend`
-and `rdm_node::storage_backend::NodeStorageBackend`. Storage is persistence only: it stores and returns
+An application's own backend supplies all six storage boundaries behind
+`rdm_admin::storage_backend::StorageBackend` and `rdm_node::storage_backend::NodeStorageBackend`.
+`StorageBoundaries::node_records` and `NodeStorage::node_records` must use that registered backend,
+alongside its other stores; opening an independent file-only property store does not implement the
+registration. [i150](../../plans/i150-node-writes-lifecyle-updates.md) records application-provider
+integration and acceptance separately. Storage is persistence only: it stores and returns
 what it is given and decides nothing (Q109). Two places of one backend are two registered names.
 
 Cells: every cell of the stem runs these registrations.

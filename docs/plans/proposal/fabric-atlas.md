@@ -1,5 +1,13 @@
 # FabricAtlas
 
+> **Historical proposal; i150 supersedes the node-record model below.** Node properties are
+> owned by the node, lifecycle records are keyed by subject and writing primary birth, and
+> current-pair reads select shared records rather than atlas-held property copies. FabricAtlas
+> still tracks command admission and execution. The approved direction is
+> [node records](node-record.md); implementation and outstanding acceptance are tracked in
+> [i150](../i150-node-writes-lifecyle-updates.md). The original rationale below is retained as history,
+> not a second instruction to implement the combined-row design.
+
 **Origin:** Luke, 2026-10-26 (Q194), from Q189 (a start right after a cross-mesh stop refused
 `node-not-live`). **State:** proposed; built after i149 lands. **Name:** `FabricAtlas`, read through
 `fabrics.atlas.get`.

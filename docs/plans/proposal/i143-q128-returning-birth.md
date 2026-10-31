@@ -31,12 +31,12 @@ node-recovery.md:77
 
 node-investigation.md:26-28
 - old: `A node that comes back after it was re-created is refused at`
-  `[node.connections.admit](node-connections-admit.md) (\`superseded-birth\`). The node that refused it`
+  `[node.connections.admit](../../architecture/lifecycles/node-connections-admit.md) (\`superseded-birth\`). The node that refused it`
   `reports it to the fabric-primary, which terminates its runtime.`
 - new: `A node that comes back after it was re-created is refused by membership: every node's book drops the`
   `digests of a birth whose NodeDeleted it applied (gossip.md).`
 
-fabric-recovery.md:59-60, 164, 182: `refused at admission ([node.mesh.join](node-mesh-join.md), \`superseded-birth\`) and its runtime is terminated (Q110)`
+fabric-recovery.md:59-60, 164, 182: `refused at admission ([node.mesh.join](../../architecture/lifecycles/node-mesh-join.md), \`superseded-birth\`) and its runtime is terminated (Q110)`
 and `refused at admission and terminated` / `refused at admission and its runtime terminated (Q110)`
 - new, each: `refused by membership (its NodeDeleted applied)`.
 

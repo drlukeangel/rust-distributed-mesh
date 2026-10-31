@@ -94,15 +94,15 @@ Luke wants it asked.
 > **A cut-off view.** A node's view is cut off while it hears no other member of its mesh and holds a member
 > whose silence no lifecycle gossip event it applied explains; it ends when the view hears a member again or
 > when that silence is explained, and one silence window of healing follows. What a cut-off or healing view
-> may not do is [fabric-primary.md §2.3.1](fabric-primary.md#231-topology-authority),
-> [build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build) and §12. Expected
+> may not do is [fabric-primary.md §2.3.1](../../architecture/fabric-primary.md#231-topology-authority),
+> [build.md §4](../../architecture/build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build) and §12. Expected
 > silence never cuts a view off and is never stale: a member whose node.stop this view admitted or applied
 > (stopping; stopped, `NodeStopped` until node.joined), whose node.restart is open (`NodeRestarting`) or whose
 > deletion it applied (`NodeDeleted`, for the deleted retention) left the view's current members through an
 > event the view applied, and is not counted. A view that holds no other member, or whose other members all
 > left it that way, is not cut off: a mesh-primary whose mesh has no other live member keeps its seat,
 > publishes as its primary and serves its mesh's topology and rafka-time, and a stopped member's start reads
-> them from it ([node.start](lifecycles/node-start.md) step 4).
+> them from it ([node.start](../../architecture/lifecycles/node-start.md) step 4).
 
 One flag, not a question: `cut-off` already names the seat move's write cut-off
 ([node-primary-update.md](../../architecture/lifecycles/node-primary-update.md) step 4). The view's cut-off

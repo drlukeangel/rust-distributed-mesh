@@ -6,7 +6,7 @@
 
 # Query: reading the fabric by property
 
-[Lifecycle index](fabric-mesh-node-lifecycles.md) · [Node properties](node-rpc-envelope.md#node-properties) · [Gossip](gossip.md)
+[Lifecycle index](../../architecture/fabric-mesh-node-lifecycles.md) · [Node properties](../../architecture/node-rpc-envelope.md#node-properties) · [Gossip](../../architecture/gossip.md)
 
 This page owns how anything reads the fabric: the filter, its matching rules, and the two places a
 query is answered (Q167, Q232, Q234). A query is answered from a primary's Atlas, or by the node
@@ -56,7 +56,7 @@ node.nodes_get([["config.zone", ["eu-1"]]])                        every node in
 
 The matching rules:
 
-- **Property:** any public field of the row by its page name ([Node properties](node-rpc-envelope.md#node-properties)
+- **Property:** any public field of the row by its page name ([Node properties](../../architecture/node-rpc-envelope.md#node-properties)
   for a node; `MeshView`, `FabricView`, `ConnectionView` and the Build header for the others).
   `config.<key>` reads into the application's config map; the key is everything after the first dot.
 - **Values:** strings. A boolean is `true` or `false`, an enum its page name (`ready`, `gateway`), a
@@ -74,8 +74,8 @@ The matching rules:
 ## 2. Internal: the node itself
 
 A node holds its own topology: the latest gossiped digest of every node it hears, the primaries and
-the mesh and fabric statuses ([gossip.md](gossip.md)). Its hydration sync, `node.topology.get` from its own
-mesh-primary at join, start and create ([node.topology.get](lifecycles/node-topology-get.md)), carries
+the mesh and fabric statuses ([gossip.md](../../architecture/gossip.md)). Its hydration sync, `node.topology.get` from its own
+mesh-primary at join, start and create ([node.topology.get](../../architecture/lifecycles/node-topology-get.md)), carries
 its own whole row from the mesh-primary's Atlas with the topology, held on its own entry and kept current by `ApplyNodeConfig`, the tag commands and `ApplyNodeName` (Q234). It
 queries that view with the same filter and the same matching rules, locally, with no call:
 
@@ -176,21 +176,21 @@ reported, and a command not acknowledged moves the row nowhere. states.md states
 ## Reading state
 
 Every read is a query by property, answered in one of two places
-([query.md](../architecture/query.md)):
+([query.md](../../architecture/query.md)):
 
 - **The primaries** answer `fabrics.get`, `meshes.get`, `nodes.get`, `connections.get` and
   `builds.get` from their atlases (the mesh-primary for its own mesh, the fabric-primary for the rest): any property of the row, `config.<key>` and `tags` included. From
   inside a node it is `node.nodes_get(filter)`, sent to its mesh-primary and carried up for another
-  mesh ([query.md §1](../architecture/query.md#1-external-a-query-to-the-primaries)).
+  mesh ([query.md §1](../../architecture/query.md#1-external-a-query-to-the-primaries)).
 - **The nodes storage** answers a node's read of one other node's row, by id or by name:
   `node.node_row(id | name)`, the record itself, opened on the first read and never at start
-  ([query.md §1](../architecture/query.md#1-external-a-query-to-the-primaries), Q237).
+  ([query.md §1](../../architecture/query.md#1-external-a-query-to-the-primaries), Q237).
 - **The node itself** answers `node.topology_view.nodes_get(filter)` from the topology it holds,
   locally, with no call: what gossip carries for every node, and its own whole row, synced from its
   mesh-primary's Atlas at join, start and create
-  ([query.md §2](../architecture/query.md#2-internal-the-node-itself)).
+  ([query.md §2](../../architecture/query.md#2-internal-the-node-itself)).
 
-The node row's fields: [node-rpc-envelope.md, Node properties](../architecture/node-rpc-envelope.md#node-properties).
+The node row's fields: [node-rpc-envelope.md, Node properties](../../architecture/node-rpc-envelope.md#node-properties).
 
 ---
 

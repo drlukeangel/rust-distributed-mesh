@@ -20,7 +20,10 @@ without restarting nodes or losing history. Today storage opens once during boot
 provider requires a live protocol for copying records, transferring claims and recovering a lost
 executor. The application submits the Build when its store exists; RDM implements that Build.
 
-This initiative moves the five RDM record stores. Application data files remain governed by
+This initiative moves all six RDM record stores: fabric, meshes, nodes, connections, Builds and
+node-records. The node-records boundary contains properties and writer-birth lifecycle records;
+its runtime activation and application-provider acceptance are tracked by
+[i150](i150-node-writes-lifecyle-updates.md). Application data files remain governed by
 `storage_persistence`. The separate storage_persistence field rename is tracked in e1 so its public
 names and compatibility work cannot be lost between initiatives.
 
@@ -205,7 +208,7 @@ no nonexistent Rafka feature registry is assumed.
   while the journal itself is being moved.
 - **Likely failure:** copying all operation identities yet exposing a stale current record because
   writer histories were appended out of source order.
-- **Persistence path:** five provider stores, exclusive claims, local with changes blocked-state and pending-event
+- **Persistence path:** six provider stores, exclusive claims, local with changes blocked-state and pending-event
   logs, and one immutable decision per `(build_id, change_id)`. Restart resolves that decision before
   opening ordinary writes. Provider omission never silently switches an established fabric to file.
 - **Dependencies:** R-SR append-only stores and exclusive-claim primitives; Q167 public property reads;

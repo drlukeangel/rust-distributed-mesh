@@ -220,8 +220,8 @@ node-rpc-envelope.md:
   NodeView; a stopped node answers stopped; no event | OK, the empty list when nothing matches; an
   unknown property, a value the field cannot take or an empty values list INVALID_ARGUMENT naming
   the pair; read bound RESOURCE_EXHAUSTED |`.
-- line 318, the connections row: the heading `node.connections.get/[delete](…)` →
-  `connections.get { node } / [node.connections.delete](…)`; `Held-connection read;` →
+- line 318, the connections row: the heading `node.connections.get/[delete](../../architecture/lifecycles/node-connections-delete.md)` →
+  `connections.get { node } / [node.connections.delete](../../architecture/lifecycles/node-connections-delete.md)`; `Held-connection read;` →
   `connections.get { node } answers the exact birth's own connections from its connections log, the
   node (id, incarnation) the read's address and the filter over id, destination, kind and state,
   [Status 0x1B](#status-op-0x1b-rdm) Get { entity: Connections, node, filter }, answered Connections;`;
@@ -282,9 +282,9 @@ labels, or any of them; read through the node store's tags index, one point read
 `nodes.get [tags: a, b] for any of the labels, [tags: a][tags: b] for all of them, with [mesh: m]
 for one mesh's`.
 
-fabric-mesh-node-lifecycles.md: line 100 `| [node.get](…) | Reading a node |` → `| [nodes.get](…) |
-Reading nodes |`; line 101 `| [node.connections.get](…) | Reading a node's held connections |` →
-`| [connections.get](…) | Reading a node's held connections |`; line 123 (0x1F) unchanged.
+fabric-mesh-node-lifecycles.md: line 100 `| [node.get](../../architecture/query.md) | Reading a node |` → `| [nodes.get](../../architecture/query.md) |
+Reading nodes |`; line 101 `| [node.connections.get](../../architecture/query.md) | Reading a node's held connections |` →
+`| [connections.get](../../architecture/query.md) | Reading a node's held connections |`; line 123 (0x1F) unchanged.
 
 Name pass, meaning unchanged (`node.get` → `nodes.get`, `fabric.get` → `fabrics.get`, `mesh.get` →
 `meshes.get`, `build.get` → `builds.get`, `node.connections.get` → `connections.get { node }`):

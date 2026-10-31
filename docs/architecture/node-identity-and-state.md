@@ -43,14 +43,12 @@ The lifecycle architecture rests on five design rules:
 
 ## 2. A node is an ENTITY, and it has three ids
 
-**A node is one entity.** Every node, whatever its kind, is one record shape, the node row
-(`NodeRecord`, `rdm-admin/src/storage.rs`: `node_id`, `fabric_id`, `name`, `mesh_id`, the
-incarnation, the status and the config), living in the ONE nodes store of the fabric
-(`NodesStorage` on the fabric's shared store root; Rafka binds it to its `<system-org>.ops.nodes`),
-one writer per mesh, never a separate per-mesh store (§2.5). Its id is minted by the one minter and
-its fields are the node's durable facts. **The
-gossip digest is a PROJECTION of that record**, not a second source for it — which is why a key
-rotation lands in the record first and gossips afterwards, and never the reverse.
+**A node is one entity with two owned records.** Its property record is keyed by node ID and
+written by the node: config, tags, bound addresses and application declarations. Its lifecycle
+record is keyed by subject node ID and the writing primary's node ID and incarnation. It contains
+identity, explicit mesh/kind, lifecycle status, certificates, executable and placement facts.
+A current-pair lookup uses the ordinary name claim; it never uses the last writer at a path.
+Gossip is a projection, not persistence or proof that a lifecycle operation completed.
 
 **A node has one identity on the fabric, a name that says where it sits, and one ID — its
 minted id. THE FABRIC IS ALL MESHES**, so the endpoint identity is globally unique — never
@@ -63,7 +61,7 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
 | id | what it is | uniqueness | who sees it |
 |---|---|---|---|
 | **`endpoint_id`** | the node's iroh key (ed25519 public key, hex) — its identity on the FABRIC, the thing a dial resolves to. A FIELD of the node record | globally unique across every mesh | **THE TRANSPORT ONLY.** Never on a public interface — not a REST body, not a wire response, not an audit row, not a log line or span attribute NAMING a node (§9 rule 4). The one exception is a span whose SUBJECT is the routing key itself — a dial's target, the handshake, the identity load/mint before an id exists to log — never a narrative "which node did this" field. Exposing the routing id outside those is a security breach |
-| **`path.name`** | path and name are the node's two fields, joined only as the path.name index key; both are free text the caller chooses at node.create (`<mesh>.<kind>.<name>` by convention, a name, never an ordinal); the node's type is its own field, `node_type` (§2), never read from the path | unique per (path, node), by the ordinary name claim | what topic placement and `replica.targets` store (§2.2); a Build step key names its target by it (`node.create:<path.name>`) |
+| **`path`, `name`** | path is the node location in the tree and name is its name; they are separate stored fields, never concatenated or parsed as one identifier; the name has no dot, and both are free text the caller chooses at node.create (`<mesh>.<kind>.<name>` by convention, a name, never an ordinal); the node's type is its own field, `node_type` (§2), never read from the path | unique per (path, name), by the ordinary name claim | what topic placement and `replica.targets` store (§2.2); a Build step key names its target by it (`node.create:<path.name>`) |
 | **`id` — the node's minted id** | the node row's own id — minted once, 60 bits, 12 Crockford characters, bare internally | globally unique, by the same property every minted id in the platform has | **the PUBLIC, STORED and AUDIT identity.** It names one node instance: what the audit log names a node by (§2.4) and what REST and the wire render for a node. Its external form renders the type prefix from `node_type`; a client only ever names a BROKER, so **`brk_<crockford>` is the only form a client sees** |
 
 - **One minter, no second form.** The id is `mint_id()` like every other entity's — no short form,
@@ -97,10 +95,10 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   A re-attach or a growth changes nothing: the nodes are created at the same `path.name`s, and the
   routes to the new nodes materialize with no update to any topic. There are two renames, both
   node.name.update under its [rename precondition](lifecycles/node-name-update.md), always of a live node whose
-  connections are deleted and which has left its mesh: a replace's predecessor to `<name>.old`, and a rollback's
+  connections are deleted and which has left its mesh: a replace's predecessor to `<name>-old`, and a rollback's
   back to `<name>` ([node replace](lifecycles/node-replace.md)). A stopped node is never renamed. Nodes are system
   entities, never renamed by hand.
-- **A path is a path.** A path is dotted segments, minted once and immutable, with no structural meaning. The segments in use are a convention (`mesh1.broker`, `fabric1.meshes`). The link from a node to its mesh is the `MeshId` on the node row, and where a row is stored says nothing about the entity's path.
+- **A path is a path.** A path has dotted free-text segments with no mesh or type encoded in their meaning. The path is minted at registration and immutable for this node. Replacement renames the predecessor to `<name>-old` at the same path; rollback restores its original name. The segments in use are a convention (`mesh1.broker`, `fabric1.meshes`). The link from a node to its mesh is the `MeshId` on the node row, and where a row is stored says nothing about the entity's path.
 - **The external form appears only on public interfaces** (an API answer, a log line, a span) and
   is stripped once, at ingress; the application's own boundaries (Rafka: REST and its audit log) are
   the application's.
@@ -112,19 +110,18 @@ The prefix renders from `node_type` over ONE 12-character id space, human-readab
 
 ### 2.2 The node `path.name` is what a reference STORES — the `endpoint_id` is resolved at dial time
 
-An application names nodes in its own configuration, so a stored reference to
-a node is its `path.name` (`mesh1.broker.1`), not its minted id or its iroh key.
+An application names nodes in its own configuration, so a logical stored reference carries separate `path` and `name` fields (for example `mesh1.broker` and `1`). Exact-instance references carry node ID and, where execution targets a process, incarnation. Neither form stores an endpoint key.
 
 - **Every dial resolves `path.name` → the node → its `endpoint_id` from the `topology-nodes`
   projection** (§2.6), which every node already holds in memory when it routes. The
   projection carries a `path.name` index, so a node whose `endpoint_id` moved (§2.3), or a `path.name` a
   new node now holds (§2.3), is reached without a single config changing.
 - **The node owns its name**: it is the owner of the name it publishes, and what it publishes is the row's name. A
-  member never writes its row merely because it is the subject (§2.5).
+  node writes its own properties; its mesh-primary writes lifecycle facts (§2.5).
 - **A 64-hex `endpoint_id` or a minted node id in a stored reference is a defect** and is refused
   by name at the reader.
 - **The stored `path.name` does not change on a RESTART, a RE-ATTACH, a GROWTH or a REPLACE** (§2.3): a re-attached or grown node is created at its `path.name`; a replaced predecessor, live and
-  out of its mesh, is renamed `<path.name>.old` and stopped, and its successor is created at the `path.name`: a re-birth. No stored
+  out of its mesh, is renamed `<name>-old` at its unchanged path and stopped, and its successor is created at the `path.name`: a re-birth. No stored
   reference to it is ever rewritten.
 
 ### 2.3 A new node is a new id — a REPLACE takes the old node's `path.name`, an ADD takes its own
@@ -140,16 +137,16 @@ follows the `path.name` (§2.2), so nothing stored changes when a node is replac
 
 | a new node that… | its id | its `path.name` | the node it relieves | placement |
 |---|---|---|---|---|
-| REPLACES a node in the topology | fresh | created at `mesh1.broker.1` once the predecessor released it | out of its mesh, renamed `mesh1.broker.1.old` then stopped, or deleted | stays as it is |
+| REPLACES a node in the topology | fresh | created at `mesh1.broker.1` once the predecessor released it | out of its mesh, renamed `name = 1-old` at `path = mesh1.broker` then stopped, or deleted | stays as it is |
 | is ADDED | fresh | its own next one (`mesh1.broker.4`) | none | an application refers to it only by an explicit change of its own configuration |
 
 - **A replace is [node replace](lifecycles/node-replace.md).** Insert-and-fail on each of its
   renames means two nodes never hold one `path.name`.
 - **Node certs:** [fabric-certs.md](fabric-certs.md).
 - **node.delete releases the node's identity and name; its row stays.** The node's mesh-primary
-  writes the row with status deleted, keeping the record and its config; the deleted row releases
-  the `path.name`, so a node created there afterwards claims it with a fresh id and seeds its
-  config from it. The workflow is [node delete](lifecycles/node-delete.md).
+  writes Deleted lifecycle state and releases the pair claim. The predecessor's own properties
+  remain at its ID. True recovery inherits its acknowledged properties; replacement uses the new
+  Build entry, including an empty config or tag set. The workflow is [node delete](lifecycles/node-delete.md).
 
 ### Day zero
 
@@ -166,27 +163,21 @@ adoption launch, are new nodes: the first step mints a new id, never the inherit
 
 ### 2.5 ONE system org, one projection, one writer per mesh
 
-The fabric has one nodes store on its shared store root (R14), held by every mesh, so a mesh whose
-peer goes unheard keeps serving with a complete record of the fabric as it last knew it. It is the
-fabric's record of every node in every mesh, and each mesh-primary writes its own mesh's rows into
-it. How an application replicates its own copy of that record to every mesh is the application's.
+The fabric shares records across its meshes through the registered storage backend. Node-owned
+properties and writer-birth lifecycle records are separate values, not copies fed through primaries.
+A node writes its own property record; a mesh-primary writes lifecycle facts under its own writer
+birth. Fabric recovery uses its existing executor identity while its target mesh has no active
+mesh-primary; it never writes under another active primary's lifecycle key.
 
-**This is what the one-writer-per-mesh rule buys.** Because a mesh-primary only ever authors its
-OWN mesh's rows, two meshes that could not hear each other cannot have written conflicting versions
-of the same node — they wrote disjoint sets of rows. Rejoining is therefore a UNION of each mesh's
-rows, not a conflict to adjudicate: no last-writer-wins, no vector clocks, no merge policy to get
-wrong. Dividing the writers by mesh is the property that lets each mesh keep working while a peer
-mesh goes unheard.
+A superseded writer changes only its own lifecycle record. The installed election result selects
+which writer readers use. No node-property or lifecycle record has a revision or tenure counter;
+existing `Primary.revision` remains part of the separately persisted election result. Flags in a
+lifecycle record record the role and never elect it.
 
-The one thing a union does not settle by itself is a node whose STATE changed on the far side while
-the two were apart — a member that died, was deleted, or moved. That is a membership event in its
-own mesh's rows, authored by that mesh's own primary (§4), so it arrives as that mesh's own
-history rather than as a competing claim about a node this side owns.
-
-**Each mesh's PRIMARY node-admin is the only writer for its OWN mesh's nodes, and writes reach it
-only over node-RPC.** N meshes means N writers, one per mesh, never more — the writers are
-divided by mesh, so two of them can never contend for the same node. A multi-mesh fabric has
-two primaries, neither owning the other's members.
+Before publishing or installing a candidate primary or opening command admission, freeze its
+accepted takeover evidence, settle earlier issued writes of that same writer birth, and finish its
+required lifecycle puts through the retained serialized writer. Retry uses the frozen evidence,
+not a fresh mutable predecessor snapshot. Missing current-writer evidence is unavailable.
 
 <a id="the-projection-differs-from-every-other-projection-in-exactly-two-ways"></a>
 #### The projection is filled from two gossip channels

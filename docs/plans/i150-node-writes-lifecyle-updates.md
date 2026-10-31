@@ -6,7 +6,7 @@
 **Architecture doc:** [Node identity and state](../architecture/node-identity-and-state.md) §2.5, [node config update](../architecture/lifecycles/node-config-update.md), and [storage](../architecture/storage.md) §2. These current contracts need coordinated amendments; the target design is [node-record.md](proposal/node-record.md), R-NR1–R-NR8.
 **RED/GREEN evidence:** pending; canary first, then seed, then implementation
 **Approved:** Luke requested this PRD and approved the serialized-write regain correction in this chat on 2026-10-31, committed as `4dbf01ebaf99ca5e17d4e2ba9cfb78ebf8fe2a65`. No UTC approval time was supplied. That approval does not constitute approval of the unresolved forks or all architecture deltas below.
-**Owner:** Codex implements the initial storage/canary increment in lane 1; subsequent story owners assigned at dispatch; Rafka integration coordinated with the i141 lead
+**Owner:** CLI implementation in lane 1 on `codex/i150-node-records`; desktop documentation audit in the same unit; Rafka integration coordinated with the i141 lead
 **Feature:** `node-records`
 **Baseline:** `4dbf01ebaf99ca5e17d4e2ba9cfb78ebf8fe2a65`, verified with `git cat-file -e`; no accompanying uncommitted contract edits are incorporated
 **Record:** this file owns i150 gaps, story status and evidence. e0 updates the dependency in [i143-prd.md](i143-prd.md); e6 coordinates the i141 consumer record and [i149](i149-topology-storage-provider.md).
@@ -16,13 +16,15 @@
 
 An embedding application's node currently sends its own property update through its mesh-primary and fabric-primary, while readers maintain copies whose freshness depends on propagation. A delayed predecessor write can also disturb path lookup, and repeated Build application must not erase an update made after that Build applied its entry. This initiative makes the node persist its own properties, resolves a path/name through its claim, and isolates lifecycle writes by the writing primary's birth. RDM supplies identity, persistence, execution and recovery semantics; application-specific port names and configuration policy stay in Rafka.
 
-Statements marked **verified** below identify inspected source or document text, not executed tests. Proposed tests, APIs and record additions are marked planned. No runtime test was run to author this PRD.
+Requirement-table source anchors describe the inspected baseline `4dbf01eba`, not line numbers
+in the changing implementation. The implementation record below identifies later commits and
+executed increment controls. Planned acceptance tests and fields are not completed behavior.
 
 ## Requirements
 
 Every gap has a BUILD owner. Existing behavior used as a dependency is source-verified, but no row is labelled HOLDS without its executable regression evidence. All rows therefore remain BUILD until the implementing epic supplies that evidence or records a passing existing control.
 
-| ID | Requirement, in consumer terms | HOLDS / BUILD | Verified current evidence or source anchor | Owning epic |
+| ID | Requirement, in consumer terms | HOLDS / BUILD | Baseline evidence or target contract | Owning epic |
 |---|---|---|---|---|
 | R1 | References carry separate free-text path and dot-free name, with mesh/type separate | BUILD | `crates/rdm-core/src/path.rs:91` stores mesh/kind/ordinal/label/old; `:228` serializes one string | e1 |
 | R2 | A late predecessor property write cannot hide the successor | BUILD | `crates/rdm-admin/src/storage.rs:605` exposes node lookup, `:609` node_at, `:617` index_path, `:625` name_claim | e2 |
@@ -40,9 +42,13 @@ Every gap has a BUILD owner. Existing behavior used as a dependency is source-ve
 | R14 | Rafka publishes its ports without an admin round trip and consumes the new reference/read shape | BUILD | Proposal Rafka section; actual consumer call sites and current pin must be verified by e6 before changes | e6 |
 | R15 | Real-process recovery, registered fast/release/soak coverage and feature docs prove the behavior | BUILD | `crates/rdm-test/tests/main.rs:50`, `:268`; `crates/rdm-test/src/estate.rs:647`; acceptance registry | e0, e7 |
 
-## § Open forks — evidence before a ruling
+## § Contract boundaries — decisions, implementation and acceptance
 
-The writer-birth key, no node revision/counter, Builds overriding properties, and serialized regain writes are settled directions, not new forks. The following unresolved boundaries are assigned work, not deferred gaps.
+The writer-birth key, no node revision/counter, Builds overriding properties, and serialized regain
+writes are settled directions. The existing election `Primary.revision` remains separate from
+node-property and lifecycle records. F1's atomic-recognition implementation is recorded below;
+its combined process proof and the F2/F3 boundaries remain assigned work. Architecture wording
+requires the exact-text approval and coordinated landing recorded in e7.
 
 | Fork | Positive surface opened and what it does | Architecture search and exact passage | Outlier document and exact conflicting or missing passage | Why the existing contract does not answer |
 |---|---|---|---|---|
@@ -50,7 +56,13 @@ The writer-birth key, no node revision/counter, Builds overriding properties, an
 | F2: update during startup | `node-config-update.md:23` stopped update completes after durable row write | `rg -n 'stopped|durable|Applied' docs/architecture/lifecycles/node-config-update.md`; `:26` next start receives config | Proposal R-NR5 “clears the owed map on the node's ready” | Environment A can be read before acknowledged update B; Ready for A cannot prove B applied |
 | F3: source of takeover state | `atlas.rs:500` folds earlier records; `:874` composes admission state | Q109 requires all readers to apply the same fold; Q197 requires operations as action evidence | Proposal R-NR8 “predecessor's records ... join reports, the digest” | An old mutable record can be changed after supersession; copying it under the successor's key would promote stale state |
 
-**F1 arms:** A: persist apply identity and effect together at the node, reuse the existing Build/operation/target identity on repeats; B: retain an ordered update mechanism; X: another proof of durable duplicate recognition. Recommend A, with no new monotonic node counter. e4 owns the schema, crash proof and exact API delta. A completion for an offline update must distinguish durable acceptance from node application without falsely recording the latter.
+**F1 disposition:** A is implemented in the property-writer increment: persist config, tags and
+`PropertyApplication(build_id, semantic entry operation)` atomically at the exact node; attempts
+are excluded. The existing target receipt and workflow receipts remain, but a missing reply cannot
+erase durable recognition. Recovery preserves it with the acknowledged properties. No new node
+counter is introduced. The combined real-process lost-reply/later-update/recovery/replay proof and
+final API documentation are still owed by e4. Durable acceptance of a deferred update is distinct
+from node application.
 
 **F2 arms:** A: identify each owed update and clear only the one acknowledged as applied; B: serialize startup with all incoming property commands, retaining their obligations; X: equivalent ordering proof. Recommend A, using existing operation identity where sufficient, not a row revision. e4 must account for config and tag operations, a second update during startup, re-birth and caller cancellation.
 
@@ -161,13 +173,13 @@ Use `Estate::spans` (`estate.rs:958`), `artifact` (`:851`) and `record_trace_url
 | planned `rdm.node.record.update.via-properties` | planned rdm-node record writer | node_id, incarnation_id, path, name, operation identity when present, backend, durable outcome | Own update public value and durable success |
 | planned `rdm.node_admin.node.resolve.via-lifecycle-record` | shared resolver | subject ID, selected writer ID/incarnation, outcome, reason | Late old write is positively recorded; read selects current writer |
 | planned `rdm.node_admin.node.update.via-lifecycle-record` | serialized lifecycle writer | subject, writer birth, phase, completion outcome | Delayed put and regained takeover order visible |
-| planned `rdm.node.record.update.via-already-applied` | e4 duplicate recognition if F1 A selected | exact target and original operation identity, outcome | Deliberately replay A after B; public B remains |
+| planned `rdm.node.record.update.via-already-applied` | e4 durable duplicate recognition | exact target and original operation identity, outcome | Deliberately replay A after B; public B remains |
 
 Final names pass `scripts/name-check.py`. Do not log config maps, secret environment, credentials or unrestricted application data. Preserve causal parentage from public request through persistence and acknowledgement. Background own updates retain their authored trace; do not fabricate a common parent for unrelated operations.
 
 ## § Per-increment seed-data obligation
 
-- e1: path/name serde cases, free-text names, empty/invalid grammar decisions, `.old` path move, every reference shape and environment pair; explicit historical compatibility/refusal decision.
+- e1: path/name serde cases, free-text names, empty/invalid grammar decisions, immutable path and predecessor name `<name>-old`, every reference shape and environment pair; explicit historical compatibility/refusal decision.
 - e2: node and writer-birth lifecycle record decoders; name claims; each field in proposal R-NR3; a current and deleted node plus two lifecycle writers. Include complete data in the functional seed, not only config.
 - e3: earlier writer, current writer and same-birth regain; retained roots and failed/unknown I/O.
 - e4: create entry, same-Build apply, later Build, own update, stopped owed update A/B, tags and reply-loss records. Track acknowledgement and application separately.
@@ -547,6 +559,93 @@ The replacement portion and lost-reply runtime proof remain required. Removing t
 activating current record reads and tag writes, lifecycle takeover, the reference migration, Rafka
 integration and final acceptance are still BUILD. This evidence is not full-initiative completion.
 
+### Latest correction: immutable path, replacement name
+
+Luke corrected the earlier replacement requirement: a node is tied to its path and the path
+cannot change. Replacement renames the predecessor's **name** to `<name>-old` at the same path;
+the successor claims that path with the original name. Earlier `.old` path-move statements and
+proofs in this work log are superseded. The separate-property and globally unique ID-first
+requirements below remain in force. Replacement provenance comes from the admitted Build,
+never merely from an ordinary name ending in `-old`.
+
+The implementation now rejects changed paths at node apply, stored-row rename and Build-step
+admission, and rejects invalid generated rename targets before a Build executes any step. Added
+regressions cover those boundaries and ordinary `-old` names without replacement provenance.
+Architect 1 reviewed this correction: explicit replacement/rollback intent still needs to replace
+Build-origin and spelling inference, including receipt replay. The architecture text changes remain
+in the proposal's exact-text review scope. The focused cell attempt failed compiling existing
+joined-string callers after removal of `PathName`'s parser/formatter; no tests ran and these new
+regressions are unverified (`target/evidence/i150/immutable-path-check.log`).
+
+### Explicit correction: separate properties and ID-first code references
+
+Luke clarified during CLI continuation that `path` is where the node is in the tree and `name`
+is the node's name. They are two properties, never a joined `path.name` identifier, display
+format, serialized string or string to split. This applies to storage, wire objects, launch
+inputs, references, queries and diagnostic fields. A structured argument may contain both.
+Names are unique within a path, so a composite `(path, name)` lookup index and name claims remain
+valid. `node.id` is globally unique and is the first choice for code references and lookups;
+a caller-supplied location is resolved through the composite index, then operations carry the ID.
+Neither property supplies mesh, type, ordinal or identity. The latest correction above governs
+replacement: immutable path, predecessor name `<name>-old`, successor original name.
+
+Architect 1 audited the correction and found joined assumptions in PathName FromStr/Display,
+public `name: PathName` carriers, storage index/claim keys, operation strings, receipt parsing,
+transport observer comparisons and diagnostic fields. The joined parser and formatter are now
+removed; the connected caller/schema migration is in progress and currently uncompilable. Earlier
+pair round-trip evidence allowed joined parsing/formatting and does not prove this corrected rule.
+The lifecycle election-output storage additions are also uncompiled and not yet activated.
+
+### CLI continuation — 2026-10-31 20:28 UTC, uncommitted and not accepted
+
+The pair-only PathName migration now threads explicit mesh/kind through node operations,
+immutable attempt actions, pinned births, runtime records and resolved deployment launches.
+Replacement deletion retains the predecessor's kind/mesh; creation uses the new entry. Claims
+retain both the executor's owning mesh and the actual in-flight mesh scope. Replay reads the
+committed claim, refuses a different executor, and compares exact scope metadata before taking
+another in-flight row. Cleanup releases the winning claim's actual scope even when its mesh is
+absent from the current view. These changes remain uncommitted and unproved at runtime.
+
+Architect 1 reviewed replacement routing, exact claim scope, replay and the resolved launch
+metadata. Its latest source review found no additional critical defect in those focused paths;
+it explicitly withheld runtime and landing approval. Compiler-driven fixture migration continues:
+`target/evidence/i150/pair-build-20.log` records a failed workspace build with 123 distinct compiler
+errors (not behavioral RED evidence). Later builds passed those compiler stages and exposed
+integration-fixture failures: build 23 reported 157 admin integration errors and three testkit unit
+errors. Builds 24–27 exposed and corrected further API and fixture errors. Build 28 completed the
+whole-workspace compile and passed the one pair round-trip test (`pair-build-28.log`); it is not a
+suite or gate result. Its optional ledger append was sandbox-refused after the test passed. The next
+run obtained filesystem approval to write that ledger. No prior-commit gate applies to this checkout.
+
+The next connected source batch removes the upward own-config route, pending push map, `Hop::Push`,
+and completion-side config installation. Wire position 34 retains its payload as `Reserved34` and
+is refused. Config commands require the bound node-owned property writer and still contact stopped
+processes; there is no unbound combined-row fallback. Missing lifecycle metadata after a property
+apply is a named failure. New bound-writer conformance replaces obsolete copied-row/push assertions.
+Architect 1 reviewed the design and applied source with no further concrete defect. The full
+workspace build and both focused property-writer tests passed in `property-route-cut.log` (2/2).
+This is focused evidence, not full acceptance. A further source audit found old-looking path seeding
+without replacement provenance; that seed and retained-row marking now require the exact recorded
+origin. The full workspace build and all four node-row tests pass in `pair-provenance-tests.log`,
+including the negative fixture and recovery snapshot preservation. Broader core tests reached
+154 passed / 3 failed on obsolete string-name fixtures; those fixture encodings are being updated.
+The broader admin library run is still in progress and has failures to diagnose.
+
+All epics remain BUILD. Lifecycle writer activation and election-install ordering, current-reader
+conversion and removal of copied rows, startup A/B obligations, combined process-fault proofs,
+Rafka provider/pin integration, exact architecture-text approval and final gates remain owed.
+The requested 20:11 UTC deadline was missed. Full closure has not been established; implementation
+continues without claiming a passing gate, landing or issue closure.
+
+The subsequent semantic review found and corrected two additional gaps. Replacement provenance
+now lives in a distinct `replacement_from` pair on the exact subject record, independent of the
+latest claim-release source. Name-only edits preserve it; exact rollback clears it. Path changes
+are admitted only by the pinned Build runner through the same validator used for external names.
+A second move first finishes any earlier pending name release under the existing node lock. The
+final-admin generator again chooses above all exactly matching generated pairs with checked
+exhaustion. Architect 1 reviewed these source changes; their regression tests have not run.
+`NodeLifecycle` now has the same provenance field for the pending activation cut.
+
 ### e0 — Executable canaries and contract decisions precede implementation
 
 - **Goal → gap:** deliver R6,R8–R10,R15; source/design anchor: `Proposal R-NR2/R-NR5/R-NR8; estate.rs:647, :851, :958`.
@@ -569,11 +668,11 @@ integration and final acceptance are still BUILD. This evidence is not full-init
 - **Detailed requirements / stories:**
   - **i150.e1.s1 — BUILD:** Replace parsed mesh/kind/ordinal address with path/name pair; preserve separate mesh/type data and validate dot-free name.
   - **i150.e1.s2 — BUILD:** Update serde, claims, launch environment, references, client and public filter decoding together; identify all old-field callers by compile/source audit.
-  - **i150.e1.s3 — BUILD:** Move predecessor path to .old with its name unchanged; preserve claim ownership and exact identity across interrupted moves.
+  - **i150.e1.s3 — BUILD:** Keep path immutable; rename predecessor name to `<name>-old` at that path; refuse path changes and preserve claim ownership and exact identity across interrupted renames.
 - **Spans:** assert the applicable production/control spans in the OTLP table; add the exact emit-site mapping and mandatory attributes before GREEN. e0 registers capture, e7 verifies retrieved traces.
 - **Testing by tier:** unit/functional rules first where applicable, then the registered real-process cells; canary RED precedes seed RED. e7 covers load/chaos. No zero-test or ignored acceptance.
-- **Acceptance tests by name:** path::tests::separate_path_and_name_round_trip; node_records::a_path_move_preserves_the_node_identity (planned).
-- **Estate plan:** Feature estate, one node is moved then replaced; complete public pair readback.
+- **Acceptance tests by name:** path::tests::separate_path_and_name_round_trip; node_records::a_predecessor_rename_preserves_path_and_identity (planned); node_records::a_rename_refuses_a_different_path (planned).
+- **Estate plan:** Feature estate, one predecessor is renamed at its unchanged path then replaced; read back path and name separately.
 - **Persistence/restart:** apply the three-boundary canary matrix to touched state; list retained roots and kill instant in the story receipt. Documentation-only stories record applicability and link/example checks.
 - **Sizing/file ownership:** one implementing owner per story; shared files are sequenced by the dispatch table. Owned surfaces: crates/rdm-core/src/path.rs; crates/rdm-core/src/launch.rs; crates/rdm-client/src/calls.rs; crates/rdm-node/src/nodes_storage.rs.
 - **Rows absorbed:** R1; Q235/Q305/Q308 and rdm#239 are source-described dependencies where relevant, not claims that their issues were independently inspected or closed.
@@ -759,3 +858,16 @@ Not shipped. e7 records actual surprises, predicted failures, seed omissions, pr
 - Repository workflow: [CLAUDE.md](../../CLAUDE.md)
 - Public API guidance: [consumer guide](../eng/consumer-guide.md)
 - Source template: [seed-first PRD](../eng/templates/prd-seed-template.md)
+
+### Startup correction: one final topology fetch — BUILD
+
+Luke's direction: after the hook, satisfy the required Build-facts floor, then fetch topology
+once at the end. Install complete topology and adopt current Rafka-time from that same reply
+before reporting started. No preliminary topology fetch and no second topology call solely for
+time. Preserve existing startup deadlines and the shared workflow across node kinds.
+
+The current `rdm-node/src/workflows/node_start.rs::AfterTheHook::steps` still fetches topology
+before `after.floor`, then calls `read_topology` again for time. The CLI must reorder the shared
+workflow and audit floor/readiness dependencies on early topology installation. Proof owed:
+startup trace shows the Build-floor check before exactly one topology request, that reply supplies
+time, and no Started/Ready occurs before both complete. Existing gap repair remains separate.

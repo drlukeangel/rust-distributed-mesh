@@ -453,7 +453,30 @@ No Build is current before it is recoverably durable.
 
 ### 5.3 Node-admin storage boundaries
 
-Control-plane state lives behind the four storage interfaces, fabric, mesh, nodes and connections, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6). In RDM's file adapter they open under `<store_dir>/fabrics/<name>` and one store root per fabric, `<store_dir>/<fabric_id>/{layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl, builds.jsonl, locks/}`: one append-only JSONL file per storage boundary, every write one line carrying the whole record with its format and key, the latest complete line for a key the current state, nothing ever removed, indexes folded in memory, the attempt in flight and every name claim a create-exclusive lock under `locks/`, and a layout marker a root is refused without (R-SR1 to R-SR5). One writer per key: the fabric-primary writes the Fabric record and every topology attempt's Build facts, with one exception: while the fabric-primary is unavailable, the [fabric recovery](lifecycles/fabric-recovery.md) workflow's executor writes that attempt's Build records and, while the target mesh has no active mesh-primary, the mesh and node records that attempt's operations require (the lost node-admin's Deleted row, the re-created node's claim and row), nothing else; this does not make it primary, and ordinary mesh writing passes to the restored mesh-primary when it assumes the role (Q122); each mesh-primary its mesh's record, its mesh's node records and tag rows, and the name locks of both (where `is_primary` and `is_fabric_primary` record the election's result); the fabric-primary also writes each mesh's drift attempts' Build facts, the mesh in the key (Q118); the launching admin a birth's runtime row; each node its own connection facts. The Build journal holds one record per fact at the fact's own key: one row at `build_id`, one at `(build_id, mesh, attempt)`, one claim at `(build_id, mesh, attempt)`, one receipt per step of an attempt. No record is written twice and no two writers write one key. The generic code knows the interfaces, never a specific database; Rafka binds its system topics to them.
+Control-plane state has six boundaries on the fabric's shared store root: fabric, meshes, nodes,
+connections, Builds and node-records (`NodeRecordsStorage`). On the file backend these live under
+`<store_dir>/<fabric_id>/{layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl,
+builds.jsonl, node-records.jsonl, locks/}`. Copy every boundary, current values and history, in source
+order together with held claims and in-flight operations.
+
+The fabric-primary writes the Fabric record, accepted Build definitions, Build-attempt records,
+and step receipts for operations it executes. Each mesh-primary
+writes its Mesh record and lifecycle facts for its members under that primary's writer birth.
+Each node writes its own config, tags, bound addresses and declarations through its property
+writer, and its connection facts through the connection writer. The launching admin records the
+birth's runtime and immutable claim snapshot. Existing election results and revisions persist
+independently of lifecycle role flags. A node record has no revision or tenure counter.
+
+While the fabric-primary is unavailable, the existing fabric-recovery executor writes only the
+attempt facts and the lifecycle/claim facts its operations require for a mesh with no active
+mesh-primary, using its own writer identity. That exception does not grant a primary role or let
+it overwrite an active primary's lifecycle key. Ordinary lifecycle writing transfers through the
+same preparation boundary when the restored primary takes the role (Q122).
+
+The Build journal retains one fact at its semantic identity: the Build ID, an attempt under its
+mesh, a claim for that attempt, and each step receipt. Property application recognition is written
+with the property effect at the node, not inferred from a missing or present completion reply.
+The generic code uses these interfaces; the application supplies the backend.
 
 `fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once; the fabric's name is claimed at `<store_dir>/fabrics/<name>` above the per-fabric roots, and a deleted fabric releases it. It carries no pointer to a Build (RDM's `FabricRecord` in `rdm-admin`).
 

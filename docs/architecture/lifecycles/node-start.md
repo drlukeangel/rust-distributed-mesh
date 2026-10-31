@@ -42,20 +42,17 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    through the joined channel and reads no topology snapshot as a prerequisite.
    Ready waits for the hook; its Ok, Blocked and Failed outcomes, the Blocked probe
    answer and cancellation follow [Outcomes and the gate](../fabric-node-hooks.md#outcomes-and-the-gate).
-4. Obtain complete topology through [node.topology.get](node-topology-get.md). Install
-   only complete source snapshots; partial snapshots never complete start. The read is the
-   node's hydration sync (Q234): with the topology it carries the node's own whole row, the
-   recorded primaries the mesh-primary holds (a lost birth's marked gone) and each mesh's id,
-   and a node-admin started by a launch reads none of them from the store (Q227). Read Build
-   facts only when the node is below the primary's floor, after the hook and before
-   node.started: the node-admin Ready check reports a missing pointer, an unreadable Build
-   or holdings behind the required floor, and the node reads the Build's committed records
-   from the Build storage ([Build floor read](../node-rpc-envelope.md#build-floor-read-op-0x1f-reserved), Q292):
-   the storage's current Build when the missing pointer names none, else the Build named, a
-   failed read made again on its backoff. The records are absorbed through the Build log; the
-   step completes when the Ready check holds the required facts, never on a read alone. Its
-   Build-floor check reads the facts its Build log holds. Refresh rafka-time **last**, so it
-   is current when the node re-enters.
+4. Satisfy the required Build floor after the hook. Read committed facts from Build storage
+   only when the node is below the primary's floor: the current Build when no pointer is known,
+   otherwise the named Build. Absorb the facts through the existing Build log and Ready check;
+   a successful storage read alone does not satisfy the floor. This check must not depend on
+   fetching topology early.
+   Then obtain topology once through [node.topology.get](node-topology-get.md), as the final
+   startup read. Request it without a conditional source version and install only complete
+   snapshots. The same reply supplies the recorded primaries, startup context and current
+   Rafka-time; adopt the time after installing topology and before reporting started.
+   Preserve retained own properties and application recognition. Do not fetch topology before
+   the Build-floor check and do not issue a second topology request just to refresh time.
 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot nor a
    Blocked hook permits it. That frame is the node's report: the mesh-primary sets
    Ready on that exact birth through the [node status](node-status.md) apply,
@@ -77,7 +74,7 @@ StartNode { node_id, incarnation, build_id, attempt, operation }
   ← CommandAccepted (Started; admission, no lifecycle state)
   ← NodeJoined (Data; mesh-primary records pending)
   [pre_node_ready]
-  [node.topology.get, missing Build floor, rafka-time last]
+  [required Build floor, one final node.topology.get with current Rafka-time]
   ← NodeStarted (Terminal; mesh-primary records Ready)
   [on_node_ready, a notice]
   [outer Build Complete only after the Ready record]
@@ -106,9 +103,9 @@ sequenceDiagram
     M-->>N: cert and rafka-time
     N-->>M: node.joined
     Note over N: pre_node_ready
-    N->>M: node.topology.get
-    M-->>N: topology, rafka-time last
-    Note over N: Build floor: committed records read from the Build storage (Q292)
+    Note over N: Satisfy Build floor from committed Build storage records (Q292)
+    N->>M: one final node.topology.get
+    M-->>N: complete topology and current Rafka-time
     N-->>M: node.started
     Note over N: on_node_ready (notice)
     Note over M: sets Ready

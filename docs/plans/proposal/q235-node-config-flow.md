@@ -75,17 +75,17 @@ carries the node's own whole row from the mesh-primary's Atlas (Q234). It never 
 
 > `node.config.update` replaces a node's application config, the whole map. It is a single call, not a
 > Build. Config is a property bag the application stores on the node; RDM never reads it
-> ([node properties](../node-rpc-envelope.md#node-properties)). A node's first config is its create spec's
-> `config` in the Build ([build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine)), written to its row at the claim and
+> ([node properties](../../architecture/node-rpc-envelope.md#node-properties)). A node's first config is its create spec's
+> `config` in the Build ([build.md §1](../../architecture/build.md#1-build-is-the-only-topology-mutation-engine)), written to its row at the claim and
 > carried in its first join; a later Build's different `config` is applied as this call applies a map.
 
 **new:**
 
 > `node.config.update` replaces a node's application config, the whole map: a PUT, never a patch. It is
 > a single call, not a Build. Config is a property bag the application stores on the node; RDM never
-> reads it ([node properties](../node-rpc-envelope.md#node-properties)). A node's first config is its create
-> spec's `config` in the Build ([build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine)), written to its row at the claim and
-> carried in its hydration sync ([node.topology.get](node-topology-get.md)); a later Build's different
+> reads it ([node properties](../../architecture/node-rpc-envelope.md#node-properties)). A node's first config is its create
+> spec's `config` in the Build ([build.md §1](../../architecture/build.md#1-build-is-the-only-topology-mutation-engine)), written to its row at the claim and
+> carried in its hydration sync ([node.topology.get](../../architecture/lifecycles/node-topology-get.md)); a later Build's different
 > `config` is applied as a caller's update is, and supersedes the node's current map, whoever set it.
 >
 > The update runs one of two ways. A caller's goes down from the fabric-primary. A node's own goes up
@@ -134,13 +134,13 @@ node-admin it joined through…").
 
 **node-topology-get.md, lines 7–9, old:**
 
-> An already-held member requests [node.topology.get](../node-rpc-envelope.md#topology-op-0x1e-rdm)
+> An already-held member requests [node.topology.get](../../architecture/node-rpc-envelope.md#topology-op-0x1e-rdm)
 > from its OWN mesh-primary. It supplies its held source version under that schema, installs
 > only complete snapshots, then resumes applicable deltas.
 
 **new:**
 
-> An already-held member requests [node.topology.get](../node-rpc-envelope.md#topology-op-0x1e-rdm)
+> An already-held member requests [node.topology.get](../../architecture/node-rpc-envelope.md#topology-op-0x1e-rdm)
 > from its OWN mesh-primary. It supplies its held source version under that schema, installs
 > only complete snapshots, then resumes applicable deltas. The answer also carries the node's own
 > whole row from its mesh-primary's Atlas, never the store; the node holds it on its own entry (Q234).
@@ -148,13 +148,13 @@ node-admin it joined through…").
 **gossip.md §5, lines 665–667, old:**
 
 > - topology is not in the join answer and not learned from gossip first: the joiner reads complete
->   source snapshots with [node.topology.get](lifecycles/node-topology-get.md), and later deltas, fulls
+>   source snapshots with [node.topology.get](../../architecture/lifecycles/node-topology-get.md), and later deltas, fulls
 >   and top-ups (§3.3) keep them current;
 
 **new:**
 
 > - topology is not in the join answer and not learned from gossip first: the joiner reads complete
->   source snapshots and its own row with [node.topology.get](lifecycles/node-topology-get.md), and later
+>   source snapshots and its own row with [node.topology.get](../../architecture/lifecycles/node-topology-get.md), and later
 >   deltas, fulls and top-ups (§3.3) keep them current;
 
 **node-rpc-envelope.md, Topology op 0x1E, the reply (Q234; a durable format moved: a reply variant added).**

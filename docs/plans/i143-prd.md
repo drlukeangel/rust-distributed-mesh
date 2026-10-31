@@ -3,11 +3,16 @@
 ## i150 dependency — node-owned properties (2026-10-31)
 
 Implementation is tracked by [i150](i150-node-writes-lifecyle-updates.md), rdm#245, lane 1,
-branch `codex/i150-node-records`. The first increment builds split-record storage, the delayed append test seam and node-side
-persistence before the existing config delivery. Focused storage cells (4), store-log cells (28),
-provider controls (2), own-config controls (2) and the real-process recovery canary (1) passed;
-this does not establish route removal or initiative completion. Runtime wiring, lifecycle takeover, Build application, Rafka integration and
-final gates remain owed; no i143 certification or export status is advanced by this entry.
+branch `codex/i150-node-records`. Committed increments through `ff916d315` supply split-record
+storage, serialized node-owned property writes, local config handling, storage freeze using the
+existing recovery clocks, atomic Build-entry application recognition and explicit ownership on
+Build entries, launches, digests, join registration and lifecycle messages. Their focused evidence
+is recorded in i150. A larger path/name and ownership migration is uncommitted and unverified;
+its current compiler failures and Architect 1 source review are recorded in i150’s CLI continuation.
+The latest correction keeps path immutable, uses predecessor name `<name>-old`, and prioritizes globally unique node IDs; the added enforcement and regressions remain unverified because the current migration does not compile.
+Lifecycle activation, removal of the old copied-row routes, startup obligations, combined fault
+proofs, Rafka integration and final gates remain owed. No i143 certification or export status is
+advanced by these increment controls.
 
 ## § Close-out plan (2026-10-17, the lead; Luke: "take stock of what's left in 143 and break it apart")
 
@@ -86,7 +91,7 @@ Gate defect (2026-10-17, **fixed 2026-10-18**, lead): `rdm-gate-at.sh`'s test-di
 **Status:** implementation-grade, final architecture reconciliation 2026-10-05  
 **Milestone:** 59 - i143 Node RPC + generic Mesh product on RDM  
 **Target architecture (rafka-v2):** `docs/architecture/connections.md`, `docs/architecture/build.md`, `docs/architecture/deployment-provider.md`, `docs/architecture/fabric-node-lifecycle-elections.md`, `docs/architecture/gossip.md`  
-**Parity ledger:** [`transport-parity.md`](transport-parity.md)  
+**Parity ledger:** [`transport-parity.md`](i143-transport-parity.md)
 **Downstream import (rafka-v2):** `docs/plans/i141-node-rpc-substrate-prd.md`  
 **Downstream migration (rafka-v2):** `docs/plans/i142-node-rpc-migrations-prd.md`
 
@@ -1991,8 +1996,8 @@ done (R-BI9 landed on `docs/architecture/build.md`: A7, A8, A9, A10, A11, A13 ap
   --- a/docs/architecture/build.md
   +++ b/docs/architecture/build.md
   @@ -3 +3 @@
-  -This page owns the Build engine (the accepted topology, the Build/attempt/claim model and `BuildStateAdapter`), the node-admin storage interfaces and crash safety, and the RDM/Rafka boundary with its import rule. The deployment provider and the RuntimeFact contract are [deployment-provider.md](deployment-provider.md); this page's sections skip §7 and §8 so that §9 to §16 keep their numbers.
-  +This page owns the Build engine (the accepted topology, the Build/attempt/claim model and `BuildStateAdapter`), the node-admin storage interfaces and crash safety, and the RDM/Rafka boundary with its import rule. The deployment provider and the RuntimeFact contract are [deployment-provider.md](deployment-provider.md).
+  -This page owns the Build engine (the accepted topology, the Build/attempt/claim model and `BuildStateAdapter`), the node-admin storage interfaces and crash safety, and the RDM/Rafka boundary with its import rule. The deployment provider and the RuntimeFact contract are [deployment-provider.md](../architecture/deployment-provider.md); this page's sections skip §7 and §8 so that §9 to §16 keep their numbers.
+  +This page owns the Build engine (the accepted topology, the Build/attempt/claim model and `BuildStateAdapter`), the node-admin storage interfaces and crash safety, and the RDM/Rafka boundary with its import rule. The deployment provider and the RuntimeFact contract are [deployment-provider.md](../architecture/deployment-provider.md).
   @@ -56 +56 @@ Allowed customer seams are:
   -- implementations of the imported Fabric/Mesh/Nodes/Connections/Build storage interfaces;
   +- implementations of the five storage interfaces, fabric, mesh, nodes, connections and status, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6);
@@ -2088,8 +2093,8 @@ done (R-BI9 landed on `docs/architecture/build.md`: A7, A8, A9, A10, A11, A13 ap
   -`fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once. It carries no pointer to a Build (RDM's `FabricRecord` in `rafka-node-admin-core`).
   +`fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once; the fabric's name is claimed insert-and-fail at `<store_dir>/fabrics/<name>` above the per-fabric roots, and a deleted fabric releases it. It carries no pointer to a Build (RDM's `FabricRecord` in `rafka-node-admin-core`).
   @@ -508 +529 @@ fabric-primary accepts Build B19:
-  -The fabric-primary decides that mesh2 exists and what it contains; mesh2's node-admin creates mesh2's nodes. mesh2 comes into being with the `node.create` of its first node-admin, whose sequence is [node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent).
-  +The fabric-primary decides that mesh2 exists and what it contains; mesh2's node-admin creates mesh2's nodes. mesh2 comes into being with the `node.create` of its first node-admin ([mesh-absent arm](lifecycles/node-create.md#mesh-absent)); that is what `mesh.create` names: there is no separate op.
+  -The fabric-primary decides that mesh2 exists and what it contains; mesh2's node-admin creates mesh2's nodes. mesh2 comes into being with the `node.create` of its first node-admin, whose sequence is [node.create's mesh-absent arm](../architecture/lifecycles/node-create.md#mesh-absent).
+  +The fabric-primary decides that mesh2 exists and what it contains; mesh2's node-admin creates mesh2's nodes. mesh2 comes into being with the `node.create` of its first node-admin ([mesh-absent arm](../architecture/lifecycles/node-create.md#mesh-absent)); that is what `mesh.create` names: there is no separate op.
   @@ -528 +549 @@ fabric-primary accepts Build B20:
   -mesh1 is deleted by `mesh.delete` and mesh3 comes into being with the `node.create` of its first node-admin. mesh3 always has a new MeshId; a MeshId is never reissued, even when the new mesh takes mesh1's name after mesh1's row is deleted. A dead mesh is never restarted: mesh3 is mesh.create of a new mesh, and it does not preserve mesh1's logical identity merely to reuse its slot/name.
   +mesh1 is deleted by `mesh.delete` and mesh3 comes into being with the `node.create` of its first node-admin. mesh3 always has a new MeshId; a MeshId is never reissued, even when the new mesh takes mesh1's name after mesh1's row is deleted. A dead mesh is never restarted: mesh3 is the mesh-absent arm of `node.create` under a new MeshId, and it does not preserve mesh1's logical identity merely to reuse its name.
@@ -2097,9 +2102,9 @@ done (R-BI9 landed on `docs/architecture/build.md`: A7, A8, A9, A10, A11, A13 ap
   -    mesh2 {rpc.1, rpc.2} -> mesh2 {rpc.1}
   +    mesh2 {mesh2.rpc.north, mesh2.rpc.south} -> mesh2 {mesh2.rpc.north}
   @@ -538,2 +559,2 @@ fabric-primary accepts Build B21:
-  -The removal is the [node.delete](lifecycles/node-delete.md) of mesh2.rpc.2, which mesh2's primary
+  -The removal is the [node.delete](../architecture/lifecycles/node-delete.md) of mesh2.rpc.2, which mesh2's primary
   -executes under the fabric-primary's claim; the fabric-primary never commands mesh2.rpc.2 and never
-  +The removal is the [node.delete](lifecycles/node-delete.md) of mesh2.rpc.south, which mesh2's primary
+  +The removal is the [node.delete](../architecture/lifecycles/node-delete.md) of mesh2.rpc.south, which mesh2's primary
   +executes under the fabric-primary's claim; the fabric-primary never commands mesh2.rpc.south and never
   @@ -622 +643 @@ The RDM-generic proofs of this page's mechanisms:
   -- elastic shape/grow/shrink tests assert accepted per-cohort counts or settled shape rather than requiring surviving ordinals to be contiguous; identity/leadership/restart/replacement tests retain exact path/NodeId/IncarnationId assertions when identity is the behavior under test;
@@ -2660,7 +2665,7 @@ Preflight `38093c90` was cancelled after build/discovery and before any test job
 <!-- epic:e12.s89 -->
 ## e12.s89 — the R-shape release cells: each red read from its own trace and fixed where it lives
 
-**Builder:** the lead with RDM engineers in pool lanes (one per job) · **Tracking issue:** to generate · **Architecture:** §14 Export/import gate; `crates/rdm-test/tests/rshape_burn_in.rs`; `tools/mesh-audit/i143-acceptance-jobs.json` `rshape_jobs`; [node-restart.md](/home/admin/rust-distributed-mesh/docs/architecture/lifecycles/node-restart.md); [build.md](/home/admin/rust-distributed-mesh/docs/architecture/build.md); [connections.md](/home/admin/rust-distributed-mesh/docs/architecture/connections.md)
+**Builder:** the lead with RDM engineers in pool lanes (one per job) · **Tracking issue:** to generate · **Architecture:** §14 Export/import gate; `crates/rdm-test/tests/rshape_burn_in.rs`; `tools/mesh-audit/i143-acceptance-jobs.json` `rshape_jobs`; node-restart.md; [build.md](/home/admin/rust-distributed-mesh/docs/architecture/build.md); [connections.md](/home/admin/rust-distributed-mesh/docs/architecture/connections.md)
 
 ### State
 

@@ -16,7 +16,7 @@ Two reviews of `/home/admin/rafka-v2/docs/architecture/build.md` (the orchestrat
 
 The page carries both models. Lines 156 and 230 give every workflow, restart and recovery included, its own build_id; line 169 forbids minting a Build for restart or drift, and line 279 says drift never mints one. The code is the attempt model: a recovery opens the next attempt of the accepted Build (`rafka-node-admin-core/src/http.rs:361-396`, `accepted.rs:1113` `AttemptReason::Recovery`), keyed on the exited birth with a repeat answering AlreadyApplied (`build_state.rs:662` `recovery_of`).
 
-- :156 — replace with: "node.create, node.delete, the replace recipe, mesh.delete and fabric.delete are each their own Build with their own id, accepted by the current fabric-primary. node.stop, node.start, node.restart, node recovery, authority movement and proven runtime drift leave the topology unchanged and open the next attempt of the current Build. One node.create is recovery, not a change to the shape: the node-admin mesh investigation creates into a live mesh that lost its node-admins runs on the same accepted Build, as its next attempt, under the mesh's own MeshId ([mesh-investigation.md](lifecycles/mesh-investigation.md) steps 5-6, :55, :173; fabric-primary.md:349)."
+- :156 — replace with: "node.create, node.delete, the replace recipe, mesh.delete and fabric.delete are each their own Build with their own id, accepted by the current fabric-primary. node.stop, node.start, node.restart, node recovery, authority movement and proven runtime drift leave the topology unchanged and open the next attempt of the current Build. One node.create is recovery, not a change to the shape: the node-admin mesh investigation creates into a live mesh that lost its node-admins runs on the same accepted Build, as its next attempt, under the mesh's own MeshId ([mesh-investigation.md](../../architecture/lifecycles/mesh-investigation.md) steps 5-6, :55, :173; fabric-primary.md:349)."
 - :158 — strike "the recovery Build"; the recovery is "the recovery attempt (`node.delete` then `node.create` at the same path.name, keyed on the exited birth)".
 - :230 — replace "Restart and node recovery are each submitted as their own Build and keep that exact topology map unchanged" with "Restart and node recovery open the next attempt of the current Build and change nothing in its topology map".
 - :183-185 (§2) — the sentence "§1 decides whether an input compiles a new Build or opens an attempt of the current one" stays; it is now true.
@@ -67,7 +67,7 @@ Done when: the page states the one-in-flight rule in R-BI4's words and names the
 
 :365 "claims the next attempt only after executor departure proof" is overbroad. The envelope already defines the three paths: reattachment through build.get and the attempt.run receipt replay; an attempt ending `HandedOff { to }` whose next claim picks the executor of the remaining operations (`node-rpc-envelope.md:1129`); and departure proof only for an executor lost with unfinished work (R-BI4).
 
-- :365 — replace with: "The next attempt is claimed after the running attempt's terminal receipt (Complete, Failed or HandedOff), or, when the executor is lost with the attempt unfinished, after exact departure proof. A live run is reattached, never re-claimed: the caller resubmits the same build_id through build.create and the executor's build.attempt.run replays the held receipts ([Build carrier](node-rpc-envelope.md#build-op-0x20-rdm), :202); build.get is a read of the evidence, not a reattachment. Claims are insert-and-fail on `(build_id, attempt)`, which prevents two claims of one attempt; a call carrying a claim that is not the current folded attempt of the receiver's projection is refused `StaleClaim` naming the held and carried attempts (`build_run.rs:402` at `023b96ca`), and `adopt_claim` moves an admin's view only to a claim the fabric-primary decided Won, so a delayed dispatch or receipt of an earlier attempt never reopens a terminally closed run."
+- :365 — replace with: "The next attempt is claimed after the running attempt's terminal receipt (Complete, Failed or HandedOff), or, when the executor is lost with the attempt unfinished, after exact departure proof. A live run is reattached, never re-claimed: the caller resubmits the same build_id through build.create and the executor's build.attempt.run replays the held receipts ([Build carrier](../../architecture/node-rpc-envelope.md#build-op-0x20-rdm), :202); build.get is a read of the evidence, not a reattachment. Claims are insert-and-fail on `(build_id, attempt)`, which prevents two claims of one attempt; a call carrying a claim that is not the current folded attempt of the receiver's projection is refused `StaleClaim` naming the held and carried attempts (`build_run.rs:402` at `023b96ca`), and `adopt_claim` moves an admin's view only to a claim the fabric-primary decided Won, so a delayed dispatch or receipt of an earlier attempt never reopens a terminally closed run."
 
 Done when: :365 cites the envelope, names the three paths, and attributes duplicate-claim prevention and stale-execution refusal to their own mechanisms.
 
@@ -132,7 +132,7 @@ Done when: every identifier in §5 resolves by name in `rafka-node-admin-core/sr
 
 :511 says a mesh comes into being with the node.create of its first node-admin; :531 says "mesh3 is mesh.create of a new mesh". There is no mesh.create in the envelope's op table or in the workflow list. R-ML2 uses the phrase for a dead mesh's name used again.
 
-- :511 — "mesh2 comes into being with the node.create of its first node-admin ([mesh-absent arm](lifecycles/node-create.md#mesh-absent)); that is what mesh.create names: there is no separate op."
+- :511 — "mesh2 comes into being with the node.create of its first node-admin ([mesh-absent arm](../../architecture/lifecycles/node-create.md#mesh-absent)); that is what mesh.create names: there is no separate op."
 - :531 — keep "mesh3 always has a new MeshId", and say "mesh3 is the mesh-absent arm of node.create under a new MeshId".
 - :156's list is unchanged by this (mesh.create is not a Build-minting workflow of its own).
 
@@ -157,7 +157,7 @@ Done when: every identifier in §5 resolves by name in `rafka-node-admin-core/sr
 
 ### A14. The claim op is 0x1C (orchestrator finding 11)
 
-:300 places the fabric-primary's claim under the Build carrier 0x20. The envelope puts the attempt claim on ClaimAttempt 0x1C (`node-rpc-envelope.md:252`, `:805`) and the dispatch on 0x20. :300 — "The fabric-primary's claim ([ClaimAttempt 0x1C](node-rpc-envelope.md#buildclaim-op-0x1c-rdm)), its dispatch of build.attempt.run …".
+:300 places the fabric-primary's claim under the Build carrier 0x20. The envelope puts the attempt claim on ClaimAttempt 0x1C (`node-rpc-envelope.md:252`, `:805`) and the dispatch on 0x20. :300 — "The fabric-primary's claim ([ClaimAttempt 0x1C](../../architecture/node-rpc-envelope.md#buildclaim-op-0x1c-rdm)), its dispatch of build.attempt.run …".
 
 ### A15. Control values are ids (R-BI5; orchestrator finding 12)
 

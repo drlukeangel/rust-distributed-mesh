@@ -164,7 +164,7 @@ set, landed before the product change.
 ```
 # Build deployment: the executable a node runs
 
-[Lifecycle index](fabric-mesh-node-lifecycles.md) · [Build](build.md) · [Deployment provider](deployment-provider.md)
+[Lifecycle index](../../architecture/fabric-mesh-node-lifecycles.md) · [Build](../../architecture/build.md) · [Deployment provider](../../architecture/deployment-provider.md)
 
 build.md owns the engine: the accepted topology, attempts, claims and receipts. deployment-provider.md
 owns the provider: how one runtime is launched, inspected and terminated. This page owns what a Build
@@ -249,7 +249,7 @@ request naming it).
 count change to exact paths before the Build is persisted." add:
 
 ```
-Each path's config carries the executable the node runs ([build-deployment.md](build-deployment.md)); a request creates a node by naming its `path.name` and its config, the compiler holds the executable on the path's entry before the Build is persisted, and a created path with none is refused by name. Counts are the product's door's vocabulary, expanded into named paths before the typed call; RDM mints a `path.name` only for a create it originates itself. A request that names a different executable for an existing path changes that entry, and the reconciler realizes the change as that node's replacement.
+Each path's config carries the executable the node runs ([build-deployment.md](../../architecture/build-deployment.md)); a request creates a node by naming its `path.name` and its config, the compiler holds the executable on the path's entry before the Build is persisted, and a created path with none is refused by name. Counts are the product's door's vocabulary, expanded into named paths before the typed call; RDM mints a `path.name` only for a create it originates itself. A request that names a different executable for an existing path changes that entry, and the reconciler realizes the change as that node's replacement.
 ```
 
 **3.3 build.md §4.1**, in the block, old `complete explicit topology map` new `complete explicit topology map, each path's config and executable`.
@@ -266,8 +266,8 @@ fabric-primary accepts Build B22:
 ~~~
 
 The topology names the same paths. mesh2.rpc.north's entry names executable B while its row records A,
-so the reconciler replaces it: [node.delete](lifecycles/node-delete.md) then [node.create](lifecycles/node-create.md)
-at the path, a new node.id, under mesh2's primary and the guards of [build-deployment.md §3](build-deployment.md).
+so the reconciler replaces it: [node.delete](../../architecture/lifecycles/node-delete.md) then [node.create](../../architecture/lifecycles/node-create.md)
+at the path, a new node.id, under mesh2's primary and the guards of [build-deployment.md §3](../../architecture/build-deployment.md).
 A primary of any type moves first. Nothing else in the fabric changes.
 ```
 
@@ -275,13 +275,13 @@ A primary of any type moves first. Nothing else in the fabric changes.
 `DeployRuntime` and launches it only when the hash matches its binding; ..." add:
 
 ```
-Which executable a node runs, and how it is named, recorded, replaced and read, is [build-deployment.md](build-deployment.md)'s.
+Which executable a node runs, and how it is named, recorded, replaced and read, is [build-deployment.md](../../architecture/build-deployment.md)'s.
 ```
 
 and in §2.7, a new bullet after **Network.**:
 
 ```
-- **Executables.** A containerized node-admin mounts the executable directories its launch named (`RDM_EXECUTABLE_DIRS`), read-only at their host paths; an executable outside them is refused by name at acceptance ([build-deployment.md §2](build-deployment.md)).
+- **Executables.** A containerized node-admin mounts the executable directories its launch named (`RDM_EXECUTABLE_DIRS`), read-only at their host paths; an executable outside them is refused by name at acceptance ([build-deployment.md §2](../../architecture/build-deployment.md)).
 ```
 
 **3.6 node-create.md**, the Spec row. Old:
@@ -291,7 +291,7 @@ and in §2.7, a new bullet after **Network.**:
 ```
 New:
 ```
-| Spec | The path's config: its executable (path, sha256, image), placement, storage and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism. The executable is the create's input and nothing else's: recorded on the row at the claim, re-hashed at the launch, never changed for the birth ([build-deployment.md](../build-deployment.md)) |
+| Spec | The path's config: its executable (path, sha256, image), placement, storage and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism. The executable is the create's input and nothing else's: recorded on the row at the claim, re-hashed at the launch, never changed for the birth ([build-deployment.md](../../architecture/build-deployment.md)) |
 ```
 
 **3.7 node-replace.md**, the Successor row. Old:
@@ -301,13 +301,13 @@ New:
 ```
 New:
 ```
-| Successor | Created at `<name>` once the predecessor has released it: a re-birth, with a new node.id, incarnation and runtime; new port; key from its specified data dir; its `Create` step names its executable ([build-deployment.md](../build-deployment.md)) |
+| Successor | Created at `<name>` once the predecessor has released it: a re-birth, with a new node.id, incarnation and runtime; new port; key from its specified data dir; its `Create` step names its executable ([build-deployment.md](../../architecture/build-deployment.md)) |
 ```
 
 **3.8 node-recovery.md**, the Retained row, append after "never the recovering admin's)":
 
 ```
- ; a row written before the executable field decodes with none, and node recovery of that birth is refused by name: the topology's entry is the target, not what the birth ran; the repair is a request naming that path's executable, the ordinary replacement ([build-deployment.md](../build-deployment.md))
+ ; a row written before the executable field decodes with none, and node recovery of that birth is refused by name: the topology's entry is the target, not what the birth ran; the repair is a request naming that path's executable, the ordinary replacement ([build-deployment.md](../../architecture/build-deployment.md))
 ```
 
 **3.9 states.md**, the section at line 174. Old heading and first sentences:
@@ -326,7 +326,7 @@ New:
 ```
 ## Resize and executable replacement
 
-A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; a state's check-in or a hook that fails fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready, and the fabric cannot change, until the replacement's last planned birth checks in.
+A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build reports Blocked naming the change, never Complete; a state's check-in or a hook that fails fails the Build on that step. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../../architecture/build-deployment.md)); node.restart retains the same process and executable. The mesh cannot report ready, and the fabric cannot change, until the replacement's last planned birth checks in.
 ```
 (The rest of the paragraph, on Rafka's state-sync answer, stands. This folds Q154's states.md sentence
 in, so Q154's own sentence is not added twice.)
@@ -355,7 +355,7 @@ generated wire page with its fields.
 **3.11 fabric-mesh-node-lifecycles.md**, after the Build row:
 
 ```
-| [Build deployment](build-deployment.md) | what a Build deploys: the executable each node runs, named per node at create, recorded on the row, re-hashed at the launch, replaced only by re-birth, recovered from the row, read from the rows |
+| [Build deployment](../../architecture/build-deployment.md) | what a Build deploys: the executable each node runs, named per node at create, recorded on the row, re-hashed at the launch, replaced only by re-birth, recovered from the row, read from the rows |
 ```
 
 **3.12 CLAUDE.md env table**: remove nothing (the two `RDM_EXECUTABLE_*` variables have no row); add
