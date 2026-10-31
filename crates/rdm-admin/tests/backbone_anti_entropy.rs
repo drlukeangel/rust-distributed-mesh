@@ -206,7 +206,7 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
         time.adopt(root.emitted_at_rafka_ms);
         let observer = TopologyView::join(&gossip, &ep, &root.fabric_id, "mesh2", &MeshId::mint(), "mesh2.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
         let _observer_bb = Backbone::join(&gossip, &ep, &observer, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![seed]).await.unwrap();
-        let unheard = || observer.digest_view.mesh_unheard(&root.node.name.mesh, std::time::Instant::now());
+        let unheard = || observer.digest_view.mesh_unheard(&root.node.mesh, std::time::Instant::now());
         tokio::time::timeout(NEVER, async {
             while unheard().is_none() {
                 tokio::time::sleep(SAMPLE).await;

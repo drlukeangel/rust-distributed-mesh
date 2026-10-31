@@ -141,7 +141,7 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rdm_core::Runtime
     let key = iroh::SecretKey::from_bytes(&hex::decode(key_hex.trim()).unwrap().try_into().unwrap());
     rdm_core::MeshDigest { held_hash: Default::default(),
         fabric_id: rdm_core::FabricId::parse(&env("RDM_FABRIC_ID")).unwrap(),
-        node: rdm_core::MeshNode {
+        node: rdm_core::MeshNode { mesh: (env("RDM_NODE_NAME").parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (env("RDM_NODE_NAME").parse::<rdm_core::PathName>().unwrap()).kind,
             node_id: NodeId::parse(&env("RDM_NODE_ID")).unwrap(),
             name: env("RDM_NODE_NAME").parse().unwrap(),
             endpoint_id: rdm_core::EndpointId(key.public().to_string()),

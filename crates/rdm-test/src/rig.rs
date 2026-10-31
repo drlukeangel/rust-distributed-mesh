@@ -565,7 +565,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
     let admin_digest = rdm_core::digest::MeshDigest { held_hash: topology_view.held_hash(),
         fabric_id: fabric.clone(),
-        node: rdm_core::digest::MeshNode {
+        node: rdm_core::digest::MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
             node_id: admin_node_id.clone(),
             name: name.parse().unwrap(),
             endpoint_id: rdm_core::EndpointId(admin_ep.id().to_string()),

@@ -16,7 +16,7 @@ fn digest() -> rdm_core::MeshDigest {
     use rdm_core::*;
     MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::mint(),
-        node: MeshNode {
+        node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             node_id: NodeId::mint(),
             name: "mesh1.rpc.1".parse().unwrap(),
             endpoint_id: EndpointId("k".into()),

@@ -493,7 +493,7 @@ mod tests {
         rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: rdm_core::MeshNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            node: rdm_core::MeshNode { mesh: n.mesh.clone(), kind: n.kind, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,

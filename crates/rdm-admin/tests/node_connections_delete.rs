@@ -249,7 +249,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let digest_base = MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric_id.clone(),
-            node: MeshNode {
+            node: MeshNode { mesh: subject_name.mesh.clone(), kind: subject_name.kind,
                 node_id: subject_id.clone(),
                 name: subject_name.clone(),
                 endpoint_id: EndpointId(subject_key.public().to_string()),

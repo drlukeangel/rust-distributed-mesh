@@ -28,7 +28,7 @@ pub fn birth_of_line(line: &str) -> Option<Result<MeshNode, String>> {
 /// incarnation): how a process that read the view reaches that node as it reaches one whose birth line
 /// it read. `None` for a node not born yet.
 pub fn birth_of_view(n: &NodeView) -> Option<MeshNode> {
-    Some(MeshNode {
+    Some(MeshNode { mesh: n.mesh.clone(), kind: n.kind,
         node_id: n.node_id.clone(),
         name: n.name.clone(),
         endpoint_id: rdm_core::EndpointId(n.endpoint_id.clone().filter(|e| !e.is_empty())?),

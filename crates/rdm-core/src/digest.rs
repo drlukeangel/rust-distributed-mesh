@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 /// One process birth of a logical node, as it publishes itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshNode {
+    /// The owning mesh, independent of path spelling.
+    pub mesh: String,
+    /// The executable runtime kind, independent of path spelling.
+    pub kind: crate::NodeKind,
     /// The node's minted id.
     pub node_id: NodeId,
     /// The node's `path.name`.
@@ -190,7 +194,7 @@ mod tests {
 
     #[test]
     fn a_birth_round_trips_as_json_for_gossip() {
-        let a = MeshNode {
+        let a = MeshNode { mesh: "mesh1".into(), kind: crate::NodeKind::RpcNode,
             node_id: NodeId::mint(),
             name: "mesh1.rpc.1".parse().unwrap(),
             endpoint_id: EndpointId("k".into()),

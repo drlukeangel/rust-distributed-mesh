@@ -15,7 +15,7 @@ fn digest(name: &str, ep: &iroh::Endpoint) -> MeshDigest {
     let port = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
     MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::parse("fab000000001").unwrap(),
-        node: MeshNode {
+        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
             node_id: NodeId::mint(),
             name: name.parse().unwrap(),
             endpoint_id: EndpointId(ep.id().to_string()),

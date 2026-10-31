@@ -93,7 +93,7 @@ fn deployed() -> Deployed {
 fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::mint(),
-        node: MeshNode {
+        node: MeshNode { mesh: d.name.mesh.clone(), kind: d.name.kind,
             node_id: d.node_id.clone(),
             name: d.name.clone(),
             endpoint_id: d.endpoint_id.clone(),

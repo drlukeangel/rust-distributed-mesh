@@ -614,7 +614,7 @@ mod tests {
         MeshDigest {
             held_hash: Default::default(),
             fabric_id: crate::FabricId::mint(),
-            node: crate::MeshNode {
+            node: crate::MeshNode { mesh: (name.parse::<crate::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<crate::PathName>().unwrap()).kind,
                 node_id: NodeId::mint(),
                 name: name.parse().unwrap(),
                 endpoint_id: crate::EndpointId(format!("key-{name}")),

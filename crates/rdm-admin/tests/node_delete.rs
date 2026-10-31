@@ -1096,7 +1096,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let old_digest = rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: template.fabric_id.clone(),
-            node: rdm_core::MeshNode {
+            node: rdm_core::MeshNode { mesh: target_name.mesh.clone(), kind: target_name.kind,
                 node_id: target_id.clone(),
                 name: target_name.clone(),
                 endpoint_id: shared_endpoint.clone(),
@@ -1132,7 +1132,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         }));
         let (successor_id, successor_inc) = (NodeId::mint(), IncarnationId::mint());
         let successor_digest = rdm_core::MeshDigest {
-            node: rdm_core::MeshNode {
+            node: rdm_core::MeshNode { mesh: target_name.mesh.clone(), kind: target_name.kind,
                 node_id: successor_id.clone(),
                 name: target_name.clone(),
                 endpoint_id: shared_endpoint,

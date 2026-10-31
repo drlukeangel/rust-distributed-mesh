@@ -463,7 +463,7 @@ mod tests {
             let local_digest = rdm_core::MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
-                node: rdm_core::MeshNode {
+                node: rdm_core::MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                     node_id: local_node_id.clone(),
                     name: "mesh1.rpc.1".parse().unwrap(),
                     endpoint_id: EndpointId(local_ep.id().to_string()),
@@ -486,7 +486,7 @@ mod tests {
                 is_fabric_primary: None,
             };
             let dead_digest = rdm_core::MeshDigest {
-                node: rdm_core::MeshNode {
+                node: rdm_core::MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                     node_id: dead_node_id.clone(),
                     name: "mesh1.rpc.2".parse().unwrap(),
                     endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),

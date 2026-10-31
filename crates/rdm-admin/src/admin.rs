@@ -172,11 +172,11 @@ mod tests {
         MeshId::parse(&format!("meshd{:0>7}", mesh.trim_start_matches("mesh"))).unwrap()
     }
 
-    fn digest(name: &str, status: MemberStatus) -> MeshDigest {
+    pub(super) fn digest(name: &str, status: MemberStatus) -> MeshDigest {
         let name: PathName = name.parse().unwrap();
         MeshDigest { held_hash: Default::default(),
             fabric_id: fabric1(),
-            node: MeshNode {
+            node: MeshNode { mesh: name.mesh.clone(), kind: name.kind,
                 node_id: NodeId::mint(),
                 name: name.clone(),
                 endpoint_id: EndpointId(format!("key-{name}")),
@@ -2640,7 +2640,7 @@ mod tests {
     }
 
     fn primary_of(d: &MeshDigest, revision: u64) -> rdm_core::Primary {
-        rdm_core::Primary { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
+        rdm_core::Primary { mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
     }
 
     /// CONTRACT (R-A2, the dw33-1 shape): the primary records an admin holds decide its projection. A

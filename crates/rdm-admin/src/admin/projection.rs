@@ -409,9 +409,12 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         }
         let silent = age > digest_view.staleness_floor();
         if let Some(id) = d.mesh_id.clone() {
-            mesh_ids.entry(name.mesh.clone()).or_insert(id);
+            mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
         let mut n = Node::allocated(name.clone());
+        n.mesh = d.node.mesh.clone();
+        n.kind = d.node.kind;
+        n.node_type = d.node.kind.node_type().to_string();
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -466,9 +469,12 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // Its held digest states its mesh's id as a heard one does: a mesh whose births are all
         // stopped keeps its id, and with it its state (states.md: a mesh's deleted is final).
         if let Some(id) = d.mesh_id.clone() {
-            mesh_ids.entry(name.mesh.clone()).or_insert(id);
+            mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
         let mut n = Node::allocated(name.clone());
+        n.mesh = d.node.mesh.clone();
+        n.kind = d.node.kind;
+        n.node_type = d.node.kind.node_type().to_string();
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -530,9 +536,12 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
             continue;
         }
         if let Some(id) = d.mesh_id.clone() {
-            mesh_ids.entry(name.mesh.clone()).or_insert(id);
+            mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
         let mut n = Node::allocated(name.clone());
+        n.mesh = d.node.mesh.clone();
+        n.kind = d.node.kind;
+        n.node_type = d.node.kind.node_type().to_string();
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -691,6 +700,53 @@ mod tests {
     use crate::fabric_builds::PrimaryRecord;
     use crate::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
     use rdm_core::{Primary, PrimaryRole};
+
+    // @feature: node-records
+    /// A digest's declared mesh and runtime kind survive the actual wire codec, primary records,
+    /// and domain projection even when both conflict with its path spelling.
+    #[test]
+    fn digest_projection_preserves_explicit_ownership_and_primary_selection() {
+        let view = DigestView::default();
+        let records = Records::default();
+        let mut admin = super::super::tests::digest("mesh1.admin.1", MemberStatus::Ready);
+        let fabric = admin.fabric_id.clone();
+        let mesh_id = MeshId::mint();
+        admin.node.name = "elsewhere.rpc.administrator".parse().unwrap();
+        admin.node.mesh = "mesh2".into();
+        admin.node.kind = NodeKind::NodeAdmin;
+        admin.mesh_id = Some(mesh_id.clone());
+        admin.is_primary = Some(7);
+        admin.is_fabric_primary = Some(7);
+        let mut member = super::super::tests::digest("mesh1.rpc.1", MemberStatus::Ready);
+        member.node.name = "elsewhere.gateway.north".parse().unwrap();
+        member.node.mesh = "mesh2".into();
+        member.node.kind = NodeKind::Compute;
+        member.mesh_id = Some(mesh_id.clone());
+        member.is_primary = Some(7);
+        let now = std::time::Instant::now();
+        for digest in [&admin, &member] {
+            let bytes = rdm_transport::wire::encode(&rdm_core::wire::WireDigest::from(digest)).unwrap();
+            let decoded: rdm_core::wire::WireDigest = rdm_transport::wire::decode(&bytes).unwrap();
+            assert!(view.record_at(rdm_core::MeshDigest::from(decoded), now));
+        }
+        for digest in [&admin, &member] {
+            let primary = view.primaries.node_type_primary("mesh2", digest.node.kind).expect("the declared primary record is installed");
+            assert!(primary.is_birth(&digest.node.node_id, &digest.node.incarnation));
+            assert_eq!(primary.revision, 7);
+        }
+        assert!(view.primaries.node_type_primary("elsewhere", NodeKind::Gateway).is_none());
+        member.is_primary = None;
+        view.recorded_primaries(&mut member);
+        assert_eq!(member.is_primary, Some(7));
+        let topology = project_at("fabric1", &fabric, ProviderKind::Process, &view, &records, now);
+        let found = topology.node(&member.node.name).expect("the member is projected");
+        assert_eq!((&found.mesh, found.kind, found.node_type()), (&"mesh2".to_string(), NodeKind::Compute, "compute"));
+        assert_eq!(topology.node_type_primary("mesh2", NodeKind::Compute).map(|n| &n.node_id), Some(&member.node.node_id));
+        assert_eq!(topology.node_type_primary("mesh2", NodeKind::NodeAdmin).map(|n| &n.node_id), Some(&admin.node.node_id));
+        assert!(topology.node_type_primary("elsewhere", NodeKind::Gateway).is_none());
+        assert_eq!(topology.meshes.iter().find(|m| m.name == "mesh2").and_then(|m| m.id.as_ref()), Some(&mesh_id));
+        assert!(topology.violations().is_empty(), "{:?}", topology.violations());
+    }
 
     /// CONTRACT: docs/architecture/build.md:453
     /// "One writer per key: the fabric-primary writes the Fabric record and every topology attempt's Build facts"

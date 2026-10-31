@@ -1343,7 +1343,7 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
             let digest = MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: self.fabric_id.clone(),
-                node: MeshNode {
+                node: MeshNode { mesh: spec.node.mesh.clone(), kind: spec.node.kind,
                     node_id,
                     name: spec.node.clone(),
                     endpoint_id: key,

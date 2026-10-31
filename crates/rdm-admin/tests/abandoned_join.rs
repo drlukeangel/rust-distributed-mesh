@@ -160,7 +160,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
         let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
         let digest = |incarnation: &IncarnationId| MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: MeshNode {
+            node: MeshNode { mesh: name.mesh.clone(), kind: name.kind,
                 node_id: node_id.clone(),
                 name: name.clone(),
                 endpoint_id: endpoint_id.clone(),

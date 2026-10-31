@@ -84,7 +84,7 @@ fn socket_of(ep: &iroh::Endpoint) -> SocketAddr {
 fn birth(node_id: &NodeId, key: iroh::PublicKey, socket: SocketAddr, incarnation: &IncarnationId, supersedes: Option<IncarnationId>) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::parse("fab000000001").unwrap(),
-        node: MeshNode {
+        node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin,
             node_id: node_id.clone(),
             name: "mesh1.admin.2".parse().unwrap(),
             endpoint_id: EndpointId(key.to_string()),

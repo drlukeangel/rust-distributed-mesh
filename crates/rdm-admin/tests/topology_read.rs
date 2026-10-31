@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 fn member_of(fabric: &FabricId, mesh: &str, kind: &str, ordinal: u32) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric.clone(),
-        node: MeshNode {
+        node: MeshNode { mesh: mesh.to_string(), kind: rdm_core::NodeKind::from_segment(kind).unwrap(),
             node_id: NodeId::mint(),
             name: format!("{mesh}.{kind}.{ordinal}").parse().unwrap(),
             endpoint_id: EndpointId(format!("key-{mesh}-{kind}-{ordinal}-{}", "x".repeat(40))),

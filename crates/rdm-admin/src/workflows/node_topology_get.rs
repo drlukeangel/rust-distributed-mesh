@@ -105,7 +105,7 @@ mod tests {
             let own_digest = MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
-                node: MeshNode {
+                node: MeshNode { mesh: "mesh1".to_string(), kind: NodeKind::NodeAdmin,
                     node_id: server_node_id.clone(),
                     name: PathName::new("mesh1", NodeKind::NodeAdmin, 1),
                     endpoint_id: EndpointId(server_ep.id().to_string()),

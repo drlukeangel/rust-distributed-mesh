@@ -131,7 +131,7 @@ impl DeploymentProvider for ImmediateReportProvider {
         let digest = MeshDigest {
             held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
-            node: MeshNode {
+            node: MeshNode { mesh: spec.node.mesh.clone(), kind: spec.node.kind,
                 node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?)
                     .map_err(|e| refused(e.to_string()))?,
                 name: spec.node.clone(),
@@ -551,7 +551,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let mut wrong_name_digest = MeshDigest {
             held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
-            node: MeshNode {
+            node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: exp_id.clone(),
                 name: "mesh1.rpc.99".parse().unwrap(),
                 endpoint_id: exp_ep,
@@ -674,7 +674,7 @@ impl DeploymentProvider for StepFaultProvider {
         let digest = MeshDigest {
             held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
-            node: MeshNode {
+            node: MeshNode { mesh: spec.node.mesh.clone(), kind: spec.node.kind,
                 node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?)
                     .map_err(|e| refused(e.to_string()))?,
                 name: spec.node.clone(),

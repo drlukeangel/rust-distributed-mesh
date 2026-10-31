@@ -110,7 +110,7 @@ fn join_door_refuses_mismatched_listener_reports_and_publishes_verified_listener
         let digest = MeshDigest {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: MeshNode {
+            node: MeshNode { mesh: dep.name.mesh.clone(), kind: dep.name.kind,
                 node_id: dep.node_id.clone(),
                 name: dep.name.clone(),
                 endpoint_id: dep.endpoint_id.clone(),

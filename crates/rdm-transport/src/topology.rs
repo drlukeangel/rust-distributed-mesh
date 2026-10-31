@@ -2528,7 +2528,7 @@ impl View {
         let record_own = |digests: Option<Vec<MeshDigest>>| {
             if let Some(digests) = digests {
                 let me_name = self.current_name();
-                for d in digests.into_iter().filter(|d| &d.fabric_id == fabric && d.node.name.mesh == self.mesh && d.node.name.to_string() != me_name) {
+                for d in digests.into_iter().filter(|d| &d.fabric_id == fabric && d.node.mesh == self.mesh && d.node.name.to_string() != me_name) {
                     if self.digest_view.get(d.node.node_id.as_str()).is_none_or(|(held, _)| held.node.incarnation != d.node.incarnation || held.digest_seq < d.digest_seq || held.held_hash != d.held_hash)
                         && self.digest_view.record_joined(d.clone())
                     {
@@ -2623,7 +2623,7 @@ impl View {
         let complete_digests = complete.map(Full::digests).unwrap_or_default();
         let final_delete = if complete_digests.len() == 1
             && complete_digests[0].status == rdm_core::MemberStatus::Leaving
-            && complete_digests[0].node.name.kind == rdm_core::NodeKind::NodeAdmin
+            && complete_digests[0].node.kind == rdm_core::NodeKind::NodeAdmin
         {
             let last_id = &complete_digests[0].node.node_id;
             complete
@@ -2675,7 +2675,7 @@ impl View {
             if matches!(side, Side::Read | Side::ReadPeer) && d.node.name.to_string() == me_name {
                 continue;
             }
-            let own = d.node.name.mesh == self.mesh;
+            let own = d.node.mesh == self.mesh;
             // The primary authors its own mesh's statuses: a projection of its own mesh, on its own
             // channel or on the backbone (a predecessor's last mesh topology after this node took the
             // role), moves none of them.
@@ -2720,7 +2720,7 @@ impl View {
     /// connections-deleting or Leaving): what this node routes to it follows that state alone (R4).
     fn note_member_state(&self, d: &MeshDigest, prior: Option<rdm_core::MemberStatus>, side: Side) {
         use rdm_core::MemberStatus::{ConnectionsDeleting, Leaving};
-        if d.node.name.mesh == self.mesh || prior == Some(d.status) || (prior.is_none() && !matches!(d.status, ConnectionsDeleting | Leaving)) {
+        if d.node.mesh == self.mesh || prior == Some(d.status) || (prior.is_none() && !matches!(d.status, ConnectionsDeleting | Leaving)) {
             return;
         }
         tracing::info_span!(
@@ -2762,7 +2762,7 @@ impl View {
     }
 
     fn note(&self, d: &MeshDigest, via: &'static str) {
-        self.via.lock().unwrap().entry(d.node.name.mesh.clone()).or_insert(via);
+        self.via.lock().unwrap().entry(d.node.mesh.clone()).or_insert(via);
     }
 
     /// Hold a primary record this node elected or read (an entry read), if it supersedes the one held.
@@ -2975,7 +2975,7 @@ impl TopologyView {
         let targets: Arc<dyn Fn() -> Held + Send + Sync> =
             Arc::new(move || {
                 let me_name = target_view.current_name();
-                held_view(&digest_view, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name)
+                held_view(&digest_view, |d| d.node.mesh == own_mesh && d.node.name.to_string() != me_name)
             });
         let app_seeds = seeds.clone();
         let channel = Channel::join(gossip, endpoint, mesh_channel(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, location, view.order.clone(), on_frame, targets, replay, Arc::default(), clock.clone()).await?;
@@ -3122,7 +3122,7 @@ impl TopologyView {
                 // watch here, so the view is rebuilt on the mark and on no poll.
                 digest_view.mark_silence();
                 heard = now_heard;
-                let now: BTreeSet<String> = current.into_iter().map(|d| d.node.name.mesh).collect();
+                let now: BTreeSet<String> = current.into_iter().map(|d| d.node.mesh).collect();
                 for m in now.difference(&held) {
                     let v = via.lock().unwrap().get(m).copied().unwrap_or("mesh-channel");
                     tracing::info_span!("rdm.mesh.topology.update.via-mesh-learned", node = %node, mesh = %m, via = v)
@@ -3148,7 +3148,7 @@ impl TopologyView {
             return;
         }
         self.mesh.register(&d);
-        let taken = if d.node.name.mesh == self.view.mesh {
+        let taken = if d.node.mesh == self.view.mesh {
             self.digest_view.record_joined(d.clone())
         } else {
             let held = self.digest_view.get(d.node.node_id.as_str()).filter(|(h, _)| h.node.incarnation == d.node.incarnation).map(|(h, _)| h.status);
@@ -3190,7 +3190,7 @@ impl TopologyView {
 
     /// How many meshes this node holds a live member of.
     pub fn meshes_held(&self) -> usize {
-        self.digest_view.current(self.digest_view.staleness_floor()).into_iter().map(|d| d.node.name.mesh).collect::<BTreeSet<_>>().len()
+        self.digest_view.current(self.digest_view.staleness_floor()).into_iter().map(|d| d.node.mesh).collect::<BTreeSet<_>>().len()
     }
 
     /// The fabric status this node holds: the last one published, until the next change.
@@ -3491,7 +3491,7 @@ impl TopologyView {
                 .digest_view
                 .current(self.digest_view.staleness_floor())
                 .into_iter()
-                .filter(|d| &d.node.name.mesh == mesh && d.fabric_id == self.fabric && d.node.node_id != own.node.node_id)
+                .filter(|d| &d.node.mesh == mesh && d.fabric_id == self.fabric && d.node.node_id != own.node.node_id)
                 .collect();
             // Its own digest as every read hands it out: with the primary records the view holds for it.
             let mut own = own.clone();
@@ -3517,7 +3517,7 @@ impl TopologyView {
                 self.mesh.register(&d);
             }
         } else if let Some(digests) = own_digests {
-            for d in digests.into_iter().filter(|d| d.fabric_id == self.fabric && d.node.name.mesh == self.view.mesh && self.digest_view.get(d.node.node_id.as_str()).is_some()) {
+            for d in digests.into_iter().filter(|d| d.fabric_id == self.fabric && d.node.mesh == self.view.mesh && self.digest_view.get(d.node.node_id.as_str()).is_some()) {
                 self.mesh.register(&d);
             }
         }
@@ -3980,7 +3980,7 @@ impl Backbone {
                 if let Some((source_mesh, publisher, version, full)) = taken.source {
                     let is_final_delete = full.digests().len() == 1
                         && full.digests()[0].status == rdm_core::MemberStatus::Leaving
-                        && full.digests()[0].node.name.kind == rdm_core::NodeKind::NodeAdmin
+                        && full.digests()[0].node.kind == rdm_core::NodeKind::NodeAdmin
                         && full
                             .in_flight()
                             .iter()
@@ -4011,7 +4011,7 @@ impl Backbone {
         });
         let (digest_view, own_mesh) = (topology_view.digest_view.clone(), mesh.to_string());
         let targets: Arc<dyn Fn() -> Held + Send + Sync> =
-            Arc::new(move || held_view(&digest_view, |d| d.node.name.mesh != own_mesh && d.node.name.kind == rdm_core::NodeKind::NodeAdmin));
+            Arc::new(move || held_view(&digest_view, |d| d.node.mesh != own_mesh && d.node.kind == rdm_core::NodeKind::NodeAdmin));
         let channel = Channel::join(gossip, endpoint, backbone_channel(&topology_view.fabric), topology_view.fabric.as_str(), node, "backbone", seeds, topology_view.mesh.location_view.clone(), topology_view.view.order.clone(), on_frame, targets, replay, topology_view.mesh.author.clone(), topology_view.clock.clone()).await?;
         topology_view.mesh_status_publisher.lock().unwrap().node = node.to_string();
         let me = Self {
@@ -4286,7 +4286,7 @@ impl Backbone {
     /// This Mesh's members as a publication puts them into its mesh topology: every member of
     /// this Mesh the view heard within the staleness floor.
     pub fn own_members(&self, topology_view: &TopologyView) -> Vec<MeshDigest> {
-        topology_view.digest_view.current(topology_view.digest_view.staleness_floor()).into_iter().filter(|d| d.node.name.mesh == self.mesh).collect()
+        topology_view.digest_view.current(topology_view.digest_view.staleness_floor()).into_iter().filter(|d| d.node.mesh == self.mesh).collect()
     }
 
     /// This Mesh's topology as a publication puts it out: `members` with this mesh's own overlays and
@@ -4295,7 +4295,7 @@ impl Backbone {
     fn own_full(&self, topology_view: &TopologyView, members: Vec<MeshDigest>) -> Full {
         let (mut in_flight, deleted) = topology_view.digest_view.overlays_of(&self.mesh);
         if members.len() == 1
-            && members[0].node.name.kind == rdm_core::NodeKind::NodeAdmin
+            && members[0].node.kind == rdm_core::NodeKind::NodeAdmin
             && members[0].status != rdm_core::MemberStatus::Leaving
         {
             let last_id = &members[0].node.node_id;
@@ -5227,7 +5227,7 @@ impl DigestView {
             }
             None => {
                 let own_mesh = self.own_mesh.lock().unwrap().clone();
-                let held = self.inner.lock().unwrap().get(op.node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == op.incarnation && !own_mesh.is_empty() && d.node.name.mesh == own_mesh).map(|(d, _, _)| d.digest_seq);
+                let held = self.inner.lock().unwrap().get(op.node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == op.incarnation && !own_mesh.is_empty() && d.node.mesh == own_mesh).map(|(d, _, _)| d.digest_seq);
                 let Some(seq) = held else { return false };
                 self.author_status(op.node_id.as_str(), &op.incarnation, status);
                 (true, seq)
@@ -5259,7 +5259,7 @@ impl DigestView {
     /// view holds no digest of exactly that birth.
     pub fn reported(&self, node_id: &NodeId, incarnation: &IncarnationId, status: rdm_core::MemberStatus) -> bool {
         let own_mesh = self.own_mesh.lock().unwrap().clone();
-        let Some(name) = self.inner.lock().unwrap().get(node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == *incarnation && !own_mesh.is_empty() && d.node.name.mesh == own_mesh).map(|(d, _, _)| d.node.name.clone()) else {
+        let Some(name) = self.inner.lock().unwrap().get(node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == *incarnation && !own_mesh.is_empty() && d.node.mesh == own_mesh).map(|(d, _, _)| d.node.name.clone()) else {
             return false;
         };
         let prior = self.author_status(node_id.as_str(), incarnation, status);
@@ -5492,7 +5492,7 @@ impl DigestView {
     fn own_mesh_member(&self, d: &MeshDigest) -> bool {
         let own_mesh = self.own_mesh.lock().unwrap();
         let itself = self.own.lock().unwrap().as_deref() == Some(d.node.node_id.as_str()) || d.node.name.to_string() == *self.observer_name.lock().unwrap();
-        !own_mesh.is_empty() && d.node.name.mesh == *own_mesh && !itself
+        !own_mesh.is_empty() && d.node.mesh == *own_mesh && !itself
     }
 
     /// `ds` as every read hands them out: each birth with the primary records this view holds for it
@@ -5511,7 +5511,7 @@ impl DigestView {
                 continue;
             }
             let itself = own.as_deref() == Some(d.node.node_id.as_str()) || d.node.name.to_string() == observer;
-            if d.node.name.mesh == own_mesh && !itself {
+            if d.node.mesh == own_mesh && !itself {
                 d.status = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s).unwrap_or(rdm_core::MemberStatus::Pending);
             }
         }
@@ -5765,7 +5765,7 @@ impl DigestView {
         if self.is_deleted(node_id) || self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id) {
             return false;
         }
-        let Some(mesh) = self.get(node_id).filter(|(d, _)| d.status == rdm_core::MemberStatus::Ready).map(|(d, _)| d.node.name.mesh) else {
+        let Some(mesh) = self.get(node_id).filter(|(d, _)| d.status == rdm_core::MemberStatus::Ready).map(|(d, _)| d.node.mesh) else {
             return false;
         };
         self.statuses.mesh(&mesh).is_some_and(|m| m.status == MESH_READY)
@@ -5843,7 +5843,7 @@ impl DigestView {
     /// mesh at that record's revision, the fabric-primary at that record's, none it does not hold.
     pub fn recorded_primaries(&self, d: &mut MeshDigest) {
         let n = &d.node;
-        d.is_primary = self.primaries.node_type_primary(&n.name.mesh, n.name.kind).filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
+        d.is_primary = self.primaries.node_type_primary(&n.mesh, n.kind).filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
         d.is_fabric_primary = self.primaries.fabric().filter(|h| h.is_birth(&n.node_id, &n.incarnation)).map(|h| h.revision);
     }
 
@@ -5853,9 +5853,9 @@ impl DigestView {
     /// revision); who is primary is the election's, from what the view holds.
     fn take_primaries(&self, d: &MeshDigest) {
         let n = &d.node;
-        let record = |revision| Primary { mesh: n.name.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), revision };
+        let record = |revision| Primary { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), revision };
         if let Some(revision) = d.is_primary {
-            self.primaries.take(PrimaryRole::of_node_type(n.name.kind), &record(revision));
+            self.primaries.take(PrimaryRole::of_node_type(n.kind), &record(revision));
         }
         if let Some(revision) = d.is_fabric_primary {
             self.primaries.take(PrimaryRole::FabricPrimary, &record(revision));
@@ -6165,7 +6165,7 @@ impl DigestView {
         let floor = self.staleness_floor();
         let held: Vec<(MeshDigest, Duration)> = self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now))).collect();
         held.into_iter()
-            .filter(|(d, silent)| *silent > floor && d.node.name.mesh == own_mesh && d.node.name.to_string() != me)
+            .filter(|(d, silent)| *silent > floor && d.node.mesh == own_mesh && d.node.name.to_string() != me)
             .filter(|(d, _)| d.status != rdm_core::MemberStatus::Leaving && !self.is_deleted_at(d.node.node_id.as_str(), now))
             .map(|(d, silent)| (d.node.node_id.to_string(), d.node.name.to_string(), silent.as_millis() as u64))
             .collect()
@@ -6216,13 +6216,13 @@ impl DigestView {
     /// The node ids of the births of `mesh` held, read under the lock: no digest is copied, only its id
     /// (Q268: a count of a mesh's births never copies the view).
     pub fn node_ids_of_mesh(&self, mesh: &str) -> Vec<String> {
-        self.inner.lock().unwrap().values().filter(|(d, _, _)| d.node.name.mesh == mesh).map(|(d, _, _)| d.node.node_id.as_str().to_string()).collect()
+        self.inner.lock().unwrap().values().filter(|(d, _, _)| d.node.mesh == mesh).map(|(d, _, _)| d.node.node_id.as_str().to_string()).collect()
     }
 
     /// Whether a birth of `mesh` is held whose mesh id is set and is not `mesh_id`, read under the lock
     /// (Q268): nothing is copied.
     pub fn holds_birth_of_mesh_under_another_id(&self, mesh: &str, mesh_id: &Option<rdm_core::MeshId>) -> bool {
-        self.inner.lock().unwrap().values().any(|(d, _, _)| d.node.name.mesh == mesh && d.mesh_id.is_some() && d.mesh_id != *mesh_id)
+        self.inner.lock().unwrap().values().any(|(d, _, _)| d.node.mesh == mesh && d.mesh_id.is_some() && d.mesh_id != *mesh_id)
     }
 
     /// The births each held digest names as replaced (`supersedes`), read under the view's lock with
@@ -6247,14 +6247,14 @@ impl DigestView {
             .lock()
             .unwrap()
             .values()
-            .filter(|(d, _, heard)| d.node.name.mesh == mesh && *heard == Heard::Forwarded)
+            .filter(|(d, _, heard)| d.node.mesh == mesh && *heard == Heard::Forwarded)
             .map(|(_, at, _)| now.saturating_duration_since(*at))
             .min()
     }
 
     /// The meshes with a backbone receipt held (see [`Self::mesh_unheard`]).
     pub fn backbone_meshes(&self) -> BTreeSet<String> {
-        self.inner.lock().unwrap().values().filter(|(_, _, heard)| *heard == Heard::Forwarded).map(|(d, _, _)| d.node.name.mesh.clone()).collect()
+        self.inner.lock().unwrap().values().filter(|(_, _, heard)| *heard == Heard::Forwarded).map(|(d, _, _)| d.node.mesh.clone()).collect()
     }
 
     /// `mesh`'s current primary node-admin: the exact birth the held primary record names, the
@@ -6286,13 +6286,13 @@ impl DigestView {
     /// predecessor birth of the mesh in the active topology and holds it deleted for the retention.
     pub fn depart_mesh_births(&self, mesh: &str, build_id: &str, attempt: u32, at_rafka_ms: u64) {
         let mut roster: BTreeMap<String, (IncarnationId, rdm_core::PathName)> = BTreeMap::new();
-        for d in self.all().into_iter().filter(|d| d.node.name.mesh == mesh) {
+        for d in self.all().into_iter().filter(|d| d.node.mesh == mesh) {
             roster.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.node.name.clone()));
         }
-        for (d, _) in self.projected_unheard_at(Instant::now()).into_iter().filter(|(d, _)| d.node.name.mesh == mesh) {
+        for (d, _) in self.projected_unheard_at(Instant::now()).into_iter().filter(|(d, _)| d.node.mesh == mesh) {
             roster.entry(d.node.node_id.to_string()).or_insert((d.node.incarnation.clone(), d.node.name.clone()));
         }
-        for d in self.stopped_digests().into_iter().filter(|d| d.node.name.mesh == mesh) {
+        for d in self.stopped_digests().into_iter().filter(|d| d.node.mesh == mesh) {
             roster.entry(d.node.node_id.to_string()).or_insert((d.node.incarnation.clone(), d.node.name.clone()));
         }
         for op in self.in_flight().into_iter().filter(|op| op.name.mesh == mesh) {
@@ -6504,7 +6504,7 @@ mod tests {
     fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode {
+            node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: node_id.clone(),
                 name: "mesh1.rpc.1".parse().unwrap(),
                 endpoint_id: EndpointId("key".into()),
@@ -7974,7 +7974,7 @@ mod tests {
     }
 
     fn primary_of(d: &MeshDigest, revision: u64) -> Primary {
-        Primary { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
+        Primary { mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
     }
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1):
@@ -8309,7 +8309,7 @@ mod tests {
         let hears = |f: &Frame| hear(&mut view.order.lock().unwrap(), &view, f, &fabric, Side::Backbone);
         let reads = |chunk: crate::snapshot::Chunk| view.take_read_chunk(chunk, Side::Read, &fabric);
         let status_of = |d: &MeshDigest| {
-            if d.node.name.mesh == view.mesh {
+            if d.node.mesh == view.mesh {
                 view.digest_view.member_status(&d.node.node_id, &d.node.incarnation)
             } else {
                 view.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status)

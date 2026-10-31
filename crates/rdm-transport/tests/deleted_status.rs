@@ -37,7 +37,7 @@ fn attr(sp: &Value, k: &str) -> String {
 fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, port: u16) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode {
+        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
             node_id: node_id.clone(),
             name: name.parse().unwrap(),
             endpoint_id: EndpointId(format!("key-{name}")),

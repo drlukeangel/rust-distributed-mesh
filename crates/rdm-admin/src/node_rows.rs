@@ -744,7 +744,7 @@ impl NodeRows {
 
     /// Persist a birth's immutable declaration in its existing row before answering its join.
     pub async fn declare_app_types(&self, d: &rdm_core::MeshDigest, types: std::collections::BTreeSet<String>) -> Result<(), String> {
-        let me = self.writer_check(&d.node.name.mesh, &d.node.name).await.map_err(|e| e.to_string())?;
+        let me = self.writer_check(&d.node.mesh, &d.node.name).await.map_err(|e| e.to_string())?;
         let configs = self.configs.as_ref().and_then(|slot| slot.get());
         let _one = match configs { Some(door) => Some(door.one_at_a_time().await), None => None };
         let mut row = match self.put_seeded(&me, &d.node.name, &d.node.node_id, crate::admin::node_status(d.status), &BTreeMap::new(), None, None, &std::collections::BTreeSet::new(), None, ClaimFor::Arrival, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {

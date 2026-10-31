@@ -167,7 +167,7 @@ fn a_new_mesh_primary_folds_the_mesh_status_rows_and_a_secondary_folds_none() {
 fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
     rdm_core::MeshDigest { held_hash: Default::default(),
         fabric_id: fabric_id.clone(),
-        node: rdm_core::MeshNode {
+        node: rdm_core::MeshNode { mesh: n.mesh.clone(), kind: n.kind,
             node_id: n.node_id.clone(),
             name: n.name.clone(),
             endpoint_id: EndpointId(format!("key-{}-{}", n.name, "x".repeat(40))),
@@ -257,7 +257,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                 assert!(topology_view.digest_view.record(heartbeat(&fabric_id, &rpc2)), "rpc.2's heartbeat is held after the role take");
                 let rpc2_heard = status(&rpc2);
                 let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: b.incarnation_id.clone().unwrap(), node_id: b.node_id.clone() }, vec![]).await.unwrap();
-                let mut projected: Vec<(String, MemberStatus)> = backbone.own_members(&topology_view).into_iter().filter(|d| d.node.name.kind == rdm_core::NodeKind::RpcNode).map(|d| (d.node.name.to_string(), d.status)).collect();
+                let mut projected: Vec<(String, MemberStatus)> = backbone.own_members(&topology_view).into_iter().filter(|d| d.node.kind == rdm_core::NodeKind::RpcNode).map(|d| (d.node.name.to_string(), d.status)).collect();
                 projected.sort_by(|a, b| a.0.cmp(&b.0));
                 // rpc.1 declares to its new primary.
                 let door = rdm_admin::status_rpc::StatusDoor {

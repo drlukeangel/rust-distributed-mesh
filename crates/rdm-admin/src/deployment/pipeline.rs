@@ -3317,7 +3317,7 @@ mod tests {
             let digest = rdm_core::MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: rdm_core::FabricId::mint(),
-                node: rdm_core::MeshNode {
+                node: rdm_core::MeshNode { mesh: spec.node.mesh.clone(), kind: spec.node.kind,
                     node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?).map_err(|e| refused(e.to_string()))?,
                     name: spec.node.clone(),
                     endpoint_id: EndpointId(key.public().to_string()),

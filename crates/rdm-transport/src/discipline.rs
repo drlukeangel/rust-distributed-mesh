@@ -40,7 +40,7 @@ pub(crate) enum Verdict {
 /// A member's view of one mesh-channel digest, as its digest view holds it after the heartbeat: `d.status`
 /// is the status held for the primary's birth.
 pub(crate) fn from_mesh_primary_digest(mesh: &str, me: &str, i_am_mesh_primary: bool, primaries: &PrimaryView, d: &MeshDigest, admitted_as_newer: bool) -> Verdict {
-    if i_am_mesh_primary || d.node.name.mesh != mesh || d.node.name.to_string() == me {
+    if i_am_mesh_primary || d.node.mesh != mesh || d.node.name.to_string() == me {
         return Verdict::NotThePrimary;
     }
     let Some(recorded_primary) = primaries.mesh(mesh) else { return Verdict::NotThePrimary };
@@ -122,7 +122,7 @@ mod tests {
     fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, status: MemberStatus, at: u64) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode {
+            node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
                 node_id: node_id.clone(),
                 name: name.parse().unwrap(),
                 endpoint_id: EndpointId("key".into()),

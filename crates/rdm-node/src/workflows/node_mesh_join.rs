@@ -197,7 +197,7 @@ mod tests {
                 parent: &step,
                 "rdm.node.mesh.update.via-joined",
                 node = %node_name,
-                mesh = %self.digest.node.name.mesh,
+                mesh = %self.digest.node.mesh,
                 mesh_id = %self.mesh_id,
                 which = "own"
             )
@@ -210,7 +210,7 @@ mod tests {
                 &g,
                 &self.ep,
                 &self.fabric_id,
-                &self.digest.node.name.mesh,
+                &self.digest.node.mesh,
                 &self.mesh_id,
                 &node_name,
                 clock,
@@ -343,7 +343,7 @@ mod tests {
             let digest = MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
-                node: MeshNode {
+                node: MeshNode { mesh: initial_name.mesh.clone(), kind: initial_name.kind,
                     node_id: node_id.clone(),
                     name: initial_name.clone(),
                     endpoint_id: EndpointId(node_key.public().to_string()),
@@ -626,7 +626,7 @@ mod tests {
             let digest = MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
-                node: MeshNode {
+                node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                     node_id: node_id.clone(),
                     name: "mesh1.rpc.1".parse().unwrap(),
                     endpoint_id: EndpointId(node_key.public().to_string()),

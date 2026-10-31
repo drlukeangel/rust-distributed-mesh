@@ -519,7 +519,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_atlas_and_from_the_topolo
         let d = MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric.clone(),
-            node: MeshNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone().unwrap(), transport_addr: n.transport_addr.unwrap(), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            node: MeshNode { mesh: n.mesh.clone(), kind: n.kind, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone().unwrap(), transport_addr: n.transport_addr.unwrap(), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: if ready { MemberStatus::Ready } else { MemberStatus::Pending },
             node_state: Default::default(),
             admin_api_base: None,

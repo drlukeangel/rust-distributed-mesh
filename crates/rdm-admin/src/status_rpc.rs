@@ -3349,7 +3349,7 @@ mod tests {
         let report = rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id,
-            node: rdm_core::MeshNode {
+            node: rdm_core::MeshNode { mesh: rpc.mesh.clone(), kind: rpc.kind,
                 node_id: rpc.node_id.clone(),
                 name: rpc.name.clone(),
                 endpoint_id: first.endpoint_id.clone(),
@@ -3943,7 +3943,7 @@ mod tests {
     fn digest_of(n: &crate::model::Node, incarnation: IncarnationId) -> rdm_core::MeshDigest {
         rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: rdm_core::MeshNode {
+            node: rdm_core::MeshNode { mesh: n.mesh.clone(), kind: n.kind,
                 node_id: n.node_id.clone(),
                 name: n.name.clone(),
                 endpoint_id: EndpointId(format!("key-{}", n.name)),
