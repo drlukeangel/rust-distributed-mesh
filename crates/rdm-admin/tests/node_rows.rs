@@ -240,6 +240,45 @@ fn a_plain_create_carries_its_create_specs_config_and_a_recovery_inherits_the_de
     assert_eq!((a["moment"].as_str(), a["subject"].as_str(), a["node_id"].as_str(), a["seeded_from"].as_str(), a["keys"].as_str(), a["outcome"].as_str()), (Some("claim"), Some("mesh1.rpc.2"), Some(born.as_str()), Some(old.as_str()), Some("1"), Some("row-seeded")), "{a:#?}");
 }
 
+/// CONTRACT (Q305; build-deployment.md §3: a replacement's "config and tags are its Build entry's,
+/// written at its claim, never the predecessor's"; node-replace.md "Properties": "an entry naming no
+/// ports names none until the node's own update"): a Build's replacement of a member at its own path
+/// claims over the `Deleted` row at the key, as a recovery does, but its row takes the entry's config
+/// and tags: an empty entry over a row holding the dead birth's two ports writes none of them, and an
+/// entry naming {tier: gold} and `blue` writes those. Its predecessor is the Deleted row's birth. The
+/// `via-node-row` span names the seed and the entry's key count (keys 0).
+/// Must NOT happen: a replacement's row starting with the dead birth's ports (rafka #3400, Build
+/// gp0027r3spsd: `row-seeded keys=2`).
+#[test]
+fn a_builds_replacement_at_its_own_path_takes_its_entrys_config_and_tags_not_the_deleted_rows() {
+    let cap = capture();
+    let ports: BTreeMap<String, String> = [("kafka_port".to_string(), "127.0.0.1:34003".to_string()), ("admin_port".to_string(), "127.0.0.1:38823".to_string())].into();
+    let name: PathName = "mesh1.gateway.1".parse().unwrap();
+    let (empty, named, born, old) = cap.run(async {
+        let old = NodeId::mint();
+        let births = vec![rdm_admin::storage::BirthFacts::new(IncarnationId::mint(), name.clone())];
+        let deleted = NodeRow { topology_storage_provider: None, name: name.clone(), node_id: old.clone(), status: NodeStatus::Deleted, config: ports.clone(), tags: ["red".to_string()].into(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births, predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let storage = Arc::new(MemoryNodesStorage::default());
+        storage.write_record(&deleted).await.unwrap();
+        let born = NodeId::mint();
+        mesh_primary(&storage).rows.claim_spec(&name, &born, "node.create:mesh1.gateway.1", None, None, &Default::default(), &BTreeMap::new(), None, ClaimFor::Replacement).await.expect("the Deleted row holds no name");
+        let other = Arc::new(MemoryNodesStorage::default());
+        other.write_record(&deleted).await.unwrap();
+        let blue: std::collections::BTreeSet<String> = ["blue".to_string()].into();
+        mesh_primary(&other).rows.claim_spec(&name, &NodeId::mint(), "node.create:mesh1.gateway.1", None, None, &blue, &tier("gold"), None, ClaimFor::Replacement).await.expect("the Deleted row holds no name");
+        (storage.record_at(&name).await.unwrap(), other.record_at(&name).await.unwrap(), born, old)
+    });
+    let empty = empty.expect("the replacement's row");
+    assert_eq!((empty.node_id.clone(), empty.config.clone(), empty.tags.clone()), (born.clone(), BTreeMap::new(), Default::default()), "an empty entry writes no config and no tags, never the dead birth's ports");
+    assert_eq!(empty.predecessor.as_ref().map(|p| p.node_id.clone()), Some(old.clone()), "the predecessor is the Deleted row's birth, as a recovery's is");
+    let named = named.expect("the replacement's row");
+    assert_eq!((named.config, named.tags), (tier("gold"), ["blue".to_string()].into()), "the entry's config and tags are the row's");
+    let spans: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
+    assert_eq!(spans.len(), 1, "{spans:#?}");
+    let a = &spans[0]["attributes"];
+    assert_eq!((a["seeded_from"].as_str(), a["keys"].as_str(), a["outcome"].as_str()), (Some(old.as_str()), Some("0"), Some("row-seeded")), "{a:#?}");
+}
+
 /// CONTRACT: a rewrite is lossless for every field its writer knows (node-identity-and-state.md "A
 /// rewrite is lossless"; node-recovery.md "Retained: ... config (seeded from the Deleted row)"). The
 /// mesh-primary's claim writes a birth's row with its create spec's config (Q166);

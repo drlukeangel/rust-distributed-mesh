@@ -1441,6 +1441,13 @@ impl DeploymentPipeline<'_> {
         self.create_with_claim(req, crate::node_rows::ClaimFor::Successor, pre_node_ready, None).await
     }
 
+    /// `create_with` for a Build's replacement of a member at its own path (`ClaimFor::Replacement`,
+    /// build-deployment.md §3): over the kept data dir or a fresh one, its row's config and tags its
+    /// entry's (`req.entry`, Q305).
+    pub(crate) async fn create_replacement_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+        self.create_with_claim(req, crate::node_rows::ClaimFor::Replacement, pre_node_ready, before_launch).await
+    }
+
     /// `create_with` for a recovery Build (`ClaimFor::Recovery` even when `req.data_dir` is `None`
     /// after `RDM_DATA_DIR_GONE_FLOORS`, R-FM2).
     pub(crate) async fn create_recovery_with(&self, req: &CreateRequest, pre_node_ready: Option<PreNodeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
@@ -1729,7 +1736,7 @@ impl DeploymentPipeline<'_> {
                 let placed = held.topology.mesh(&req.node.mesh).and_then(|m| m.spec(&req.node)).map(|s| (s.storage_persistence, s.placement));
                 // A replace's successor takes its entry's config and tags, never its predecessor's (Q305).
                 let (tags, config) = match (of, &req.entry) {
-                    (crate::node_rows::ClaimFor::Create | crate::node_rows::ClaimFor::Successor, Some(e)) => (e.tags.clone(), e.config.clone()),
+                    (crate::node_rows::ClaimFor::Create | crate::node_rows::ClaimFor::Successor | crate::node_rows::ClaimFor::Replacement, Some(e)) => (e.tags.clone(), e.config.clone()),
                     _ => Default::default(),
                 };
                 step_span.record("awaiting", "claim");

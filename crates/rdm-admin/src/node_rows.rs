@@ -400,6 +400,11 @@ pub enum ClaimFor {
     /// takes the tags with the config from the `Deleted` row at the key, indexed under the new node's
     /// id in that one write (§8, recovery).
     Recovery,
+    /// A Build's create of a member it replaces at its own path (build-deployment.md §3: the reconcile's
+    /// replacement, over the data dir its delete kept or a fresh one): claimed over the `Deleted` row at
+    /// the key as a recovery's is (its node type and its predecessor seeded from it), but its config and
+    /// tags are its Build entry's (Q305), never the predecessor's.
+    Replacement,
     /// A Build's node.create of a replace's successor at the `<name>` its predecessor released
     /// (node-replace.md step 3, Properties): the row takes its Build entry's config and tags (Q305),
     /// never the predecessor's; the predecessor's row, the retained `<name>.old` row or else the `Deleted` row at the key, seeds the rest, its labels leaving the active index, the successor's tags indexed under
@@ -596,7 +601,7 @@ impl NodeRows {
         let mut guard = ClaimGuard { span: span.clone(), done: false };
         let r = tracing::Instrument::instrument(
             async {
-                let me = if of == ClaimFor::Recovery && name.kind == NodeKind::NodeAdmin {
+                let me = if matches!(of, ClaimFor::Recovery | ClaimFor::Replacement) && name.kind == NodeKind::NodeAdmin {
                     let t = self.view.read().await;
                     if t.is_fabric_primary(&self.me_id) {
                         self.held_name_in(&t)
@@ -631,7 +636,7 @@ impl NodeRows {
         if let Some(reason) = rdm_core::status::node_type_refusal(&normalized) {
             return Err(RowRefused::Unwritten(format!("{me}: {reason}; nothing is claimed or written")));
         }
-        let inherited_type = if of == ClaimFor::Recovery {
+        let inherited_type = if matches!(of, ClaimFor::Recovery | ClaimFor::Replacement) {
             record_at(&*self.storage, name)
                 .await
                 .ok()
@@ -1319,26 +1324,26 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
             old
         }
     };
-    // The config and the tags of a Build's create, a replace's successor included, are its entry's
-    // (`own`, `created_with`; Q305): a Build provides the whole map of a node it replaces, never the
-    // predecessor's, and an empty one is empty. A recovery's claim takes the Deleted record's at this
+    // The config and the tags of a Build's create, a replace's successor and a reconcile's replacement
+    // included, are its entry's (`own`, `created_with`; Q305): a Build provides the whole map of a node it
+    // replaces, never the predecessor's, and an empty one is empty. A recovery's claim takes the Deleted record's at this
     // name (Q166) and an arrival's the seed's: no entry names them.
     let inherited = seed.as_ref().filter(|p| match of {
         ClaimFor::Create | ClaimFor::Arrival => false,
-        ClaimFor::Recovery => p.name == *name && p.status == NodeStatus::Deleted,
+        ClaimFor::Recovery | ClaimFor::Replacement => p.name == *name && p.status == NodeStatus::Deleted,
         ClaimFor::Successor => p.name != *name || p.status == NodeStatus::Deleted,
     });
     let tags = match of {
-        ClaimFor::Create | ClaimFor::Successor => created_with.clone(),
+        ClaimFor::Create | ClaimFor::Successor | ClaimFor::Replacement => created_with.clone(),
         ClaimFor::Arrival | ClaimFor::Recovery => inherited.map(|p| p.tags.clone()).unwrap_or_default(),
     };
     let config = match of {
-        ClaimFor::Create | ClaimFor::Successor => own.clone(),
+        ClaimFor::Create | ClaimFor::Successor | ClaimFor::Replacement => own.clone(),
         ClaimFor::Arrival | ClaimFor::Recovery => inherited.or(seed.as_ref()).map_or_else(|| own.clone(), |p| p.config.clone()),
     };
     // The executable beside the config: the one the create launches (`executable`), else the seed's.
     let executable = executable.cloned().or_else(|| seed.as_ref().and_then(|p| p.executable.clone()));
-    let predecessor = seed.as_ref().filter(|p| of == ClaimFor::Recovery && p.status == NodeStatus::Deleted).and_then(|p| p.births.last().map(|b| crate::storage::BirthRef { node_id: p.node_id.clone(), incarnation_id: b.incarnation_id.clone() }));
+    let predecessor = seed.as_ref().filter(|p| matches!(of, ClaimFor::Recovery | ClaimFor::Replacement) && p.status == NodeStatus::Deleted).and_then(|p| p.births.last().map(|b| crate::storage::BirthRef { node_id: p.node_id.clone(), incarnation_id: b.incarnation_id.clone() }));
     if let Some(p) = &seed {
         span.record("seeded_from", p.node_id.as_str());
     }
