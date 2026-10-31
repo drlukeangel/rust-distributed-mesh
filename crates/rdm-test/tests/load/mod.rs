@@ -491,7 +491,7 @@ fn throughput_rows(rows: &mut Rows, route: &str, rates: &mut [f64]) {
 /// births, never another mesh's), rpc.1 and rpc.2 to rpc.6 and rpc.7, each source's destinations in turn,
 /// every source at once; each pair's measure is its open (a cold Direct dial) and its 4 streams of
 /// 512 KiB its throughput. Proxy: in each mesh, rpc.3 to rpc.5 through
-/// rpc.4: the carrier's own Direct edge first, then the source's Direct dials toward the destination
+/// rpc.4: the carrier's own Direct connection first, then the source's Direct dials toward the destination
 /// blocked (connections.md §7: the first open finds the carrier), its open the cold discovery and its
 /// streams the tunnel's throughput.
 async fn data_plane(estate: &Estate, meshes: &[String], rpcs: u32, rows: &mut Rows) {

@@ -168,7 +168,7 @@ pub struct PeerMesh {
     /// The ladder has decided the recovery of the mesh's node-admins.
     pub recovery_decided: bool,
     /// The ladder's 60 s decision found the latest probe `unreachable`: no node answered and no
-    /// carrier reported its edge to a node-admin lost. The mesh is held; its node-admin is created
+    /// carrier reported its connection to a node-admin lost. The mesh is held; its node-admin is created
     /// only on the provider's exact exited verdict of every node of the mesh
     /// (mesh-investigation.md step 5, "Fully crashed"), which the fabric-primary reads, never the ladder.
     pub unreachable_decided: bool,
@@ -725,7 +725,7 @@ fn verdict(me: &str, mesh: &str, outcome: &str, unheard_ms: u64, why: &str) {
 }
 
 /// What one node-admin's `unreached` says of the mesh (mesh-investigation.md step 5). Only a carrier
-/// saying its own edge to the node-admin is lost (`InnerNotSent`, the tickle's `connection-lost`)
+/// saying its own connection to the node-admin is lost (`InnerNotSent`, the tickle's `connection-lost`)
 /// is `connection-lost`, and that carrier is named; a carrier that cannot be reached, refuses, or
 /// loses the call says nothing of the node-admin, so `unreachable`, naming the first carrier that
 /// answered anything at all (a reply that was not the exact birth's, or an `Indeterminate`), or none.
@@ -772,7 +772,7 @@ pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, primary: Option
 
 /// What one probe found over every node-admin it asked, in the order asked: any node-admin
 /// answering is `admin-alive` (the mesh has a node-admin; mesh-investigation.md step 4); with none
-/// answering it is `connection-lost` only when the carrier reported its edge lost to every one of
+/// answering it is `connection-lost` only when the carrier reported its connection lost to every one of
 /// them (step 5: the recovery recovers every node-admin of the mesh, so each must be reported
 /// unreachable from inside it); any other end says nothing of that node-admin, so `unreachable`.
 pub(crate) fn fold_admin_outcomes(outcomes: &[ProbeOutcome]) -> ProbeOutcome {
@@ -1410,7 +1410,7 @@ mod tests {
     /// `admin-alive`; `connection-lost` only when every one of them was reported lost from inside
     /// the mesh; anything else, a timeout or an unreachable carrier included, is `unreachable`.
     #[test]
-    fn a_probe_over_several_admins_is_edge_lost_only_when_every_admin_is() {
+    fn a_probe_over_several_admins_is_connection_lost_only_when_every_admin_is() {
         assert_eq!(fold_admin_outcomes(&[ConnectionLost, AdminAlive]), AdminAlive);
         assert_eq!(fold_admin_outcomes(&[ConnectionLost, ConnectionLost]), ConnectionLost);
         assert_eq!(fold_admin_outcomes(&[ConnectionLost, Unreachable]), Unreachable);
@@ -1701,7 +1701,7 @@ mod tests {
     /// carried probes through the same two. Probe 2 repeats it preferring members probe 1 did not
     /// carry through: rpc 1 and rpc 2. Every carrier answers connection-lost, so both probes find
     /// it, and each probe's span names every node-admin asked in that order, the leg and the carrier
-    /// (the first asked that said its edge was lost). Must NOT happen: the first node-admin asked
+    /// (the first asked that said its connection was lost). Must NOT happen: the first node-admin asked
     /// being the path-first one, a node-admin's carried probe before its direct one, one carrier
     /// asked after the other ended, more than two carriers, probe 2 carried by probe 1's carrier
     /// while other members stand, or a node of mesh1 asked.

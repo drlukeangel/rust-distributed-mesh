@@ -155,7 +155,7 @@ pub fn first_failure_for(
 pub fn owed_direct_restored(held: &ConnectionsHeld, now_ms: u64) -> Vec<NodeConnection> {
     held.own_active_proxies()
         .into_iter()
-        .filter(|p| matches!(held.active_direct_for(&p.source.name, &p.destination.name, &p.alpn), Some(Some(edge)) if !held.names_superseded_destination(edge)))
+        .filter(|p| matches!(held.active_direct_for(&p.source.name, &p.destination.name, &p.alpn), Some(Some(connection)) if !held.names_superseded_destination(connection)))
         .map(|p| NodeConnection {
             id: crate::ConnectionId::mint(),
             state: ConnectionState::Disconnected,

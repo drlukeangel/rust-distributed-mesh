@@ -23,7 +23,7 @@ pub(crate) const MAX_CARRIED_BYTES: usize = 1024 * 1024;
 
 /// What the carrier keeps back from the origin's remaining budget so its reply still reaches the
 /// origin inside that budget: the request's transit from origin to carrier (the origin measures
-/// before it writes), the carrier's work after its inner call ends (edge lookup, reply encoding),
+/// before it writes), the carrier's work after its inner call ends (connection lookup, reply encoding),
 /// the reply's write and transit back, and the origin's read and decode. It is a bounded
 /// transport and serialization allowance, not a policy margin.
 pub const FORWARD_REPLY_RESERVE: Duration = Duration::from_millis(100);
@@ -125,7 +125,7 @@ pub enum NotSentCause {
     ///
     /// Position 5 on the wire.
     Carried,
-    /// The carrier's own edge was lost.
+    /// The carrier's own connection was lost.
     ///
     /// Position 6 on the wire.
     ConnectionLost,
@@ -247,7 +247,7 @@ pub enum ForwardReply {
         /// Why the call is refused.
         reason: String,
     },
-    /// The carrier made no inner call it could prove arrived: its own Direct edge to the final
+    /// The carrier made no inner call it could prove arrived: its own Direct connection to the final
     /// target is not Active (connections.md §8). `reason` names the carrier's latest Direct fact
     /// toward the target. The origin deletes its Proxy through this carrier with the structural
     /// reason `connection-lost`.

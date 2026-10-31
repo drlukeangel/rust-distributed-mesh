@@ -368,28 +368,28 @@ async fn a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands()
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The carrier's account of its own edge (connections.md section 8): a Failed or Disconnected
+/// The carrier's account of its own connection (connections.md section 8): a Failed or Disconnected
 /// latest Direct toward the exact node is named; a Connected one and no fact at all are not.
 ///
-/// CONTRACT: `edge_not_active` reports the carrier's own latest Direct fact toward the exact node
+/// CONTRACT: `connection_not_active` reports the carrier's own latest Direct fact toward the exact node
 /// and nothing else: no fact is "not named", never "lost".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connected() {
-    use rdm_transport::CarrierEdges;
-    let dir = data_dir("edges");
+async fn a_carrier_names_its_own_connection_only_when_its_latest_direct_is_not_connected() {
+    use rdm_transport::CarrierConnections;
+    let dir = data_dir("connections");
     let (me, dest) = (end("mesh1.rpc.2"), end("mesh1.rpc.3"));
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
     let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
-    assert_eq!(writer.edge_not_active(&dest.node_id).await, None, "no fact is not an edge fact");
+    assert_eq!(writer.connection_not_active(&dest.node_id).await, None, "no fact is not a connection fact");
     writer.record(row(&me, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();
-    assert_eq!(writer.edge_not_active(&dest.node_id).await, None, "a Connected edge is Active");
+    assert_eq!(writer.connection_not_active(&dest.node_id).await, None, "a Connected connection is Active");
     let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 20);
     failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
     failed.reason = Some("dial failed".into());
     writer.record(failed).await.unwrap();
-    let why = writer.edge_not_active(&dest.node_id).await.expect("a Failed edge is not Active");
+    let why = writer.connection_not_active(&dest.node_id).await.expect("a Failed connection is not Active");
     assert_eq!(why, "mesh1.rpc.2 -> mesh1.rpc.3 Direct failed (dial failed)");
-    assert_eq!(writer.edge_not_active(&NodeId::mint()).await, None, "another node's edge is not named");
+    assert_eq!(writer.connection_not_active(&NodeId::mint()).await, None, "another node's connection is not named");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -419,24 +419,24 @@ impl ConnectionsStorage for SlowIndex {
     }
 }
 
-/// CONTRACT (#2803 detection; Q169): the carrier names its edge from the dial that just failed,
+/// CONTRACT (#2803 detection; Q169): the carrier names its connection from the dial that just failed,
 /// from the dial's own outcome, however long the fact's write takes, so a member that cannot reach
 /// its own node-admin says `connection-lost` every time, never "not sent" for want of a write. The
-/// read of its held edges never waits for a write: until the Failed row lands it holds no fact.
+/// read of its held connections never waits for a write: until the Failed row lands it holds no fact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_carrier_names_the_edge_a_dial_has_just_failed_however_slow_the_write() {
-    use rdm_transport::CarrierEdges;
-    let dir = data_dir("edges-slow");
+async fn a_carrier_names_the_connection_a_dial_has_just_failed_however_slow_the_write() {
+    use rdm_transport::CarrierConnections;
+    let dir = data_dir("connections-slow");
     let (me, dest) = (end("mesh2.rpc.1"), end("mesh2.admin.1"));
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(SlowIndex(Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap())));
     let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
     writer.direct_failed(&resolved(&dest), "timed out");
-    let why = writer.edge_after_dial(&resolved(&dest), "timed out").await.expect("the failed dial's fact is named");
+    let why = writer.connection_after_dial(&resolved(&dest), "timed out").await.expect("the failed dial's fact is named");
     assert_eq!(why, "mesh2.rpc.1 -> mesh2.admin.1 Direct failed (timed out)");
-    let held_now = tokio::time::timeout(std::time::Duration::from_millis(100), writer.edge_not_active(&dest.node_id)).await.expect("the read answers from what is held, never waiting for the write");
+    let held_now = tokio::time::timeout(std::time::Duration::from_millis(100), writer.connection_not_active(&dest.node_id)).await.expect("the read answers from what is held, never waiting for the write");
     assert_eq!(held_now, None, "the Failed row has not landed, so no fact is held yet");
     writer.observations_landed().await;
-    assert_eq!(writer.edge_not_active(&dest.node_id).await.as_deref(), Some("mesh2.rpc.1 -> mesh2.admin.1 Direct failed (timed out)"), "once landed the fact is held");
+    assert_eq!(writer.connection_not_active(&dest.node_id).await.as_deref(), Some("mesh2.rpc.1 -> mesh2.admin.1 Direct failed (timed out)"), "once landed the fact is held");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -962,7 +962,7 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
         let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
-        // Seeded: the carrier's edge, and a failing series at (1, 2) whose next attempt is due now.
+        // Seeded: the carrier's connection, and a failing series at (1, 2) whose next attempt is due now.
         let failed_at = now_ms() - rdm_core::reconnect::reconnect_backoff(2) - rdm_core::reconnect::deterministic_jitter(&me.name, &dest.name, 2) - 1;
         let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
         failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 2 });

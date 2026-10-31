@@ -146,9 +146,9 @@ async fn a_status_call_carried_to_a_target_the_admin_cannot_resolve_is_not_sent_
 /// A target the admin cannot reach, while the admin's own Direct fact toward it is not Active, is
 /// answered `ConnectionLost` naming that fact, and the target handled nothing.
 ///
-/// CONTRACT: the admin carrier reports its own edge to a dead target, the same as any carrier.
+/// CONTRACT: the admin carrier reports its own connection to a dead target, the same as any carrier.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_status_call_carried_to_a_dead_target_names_the_admins_lost_edge() {
+async fn a_status_call_carried_to_a_dead_target_names_the_admins_lost_connection() {
     let r = rig().await;
     // The dead target: the admin dials the live target's address for it and the handshake names another key.
     let dead = birth();
@@ -170,7 +170,7 @@ async fn a_status_call_carried_to_a_dead_target_names_the_admins_lost_edge() {
     let (out, _) = origin.call_via::<Status>(&admin_target(&r), &dead.node_id, &probe(&dead), &CallOptions::default()).await;
     match &out {
         RpcOutcome::NotSent(n) => assert!(matches!(n.reason(), NotSentReason::ConnectionLost(why) if why.starts_with("mesh1.admin.2 -> mesh1.rpc.2 Direct ")), "{out:?}"),
-        other => panic!("the admin names its lost edge to the dead target: {other:?}"),
+        other => panic!("the admin names its lost connection to the dead target: {other:?}"),
     }
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }

@@ -242,8 +242,8 @@ pub enum NotSentReason {
     FrameNotSent,
     /// A carrier proved the inner call never committed at the final target.
     Carried(String),
-    /// The carrier's own Direct edge to the final target is not Active, so it made no inner call
-    /// that arrived; the string is the carrier's own account of that edge.
+    /// The carrier's own Direct connection to the final target is not Active, so it made no inner call
+    /// that arrived; the string is the carrier's own account of that connection.
     ConnectionLost(String),
     /// The origin's remaining budget did not exceed the carrier's reply reserve, so the carrier
     /// made no inner call. Both are whole milliseconds.

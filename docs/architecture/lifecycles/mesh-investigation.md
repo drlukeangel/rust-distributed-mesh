@@ -95,7 +95,7 @@ an unreachable node-admin; what became of that node-admin is node investigation'
 The RPC chain uses `rdm.node_rpc.request.update.via-call` and
 `rdm.node_rpc.request.serve.via-direct` for Ping and outer Forward. The carrier's inner
 ProbeNodeState call uses `rdm.node_rpc.request.update.via-call`; the target emits
-`rdm.node_rpc.request.serve.via-carried-inner` when reached. Carrier-edge failure cannot
+`rdm.node_rpc.request.serve.via-carried-inner` when reached. A connection failure cannot
 produce an inner server span. Trace ancestry follows the envelope's carried-call context.
 
 ```mermaid

@@ -174,7 +174,7 @@ async fn one_discovered_proxy_serves_every_consumer_of_the_same_destination() {
     let dialer_consumer_2 = dialer_consumer_1.clone();
     let (_dialer_brk2, mut acc_brk2) = brk2.registry.connections(ALPN_A).unwrap().split();
 
-    // gw1 can reach gw2 (its topology holds it), and gw2 opens its own active Direct edge to brk2;
+    // gw1 can reach gw2 (its topology holds it), and gw2 opens its own active Direct connection to brk2;
     // gw1 cannot reach brk2 Direct:
     gw1.know(&gw2);
     gw2.know(&brk2);
@@ -639,7 +639,7 @@ async fn alpn_interference_restores_a_while_b_keeps_its_proxy() {
     let (_, mut acc_dst_a) = dst.registry.connections(ALPN_A).unwrap().split();
     let (_, mut acc_dst_b) = dst.registry.connections(ALPN_B).unwrap().split();
 
-    // src can reach carrier; carrier can reach dst and establishes real Direct edges on both ALPNs
+    // src can reach carrier; carrier can reach dst and establishes real Direct connections on both ALPNs
     // (held by the carrier's own ConnectionsWriter; no row is fed by hand):
     src.know(&carrier);
     carrier.know(&dst);

@@ -1,5 +1,5 @@
 //! The read-only views the tabs draw, folded from node-admin's typed answers over Node RPC: the fabric
-//! header, the topology with its connection edges, and the Builds.
+//! header, the topology with its connections, and the Builds.
 
 use crate::chaos::NodeFacts;
 use crate::admin::Admin;
@@ -103,7 +103,7 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
             })
         })
         .collect();
-    let mut edges: Vec<Value> = Vec::new();
+    let mut connections: Vec<Value> = Vec::new();
     let mut errors = Vec::new();
     for n in views.iter() {
         match admin.connections(n).await {
@@ -114,10 +114,10 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
                     e["reported_by"] = json!(by);
                     // One fact per (source, destination, kind): the latest any admin reports.
                     let same = |x: &Value| x["source"] == e["source"] && x["destination"] == e["destination"] && x["kind"] == e["kind"];
-                    match edges.iter().position(|x| same(x)) {
-                        Some(i) if edges[i]["logged_at_ms"].as_u64() >= e["logged_at_ms"].as_u64() => {}
-                        Some(i) => edges[i] = e,
-                        None => edges.push(e),
+                    match connections.iter().position(|x| same(x)) {
+                        Some(i) if connections[i]["logged_at_ms"].as_u64() >= e["logged_at_ms"].as_u64() => {}
+                        Some(i) => connections[i] = e,
+                        None => connections.push(e),
                     }
                 }
             }
@@ -125,7 +125,7 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
             None => {}
         }
     }
-    Ok(json!({"nodes": view, "edges": edges, "edge_errors": errors}))
+    Ok(json!({"nodes": view, "connections": connections, "connection_errors": errors}))
 }
 
 /// The current accepted Build and the Builds this UI submitted, newest first.

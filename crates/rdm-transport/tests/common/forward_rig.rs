@@ -4,7 +4,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, NodeId};
-use rdm_transport::{CallOptions, CarrierEdges, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{CallOptions, CarrierConnections, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
@@ -150,9 +150,9 @@ pub async fn rig() -> Rig {
     rig_with(None, false).await
 }
 
-/// `edges`: the carrier's account of its Direct edges. `carrier_misdials`: the carrier's own view
+/// `connections`: the carrier's account of its Direct connections. `carrier_misdials`: the carrier's own view
 /// of the target names another transport identity, so its dial fails at the handshake.
-pub async fn rig_with(edges: Option<Arc<dyn CarrierEdges>>, carrier_misdials: bool) -> Rig {
+pub async fn rig_with(connections: Option<Arc<dyn CarrierConnections>>, carrier_misdials: bool) -> Rig {
     let handled = Arc::new(AtomicU64::new(0));
     let applied = Arc::new(tokio::sync::Notify::new());
     let (h, a) = (handled.clone(), applied.clone());
@@ -193,8 +193,8 @@ pub async fn rig_with(edges: Option<Arc<dyn CarrierEdges>>, carrier_misdials: bo
     let carrier_client = Arc::new(NodeRpcClient::new(carrier_ep.clone(), carrier_resolver.clone()));
     let carrier_birth = birth();
     let carrier_builder = ServerBuilder::new().ledger(test_ledger()).carry::<Probe>().carry::<Ping>();
-    let carrier_server = match edges {
-        Some(e) => carrier_builder.serve_forward_with_edges(carrier_client.clone(), e),
+    let carrier_server = match connections {
+        Some(e) => carrier_builder.serve_forward_with_connections(carrier_client.clone(), e),
         None => carrier_builder.serve_forward(carrier_client.clone()),
     }
     .build(served(&carrier_birth))

@@ -344,7 +344,7 @@ async fn a_dial_that_outlives_its_callers_deadline_reports_connected_once_when_i
 }
 
 /// CONTRACT (node-rpc session rulings 2026-10-03 §4.3; connections.md sections 9 and 10): reply
-/// deadlines on a pooled connection are not a broken Direct edge. After three calls end
+/// deadlines on a pooled connection are not a broken Direct connection. After three calls end
 /// `Indeterminate(ReplyDeadline)` the connections writer has heard `connected` once, from the dial
 /// that opened the connection, and `broken` never; the connection is still the one pooled.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

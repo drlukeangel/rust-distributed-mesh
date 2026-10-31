@@ -18,22 +18,22 @@ use rdm_core::outcome::{carried, NotSentReason, PreCommit, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
 use std::sync::Arc;
 
-/// The carrier's account of its own Direct edges (connections.md §8): the one fact a carrier
+/// The carrier's account of its own Direct connections (connections.md §8): the one fact a carrier
 /// owns about a forward's final target.
 #[async_trait::async_trait]
-pub trait CarrierEdges: Send + Sync {
-    /// Why this node's own latest Direct edge to the exact node `target` is not Active, or `None`
+pub trait CarrierConnections: Send + Sync {
+    /// Why this node's own latest Direct connection to the exact node `target` is not Active, or `None`
     /// when it is Active or this node holds no Direct fact toward it. Answered from what is held: a
     /// fact is held only once its durable write lands, and the read never waits for a write (Q169).
-    async fn edge_not_active(&self, target: &NodeId) -> Option<String>;
+    async fn connection_not_active(&self, target: &NodeId) -> Option<String>;
 
-    /// The edge text for a dial of this carrier's own that just ended with no connection to
+    /// The connection text for a dial of this carrier's own that just ended with no connection to
     /// `node`, `reason` being what the dial reported. The dial's outcome is the carrier's own
-    /// Direct fact, so the default reads it back through [`Self::edge_not_active`]; an
+    /// Direct fact, so the default reads it back through [`Self::connection_not_active`]; an
     /// implementation that can name the fact from the dial alone answers without waiting for the
     /// fact's durable write, which is not the reply's business.
-    async fn edge_after_dial(&self, node: &crate::resolve::ResolvedNode, _reason: &str) -> Option<String> {
-        self.edge_not_active(&node.node_id).await
+    async fn connection_after_dial(&self, node: &crate::resolve::ResolvedNode, _reason: &str) -> Option<String> {
+        self.connection_not_active(&node.node_id).await
     }
 }
 
@@ -64,15 +64,15 @@ impl ServerBuilder {
     }
 
     /// The core families, which every node built on Node RPC serves: Ping, and Forward as one
-    /// direct inner call through `client` (the process's one client). `edges` is the node's own
-    /// account of its Direct edges when it keeps one ([`Self::serve_forward_with_edges`]).
-    pub fn serve_core(self, client: Arc<NodeRpcClient>, edges: Option<Arc<dyn CarrierEdges>>) -> Self {
+    /// direct inner call through `client` (the process's one client). `connections` is the node's own
+    /// account of its Direct connections when it keeps one ([`Self::serve_forward_with_connections`]).
+    pub fn serve_core(self, client: Arc<NodeRpcClient>, connections: Option<Arc<dyn CarrierConnections>>) -> Self {
         use rdm_core::ping::{Ping, PingReply, PingRequest};
         self.serve::<Ping, _, _>(OpOwner::Core, |_peer, req: PingRequest| async move {
             let PingRequest::Ping { payload, .. } = req;
             Ok(PingReply::Pong { payload })
         })
-        .serve_forward_with(client, edges)
+        .serve_forward_with(client, connections)
     }
 
     /// Serve [`Forward`]: each forward is one direct inner call through `client`.
@@ -80,27 +80,27 @@ impl ServerBuilder {
         self.serve_forward_with(client, None)
     }
 
-    /// [`Self::serve_forward`] for a carrier that records its own Direct edges: a forward whose
-    /// inner call ends `NotSent` at the dial while `edges` reports this carrier's own edge to the
+    /// [`Self::serve_forward`] for a carrier that records its own Direct connections: a forward whose
+    /// inner call ends `NotSent` at the dial while `connections` reports this carrier's own connection to the
     /// final target not Active is answered [`ForwardReply::ConnectionLost`] (connections.md §8),
     /// so the origin learns the third Proxy validity condition from the carried call itself.
-    pub fn serve_forward_with_edges(self, client: Arc<NodeRpcClient>, edges: Arc<dyn CarrierEdges>) -> Self {
-        self.serve_forward_with(client, Some(edges))
+    pub fn serve_forward_with_connections(self, client: Arc<NodeRpcClient>, connections: Arc<dyn CarrierConnections>) -> Self {
+        self.serve_forward_with(client, Some(connections))
     }
 
-    fn serve_forward_with(mut self, client: Arc<NodeRpcClient>, edges: Option<Arc<dyn CarrierEdges>>) -> Self {
+    fn serve_forward_with(mut self, client: Arc<NodeRpcClient>, connections: Option<Arc<dyn CarrierConnections>>) -> Self {
         let table = Arc::new(std::sync::OnceLock::new());
         self.carried_table = Some(table.clone());
         let replies = self.carried_replies.clone();
         self.serve::<Forward, _, _>(OpOwner::Core, move |peer: PeerContext, req: ForwardRequest| {
-            let (client, table, edges, replies) = (client.clone(), table.clone(), edges.clone(), replies.clone());
+            let (client, table, connections, replies) = (client.clone(), table.clone(), connections.clone(), replies.clone());
             async move {
                 let observed = replies.get().cloned();
                 let (target, inner_op, request) = match (&observed, &req) {
                     (Some(_), ForwardRequest::Forward { target, inner_op, inner, .. }) => (Some(target.clone()), *inner_op, inner.clone()),
                     _ => (None, 0, Vec::new()),
                 };
-                let reply = carry_once(&client, &table, edges.as_deref(), &peer, req).await;
+                let reply = carry_once(&client, &table, connections.as_deref(), &peer, req).await;
                 if let (Some(observer), Some(target), ForwardReply::Forwarded { inner }) = (observed, target, &reply) {
                     observer.carried(&target, inner_op, &request, inner).await;
                 }
@@ -113,7 +113,7 @@ impl ServerBuilder {
 async fn carry_once(
     client: &NodeRpcClient,
     table: &std::sync::OnceLock<std::collections::HashMap<u8, usize>>,
-    edges: Option<&dyn CarrierEdges>,
+    connections: Option<&dyn CarrierConnections>,
     peer: &PeerContext,
     req: ForwardRequest,
 ) -> ForwardReply {
@@ -190,30 +190,30 @@ async fn carry_once(
     match out {
         RpcOutcome::Reply(r) => r.into_value(),
         RpcOutcome::NotSent(n) => {
-            // Only a dial that ended in this carrier's own Direct fact speaks for the edge.
+            // Only a dial that ended in this carrier's own Direct fact speaks for the connection.
             let at_the_dial = matches!(n.reason(), NotSentReason::Connection(_) | NotSentReason::Deadline);
-            let edge = match edges.filter(|_| at_the_dial) {
+            let connection = match connections.filter(|_| at_the_dial) {
                 Some(e) => match _evidence.as_ref().and_then(|ev| ev.dial_failure.clone()) {
                     // The dial's own outcome is the fact: answered from it, not read back through the
                     // fact's durable write.
                     Some(reason) => match client.resolver.resolve(&NodeTarget::ExactNode(target.clone())) {
-                        Ok(node) => e.edge_after_dial(&node, &reason).await,
-                        Err(_) => e.edge_not_active(&target).await,
+                        Ok(node) => e.connection_after_dial(&node, &reason).await,
+                        Err(_) => e.connection_not_active(&target).await,
                     },
-                    None => e.edge_not_active(&target).await,
+                    None => e.connection_not_active(&target).await,
                 },
                 None => None,
             };
-            match edge {
+            match connection {
                 Some(reason) => {
                     tracing::info_span!(
                         "rdm.node_rpc.request.reject.via-connection-lost",
                         inner_op,
                         target = %target,
                         caller = %peer.endpoint_id,
-                        edge = %reason
+                        connection = %reason
                     )
-                    .in_scope(|| tracing::info!("the carrier's own Direct edge to the final target is not Active"));
+                    .in_scope(|| tracing::info!("the carrier's own Direct connection to the final target is not Active"));
                     rdm_core::reply::forward::connection_lost(reason)
                 }
                 None => rdm_core::reply::forward::inner_not_sent(format!("{:?}", n.reason()), NotSentCause::from_reason(n.reason())),

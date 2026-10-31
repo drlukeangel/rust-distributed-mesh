@@ -144,19 +144,19 @@ fn route_resolution_never_creates_or_moves_a_reconnect() {
     assert_eq!(reconnect_plan(&h, |_| None), plan, "traffic changes no reconnect obligation");
 }
 
-/// CONTRACT (node-connections-admit.md Row and Never, Q212; connections.md: an active edge is removed
+/// CONTRACT (node-connections-admit.md Row and Never, Q212; connections.md: an active connection is removed
 /// only when the latest Direct entry becomes Disconnected or Failed, never Refused): a known dialer's
-/// `Refused` fact, newer than its live `Connected` edge on the same key, is held and never removes
-/// that edge.
+/// `Refused` fact, newer than its live `Connected` connection on the same key, is held and never removes
+/// that connection.
 #[test]
-fn a_known_dialers_refused_fact_cuts_no_live_edge() {
+fn a_known_dialers_refused_fact_cuts_no_live_connection() {
     let acceptor = end(2, "a1");
     let dialer = end(1, "d1");
     let mut held = held_for(&acceptor);
     let live = connected(&dialer, &acceptor, 100);
     held.apply(live.clone()).unwrap();
-    assert_eq!(held.active_direct(&dialer.name, &acceptor.name).flatten().map(|c| c.id.clone()), Some(live.id.clone()), "the live edge is held");
+    assert_eq!(held.active_direct(&dialer.name, &acceptor.name).flatten().map(|c| c.id.clone()), Some(live.id.clone()), "the live connection is held");
     let refused = NodeConnection { id: rdm_core::ConnectionId::mint(), state: ConnectionState::Refused, reason: Some("expired".into()), logged_at_ms: 200, ..live.clone() };
     held.apply(refused).unwrap();
-    assert_eq!(held.active_direct(&dialer.name, &acceptor.name).flatten().map(|c| c.id.clone()), Some(live.id), "a Refused fact cuts no live edge");
+    assert_eq!(held.active_direct(&dialer.name, &acceptor.name).flatten().map(|c| c.id.clone()), Some(live.id), "a Refused fact cuts no live connection");
 }

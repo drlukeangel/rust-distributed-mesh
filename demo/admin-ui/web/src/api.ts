@@ -49,7 +49,7 @@ export interface TopologyNode {
   node_id: string;
   has_runtime: boolean;
 }
-export interface Edge {
+export interface Connection {
   source: string;
   destination: string;
   kind: "direct" | "proxy";
@@ -61,8 +61,8 @@ export interface Edge {
 }
 export interface Topology {
   nodes: TopologyNode[];
-  edges: Edge[];
-  edge_errors: string[];
+  connections: Connection[];
+  connection_errors: string[];
 }
 
 export interface StepView {

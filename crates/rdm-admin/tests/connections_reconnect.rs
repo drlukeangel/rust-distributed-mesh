@@ -49,7 +49,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
         let data_dir = std::env::temp_dir().join(format!("i143-2938-unit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data_dir);
 
-        // The source, its carrier's edge and its own Proxy to the destination (the previous birth's
+        // The source, its carrier's connection and its own Proxy to the destination (the previous birth's
         // facts), then the destination made unreachable: a key nobody serves, a port nobody listens on.
         let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
         let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&data_dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());

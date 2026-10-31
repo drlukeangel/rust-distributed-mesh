@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import ReactFlow, { Background, Controls, MarkerType, type Edge as FlowEdge, type Node as FlowNode } from "reactflow";
-import { api, type Edge, type Topology as Topo, type TopologyNode } from "../api";
+import { api, type Connection, type Topology as Topo, type TopologyNode } from "../api";
 
 const KIND_COLOR: Record<string, string> = { node_admin: "#e3b341", rpc_node: "#8b949e", gateway: "#58a6ff", compute: "#3fb950", broker: "#d2a8ff" };
 const MESH_COLORS = ["#58a6ff", "#bc8cff", "#f0883e", "#56d4dd", "#ff7b72"];
 
 const meshColor = (names: string[], m: string) => MESH_COLORS[names.indexOf(m) % MESH_COLORS.length];
-const bad = (e: Edge) => e.state !== "connected";
+const bad = (e: Connection) => e.state !== "connected";
 
 function layout(nodes: TopologyNode[]): FlowNode[] {
   const meshes = Array.from(new Set(nodes.map((n) => n.mesh))).sort();
@@ -55,8 +55,8 @@ function layout(nodes: TopologyNode[]): FlowNode[] {
   return out;
 }
 
-function flowEdges(edges: Edge[]): FlowEdge[] {
-  return edges.map((e, i) => {
+function flowEdges(connections: Connection[]): FlowEdge[] {
+  return connections.map((e, i) => {
     const colour = bad(e) ? "#f85149" : e.kind === "direct" ? "#3fb950" : "#58a6ff";
     return {
       id: `${e.source}>${e.destination}:${e.kind}:${i}`,
@@ -73,7 +73,7 @@ function flowEdges(edges: Edge[]): FlowEdge[] {
 }
 
 export function Topology() {
-  const [data, setData] = useState<Topo>({ nodes: [], edges: [], edge_errors: [] });
+  const [data, setData] = useState<Topo>({ nodes: [], connections: [], connection_errors: [] });
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     const load = () => api.topology().then((d) => { setData(d); setErr(null); }).catch((e) => setErr(String(e)));
@@ -82,7 +82,7 @@ export function Topology() {
     return () => clearInterval(id);
   }, []);
   const nodes = useMemo(() => layout(data.nodes), [data.nodes]);
-  const edges = useMemo(() => flowEdges(data.edges), [data.edges]);
+  const edges = useMemo(() => flowEdges(data.connections), [data.connections]);
 
   if (err) return <div className="card">topology load failed: {err}</div>;
   if (data.nodes.length === 0) return <div className="card muted">no nodes yet — press <b>bootstrap 2+3</b> above.</div>;
@@ -92,7 +92,7 @@ export function Topology() {
         <span style={{ color: "#3fb950" }}>━━ direct</span>
         <span style={{ color: "#58a6ff" }}>╍╍ proxy (labelled with its carrier)</span>
         <span style={{ color: "#f85149" }}>━━ failed / disconnected</span>
-        <span className="muted">{data.edges.length} connection facts{data.edge_errors.length ? ` · unreadable: ${data.edge_errors.join("; ")}` : ""}</span>
+        <span className="muted">{data.connections.length} connection facts{data.connection_errors.length ? ` · unreadable: ${data.connection_errors.join("; ")}` : ""}</span>
       </div>
       <div style={{ height: "calc(100vh - 290px)", border: "1px solid var(--border)", borderRadius: 6 }}>
         <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.15 }} nodesConnectable={false} elementsSelectable={false} proOptions={{ hideAttribution: true }}>

@@ -198,7 +198,7 @@ pub fn own_end(own: &PathName) -> ConnectionEnd {
 }
 
 /// A connections fact at stamp `at`, in the shape the writer records it.
-pub fn edge(from: ConnectionEnd, to: ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<ConnectionEnd>, at: u64) -> NodeConnection {
+pub fn connection(from: ConnectionEnd, to: ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<ConnectionEnd>, at: u64) -> NodeConnection {
     let recovery = (kind == ConnectionKind::Direct && state == ConnectionState::Failed).then_some(DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
     NodeConnection { id: rdm_core::ConnectionId::mint(), source: from, destination: to, kind, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier, recovery, reason: None, logged_at_ms: at }
 }

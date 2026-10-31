@@ -25,7 +25,7 @@ use rdm_node::connections_writer::ConnectionsWriter;
 use rdm_node::storage::{ConnectionsStorage, MemoryConnectionsStorage};
 use rdm_node::storage_error::StorageError;
 use rdm_transport::connections::{Alpn, Birth, ConnectionsRegistry};
-use rdm_transport::{CarrierEdges, ResolvedNode, StaticResolver};
+use rdm_transport::{CarrierConnections, ResolvedNode, StaticResolver};
 
 const ALPN: &[u8] = b"test-connection-writes/1";
 
@@ -160,10 +160,10 @@ fn an_open_returns_before_its_row_lands_on_a_store_reached_over_that_connection(
             .await
             .expect("node.connection.get answers from what is held, never waiting for a write");
         assert!(read.routes.is_empty(), "nothing has landed, so nothing is held: {:?}", read.routes);
-        let edge = tokio::time::timeout(Duration::from_secs(1), source.writer.edge_not_active(&dest.birth.node_id))
+        let connection = tokio::time::timeout(Duration::from_secs(1), source.writer.connection_not_active(&dest.birth.node_id))
             .await
-            .expect("a carrier's edge read answers from what is held, never waiting for a write");
-        assert_eq!(edge, None, "no Direct fact toward the destination is held yet");
+            .expect("a carrier's connection read answers from what is held, never waiting for a write");
+        assert_eq!(connection, None, "no Direct fact toward the destination is held yet");
 
         // The connection exists: the store is reached and the row lands after the open.
         store.reachable.send_replace(true);

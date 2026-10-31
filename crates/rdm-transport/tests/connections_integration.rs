@@ -42,9 +42,9 @@ fn pooled_to(rig: &Rig, node: &Node) -> Vec<PoolKey> {
 fn proxied(rig: &Rig, own: &PathName) -> ConnectionsHeld {
     let me = own_end(own);
     let mut held = held_for(own);
-    held.apply(edge(me.clone(), end(&rig.b), ConnectionKind::Direct, ConnectionState::Failed, None, 10)).unwrap();
-    held.apply(edge(end(&rig.p), end(&rig.b), ConnectionKind::Direct, ConnectionState::Connected, None, 11)).unwrap();
-    held.apply(edge(me, end(&rig.b), ConnectionKind::Proxy, ConnectionState::Connected, Some(end(&rig.p)), 12)).unwrap();
+    held.apply(connection(me.clone(), end(&rig.b), ConnectionKind::Direct, ConnectionState::Failed, None, 10)).unwrap();
+    held.apply(connection(end(&rig.p), end(&rig.b), ConnectionKind::Direct, ConnectionState::Connected, None, 11)).unwrap();
+    held.apply(connection(me, end(&rig.b), ConnectionKind::Proxy, ConnectionState::Connected, Some(end(&rig.p)), 12)).unwrap();
     held
 }
 
@@ -102,7 +102,7 @@ async fn a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_
     let mut held = proxied(&r, &own);
     // The direct connection to B returns (whichever path opened it): Direct Connected beside the
     // active Proxy. The obligation exists at once; the Proxy stays effective until it is deleted.
-    held.apply(edge(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 20)).unwrap();
+    held.apply(connection(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 20)).unwrap();
     let owed = owed_direct_restored(&held, 21);
     assert_eq!(owed.len(), 1, "one delete is owed: {owed:?}");
     assert_eq!((owed[0].kind, owed[0].state, owed[0].reason.as_deref()), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored")));
@@ -141,13 +141,13 @@ async fn a_complete_projection_with_no_fact_dials_the_destination_directly() {
 }
 
 /// CONTRACT: a Direct fact naming a birth the topology view no longer holds at the destination's path is
-/// not the current edge: the call dials the current birth and is answered.
+/// not the current connection: the call dials the current birth and is answered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fact_naming_a_superseded_birth_still_dials_the_current_one() {
     let r = rig().await;
     let own: PathName = "mesh1.admin.1".parse().unwrap();
     let mut held = held_for(&own);
-    held.apply(edge(own_end(&own), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
+    held.apply(connection(own_end(&own), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
     let members = std::sync::Arc::new(rdm_core::connections::StaticIncarnations::default());
     members.set(r.b.resolved.node_id.clone(), r.b.resolved.name.clone(), rdm_core::IncarnationId::mint());
     held.set_topology_view(members);

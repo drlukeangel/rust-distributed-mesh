@@ -328,7 +328,7 @@ pub(crate) fn sync_recovery(writer: &ConnectionsWriter, destination: &PathName, 
                 let held = held_arc.lock().unwrap();
                 matches!(
                     held.active_direct_for(src, &row.destination.name, &row.alpn),
-                    Some(Some(edge)) if edge.destination.incarnation == row.destination.incarnation
+                    Some(Some(connection)) if connection.destination.incarnation == row.destination.incarnation
                 )
             });
             if !superseded_by_active {
@@ -464,7 +464,7 @@ pub async fn run_due_at(
                 Step::Spent("destination-superseded")
             } else if matches!(
                 held.active_direct_for(&source, &destination.name, &alpn),
-                Some(Some(edge)) if edge.destination.incarnation == destination.incarnation
+                Some(Some(connection)) if connection.destination.incarnation == destination.incarnation
             ) {
                 Step::Spent("direct-connected")
             } else {

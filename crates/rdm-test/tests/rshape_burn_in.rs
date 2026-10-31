@@ -495,7 +495,7 @@ fn snapshot(estate: &Estate, node: &str) -> Value {
 }
 
 /// Every role node (compute and gateway answer the snapshot door) holds, with nothing owed, a
-/// Connected Direct edge to the exact current birth of its mesh's primary node-admin.
+/// Connected Direct connection to the exact current birth of its mesh's primary node-admin.
 async fn converge_connections(f: &Formed, inv: &mut Invariants) -> Value {
     converge_connections_with(f, inv, true).await
 }
@@ -503,20 +503,20 @@ async fn converge_connections(f: &Formed, inv: &mut Invariants) -> Value {
 /// [`converge_connections_with`] (`strict = false`) after a restart of `restarted_node_id`. When that node is
 /// its mesh's primary node-admin, canon owes no Direct fact from a role node to its new birth: the role node's
 /// status declaration is idempotent and durable, and a Direct Connected is evidence of activity, not an
-/// obligation (docs/architecture/connections.md:505-517, section 10). The edge to that new birth is
-/// therefore not required; a Connected edge to the superseded birth is still listed as stale, never required away.
+/// obligation (docs/architecture/connections.md:505-517, section 10). The connection to that new birth is
+/// therefore not required; a Connected connection to the superseded birth is still listed as stale, never required away.
 async fn converge_connections_after_restart(f: &Formed, inv: &mut Invariants, restarted_node_id: &str) -> Value {
     converge_connections_inner(f, inv, false, Some(restarted_node_id)).await
 }
 
 /// [`converge_connections`], optionally tolerating a Connected Direct fact whose destination has
 /// since been re-born (`strict = false`): such a fact is listed under `stale_connected` and never
-/// counted as missing. The required edge, to the mesh primary's current birth, is always required.
+/// counted as missing. The required connection, to the mesh primary's current birth, is always required.
 async fn converge_connections_with(f: &Formed, inv: &mut Invariants, strict: bool) -> Value {
     converge_connections_inner(f, inv, strict, None).await
 }
 
-async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bool, owed_no_edge_to: Option<&str>) -> Value {
+async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bool, owed_no_connection_to: Option<&str>) -> Value {
     let mut out = BTreeMap::new();
     let roles: Vec<String> = f.shape.names().into_iter().filter(|n| matches!(launch_id(n), "compute" | "gateway")).collect();
     for node in roles {
@@ -526,7 +526,7 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
             let nodes = f.estate.node_values().await;
             // Under R-CR5 (connections.md "Two planes, two words"), Node RPC (join and status
             // declaration to the mesh's primary node-admin) is the control plane and writes no Direct
-            // connection entries. Every Connected Direct edge a role node holds from data-plane
+            // connection entries. Every Connected Direct connection a role node holds from data-plane
             // activity names the current birth of its destination (no connection to a superseded process).
             let admins: Vec<&Value> = nodes.iter().filter(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).collect();
             assert_eq!(admins.len(), 1, "{mesh} has one primary node-admin: {admins:?}");
@@ -538,8 +538,8 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
                 let current = nodes.iter().find(|n| n["node_id"] == d["destination"]["node_id"]);
                 if current.is_none_or(|c| c["incarnation_id"] != d["destination"]["incarnation"]) {
                     stale.push(json!({"to": d["destination"]["name"], "incarnation": d["destination"]["incarnation"]}));
-                    if strict && owed_no_edge_to != d["destination"]["node_id"].as_str() {
-                        missing.push(format!("{} (a Connected edge to a superseded or unknown birth)", d["destination"]["name"]));
+                    if strict && owed_no_connection_to != d["destination"]["node_id"].as_str() {
+                        missing.push(format!("{} (a Connected connection to a superseded or unknown birth)", d["destination"]["name"]));
                     }
                 }
             }
@@ -557,10 +557,10 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
         let (snap, stale) = snap;
         out.insert(node, json!({"active_len": snap["active_len"], "owed": snap["owed"], "directs": snap["own_latest_directs"], "stale_connected": stale}));
     }
-    let msg = if owed_no_edge_to.is_some() {
+    let msg = if owed_no_connection_to.is_some() {
         "every compute and gateway owes no deletion after the restart (no Direct fact is owed to a restarted primary's new birth)"
     } else if strict {
-        "every compute and gateway holds no Connected Direct edge to a superseded birth and owes no deletion"
+        "every compute and gateway holds no Connected Direct connection to a superseded birth and owes no deletion"
     } else {
         "every compute and gateway owes no deletion (a Connected fact to a re-born node's superseded birth is listed, not required away)"
     };
@@ -802,7 +802,7 @@ fn primaries_row(phase: &str, nodes: &[Value], fabric: &Value) -> Value {
 /// role executable at the bound bytes, one runtime per node; each runtime's own ready span names
 /// the same NodeId, incarnation and provider; each mesh has exactly one primary node-admin and
 /// the fabric has one fabric-primary that the fabric record agrees with; every compute and gateway
-/// holds a Connected Direct edge to the current birth of its mesh's primary node-admin with nothing owed. Every
+/// holds a Connected Direct connection to the current birth of its mesh's primary node-admin with nothing owed. Every
 /// created node came from the rectifier: build.create request -> reconcile attempt -> node.create.via-build
 /// -> deployment pipeline -> steps, launching the bound bytes. What must NOT happen: a node the
 /// shape does not list, a duplicated identity, a built-in or fixture executable, a runtime the
@@ -929,7 +929,7 @@ impl RouteRun {
 
     /// Issue the legs. Same-mesh and cross-mesh exact calls from the controller, the same two carried
     /// by a gateway, then calls the gateway and compute originate themselves over their held
-    /// connections (the compute holds no edge to the broker: its call is `no-active-route`).
+    /// connections (the compute holds no connection to the broker: its call is `no-active-route`).
     async fn run(&mut self, f: &Formed, nodes: &[Value], inv: &mut Invariants) {
         let e = &f.estate;
         let b1 = Self::node(nodes, "mesh1.broker.1").clone();
@@ -1007,7 +1007,7 @@ impl RouteRun {
         // 5. the gateway that carried kept nothing of the carried calls: it holds the Direct facts it held
         //    before carrying, no more. Its own call to each broker follows the fact it held before (`direct`),
         //    or with none has nothing to follow (`direct-unknown`, connections.md §5), and the connection it
-        //    originates is its Direct edge to the replying birth (§1, R-CR6).
+        //    originates is its Direct connection to the replying birth (§1, R-CR6).
         assert_eq!(held_directs(e), before_carrying, "the carrier kept nothing of its carried calls: its Direct facts toward the brokers are the ones it held before carrying");
         for (dest, d, kind) in [("mesh1.broker.1", &b1, "same-mesh"), ("mesh2.broker.1", &b2, "cross-mesh")] {
             let dest_id = s(&d["node_id"]);
@@ -1016,7 +1016,7 @@ impl RouteRun {
             let route = if held_before { "direct" } else { "direct-unknown" };
             let c = probe_call(e, &["originate", "--target", &format!("path:{g1}"), "--destination", &format!("path:{dest}"), "--key", &key, "--value", &value(&key)]);
             assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some(route), Some("reply")), "{g1}'s own call to {dest} follows the Direct fact it held before carrying ({held_before}): {}", c.out);
-            wait_for(&format!("{g1} holds a Connected Direct edge to {dest}'s current birth"), Duration::from_secs(30), || async {
+            wait_for(&format!("{g1} holds a Connected Direct connection to {dest}'s current birth"), Duration::from_secs(30), || async {
                 let snap = snapshot(e, g1);
                 snap["own_latest_directs"].as_array().into_iter().flatten().any(|x| x["state"] == "Connected" && x["destination"]["node_id"] == d["node_id"] && x["destination"]["incarnation"] == d["incarnation_id"]).then_some(())
             })
@@ -1122,7 +1122,7 @@ impl RouteRun {
 /// inner call to the exact target, and the carrier keeps nothing of them (connections.md §1: a Forward
 /// keeps no connection, no id, no row at the forwarder); that gateway's own first call to each broker is
 /// `direct-unknown` (no Direct fact toward it, §5), replied by the broker's NodeId and incarnation, and
-/// leaves it a Connected Direct edge to that birth; a compute that holds no Direct fact toward the broker dials it directly
+/// leaves it a Connected Direct connection to that birth; a compute that holds no Direct fact toward the broker dials it directly
 /// (`direct-unknown`) and the broker applies the write; an exact NodeId the fabric never held is
 /// NotSent `Resolve(Unknown)`. What must NOT happen: a reply from any node but the requested one, a
 /// handler execution for a call that was not sent, or a route the connections projection does not
@@ -2130,7 +2130,7 @@ fn both(n: usize) -> BTreeMap<String, usize> {
 /// node-admin right now, and which Connected facts name a birth that has since been replaced.
 /// Observed, never waited for: the report is evidence, the assertions are the ones the architecture
 /// makes (authority and data-plane liveness).
-async fn edge_report(f: &Formed, a: &mut Run) -> Value {
+async fn connection_report(f: &Formed, a: &mut Run) -> Value {
     let nodes = a.nodes_now(f).await;
     let mut out = BTreeMap::new();
     for node in f.shape.names().into_iter().filter(|n| matches!(launch_id(n), "compute" | "gateway")) {
@@ -2165,12 +2165,12 @@ async fn prove_path(f: &mut Formed, a: &mut Run, want: &BTreeMap<String, usize>,
         looks += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    let edges = edge_report(f, a).await;
+    let connections = connection_report(f, a).await;
     let before = a.traffic.ops.len();
     a.traffic.burst(f, 4, "steady-proof").await;
     let replies = a.traffic.ops[before..].iter().filter(|(_, c)| bucket(&c.out) == Bucket::Reply && c.out["reply"]["result"] == json!({"stored": true})).count();
-    inv.holds(&format!("surviving path `{label}`: authority held across one staleness window ({looks} looks) and four fresh puts all stored"), replies == 4, json!({"stored": replies, "looks": looks, "window_ms": window, "role_edges": edges}));
-    json!({"label": label, "puts_stored": replies, "looks": looks, "window_ms": window, "role_edges": edges})
+    inv.holds(&format!("surviving path `{label}`: authority held across one staleness window ({looks} looks) and four fresh puts all stored"), replies == 4, json!({"stored": replies, "looks": looks, "window_ms": window, "role_connections": connections}));
+    json!({"label": label, "puts_stored": replies, "looks": looks, "window_ms": window, "role_connections": connections})
 }
 
 /// Restart `node` (never the fabric-primary) through the Build rectifier and keep the traffic going
@@ -2712,7 +2712,7 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
 /// one effective writer at every stable point while the admins churn, and seeded proof traffic is
 /// accounted for operation by operation. Each mesh's two admins are disturbed one after the other,
 /// the second only once the first's replacement is Ready and a surviving path is proven (every compute
-/// and gateway holds a Connected Direct edge to the current primary's birth, fresh puts all stored):
+/// and gateway holds a Connected Direct connection to the current primary's birth, fresh puts all stored):
 /// a mesh without the fabric-primary loses its current primary to a SIGKILL and the surviving admin
 /// takes the role (C1); the other admin of a mesh restarts through a Build as the same NodeId in a new
 /// birth (C3); the fabric-primary is never killed, it is deleted by a Build it executes itself,
@@ -3162,15 +3162,15 @@ fn op_to(f: &Formed, a: &mut Run, node: &Value, via: Option<&str>, tag: &str, wi
     t.ops.len() - 1
 }
 
-/// The edges `primary` (a gateway or compute) holds toward `node_id`, from its own connection snapshot.
+/// The connections `primary` (a gateway or compute) holds toward `node_id`, from its own connection snapshot.
 fn directs_to(estate: &Estate, holder: &str, node_id: &str) -> Vec<Value> {
     snapshot(estate, holder)["own_latest_directs"].as_array().into_iter().flatten().filter(|d| d["destination"]["node_id"] == node_id).cloned().collect()
 }
 
-/// `primary` holds a Connected Direct edge to the current birth of `node_id` and, when `old_inc` is
+/// `primary` holds a Connected Direct connection to the current birth of `node_id` and, when `old_inc` is
 /// given, none to that superseded birth. The connections convergence bound is the same 30 s the
 /// formation cells use; a bound that fires is the finding.
-async fn await_edge(estate: &Estate, holder: &str, node_id: &str, new_inc: &str, old_inc: Option<&str>) -> Value {
+async fn await_connection(estate: &Estate, holder: &str, node_id: &str, new_inc: &str, old_inc: Option<&str>) -> Value {
     let until = Instant::now() + Duration::from_secs(30);
     let t0 = Instant::now();
     loop {
@@ -3178,16 +3178,16 @@ async fn await_edge(estate: &Estate, holder: &str, node_id: &str, new_inc: &str,
         let current = d.iter().any(|x| x["state"] == "Connected" && x["destination"]["incarnation"] == new_inc);
         let stale = old_inc.is_some_and(|o| d.iter().any(|x| x["state"] == "Connected" && x["destination"]["incarnation"] == o));
         if current && !stale {
-            return json!({"holder": holder, "node_id": node_id, "current_incarnation": new_inc, "superseded_incarnation": old_inc, "converged_ms": t0.elapsed().as_millis() as u64, "edges": d});
+            return json!({"holder": holder, "node_id": node_id, "current_incarnation": new_inc, "superseded_incarnation": old_inc, "converged_ms": t0.elapsed().as_millis() as u64, "connections": d});
         }
-        assert!(Instant::now() < until, "{holder} did not hold a Connected Direct edge to {node_id}'s birth {new_inc} (and none to the superseded {old_inc:?}) within 30 s: {}", serde_json::to_string(&d).unwrap());
+        assert!(Instant::now() < until, "{holder} did not hold a Connected Direct connection to {node_id}'s birth {new_inc} (and none to the superseded {old_inc:?}) within 30 s: {}", serde_json::to_string(&d).unwrap());
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
 /// A carried call (through `via`) to `node`; the reply names the birth that answered. The carrier
 /// keeps nothing of it: a Forward keeps no connection, no id, no row at the forwarder, and a
-/// carrier's Direct edge to the destination is its own fact, a connection it originated for traffic
+/// carrier's Direct connection to the destination is its own fact, a connection it originated for traffic
 /// (connections.md §1 "Two words for a call through a middle node", §6, §8; R-CR6).
 fn carried_get(estate: &Estate, node: &Value, via: &str, key: &str) -> Call {
     let c = probe_call(estate, &["get", "--target", &format!("exact:{}", s(&node["node_id"])), "--via", &format!("path:{via}"), "--key", key]);
@@ -3350,15 +3350,15 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
         (ckey, cval) = (a.traffic.ops[ci].0.key.clone(), a.traffic.ops[ci].0.value.clone());
         assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node}: the canary was stored before the restart: {}", a.traffic.ops[ci].1.out);
     }
-    // A broker is originated to by its mesh's gateway first, so that gateway holds a Direct edge (its own
+    // A broker is originated to by its mesh's gateway first, so that gateway holds a Direct connection (its own
     // connection, connections.md §1) to this birth. The other mesh's gateway originates to it too: a
-    // cross-mesh Direct edge to the same birth.
+    // cross-mesh Direct connection to the same birth.
     let gx = format!("{}.gateway.1", meshes().iter().find(|m| **m != mesh).unwrap());
     if kind == "broker" {
         originate_op(f, a, &gw, &n, "before-restart");
-        await_edge(&f.estate, &gw, &node_id, &inc, None).await;
+        await_connection(&f.estate, &gw, &node_id, &inc, None).await;
         originate_op(f, a, &gx, &n, "before-restart");
-        await_edge(&f.estate, &gx, &node_id, &inc, None).await;
+        await_connection(&f.estate, &gx, &node_id, &inc, None).await;
     }
     a.traffic.aim = matches!(kind.as_str(), "broker" | "gateway").then(|| node.to_string());
     let ev = restart_node(f, a, st, node, label).await;
@@ -3398,37 +3398,37 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
             let carried = carried_get(&f.estate, &n2, &gw, &ckey);
             assert_eq!(carried.out["reply"]["result"], json!({"found": true, "value": cval}), "{}", carried.out);
             let oi = originate_op(f, a, &gw, &n2, "after-restart");
-            let edge = await_edge(&f.estate, &gw, &node_id, &inc, None).await;
+            let connection = await_connection(&f.estate, &gw, &node_id, &inc, None).await;
             let orig_trace = a.traffic.ops[oi].1.trace_id.clone();
             let orig_route = a.traffic.ops[oi].1.out["route"].clone();
             f.actions.push(action_row(&carried));
             // The other mesh's gateway: its call over the projection reaches the birth the restart kept, and
-            // what it originates holds a Direct edge to that birth again.
+            // what it originates holds a Direct connection to that birth again.
             let cross_carried = carried_get(&f.estate, &n2, &gx, &ckey);
             let xi = originate_op(f, a, &gx, &n2, "after-restart");
-            let cross_edge_after = await_edge(&f.estate, &gx, &node_id, &inc, None).await;
+            let cross_connection_after = await_connection(&f.estate, &gx, &node_id, &inc, None).await;
             let cross_orig_trace = a.traffic.ops[xi].1.trace_id.clone();
             f.actions.push(action_row(&cross_carried));
             json!({
-                "gateway": gw, "edge": edge, "carried_trace": carried.trace_id, "originated_trace": orig_trace, "originated_route": orig_route,
-                "cross_mesh_gateway": gx, "cross_mesh_edge_after_its_originated_call": cross_edge_after, "cross_mesh_carried_trace": cross_carried.trace_id, "cross_mesh_originated_trace": cross_orig_trace,
+                "gateway": gw, "connection": connection, "carried_trace": carried.trace_id, "originated_trace": orig_trace, "originated_route": orig_route,
+                "cross_mesh_gateway": gx, "cross_mesh_connection_after_its_originated_call": cross_connection_after, "cross_mesh_carried_trace": cross_carried.trace_id, "cross_mesh_originated_trace": cross_orig_trace,
             })
         }
         "gateway" => {
             let broker = st2.nodes.iter().find(|x| x["name"] == format!("{mesh}.broker.1")).cloned().unwrap();
             let carried = carried_get(&f.estate, &broker, node, &format!("canary-of-{node}"));
             let oi = originate_op(f, a, node, &broker, "after-restart");
-            let edge = await_edge(&f.estate, node, &s(&broker["node_id"]), &s(&broker["incarnation_id"]), None).await;
+            let connection = await_connection(&f.estate, node, &s(&broker["node_id"]), &s(&broker["incarnation_id"]), None).await;
             let orig_trace = a.traffic.ops[oi].1.trace_id.clone();
             let orig_route = a.traffic.ops[oi].1.out["route"].clone();
             f.actions.push(action_row(&carried));
-            json!({"restarted_gateway": node, "broker": broker["name"], "edge": edge, "carried_trace": carried.trace_id, "originated_trace": orig_trace, "originated_route": orig_route})
+            json!({"restarted_gateway": node, "broker": broker["name"], "connection": connection, "carried_trace": carried.trace_id, "originated_trace": orig_trace, "originated_route": orig_route})
         }
         _ => Value::Null,
     };
-    // Every compute and gateway holds an edge to the current primary node-admin birth and none to a superseded one.
+    // Every compute and gateway holds a connection to the current primary node-admin birth and none to a superseded one.
     // A Connected fact a cross-mesh primary keeps for a superseded birth is listed under `routing` (observed
-    // above), never required away here: the required edges are the current primary node-admin's.
+    // above), never required away here: the required connections are the current primary node-admin's.
     let connections = converge_connections_after_restart(f, inv, &node_id).await;
     let rec = json!({
         "label": label, "node": node, "kind": kind, "node_id": node_id, "endpoint_id": endpoint, "incarnation_id": inc,
@@ -3603,7 +3603,7 @@ async fn restart_run(cell: &str, shape: Shape) {
 /// (the same IncarnationId) on the same runtime (node-stop.md, node-start.md: the live process stops and rejoins, no
 /// new birth): the provider (the process table's start token, or the container daemon) shows the runtime it
 /// ran in before still running the bound bytes. Routing comes back on that birth: an exact write is served
-/// by it, the gateways that held a pooled edge to the broker hold one to it again after its stop deleted
+/// by it, the gateways that held a pooled connection to the broker hold one to it again after its stop deleted
 /// their connections, and a call over that held connection is answered by it. At every checkpoint exactly
 /// one admin accepts a topology write. Every operation is classified once, none applied twice, none
 /// replayed. What must NOT happen: a new NodeId, EndpointId or IncarnationId, a new runtime, a NodeDeleted
@@ -3665,7 +3665,7 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
     assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node}: the canary was stored before the delete: {}", a.traffic.ops[ci].1.out);
     if kind == "broker" && gw != node {
         originate_op(f, a, &gw, &n, "before-delete");
-        await_edge(&f.estate, &gw, &node_id, &old_inc, None).await;
+        await_connection(&f.estate, &gw, &node_id, &old_inc, None).await;
     }
     let refusal = refused_by_a_non_writer(f, a, st, node, how).await;
     let still = f.estate.node_value(node).await;
@@ -3891,17 +3891,17 @@ fn stop_evidence(spans: &[Value], rec: &Value) -> Value {
     })
 }
 
-/// No Connected Direct edge from `primary` to any birth of `node_id` (a deleted node): its pooled
+/// No Connected Direct connection from `primary` to any birth of `node_id` (a deleted node): its pooled
 /// connections to it are gone. Bounded by the same 30 s as every connections convergence.
-async fn await_no_edge(estate: &Estate, holder: &str, node_id: &str) -> Value {
+async fn await_no_connection(estate: &Estate, holder: &str, node_id: &str) -> Value {
     let until = Instant::now() + Duration::from_secs(30);
     let t0 = Instant::now();
     loop {
         let d = directs_to(estate, holder, node_id);
         if !d.iter().any(|x| x["state"] == "Connected") {
-            return json!({"holder": holder, "node_id": node_id, "converged_ms": t0.elapsed().as_millis() as u64, "edges": d});
+            return json!({"holder": holder, "node_id": node_id, "converged_ms": t0.elapsed().as_millis() as u64, "connections": d});
         }
-        assert!(Instant::now() < until, "{holder} still holds a Connected Direct edge to the deleted {node_id} 30 s after the removal: {}", serde_json::to_string(&d).unwrap());
+        assert!(Instant::now() < until, "{holder} still holds a Connected Direct connection to the deleted {node_id} 30 s after the removal: {}", serde_json::to_string(&d).unwrap());
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -3913,7 +3913,7 @@ fn stale_facts_toward(estate: &Estate, f: &Formed, node_id: &str) -> Vec<Value> 
     for h in f.shape.names().into_iter().filter(|n| matches!(launch_id(n), "gateway" | "compute")) {
         let d = directs_to(estate, &h, node_id);
         if d.iter().any(|x| x["state"] == "Connected") {
-            out.push(json!({"holder": h, "edges": d}));
+            out.push(json!({"holder": h, "connections": d}));
         }
     }
     out
@@ -4160,8 +4160,8 @@ async fn replacement_run(cell: &str, shape: Shape) {
     assert_eq!(bucket(&a.traffic.ops[gi].1.out), Bucket::NotSent, "a call to the deleted NodeId still sends nothing once its path.name has a successor: {}", a.traffic.ops[gi].1.out);
     let carried = carried_get(&f.estate, &born, &gw, &ckey);
     let oi = originate_op(&f, &mut a, &gw, &born, "after-replacement");
-    let edge_new = await_edge(&f.estate, &gw, &new_id, &new_inc, None).await;
-    let edge_old_gone = await_no_edge(&f.estate, &gw, &old_id).await;
+    let connection_new = await_connection(&f.estate, &gw, &new_id, &new_inc, None).await;
+    let connection_old_gone = await_no_connection(&f.estate, &gw, &old_id).await;
     let orig_trace = a.traffic.ops[oi].1.trace_id.clone();
     f.actions.push(action_row(&carried));
     let stale_toward_old = stale_facts_toward(&f.estate, &f, &old_id);
@@ -4169,12 +4169,12 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let replacement = json!({
         "old": {"node": victim, "node_id": old_id, "endpoint_id": old["endpoint_id"], "incarnation_id": old["incarnation_id"], "data_dir": old["data_dir"], "runtime": old_rt_record},
         "new": {"node": victim, "node_id": new_id, "endpoint_id": born["endpoint_id"], "incarnation_id": new_inc, "data_dir": born["data_dir"], "runtime": rt_new.record()},
-        "add_build": add_build, "add_request_ns": add_t0, "add_wall_ms": add_fin["wall_ms"], "gateway_edge_to_successor": edge_new, "gateway_edge_to_deleted_gone": edge_old_gone,
+        "add_build": add_build, "add_request_ns": add_t0, "add_wall_ms": add_fin["wall_ms"], "gateway_connection_to_successor": connection_new, "gateway_connection_to_deleted_gone": connection_old_gone,
         "facts_other_holders_keep_toward_the_deleted": stale_toward_old, "carried_trace": carried.trace_id, "originated_trace": orig_trace, "connections_after": connections_after,
         "path_name_successor": true,
     });
     inv.holds(
-        "C8 planned replacement: the deleted broker's NodeId, EndpointId, data dir and runtime are not the successor's; the successor's proof store is fresh; the deleted NodeId is not routable and the path resolves only to the successor; the mesh's gateway dropped its edge to the deleted node and holds one to the successor",
+        "C8 planned replacement: the deleted broker's NodeId, EndpointId, data dir and runtime are not the successor's; the successor's proof store is fresh; the deleted NodeId is not routable and the path resolves only to the successor; the mesh's gateway dropped its connection to the deleted node and holds one to the successor",
         true,
         json!({"old_node_id": old_id, "new_node_id": new_id}),
     );
@@ -4314,7 +4314,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
 /// terminal as the provider reports it, its NodeId stays out of every admin's view for a full staleness
 /// window, and a call to it sends nothing. The same attempt creates a broker at the path.name: a new NodeId, a new
 /// EndpointId, a fresh data dir and a new runtime; its proof store holds nothing of the old node's, the
-/// path resolves only to it, the mesh's gateway drops its edge to the deleted node and holds one to
+/// path resolves only to it, the mesh's gateway drops its connection to the deleted node and holds one to
 /// the successor. Then the exact runtime of a gateway is killed (acknowledged by the provider) and the
 /// rectifier proves the birth gone and re-births the path under the next attempt of the same Build,
 /// accepting no new Build. What must NOT happen: a reused NodeId, a successor holding the deleted
@@ -4834,15 +4834,15 @@ async fn supersession_run(cell: &str, shape: Shape) {
     let mut events = Vec::new();
 
     // Healthy control, same family as every absence below: both gateways reach the broker Direct and the
-    // source holds a Connected edge to its exact birth.
+    // source holds a Connected connection to its exact birth.
     for from in [&src, &other_src] {
         let d = dial(&f, from, &dst);
         f.actions.push(action_row(&d));
     }
     let healthy = originate_op(&f, &mut a, &src, &d0, "healthy-control");
-    let edge0 = await_edge(&f.estate, &src, &d_id, &d_inc0, None).await;
+    let connection0 = await_connection(&f.estate, &src, &d_id, &d_inc0, None).await;
     let control_other = originate_op(&f, &mut a, &other_src, &d0, "healthy-control");
-    events.push(json!({"event": "healthy-control", "ledger_ops": [healthy, control_other], "edge": edge0}));
+    events.push(json!({"event": "healthy-control", "ledger_ops": [healthy, control_other], "connection": connection0}));
 
     // C11, an established connection lost: the host acknowledges the drop rules; the call written on the dead
     // connection has no reply coming. It is never a Reply and never replayed; the other gateway still reaches
@@ -4908,7 +4908,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     let release_ms = t_release / 1_000_000;
     let t_wait = Instant::now();
     let mut series: Vec<Value> = Vec::new();
-    let edge1 = loop {
+    let connection1 = loop {
         let latest = latest_direct(&snapshot(&f.estate, &lost_src), &dst).unwrap_or_else(|| panic!("{lost_src} holds no Direct fact toward {dst}"));
         assert_eq!(latest["destination"]["incarnation"], d_inc1.as_str(), "{lost_src}'s latest Direct toward {dst} names the new birth: {latest}");
         if latest["state"] == "Connected" {
@@ -4933,9 +4933,9 @@ async fn supersession_run(cell: &str, shape: Shape) {
     let pooled: Vec<String> = a.traffic.ops[after].1.out["pooled"].as_array().into_iter().flatten().map(s).collect();
     assert!(!pooled.iter().any(|k| k.contains(&d_inc0)), "the source's pool names nothing of the superseded birth {d_inc0}: {pooled:?}");
     assert!(pooled.iter().any(|k| k.contains(&d_inc1)), "the source's pool holds a connection to the current birth {d_inc1}: {pooled:?}");
-    let edge2 = await_edge(&f.estate, &src, &d_id1, &d_inc1, None).await;
-    let superseded_gone = await_no_edge(&f.estate, &src, &d_id).await;
-    events.push(json!({"event": "recovered", "series_rows": series, "edge": edge1, "recovered_op": recovered_op, "old_node_id": d_id, "old_incarnation": d_inc0, "new_node_id": d_id1, "new_incarnation": d_inc1, "recovery": recovery, "pooled_after": pooled, "current_edge": edge2, "superseded_edge_gone": superseded_gone, "ledger_after": after}));
+    let connection2 = await_connection(&f.estate, &src, &d_id1, &d_inc1, None).await;
+    let superseded_gone = await_no_connection(&f.estate, &src, &d_id).await;
+    events.push(json!({"event": "recovered", "series_rows": series, "connection": connection1, "recovered_op": recovered_op, "old_node_id": d_id, "old_incarnation": d_inc0, "new_node_id": d_id1, "new_incarnation": d_inc1, "recovery": recovery, "pooled_after": pooled, "current_connection": connection2, "superseded_connection_gone": superseded_gone, "ledger_after": after}));
     a.events.extend(events.iter().cloned());
     let (s0, dname, inc1, comp, lsrc) = (src.clone(), dst.clone(), d_inc1.clone(), inbound_from.clone(), lost_src.clone());
     let marks = (t_cut2, t_release, t_in0);
@@ -4966,7 +4966,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     .await;
 }
 
-/// CONTRACT: in the formed estate a gateway holds a Connected Direct edge to a broker's exact birth and
+/// CONTRACT: in the formed estate a gateway holds a Connected Direct connection to a broker's exact birth and
 /// a healthy control proves the route (a second gateway also reaches that broker). The UDP between those
 /// two nodes' sockets is then dropped (acknowledged by the host's rule install): the gateway's call to the
 /// broker does not reply, its latest Direct fact toward the broker is no longer Connected, and the other
@@ -4978,7 +4978,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
 /// birth under a cut and its dial is a Failed fact that sent nothing; once released, the source's own dial is
 /// Connected on the new birth: the dial still running at the release, or the reconnect series' next attempt
 /// when its latest Failed row falls due (connections.md §9.3, §9.5). The gateway's pool names nothing of the
-/// superseded birth and holds a connection to the new one, it holds a Connected edge to the new node.id and
+/// superseded birth and holds a connection to the new one, it holds a Connected connection to the new node.id and
 /// none to the exited one, and its call is answered by the new birth. What must NOT happen: a reply under the
 /// cut, a call answered by a superseded birth, a pooled connection to the old birth after the supersession, a
 /// topology write sent by the cell.
@@ -5008,9 +5008,9 @@ async fn proxy_run(cell: &str, shape: Shape) {
     let (dn, cn) = (node(&dst), node(&car));
     let mut events = Vec::new();
 
-    // The carrier's own Direct edge to the destination is the evidence a carrier is eligible (connections.md 8).
-    let carrier_edge = dial(&f, &car, &dst);
-    f.actions.push(action_row(&carrier_edge));
+    // The carrier's own Direct connection to the destination is the evidence a carrier is eligible (connections.md 8).
+    let carrier_connection = dial(&f, &car, &dst);
+    f.actions.push(action_row(&carrier_connection));
     await_direct(&f.estate, &car, &dst, "Connected", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == dn["incarnation_id"]).await;
 
     // C12: the source holds Direct Failed(1) and Proxy Connected via the carrier (the facts a proven carried path
@@ -5134,7 +5134,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
 }
 
 /// CONTRACT: in the formed estate a compute holds Direct Failed and Proxy Connected via its mesh's gateway
-/// toward the other mesh's gateway (the carrier's own Direct edge to it is Active). The compute's call is
+/// toward the other mesh's gateway (the carrier's own Direct connection to it is Active). The compute's call is
 /// carried: the route is via-peer through that gateway, the gateway makes exactly one inner call (it never
 /// forwards again), the other mesh's gateway executes it as its exact birth, and the compute holds no
 /// connection to it. The destination then dials the compute while the compute's deletion write is refused
@@ -5251,9 +5251,9 @@ async fn churn_run(cell: &str, shape: Shape) {
         let x = dial(&f, &src, d);
         f.actions.push(action_row(&x));
         let i = originate_op(&f, &mut a, &src, &new, "after-supersession");
-        let edge = await_edge(&f.estate, &src, &new_id, &s(&new["incarnation_id"]), None).await;
-        let gone = await_no_edge(&f.estate, &src, &old_id).await;
-        recoveries.push(json!({"node": d, "old_node_id": old_id, "old_incarnation": old["incarnation_id"], "new_node_id": new_id, "new_incarnation": new["incarnation_id"], "recovery": ev, "ledger_op": i, "edge": edge, "superseded_edge_gone": gone}));
+        let connection = await_connection(&f.estate, &src, &new_id, &s(&new["incarnation_id"]), None).await;
+        let gone = await_no_connection(&f.estate, &src, &old_id).await;
+        recoveries.push(json!({"node": d, "old_node_id": old_id, "old_incarnation": old["incarnation_id"], "new_node_id": new_id, "new_incarnation": new["incarnation_id"], "recovery": ev, "ledger_op": i, "connection": connection, "superseded_connection_gone": gone}));
     }
     events.push(json!({"event": "supersessions", "recoveries": recoveries}));
 
@@ -5294,7 +5294,7 @@ async fn churn_run(cell: &str, shape: Shape) {
 /// a new runtime) and reached again. At the baseline (every peer dialled once) and at the end the gateway's
 /// descriptors and sockets are read from the process table and the provider's runtimes are counted. The end
 /// shows no more descriptors or sockets than the baseline, a pool whose every connection names a current
-/// birth and none a superseded one (one per peer birth), a Connected edge to each new node.id and none to the
+/// birth and none a superseded one (one per peer birth), a Connected connection to each new node.id and none to the
 /// exited one, and exactly the shape's runtimes. What must NOT happen: a pooled connection to a superseded
 /// birth, a leaked descriptor, a runtime of a superseded birth, a call answered by a superseded birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -6440,17 +6440,17 @@ async fn world(cell: &str, shape: Shape) -> World {
     World { f, inv, nodes, launches, primaries, connections, a, st, fp, formation, window_ms }
 }
 
-async fn direct_edge_run(cell: &str, shape: Shape) {
+async fn direct_connection_run(cell: &str, shape: Shape) {
     if !cuts_here(cell) {
         return;
     }
     let World { mut f, mut inv, nodes, launches, primaries, connections, mut a, st, fp, formation, window_ms } = world(cell, shape).await;
     let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
     let mut events = Vec::new();
-    // Leg A, a Direct edge to a mesh-primary node-admin is lost: a gateway of the mesh that does not hold the
+    // Leg A, a Direct connection to a mesh-primary node-admin is lost: a gateway of the mesh that does not hold the
     // fabric-primary loses its path to that mesh's primary (the one socket pair cut, acknowledged by the host).
-    // Silence on one edge is not death: every admin keeps the gateway ready for a full staleness window, no
-    // attempt opens, and once the cut is released the edge is Connected again to the same birth.
+    // Silence on one connection is not death: every admin keeps the gateway ready for a full staleness window, no
+    // attempt opens, and once the cut is released the connection is Connected again to the same birth.
     let far_mesh = if st.mesh_of_fp() == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
     let primary = st.primary_of(&far_mesh);
     let (pname, gw) = (s(&primary["name"]), format!("{far_mesh}.gateway.1"));
@@ -6465,13 +6465,13 @@ async fn direct_edge_run(cell: &str, shape: Shape) {
     let lost = probe_call(&f.estate, &["dial", "--target", &format!("path:{gw}"), "--destination", &format!("path:{pname}"), "--key", "x"]);
     f.actions.push(action_row(&lost));
     assert_eq!(lost.out["outcome"], "Reply", "the probe's own call to {gw} is answered: {}", lost.out);
-    assert!(matches!(lost.out["dialed"].as_str(), Some("NotSent" | "Indeterminate")), "a call from {gw} to {pname} over the cut edge is not answered: {}", lost.out);
+    assert!(matches!(lost.out["dialed"].as_str(), Some("NotSent" | "Indeterminate")), "a call from {gw} to {pname} over the cut connection is not answered: {}", lost.out);
     let window = Duration::from_millis(window_ms * 2 + 500);
     let until = Instant::now() + window;
     let mut looks = 0u32;
     while Instant::now() < until {
         for v in admin_views_of(&mut a, &f, &gw).await {
-            assert!(v["lists_path"] == true && v["status"] == "ready" && v["node_id"] == gwn["node_id"], "an admin stopped holding {gw} ready while only its edge to {pname} was cut: {v}");
+            assert!(v["lists_path"] == true && v["status"] == "ready" && v["node_id"] == gwn["node_id"], "an admin stopped holding {gw} ready while only its connection to {pname} was cut: {v}");
         }
         looks += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -6479,19 +6479,19 @@ async fn direct_edge_run(cell: &str, shape: Shape) {
     // What the gateway's own Direct fact says under the cut is the transport's idle timing (a pooled connection
     // that no packet reaches is dropped when its idle timer fires): recorded as observed, never asserted.
     let fact_during = latest_direct(&snapshot(&f.estate, &gw), &pname);
-    assert_eq!(build_attempt(&f.estate, &st, &formation).await["attempt"].as_u64(), Some(attempt0), "no attempt opened for a lost edge");
+    assert_eq!(build_attempt(&f.estate, &st, &formation).await["attempt"].as_u64(), Some(attempt0), "no attempt opened for a lost connection");
     drop(cut_a);
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
     let regained = dial(&f, &gw, &pname);
     f.actions.push(action_row(&regained));
-    let edge_a = await_direct(&f.estate, &gw, &pname, "Connected to the same birth", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == primary["incarnation_id"]).await;
+    let connection_a = await_direct(&f.estate, &gw, &pname, "Connected to the same birth", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == primary["incarnation_id"]).await;
     let ra = originate_op(&f, &mut a, &gw, &node(&format!("{far_mesh}.broker.1")), "after-release");
     assert_eq!(a.traffic.ops[ra].1.out["call_outcome"], "reply", "the gateway serves again: {}", a.traffic.ops[ra].1.out);
-    events.push(json!({"event": "direct-loss-to-mesh-primary", "gateway": gw, "primary": pname, "ack": ack_a, "t_cut_ns": t_cut_a, "call_under_cut": lost.out, "fact_during": fact_during, "looks": looks, "window_ms": window.as_millis() as u64, "edge_after": edge_a}));
+    events.push(json!({"event": "direct-loss-to-mesh-primary", "gateway": gw, "primary": pname, "ack": ack_a, "t_cut_ns": t_cut_a, "call_under_cut": lost.out, "fact_during": fact_during, "looks": looks, "window_ms": window.as_millis() as u64, "connection_after": connection_a}));
     inv.holds(
-        &format!("C11: {gw}'s Direct edge to {pname}, the primary of {far_mesh}, was cut (acknowledged): its call was not answered, every admin held {gw} ready for {} ms, no attempt opened, and once released the edge was Connected to the same birth", window.as_millis()),
+        &format!("C11: {gw}'s Direct connection to {pname}, the primary of {far_mesh}, was cut (acknowledged): its call was not answered, every admin held {gw} ready for {} ms, no attempt opened, and once released the connection was Connected to the same birth", window.as_millis()),
         true,
-        json!({"looks": looks, "edge": edge_a}),
+        json!({"looks": looks, "connection": connection_a}),
     );
 
     a.events.extend(events.iter().cloned());
@@ -6499,7 +6499,7 @@ async fn direct_edge_run(cell: &str, shape: Shape) {
     close_run(f, a, inv, nodes, launches, primaries, connections, &["C11"], json!({"events": events}), |_f, _spans, _inv| json!({})).await;
 }
 
-async fn carrier_edge_run(cell: &str, shape: Shape) {
+async fn carrier_connection_run(cell: &str, shape: Shape) {
     if !cuts_here(cell) {
         return;
     }
@@ -6507,18 +6507,18 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
     let mut events = Vec::new();
     let _ = (&formation, window_ms);
-    // Leg B, the carrier's own edge to the destination is lost: a compute holds Direct Failed and Proxy Connected
-    // via its mesh's gateway toward the other mesh's gateway; the carrier's edge is cut and its next inner call
-    // finds the edge not Active. The carrier refuses the carried call by name, the source deletes that Proxy
+    // Leg B, the carrier's own connection to the destination is lost: a compute holds Direct Failed and Proxy Connected
+    // via its mesh's gateway toward the other mesh's gateway; the carrier's connection is cut and its next inner call
+    // finds the connection not Active. The carrier refuses the carried call by name, the source deletes that Proxy
     // durably with the same reason and does not send the call through any other connection.
     let (src, car, dst) = ("mesh1.compute.1".to_string(), "mesh1.gateway.1".to_string(), "mesh2.gateway.1".to_string());
     let cn = node(&car);
     // The healthy control, same family: the carrier also carries a call to another node of the other mesh while
-    // its edge to it is Active.
+    // its connection to it is Active.
     let other = "mesh2.broker.1".to_string();
     let on = node(&other);
-    let carrier_edge0 = dial(&f, &car, &other);
-    f.actions.push(action_row(&carrier_edge0));
+    let carrier_connection0 = dial(&f, &car, &other);
+    f.actions.push(action_row(&carrier_connection0));
     await_direct(&f.estate, &car, &other, "Connected", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == on["incarnation_id"]).await;
     let seeded0 = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{other}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "6", "--key", "x"]);
     assert_eq!((seeded0.out["proxy_recorded"].as_bool(), seeded0.out["carrier_node_id"].as_str()), (Some(true), cn["node_id"].as_str()), "{}", seeded0.out);
@@ -6527,25 +6527,25 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     f.actions.push(action_row(&healthy));
     assert_eq!((healthy.out["route"].as_str(), healthy.out["carrier"].as_str(), healthy.out["call_outcome"].as_str()), (Some("via-peer"), Some(car.as_str()), Some("reply")), "the healthy control is carried: {}", healthy.out);
     // The cut covers the carrier and the destination, which have never been connected: the carrier's own dial
-    // finds no path and writes its Failed fact, the carrier's edge to the destination is not Active.
+    // finds no path and writes its Failed fact, the carrier's connection to the destination is not Active.
     let (cut_b, ack_b) = cut_between(&f, &st.nodes, &car, &dst, &fp).await;
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack_b}));
     let t_cut_b = now_ns();
-    let probe_edge = probe_call(&f.estate, &["dial", "--target", &format!("path:{car}"), "--destination", &format!("path:{dst}"), "--key", "x"]);
-    f.actions.push(action_row(&probe_edge));
-    assert_eq!(probe_edge.out["dialed"], "NotSent", "the carrier's dial to {dst} over the cut finds no path: {}", probe_edge.out);
-    let edge_down = await_direct(&f.estate, &car, &dst, "Failed", Duration::from_secs(30), |d| d["state"] == "Failed").await;
+    let probe_connection = probe_call(&f.estate, &["dial", "--target", &format!("path:{car}"), "--destination", &format!("path:{dst}"), "--key", "x"]);
+    f.actions.push(action_row(&probe_connection));
+    assert_eq!(probe_connection.out["dialed"], "NotSent", "the carrier's dial to {dst} over the cut finds no path: {}", probe_connection.out);
+    let connection_down = await_direct(&f.estate, &car, &dst, "Failed", Duration::from_secs(30), |d| d["state"] == "Failed").await;
     // The source records the Proxy via the carrier toward the destination it cannot reach Direct either.
     let seeded = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "6", "--key", "x"]);
     assert_eq!((seeded.out["proxy_recorded"].as_bool(), seeded.out["carrier_node_id"].as_str()), (Some(true), cn["node_id"].as_str()), "{}", seeded.out);
     f.actions.push(action_row(&seeded));
     let rows0 = proxy_disconnected_rows(&durable_history(&f, &src).await).len();
     let t_call_b0 = now_ns();
-    let refused = orig_get(&f, &src, &dst, "carried-edge-lost");
+    let refused = orig_get(&f, &src, &dst, "carried-connection-lost");
     let t_call_b1 = now_ns();
     f.actions.push(action_row(&refused));
     assert_eq!(refused.out["outcome"], "Reply", "the source answers its own probe: {}", refused.out);
-    assert_eq!(refused.out["call_outcome"], "NotSent", "a carried call whose carrier's edge is not Active sends nothing: {}", refused.out);
+    assert_eq!(refused.out["call_outcome"], "NotSent", "a carried call whose carrier's connection is not Active sends nothing: {}", refused.out);
     assert!(refused.out["deleted"].to_string().contains("connection-lost"), "the source deletes the Proxy it travelled with the carrier's refusal as the reason: {}", refused.out);
     let rows1 = proxy_disconnected_rows(&durable_history(&f, &src).await);
     assert_eq!(rows1.len(), rows0 + 1, "exactly one durable Proxy Disconnected: {rows1:?}");
@@ -6556,7 +6556,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     assert_eq!(proxy_disconnected_rows(&durable_history(&f, &src).await).len(), rows0 + 1, "no second delete row");
     drop(cut_b);
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
-    events.push(json!({"event": "connection-lost", "carrier": car, "destination": dst, "source": src, "ack": ack_b, "t_cut_ns": t_cut_b, "carrier_edge_after_cut": edge_down, "healthy_control": healthy.out, "refused": refused.out, "durable_delete": rows1.last().unwrap(), "next_call": next.out, "call_window_ns": [t_call_b0, t_call_b1]}));
+    events.push(json!({"event": "connection-lost", "carrier": car, "destination": dst, "source": src, "ack": ack_b, "t_cut_ns": t_cut_b, "carrier_connection_after_cut": connection_down, "healthy_control": healthy.out, "refused": refused.out, "durable_delete": rows1.last().unwrap(), "next_call": next.out, "call_window_ns": [t_call_b0, t_call_b1]}));
 
     a.events.extend(events.iter().cloned());
     let t_call = (t_call_b0, t_call_b1, t_cut_b);
@@ -6566,7 +6566,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
         assert_eq!(lost.len(), 1, "the carrier refused exactly one carried call by name: {lost:?}");
         let inner = named(spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| start_ns(sp) >= t_call.0 && start_ns(sp) <= t_call.1).count();
         assert!(inner <= 1, "the carried call was tried once, never again: {inner} inner calls");
-        inv.holds("C12: a carrier whose own edge to the destination was cut refused the carried call by name once; the source deleted the Proxy durably with that reason and did not select it again", true, json!({"refusals": lost.len()}));
+        inv.holds("C12: a carrier whose own connection to the destination was cut refused the carried call by name once; the source deleted the Proxy durably with that reason and did not select it again", true, json!({"refusals": lost.len()}));
         json!({"connection_lost_spans": lost.len(), "inner_calls": inner})
     })
     .await;
@@ -6578,11 +6578,11 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     let mut events = Vec::new();
     let (src, car, dst) = ("mesh1.compute.1".to_string(), "mesh1.gateway.1".to_string(), "mesh2.gateway.1".to_string());
     let (cn, dn) = (node(&car), node(&dst));
-    let carrier_edge = dial(&f, &car, &dst);
-    f.actions.push(action_row(&carrier_edge));
+    let carrier_connection = dial(&f, &car, &dst);
+    f.actions.push(action_row(&carrier_connection));
     await_direct(&f.estate, &car, &dst, "Connected", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == dn["incarnation_id"]).await;
     let _ = window_ms;
-    // Leg C, a carrier restart while a cutback is owed. The carrier's edge is back; the Proxy is recorded
+    // Leg C, a carrier restart while a cutback is owed. The carrier's connection is back; the Proxy is recorded
     // again; the deletion write is refused when Direct returns, so the deletion is owed; the carrier is
     // restarted by the rectifier while calls keep coming. Each call ends typed; none is answered by a birth other
     // than the destination's exact one; none is sent twice; the owed deletion lands once, durably, with a
@@ -6689,16 +6689,16 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     .await;
 }
 
-/// CONTRACT: in the formed estate a gateway's Direct edge to its mesh's primary node-admin is cut (the one
+/// CONTRACT: in the formed estate a gateway's Direct connection to its mesh's primary node-admin is cut (the one
 /// socket pair, acknowledged by the host) in the mesh that does not hold the fabric-primary: the gateway's call
-/// over that edge is not answered, every node-admin keeps the gateway ready for a full staleness window, no
-/// attempt opens, and released the edge is Connected to the same birth and the gateway serves again. Canon:
+/// over that connection is not answered, every node-admin keeps the gateway ready for a full staleness window, no
+/// attempt opens, and released the connection is Connected to the same birth and the gateway serves again. Canon:
 /// node-admin-lifecycle.md rule 4 (a failed connection is not death; only exact provider evidence proves a
-/// runtime gone). What must NOT happen: a node declared silent or dead for a cut edge, an attempt for a lost
-/// edge, a call answered over the cut.
+/// runtime gone). What must NOT happen: a node declared silent or dead for a cut connection, an attempt for a lost
+/// connection, a call answered over the cut.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mock_direct_edge_loss_to_a_mesh_primary_declares_no_death() {
-    direct_edge_run("mock_direct_edge_loss_to_a_mesh_primary_declares_no_death", any_tier()).await;
+async fn mock_direct_connection_loss_to_a_mesh_primary_declares_no_death() {
+    direct_connection_run("mock_direct_connection_loss_to_a_mesh_primary_declares_no_death", any_tier()).await;
 }
 
 /// CONTRACT: in the formed estate the source's Proxy through its mesh's gateway to the other mesh's gateway
@@ -6718,18 +6718,18 @@ async fn mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once() {
     cutback_restart_run("mock_carrier_restart_with_a_cutback_owed_disconnects_the_proxy_once", Shape { gateway: tier.gateway.max(2), ..tier }).await;
 }
 
-/// CONTRACT: in the formed estate the carrier of a compute's Proxy loses its own edge to the destination (cut
+/// CONTRACT: in the formed estate the carrier of a compute's Proxy loses its own connection to the destination (cut
 /// between two sockets that never connected, acknowledged by the host; the carrier's own dial finds no path
 /// and writes its Failed fact). The compute's carried call ends with the carrier's refusal by name,
 /// `connection-lost`, as a call that sent nothing (NotSent): the source writes one durable Proxy
 /// Disconnected with that reason, does not select the carrier again, and the carrier made one inner attempt.
-/// A healthy carried call to another node of the other mesh, with the carrier's edge Active, is the control.
+/// A healthy carried call to another node of the other mesh, with the carrier's connection Active, is the control.
 /// Canon: connections.md section 8 (the carrier refuses `connection-lost`; that refusal is how the source
-/// learns the edge is gone) and section 9 J. What must NOT happen: a carried call that ends Indeterminate for a
-/// call the carrier refused, a Proxy that stays selected after the carrier's edge is lost, a second inner call.
+/// learns the connection is gone) and section 9 J. What must NOT happen: a carried call that ends Indeterminate for a
+/// call the carrier refused, a Proxy that stays selected after the carrier's connection is lost, a second inner call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget() {
-    carrier_edge_run("mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget", any_tier()).await;
+async fn mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget() {
+    carrier_connection_run("mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget", any_tier()).await;
 }
 
 

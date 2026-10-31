@@ -207,8 +207,8 @@ pub enum ProbeEnd {
     /// A status reply came back (the node's own, or the carrier's `Forwarded { inner }`);
     /// [`birth_answered`] says whether it is the probed birth's.
     Reply(rdm_core::status::StatusReply),
-    /// The carrier could not carry the probe: its own edge to the node is not Active
-    /// (`InnerNotSent`, node-tickle.md step 3), with the carrier's account of that edge.
+    /// The carrier could not carry the probe: its own connection to the node is not Active
+    /// (`InnerNotSent`, node-tickle.md step 3), with the carrier's account of that connection.
     ConnectionLost(String),
     /// Any other end: the Node RPC outcome's name (`NotSent`, `Indeterminate`, `Unserved`,
     /// `RejectedStale`) and what it says.
@@ -228,7 +228,7 @@ impl ProbeEnd {
         match out {
             RpcOutcome::Reply(r) => Self::Reply(r.into_value()),
             RpcOutcome::NotSent(ns) => match ns.reason() {
-                NotSentReason::ConnectionLost(edge) => Self::ConnectionLost(edge.clone()),
+                NotSentReason::ConnectionLost(connection) => Self::ConnectionLost(connection.clone()),
                 other => Self::Other { end, detail: format!("not sent: {other:?}") },
             },
             _ => Self::Other { end, detail: detail_name.to_string() },
@@ -239,13 +239,13 @@ impl ProbeEnd {
     pub fn name(&self) -> String {
         match self {
             Self::Reply(r) => r.name().to_string(),
-            Self::ConnectionLost(edge) => format!("connection-lost: {edge}"),
+            Self::ConnectionLost(connection) => format!("connection-lost: {connection}"),
             Self::Other { end, detail } => format!("{end}: {detail}"),
         }
     }
 
     /// Whether the probe reached a process that answered anything at all (a reply, or a carrier's own
-    /// account of its edge): a `NotSent` or `RejectedStale` reached none.
+    /// account of its connection): a `NotSent` or `RejectedStale` reached none.
     pub fn reached_a_process(&self) -> bool {
         match self {
             Self::Reply(_) | Self::ConnectionLost(_) => true,

@@ -1113,15 +1113,15 @@
         }
       ]
     },
-    "i143-rshape-adv-direct-edge-process": {
+    "i143-rshape-adv-direct-connection-process": {
       "issue": 2943,
       "layer": "chaos-process",
       "cells": [
         {
-          "name": "mock_direct_edge_loss_to_a_mesh_primary_declares_no_death",
+          "name": "mock_direct_connection_loss_to_a_mesh_primary_declares_no_death",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-edge-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_direct_edge_loss_to_a_mesh_primary_declares_no_death -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-adv-direct-edge-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-connection-process/mock_direct_connection_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_direct_connection_loss_to_a_mesh_primary_declares_no_death -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-direct-connection-process/mock_direct_connection_loss_to_a_mesh_primary_declares_no_death"
         }
       ]
     },
@@ -1137,15 +1137,15 @@
         }
       ]
     },
-    "i143-rshape-adv-carrier-edge-process": {
+    "i143-rshape-adv-carrier-connection-process": {
       "issue": 2943,
       "layer": "chaos-process",
       "cells": [
         {
-          "name": "mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
+          "name": "mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-connection-process/mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-carrier-connection-process/mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget"
         }
       ]
     },
@@ -1437,15 +1437,15 @@
         }
       ]
     },
-    "i143-rshape-adv-direct-edge-scale-process": {
+    "i143-rshape-adv-direct-connection-scale-process": {
       "issue": 2943,
       "layer": "chaos-scale",
       "cells": [
         {
-          "name": "mock_direct_edge_loss_to_a_mesh_primary_declares_no_death",
+          "name": "mock_direct_connection_loss_to_a_mesh_primary_declares_no_death",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-edge-scale-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_direct_edge_loss_to_a_mesh_primary_declares_no_death -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-adv-direct-edge-scale-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-connection-scale-process/mock_direct_connection_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_direct_connection_loss_to_a_mesh_primary_declares_no_death -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-direct-connection-scale-process/mock_direct_connection_loss_to_a_mesh_primary_declares_no_death"
         }
       ]
     },
@@ -1461,15 +1461,15 @@
         }
       ]
     },
-    "i143-rshape-adv-carrier-edge-scale-process": {
+    "i143-rshape-adv-carrier-connection-scale-process": {
       "issue": 2943,
       "layer": "chaos-scale",
       "cells": [
         {
-          "name": "mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
+          "name": "mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
           "source": "crates/rdm-test/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-scale-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-scale-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-connection-scale-process/mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-carrier-connection-scale-process/mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget"
         }
       ]
     }

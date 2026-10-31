@@ -30,7 +30,7 @@ namespace ([Runtime spans](node-rpc-envelope.md#runtime-spans)).
   root otherwise.
 - **No payload enters a span.** No byte of a frame's or a call's body, and never a declared secret
   or RDM's own secret material, is written as a span attribute.
-- **Identity correlates where no parent edge exists.** Every Build-backed span carries `build_id`
+- **Identity correlates traces that start on their own.** Every Build-backed span carries `build_id`
   and, where it applies, `attempt`, `operation`, `step`, `node_id` and `incarnation`. A trace that
   starts on its own (§4) is joined to the operation that caused it by those fields.
 
@@ -95,5 +95,5 @@ The per-operation chains are on their pages:
 - The fabric's change is not a child of the Build that caused it (§4); they are joined by
   `build_id`.
 - A destination's admission of a data-plane connection writes its connection fact
-  (`via-observed`) without a parent edge to the opener's trace; it is joined by the connection's
+  (`via-observed`) in a trace of its own, never the opener's; it is joined by the connection's
   `source`, `destination` and `alpn`.

@@ -265,9 +265,9 @@
       "sha256": "3a0a98e309f8457fc1e36697a473118e9405209b0151ca1075703781cbf80715"
     },
     {
-      "job": "i143-rshape-adv-carrier-edge-process",
+      "job": "i143-rshape-adv-carrier-connection-process",
       "section": "rshape_jobs",
-      "path": "target/i143-rshape/jobs/i143-rshape-adv-carrier-edge-process.json",
+      "path": "target/i143-rshape/jobs/i143-rshape-adv-carrier-connection-process.json",
       "sha256": "794e332584c8288bf1639b7ae2119276dd70bf3e51aa7dac1a089601ebcd00d8"
     },
     {
@@ -301,9 +301,9 @@
       "sha256": "da372438c535eda8af21ae1bd639695ac13bd7f79ee0c91d8386498f363288eb"
     },
     {
-      "job": "i143-rshape-adv-direct-edge-process",
+      "job": "i143-rshape-adv-direct-connection-process",
       "section": "rshape_jobs",
-      "path": "target/i143-rshape/jobs/i143-rshape-adv-direct-edge-process.json",
+      "path": "target/i143-rshape/jobs/i143-rshape-adv-direct-connection-process.json",
       "sha256": "757dc191f2568ecb617eb11c0edbf6cfb809461837e0bc9cfc4925197ba92c84"
     },
     {

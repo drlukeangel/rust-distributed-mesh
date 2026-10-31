@@ -39,7 +39,7 @@ fn proxy(source: ConnectionEnd, carrier: ConnectionEnd, destination: ConnectionE
 
 const RPC: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
-/// own = rpc.1, carrier = rpc.2, destination = rpc.3; the carrier's edge to the destination
+/// own = rpc.1, carrier = rpc.2, destination = rpc.3; the carrier's connection to the destination
 /// names destination process `d1` and carrier process `c1`.
 fn estate() -> (ConnectionsHeld, ConnectionEnd, ConnectionEnd, ConnectionEnd) {
     let (own, carrier, dest) = (end(NodeKind::RpcNode, 1, Some("o1")), end(NodeKind::RpcNode, 2, Some("c1")), end(NodeKind::RpcNode, 3, Some("d1")));
@@ -58,7 +58,7 @@ fn a_disconnected_or_failed_direct_never_stays_resident_and_an_older_connect_nev
     assert_eq!(held.active_direct(&own.name, &dest.name), Some(Some(&connected)));
 
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 30)).unwrap();
-    assert_eq!(held.active_direct(&own.name, &dest.name), Some(None), "a Failed entry removes the edge");
+    assert_eq!(held.active_direct(&own.name, &dest.name), Some(None), "a Failed entry removes the connection");
     assert_eq!(
         held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 25)),
         Err(ApplyRefusal::Stale { held: 61, offered: 50 }),
@@ -68,8 +68,8 @@ fn a_disconnected_or_failed_direct_never_stays_resident_and_an_older_connect_nev
 
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 40)).unwrap();
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Disconnected, 50)).unwrap();
-    assert_eq!(held.active_direct(&own.name, &dest.name), Some(None), "a Disconnected entry removes the edge");
-    assert_eq!(held.active_len(), 1, "only the carrier's active edge is resident");
+    assert_eq!(held.active_direct(&own.name, &dest.name), Some(None), "a Disconnected entry removes the connection");
+    assert_eq!(held.active_len(), 1, "only the carrier's active connection is resident");
     assert_eq!(held.keys(), 2, "each key keeps its stamp, resident or not");
 }
 
@@ -177,12 +177,12 @@ fn a_stale_carrier_incarnation_is_superseded() {
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_CARRIER_SUPERSEDED));
 }
 
-/// CONTRACT: the carrier's own Direct edge is the carrier's fact (connections.md section 8). A
-/// source whose held graph does not hold it still keeps its Proxy valid; a Disconnected edge it
+/// CONTRACT: the carrier's own Direct connection is the carrier's fact (connections.md section 8). A
+/// source whose held graph does not hold it still keeps its Proxy valid; a Disconnected connection it
 /// does hold changes nothing either, because the carried call, not this read, answers
 /// `connection-lost`.
 #[test]
-fn a_proxy_is_valid_without_the_carriers_edge_in_the_sources_held_graph() {
+fn a_proxy_is_valid_without_the_carriers_connection_in_the_sources_held_graph() {
     let (own, carrier, dest) = (end(NodeKind::RpcNode, 1, Some("o1")), end(NodeKind::RpcNode, 2, Some("c1")), end(NodeKind::RpcNode, 3, Some("d1")));
     let mut held = ConnectionsHeld::new();
     held.set_own_source(own.name.clone());
@@ -197,7 +197,7 @@ fn a_proxy_is_valid_without_the_carriers_edge_in_the_sources_held_graph() {
 }
 
 /// CONTRACT: a Direct fact naming a destination process the topology view no longer holds is not the
-/// current edge: routing dials instead of trusting it, and it deletes no Proxy.
+/// current connection: routing dials instead of trusting it, and it deletes no Proxy.
 #[test]
 fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     let (mut held, own, carrier, dest) = estate();
@@ -207,7 +207,7 @@ fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     assert_eq!(held.active_directs_to(&dest.name).unwrap().len(), 2);
     m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap());
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "the fact names d1, the topology view holds d2");
-    assert!(held.active_directs_to(&dest.name).unwrap().is_empty(), "no edge names the current destination");
+    assert!(held.active_directs_to(&dest.name).unwrap().is_empty(), "no connection names the current destination");
 }
 
 /// CONTRACT (connections.md §9.1: "A reconnect series exists when the latest Direct record for this
@@ -231,7 +231,7 @@ fn a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call
 }
 
 /// CONTRACT: a destination that deleted is no current birth: the Direct fact toward it
-/// is not the current edge and a Proxy to it is targeted by name.
+/// is not the current connection and a Proxy to it is targeted by name.
 #[test]
 fn a_direct_fact_and_a_proxy_naming_a_deleted_destination_are_not_current() {
     let (mut held, own, carrier, dest) = estate();

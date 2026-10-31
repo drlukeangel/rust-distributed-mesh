@@ -555,7 +555,7 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
         )
         .await
         .unwrap();
-    // Establish the member-to-own-admin edge on both sides without giving A any new
+    // Establish the member-to-own-admin connection on both sides without giving A any new
     // bootstrap peer, before A joins LATER through B so B's HyParView active_view
     // already holds C when A's Join arrives at B.
     let mut member = c

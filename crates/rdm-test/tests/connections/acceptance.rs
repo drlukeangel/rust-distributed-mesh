@@ -29,7 +29,7 @@
 //! | G an inbound accept is a recovery trigger | `a:connections_writer::an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_source_dial_whose_connected_disconnects_the_proxy`; `a:connections_writer::repeated_accepts_coalesce_into_one_attempt_that_waits_for_the_series_backoff`; `t:connection_observer::an_accepted_connection_is_handed_to_the_accept_trigger_once` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
 //! | H Proxy deletion write failure is safe and retried | `a:connections_writer::a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands`; `n:connection_writes::a_refused_connection_write_is_retried_with_backoff_until_it_lands` | `p:rpc/proxy_cutback::source_accept_wakes_its_own_dial_whose_direct_disconnects_proxy_before_cutback` | - |
 //! | I destination/carrier incarnation | `c:connections::a_failed_direct_naming_a_superseded_destination_stands_no_series_and_the_call_dials` (added with its fix); `c:connections::a_stale_destination_incarnation_is_superseded`; `c:connections::a_stale_carrier_incarnation_is_superseded`; `c:connections::a_direct_fact_naming_a_superseded_destination_is_not_current`; `t:connections_integration::a_fact_naming_a_superseded_birth_still_dials_the_current_one`; `t:connections::an_open_against_another_incarnation_is_wrong_incarnation_and_never_served`; `a:connections_writer::a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming_that_birth` | none | `a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and_never_carries`; `a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_never_carries` |
-//! | J carrier edge loss invalidates Proxy | `t:forward::a_carrier_whose_own_direct_to_the_target_is_not_active_refuses_connection_lost`; `t:forward::a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_disconnected`; `a:connections_writer::a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connected` | none | `a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects_the_proxy` |
+//! | J carrier connection loss invalidates Proxy | `t:forward::a_carrier_whose_own_direct_to_the_target_is_not_active_refuses_connection_lost`; `t:forward::a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_disconnected`; `a:connections_writer::a_carrier_names_its_own_connection_only_when_its_latest_direct_is_not_connected` | none | `a_carrier_that_lost_its_connection_refuses_by_name_and_the_source_disconnects_the_proxy` |
 //! | K sent request is never rerouted | `t:connections_integration::an_indeterminate_alone_never_invalidates_a_proxy`; `t:routing::certainty_stays_downstream_an_indeterminate_is_never_replayed_through_another_route`; `t:certainty::reply_loss_after_a_complete_send_is_indeterminate` | none | not writable here: no process door forces a post-commit answer timeout on a carried call (Decisions) |
 //! | L #2640 independence | `t:routing::semantic_selection_is_not_connection_selection`; `t:routing::connection_changes_do_not_touch_the_selection_and_selection_changes_fabricate_no_connection_state` | none | n/a in RDM: no `orgs.topics`, route barrier or watermark exists here; the transport cells prove the selection is untouched |
 //!
@@ -201,11 +201,11 @@ async fn connections_delete_ids(estate: &Estate, node: &str, ids: &[String]) -> 
     estate.nodes_obj().await.connections_delete(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &rdm_core::status::ConnectionScope::Connections(ids)).await.expect("node.connection.delete answered")
 }
 
-/// The carrier holds its own Direct edge to the destination on the app protocol: a stream it opened,
+/// The carrier holds its own Direct connection to the destination on the app protocol: a stream it opened,
 /// its `Direct Connected` landed on the store root, where a source's carrier discovery reads it.
-async fn carrier_edge(estate: &Estate) {
-    let edge = stream(estate, CARRIER, DEST, "carrier-edge");
-    assert_eq!((edge["streamed"].as_bool(), edge["kind"].as_str()), (Some(true), Some("direct")), "the carrier reaches the destination directly: {edge}");
+async fn carrier_connection(estate: &Estate) {
+    let connection = stream(estate, CARRIER, DEST, "carrier-connection");
+    assert_eq!((connection["streamed"].as_bool(), connection["kind"].as_str()), (Some(true), Some("direct")), "the carrier reaches the destination directly: {connection}");
     wait_for("the carrier's Direct Connected toward the destination landed", Duration::from_secs(15), || async {
         rows(&estate.connection_history(CARRIER), DEST, "Direct").last().is_some_and(|r| r["state"] == "Connected").then_some(())
     })
@@ -217,7 +217,7 @@ async fn carrier_edge(estate: &Estate) {
 /// the Proxy immediately. Forbidden: another full direct dial ladder before proxying"; §7 steps 1-6;
 /// §12: "Cold discovery continues to expose `effective_route_cold_discovery_ms`"): the source's Direct
 /// dials toward the destination are blocked (`NotSent`, as an unreachable dial). Its first open on the
-/// app protocol writes one `Direct Failed` (round 1, ordinal 1), takes the carrier whose Direct edge to
+/// app protocol writes one `Direct Failed` (round 1, ordinal 1), takes the carrier whose Direct connection to
 /// the destination is active, and opens the tunnel; the destination's own `admitted` comes back and the
 /// source writes `Proxy Connected` naming the carrier and both births. A second open, another
 /// consumer's payload, goes through the held Proxy at once: its trace holds no Direct dial. The first
@@ -231,7 +231,7 @@ async fn one_discovered_proxy_carries_every_later_open_with_no_direct_dial() {
     let mut estate = born(cell).await;
     let dest = estate.node_value(DEST).await;
     let carrier = estate.node_value(CARRIER).await;
-    carrier_edge(&estate).await;
+    carrier_connection(&estate).await;
     block_direct(&estate, SOURCE, DEST, true);
 
     // 1. The first open: Direct NotSent, the carrier found, the tunnel admitted by the destination.
@@ -296,15 +296,15 @@ async fn one_discovered_proxy_carries_every_later_open_with_no_direct_dial() {
 /// writer's own observer path, one on the app protocol from a blocked open), all durable in the one
 /// log. A peer that then opens toward the source through a carrier takes the carrier from the
 /// topology it holds and reads no fact from the store: everything it holds is its own, none of the
-/// source's failed history, none of the carrier's edges and none of the source's Proxy. Must NOT
+/// source's failed history, none of the carrier's connections and none of the source's Proxy. Must NOT
 /// happen: a held entry whose source is another node, or another node's Proxy held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_peer_holds_none_of_a_sources_failed_history_or_its_proxy() {
     let cell = "a_peer_holds_none_of_a_sources_failed_history_or_its_proxy";
     let mut estate = born(cell).await;
-    carrier_edge(&estate).await;
-    // The carrier's edge to the source too: the peer's discovery below goes through it.
-    let back = stream(&estate, CARRIER, SOURCE, "carrier-edge-to-source");
+    carrier_connection(&estate).await;
+    // The carrier's connection to the source too: the peer's discovery below goes through it.
+    let back = stream(&estate, CARRIER, SOURCE, "carrier-connection-to-source");
     assert_eq!((back["streamed"].as_bool(), back["kind"].as_str()), (Some(true), Some("direct")), "{back}");
     wait_for("the carrier's Direct Connected toward the source landed", Duration::from_secs(15), || async {
         rows(&estate.connection_history(CARRIER), SOURCE, "Direct").last().is_some_and(|r| r["state"] == "Connected").then_some(())
@@ -327,11 +327,11 @@ async fn a_peer_holds_none_of_a_sources_failed_history_or_its_proxy() {
     // 2. The destination, a peer, opens toward the source through a carrier its topology holds.
     block_direct(&estate, DEST, SOURCE, true);
     let peer_open = stream(&estate, DEST, SOURCE, "peer-discovery");
-    assert_eq!(peer_open["kind"].as_str(), Some(format!("proxy via {CARRIER}").as_str()), "the peer's carrier carried it on its own edge: {peer_open}");
+    assert_eq!(peer_open["kind"].as_str(), Some(format!("proxy via {CARRIER}").as_str()), "the peer's carrier carried it on its own connection: {peer_open}");
     let peer = snapshot(&estate, DEST);
     let held: Vec<&Value> = peer["active_directs"].as_array().into_iter().flatten().collect();
     let foreign: Vec<&&Value> = held.iter().filter(|d| d["source"]["name"] != DEST).collect();
-    assert!(foreign.is_empty(), "the peer holds no other node's fact, the carrier's edges and the source's failing pair ({failed} failed facts) included: {foreign:?}");
+    assert!(foreign.is_empty(), "the peer holds no other node's fact, the carrier's connections and the source's failing pair ({failed} failed facts) included: {foreign:?}");
     assert!(held.iter().all(|d| d["kind"] == "Direct" && d["state"] == "Connected"), "the peer holds active Direct facts only: {held:?}");
     let proxies: Vec<&Value> = peer["own_active_proxies"].as_array().into_iter().flatten().collect();
     assert!(proxies.iter().all(|p| p["source"]["name"] == DEST), "the peer holds its own Proxy and no other node's: {proxies:?}");
@@ -355,7 +355,7 @@ async fn a_peer_holds_none_of_a_sources_failed_history_or_its_proxy() {
 async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direct() {
     let cell = "a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direct";
     let mut estate = born(cell).await;
-    carrier_edge(&estate).await;
+    carrier_connection(&estate).await;
     block_direct(&estate, SOURCE, DEST, true);
     let first = stream(&estate, SOURCE, DEST, "over-the-proxy");
     assert_eq!(first["kind"].as_str(), Some(format!("proxy via {CARRIER}").as_str()), "{first}");
@@ -423,41 +423,41 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
     estate.record_trace_url(&s(&dials[0]["trace_id"]));
 }
 
-/// CONTRACT (connections.md §13 J: "Drop the carrier's active Direct edge to destination. The carrier
+/// CONTRACT (connections.md §13 J: "Drop the carrier's active Direct connection to destination. The carrier
 /// refuses the next carried call with `connection-lost`; the source writes Proxy Disconnected with
 /// that reason, stops selecting that Proxy, and either establishes another valid Proxy or exposes no
-/// active route"; §8): the source holds a Proxy through the carrier. The carrier's own edge is lost:
+/// active route"; §8): the source holds a Proxy through the carrier. The carrier's own connection is lost:
 /// its Direct toward the destination is deleted by id (`node.connection.delete { Connections([id]) }`,
 /// its Disconnected written). The source's next open reaches the carrier,
 /// which refuses the tunnel `connection-lost`; the source writes `Proxy Disconnected(connection-lost)`
-/// and holds no Proxy. With no other carrier holding an edge, the next open has no route through a
+/// and holds no Proxy. With no other carrier holding a connection, the next open has no route through a
 /// carrier and ends by name. Must NOT happen: the stream carried, the Proxy still held, or another reason.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects_the_proxy() {
-    let cell = "a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects_the_proxy";
+async fn a_carrier_that_lost_its_connection_refuses_by_name_and_the_source_disconnects_the_proxy() {
+    let cell = "a_carrier_that_lost_its_connection_refuses_by_name_and_the_source_disconnects_the_proxy";
     let mut estate = born(cell).await;
-    carrier_edge(&estate).await;
+    carrier_connection(&estate).await;
     block_direct(&estate, SOURCE, DEST, true);
     let first = stream(&estate, SOURCE, DEST, "over-the-proxy");
     assert_eq!(first["kind"].as_str(), Some(format!("proxy via {CARRIER}").as_str()), "{first}");
     wait_for("the Proxy is held", Duration::from_secs(15), || async { (snapshot(&estate, SOURCE)["own_active_proxies"].as_array().map(Vec::len) == Some(1)).then_some(()) }).await;
 
-    // 1. The carrier loses its edge: its Direct toward the destination is closed by id, its
+    // 1. The carrier loses its connection: its Direct toward the destination is closed by id, its
     // Disconnected landed and held by the carrier (a drop is no reconnect series: nothing re-dials it, §5.1).
-    let edge = rows(&estate.connection_history(CARRIER), DEST, "Direct").into_iter().rev().find(|r| r["state"] == "Connected").cloned().expect("the carrier's edge");
-    let closed = connections_delete_ids(&estate, CARRIER, &[s(&edge["id"])]).await;
-    assert!(matches!(&closed, rdm_core::status::StatusReply::ConnectionsDeleted { closed, .. } if closed.iter().any(|c| c.to_string() == s(&edge["id"]))), "the carrier's edge is closed by id: {closed:?}");
+    let connection = rows(&estate.connection_history(CARRIER), DEST, "Direct").into_iter().rev().find(|r| r["state"] == "Connected").cloned().expect("the carrier's connection");
+    let closed = connections_delete_ids(&estate, CARRIER, &[s(&connection["id"])]).await;
+    assert!(matches!(&closed, rdm_core::status::StatusReply::ConnectionsDeleted { closed, .. } if closed.iter().any(|c| c.to_string() == s(&connection["id"]))), "the carrier's connection is closed by id: {closed:?}");
     // The carrier refuses from what it holds (§8), and it holds the drop only once its write lands
     // (Q169); the drop's line is in the store file before its write lands (the write is then
     // fsynced), so the wait reads the carrier's held projection, never the file.
     wait_for("the carrier holds its Disconnected", Duration::from_secs(15), || async {
-        snapshot(&estate, CARRIER)["own_latest_directs"].as_array().into_iter().flatten().any(|d| d["destination"]["name"] == DEST && d["alpn"] == edge["alpn"] && d["state"] == "Disconnected").then_some(())
+        snapshot(&estate, CARRIER)["own_latest_directs"].as_array().into_iter().flatten().any(|d| d["destination"]["name"] == DEST && d["alpn"] == connection["alpn"] && d["state"] == "Disconnected").then_some(())
     })
     .await;
     assert_eq!(rows(&estate.connection_history(CARRIER), DEST, "Direct").last().map(|r| r["state"].clone()), Some(serde_json::json!("Disconnected")), "the carrier's Disconnected is its latest Direct row");
 
     // 2. The source's next open: refused by the carrier by name; the Proxy is disconnected with it.
-    let refused = stream(&estate, SOURCE, DEST, "after-edge-lost");
+    let refused = stream(&estate, SOURCE, DEST, "after-connection-lost");
     assert_eq!(refused["streamed"].as_bool(), Some(false), "nothing is carried: {refused}");
     assert!(s(&refused["reason"]).contains("connection-lost"), "the carrier refused by name: {refused}");
     let dropped = wait_for("the source's Proxy Disconnected landed", Duration::from_secs(15), || async {
@@ -466,7 +466,7 @@ async fn a_carrier_that_lost_its_edge_refuses_by_name_and_the_source_disconnects
     .await;
     assert_eq!(dropped["reason"], "connection-lost", "{dropped}");
     assert_eq!(snapshot(&estate, SOURCE)["own_active_proxies"].as_array().map(Vec::len), Some(0), "the Proxy is no longer selected");
-    // 3. No other carrier holds an edge: no route through a carrier.
+    // 3. No other carrier holds a connection: no route through a carrier.
     let none = stream(&estate, SOURCE, DEST, "no-route");
     assert_eq!(none["streamed"].as_bool(), Some(false), "no other valid Proxy exists: {none}");
     assert!(s(&none["reason"]).contains("NoActiveRoute"), "the source exposes no active route by name: {none}");
@@ -691,7 +691,7 @@ async fn exact_birth(estate: &Estate, node: &str) -> rdm_client::ExactBirth {
 async fn an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work_by_name() {
     let cell = "an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work_by_name";
     let mut estate = born(cell).await;
-    carrier_edge(&estate).await;
+    carrier_connection(&estate).await;
     let direct = stream(&estate, SOURCE, CARRIER, "direct");
     assert_eq!(direct["kind"].as_str(), Some("direct"), "{direct}");
     block_direct(&estate, SOURCE, DEST, true);
@@ -776,9 +776,9 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
 }
 
 /// The carrier's own Direct to the destination's birth `dest_incarnation` on the app protocol, landed.
-async fn carrier_edge_of(estate: &Estate, dest_incarnation: &str) {
-    let edge = stream(estate, CARRIER, DEST, "carrier-edge");
-    assert_eq!((edge["kind"].as_str(), s(&edge["peer_incarnation"]).as_str()), (Some("direct"), dest_incarnation), "the carrier reaches the destination's birth directly: {edge}");
+async fn carrier_connection_of(estate: &Estate, dest_incarnation: &str) {
+    let connection = stream(estate, CARRIER, DEST, "carrier-connection");
+    assert_eq!((connection["kind"].as_str(), s(&connection["peer_incarnation"]).as_str()), (Some("direct"), dest_incarnation), "the carrier reaches the destination's birth directly: {connection}");
     wait_for("the carrier's Direct Connected toward the destination's birth landed", Duration::from_secs(15), || async {
         rows(&estate.connection_history(CARRIER), DEST, "Direct").last().is_some_and(|r| r["state"] == "Connected" && s(&r["destination"]["incarnation"]) == dest_incarnation).then_some(())
     })
@@ -815,7 +815,7 @@ async fn a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and
     let mut estate = born(cell).await;
     let old = estate.node_value(DEST).await;
     let old_inc = s(&old["incarnation_id"]);
-    carrier_edge_of(&estate, &old_inc).await;
+    carrier_connection_of(&estate, &old_inc).await;
     block_direct(&estate, SOURCE, DEST, true);
     let first = stream(&estate, SOURCE, DEST, "old-birth");
     assert_eq!((first["kind"].as_str(), s(&first["peer_incarnation"])), (Some(format!("proxy via {CARRIER}").as_str()), old_inc.clone()), "{first}");
@@ -827,7 +827,7 @@ async fn a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and
     for witness in [SOURCE, CARRIER] {
         estate.witness_holds_birth(witness, DEST).await;
     }
-    carrier_edge_of(&estate, &new_inc).await;
+    carrier_connection_of(&estate, &new_inc).await;
     // What the source writes from here on: the old birth's series (its attempts under the block until
     // the kill) is history before this point.
     let before = estate.connection_history(SOURCE).len();
@@ -865,7 +865,7 @@ async fn a_proxy_naming_a_replaced_carrier_birth_is_disconnected_by_name_and_nev
     let mut estate = born(cell).await;
     let dest = estate.node_value(DEST).await;
     let old_carrier = s(&estate.node_value(CARRIER).await["incarnation_id"]);
-    carrier_edge_of(&estate, &s(&dest["incarnation_id"])).await;
+    carrier_connection_of(&estate, &s(&dest["incarnation_id"])).await;
     block_direct(&estate, SOURCE, DEST, true);
     let first = stream(&estate, SOURCE, DEST, "old-carrier");
     assert_eq!(first["kind"].as_str(), Some(format!("proxy via {CARRIER}").as_str()), "{first}");

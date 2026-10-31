@@ -981,7 +981,7 @@ async fn a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned
         let d = TestPeer::bind("mesh1.rpc.2", &alpns).await;
         s.know(&g);
         g.know(&d);
-        seed_carrier_direct_edge(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_A).await;
+        seed_carrier_direct_connection(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_A).await;
         (s, g, d)
     }
     .with_subscriber(dispatch.clone())
@@ -1162,7 +1162,7 @@ async fn a_callers_span_closes_while_its_direct_and_proxy_connections_live() {
         let d = TestPeer::bind("mesh1.rpc.4", &alpns).await;
         s.know(&g);
         g.know(&d);
-        seed_carrier_direct_edge(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_B).await;
+        seed_carrier_direct_connection(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_B).await;
         (s, g, d)
     }
     .with_subscriber(dispatch.clone())
@@ -1235,7 +1235,7 @@ fn no_proxy_alpn(name: &[u8]) -> Alpn {
     }
 }
 
-async fn seed_carrier_direct_edge(
+async fn seed_carrier_direct_connection(
     observer_sinks: &[&Arc<MemoryConnectionsSink>],
     carrier: &Birth,
     destination: &Birth,
@@ -1305,7 +1305,7 @@ async fn a_held_proxy_is_taken_without_a_direct_dial() {
 
     // Seed carrier -> dest Direct Connected in source and carrier held projections,
     // and seed a held Proxy Connected row in source's sink:
-    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
     let held_proxy = NodeConnection {
         id: ConnectionId::mint(),
         source: source.birth.to_end(),
@@ -1385,14 +1385,14 @@ async fn a_not_sent_direct_on_a_proxy_alpn_goes_once_through_the_hashed_carrier(
     gw1.know(&dest);
     gw2.know(&dest);
 
-    seed_carrier_direct_edge(
+    seed_carrier_direct_connection(
         &[&source.sink, &gw1.sink, &gw2.sink],
         &gw1.birth,
         &dest.birth,
         ALPN_A,
     )
     .await;
-    seed_carrier_direct_edge(
+    seed_carrier_direct_connection(
         &[&source.sink, &gw1.sink, &gw2.sink],
         &gw2.birth,
         &dest.birth,
@@ -1470,21 +1470,21 @@ async fn a_not_sent_direct_on_a_proxy_alpn_goes_once_through_the_hashed_carrier(
 /// A source, two gateway carriers and a destination the source cannot dial: the source's topology
 /// holds both carriers and its held connections hold no other node's Direct (Q227: no node reads
 /// another's connection facts); each carrier's own held connections hold its own Direct to the
-/// destination when `edge`, given the index of the carrier the hash names first, says so. Returns
+/// destination when `connection`, given the index of the carrier the hash names first, says so. Returns
 /// the peers and that index.
-async fn carriers_from_topology(edge: impl Fn(usize) -> [bool; 2]) -> (TestPeer, [TestPeer; 2], TestPeer, usize) {
+async fn carriers_from_topology(connection: impl Fn(usize) -> [bool; 2]) -> (TestPeer, [TestPeer; 2], TestPeer, usize) {
     let alpns = [gateway_alpn(ALPN_A)];
     let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
     let gw = [TestPeer::bind("mesh1.gateway.1", &alpns).await, TestPeer::bind("mesh1.gateway.2", &alpns).await];
     let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
     let first = (rdm_core::connections::spread(&source.birth.name.to_string(), &dest.birth.name.to_string(), dest.birth.incarnation.as_str()) % 2) as usize;
-    for (g, holds) in gw.iter().zip(edge(first)) {
+    for (g, holds) in gw.iter().zip(connection(first)) {
         source.know(g);
         g.know(&dest);
         g.know(&source);
         dest.know(g);
         if holds {
-            seed_carrier_direct_edge(&[&g.sink], &g.birth, &dest.birth, ALPN_A).await;
+            seed_carrier_direct_connection(&[&g.sink], &g.birth, &dest.birth, ALPN_A).await;
         }
     }
     dest.know(&source);
@@ -1522,9 +1522,9 @@ async fn a_not_sent_direct_takes_its_carrier_from_the_topology_the_source_holds(
 #[tokio::test]
 async fn a_carrier_without_its_own_direct_refuses_by_name_and_the_source_takes_the_next() {
     let (source, gw, dest, first) = carriers_from_topology(|first| {
-        let mut edge = [true, true];
-        edge[first] = false;
-        edge
+        let mut connection = [true, true];
+        connection[first] = false;
+        connection
     })
     .await;
     let admitters: Vec<Arc<PolicyAdmitter>> = gw.iter().map(|g| {
@@ -1753,7 +1753,7 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
     let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
 
     // Case 1: Destination refuses at admission -> Refused by name, no Proxy Connected written:
-    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
     let dest_admitter = Arc::new(PolicyAdmitter {
         allow: AtomicBool::new(false),
         calls: AtomicUsize::new(0),
@@ -1790,7 +1790,7 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
     // Reset source's held state so open attempts against stale_dest:
     let fresh_source = TestPeer::bind("mesh1.rpc.3", &alpns).await;
     fresh_source.know(&carrier);
-    seed_carrier_direct_edge(
+    seed_carrier_direct_connection(
         &[&fresh_source.sink, &carrier.sink],
         &carrier.birth,
         &stale_dest,
@@ -1834,7 +1834,7 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
     };
     let fresh_source2 = TestPeer::bind("mesh1.rpc.5", &alpns).await;
     fresh_source2.know(&carrier);
-    seed_carrier_direct_edge(
+    seed_carrier_direct_connection(
         &[&fresh_source2.sink, &carrier.sink],
         &carrier.birth,
         &dead_dest,
@@ -1872,7 +1872,7 @@ async fn the_carrier_pairs_concurrent_streams_one_to_one_in_both_directions_and_
 
     source.know(&carrier);
     carrier.know(&dest);
-    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
 
     let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
     let (_, mut acceptor_c) = carrier.registry.connections(ALPN_A).unwrap().split();
@@ -1942,7 +1942,7 @@ async fn a_destination_opened_stream_reaches_the_source_through_the_tunnel() {
 
     source.know(&carrier);
     carrier.know(&dest);
-    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
 
     let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
     let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
@@ -1979,7 +1979,7 @@ async fn a_reset_code_on_one_leg_is_the_same_code_on_the_other() {
 
     source.know(&carrier);
     carrier.know(&dest);
-    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
 
     let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
     let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
@@ -2029,7 +2029,7 @@ async fn a_carrier_leg_closing_closes_every_paired_stream_carrier_gone() {
 
     source.know(&carrier);
     carrier.know(&dest);
-    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
 
     let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
     let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
@@ -2081,7 +2081,7 @@ async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_
     // Initially source knows only carrier, not dest:
     source.know(&carrier);
     carrier.know(&dest);
-    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
 
     let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
     let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
@@ -2198,7 +2198,7 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
         let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
         source.know(&carrier);
         carrier.know(&dest);
-        seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+        seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
         let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
         let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
         let accept = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
@@ -2264,7 +2264,7 @@ fn a_carriers_tunnel_span_is_exported_once_the_tunnel_opens_while_the_tunnel_sti
         let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
         source.know(&carrier);
         carrier.know(&dest);
-        seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+        seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
         let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
         let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
         let accept = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
@@ -2318,7 +2318,7 @@ fn a_proxy_deleted_by_id_closes_the_carriers_legs_and_ends_its_tunnel_on_the_car
         let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
         source.know(&carrier);
         carrier.know(&dest);
-        seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+        seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
         let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
         let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
         let accept = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
@@ -2362,7 +2362,7 @@ async fn a_protocol_with_proxy_false_never_consumes_a_proxy_even_when_one_is_hel
     source.know(&carrier);
     fresh.know(&carrier);
     carrier.know(&dest);
-    seed_carrier_direct_edge(&[&source.sink, &carrier.sink, &fresh.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_connection(&[&source.sink, &carrier.sink, &fresh.sink], &carrier.birth, &dest.birth, ALPN_A).await;
     let carrier_admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(true), calls: AtomicUsize::new(0) });
     carrier.registry.set_admitter(carrier_admitter.clone());
 
@@ -2436,8 +2436,8 @@ async fn a_carrier_outside_the_protocols_list_is_never_picked() {
     lone.know(&outside);
     outside.know(&dest);
     gw.know(&dest);
-    seed_carrier_direct_edge(&[&source.sink, &outside.sink, &gw.sink, &lone.sink], &outside.birth, &dest.birth, ALPN_A).await;
-    seed_carrier_direct_edge(&[&source.sink, &outside.sink, &gw.sink, &lone.sink], &gw.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_connection(&[&source.sink, &outside.sink, &gw.sink, &lone.sink], &outside.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_connection(&[&source.sink, &outside.sink, &gw.sink, &lone.sink], &gw.birth, &dest.birth, ALPN_A).await;
     let outside_admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(true), calls: AtomicUsize::new(0) });
     let gw_admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(true), calls: AtomicUsize::new(0) });
     outside.registry.set_admitter(outside_admitter.clone());
@@ -2496,14 +2496,14 @@ async fn the_carrier_choice_is_kept_until_a_named_event_and_spread_by_source() {
     source.know(&gw1);
     source.know(&gw2);
     source.know(&gw3);
-    seed_carrier_direct_edge(
+    seed_carrier_direct_connection(
         &[&source.sink, &gw1.sink, &gw2.sink, &gw3.sink],
         &gw1.birth,
         &dest.birth,
         ALPN_A,
     )
     .await;
-    seed_carrier_direct_edge(
+    seed_carrier_direct_connection(
         &[&source.sink, &gw1.sink, &gw2.sink, &gw3.sink],
         &gw2.birth,
         &dest.birth,
@@ -2524,8 +2524,8 @@ async fn the_carrier_choice_is_kept_until_a_named_event_and_spread_by_source() {
         panic!("expected Proxy connection");
     };
 
-    // Now gw3 appears with a newer Direct Connected edge to dest:
-    seed_carrier_direct_edge(
+    // Now gw3 appears with a newer Direct Connected connection to dest:
+    seed_carrier_direct_connection(
         &[&source.sink, &gw1.sink, &gw2.sink, &gw3.sink],
         &gw3.birth,
         &dest.birth,
@@ -2564,7 +2564,7 @@ async fn a_direct_connected_disconnects_the_proxy() {
 
     source.know(&carrier);
     carrier.know(&dest);
-    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
 
     let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
     let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
@@ -2963,7 +2963,7 @@ fn a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_wa
         carrier.know(&dest);
         carrier.know(&source);
         dest.know(&carrier);
-        seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+        seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
         source.registry.set_member_cert(rdm_core::certs::cert_to_bytes(&chain.member(&source, expiry)));
         carrier.registry.set_member_cert(rdm_core::certs::cert_to_bytes(&chain.member(&carrier, carrier_expiry)));
         let carrier_admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(false), calls: AtomicUsize::new(0) });
@@ -3144,8 +3144,8 @@ async fn registering_the_step_for_node_rpc_or_gossip_is_refused_at_bind() {
 }
 
 /// Bind a live dialer admitted to an acceptor, then refuse every later dial (the policy admitter
-/// turned off): returns the acceptor, the admitter, and the live dialer kept so its edge stays up.
-async fn an_acceptor_with_one_live_edge() -> (TestPeer, Arc<PolicyAdmitter>, TestPeer, impl Sized) {
+/// turned off): returns the acceptor, the admitter, and the live dialer kept so its connection stays up.
+async fn an_acceptor_with_one_live_connection() -> (TestPeer, Arc<PolicyAdmitter>, TestPeer, impl Sized) {
     let live = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
     let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
     live.know(&acceptor);
@@ -3180,19 +3180,19 @@ fn refused_sources(spans: &[serde_json::Value]) -> Vec<String> {
 
 /// CONTRACT (node-connections-admit.md Row and Never, Q212): a dialer whose key no topology view
 /// names is refused with the span only and no row, even when it presents a live birth's name: that
-/// birth's live edge is left exactly as it was (no row written, so nothing in its key changes).
+/// birth's live connection is left exactly as it was (no row written, so nothing in its key changes).
 #[test]
-fn an_unknown_key_presenting_a_live_births_name_writes_no_row_and_leaves_that_births_edge() {
+fn an_unknown_key_presenting_a_live_births_name_writes_no_row_and_leaves_that_births_connection() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-refused-unknown-key-live-name").expect("the cell's evidence file can be created");
     capture.run(4, async {
-        let (acceptor, _admitter, live, _conn) = an_acceptor_with_one_live_edge().await;
-        // The live edge's fact is the source's own Direct Connected (connections.md §13 G): the live
+        let (acceptor, _admitter, live, _conn) = an_acceptor_with_one_live_connection().await;
+        // The live connection's fact is the source's own Direct Connected (connections.md §13 G): the live
         // dialer's row; the acceptor writes no row for an admission.
-        let (before, edge_before) = (acceptor.sink.history(), live.sink.history());
-        assert!(edge_before.iter().any(|r| r.destination.name == acceptor.birth.name && r.state == ConnectionState::Connected), "the live birth's edge is held: {edge_before:#?}");
+        let (before, connection_before) = (acceptor.sink.history(), live.sink.history());
+        assert!(connection_before.iter().any(|r| r.destination.name == acceptor.birth.name && r.state == ConnectionState::Connected), "the live birth's connection is held: {connection_before:#?}");
         let after = an_unknown_key_dials(&acceptor, "mesh1.rpc.1").await;
         assert_eq!(after, before, "no row is written for a key no view names");
-        assert_eq!(live.sink.history(), edge_before, "the live birth's edge is unchanged");
+        assert_eq!(live.sink.history(), connection_before, "the live birth's connection is unchanged");
         acceptor.shutdown().await;
         live.shutdown().await;
     });
@@ -3208,7 +3208,7 @@ fn an_unknown_key_presenting_a_live_births_name_writes_no_row_and_leaves_that_bi
 fn an_unknown_key_presenting_an_unknown_birth_writes_no_row_only_the_span() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-refused-unknown-key-unknown-birth").expect("the cell's evidence file can be created");
     capture.run(4, async {
-        let (acceptor, _admitter, live, _conn) = an_acceptor_with_one_live_edge().await;
+        let (acceptor, _admitter, live, _conn) = an_acceptor_with_one_live_connection().await;
         let before = acceptor.sink.history();
         let after = an_unknown_key_dials(&acceptor, "mesh1.rpc.9").await;
         assert_eq!(after, before, "no row for a key no view names");
@@ -3278,7 +3278,7 @@ fn an_application_span_made_from_an_accepted_connection_shares_the_openers_trace
         let d = TestPeer::bind("mesh1.rpc.4", &alpns).await;
         s.know(&g);
         g.know(&d);
-        seed_carrier_direct_edge(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_B).await;
+        seed_carrier_direct_connection(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_B).await;
         let (dialer_s, _) = s.registry.connections(ALPN_B).unwrap().split();
         let (_, mut acceptor_d) = d.registry.connections(ALPN_B).unwrap().split();
         let accept_d = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });

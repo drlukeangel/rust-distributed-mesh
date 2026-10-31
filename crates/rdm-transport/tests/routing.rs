@@ -71,10 +71,10 @@ async fn semantic_selection_is_not_connection_selection() {
     let me = own_end(&own);
     // B: Direct failed, a valid Proxy through P; C: Direct active.
     let mut held = held_for(&own);
-    held.apply(edge(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Failed, None, 10)).unwrap();
-    held.apply(edge(end(&r.p), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 11)).unwrap();
-    held.apply(edge(me.clone(), end(&r.b), ConnectionKind::Proxy, ConnectionState::Connected, Some(end(&r.p)), 12)).unwrap();
-    held.apply(edge(me.clone(), end(&r.c), ConnectionKind::Direct, ConnectionState::Connected, None, 13)).unwrap();
+    held.apply(connection(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Failed, None, 10)).unwrap();
+    held.apply(connection(end(&r.p), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 11)).unwrap();
+    held.apply(connection(me.clone(), end(&r.b), ConnectionKind::Proxy, ConnectionState::Connected, Some(end(&r.p)), 12)).unwrap();
+    held.apply(connection(me.clone(), end(&r.c), ConnectionKind::Direct, ConnectionState::Connected, None, 13)).unwrap();
     let policy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
     // The domain chose B: B's reachability changed to Proxy and the seam still executes B.
@@ -86,7 +86,7 @@ async fn semantic_selection_is_not_connection_selection() {
     assert_eq!(r.c.handled.load(Ordering::SeqCst), 0);
 
     // B becomes Direct again: same target, a different leg, still B.
-    held.apply(edge(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 20)).unwrap();
+    held.apply(connection(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 20)).unwrap();
     let route: RouteChoice = (&resolve(&held, &own, &target.resolved.name, policy).route).into();
     let (out, _, leg) = routed(&r, target, route, b"b-again").await;
     assert_eq!(served_by(&out).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{out:?}");
@@ -100,8 +100,8 @@ async fn connection_changes_do_not_touch_the_selection_and_selection_changes_fab
     let own: PathName = "mesh1.admin.1".parse().unwrap();
     let me = own_end(&own);
     let mut held = held_for(&own);
-    held.apply(edge(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
-    held.apply(edge(me.clone(), end(&r.c), ConnectionKind::Direct, ConnectionState::Connected, None, 11)).unwrap();
+    held.apply(connection(me.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
+    held.apply(connection(me.clone(), end(&r.c), ConnectionKind::Direct, ConnectionState::Connected, None, 11)).unwrap();
     let policy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
     // The selector is a value the seam only reads: Direct -> Proxy -> Direct on B changes it never.
     let selected = "B";
@@ -117,9 +117,9 @@ async fn connection_changes_do_not_touch_the_selection_and_selection_changes_fab
     for (kind, state, carrier, expected) in steps {
         at += 10;
         if carrier.is_some() {
-            held.apply(edge(end(&r.p), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, at)).unwrap();
+            held.apply(connection(end(&r.p), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, at)).unwrap();
         }
-        held.apply(edge(me.clone(), end(&r.b), kind, state, carrier, at + 1)).unwrap();
+        held.apply(connection(me.clone(), end(&r.b), kind, state, carrier, at + 1)).unwrap();
         let target = select(&r, selected);
         let route: RouteChoice = (&resolve(&held, &own, &target.resolved.name, policy).route).into();
         assert_eq!(route, expected, "connections decide the leg");

@@ -9,16 +9,16 @@
 //! [`IncarnationId`] it served. Incarnations are compared by equality only.
 //!
 //! [`ConnectionsHeld`] keeps the latest stamp per `(source, destination, kind)`. Only an active
-//! Direct fact is resident fleet-wide; a later Disconnected or Failed entry removes its edge and
-//! keeps only the stamp, so an older connect that arrives after it cannot bring the edge back.
+//! Direct fact is resident fleet-wide; a later Disconnected or Failed entry removes its connection and
+//! keeps only the stamp, so an older connect that arrives after it cannot bring the connection back.
 //! The one exception is source-owned: this node's own active Proxy per destination.
 //!
 //! [`resolve`] answers how a new invocation from this node reaches one exact destination under
 //! its protocol's [`CarrierPolicy`]: a valid own Proxy, else an active Direct, else no route.
 //! A Proxy is valid only while the destination process and the carrier process it recorded are the
 //! ones the topology view holds now (a superseded one is targeted by name) and the carrier's own Direct
-//! edge to the destination is Active. The incarnations reach the source through the topology view
-//! ([`CurrentIncarnations`]); the carrier's edge is the carrier's own fact, learned from the
+//! connection to the destination is Active. The incarnations reach the source through the topology view
+//! ([`CurrentIncarnations`]); the carrier's connection is the carrier's own fact, learned from the
 //! carried call that returns `connection-lost` (connections.md section 8), never held here.
 //! A Direct fact naming a destination process the topology view no longer holds is not current either.
 
@@ -290,8 +290,8 @@ impl ConnectionsHeld {
             }
         }
         // A `Refused` fact is the acceptor's fact about one dial, never proof about the dialer
-        // (node-connections-admit.md Never): it removes no active edge and clears no failure; only a
-        // Disconnected or Failed entry removes an edge (connections.md), so its key keeps what it held.
+        // (node-connections-admit.md Never): it removes no active connection and clears no failure; only a
+        // Disconnected or Failed entry removes a connection (connections.md), so its key keeps what it held.
         if entry.state == ConnectionState::Refused {
             let (active, failed) = self.cells.remove(&key).map_or((None, None), |held| (held.active, held.failed));
             self.cells.insert(key, Cell { stamp, active, failed });
@@ -334,10 +334,10 @@ impl ConnectionsHeld {
         }
     }
 
-    /// Whether `edge` names a destination process the topology view no longer holds: such a fact is
+    /// Whether `connection` names a destination process the topology view no longer holds: such a fact is
     /// evidence about a birth that is gone, never about the current one.
-    pub(crate) fn names_superseded_destination(&self, edge: &NodeConnection) -> bool {
-        self.end_superseded(&edge.destination).unwrap_or(false)
+    pub(crate) fn names_superseded_destination(&self, connection: &NodeConnection) -> bool {
+        self.end_superseded(&connection.destination).unwrap_or(false)
     }
 
     /// The holder now has every route.
@@ -481,11 +481,11 @@ pub enum CarrierPolicy {
     },
 }
 
-/// The carrier's own Direct edge to the destination is not Active: the carried call answered it.
+/// The carrier's own Direct connection to the destination is not Active: the carried call answered it.
 pub const INVALID_CONNECTION_LOST: &str = "connection-lost";
-/// The carrier's edge names another carrier process than the Proxy recorded.
+/// The carrier's connection names another carrier process than the Proxy recorded.
 pub const INVALID_CARRIER_SUPERSEDED: &str = "carrier-incarnation-superseded";
-/// The carrier's edge names another destination process than the Proxy recorded.
+/// The carrier's connection names another destination process than the Proxy recorded.
 pub const INVALID_DESTINATION_SUPERSEDED: &str = "destination-incarnation-superseded";
 
 /// How a new invocation reaches its destination.
@@ -533,7 +533,7 @@ pub struct RouteResolution {
 
 /// Why `proxy` is not valid now over `held`, or `None` when it is. The destination and carrier
 /// processes it recorded must be the ones the topology view holds at their paths now. The carrier's own
-/// Direct edge to the destination is not judged here: it is the carrier's fact, and the carried
+/// Direct connection to the destination is not judged here: it is the carrier's fact, and the carried
 /// call answers `connection-lost` when it is not Active.
 pub fn proxy_invalid(held: &ConnectionsHeld, proxy: &NodeConnection) -> Option<&'static str> {
     let Some(carrier) = proxy.carrier.as_ref() else {
@@ -596,7 +596,7 @@ pub fn resolve_for_carriers(
     let route = match held.active_direct_for(own, destination, alpn) {
         // A Direct fact naming a destination process that is gone is no evidence about the
         // current one: the dial is the only thing to try.
-        Some(Some(edge)) if held.names_superseded_destination(edge) => EffectiveRoute::Direct { known: false },
+        Some(Some(connection)) if held.names_superseded_destination(connection) => EffectiveRoute::Direct { known: false },
         Some(Some(_)) => EffectiveRoute::Direct { known: true },
         // No Direct fact was ever observed toward this destination, or the latest one is a drop
         // (Disconnected: a connection this node closed, as node.connection.delete does at every

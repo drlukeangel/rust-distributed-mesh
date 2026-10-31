@@ -3,7 +3,7 @@
 
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, NodeId};
-use rdm_transport::{CallOptions, CarrierEdges, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder};
+use rdm_transport::{CallOptions, CarrierConnections, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::ping::{Ping, PingRequest};
 use rdm_core::forward::{Forward, ForwardReply, ForwardRequest};
@@ -119,12 +119,12 @@ async fn a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carri
 
 }
 
-/// A carrier's own account of its Direct edge to the final target.
-struct EdgeFact(Option<String>);
+/// A carrier's own account of its Direct connection to the final target.
+struct ConnectionFact(Option<String>);
 
 #[async_trait::async_trait]
-impl CarrierEdges for EdgeFact {
-    async fn edge_not_active(&self, _target: &NodeId) -> Option<String> {
+impl CarrierConnections for ConnectionFact {
+    async fn connection_not_active(&self, _target: &NodeId) -> Option<String> {
         self.0.clone()
     }
 }
@@ -138,21 +138,21 @@ impl CarrierEdges for EdgeFact {
 /// the carrier's failed dial (the envelope's Forward): its inner request is never resent.
 #[tokio::test]
 async fn a_carrier_whose_own_direct_to_the_target_is_not_active_refuses_connection_lost() {
-    let r = rig_with(Some(Arc::new(EdgeFact(Some("Direct Failed (dial failed)".into())))), true).await;
+    let r = rig_with(Some(Arc::new(ConnectionFact(Some("Direct Failed (dial failed)".into())))), true).await;
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::ConnectionLost("Direct Failed (dial failed)".into())), "{out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
     assert_eq!(r.carrier_client.delivery().stats().resends.load(Ordering::SeqCst), 0, "the failed dial is the carrier's answer, never resent");
 }
 
-/// The same dial failure with the carrier holding no non-Active edge fact stays the carrier's
-/// plain `InnerNotSent`: the refusal is the edge fact, not the failure.
+/// The same dial failure, the carrier's own connection fact Active (or none held), stays the carrier's
+/// plain `InnerNotSent`: the refusal is the connection fact, not the failure.
 ///
-/// CONTRACT: a carrier that cannot name its own non-Active edge never claims `connection-lost`;
+/// CONTRACT: a carrier whose own connection fact is Active (or that holds none) never claims `connection-lost`;
 /// its plain `InnerNotSent` comes directly from its failed dial, the inner request never resent.
 #[tokio::test]
-async fn a_carrier_with_no_non_active_edge_fact_keeps_the_plain_inner_not_sent() {
-    let r = rig_with(Some(Arc::new(EdgeFact(None))), true).await;
+async fn connection_failed_dial_inner_not_sent() {
+    let r = rig_with(Some(Arc::new(ConnectionFact(None))), true).await;
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Connection(_))), "{out:?}");
     assert_eq!(r.carrier_client.delivery().stats().resends.load(Ordering::SeqCst), 0, "the failed dial is the carrier's answer, never resent");
@@ -192,8 +192,8 @@ fn proxied_held(r: &Rig) -> (rdm_core::connections::ConnectionsHeld, rdm_core::P
 async fn a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_disconnected() {
     use rdm_core::connections::{resolve, CarrierPolicy, INVALID_CONNECTION_LOST};
     let policy = CarrierPolicy::Proxy { carrier_kind: rdm_core::NodeKind::RpcNode };
-    for (edge, deleted) in [(Some("Direct Failed".to_string()), true), (None, false)] {
-        let r = rig_with(Some(Arc::new(EdgeFact(edge))), true).await;
+    for (connection, deleted) in [(Some("Direct Failed".to_string()), true), (None, false)] {
+        let r = rig_with(Some(Arc::new(ConnectionFact(connection))), true).await;
         let (held, own, proxy) = proxied_held(&r);
         let resolution = resolve(&held, &own, &r.target.resolved.name, policy);
         let call = r.origin.call_resolved::<Probe>(resolution, &own, &r.target.resolved.name, &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
@@ -214,7 +214,7 @@ async fn a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_dis
 /// (rdm.node_rpc.request.update.via-call, outcome and reason). It is the cell's subject, not setup.
 #[tokio::test]
 async fn an_unreachable_target_under_the_origins_default_budget_is_connection_lost_never_indeterminate() {
-    let r = rig_with(Some(Arc::new(EdgeFact(Some("Direct Failed (dial failed)".into())))), false).await;
+    let r = rig_with(Some(Arc::new(ConnectionFact(Some("Direct Failed (dial failed)".into())))), false).await;
     r.target.router.shutdown().await.unwrap();
     let opts = CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(10)), ..CallOptions::default() };
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &opts).await;
@@ -241,7 +241,7 @@ fn an_unreachable_target_under_a_500ms_budget_is_connection_lost_inside_it() {
         let trace = crate::delivery::trace_of(&root);
         let (out, elapsed) = tracing::Instrument::instrument(
             async {
-                let r = rig_with(Some(Arc::new(EdgeFact(Some("Direct Failed (dial failed)".into())))), false).await;
+                let r = rig_with(Some(Arc::new(ConnectionFact(Some("Direct Failed (dial failed)".into())))), false).await;
                 r.target.router.shutdown().await.unwrap();
                 let started = std::time::Instant::now();
                 let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &overall(Duration::from_millis(500))).await;
@@ -283,12 +283,12 @@ fn an_unreachable_target_under_a_500ms_budget_is_connection_lost_inside_it() {
 struct SlowFactWrite;
 
 #[async_trait::async_trait]
-impl CarrierEdges for SlowFactWrite {
-    async fn edge_not_active(&self, _target: &NodeId) -> Option<String> {
+impl CarrierConnections for SlowFactWrite {
+    async fn connection_not_active(&self, _target: &NodeId) -> Option<String> {
         tokio::time::sleep(Duration::from_millis(400)).await;
         Some("Direct failed (read back)".into())
     }
-    async fn edge_after_dial(&self, _node: &ResolvedNode, reason: &str) -> Option<String> {
+    async fn connection_after_dial(&self, _node: &ResolvedNode, reason: &str) -> Option<String> {
         Some(format!("Direct failed ({reason})"))
     }
 }

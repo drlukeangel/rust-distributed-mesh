@@ -784,17 +784,17 @@
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_direct_edge_loss_to_a_mesh_primary_declares_no_death",
+      "test": "mock_direct_connection_loss_to_a_mesh_primary_declares_no_death",
       "issue": 2943,
       "provider": "process",
       "tier": "adversarial",
-      "job": "i143-rshape-adv-direct-edge-process",
+      "job": "i143-rshape-adv-direct-connection-process",
       "covers": [
         "C11"
       ],
       "canon": "node-admin-lifecycle.md rule 4 (a failed connection is not death; only exact provider evidence proves a runtime gone)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-edge-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_direct_edge_loss_to_a_mesh_primary_declares_no_death -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-adv-direct-edge-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-connection-process/mock_direct_connection_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_direct_connection_loss_to_a_mesh_primary_declares_no_death -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-direct-connection-process/mock_direct_connection_loss_to_a_mesh_primary_declares_no_death",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
@@ -813,17 +813,17 @@
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
+      "test": "mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
       "issue": 2943,
       "provider": "process",
       "tier": "adversarial",
-      "job": "i143-rshape-adv-carrier-edge-process",
+      "job": "i143-rshape-adv-carrier-connection-process",
       "covers": [
         "C12"
       ],
       "canon": "connections.md section 8 (the carrier refuses carrier-edge-lost; that refusal is how the source learns the edge is gone) and section 9 J",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-connection-process/mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-carrier-connection-process/mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
@@ -995,13 +995,13 @@
       ]
     },
     {
-      "test": "mock_direct_edge_loss_to_a_mesh_primary_declares_no_death",
+      "test": "mock_direct_connection_loss_to_a_mesh_primary_declares_no_death",
       "issue": 2943,
       "provider": "process",
       "tier": "scale",
-      "job": "i143-rshape-adv-direct-edge-scale-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-edge-scale-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_direct_edge_loss_to_a_mesh_primary_declares_no_death -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-adv-direct-edge-scale-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death",
+      "job": "i143-rshape-adv-direct-connection-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-connection-scale-process/mock_direct_connection_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_direct_connection_loss_to_a_mesh_primary_declares_no_death -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-direct-connection-scale-process/mock_direct_connection_loss_to_a_mesh_primary_declares_no_death",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs",
       "covers": [
         "C11"
@@ -1022,13 +1022,13 @@
       ]
     },
     {
-      "test": "mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
+      "test": "mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
       "issue": 2943,
       "provider": "process",
       "tier": "scale",
-      "job": "i143-rshape-adv-carrier-edge-scale-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-scale-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-scale-process/mock_carrier_edge_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
+      "job": "i143-rshape-adv-carrier-connection-scale-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-connection-scale-process/mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=scale RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-carrier-connection-scale-process/mock_carrier_connection_loss_disconnects_the_proxy_by_name_within_the_callers_budget",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs",
       "covers": [
         "C12"

@@ -301,7 +301,7 @@ A node holds the connection facts it writes, each from the moment its write land
 and it reads none from the store on create, start or rejoin, or before a carrier pick (Q227). A node is
 born holding no connection: a restart closes every connection the node held.
 
-When the latest Direct record becomes Disconnected or Failed, the old active edge is removed from what the
+When the latest Direct record becomes Disconnected or Failed, the old active connection is removed from what the
 node holds. The Dead/Failed row itself remains durable and indexed.
 
 ### 4.2 Source-owned Proxy state
@@ -335,7 +335,7 @@ latest Proxy(S,D)
 ```
 
 The destination and carrier incarnations are checked against the current topology view; the carrier's own Direct
-edge to the destination is learned from the carrier when it is asked to carry (§8).
+connection to the destination is learned from the carrier when it is asked to carry (§8).
 
 ### 5.1 Precedence
 
@@ -482,7 +482,7 @@ This is deliberately **not** a normal platform `Job` entity. It is a local recon
 from the Direct facts the node writes and holds; it reads none back from `ops.nodes.connections`.
 
 Why: the source node already owns its connection observations, owns its Direct/Proxy rows, has the transport
-context needed to dial, and is the only process that can repair its own source-to-destination direct edge.
+context needed to dial, and is the only process that can repair its own source-to-destination connection.
 Routing local transport repair through node-admin would centralize an N-by-N reachability problem and add a
 control hop to state the source already knows.
 
@@ -753,9 +753,9 @@ A destination incarnation change invalidates the old Direct/Proxy evidence for t
 incarnation change invalidates a Proxy that names the old carrier process. Stale evidence is never used for a
 new process birth.
 
-### J. Carrier edge loss invalidates Proxy
+### J. Carrier connection loss invalidates Proxy
 
-Drop the carrier's active Direct edge to destination. The carrier refuses the next carried call with
+Drop the carrier's active connection to the destination. The carrier refuses the next carried call with
 `connection-lost`; the source writes Proxy Disconnected with that reason, stops selecting that Proxy, and
 either establishes another valid Proxy or exposes no active route.
 

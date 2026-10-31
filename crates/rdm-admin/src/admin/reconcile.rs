@@ -242,7 +242,7 @@ pub async fn give_mesh_node_admin(records: &Records, me: &PathName, view: &RwLoc
 
 /// The mesh no member of which answers (mesh-investigation.md step 5, "No member answers"): a peer mesh
 /// whose investigation decided `unreachable` (no member answered either probe, no carrier reported its
-/// edge to a node-admin lost) is owed node.create of its first node-admin in process here, on the
+/// connection to a node-admin lost) is owed node.create of its first node-admin in process here, on the
 /// investigation's verdict (Q111): the probes reached none of its node-admins, so they are re-created;
 /// the create's own target asks the provider about the birth at the path and decides its data dir
 /// (`R-FM2`). Answers the mesh and the node-admin owed (the mesh's first in path order, or the one the

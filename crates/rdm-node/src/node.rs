@@ -31,8 +31,8 @@ pub fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey> {
 }
 
 /// The core families (Ping, Forward) every node serves, over the process's one `client`.
-pub fn core_protocols(b: ServerBuilder, client: Arc<rdm_transport::NodeRpcClient>, edges: Option<Arc<dyn rdm_transport::CarrierEdges>>) -> ServerBuilder {
-    b.serve_core(client, edges)
+pub fn core_protocols(b: ServerBuilder, client: Arc<rdm_transport::NodeRpcClient>, connections: Option<Arc<dyn rdm_transport::CarrierConnections>>) -> ServerBuilder {
+    b.serve_core(client, connections)
 }
 
 /// A node running on the imported substrate: its endpoint routers, the topology view, Node RPC server and
@@ -1611,9 +1611,9 @@ async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &Topolog
 }
 
 /// Q39's carrier rule as the route policy of one owed declaration (i146 Q52): direct while this node
-/// holds a connected Direct edge to the primary (its connections table, as the route projection answers),
+/// holds a connected Direct connection to the primary (its connections table, as the route projection answers),
 /// else the live peers of the primary's mesh, never the primary and never this birth: the members this
-/// node holds a connected Direct edge to first, else the members it hears; each attempt takes the next
+/// node holds a connected Direct connection to first, else the members it hears; each attempt takes the next
 /// in turn. With no such peer the attempt goes direct.
 fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topology_view: &TopologyView, me: &NodeId, primary: &NodeId, mesh: &str, attempt: u32) -> rdm_transport::route::RouteChoice {
     let connected: Vec<rdm_core::connections::NodeConnection> = held.lock().unwrap().own_latest_directs().into_iter().filter(|c| c.state == rdm_core::connections::ConnectionState::Connected).cloned().collect();

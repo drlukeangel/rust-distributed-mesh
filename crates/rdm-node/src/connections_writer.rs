@@ -69,7 +69,7 @@ type Build = Box<dyn FnOnce(&ConnectionsWriter, ConnectionEnd) -> Option<NodeCon
 enum Origin {
     /// A fact observed of a connection: where (`dial`) and the peer endpoint it was observed with.
     Observed { origin: &'static str, peer: String },
-    /// A drop of an open entry (`node.connection.delete`, an invalid carrier edge).
+    /// A drop of an open entry (`node.connection.delete`, an invalid carrier connection).
     Drop { closed_entry: rdm_core::ConnectionId, reason: String },
 }
 
@@ -721,16 +721,16 @@ impl rdm_transport::AcceptTrigger for ConnectionsWriter {
 }
 
 #[async_trait::async_trait]
-impl rdm_transport::CarrierEdges for ConnectionsWriter {
-    /// The carrier's dial to `node` just failed: the edge is Failed by that very outcome, and the
+impl rdm_transport::CarrierConnections for ConnectionsWriter {
+    /// The carrier's dial to `node` just failed: the connection is Failed by that very outcome, and the
     /// text is the one the fact carries, named without waiting for the fact's write.
-    async fn edge_after_dial(&self, node: &ResolvedNode, reason: &str) -> Option<String> {
+    async fn connection_after_dial(&self, node: &ResolvedNode, reason: &str) -> Option<String> {
         Some(format!("{} -> {} Direct {} ({reason})", self.own().name, node.name, state_name(ConnectionState::Failed)))
     }
 
-    async fn edge_not_active(&self, target: &rdm_core::NodeId) -> Option<String> {
+    async fn connection_not_active(&self, target: &rdm_core::NodeId) -> Option<String> {
         // Answered from what is held: a fact owed and not yet landed is not held, and no read waits
-        // for a write (Q169). A dial's own outcome is named by `edge_after_dial`.
+        // for a write (Q169). A dial's own outcome is named by `connection_after_dial`.
         let held = self.inner.held.lock().unwrap();
         let latest = held.own_latest_directs().into_iter().find(|d| &d.destination.node_id == target)?;
         (latest.state != ConnectionState::Connected).then(|| {
