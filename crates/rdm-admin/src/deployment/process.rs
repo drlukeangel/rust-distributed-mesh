@@ -116,6 +116,15 @@ fn is(pid: u32, start: Option<u64>) -> bool {
     matches!(exact_group(PROC, pid, start), Group::Running | Group::OsStopped)
 }
 
+/// The process `start` names has exited: its group read over `proc` is `Gone`. A group that cannot
+/// be read whole is not proven exited (deployment-provider.md §2.6: unreadable or partial is
+/// `Unknown`): a stop waits on, as inspect answers it. [`is`] is the other question, whether a
+/// process is proven to be the one to signal, where an unreadable identity is not.
+#[cfg(unix)]
+fn gone_at(proc: &str, pid: u32, start: Option<u64>) -> bool {
+    exact_group(proc, pid, start) == Group::Gone
+}
+
 /// The host's process filesystem, which every reader below reads.
 const PROC: &str = "/proc";
 
@@ -524,13 +533,13 @@ impl DeploymentProvider for ProcessDeploymentProvider {
             };
             let until = tokio::time::Instant::now() + grace;
             loop {
-                if !self.running(pid, handle.start).await {
+                if self.exited(pid, handle.start).await {
                     break;
                 }
                 if tokio::time::Instant::now() >= until {
                     signal(pid, libc::SIGKILL);
                     for _ in 0..100 {
-                        if !self.running(pid, handle.start).await {
+                        if self.exited(pid, handle.start).await {
                             break;
                         }
                         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -638,6 +647,17 @@ impl ProcessDeploymentProvider {
     #[cfg(unix)]
     async fn is_ours(&self, pid: u32, start: Option<u64>) -> bool {
         self.running(pid, start).await
+    }
+
+    /// The handle's process has exited: our child's wait returned, or the exact adopted process's
+    /// group is gone. A group that cannot be read whole has not (inspect answers it `Unknown`).
+    #[cfg(unix)]
+    async fn exited(&self, pid: u32, start: Option<u64>) -> bool {
+        let child = self.children.lock().unwrap().get(&pid).filter(|l| start.is_none() || l.start == start).map(|l| l.exit.is_some());
+        match child {
+            Some(exited) => exited,
+            None => crate::blocking::blocking_io(move || gone_at(PROC, pid, start)).await,
+        }
     }
 }
 
@@ -760,6 +780,10 @@ mod tests {
         };
         fixture_proc(&root, 300, 555, &[Some('S'), None]);
         names(exact_group(proc, 300, Some(555)), "300/task/301/stat", "Is a directory");
+        // A stop's wait reads an unreadable group as not exited; only a gone one has.
+        assert!(!gone_at(proc, 300, Some(555)), "an unreadable group is not proven exited: the stop ladder waits on");
+        assert!(gone_at(proc, 999, Some(555)) && gone_at(proc, 200, Some(556)), "a gone or recycled pid has exited");
+        assert!(!gone_at(proc, 100, Some(555)), "a running group has not exited");
         fixture_proc(&root, 400, 555, &[Some('S')]);
         std::fs::write(root.join("400/task/400/stat"), "400 (node").unwrap();
         names(exact_group(proc, 400, Some(555)), "400/task/400/stat", "no state letter in \"400 (node\"");
