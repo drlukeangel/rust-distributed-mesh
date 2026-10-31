@@ -183,7 +183,7 @@ states.md:30 | D2 | "| node stopping | the node's mesh-primary | the stop call's
 states.md:31 | D1 | "| node stopped | the node's mesh-primary | the matching stopped frame on the stop call's stream |" | the node reports stopped in its reply; the MP records and gossips it
 states.md:32 | D3/D4 | "| node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's adopted claim, published as NodeDeleting |" | deleting is the delete workflow's intent overlay (NodeDeleting) from the claim, never a node state
 states.md:33 | D5 | "| node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's exact provider exit proof |" | the deleted row is an external observation from the provider's exit proof; list it apart from node lifecycle states
-states.md:40 | D1 | "The internal report and apply that move a node's status are [node status](node-status.md)." | the node's reply reports its state and the MP records it; no apply moves a node's state
+states.md:40 | D1 | "The internal report and apply that move a node's status are [node status](../../architecture/lifecycles/node-status.md)." | the node's reply reports its state and the MP records it; no apply moves a node's state
 states.md:92 | D3 | "A node that is starting, pending," | a node is never "starting"; that is the start workflow's intent overlay
 states.md:93 | D3 | "connections-deleting, connections-deleted, stopping, stopped or deleting, a NodeStopped," | a node is never "deleting"; NodeDeleting is the delete workflow's intent overlay
 states.md:133 | D6 | "node.get answers Current { parked }." | node.get answers the node's reported state, stopped
@@ -194,7 +194,7 @@ node-start.md:49 | D1 | "refusal of that apply completes no readiness." | readin
 node-start.md:64 | D1 | "[mesh-primary sets Ready]" | "[mesh-primary records and gossips the reported ready]"
 node-start.md:94 | D1 | "Note over M: sets Ready" | "Note over M: records reported ready"
 node-stop.md:33 | D2 | "The stop's visible status is stopping; the child call keeps its events," | during the child call the status is what the node reports (connections-deleting); stopping only once the node reports it
-node-stop.md:68 | D3 | "Inside [node.restart](node-restart.md), the mesh-primary publishes that stop's stopped as" | the MP gossips the node's reported stopped; NodeRestarting may sit beside it as intent, never replace it
+node-stop.md:68 | D3 | "Inside node.restart, the mesh-primary publishes that stop's stopped as" | the MP gossips the node's reported stopped; NodeRestarting may sit beside it as intent, never replace it
 node-restart.md:16 | D3 | "Mesh-primary authors NodeRestarting, including from stop's stopped; never NodeStopped for this restart" | the reported stopped is gossiped as stopped; NodeRestarting is only an intent overlay on top of it
 node-restart.md:27 | D3 | "workflow's stopped the mesh-primary publishes NodeRestarting instead of NodeStopped." | the MP publishes the reported stopped, with the restart intent overlay kept alongside it
 node-restart.md:39 | D3 | "[stop's stopped published as NodeRestarting]" | "[stop's reported stopped published; NodeRestarting overlay retained]"
@@ -205,18 +205,18 @@ node-delete.md:27 | D4 | "For a crashed process those stop steps are already don
 node-delete.md:32 | D5 | "writes the node's row with status deleted;" | the durable deleted row records the provider's exit proof, an external observation, not a node-reported status
 node-mesh-join.md:29 | D3 | "the node publishes nothing in that state" | joining is the primitive's progress, not a node state; the node's state stays what it last reported
 node-mesh-join.md:67 | D3 | "that held it stopped or restarting hears the rejoin." | peers held it stopped (possibly under a NodeRestarting intent overlay); restarting is not a state
-node-mesh-join.md:213 | D1 | "Ready is set by the mesh-primary after `node.started` ([node status](node-status.md))," | the node reports ready with node.started; the MP records and gossips it
+node-mesh-join.md:213 | D1 | "Ready is set by the mesh-primary after `node.started` ([node status](../../architecture/lifecycles/node-status.md))," | the node reports ready with node.started; the MP records and gossips it
 node-mesh-leave.md:18 | D2 | "connections-deleted: `node.connections.delete { All }` completed with its receipt (`Established`, or `Deadline` with the held ids recorded)" | entry needs the node's reported connections-deleted (Established); a Deadline receipt leaves the node connections-deleting
 node-mesh-leave.md:21 | D3/D6 | "`leaving` from the command until the mesh is left (and the backbone, a node-admin); the node publishes nothing in that state" | leaving is the primitive's progress, not a node state
 node-connections-delete.md:18 | D1 | "Status connections-deleting, then connections-deleted, set by the node's mesh-primary" | the node reports each state as it executes; the MP records and gossips them
-node-connections-delete.md:21 | D2 | "| Entry (`All`) | The [connections-deleting](states.md#who-sets-each-state) status, set at the call's admission |" | connections-deleting begins when the node reports entering the closure; admission is not a state
+node-connections-delete.md:21 | D2 | "| Entry (`All`) | The [connections-deleting](../../architecture/lifecycles/states.md#who-sets-each-state) status, set at the call's admission |" | connections-deleting begins when the node reports entering the closure; admission is not a state
 node-connections-delete.md:67 | D1/D2 | "The node's mesh-primary sets connections-deleting when it accepts the call." | the node enters connections-deleting as it executes and reports it; the MP records the report
 node-connections-delete.md:75 | D1 | "The node's mesh-primary sets connections-deleted from that completion." | the MP records the connections-deleted that the node reports in that completion
-node-connections-delete.md:81 | D4 | "attempt, or [node.stop](node-stop.md), leaves that state;" | the node leaves connections-deleting only when it reports a new state
+node-connections-delete.md:81 | D4 | "attempt, or [node.stop](../../architecture/lifecycles/node-stop.md), leaves that state;" | the node leaves connections-deleting only when it reports a new state
 node-status.md:5 | D1/D2 | "The internal status report and apply; not a caller op. Status moves only through the" | status changes only as the node executes; the node reports it and the MP records it, with no apply
 node-status.md:26 | D1 | "A node reports to its mesh's primary, which sets its status." | "… which records and gossips the state the node reported"
 node-status.md:34 | D1 | "| Caller / receiver | The node's mesh-primary, downward to the exact accepted node |" | there is no downward status apply; state flows up in the node's replies
-node-status.md:36 | D2 | "connections-deleting is entered only by [node.connections.delete](node-connections-delete.md) with `{ scope: All }`" | the node enters connections-deleting while executing the All closure and reports it
+node-status.md:36 | D2 | "connections-deleting is entered only by [node.connections.delete](../../architecture/lifecycles/node-connections-delete.md) with `{ scope: All }`" | the node enters connections-deleting while executing the All closure and reports it
 node-status.md:40 | D1 | "Workflow actions run the status apply; how a node leaves the stopped status is" | workflows send commands; the node's replies report the state it reached
 node-status.md:43 | D1 | "On the applied status the node adjusts its lifecycle admission." | the node changes its own state and admission as it executes and reports the result
 node-recovery.md:43 | D6 | "any answer from the exact birth (`Current`, `CurrentParked` or" | a stopped node answers Current with its reported state, stopped
@@ -259,7 +259,7 @@ mesh-create.md:188 | D2 | "Mesh Pending | fabric-primary | the Ping, then `Apply
 mesh-create.md:190 | D1 | "Mesh Ready | fabric-primary, node-admin | `ApplyMeshState(Ready)`" | the reporting actor is the mesh-primary; the fabric-primary only records
 mesh-delete.md:19 | D3 | "Mesh state | `mesh.deleting`: the mesh-primary publishes its mesh's status, deleting" | mesh.deleting is a step/event name and deleting is a workflow-intent overlay, not a mesh state
 mesh-delete.md:25 | D3 | "its final mesh topology, the mesh deleted and itself deleting, is its last gossip" | deleting is an overlay; the mesh topology carries the admin's reported state plus the intent overlay
-mesh-delete.md:26 | D5 | "A mesh's deleted and a node's deleted release names as [States](states.md) states" | a node's deleted is the durable row from the provider's exit proof, an observation, not a node state
+mesh-delete.md:26 | D5 | "A mesh's deleted and a node's deleted release names as [States](../../architecture/lifecycles/states.md) states" | a node's deleted is the durable row from the provider's exit proof, an observation, not a node state
 mesh-delete.md:38 | D3 | "`mesh.deleting`: the mesh-primary publishes its mesh's status, deleting, as its MeshStatus frame." | deleting is a workflow-intent overlay, not a published mesh status
 mesh-delete.md:53 | D3 | "its final mesh topology, the mesh deleted and itself deleting, is its last gossip: the node.delete's NodeDeleting in mesh topology form" | NodeDeleting is an event and deleting an overlay; neither is the member's state
 mesh-delete.md:55 | D5 | "fabric-primary stops it, proves its exit and writes its row deleted" | it records the provider's exit proof and writes the deleted row from that proof
@@ -293,7 +293,7 @@ fabric-ready.md:49 | D4 | "M->>B: traffic-opening" | same
 ### 6.3 gossip.md and node-identity-and-state.md (47)
 
 ```text
-gossip.md:6 | D1 | "Fabric, mesh and node lifecycle states and who sets them are defined only in [States](lifecycles/states.md#states)." | States should define who reports node states (the node) and who records them (the MP)
+gossip.md:6 | D1 | "Fabric, mesh and node lifecycle states and who sets them are defined only in [States](../../architecture/lifecycles/states.md#states)." | States should define who reports node states (the node) and who records them (the MP)
 gossip.md:152 | D1 | "a heartbeat never carries or moves a status, and a member's status comes only from its mesh-primary" | a member's status is the node's own report, which its mesh-primary records and gossips
 gossip.md:153 | D1 | "In `digests`, each member is a projection entry `{ digest, status }`, the status authored by the mesh-primary alone." | the status is the state the node reported, and the mesh-primary is its only publisher
 gossip.md:153 | D3 | "and NodeStopped until the next lifecycle op on that exact birth" | stopped is a state the node reports; carry it as the member's status, not in in_flight next to intent overlays (§3 P6)
@@ -315,7 +315,7 @@ gossip.md:345 | D3 | "at `mesh.deleting` the mesh-primary publishes its mesh's s
 gossip.md:364-365 | D1,D2 | "each member's own state as its node.delete moves it" | each member's state as that member reports it while node.delete runs
 gossip.md:367-368 | D5 | "A member's NodeDeleted moves it to `deleted`, where it resolves Gone for the deleted retention." | the deleted row comes from the provider's exit proof; NodeDeleted spreads that observation and moves no node state
 gossip.md:680 | D5 | "A known exact deletion is membership state and a lifecycle event, never a second gossip protocol." | a deletion is the provider's exit-proof observation spread by an event, not a node lifecycle state
-gossip.md:807 | D1 | "[States](lifecycles/states.md#states) owns the lifecycle states, who sets them, the rounds and" | who reports the states (the node) and who records them (the MP)
+gossip.md:807 | D1 | "[States](../../architecture/lifecycles/states.md#states) owns the lifecycle states, who sets them, the rounds and" | who reports the states (the node) and who records them (the MP)
 node-identity-and-state.md:21-22 | D1 | "Its mesh-primary sets a node's status from the node's reports on its workflow's reply stream" | the source is right but "sets" is wrong: the mesh-primary records the status the node reports
 node-identity-and-state.md:158-159 | D5 | "The node's mesh-primary writes the row with status deleted, keeping the record and its config;" | the deleted row is written from the provider's exit proof, an external observation, not a reported status
 node-identity-and-state.md:203-205 | D1,D5 | "a member that died, was deleted, or moved. That is a membership event in its own mesh's rows, authored by that mesh's own primary" | death and deletion are observations or provider proof; state changes are the node's reports; the MP records each kind separately
@@ -349,7 +349,7 @@ node-rpc.md:625 | D6 | "The protocol supplies constructors for shared states and
 node-rpc.md:908 | D3/D6 | "Lifecycle vocabulary is fixed:" (:911-914 map not initialized=NotReady, overloaded=Busy, op not served=Unserved) | runtime refusal or reply classes, not lifecycle vocabulary; envelope :321 says NotReady "is never a lifecycle fact"
 node-rpc-envelope.md:245 | D6 | "Current; stopped answers CurrentParked; no event" | a stopped node answers Current { state: stopped }; drop "parked"
 node-rpc-envelope.md:253 | D3 (mesh) | "mesh.deleting, mesh.deleted" | "deleting" is a workflow-intent word; as a published event it reads as a state (P9)
-node-rpc-envelope.md:278 | D1 | "| `status` | RDM | [node status](lifecycles/node-status.md) only | — | that status's own completion |" | status comes from the node's own report; the MP records and gossips it; RDM does not set it
+node-rpc-envelope.md:278 | D1 | "| `status` | RDM | [node status](../../architecture/lifecycles/node-status.md) only | — | that status's own completion |" | status comes from the node's own report; the MP records and gossips it; RDM does not set it
 node-rpc-envelope.md:302 | D3 | "Mesh and fabric workflows compose node.stop and node.delete as [mesh.delete] and [fabric.delete] state" | mesh.delete and fabric.delete are workflows that compose node workflows, not "state"
 node-rpc-envelope.md:571 | D1 | "Direction: upward for declarations; downward for applies and probes." | node state goes upward as the node's report; downward calls are commands or probes, none applies a state (P4)
 node-rpc-envelope.md:571 | D1 | "Every node's status, node-admins included, is set by its mesh's primary on the node's report, and the mesh-primary sets its own" | each node reports its own status; its mesh-primary records and gossips that report

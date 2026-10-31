@@ -16,10 +16,15 @@ another file is named.
 - **Searching Jaeger.** Filter on `build_id`; every step of the change is on the Build's trace. A
   provider's secrets never appear in a span.
 - **Where the records are.** On the `file` provider a fabric's root is `<RDM_STORE_DIR>/<fabric id>/`:
-  `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, the `layout`
+  `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`,
+  `node-records.jsonl`, the `layout`
   marker and `locks/`. Another registered name has the place its registration gives it.
-- **No timer ends a block.** A change that does not progress holds every mesh-primary blocked until
-  the step it waits on completes. Nothing here is fixed by waiting for a timeout.
+- **A completed block requires every required birth's freeze.** The existing unanswered-command
+  clock and node investigation/recovery resolve a birth that cannot answer; the mesh is not reported
+  blocked while that freeze is unanswered. A stopped process still has a Node RPC endpoint. An
+  OS-paused or exited process cannot acknowledge its own freeze. Do not bypass investigation or
+  invent a second timer or an additional unresolved-investigation state. Once a block is complete,
+  no timer silently releases it; the matching storage operation or rollback does.
 
 ## Reading a change's progress
 

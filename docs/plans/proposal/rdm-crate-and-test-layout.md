@@ -1,7 +1,7 @@
 # RDM crate and test layout
 
 **Proposal.** This page sits one layer above
-[rdm-code-conformance.md](/home/admin/rafka-v2/docs/plans/proposal/rdm-code-conformance.md).
+[rdm-code-conformance.md](rdm-code-conformance.md).
 That page says what each workflow, primitive and name becomes (its §0.1 workflows call primitives,
 §1 renames, §2 behaviour). This page says which crate and which test file each one lives in, what
 leaves the RDM crates for the demo, how the build gets fast, and the order of the landings that get
@@ -44,7 +44,7 @@ Findings:
    - The test kit in turn takes `node_self`, `join`, `app_hydration`, `topology_read`, `rafka_time`,
      `deployment`, `certs` and five more modules from `rafka-node-admin-core`.
    - So a role process links the 55k-line admin crate and the test kit.
-   - [build.md, "Packages"](/home/admin/rafka-v2/docs/architecture/build.md) says the test kit is
+   - [build.md, "Packages"](../../architecture/build.md) says the test kit is
      "the generic RPC proof node, proof protocols and probes": a proof package, not the product runtime.
 2. **Node code sits in the admin crate.**
    - `node_self.rs` (1,100 lines; "Every node kind runs this one logic"), `node_name.rs`

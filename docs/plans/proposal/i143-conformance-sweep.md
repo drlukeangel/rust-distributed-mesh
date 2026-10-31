@@ -79,17 +79,17 @@ Each difference: page:line, what it says, what the code does (file:line on main)
 
 A. node-runtime-inspect.md (item 1). Delete :16-17
    `- the boot of a node-admin on an inherited data dir, on the old birth of that dir`
-   `  ([fabric recovery](fabric-recovery.md)).`
+   `  ([fabric recovery](../../architecture/lifecycles/fabric-recovery.md)).`
    In :25 (Caller) delete `, the booting node-admin for the old birth on its own data dir`; in :30 (What
    follows) delete `; a boot on an inherited dir proceeds as recovery`. (fabric-recovery.md "Nothing
    alive" already says every node the store names is re-created, never waited for.)
 B. node-runtime-inspect.md :32 (item 2): after `verdict (... / unavailable),` add `` `caller` (`terminate` or `delete` when a delete asks), ``.
 C. node-tickle.md (item 3), :26 Ladder:
-   old `Direct first. On failure, the same probe carried by [Forward](...) through up to two eligible live peers of the node's mesh, both at once; one failed peer probe does not cancel the other`
-   new `Direct first. On failure, the same probe carried by [Forward](...) through up to two peers at once: the leads first (nodes in any mesh holding a connection to the birth, [node investigation](node-investigation.md) step a), then eligible live peers of the node's mesh; one failed peer probe does not cancel the other`
+   old `Direct first. On failure, the same probe carried by [Forward](../../architecture/node-rpc-envelope.md) through up to two eligible live peers of the node's mesh, both at once; one failed peer probe does not cancel the other`
+   new `Direct first. On failure, the same probe carried by [Forward](../../architecture/node-rpc-envelope.md) through up to two peers at once: the leads first (nodes in any mesh holding a connection to the birth, [node investigation](../../architecture/lifecycles/node-investigation.md) step a), then eligible live peers of the node's mesh; one failed peer probe does not cancel the other`
 D. node-tickle.md (items 4, 5): delete :12-13 (the mesh investigation bullet), :15 (the
    node.primary.update bullet) and :17-19 ("Mesh investigation is this primitive ... the primitive does
-   not."); add to the run-by list `- [node.delete](node-delete.md)'s path fence before a create over an
+   not."); add to the run-by list `- [node.delete](../../architecture/lifecycles/node-delete.md)'s path fence before a create over an
    unheard birth (through node investigation).`
 
 # Decisions open (Luke)
@@ -101,6 +101,6 @@ D. node-tickle.md (items 4, 5): delete :12-13 (the mesh investigation bullet), :
 - Item 16: which page owns an unheard mesh-primary's investigation (recommendation: node-recovery.md,
   the code's; elections §4.1 :115 then reads "The mesh-primary then runs node investigation on an
   unheard member, whatever its type; an unheard mesh-primary's is the fabric-primary's
-  ([node recovery](lifecycles/node-recovery.md) step 2)").
+  ([node recovery](../../architecture/lifecycles/node-recovery.md) step 2)").
 - Items 10-12, 15: fabric recovery's degraded publication, the "tells it" op, the lane, the launched
   admin's self-restore: page text to match the code, or code to match the page.

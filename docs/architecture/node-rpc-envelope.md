@@ -343,11 +343,11 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [node.mesh.leave](lifecycles/node-mesh-leave.md) | Standalone, [NodeCommand 0x22](#nodecommand-op-0x22-rdm) `LeaveMesh`, exact-node hop only, server-streaming: `CommandAccepted` (leaving), then `MeshLeft { node_id, incarnation, left }` (Terminal); node.stop and node.delete end their live part with it, and inside a stop its `Leaving` and `StopMeshLeft { left }` are Data frames on the stop's stream | node.mesh.left; `BusyHoldingConnections { connections }` while the node holds a connection | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.tickle](lifecycles/node-tickle.md) | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) direct, and the same probe through up to two live peers of the node's mesh on [Forward 0x1A](#forward-op-0x1a-core) | `reached { answer }` or `unreached`; no event, and unreached is never death | `OK` for a served probe; unreached retains its typed delivery code |
 | [node.runtime.inspect](lifecycles/node-runtime-inspect.md) | The deployment provider's inspect of the runtime handle recorded at launch; not a Node RPC | `running`, `os-stopped`, `exited { code }` or `unavailable { reason }`, node investigation's provider verdict; no event | — (typed provider result; no Node RPC) |
-| node.get | [Read 0x23](#read-op-0x23-rdm) `Get { entity: Nodes, filter }`, streamed in `Nodes` frames: every node row the answering admin holds that matches every pair, by path.name; no pair is every node of the fabric, its topology; a pair names any field of the node-properties table by its name, config entries as `config.<key>`; `tags` matches a node carrying the value, repeated for all of; a node's tags, config and cert are fields of its row; node.get is answered by the fabric-primary from its atlas, never from the node store: it fills the atlas from the node records once, at its start or hand-over, and each op writes it after that | the rows, `NodeView`; a stopped node answers `stopped`; no event | `OK`, the empty list when nothing matches; an unknown property, a value the field cannot take or an empty values list `INVALID_ARGUMENT` naming the pair; a row past one frame `RESOURCE_EXHAUSTED` naming it |
+| node.get | [Read 0x23](#read-op-0x23-rdm) `Get { entity: Nodes, filter }`, streamed in `Nodes` frames: every node row the answering admin holds that matches every pair, by path.name; no pair is every node of the fabric, its topology; a pair names any field of the node-properties table by its name, config entries as `config.<key>`; `tags` matches a node carrying the value, repeated for all of; a node's tags, config and cert are fields of its row; node.get is answered by the fabric-primary from shared records: current pair resolution uses the name claim and installed election result, then the exact writer-birth lifecycle record and the node-owned properties; missing current-writer evidence is unavailable, never a cached predecessor | the rows, `NodeView`; a stopped node answers `stopped`; no event | `OK`, the empty list when nothing matches; an unknown property, a value the field cannot take or an empty values list `INVALID_ARGUMENT` naming the pair; a row past one frame `RESOURCE_EXHAUSTED` naming it |
 | [node.topology.get](lifecycles/node-topology-get.md) | [GetTopology 0x1E](#topology-op-0x1e-rdm); complete source snapshot read | complete read result; no event | `OK`; unknown subject `NOT_FOUND`, read bound `RESOURCE_EXHAUSTED` |
 | [node.name.update](lifecycles/node-name-update.md) | Rename, to the node's mesh-primary; frames `UpdateName` and `ApplyNodeName` on [0x1B](#status-op-0x1b-rdm); the node admits no connection | node.name.updated; `NameHeld { by }`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation` | `OK`; NameHeld `ALREADY_EXISTS`, stale `ABORTED`, invalid name `INVALID_ARGUMENT`, other state refusal `FAILED_PRECONDITION` |
 | node.connection.get { node } / [node.connection.delete](lifecycles/node-connections-delete.md) | `node.connection.get { node }` answers the exact birth's own connections from its connections log, the node (id, incarnation) the read's address and the filter over id, destination, kind and state, [Read 0x23](#read-op-0x23-rdm) `GetConnections { node, incarnation, filter }`, streamed in `Connections` frames; `node.connection.delete { scope: All }` or `{ scope: Connections([connection id, …]) }`. `All` is graceful closure of every open connection of the node, each open Direct or Proxy entry of its connections log (gossip neighbours and the Node RPC pool are not connections), with status connections-deleting then connections-deleted and the [order and deadline](lifecycles/node-connections-delete.md#numbered-end-to-end-sequence) of that page; `Connections` closes exactly the named connections, by the minted id of their open entry as node.connection.get returns them; an empty list is refused by name. The endpoint and an active stop stream stay open; each drop is written under the node's current name; the caller's carrier to the node's mesh-primary is [Status 0x1B](#status-op-0x1b-rdm): StatusRequest position 21 `DeleteConnections`, answered by StatusReply position 31 `ConnectionsDeleted`, or by position 32 `RejectedConnectionScope` for a scope that names nothing the node can cut; the mesh-primary carries it to the exact node on NodeCommand 0x22 | read result / node.connection.deleted, naming every id it closed and every id it did not know or found already closed; for `All`, carrying a `ConnectionsReceipt`: `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }` | call `OK` when served; closed `OK`, not_open `NOT_FOUND`; `All` Deadline `DEADLINE_EXCEEDED` |
-| node.tag.get/create/delete | A node's tags are its own property, not config. `node.tag.get` answers the node's labels; `node.tag.create { label \\| [labels] }` adds one label or a list; `node.tag.delete { All \\| [labels] }` removes every label or the named ones, the same scope shape as `node.connection.delete`. One item or a list, uniform: a single item is the same as a list of one. Each label is its own keyed row (label, node id) in the node store's tags index. Create is a blind put of that key, so creating a label the node already carries is ignored and writes no duplicate; delete tombstones the named keys. A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.', and a node carries at most 32; a label outside that grammar, or one past the 32, is refused by name and nothing is written; frames `CreateTags { node_id, incarnation, labels }` and `DeleteTags { node_id, incarnation, scope: All \| Labels }` on 0x1B, replies `TagsCreated { node_id, incarnation, already_carried }` and `TagsDeleted { node_id, incarnation, not_carried }` | read result / create: the reply names each label the node already carried, AlreadyApplied for those | call `OK` when served; already_carried `ALREADY_EXISTS`, not_carried `NOT_FOUND`, applied label `OK`; invalid label `INVALID_ARGUMENT` |
+| node.tag.get/create/delete | A node's tags are its own property, not config. `node.tag.get` answers the node's labels; `node.tag.create { label \\| [labels] }` adds one label or a list; `node.tag.delete { All \\| [labels] }` removes every label or the named ones, the same scope shape as `node.connection.delete`. One item or a list, uniform: a single item is the same as a list of one. The node's serialized property writer adds or removes labels in its own durable property record. Adding an existing label is AlreadyApplied and creates no duplicate; deletion preserves other owned fields. A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.', and a node carries at most 32; a label outside that grammar, or one past the 32, is refused by name and nothing is written; frames `CreateTags { node_id, incarnation, labels }` and `DeleteTags { node_id, incarnation, scope: All \| Labels }` on 0x1B, replies `TagsCreated { node_id, incarnation, already_carried }` and `TagsDeleted { node_id, incarnation, not_carried }` | read result / create: the reply names each label the node already carried, AlreadyApplied for those | call `OK` when served; already_carried `ALREADY_EXISTS`, not_carried `NOT_FOUND`, applied label `OK`; invalid label `INVALID_ARGUMENT` |
 | node.config.get/update | Application config read / full-map put; the [config update sequence](lifecycles/node-config-update.md); dedicated request mapping is open | read result / node.config.updated | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
 | [node.cert.renew](lifecycles/node-cert-renew.md) | The mesh-primary, as issuer, to the exact birth: [Status 0x1B](#status-op-0x1b-rdm) `RenewCert { node_id, incarnation, cert }`, answered `CertRenewed`; the node installs the cert and presents it on every connection it opens after; nothing is terminated | node.cert.renewed; a named refusal for another birth or an undecodable cert | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.issuer.update](lifecycles/node-issuer-update.md) | The fabric-primary to one node-admin, exact birth, the mesh-primary directly and any other admin as a forwarded call through the mesh-primary ([Forward 0x1A](#forward-op-0x1a-core)): [Status 0x1B](#status-op-0x1b-rdm) `UpdateIssuer { node_id, incarnation, key, cert }`, answered `IssuerUpdated`; refused by name for another mesh or another birth | node.issuer.updated | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
@@ -387,36 +387,34 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 |---|---|---|---|---|
 | `node.id`, `incarnation`, `endpoint`, `transport_addr`, the runtime handle | RDM at birth | nothing | — | — |
 | `status` | RDM | [node status](lifecycles/node-status.md) only | — | that status's own completion |
-| `path`, `mesh`, `node_type` | the create spec | nothing: immutable for the node's life. `node.name.update` carries the name only, so the path cannot move by construction | — | — |
-| `name` | the create spec | **`node.name.update { node_id, incarnation, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1) | `node.name.updated` |
-| `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the claim); on replace the successor's are its Build entry's, written at its claim | `node.tag.create { label \| [labels] }` adds; `node.tag.delete { All \| [labels] }` removes. Additive and removal commands on keyed label rows, not a replacement of a tags property | none | `node.tag.created` / `node.tag.deleted` |
-| `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own goes up through its mesh-primary; a Build whose spec names a different map applies it as a caller's, superseding the node's current map (build.md §1, Q236) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
+| `path`, `mesh`, `node_type` | the create spec | path, mesh and node_type are immutable; node.name.update changes only name and refuses a supplied path different from the registered path | — | — |
+| `name` | the create spec | **`node.name.update { node_id, incarnation, path, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1) | `node.name.updated` |
+| `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the claim); on replace the successor applies its Build entry through its own property writer | `node.tag.create { label \| [labels] }` adds; `node.tag.delete { All \| [labels] }` removes. The node's property writer applies the label change to its own current tag set and persists it with its other owned fields | none | `node.tag.created` / `node.tag.deleted` |
+| `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own is a local durable property write; a Build applies config and tags together through ApplyNodeProperties with durable semantic entry recognition; the same Build preserves later updates, and a later Build can supersede them (build.md §1, Q236) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
 | `types` | the birth's [JoinNode](#join-op-0x1d-rdm): what it declared; empty for a node-admin | nothing: a different declaration is a restart. `node.get` answers it whole | — | — |
 | `held`, `held_hash` | RDM: the types the node has joined ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); equal to `types` for an ordinary node; for a node-admin the union of its nodes' declarations and what it read from other node-admins. `held_hash` is blake3 of the sorted set and rides the row's digest (32 bytes; no list rides gossip) | RDM, as members join; grows, never shrinks within a birth; never a put. `node.get` answers `held` whole | — | — |
 | `is_primary` | the election's result, recorded by the mesh-primary | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
 | `is_fabric_primary` | the election's result, recorded by the node-admin on its own row | `node.fabric-primary.update` | node.fabric-primary.update's | `node.fabric-primary.updated` |
 | connections | — (data plane, never a property) | `node.connection.delete { All \| [ids] }` | — | `node.connection.deleted` |
 
-`node.get` answers the whole node. Nothing above is PATCH: a rename replaces the name, a tag command adds or removes whole labels on their own rows, a config update replaces the whole map, and each runs once through the one writer.
+`node.get` answers the whole node. Nothing above is PATCH: a rename replaces the name, a tag command adds or removes whole labels through the node's property writer, a config update replaces the whole map, and each runs once through the one writer.
 
 Status moves only through [node status](lifecycles/node-status.md), never a put. A new exe requires a new node.
 
-node.config is application attributes, a property bag; a node's tags are its own property, not config. Config is distinct from join's cert/time
-and the topology read. Config is a map of name to value; a body that names a key twice keeps the
-last value, `admin_api_base` included. It is a field of the node record, held by the fabric-primary in its atlas, and never in the
-digest. RDM never reads it. The
-[config update sequence](lifecycles/node-config-update.md) is a single call, not a Build. A
-node's first config is its create spec's, written to its row at the claim; a node recovered at a
-path.name inherits the config of the row it takes over, with its tags; a replacement's successor starts
-with its Build entry's; a rejoining node gets it back in its join answer.
+node.config is an application property bag, separate from tags, join cert/time and topology.
+Config is a map of name to value; duplicate keys take the last value, including `admin_api_base`.
+The node persists it in its own property record. Neither primary holds a copy in its atlas and the
+map is never carried in the digest. RDM stores application values without interpreting them.
+The initial entry is retained with the claim and applied by the node; recovery inherits acknowledged
+properties and application recognition, replacement uses its Build entry, and a retained own record
+survives startup. The [config update sequence](lifecycles/node-config-update.md) owns application.
 
-The row's revision, stepped by the mesh-primary on every write of the row, orders every install of
-the map (Q235): `ApplyNodeConfig`, `ConfigUpdated` and `ConfigRowRefused` carry it with the map, and a
-recipient installs a map only over an older revision. A node's own update is pushed up as
-`NodeConfigUpdated` ([Status](#status-op-0x1b-rdm) request position 34), upward from the node's
-mesh-primary to the fabric-primary and owed until answered: `Applied` when the fabric-primary's atlas
-took it, `AlreadyApplied` when the atlas holds that revision or a newer one, `RejectedNotPrimary` at
-any other admin.
+Node-property and lifecycle records and their completion replies have no record revision. The node
+serializes local config, caller config, tags and Build entry effects through its property writer.
+A Build's config, tags and application identity are one durable put, so a lost reply cannot make
+its retry overwrite a later update. The exact target and workflow completion remain receipted.
+`NodeConfigUpdated` is not an upward delivery route. The existing election `Primary.revision`
+is independent of property/lifecycle records and remains part of the election result.
 
 ### Open typed object questions
 
@@ -805,7 +803,7 @@ pub enum StatusRequest {
     Reserved15 { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 15, reserved (Q174): refused by name, never executed
     StartNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 16, reserved: refused by name, never executed
     UpdateNodeConfig { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String> },
-    ApplyNodeConfig { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String>, revision: u64 },
+    ApplyNodeConfig { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String> },
     ApplyNodeName { node_id: NodeId, incarnation: IncarnationId, name: String },
     UpdateName { node_id: NodeId, incarnation: IncarnationId, name: String },
     DeleteConnections { node_id: NodeId, incarnation: IncarnationId, scope: ConnectionScope },
@@ -821,7 +819,7 @@ pub enum StatusRequest {
     UpdateIssuer { node_id: NodeId, incarnation: IncarnationId, key: IssuingKeyHex, cert: String },
     GetAtlas,
     Get { entity: Entity, node: Option<(NodeId, IncarnationId)>, filter: Filter }, // position 33: reserved: every entity is read on 0x23 (Q285), refused here by name
-    NodeConfigUpdated { node_id: NodeId, config: BTreeMap<String, String>, revision: u64 }, // position 34: a node's row pushed up
+    Reserved34 {}, // removed upward property-copy route; never sent
 }
 
 // The reads (one read per entity): fabric.get, mesh.get, node.get and node.connection.get { node }.
@@ -902,9 +900,9 @@ pub enum StatusReply {
     Started,
     StartFailed { step: String, reason: String },
     CurrentStopped { node_id: NodeId, incarnation: IncarnationId },
-    ConfigUpdated { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String>, revision: u64 },
+    ConfigUpdated { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String> },
     Reserved22 { keys: u32, bytes: u32, max_keys: u32, max_bytes: u32 }, // position 22, reserved (Q203): never sent
-    ConfigRowRefused { node: String, reason: String, config: BTreeMap<String, String>, revision: u64 },
+    ConfigRowRefused { node: String, reason: String, config: BTreeMap<String, String> },
     ConfigNotApplied { node: String, answered: String, reason: String },
     Blocked { node_id: NodeId, incarnation: IncarnationId, reason: String, retry_on: RetryOn },
     NameUpdated { node_id: NodeId, incarnation: IncarnationId },
@@ -1216,7 +1214,7 @@ pub enum TopologyReply {
     Stored { mesh: String, mesh_id: Option<MeshId>, nodes: Vec<StoredNode> },
     Primaries { kind: PrimaryKind, primary: Primary, gone: bool },
     RafkaTime { ms: u64, kind: Option<PrimaryKind> },
-    OwnRow { node: NodeView, revision: u64 },
+    OwnRow { node: NodeView },
 }
 
 // A primary as the topology answers it (the election's result the mesh-primary
@@ -1257,14 +1255,13 @@ each as an election input before it computes any (elections §3), over an older 
 gone birth as lost: a node-admin started by a launch takes its recorded primaries here, never
 from the store (Q227).
 
-OwnRow is reply position 14. A read by a node of its OWN mesh-primary answers one OwnRow,
-after RafkaTime and before End: the reader's whole row as the mesh-primary's Atlas holds it
-(every node property: config, tags, executable, storage, placement, listeners, status,
-primaries) with the row's revision, never read from the store; it is not a mesh and End.meshes
-does not count it. The reader installs it on its own entry in its topology over an older
-revision (Q234). A read served by any other node answers
-no OwnRow. An OwnRow over the frame bound is not sent: the read span records `own_row` as
-`too-large` and the read still ends.
+OwnRow is reply position 14. A read by a node of its own mesh-primary answers its own
+lifecycle/topology context before End; this is not a mesh and End.meshes does not count it.
+The serving primary reads the selected lifecycle and property records rather than an atlas-held
+row. There is no row revision to compare. The node's property writer preserves its retained own
+properties and application recognition; a startup snapshot cannot overwrite later local changes.
+A reply beyond the existing frame bound is not silently truncated: the read span records
+`own_row=too-large` and the read ends without installing partial context.
 Serving: `crates/rdm-node/src/topology_read.rs::StoredMap` and
 `crates/rdm-node/src/topology_read.rs::TopologyDoor`.
 
@@ -1334,7 +1331,7 @@ pub enum ReadReply {
 
 The stream is Started, then the data frames `Nodes`, `Meshes`, `Fabrics` or `Connections`, then End. The answer is
 the read's every matching row, captured once in its stable order (by path.name, by name), from the
-answering admin's atlas as [query.md](query.md) states, or carried to the primary that holds it (Q224,
+selected shared records as [query.md](query.md) states, or carried to the primary that holds it (Q224,
 Q243) on this same op; it is never bounded as one frame. The rows are packed in order into data frames
 that each fit the frame ceiling, by the one packer the Build facts and topology snapshots share. A row
 that fits no frame alone is `ReadOverBound` naming it (`RESOURCE_EXHAUSTED`), and nothing of the read is
@@ -1888,7 +1885,7 @@ pub enum OriginateReply {
     StreamFailed { by: AnsweredBy, reason: String },
     TransportStopMarked { by: AnsweredBy, reason: String },
     DirectBlocked { by: AnsweredBy, destination: String, blocked: bool },
-    OwnConfigUpdated { by: AnsweredBy, outcome: String, config: BTreeMap<String, String>, revision: u64 },
+    OwnConfigUpdated { by: AnsweredBy, outcome: String, config: BTreeMap<String, String> },
 }
 ```
 ## The ledger row

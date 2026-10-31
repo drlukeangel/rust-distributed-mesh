@@ -7,7 +7,7 @@ told about it.
 
 The contract is in these pages; this runbook only gathers them:
 - [deployment-provider.md §4](../architecture/deployment-provider.md#4-storage-policy-and-the-data-dir), storage policy and the data dir;
-- [node-restart.md](../architecture/lifecycles/node-restart.md) and [node-start.md](../architecture/lifecycles/node-start.md);
+- [node-stop.md](../architecture/lifecycles/node-stop.md) and [node-start.md](../architecture/lifecycles/node-start.md);
 - [node-recovery.md](../architecture/lifecycles/node-recovery.md), with its data-dir rules (`R-FM2`);
 - [node-replace.md](../architecture/lifecycles/node-replace.md) and [build-deployment.md](../architecture/build-deployment.md);
 - [node-delete.md](../architecture/lifecycles/node-delete.md);
@@ -33,7 +33,6 @@ The contract is in these pages; this runbook only gathers them:
 | Operation | node.id, incarnation | Data dir | Endpoint key | `pre_node_ready` |
 |---|---|---|---|---|
 | `node.stop` then `node.start` | same | same | same | runs again, `start_kind = AfterStop` |
-| `node.restart` | same; the process never exits | same | same, and the same bound port | runs again, `start_kind = AfterStop` |
 | node recovery, verdict `exited` (a re-birth) | new; same path.name | the old one, inherited | the old one, loaded from it | `FirstStart`, `inherited = true` |
 | node recovery, any other verdict but `os-stopped` | new; same path.name | newly allocated | newly minted | `FirstStart`, `inherited = false` |
 | node recovery, the old data dir absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors | new; same path.name | newly allocated beside the old path; `data-dir-lost { path, since }` recorded | newly minted (the old one is never re-minted) | `FirstStart`, `inherited = false` |
@@ -70,7 +69,7 @@ with its own commit boundary (node-replace.md, "Data transfer").
 
 ## Checking a broker restart
 
-1. Confirm which operation ran. A `node.restart` keeps the node.id and incarnation. A re-birth at
+1. Confirm which operation ran. A `node.stop` followed by `node.start` keeps the node.id and incarnation. A re-birth at
    the same path.name shows new ones.
 2. For a restart: the process never exited, and the data dir and port are unchanged. If the broker's
    data is missing afterwards, the broker's own stop and start released or rewrote it. RDM did not

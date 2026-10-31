@@ -4,6 +4,11 @@ One index for an application built on RDM. Each line answers one "how do I…"
 and links the page that owns it. The pages are the contract; this guide only points at them. Read
 the linked page before asking: every answer here was already on one.
 
+> **Node-record migration:** i150 changes node-property ownership and external reads. Its
+> [integration guide](../features/node-records/overview.md) distinguishes the approved target
+> from remaining runtime acceptance. Atlas-based descriptions below are the preceding contract
+> until the exact architecture changes and their implementation land together.
+
 ## Starting and wiring
 
 | How do I… | Where |

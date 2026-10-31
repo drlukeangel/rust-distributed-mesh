@@ -11,21 +11,21 @@ and `seat_revision`), and the (c) page lines that point to it follow in their ow
 ```markdown
 # node investigation
 
-[Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [node.tickle](node-tickle.md) · [node.runtime.inspect](node-runtime-inspect.md) · [Connections](../connections.md#31-declared-indexes)
+[Lifecycle index](../../architecture/fabric-mesh-node-lifecycles.md) · [States](../../architecture/lifecycles/states.md) · [node.tickle](../../architecture/lifecycles/node-tickle.md) · [node.runtime.inspect](../../architecture/lifecycles/node-runtime-inspect.md) · [Connections](../../architecture/connections.md#31-declared-indexes)
 
 A primitive. Node investigation is the one function every caller uses on one exact birth, ending in
 one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its steps, in order:
 
-1. Read the by-destination connections index ([connections.md §3.1](../connections.md#31-declared-indexes)).
+1. Read the by-destination connections index ([connections.md §3.1](../../architecture/connections.md#31-declared-indexes)).
    It names the peers to try; it never proves the node is reachable.
-2. [node.tickle](node-tickle.md), direct.
+2. [node.tickle](../../architecture/lifecycles/node-tickle.md), direct.
 3. The same tickle via those peers.
-4. [node.runtime.inspect](node-runtime-inspect.md).
+4. [node.runtime.inspect](../../architecture/lifecycles/node-runtime-inspect.md).
 
 Only an answer from the exact birth counts as `reached`.
 
 The verdict is the one decision. Reached: the node is commanded back through
-[node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path.name with a
+[node.mesh.join](../../architecture/lifecycles/node-mesh-join.md). Any other verdict: it is re-created at the same path.name with a
 new node.id. A wrong verdict is fixed in the investigation.
 
 Nothing waits on a proof of termination: not node recovery, a seat move, a name's release, the hung
@@ -35,7 +35,7 @@ Data dir: if the provider step finds the runtime exited, the re-created node tak
 dir; on any other verdict, a newly allocated one (R-FM2).
 
 A node that comes back after it was re-created is refused at
-[node.connections.admit](node-connections-admit.md) (`superseded-birth`). The node that refused it
+[node.connections.admit](../../architecture/lifecycles/node-connections-admit.md) (`superseded-birth`). The node that refused it
 reports it to the fabric-primary, which terminates its runtime.
 
 ## Operation contract
@@ -47,7 +47,7 @@ reports it to the fabric-primary, which terminates its runtime.
 | Steps | The by-destination connections index read, node.tickle direct, the same tickle via those peers, node.runtime.inspect |
 | Result | `reached`, `running`, `os-stopped`, `exited` or `unproven` |
 | What follows | Reached: node.mesh.join. Any other verdict: re-created at the same path.name with a new node.id, over the inherited data dir when the verdict is `exited`, over a newly allocated one otherwise |
-| Spans | [node.tickle](node-tickle.md#operation-contract)'s and [node.runtime.inspect](node-runtime-inspect.md#operation-contract)'s own |
+| Spans | [node.tickle](../../architecture/lifecycles/node-tickle.md#operation-contract)'s and [node.runtime.inspect](../../architecture/lifecycles/node-runtime-inspect.md#operation-contract)'s own |
 ```
 
 ## Index line: `docs/architecture/fabric-mesh-node-lifecycles.md`
@@ -55,7 +55,7 @@ reports it to the fabric-primary, which terminates its runtime.
 Added to the primitives' table, beside node.tickle and node.runtime.inspect:
 
 ```markdown
-| [node investigation](lifecycles/node-investigation.md) (primitive) | The one verdict on one exact birth: the by-destination connections index read, node.tickle direct and via those peers, node.runtime.inspect; reached is commanded back through node.mesh.join, any other verdict is re-created at the same path.name with a new node.id |
+| [node investigation](../../architecture/lifecycles/node-investigation.md) (primitive) | The one verdict on one exact birth: the by-destination connections index read, node.tickle direct and via those peers, node.runtime.inspect; reached is commanded back through node.mesh.join, any other verdict is re-created at the same path.name with a new node.id |
 ```
 
 ## Not in this text

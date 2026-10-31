@@ -1,5 +1,13 @@
 ## Storage as whole records: one cached object, one writer, one whole write
 
+> **Historical proposal; i150 supersedes the node-record model below.** Node properties are
+> owned by the node, lifecycle records are keyed by subject and writing primary birth, and
+> current-pair reads select shared records rather than atlas-held property copies. FabricAtlas
+> still tracks command admission and execution. The approved direction is
+> [node records](node-record.md); implementation and outstanding acceptance are tracked in
+> [i150](../i150-node-writes-lifecyle-updates.md). The original rationale below is retained as history,
+> not a second instruction to implement the combined-row design.
+
 Proposal for i143, for Luke's yes before anything is built. It replaces the per-fact storage interface
 landed at `749c796f5` (storage-by-object.md). **Built (2026-10-23, lead), in the landing that carries
 this line:** the code, the page lines below, and the cells below (the carrier write of another admin's
@@ -139,8 +147,8 @@ and is read by id.
 - new: "The reason is that before state-commit the Fabric record and each mesh's Mesh record live only in their writers' scratchpads, so a primary change or a record written in that window is lost with its writer or cannot be read by its successor."
 
 `node-identity-and-state.md:656-660`
-- old: "**What a mesh-primary records of a silent member** is rows on the node: the `PendingReconnect` and `Dead` marks ([States](lifecycles/states.md#states), node row silence marks), the `data-dir-lost` and `data-dir-unreadable` facts ([node recovery](lifecycles/node-recovery.md), [deployment provider](deployment-provider.md) §2.5), each a typed keyed row written and removed by the mesh-primary"
-- new: "**What a mesh-primary records of a silent member** is on the node's record: the `PendingReconnect` and `Dead` marks ([States](lifecycles/states.md#states), node row silence marks), the `data-dir-lost` and `data-dir-unreadable` facts ([node recovery](lifecycles/node-recovery.md), [deployment provider](deployment-provider.md) §2.5), each set and cleared by the mesh-primary on the record it holds and written whole"
+- old: "**What a mesh-primary records of a silent member** is rows on the node: the `PendingReconnect` and `Dead` marks ([States](../../architecture/lifecycles/states.md#states), node row silence marks), the `data-dir-lost` and `data-dir-unreadable` facts ([node recovery](../../architecture/lifecycles/node-recovery.md), [deployment provider](../../architecture/deployment-provider.md) §2.5), each a typed keyed row written and removed by the mesh-primary"
+- new: "**What a mesh-primary records of a silent member** is on the node's record: the `PendingReconnect` and `Dead` marks ([States](../../architecture/lifecycles/states.md#states), node row silence marks), the `data-dir-lost` and `data-dir-unreadable` facts ([node recovery](../../architecture/lifecycles/node-recovery.md), [deployment provider](../../architecture/deployment-provider.md) §2.5), each set and cleared by the mesh-primary on the record it holds and written whole"
 
 `fabric-certs.md` §Tracking (103-108)
 - old: "The issuer writes the birth's cert row when the birth holds the cert, at its join's admission and on each renewal's `CertRenewed`: `NodeCertRow { node_id, name, incarnation, issued_at, expires_at, issuer_expires_at, renew_at }`, a row on the birth in `nodes.storage` beside `data-dir-lost` and `data-dir-unreadable`, keyed by the birth (format `node-cert/2`); the written expiry is the receipt, and the row is the birth's renewal state. `node.get` surfaces it as `cert { issued_at, expires_at, issuer_expires_at }`. A successor mesh-primary reads the rows and continues the schedule from them;"
@@ -175,7 +183,7 @@ and is read by id.
 - new: "**The record is written and the release of the old claim fails or is interrupted**: the node holds both"
 
 `node-identity-and-state.md` §2.8, "It is written at Day 0 and at state-commit"
-- old: "Nothing writes the row again until [fabric.delete](lifecycles/fabric-delete.md)."
+- old: "Nothing writes the row again until [fabric.delete](../../architecture/lifecycles/fabric-delete.md)."
 - new: "The identity is never written again; the record is rewritten whole with each fabric event, by the fabric-primary."
 
 `storage-by-object.md` "Keys, writers, fold" (36-48): replaced by this proposal's "The rule", "The

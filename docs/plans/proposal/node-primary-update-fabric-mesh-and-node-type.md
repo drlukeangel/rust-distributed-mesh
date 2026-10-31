@@ -66,7 +66,7 @@ Architecture doc edits land only on Luke's yes to this proposal; that yes is the
 
 1. **elections §4.1**
    - Now: "For every (mesh, node kind) cohort, the one imported resolver applies the same eligibility/key rule."
-   - Becomes: "For every (mesh, node_type) cohort, the one imported resolver applies the same eligibility/key rule. A node's type is its `node_type` field ([node identity](node-identity-and-state.md)), never its name. Each cohort's primary is that node's `is_primary`."
+   - Becomes: "For every (mesh, node_type) cohort, the one imported resolver applies the same eligibility/key rule. A node's type is its `node_type` field ([node identity](../../architecture/node-identity-and-state.md)), never its name. Each cohort's primary is that node's `is_primary`."
 2. **elections §4.2**
    - Now: "(mesh, node-admin) cohort winner == mesh primary".
    - Becomes: "(mesh, `node-admin`) cohort winner == mesh primary".
@@ -146,18 +146,18 @@ The ordinary election is untouched by this search: on a proven loss the seat wai
    - Index: two rows in fabric-mesh-node-lifecycles.md, `node.primary.update` and `node.fabric-primary.update`, both pointing at this page; the `fabric.primary.update` row goes.
    - `lifecycles/fabric-primary-update.md` is deleted (its op is replaced, Part D); every link to it moves to the new page (mesh-delete.md :18 and :34-35, node-rpc-envelope.md :251, elections §4.4, states.md "Leadership", the lifecycle index).
 2. **lifecycles/mesh-delete.md :18 (Seat row) and :34-35 (step 1)**
-   - Now: "If the mesh holds the fabric-primary seat, [fabric.primary.update](fabric-primary-update.md) runs first"; "`fabric.primary.updated` confirms the committed transfer before any member is deleted".
-   - Becomes: "If the mesh holds the fabric-primary seat, [node.fabric-primary.update](node-primary-update.md) runs first with this mesh excluded from the successor search"; "`node.fabric-primary.updated` confirms the committed transfer before any member is deleted". Rows 21, 25 and step 7 are unchanged: the mesh-primary keeps its seat to the end and never runs node.primary.update under mesh.delete.
+   - Now: "If the mesh holds the fabric-primary seat, [fabric.primary.update](../../architecture/lifecycles/node-primary-update.md) runs first"; "`fabric.primary.updated` confirms the committed transfer before any member is deleted".
+   - Becomes: "If the mesh holds the fabric-primary seat, [node.fabric-primary.update](../../architecture/lifecycles/node-primary-update.md) runs first with this mesh excluded from the successor search"; "`node.fabric-primary.updated` confirms the committed transfer before any member is deleted". Rows 21, 25 and step 7 are unchanged: the mesh-primary keeps its seat to the end and never runs node.primary.update under mesh.delete.
 2. **lifecycles/node-stop.md :17** (Seat holder row)
    - Now: "A target holding a seat is stopped by its same-mesh successor; SeatTransfer (TakeSeats, SeatsCommitted installed) precedes `node.connections.delete`".
-   - Becomes: "A target holding a seat runs [node.primary.update](node-primary-update.md) first, commanded from above; its successor, now its primary, then commands the stop".
+   - Becomes: "A target holding a seat runs [node.primary.update](../../architecture/lifecycles/node-primary-update.md) first, commanded from above; its successor, now its primary, then commands the stop".
 3. **lifecycles/node-connections-delete.md step 0 and :29**
    - Now: "the Build's executor is its same-mesh successor. It runs the TakeSeats seat transfer to the holder and continues only once it has installed SeatsCommitted".
    - Becomes: "the holder first runs node.primary.update (and node.fabric-primary.update when it holds the fabric seat), commanded from above; the Build continues once node.primary.updated is answered, under the new primary".
    - Row :29 says the same.
 4. **lifecycles/states.md "Leadership"**
    - Now: "requires the committed seat transfer described in node.connections.delete and fabric.primary.update".
-   - Becomes: "requires [node.primary.update](node-primary-update.md) first (node.fabric-primary.update for the fabric seat)".
+   - Becomes: "requires [node.primary.update](../../architecture/lifecycles/node-primary-update.md) first (node.fabric-primary.update for the fabric seat)".
 5. **node-rpc-envelope.md "TakeSeats: Build-driven seat transfer" (:1449-1480)**
    - Now: `N → P TakeSeats { ... }`, `P → N SeatsCommitted { seats }`.
    - Becomes: `holder → successor PrimaryUpdate { seats: [(cohort, holder: { node_id, incarnation }, successor: { node_id, incarnation }, revision)], build_id, attempt, operation }` carrying the committed row's content (one or two seats), exact births on both sides and never a name, and, on that call's reply stream, `PrimaryUpdated { revisions }`. Its refusals:

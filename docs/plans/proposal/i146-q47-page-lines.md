@@ -153,24 +153,24 @@ New:
 
 Old:
 ```text
-| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [Status 0x1B](#status-op-0x1b-rdm) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.start](../../architecture/lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [Status 0x1B](#status-op-0x1b-rdm) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 ```
 
 New:
 ```text
-| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → NodeJoined (Data) → NodeStarted (Terminal) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.start](../../architecture/lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → NodeJoined (Data) → NodeStarted (Terminal) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 ```
 
 ## docs/architecture/node-rpc-envelope.md
 
 Old:
 ```text
-| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Status 0x1B StopNode](#node-stop-command-pair); stopped rides the StopNode reply; the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.stop](../../architecture/lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Status 0x1B StopNode](#node-stop-command-pair); stopped rides the StopNode reply; the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 ```
 
 New:
 ```text
-| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → StopConnectionsDeleted (Data) → NodeStopped (Terminal); the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.stop](../../architecture/lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → StopConnectionsDeleted (Data) → NodeStopped (Terminal); the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 ```
 
 ## docs/architecture/node-rpc-envelope.md
@@ -202,8 +202,8 @@ New:
 Old:
 ```text
 The caller contract is [node.stop / node.delete](#typed-object-contract); the sequences are
-[node.connections.delete](lifecycles/node-connections-delete.md), [node.stop](lifecycles/node-stop.md) and
-[node.delete](lifecycles/node-delete.md). The Status bodies StopNode and NodeLeft are
+[node.connections.delete](../../architecture/lifecycles/node-connections-delete.md), [node.stop](../../architecture/lifecycles/node-stop.md) and
+[node.delete](../../architecture/lifecycles/node-delete.md). The Status bodies StopNode and NodeLeft are
 [StatusRequest](#status-op-0x1b-rdm) positions 8 and 9.
 
 The stop's graceful closure is `node.connections.delete { scope: All }`; its receipt is a
@@ -237,11 +237,11 @@ ends the stream after the transport cut. The operation-named owed Stopped declar
 Old:
 ```text
 RDM owns this family. It carries the mesh-primary-to-node hop of
-[node.connections.delete](lifecycles/node-connections-delete.md), which owns sequencing and the
+[node.connections.delete](../../architecture/lifecycles/node-connections-delete.md), which owns sequencing and the
 failure contract. Direction: a node's mesh-primary calls the exact birth. Every call is
 server-streaming and not forwardable; the server keeps serving it while the node is
 connections-deleting. Field order and enum positions are on the generated
-[wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md). Births are exact
+[wire page](../../architecture/node-rpc-envelope.md). Births are exact
 identities, never names.
 
 ```text
@@ -261,8 +261,8 @@ that breaks after `CommandAccepted` is incomplete.
 New:
 ```text
 RDM owns this family. It carries the mesh-primary → exact-node hop of
-[node.connections.delete](lifecycles/node-connections-delete.md), [node.stop](lifecycles/node-stop.md)
-and [node.start](lifecycles/node-start.md). The caller's hop and Build carrier are unchanged.
+[node.connections.delete](../../architecture/lifecycles/node-connections-delete.md), [node.stop](../../architecture/lifecycles/node-stop.md)
+and [node.start](../../architecture/lifecycles/node-start.md). The caller's hop and Build carrier are unchanged.
 Every call is server-streaming, never forwarded, and served while connections-deleting.
 Births are exact identities, never names. Every earlier byte and enum position stands; requests
 `StopNode` and `StartNode` append at 1 and 2. Replies append after the existing positions 0–10.
@@ -316,12 +316,12 @@ New:
 
 Old:
 ```text
-| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
+| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](../../architecture/node-rpc-envelope.md) |
 ```
 
 New:
 ```text
-| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
+| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](../../architecture/node-rpc-envelope.md) |
 ```
 
 ## docs/architecture/node-rpc-envelope.md

@@ -63,7 +63,7 @@ carrier discovery:
 New:
 
 ````text
-This lets the mesh-primary's node investigation ask, when it runs ([node investigation](lifecycles/node-investigation.md)),
+This lets the mesh-primary's node investigation ask, when it runs ([node investigation](../../architecture/lifecycles/node-investigation.md)),
 conceptually:
 
 ```text

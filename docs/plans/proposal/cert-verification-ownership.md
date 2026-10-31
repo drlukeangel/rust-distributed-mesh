@@ -77,7 +77,7 @@ fabric-certs.md:89-95:
 
 > There is no authentication or authorization layer between mesh nodes. A node's identity on
 > the mesh is its iroh endpoint key. Admission to the mesh is the JoinNode check against the
-> deployed birth ([node-create.md](lifecycles/node-create.md) step 4). No cert is verified on a
+> deployed birth ([node-create.md](../../architecture/lifecycles/node-create.md) step 4). No cert is verified on a
 > Node RPC call, a gossip frame or a `rafka-mesh-v1` connection (gateway→broker data frames,
 > snapshot pulls, forwards); a connection between two mesh nodes is trusted because both ends are
 > members. The member cert issued at JoinNode is Rafka's, for what Rafka presents to clients and
@@ -307,7 +307,7 @@ it annoying": the mechanics below are standard practice, recorded here to be obj
    mesh (`NoRootToMint`) and never a member cert that outlives its issuer (`MemberOutlivesIssuer`)."
 4. `:65-75` (§"When a cert is issued"), a row appended to the table: "| a member cert has lived two thirds
    of its TTL (`RDM_CERT_RENEW_AT`, with up to 5 % jitter) | the birth's issuing authority (its mesh-primary;
-   the fabric-primary for a mesh-primary) | [node.cert.renew](lifecycles/node-cert-renew.md) to the
+   the fabric-primary for a mesh-primary) | [node.cert.renew](../../architecture/lifecycles/node-cert-renew.md) to the
    running birth; the old cert stays valid to its own expiry |" and the sentence after the table gains: "A mesh's issuing
    cert is re-minted by the fabric-primary at two thirds of its TTL and carried to that mesh's node-admins
    the same way; members issued after that carry the new issuer."
@@ -316,18 +316,18 @@ it annoying": the mechanics below are standard practice, recorded here to be obj
 6. `:87-95` (§"Inside the mesh"). Old: the paragraph quoted in §1.3 above. New: "## On a connection\n\n
    No cert is checked on a Node RPC call or a gossip frame: inside RDM's control plane a node's identity
    is its iroh endpoint key, and admission to the mesh is the JoinNode check against the deployed birth
-   ([node-create.md](lifecycles/node-create.md) step 4). On every inbound connection of an ALPN the
+   ([node-create.md](../../architecture/lifecycles/node-create.md) step 4). On every inbound connection of an ALPN the
    embedding app registered at `bind`, the acceptor reads the dialer's member cert on the connection's
    first bi-stream, verifies it (signature to the issuer, the issuer to the root, the issuer's mesh, both
    expiries), writes the verdict back, and admits or drops the connection; the verdict is a connection
-   fact ([connections.md](connections.md) §1.2, §12). RDM never registers the step for its own two ALPNs.
+   fact ([connections.md](../../architecture/connections.md) §1.2, §12). RDM never registers the step for its own two ALPNs.
    The member cert is also what the app presents outward, to clients and other systems."
 
 **RDM `docs/architecture/connections.md`**
 
 7. `:96-100` (§1.2, the durable state block). Old: "Connected\nDisconnected\nFailed". New: "Connected\n
    Disconnected\nFailed\nRefused". And after :111, appended: "`Refused` is written by an acceptor for an
-   inbound connection it dropped at admission ([fabric-certs.md](fabric-certs.md#on-a-connection)),
+   inbound connection it dropped at admission ([fabric-certs.md](../../architecture/fabric-certs.md#on-a-connection)),
    naming the reason (`no-credential`, `bad-signature`, `expired`, `issuer-mesh-mismatch`). It is the
    acceptor's fact about one dial, never proof about the dialer." Mapping line added at :104-108:
    "Refused      -> state=refused". (Durable format: a new state value, the landing carries the marker.)
@@ -337,15 +337,15 @@ it annoying": the mechanics below are standard practice, recorded here to be obj
 
 **RDM `docs/architecture/fabric-mesh-node-lifecycles.md`**
 
-9. `:19`. Old: "| [Fabric certs](fabric-certs.md) | the cert chain and issuance |" New: "| [Fabric
+9. `:19`. Old: "| [Fabric certs](../../architecture/fabric-certs.md) | the cert chain and issuance |" New: "| [Fabric
    certs](fabric-certs.md) | the cert chain, issuance, renewal and verification at a connection |"
 
 **rafka-v2 `docs/architecture/internal-mesh-auth.md`**
 
 10. `:12-14`. Old: "A `rafka-mesh-v1` connection between mesh nodes carries no credential either: both
-    ends are mesh members ([`fabric-certs.md`](…#inside-the-mesh))." New: "A `rafka-mesh-v1` connection
+    ends are mesh members ([`fabric-certs.md`](../../architecture/fabric-certs.md))." New: "A `rafka-mesh-v1` connection
     between mesh nodes carries the dialer's member cert, issued and verified by RDM at admission
-    ([`fabric-certs.md`](…#on-a-connection)); nothing on the frames is re-verified."
+    ([`fabric-certs.md`](../../architecture/fabric-certs.md)); nothing on the frames is re-verified."
 11. `:20`. Old: "| Gateway → broker, connection | NONE | — | — |" New: "| Gateway → broker, connection |
     the dialer's RDM member cert | RDM, at the acceptor's admission step | the connection: dropped on
     refusal |"
@@ -371,7 +371,7 @@ it annoying": the mechanics below are standard practice, recorded here to be obj
 **New pages and their index rows** (superseded by Q6's table; kept for the renew page's shape)
 
 15. `docs/architecture/lifecycles/node-cert-renew.md`, a new primitive page in the shape of
-    [node.config.update](lifecycles/node-config-update.md): caller the birth's issuing authority; target
+    [node.config.update](../../architecture/lifecycles/node-config-update.md): caller the birth's issuing authority; target
     the exact `(node.id, incarnation)`; request `node.cert.renew { cert }`; reply `node.cert.renewed`
     (the receipt), or a named refusal (another birth, a cert the node cannot decode); what it never does
     (terminate a connection, change a status, publish a frame); failure (retried on the authority's next

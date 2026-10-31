@@ -4,7 +4,7 @@ Asked by the lead, from Rafka 141's request (2026-10-25). One question, with a r
 
 ### 1. Spec
 
-[fabric-state-sync.md](../../architecture/lifecycles/fabric-state-sync.md), "Application → fabric-primary":
+fabric-state-sync.md, "Application → fabric-primary":
 "The hook's answer means the requested application work is complete for this state. … A foreign
 Build, old attempt or incomplete application phase is not this completion." Owner: the fabric-primary.
 Sequence: fabric-primary enters state-sync → calls `sync_state` with `(build_id, attempt)` → the
