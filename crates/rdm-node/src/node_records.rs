@@ -71,6 +71,15 @@ pub struct PropertyWritten {
     pub already_applied: bool,
 }
 
+/// A tag command applied at the node, alongside its other property changes.
+#[derive(Debug, Clone)]
+pub enum TagChange {
+    /// Add the named labels.
+    Create(BTreeSet<String>),
+    /// Remove all labels or the named labels.
+    Delete(rdm_core::status::TagScope),
+}
+
 impl NodePropertyWriter {
     /// Create the single writer for a running node. The first command reads its own retained
     /// record, or uses the launch/join properties when no record has been written yet.
@@ -104,6 +113,88 @@ impl NodePropertyWriter {
         .await
     }
 
+    /// Decide tag deltas against the latest serialized property state. The label grammar and
+    /// complete resulting set are checked before persistence; a refusal changes nothing.
+    pub async fn tags(
+        &self,
+        initial: NodeProperties,
+        change: TagChange,
+        application: Option<PropertyApplication>,
+        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+    ) -> Result<rdm_core::status::StatusReply, StorageError> {
+        use rdm_core::status::{StatusReply, TagScope};
+        let refusal = match &change {
+            TagChange::Create(labels) => rdm_core::status::create_tags_refusal(labels),
+            TagChange::Delete(scope) => scope.refusal(),
+        };
+        if let Some(reason) = refusal {
+            return Ok(rdm_core::reply::status::bounded_rejected_tags(&reason));
+        }
+        let answer = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let result = answer.clone();
+        let written = self
+            .update_checked(
+                initial,
+                application,
+                move |record| {
+                    let node_id = record.birth.node_id.clone();
+                    let incarnation = record.birth.incarnation_id.clone();
+                    let reply = match change {
+                        TagChange::Create(labels) => {
+                            let already_carried =
+                                labels.intersection(&record.tags).cloned().collect();
+                            record.tags.extend(labels);
+                            if let Some(reason) = rdm_core::status::tags_refusal(&record.tags) {
+                                return Err(StorageError::Refused {
+                                    file: "node.tags".into(),
+                                    reason,
+                                });
+                            }
+                            StatusReply::TagsCreated {
+                                node_id,
+                                incarnation,
+                                already_carried,
+                            }
+                        }
+                        TagChange::Delete(scope) => {
+                            let not_carried = match scope {
+                                TagScope::All => {
+                                    record.tags.clear();
+                                    BTreeSet::new()
+                                }
+                                TagScope::Labels(labels) => {
+                                    let absent = labels.difference(&record.tags).cloned().collect();
+                                    record.tags.retain(|tag| !labels.contains(tag));
+                                    absent
+                                }
+                            };
+                            StatusReply::TagsDeleted {
+                                node_id,
+                                incarnation,
+                                not_carried,
+                            }
+                        }
+                    };
+                    *result.lock().unwrap() = Some(reply);
+                    Ok(())
+                },
+                publish,
+            )
+            .await;
+        match written {
+            Ok(written) if written.already_applied => Ok(rdm_core::reply::already_applied()),
+            Ok(_) => Ok(answer
+                .lock()
+                .unwrap()
+                .take()
+                .expect("the applied tag command answered")),
+            Err(StorageError::Refused { file, reason }) if file == "node.tags" => {
+                Ok(rdm_core::reply::status::bounded_rejected_tags(&reason))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Apply a command to the latest owned properties. `publish` installs the durable result
     /// into the application's local view while still holding the same ordering lock. Neither
     /// the command's future nor its receiver owns the lifetime of a pending provider write.
@@ -114,6 +205,27 @@ impl NodePropertyWriter {
         change: impl FnOnce(&mut NodeProperties) + Send + 'static,
         publish: impl FnOnce(&NodeProperties) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
+        self.update_checked(
+            initial,
+            application,
+            move |record| {
+                change(record);
+                Ok(())
+            },
+            publish,
+        )
+        .await
+    }
+
+    /// Validate and apply a property command against the same serialized current record.
+    /// A refused edit writes nothing and leaves both the durable and local value unchanged.
+    pub async fn update_checked(
+        &self,
+        initial: NodeProperties,
+        application: Option<PropertyApplication>,
+        change: impl FnOnce(&mut NodeProperties) -> Result<(), StorageError> + Send + 'static,
+        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+    ) -> Result<PropertyWritten, StorageError> {
         use tracing::Instrument;
         let (records, current) = (self.records.clone(), self.current.clone());
         // Dropping JoinHandle detaches the admitted write; it does not cancel it. In
@@ -122,28 +234,25 @@ impl NodePropertyWriter {
             async move {
                 let mut held = current.lock().await;
                 if held.is_none() {
-                    *held = Some(
-                        records
-                            .properties(&initial.birth.node_id)
-                            .await?
-                            .unwrap_or(initial),
-                    );
+                    *held = records.properties(&initial.birth.node_id).await?;
                 }
-                let mut next = held.as_ref().expect("initialized above").clone();
+                let mut next = held.as_ref().cloned().unwrap_or(initial);
                 let already_applied = application
                     .as_ref()
                     .is_some_and(|a| next.applied.contains(a));
                 if !already_applied {
-                    change(&mut next);
+                    change(&mut next)?;
                     if let Some(application) = application {
                         next.applied.insert(application);
                     }
-                    if let Err(error) = records.put_properties(&next).await {
-                        // An error may be a lost acknowledgement. The next admitted command must
-                        // resolve the exact durable record, including application identities,
-                        // before it can change anything. Never reuse a pre-write cached value.
-                        *held = None;
-                        return Err(error);
+                    if held.as_ref() != Some(&next) {
+                        if let Err(error) = records.put_properties(&next).await {
+                            // An error may be a lost acknowledgement. The next admitted command must
+                            // resolve the exact durable record, including application identities,
+                            // before it can change anything. Never reuse a pre-write cached value.
+                            *held = None;
+                            return Err(error);
+                        }
                     }
                     *held = Some(next.clone());
                 }

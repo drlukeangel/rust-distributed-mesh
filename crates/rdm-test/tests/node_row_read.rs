@@ -18,6 +18,7 @@ const FOLD: &str = "rdm.node.store.resolve.via-fold";
 
 fn launch(dir: &Path, fabric: &FabricId, name: &str, admin: &rdm_test::rig::AdminSide) -> Launch {
     Launch {
+        initial_properties: Default::default(),
         topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: fabric.clone(),

@@ -42,7 +42,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
-        let launch = Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
+        let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric,
             name: "mesh1.rpc.1".parse().unwrap(),
@@ -100,6 +100,10 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         assert_eq!(digest_view.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq), Some(seq_at_stop), "no digest of a stopped node reaches the admin");
         assert!(running.own.is_stopped(), "the birth is stopped, its process live");
 
+        let stopped_map = std::collections::BTreeMap::from([("source".into(), "written-while-stopped".into())]);
+        running.config_update(stopped_map.clone()).await.expect("a stopped live node persists its own update");
+        assert_eq!(running.topology_view.config(), Some(stopped_map.clone()));
+
         // The start: the same birth rejoins through the admin that commands it.
         admin.deployed(&launch, &key);
         assert_eq!(call(&admin, &target, &start).await, StatusReply::Started);
@@ -128,6 +132,7 @@ fn a_stopped_node_keeps_its_process_and_a_started_node_rejoins_as_the_same_birth
         assert_eq!((after.node.node_id.clone(), after.node.incarnation.clone(), after.node.endpoint_id.clone(), after.node.transport_addr), (born.node.node_id.clone(), born.node.incarnation.clone(), born.node.endpoint_id.clone(), born.node.transport_addr), "the same birth at the same endpoint and port");
         assert!(after.digest_seq > seq_at_stop, "its digest sequence continued across the cycle");
         assert!(!running.own.is_stopped(), "the birth is live again");
+        assert_eq!(running.topology_view.config(), Some(stopped_map), "the application keeps its acknowledged map through rejoin");
         // The same start reissued by a later attempt of its Build (a successor executor whose
         // predecessor was lost after the node started) settles as AlreadyApplied: the command is
         // keyed by its build and operation, not its attempt (node-rpc-envelope.md: "Reissuing a

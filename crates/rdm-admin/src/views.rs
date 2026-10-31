@@ -235,7 +235,7 @@ pub fn own_row_view(view: &Topology, records: &Atlas, row: &crate::storage::Node
 /// refuses is `RejectedFilter` naming the pair, and nothing is read. Its span names the read, the
 /// pairs and how many nodes were answered.
 pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, records: &Atlas, filter: &Filter) -> StatusReply {
-    nodes_answer_with_status(me, view, loads, records, &Ok(BTreeMap::new()), filter, &|_| {}).await
+    nodes_answer_with_status(me, view, loads, records, &Ok(BTreeMap::new()), filter, &|_| {}, None).await
 }
 
 /// Whether `n` matches `filter` with the labels it holds in the active tags index (lifecycles/
@@ -256,7 +256,7 @@ fn matches_active(filter: &Filter, records: &Atlas, n: &NodeView) -> bool {
 /// [`nodes_answer`] with `planned`, the current Build's paths, naming where a birth the view no
 /// longer holds is answered from its record (R-FM1, R-FM2), and `amend`, what the answering admin
 /// adds to each row before it is matched (the app types its own channels hold).
-pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, records: &Atlas, planned: &Planned, filter: &Filter, amend: &(dyn Fn(&mut NodeView) + Sync)) -> StatusReply {
+pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, records: &Atlas, planned: &Planned, filter: &Filter, amend: &(dyn Fn(&mut NodeView) + Sync), properties: Option<&dyn rdm_node::node_records::NodeRecordsStorage>) -> StatusReply {
     let read = Entity::Nodes.read();
     let span = tracing::info_span!(
         "rdm.node_admin.node.serve.via-get",
@@ -288,6 +288,29 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         }
         let mut nodes = nodes(view, &loads(), records, &planned);
         nodes.iter_mut().for_each(amend);
+        if let Some(properties) = properties {
+            // Resolve stable identity pairs first: an exact read must not touch another node's
+            // property record. Property-dependent pairs still match the complete current value.
+            let mut identity = filter.clone();
+            identity.pairs.retain(|(property, _)| matches!(property.trim_start_matches('!'), "id" | "incarnation" | "path" | "name" | "mesh" | "kind" | "node_type"));
+            nodes.retain(|node| identity.matches(node));
+            for node in &mut nodes {
+                match properties.properties(&node.node_id).await {
+                    Ok(Some(own)) => {
+                        node.config = own.config;
+                        node.tags = own.tags;
+                        node.listeners = own.listeners;
+                        node.endpoint_id = own.endpoint_id.map(|id| id.to_string());
+                        node.transport_addr = own.transport_addr;
+                        node.held = own.held;
+                        node.held_hash = rdm_core::app_types::hash(&node.held);
+                        if let Some(declared) = own.app_types { node.types = declared.types; }
+                    }
+                    Ok(None) => {}
+                    Err(error) => return rdm_core::reply::status::not_ready(format!("{}: node record {} could not be read: {error}", me, node.node_id)),
+                }
+            }
+        }
         nodes.retain(|n| matches_active(filter, records, n));
         let count = nodes.len();
         span.record("nodes", count as u64);

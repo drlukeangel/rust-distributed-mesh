@@ -888,33 +888,25 @@ impl StatusDoor {
         self.apply_from(peer, sender, req).await
     }
 
-    /// This admin's own `node.config.update` (node-config-update.md, a node's own update; Q235), born as
-    /// `incarnation`: put its whole config `config`, held at once (P2), and answer once its mesh-primary
-    /// answered. It goes to the mesh-primary its view names, owed until it answers and retargeted on a
-    /// primary change, in process when that mesh-primary is this admin (P4); the mesh-primary writes the
-    /// row and its atlas and owes the row up to the fabric-primary. The answer's row (the row as written,
-    /// or as it stands on a refusal) is installed over an older revision.
+    /// Persist this admin's own config at its exact node ID through its shared property writer.
     pub async fn own_config_update(&self, incarnation: crate::model::IncarnationId, config: std::collections::BTreeMap<String, String>) -> StatusReply {
-        let req = StatusRequest::UpdateNodeConfig { node_id: self.node_id.clone(), incarnation, config: config.clone() };
-        self.commands.admitted().await;
         let view = self.topology.read().await.clone();
         let me = self.held_name_in(&view);
-        let Some(configs) = self.configs.get() else {
-            return rdm_core::reply::status::not_ready(format!("{me} has no node-RPC client yet; {} is refused", req.op()));
+        let Some(subject) = view.own(&self.node_id) else {
+            return rdm_core::reply::status::not_ready(format!("{me} holds no own birth yet"));
         };
-        let held = self.configure.get().cloned();
-        if let Some(hold) = &held {
-            hold(ConfigHeld::Sent(config)).await;
+        if subject.incarnation_id.as_ref() != Some(&incarnation) {
+            return rdm_core::reply::stale(subject.incarnation_id.clone().unwrap_or(incarnation));
         }
-        let reply = configs.serve(&me, &self.node_id, &view, &self.topology, &*self.nodes_storage, self.atlas.get().map(|a| &**a), crate::node_config::SentBy::Own, &req).await;
-        if let Some(hold) = &held {
-            let row = match &reply {
-                StatusReply::ConfigUpdated { config, revision, .. } | StatusReply::ConfigRowRefused { config, revision, .. } => Some((config.clone(), *revision)),
-                _ => None,
-            };
-            hold(ConfigHeld::Answered(row)).await;
+        let result = match self.configs.get() {
+            Some(configs) => configs.own_config(subject, config).await,
+            None => None,
+        };
+        match result {
+            Some(Ok(reply)) => reply,
+            Some(Err(error)) => rdm_core::reply::status::bounded_config_row_refused(&me.to_string(), &error.to_string()),
+            None => rdm_core::reply::status::not_ready(format!("{me} has no own property writer yet")),
         }
-        reply
     }
 
     /// A `NodeConfigUpdated` at this admin `me` (node-config-update.md, a node's own update, step 3;
@@ -1184,6 +1176,35 @@ impl StatusDoor {
         }
         let view = self.topology.read().await.clone();
         let me_name = self.held_name_in(&view);
+        // Exact-self downward property commands terminate at this node's writer. A node-admin
+        // serving its own record is a node here, regardless of the primary roles it holds.
+        let own_property = match req {
+            StatusRequest::ApplyNodeConfig { incarnation, .. } => Some(incarnation),
+            StatusRequest::CreateTags { node_id, incarnation, .. } | StatusRequest::DeleteTags { node_id, incarnation, .. } if *node_id == self.node_id => Some(incarnation),
+            _ => None,
+        };
+        if let Some(incarnation) = own_property {
+            let Some(subject) = view.own(&self.node_id) else {
+                return rdm_core::reply::status::not_ready(format!("{me_name} holds no own birth yet"));
+            };
+            if subject.incarnation_id.as_ref() != Some(incarnation) {
+                return rdm_core::reply::stale(subject.incarnation_id.clone().unwrap_or_else(|| incarnation.clone()));
+            }
+            let Some(configs) = self.configs.get() else {
+                return rdm_core::reply::status::not_ready(format!("{me_name} has no own property writer yet"));
+            };
+            let result = match req {
+                StatusRequest::ApplyNodeConfig { config, .. } => configs.own_config(subject, config.clone()).await,
+                StatusRequest::CreateTags { labels, .. } => configs.own_tags(subject, rdm_node::node_records::TagChange::Create(labels.clone())).await,
+                StatusRequest::DeleteTags { scope, .. } => configs.own_tags(subject, rdm_node::node_records::TagChange::Delete(scope.clone())).await,
+                _ => unreachable!("selected own property commands only"),
+            };
+            return match result {
+                Some(Ok(reply)) => if matches!(req, StatusRequest::ApplyNodeConfig { .. }) { rdm_core::reply::applied() } else { reply },
+                Some(Err(error)) => rdm_core::reply::status::bounded_node_row_refused(&me_name.to_string(), &error.to_string()),
+                None => rdm_core::reply::status::not_ready(format!("{me_name} has no own property writer yet")),
+            };
+        }
         match req {
             StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::LeaveMesh { .. } => return crate::node_commands::refuse_reserved(&me_name.to_string(), &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req),
             StatusRequest::NodeLeft { node_id, .. } => {
@@ -1550,7 +1571,7 @@ impl StatusDoor {
                         n.held_hash = rdm_core::app_types::hash(&n.held);
                     }
                 };
-                crate::views::nodes_answer_with_status(me_name, view, loads, atlas, &planned, &read.filter, &amend).await
+                crate::views::nodes_answer_with_status(me_name, view, loads, atlas, &planned, &read.filter, &amend, self.configs.get().and_then(|c| c.records()).map(|r| &**r)).await
             }
             Entity::Meshes => {
                 if self.loads.is_none() {

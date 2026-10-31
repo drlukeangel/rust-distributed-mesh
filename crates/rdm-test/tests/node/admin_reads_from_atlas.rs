@@ -41,6 +41,7 @@ pub(crate) fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
     Launch {
+        initial_properties: Default::default(),
         topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),

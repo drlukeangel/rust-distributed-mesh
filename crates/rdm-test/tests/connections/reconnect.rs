@@ -59,6 +59,7 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
                 .unwrap();
             let key = node::load_or_mint_key(&dir).unwrap();
             let launch = Launch {
+                initial_properties: Default::default(),
                 topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
                 fabric: "fabric1".into(),
                 fabric_id: fabric.clone(),

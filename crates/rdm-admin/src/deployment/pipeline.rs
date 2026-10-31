@@ -1774,7 +1774,18 @@ impl DeploymentPipeline<'_> {
         // The process provider shares the host network namespace and the
         // container provider's network exists per fabric: nothing per node.
         self.step(run, CreateStep::PrepareNetwork.name(), async { Ok(()) }).await?;
+        // Resolve the exact claim just prepared, including recovery's inherited properties.
+        // A path lookup here could select an unrelated later birth.
+        let initial_properties = if let Some(rows) = &rows {
+            let claimed = rows.written().known_row(&**rows.storage(), &id.node_id).await
+                .map_err(|reason| PipelineError { step: CreateStep::PrepareStorage.name(), reason, code: rdm_core::outcome::Code::FailedPrecondition })?
+                .ok_or_else(|| PipelineError { step: CreateStep::PrepareStorage.name(), reason: format!("{}: exact claim {} has no initial properties; nothing is launched", req.node, id.node_id), code: rdm_core::outcome::Code::FailedPrecondition })?;
+            rdm_core::launch::InitialProperties { config: claimed.config, tags: claimed.tags }
+        } else {
+            req.entry.as_ref().map(|entry| rdm_core::launch::InitialProperties { config: entry.config.clone(), tags: entry.tags.clone() }).unwrap_or_default()
+        };
         let launch = Launch {
+            initial_properties,
             // The provider the launching admin writes (storage.md §2 "every launch"): the one its own
             // template names, as `RDM_MESH_ID` is taken from it.
             topology_storage_provider: self.template.env.get(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER).cloned().unwrap_or_else(|| rdm_core::launch::TOPOLOGY_STORAGE_FILE.into()),

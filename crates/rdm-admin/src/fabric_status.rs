@@ -320,7 +320,7 @@ impl FabricStates {
         let Some(rows) = self.env.records.contacts.get() else {
             return false;
         };
-        match crate::accepted::recorded_executables(&**rows, next).await {
+        match crate::accepted::recorded_executables(&**rows, self.env.records.node_records.get().map(|r| &**r), next).await {
             Ok(recorded) => crate::accepted::same_on_the_rows(held, next, &recorded),
             Err(e) => {
                 tracing::info!(error = %e, "the node rows could not be read for what each path runs: the accepted topology is taken as changed");
@@ -377,7 +377,7 @@ impl FabricStates {
         // planned replacement: the fabric changes once every planned member runs its entry's executable
         // (states.md "Resize and executable replacement"), as the node rows record what each runs.
         if let (Some(build), Some(rows)) = (accepted.filter(|b| b.submitted_change.as_ref().is_some_and(crate::accepted::TopologyChange::plans_replacements)), self.env.records.contacts.get()) {
-            match crate::accepted::recorded_executables(&**rows, &build.topology).await {
+            match crate::accepted::recorded_executables(&**rows, self.env.records.node_records.get().map(|r| &**r), &build.topology).await {
                 Ok(recorded) => {
                     // A member whose row records another executable than its entry names is owed its
                     // replacement (proposal executable-bindings-at-create.md rule 5).

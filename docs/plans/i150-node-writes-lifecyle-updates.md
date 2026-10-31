@@ -217,8 +217,7 @@ No new background retry loop, queue or gossip channel is authorized. Existing ca
 ## Implementation plan
 
 Initial implementation increment: `rdm-node::node_records` introduces split record schemas and
-provider-neutral persistence traits with memory/file adapters. The node's own config update now persists its property record before the existing admin delivery;
-admin reads/lifecycle selection and removal of that delivery route are still outstanding. A test-only StoreLog append hold exposes cancellation ordering;
+provider-neutral persistence traits with memory/file adapters. The node's own config update now persists locally without admin delivery; caller config/tag commands terminate at the same own writer. Admin property reads and Build property comparisons read that record. Exact lifecycle selection and deletion of all legacy row machinery remain outstanding. A test-only StoreLog append hold exposes cancellation ordering;
 storage tests cover late writers, exact writer incarnation, clean process exit, forced process
 exit and corrupt evidence. This is foundation work for e0.s2/e2.s1–s2, not a claim that the feature
 seed, node-runtime canaries, or end-to-end migration are GREEN. Initial focused evidence (2026-10-31, lane 1): four node-record storage tests passed (0.04 s),
@@ -245,6 +244,36 @@ No final gate, application-provider qualification, Rafka
 integration, or full i150 acceptance is claimed by these focused passes.
 
 Stories below are the dispatchable gap list. Each starts BUILD, with implementation owner unassigned; no issues or agents are created by this document. Story completion requires its exact test, evidence and contract delta, not only merged code.
+
+### Local property routes and startup evidence (2026-10-31)
+
+Ordinary and admin nodes use their shared own writer for downward config/tag commands. Own config
+writes no longer traverse the primary chain. The ordinary node's obsolete upward config queue,
+reply installer and retry branch have been removed; lifecycle declarations retain their existing
+queue. Public reads overlay the exact node-owned record, with identity filters applied before
+property I/O. Legacy fixture branches and copied lifecycle/property row structures still need removal.
+
+Launches carry initial config/tags as `RDM_NODE_PROPERTIES`. The deployment pipeline resolves the
+newly prepared exact claim, so recovery receives its inherited snapshot and Build creation receives
+its entry. Both admin and ordinary startup bind actual endpoint/type/held metadata and persist
+before Ready. A same-ID start preserves retained config/tags and apply recognition. The actual
+application map survives an own update while stopped and the subsequent rejoin.
+
+Focused evidence at the current implementation checkout (uncommitted when executed):
+- `local-admin-property-controls.log`: two own-write/public-read controls passed, 2.69 s.
+- `local-route-cleanup.log`: ten storage/writer lifetime controls passed, 0.05 s.
+- `initial-properties-process.log`: Build apply/own-update/later-Build and forced recovery cells
+  passed, 2/2, 14.57 s.
+- `initial-properties-storage.log`: eleven storage/writer/tag controls passed, 0.04 s.
+- `initial-properties-launch.log`: six launch environment controls passed, including nonempty
+  map/set round-trip and named malformed-input refusal.
+- `local-stop-start.log`: strengthened same-birth stop/start application-map control passed, 0.87 s.
+
+Architect 1 identified that the existing storage-change block covered primary-issued writes,
+whereas direct own writes now require node-level admission freezing before copy. That extension
+and its cancellation/migration proof remain BUILD. Existing handle replacement counting alone is
+insufficient. No final gate, production Build application identity, lifecycle activation, pair
+migration or Rafka acceptance is claimed by these focused passes.
 
 ### Shared property writer implementation evidence (2026-10-31)
 

@@ -3300,6 +3300,12 @@ impl TopologyView {
         self.show_config(&held);
     }
 
+    /// Install this node's durable tags locally. Tags are read from its record, never carried
+    /// on gossip; the property writer serializes this publication with every property command.
+    pub fn set_tags(&self, tags: std::collections::BTreeSet<String>) {
+        if let Some(row) = self.own_row.lock().unwrap().as_mut() { row.tags = tags; }
+    }
+
     /// Install `config`, the row's map at `revision` (node-config-update.md; Q235 P1: `ApplyNodeConfig`,
     /// the answer to an own update, the hydration sync), over an older revision only: a map at the
     /// revision held or an older one is dropped, so a delayed reply or apply never overwrites a newer
@@ -9071,4 +9077,3 @@ mod tests {
         agree(&rx);
     }
 }
-

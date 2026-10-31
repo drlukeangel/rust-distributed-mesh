@@ -113,16 +113,8 @@ impl Running {
         self.status_door.get().cloned()
     }
 
-    /// Put this admin's own config, the whole map (`node.config.update` of its own birth,
-    /// node-config-update.md): what an application's node-admin calls to put a key on its own row (its
-    /// `admin_api_base`). It answers once the command completed: `ConfigUpdated` once its mesh-primary
-    /// wrote the row and this admin holds the map, or the refusal by name. The caller never names the
-    /// fabric-primary: an admin that is not it carries the command up to the one its records name
-    /// ([`crate::status_rpc::StatusDoor::own_config_update`]). Called before this admin holds a
-    /// view, or before its view holds its own birth, it waits for that view rather than refusing: the
-    /// update is owed until answered (node-config-update.md "A node's own update", D12, D23). The view
-    /// waited on is the one the update is served from, so it is never refused `SubjectUnknown` for this
-    /// admin's own birth; the wait ends with this birth.
+    /// Persist this admin's whole config map through its own property writer. Before its
+    /// command surface is bound, wait for startup to supply that surface and its exact birth.
     pub async fn config_update(&self, config: std::collections::BTreeMap<String, String>) -> rdm_core::status::StatusReply {
         let birth = self.birth();
         let status = loop {
@@ -1516,7 +1508,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 written.feeds(control.atlas.clone());
                                 control.atlas.writes(&own_mesh);
                                 let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), configure.clone(), written.clone());
-                                configs.uses_records(topology_storage.node_records());
+                                configs.uses_records(topology_storage.node_records(), topology_view.clone());
                                 // A command it sends down that a mesh-primary not yet holding the primary refused waits on the view's next change (D12).
                                 configs.watch_views(records.subscribe_view());
                                 // An owed push of a node's row up to the fabric-primary reads the view again on each send (Q235 P3).
@@ -1773,6 +1765,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 });
                                 let _ = control.departure.set(env.departure.clone());
                                 let _ = control.node_rows.set(nodes_storage.clone());
+                                let _ = control.node_records.set(topology_storage.node_records());
+                                let _ = records.node_records.set(topology_storage.node_records());
                                 let _ = control.node_id.set(node_id.clone());
                                 records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_fabric_recovery(crate::fabric_recovery::reader(digest_view.clone(), records.clone())).with_configs(configs_slot.clone()).with_written(written.clone())));
                                 let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, primaries: topology_view.primaries().clone(), incarnation: incarnation.clone() }));
@@ -1844,6 +1838,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 gossip: None,
                                 data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()), is_primary: None, is_fabric_primary: None
                             }));
+                            // This admin owns its properties just as an ordinary node does. Bind
+                            // actual metadata before any readiness hook or role can publish Ready.
+                            {
+                                let mut subject = crate::model::Node::allocated(name.clone());
+                                subject.node_id = node_id.clone();
+                                subject.incarnation_id = Some(incarnation.clone());
+                                subject.endpoint_id = Some(EndpointId(key.public().to_string()));
+                                subject.transport_addr = Some(mesh_addr);
+                                let initial = cfg.launch.as_ref().map(|launch| launch.initial_properties.clone()).unwrap_or_default();
+                                configs_slot.get().expect("configs bound before digest").bound_own(&subject, initial).await?;
+                            }
                             // The own row in the data dir: this birth and its Mesh, so a restart on this data dir is the
                             // same logical node in the same Mesh.
                             {
