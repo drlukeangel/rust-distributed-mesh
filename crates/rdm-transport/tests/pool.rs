@@ -395,5 +395,9 @@ async fn a_connection_closed_under_a_committed_call_is_evicted_and_reported_brok
     assert_eq!(broken.len(), 1, "the closed connection is reported broken, once: {:?}", told.0.lock().unwrap());
     let (out, next) = r.ping().await;
     assert!(out.reply().is_some(), "{out:?}");
-    assert_ne!(next.connection, first.connection, "the closed connection left the pool: {next:?}");
+    // The next call rides a new dial's connection: the writer hears `connected` a second time. A
+    // connection's `stable_id` is fixed only for its own lifetime (iroh `Connection::stable_id`), so a
+    // new connection may carry the closed one's id once it is freed: the id never tells them apart.
+    let connected = told.0.lock().unwrap().iter().filter(|e| e.starts_with("connected")).count();
+    assert_eq!(connected, 2, "the closed connection left the pool and the next call was dialled anew ({first:?} then {next:?}): {:?}", told.0.lock().unwrap());
 }
