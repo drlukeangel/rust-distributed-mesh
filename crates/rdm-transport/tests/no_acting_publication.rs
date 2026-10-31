@@ -47,7 +47,7 @@ fn digest(name: &str, port: u16) -> MeshDigest {
 }
 
 fn op(kind: &str, d: &MeshDigest) -> LifecycleOp {
-    LifecycleOp {
+    LifecycleOp { mesh: d.node.mesh.clone(),
         build_id: "b-s53".into(),
         attempt: 1,
         operation: format!("{kind}:{}", d.node.name),

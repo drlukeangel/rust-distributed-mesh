@@ -310,7 +310,7 @@ pub fn ca_cert_bytes(cert: &CaCert) -> Vec<u8> {
 /// at `expiry_ms`. The issuing admin cuts the expiry to its issuer's first; one that still outlives it
 /// is refused.
 pub fn issue(issuer: &IssuingKey, birth: &BirthIdentity, issued_ms: u64, expiry_ms: u64) -> Result<SignedCert, CertError> {
-    if birth.mesh != issuer.mesh() || birth.name.mesh != issuer.mesh() {
+    if birth.mesh != issuer.mesh() {
         return Err(CertError::IssuerMeshMismatch);
     }
     if expiry_ms > issuer.expiry_ms() {
@@ -339,7 +339,7 @@ pub fn verify(signed: &SignedCert, roots: &[VerifyingKey], now_ms: u64, skew_ms:
     if now_ms > signed.issuer.cert.expiry_ms.saturating_add(skew_ms) {
         return Err(CertError::IssuerExpired);
     }
-    if signed.cert.mesh != signed.issuer.cert.mesh || signed.cert.name.mesh != signed.issuer.cert.mesh {
+    if signed.cert.mesh != signed.issuer.cert.mesh {
         return Err(CertError::IssuerMeshMismatch);
     }
     signed.issuer.cert.issuer_pub.verify(&cert_bytes(&signed.cert), &signed.sig).map_err(|_| CertError::BadSignature)?;
@@ -619,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn a_member_named_for_another_mesh_is_refused_issuer_mesh_mismatch() {
+    fn a_members_explicit_mesh_decides_issuance_and_verification() {
         let root_key = root();
         let issuer = sample_issuer(&root_key);
 
@@ -627,10 +627,20 @@ mod tests {
         let mint_res = issue_cert(&issuer, "mesh2.broker.1", 3600, 1000);
         assert_eq!(mint_res.unwrap_err(), CertError::IssuerMeshMismatch);
 
-        // verify also refuses if the name was modified/mismatched
+        // A misleading path/name remains a signed label, independent of the declared mesh.
+        let mut independent = birth("elsewhere.gateway.north");
+        independent.mesh = "mesh1".into();
+        let signed = issue(&issuer, &independent, 1000, 3_601_000).unwrap();
+        assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Ok(()));
+
+        // Verification refuses a mismatched explicit mesh before checking the signature.
+        let mut signed = issue_cert(&issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
+        signed.cert.mesh = "mesh2".into();
+        assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::IssuerMeshMismatch));
+
         let mut signed = issue_cert(&issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
         signed.cert.name = "mesh2.broker.1".parse().unwrap();
-        assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::IssuerMeshMismatch));
+        assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::BadSignature), "the name remains covered by the signature");
     }
 
     #[test]

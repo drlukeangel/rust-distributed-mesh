@@ -180,7 +180,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             declared: Default::default(),
         };
-        let _report = root.runner.joins.expect(rdm_admin::join::Deployed {
+        let _report = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
@@ -303,7 +303,7 @@ fn a_node_admin_reports_a_members_new_type_on_its_held_watch_and_its_app_receive
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             declared: Default::default(),
         };
-        let _report = root.runner.joins.expect(rdm_admin::join::Deployed {
+        let _report = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),

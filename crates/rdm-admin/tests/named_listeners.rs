@@ -93,7 +93,7 @@ fn join_door_refuses_mismatched_listener_reports_and_publishes_verified_listener
             .map(|n| (n.clone(), "127.0.0.1:0".parse().expect("addr")))
             .collect();
 
-        let dep = Deployed {
+        let dep = Deployed { mesh: "mesh1".into(), kind: NodeKind::Gateway,
             name: PathName::new("mesh1", NodeKind::Gateway, 1),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
@@ -110,7 +110,7 @@ fn join_door_refuses_mismatched_listener_reports_and_publishes_verified_listener
         let digest = MeshDigest {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: MeshNode { mesh: dep.name.mesh.clone(), kind: dep.name.kind,
+            node: MeshNode { mesh: dep.mesh.clone(), kind: dep.kind,
                 node_id: dep.node_id.clone(),
                 name: dep.name.clone(),
                 endpoint_id: dep.endpoint_id.clone(),

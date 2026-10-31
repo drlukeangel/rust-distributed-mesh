@@ -1381,11 +1381,11 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         return forward_of(*frame, me, own_mesh).map(|frame| Frame::Authored { context, frame: Box::new(frame) });
     }
     match frame {
-        Frame::NodeDeleting { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
-        Frame::NodeDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
-        Frame::NodeStopped { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
-        Frame::NodeConnectionsDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleting { op, forwarded_by: Some(me.to_string()) }),
-        Frame::NodeConnectionsDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeDeleting { op, publisher, topology_version, .. } if op.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
+        Frame::NodeDeleted { op, .. } if op.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeStopped { op, publisher, topology_version, .. } if op.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
+        Frame::NodeConnectionsDeleting { op, .. } if op.mesh != own_mesh => Some(Frame::NodeConnectionsDeleting { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeConnectionsDeleted { op, .. } if op.mesh != own_mesh => Some(Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {
             Some(Frame::MeshStatus { mesh, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })
         }
@@ -2310,7 +2310,7 @@ impl View {
     /// projection is the publisher's later word on the birth, and the version orders them only within
     /// that publisher's counter.
     fn refuses_status_event(&self, kind: StatusEvent, op: &LifecycleOp, publisher: &PublisherId, topology_version: u64, via: &'static str) -> bool {
-        let mesh = op.name.mesh.as_str();
+        let mesh = op.mesh.as_str();
         if kind != StatusEvent::Stopped {
             return false;
         }
@@ -2709,7 +2709,7 @@ impl View {
             }
         }
         if let Some(op) = final_delete {
-            let (mesh, build_id, attempt, at_rafka_ms) = (op.name.mesh.clone(), op.build_id.clone(), op.attempt, op.event_at_rafka_ms);
+            let (mesh, build_id, attempt, at_rafka_ms) = (op.mesh.clone(), op.build_id.clone(), op.attempt, op.event_at_rafka_ms);
             self.digest_view.depart(op);
             self.digest_view.depart_mesh_births(&mesh, &build_id, attempt, at_rafka_ms);
         }
@@ -2741,7 +2741,7 @@ impl View {
     /// (gossip.md, node-stopped lifecycle overlay): Leaving and stopped, not routable. `channel` is
     /// where the overlay arrived: the frame itself, or the mesh topology's `in_flight`.
     fn note_member_stopped(&self, op: &rdm_core::LifecycleOp, prior: Option<rdm_core::MemberStatus>, channel: &str) {
-        if op.name.mesh == self.mesh {
+        if op.mesh == self.mesh {
             return;
         }
         tracing::info_span!(
@@ -4393,7 +4393,7 @@ impl Backbone {
         let topology_view = &self.topology_view;
         let me_name = self.current_name();
         let publisher = self.current_publisher();
-        let (role, version) = if op.name.mesh == self.mesh && self.publishing.load(Ordering::Relaxed) {
+        let (role, version) = if op.mesh == self.mesh && self.publishing.load(Ordering::Relaxed) {
             let mut v = self.version.lock().unwrap();
             topology_view.view.apply_status_event(kind, op, None, "executed");
             let full = self.own_full(topology_view, self.own_members(topology_view));
@@ -5285,7 +5285,7 @@ impl DigestView {
     /// this view holds no digest of exactly that birth.
     pub fn admitted(&self, op: &LifecycleOp, status: rdm_core::MemberStatus) -> bool {
         let own_mesh = self.own_mesh.lock().unwrap().clone();
-        let held = !own_mesh.is_empty() && op.name.mesh == own_mesh && self.inner.lock().unwrap().get(op.node_id.as_str()).is_some_and(|(d, _, _)| d.node.incarnation == op.incarnation);
+        let held = !own_mesh.is_empty() && op.mesh == own_mesh && self.inner.lock().unwrap().get(op.node_id.as_str()).is_some_and(|(d, _, _)| d.node.incarnation == op.incarnation);
         if !held {
             return false;
         }
@@ -5743,8 +5743,8 @@ impl DigestView {
             executed.retain(|id| deleted.iter().any(|op| op.node_id.as_str() == id));
             executed.clone()
         };
-        let in_flight = self.in_flight().into_iter().filter(|op| op.name.mesh == mesh).collect();
-        let deleted = deleted.into_iter().filter(|op| op.name.mesh == mesh || executed.contains(op.node_id.as_str())).collect();
+        let in_flight = self.in_flight().into_iter().filter(|op| op.mesh == mesh).collect();
+        let deleted = deleted.into_iter().filter(|op| op.mesh == mesh || executed.contains(op.node_id.as_str())).collect();
         (in_flight, deleted)
     }
 
@@ -6295,7 +6295,7 @@ impl DigestView {
         for d in self.stopped_digests().into_iter().filter(|d| d.node.mesh == mesh) {
             roster.entry(d.node.node_id.to_string()).or_insert((d.node.incarnation.clone(), d.node.name.clone()));
         }
-        for op in self.in_flight().into_iter().filter(|op| op.name.mesh == mesh) {
+        for op in self.in_flight().into_iter().filter(|op| op.mesh == mesh) {
             roster.entry(op.node_id.to_string()).or_insert((op.incarnation.clone(), op.name.clone()));
         }
         let own = self.own.lock().unwrap().clone();
@@ -6305,7 +6305,7 @@ impl DigestView {
                 continue;
             }
             let Ok(node_id) = NodeId::parse(&id) else { continue };
-            let op = LifecycleOp { build_id: build_id.to_string(), attempt, operation: format!("node.delete:{path}"), node_id, incarnation, name: path, event_at_rafka_ms: at_rafka_ms, traceparent: None, tracestate: None };
+            let op = LifecycleOp { mesh: mesh.to_string(), build_id: build_id.to_string(), attempt, operation: format!("node.delete:{path}"), node_id, incarnation, name: path, event_at_rafka_ms: at_rafka_ms, traceparent: None, tracestate: None };
             if self.depart_quiet(op) {
                 changed = true;
             }
@@ -6679,7 +6679,7 @@ mod tests {
     }
 
     fn op(id: &NodeId, inc: &IncarnationId, operation: &str) -> LifecycleOp {
-        LifecycleOp {
+        LifecycleOp { mesh: "mesh1".into(),
             build_id: "b1".into(),
             attempt: 1,
             operation: operation.into(),

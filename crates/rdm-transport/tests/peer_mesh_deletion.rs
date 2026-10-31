@@ -110,7 +110,7 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         }
 
         // The fabric-primary, as executor, proves the exit and publishes NodeDeleted on its own mesh channel.
-        let op = LifecycleOp {
+        let op = LifecycleOp { mesh: subject.node.mesh.clone(),
             build_id: "b-peer-mesh-deletion".into(),
             attempt: 3,
             operation: "node.delete:mesh2.admin.1".into(),

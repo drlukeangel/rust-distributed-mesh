@@ -109,7 +109,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             declared: Default::default(),
         };
         let runtime = rdm_core::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
-        let _ = root.runner.joins.expect(rdm_admin::join::Deployed {
+        let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),

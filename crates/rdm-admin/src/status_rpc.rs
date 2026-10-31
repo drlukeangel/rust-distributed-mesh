@@ -1990,7 +1990,7 @@ impl StatusDoor {
         use rdm_core::protocol::NodeProtocol;
         use tracing::Instrument;
         let Some(incarnation) = node.incarnation_id.clone() else { return A::NotSent { reason: "the command names no exact birth".into(), code: Code::FailedPrecondition }; };
-        let op = rdm_core::LifecycleOp { node_id: node.node_id.clone(), incarnation: incarnation.clone(), name: node.name.clone(), build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+        let op = rdm_core::LifecycleOp { mesh: node.mesh.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone(), name: node.name.clone(), build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
         let request = if start { Q::StartNode { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() } } else { Q::StopNode { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() } };
         let key = crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() };
         // A mesh-primary that replied `blocked` issues no new command until it is unblocked (storage.md §2).
@@ -3121,7 +3121,7 @@ mod tests {
         let _ = door.stopped.set(publisher);
         let stop_of = |n: &crate::model::Node, kind: &str| DeclaredOperation { build_id: "b".into(), attempt: 2, operation: format!("{kind}:{}", n.name) };
         let declare = |n: &crate::model::Node, operation: Option<DeclaredOperation>| StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation };
-        let stream = |n: &crate::model::Node, op: &DeclaredOperation| rdm_core::LifecycleOp { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), name: n.name.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+        let stream = |n: &crate::model::Node, op: &DeclaredOperation| rdm_core::LifecycleOp { mesh: n.mesh.clone(), build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), name: n.name.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
 
         // The declaration first, then a repeat of it, then the stop stream's stopped.
         let stop = stop_of(&declared_first, "node.stop");
@@ -3334,7 +3334,7 @@ mod tests {
                 t
             })),
         };
-        let first = crate::join::Deployed {
+        let first = crate::join::Deployed { mesh: rpc.mesh.clone(), kind: rpc.kind,
             name: rpc.name.clone(),
             node_id: rpc.node_id.clone(),
             incarnation: birth.clone(),
@@ -4036,7 +4036,7 @@ mod tests {
         digest_view.record(digest_of(&restarted, IncarnationId::mint()));
         // rpc.2 deleted: its exact birth deleted.
         digest_view.record(digest_of(&deleted, deleted.incarnation_id.clone().unwrap()));
-        digest_view.depart(rdm_core::LifecycleOp {
+        digest_view.depart(rdm_core::LifecycleOp { mesh: deleted.mesh.clone(),
             build_id: "build1".into(),
             attempt: 1,
             operation: "node.delete:mesh1.rpc.2".into(),

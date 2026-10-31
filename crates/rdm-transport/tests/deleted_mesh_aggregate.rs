@@ -39,7 +39,7 @@ fn digest(name: &str, port: u16) -> MeshDigest {
 #[test]
 fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_delete() {
     let m3_a1 = digest("mesh3.admin.1", 29301);
-    let final_del = LifecycleOp {
+    let final_del = LifecycleOp { mesh: m3_a1.node.mesh.clone(),
         build_id: "b-s72".into(),
         attempt: 1,
         operation: "node.delete:mesh3.admin.1".into(),

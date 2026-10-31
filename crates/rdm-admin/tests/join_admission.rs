@@ -76,7 +76,7 @@ impl Capture {
 
 
 fn deployed() -> Deployed {
-    Deployed {
+    Deployed { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
         name: "mesh1.rpc.1".parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
@@ -554,7 +554,7 @@ fn a_join_report_whose_listeners_are_not_exactly_the_assigned_is_refused_by_name
     std::fs::create_dir_all(&dir).unwrap();
     let cap = capture(cell);
     let assigned: Vec<(String, std::net::SocketAddr)> = ["kafka", "rest", "proxy"].iter().map(|n| (n.to_string(), "127.0.0.1:0".parse().unwrap())).collect();
-    let dep = Deployed { name: "mesh1.gateway.1".parse().unwrap(), listeners: assigned, ..deployed() };
+    let dep = Deployed { kind: rdm_core::NodeKind::Gateway, name: "mesh1.gateway.1".parse().unwrap(), listeners: assigned, ..deployed() };
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();

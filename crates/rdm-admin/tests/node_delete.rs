@@ -956,7 +956,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             })
             .await
             .unwrap();
-        let deleting_op = LifecycleOp {
+        let deleting_op = LifecycleOp { mesh: target_name.mesh.clone(),
             build_id: build_id.to_string(),
             attempt: 2,
             operation: format!("node.delete:{target_name}"),
@@ -1119,7 +1119,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             is_fabric_primary: None,
         };
         assert!(peer_view.record(old_digest.clone()));
-        assert!(peer_view.depart(LifecycleOp {
+        assert!(peer_view.depart(LifecycleOp { mesh: target_name.mesh.clone(),
             build_id: build_id_live.to_string(),
             attempt: 1,
             operation: format!("node.delete:{target_name}"),

@@ -931,7 +931,7 @@ mod tests {
 
     #[test]
     fn a_lifecycle_op_output_with_an_unknown_field_is_refused_by_name() {
-        let op = rdm_core::LifecycleOp {
+        let op = rdm_core::LifecycleOp { mesh: "mesh1".into(),
             build_id: "b1".into(),
             attempt: 3,
             operation: "node.delete:mesh1.rpc.1".into(),

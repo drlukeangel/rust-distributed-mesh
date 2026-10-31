@@ -33,6 +33,10 @@ use tokio::sync::watch;
 /// (`docs/architecture/lifecycles/node-create.md` step 2, `docs/architecture/lifecycles/node-mesh-join.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deployed {
+    /// The owning mesh supplied at deployment.
+    pub mesh: String,
+    /// The runtime kind supplied at deployment.
+    pub kind: crate::model::NodeKind,
     /// The deployed node's `path.name`.
     pub name: PathName,
     /// The deployed node's id.
@@ -97,6 +101,8 @@ impl Deployed {
             }
         }
         same("node_id", &self.node_id, &d.node.node_id)?;
+        same("mesh", &self.mesh, &d.node.mesh)?;
+        same("kind", &self.kind, &d.node.kind)?;
         // The name is reconciled apart from identity (node-create.md step 4): a held birth is
         // admitted under its row's name or the name this authority last accepted for it; a first
         // start under its create spec's name only.
@@ -474,7 +480,7 @@ impl JoinDoor {
                 // installed, and the join is retried.
                 if let (Some((storage, written)), true) = (&self.nodes, !issue.bytes.is_empty() || !listeners.is_empty()) {
                     let dates = (!issue.bytes.is_empty()).then(|| crate::cert_renewal::dates_of(&issue));
-                    let signing = (!issue.bytes.is_empty() && birth.name.kind == crate::model::NodeKind::NodeAdmin).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
+                    let signing = (!issue.bytes.is_empty() && d.node.kind == crate::model::NodeKind::NodeAdmin).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
                     let base = crate::storage::NodeRow::new(birth.name.clone(), birth.node_id.clone(), crate::model::NodeStatus::Pending);
                     let put = written.update(&**storage, &birth.node_id, Some(base), |r| {
                         let b = r.birth_mut(&birth.incarnation, &birth.name);
@@ -575,7 +581,7 @@ mod tests {
     }
 
     fn deployed() -> Deployed {
-        Deployed {
+        Deployed { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             name: "mesh1.rpc.1".parse().unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
@@ -592,7 +598,7 @@ mod tests {
     fn digest_of(d: &Deployed) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
-            node: MeshNode { mesh: d.name.mesh.clone(), kind: d.name.kind,
+            node: MeshNode { mesh: d.mesh.clone(), kind: d.kind,
                 node_id: d.node_id.clone(),
                 name: d.name.clone(),
                 endpoint_id: d.endpoint_id.clone(),
@@ -618,12 +624,25 @@ mod tests {
     #[test]
     fn a_join_digest_that_matches_the_deployment_is_deployed_and_is_reported() {
         let joins = Joins::default();
-        let dep = deployed();
+        let dep = Deployed {
+            name: "elsewhere.gateway.north".parse().unwrap(),
+            mesh: "mesh2".into(),
+            kind: rdm_core::NodeKind::Compute,
+            ..deployed()
+        };
         let rx = joins.expect(dep.clone());
         let d = digest_of(&dep);
         assert_eq!(joins.standing(&d, &[]), Standing::Deployed { name: dep.name.clone(), held: false });
         joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
         assert_eq!(rx.borrow().as_ref().map(|r| r.digest.node.transport_addr), Some(d.node.transport_addr), "the address the node reported is the one the admin publishes");
+        let mut wrong_mesh = d.clone();
+        wrong_mesh.node.mesh = "elsewhere".into();
+        let mismatch = dep.verify(&wrong_mesh, &[]).unwrap_err();
+        assert_eq!(mismatch.field, "mesh");
+        assert!(mismatch.deployed.contains("mesh2") && mismatch.reported.contains("elsewhere"));
+        let mut wrong_kind = d;
+        wrong_kind.node.kind = rdm_core::NodeKind::Gateway;
+        assert_eq!(dep.verify(&wrong_kind, &[]).unwrap_err().field, "kind");
     }
 
     // @feature: node-lifecycle
@@ -828,6 +847,8 @@ mod tests {
 
             let dep_key = iroh::SecretKey::generate().public();
             let mut dep = deployed();
+            dep.name = "elsewhere.rpc.administrator".parse().unwrap();
+            dep.kind = rdm_core::NodeKind::NodeAdmin;
             dep.endpoint_id = EndpointId(dep_key.to_string());
 
             // 1. Unknown birth -> `NotPrimary { primary }`.
@@ -916,6 +937,7 @@ mod tests {
                 stored_row.birth(&dep.incarnation).and_then(|b| b.cert.as_ref()).is_some(),
                 "birth cert dates written on NodeRow"
             );
+            assert!(stored_row.birth(&dep.incarnation).and_then(|b| b.signing_cert.as_ref()).is_some(), "an admin's signing dates follow its explicit kind, even when its name looks like another kind and mesh");
         });
 
         let spans = capture.spans().expect("captured spans");

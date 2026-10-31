@@ -305,7 +305,7 @@ impl AdminSide {
 
     fn register(&self, launch: &rdm_core::launch::Launch, key: &SecretKey, name: rdm_core::PathName, last_accepted: Option<rdm_core::PathName>, held: bool) {
         let runtime = rdm_core::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).expect("the birth's runtime record is written");
-        let _ = self.joins.expect(rdm_admin::join::Deployed {
+        let _ = self.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
             name,
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),

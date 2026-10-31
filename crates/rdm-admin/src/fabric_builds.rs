@@ -435,7 +435,7 @@ mod tests {
     /// operation's `Complete`, which still commits no output.
     #[test]
     fn a_stop_receipt_carries_its_birth_and_time_on_the_build_topic() {
-        let op = rdm_core::LifecycleOp {
+        let op = rdm_core::LifecycleOp { mesh: "mesh1".into(),
             build_id: "b1".into(),
             attempt: 2,
             operation: "node.stop:mesh1.rpc.1".into(),

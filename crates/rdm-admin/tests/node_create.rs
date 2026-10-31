@@ -536,7 +536,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let exp_path: PathName = "mesh1.rpc.3".parse().unwrap();
         let exp_ep = EndpointId(loaded_key.public().to_string());
         let exp_fact = RuntimeFact::of_this_process(&rdm_admin::model::DeploymentId::mint().to_string()).unwrap();
-        let exp_rx = joins.expect(rdm_admin::join::Deployed {
+        let exp_rx = joins.expect(rdm_admin::join::Deployed { mesh: exp_path.mesh.clone(), kind: exp_path.kind,
             name: exp_path.clone(),
             node_id: exp_id.clone(),
             incarnation: exp_inc.clone(),

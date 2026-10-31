@@ -63,7 +63,7 @@ fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, supersedes:
 }
 
 fn stop_op(d: &MeshDigest) -> LifecycleOp {
-    LifecycleOp {
+    LifecycleOp { mesh: d.node.mesh.clone(),
         build_id: "build-s52".into(),
         attempt: 1,
         operation: format!("node.stop:{}", d.node.name),

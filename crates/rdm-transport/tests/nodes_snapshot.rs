@@ -81,7 +81,7 @@ impl Mesh {
 }
 
 fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
-    LifecycleOp {
+    LifecycleOp { mesh: d.node.mesh.clone(),
         build_id: "b1".into(),
         attempt: 1,
         operation: operation.into(),

@@ -677,7 +677,7 @@ impl AdminRunner {
         let all = crate::mesh_delete::mesh_left_proof(&completion, &terminal).map_err(|e| format!("{operation}: the proof set is not complete: {e}"))?;
         let mesh_id = MeshId::parse(&completion.mesh_id).map_err(|e| format!("{operation}: the completion names the mesh id {:?}, which does not parse: {e}", completion.mesh_id))?;
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: operation.to_string() };
-        self.record_mesh_left(&key, &op.name.mesh, all).await?;
+        self.record_mesh_left(&key, &op.mesh, all).await?;
         Ok("applied")
     }
 
@@ -1367,7 +1367,7 @@ mod tests {
             .await
             .unwrap();
 
-        let op = rdm_core::LifecycleOp {
+        let op = rdm_core::LifecycleOp { mesh: "mesh2".into(),
             build_id: build_id.to_string(),
             attempt: 1,
             operation: del_op,
