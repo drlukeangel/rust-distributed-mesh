@@ -21,7 +21,7 @@ pub fn predecessor_steps(node: &PathName) -> Vec<Step> {
 /// `node[1].delete` at `<name>.old`.
 pub fn replace(node: &PathName) -> Vec<Step> {
     let mut steps = predecessor_steps(node);
-    steps.extend([Step::Create { node: node.clone(), executable: None }, Step::Delete { node: node.renamed() }]);
+    steps.extend([Step::Create { mesh: node.mesh.clone(), kind: node.kind, node: node.clone(), executable: None }, Step::Delete { node: node.renamed() }]);
     steps
 }
 

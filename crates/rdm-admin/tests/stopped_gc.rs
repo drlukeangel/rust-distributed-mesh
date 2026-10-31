@@ -112,7 +112,7 @@ fn replace_steps(b: &(PathName, NodeId, IncarnationId)) -> AttemptAction {
             Step::LeaveMesh { node: node.clone() },
             Step::Update { node: node.clone(), name: node.renamed() },
             Step::Stop { node: node.renamed() },
-            Step::Create { node: node.clone(), executable: None },
+            Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: node.clone(), executable: None },
             Step::Delete { node: node.renamed() },
         ],
         pinned: vec![(node, rdm_admin::build::PinnedBirth { node_id: b.1.clone(), incarnation: b.2.clone() })],

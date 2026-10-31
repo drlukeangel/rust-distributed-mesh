@@ -2147,7 +2147,7 @@ mod tests {
             Step::LeaveMesh { node: node.clone() },
             Step::Update { node: node.clone(), name: node.renamed() },
             Step::Stop { node: node.renamed() },
-            Step::Create { node: node.clone(), executable: None },
+            Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: node.clone(), executable: None },
         ]
     }
 
@@ -3377,7 +3377,7 @@ mod tests {
             Step::Stop {
                 node: old_name.clone(),
             },
-            Step::Create {
+            Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 node: name.clone(),
                 executable: Some(succ_exe.clone()),
             },

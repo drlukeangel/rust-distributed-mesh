@@ -189,6 +189,8 @@ async fn rig(dir: &std::path::Path) -> Rig {
     let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: FabricId::mint(),
+        mesh: "mesh1".into(),
+        kind: rdm_core::NodeKind::RpcNode,
         name: "mesh1.rpc.1".parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),

@@ -94,11 +94,13 @@ async fn boot_root(dir: &Path, policy: &[(&'static str, String)]) -> Running {
 
 /// The launch of a birth at `name` deployed by `by` (the admin that answers its JoinNode), with the
 /// testkit's root set, on the fabric's shared `store`.
-fn launch_by(by: &Running, store: &Path, dir: &Path, name: &str) -> Launch {
+fn launch_by(by: &Running, store: &Path, dir: &Path, name: &str, kind: rdm_core::NodeKind) -> Launch {
     let d = by.digest.lock().unwrap().clone();
     Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
+        mesh: "mesh1".into(),
+        kind: kind,
         name: name.parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
@@ -139,7 +141,7 @@ fn deployed(by: &Running, launch: &Launch) {
 /// A member at `name`, deployed by `by`, with the product ALPN registered, started and joined.
 async fn member(by: &Running, store: &Path, name: &str) -> RunningNode {
     let dir = cell_dir(name);
-    let launch = launch_by(by, store, &dir, name);
+    let launch = launch_by(by, store, &dir, name, rdm_core::NodeKind::RpcNode);
     deployed(by, &launch);
     rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
         .await
@@ -151,7 +153,7 @@ async fn member(by: &Running, store: &Path, name: &str) -> RunningNode {
 /// no cert policy but the one its entry pull carries. Returns it with that environment.
 async fn launched_admin(root: &Running, store: &Path) -> (Running, BTreeMap<String, String>) {
     let dir = cell_dir("mesh1.admin.2");
-    let mut launch = launch_by(root, store, &dir, "mesh1.admin.2");
+    let mut launch = launch_by(root, store, &dir, "mesh1.admin.2", rdm_core::NodeKind::NodeAdmin);
     launch.listeners = vec![("control".into(), "127.0.0.1:0".parse().unwrap())];
     launch.issuing = root.runner.issuer.issuing_material("mesh1").expect("the root holder hands mesh1's issuing material");
     deployed(root, &launch);

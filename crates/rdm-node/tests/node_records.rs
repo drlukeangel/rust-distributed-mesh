@@ -687,6 +687,8 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
         topology_storage_provider: "file".into(),
         fabric: "fabric1".into(),
         fabric_id: FabricId::mint(),
+        mesh: "mesh1".into(),
+        kind: rdm_core::NodeKind::RpcNode,
         name: "mesh1.rpc.2".parse().unwrap(),
         node_id: initial.birth.node_id.clone(),
         incarnation: initial.birth.incarnation_id.clone(),

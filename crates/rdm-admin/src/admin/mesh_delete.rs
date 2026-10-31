@@ -379,7 +379,7 @@ impl AdminRunner {
         let held: Vec<PathName> = view.nodes.iter().map(|n| n.name.clone()).collect();
         let path = crate::mesh_delete::leaving_mesh_admin_path(mesh, &adm.roster, &held)?;
         let span = tracing::info_span!("rdm.node_admin.node.create.via-leaving-mesh", mesh = %mesh, mesh_id = %key.mesh_id, node = %path, build_id = %build_id.log(), attempt, operation = %outer, predecessor = %format!("{} {}", lost.node, lost.incarnation_id), outcome = tracing::field::Empty);
-        let created = self.create_deleting_mesh_admin(build_id, attempt, &path, &key.mesh_id, &lost).instrument(span.clone()).await;
+        let created = self.create_deleting_mesh_admin(build_id, attempt, mesh, &path, &key.mesh_id, &lost).instrument(span.clone()).await;
         span.record("outcome", if created.is_ok() { "created" } else { "failed" });
         created.map_err(|e| format!("{outer}: the node-admin {path} created for {mesh}, which has no live admin: {e}"))?;
         self.refresh_view().await;
@@ -399,7 +399,7 @@ impl AdminRunner {
     /// recovery (build.md, "One node.create is recovery"), and a recovery runs the executable its
     /// exited birth's row records, never the recovering admin's (node-recovery.md "Retained", Q157).
     /// A predecessor whose row records none refuses the create by name; nothing is launched.
-    async fn create_deleting_mesh_admin(&self, build_id: &crate::build::BuildId, attempt: u32, path: &PathName, mesh_id: &MeshId, predecessor: &RosterBirth) -> Result<(), String> {
+    async fn create_deleting_mesh_admin(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, path: &PathName, mesh_id: &MeshId, predecessor: &RosterBirth) -> Result<(), String> {
         let state = self.records.declared.lock().unwrap().meshes.get(mesh_id).copied().ok_or_else(|| {
             format!("{}: this fabric-primary holds no declared state for {} ({mesh_id}), so the admin created for it could be handed none; nothing is created under an assumed state", self.held_name(), path.mesh)
         })?;
@@ -408,10 +408,10 @@ impl AdminRunner {
             crate::path_investigation::TargetOutcome::Clear { gone: None } => {}
             other => return Err(format!("{path} is not a path no birth held: the create door targeted {other:?}")),
         }
-        let hand_off = self.mesh_state_hook(path, state)?;
-        let template = self.with_issuing_material(self.template_bound(path, executable, "row").await?, &path.mesh).await?;
+        let hand_off = self.mesh_state_hook(mesh, state)?;
+        let template = self.with_issuing_material(self.template_bound(path, mesh, NodeKind::NodeAdmin, executable, "row").await?, mesh).await?;
         let held_runtimes = self.held_runtimes().await;
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: path.clone(), spec: self.listeners.spec_for(NodeKind::NodeAdmin), data_dir: None, held_runtimes, entry: None };
+        let req = CreateRequest { mesh: mesh.to_string(), kind: NodeKind::NodeAdmin, build_id: build_id.clone(), attempt, node: path.clone(), spec: self.listeners.spec_for(NodeKind::NodeAdmin), data_dir: None, held_runtimes, entry: None };
         let created = self.pipeline(&template).create_with(&req, Some(hand_off), None).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(path.clone(), (created.node, created.handle));

@@ -274,11 +274,11 @@ mod tests {
         let m2_admin_path: crate::model::PathName = "mesh2.admin.1".parse().unwrap();
         let m2_rpc_path: crate::model::PathName = "mesh2.rpc.1".parse().unwrap();
         assert!(
-            settled_view.first_admin_of(&m2_admin_path),
+            settled_view.first_admin_of(&m2_admin_path, "mesh2", NodeKind::NodeAdmin),
             "mesh2.admin.1 is the first node-admin of mesh2 and runs on its own"
         );
         assert!(
-            !settled_view.first_admin_of(&m2_rpc_path),
+            !settled_view.first_admin_of(&m2_rpc_path, "mesh2", NodeKind::RpcNode),
             "mesh2.rpc.1 is not the first node-admin of mesh2"
         );
         let create_m2_admin = BuildOperation::CreateNode {
@@ -529,6 +529,8 @@ mod tests {
                 initial_properties: Default::default(),
                 fabric: "fabric1".into(),
                 fabric_id: fabric_id.clone(),
+                mesh: "mesh2".into(),
+                kind: rdm_core::NodeKind::NodeAdmin,
                 name: "mesh2.admin.1".parse().unwrap(),
                 node_id: NodeId::mint(),
                 incarnation: IncarnationId::mint(),

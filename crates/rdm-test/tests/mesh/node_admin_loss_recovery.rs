@@ -505,7 +505,7 @@ async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_record
     let cut = "steps:create";
     door.arm(cut, json!({"kind": "receipt", "step": "PrepareStorage", "operation": "node.create:mesh1.rpc.3"})).await;
     let rpc1: rdm_client::PathName = Estate::path("mesh1.rpc.1");
-    let stream = estate.nodes_obj().await.steps(vec![rdm_core::build::Step::Stop { node: rpc1 }, rdm_core::build::Step::Create { node: Estate::path("mesh1.rpc.3"), executable: Some(estate.executables.of(rdm_client::LaunchKind::RpcNode)) }]).await.unwrap_or_else(|e| panic!("the Build is accepted: {e}"));
+    let stream = estate.nodes_obj().await.steps(vec![rdm_core::build::Step::Stop { node: rpc1 }, rdm_core::build::Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: Estate::path("mesh1.rpc.3"), executable: Some(estate.executables.of(rdm_client::LaunchKind::RpcNode)) }]).await.unwrap_or_else(|e| panic!("the Build is accepted: {e}"));
     let held = door.wait_held(cut).await;
 
     // The fault: every runtime of the fabric, at once, inside the Build.

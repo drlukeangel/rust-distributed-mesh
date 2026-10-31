@@ -2891,7 +2891,7 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
     let nodes = objects(&estate).await;
     let with_binding = |node: &PathName, b: &Binding| -> Vec<Step> {
         replace_steps(node).into_iter().map(|s| match s {
-            Step::Create { node, .. } => Step::Create { node, executable: Some(b.clone()) },
+            Step::Create { node, mesh, kind, .. } => Step::Create { node, mesh, kind, executable: Some(b.clone()) },
             other => other,
         }).collect()
     };
@@ -2921,10 +2921,10 @@ async fn a_create_steps_executable_reaches_the_provider_at_every_admin_and_throu
 
     // The refusals, by name, nothing launched.
     let absent = Binding { executable: execs.join("not-there"), ..binding.clone() };
-    let reason = failed_steps(&nodes, vec![Step::Create { node: "mesh1.rpc.7".parse().unwrap(), executable: Some(absent) }]).await;
+    let reason = failed_steps(&nodes, vec![Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: "mesh1.rpc.7".parse().unwrap(), executable: Some(absent) }]).await;
     assert!(reason.contains("not-there") && reason.contains("cannot be read"), "a missing file is refused by name: {reason}");
     let mismatched = Binding { sha256: "0".repeat(64), ..binding.clone() };
-    let reason = failed_steps(&nodes, vec![Step::Create { node: "mesh1.rpc.8".parse().unwrap(), executable: Some(mismatched) }]).await;
+    let reason = failed_steps(&nodes, vec![Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: "mesh1.rpc.8".parse().unwrap(), executable: Some(mismatched) }]).await;
     assert!(reason.contains("rpc-node-fixed") && reason.contains("the binding expects"), "a hash mismatch is refused by name: {reason}");
     for node in ["mesh1.rpc.7", "mesh1.rpc.8"] {
         assert!(!estate.node_values().await.iter().any(|n| n["name"] == node), "nothing is launched at {node}");

@@ -4035,6 +4035,8 @@ mod tests {
         let launch = rdm_core::launch::Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
+            mesh: "mesh1".into(),
+            kind: rdm_core::NodeKind::NodeAdmin,
             name: "mesh1.admin.2".parse().unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
@@ -4077,6 +4079,8 @@ mod tests {
             topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
+            mesh: "mesh1".into(),
+            kind: rdm_core::NodeKind::NodeAdmin,
             name: "mesh1.admin.2".parse().unwrap(),
             node_id: given.clone(),
             incarnation: IncarnationId::mint(),
@@ -4095,6 +4099,10 @@ mod tests {
         };
         let launched = launch.to_env();
         assert_eq!(launched.get(rdm_core::launch::ENV_NODE_ID), Some(&given.to_string()));
+        let mut wrong_kind = launched.clone();
+        wrong_kind.insert(rdm_core::launch::ENV_NODE_KIND.into(), "rpc_node".into());
+        let error = AdminConfig::from_env(|k| wrong_kind.get(k).cloned()).unwrap_err();
+        assert_eq!(error, "RDM_NODE_KIND names rpc_node: this executable serves node_admin");
         let launched = AdminConfig::from_env(|k| launched.get(k).cloned()).unwrap();
         assert_eq!((&launched.node_id, launched.launch.as_ref().map(|l| &l.node_id)), (&given, Some(&given)), "a launched admin runs as its launch's RDM_NODE_ID");
     }

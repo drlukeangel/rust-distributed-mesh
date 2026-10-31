@@ -431,6 +431,40 @@ launch, gossip, lifecycle operations, roster and pin ownership, section routing,
 pair format remain BUILD. In particular, deleted/renamed subjects need the existing exact-birth
 pin to retain explicit mesh ownership; routing must never reconstruct it from their path.
 
+### Explicit launch and create-step ownership (2026-10-31)
+
+`CreateRequest` and `Launch` carry mesh and runtime kind explicitly; `RDM_MESH` and
+`RDM_NODE_KIND` preserve them independently of name spelling. Ordinary startup and same-process
+start use the declared kind. Admin startup refuses another kind. Executable validation, listener
+selection, declared-secret selection and first-admin handoff use the supplied ownership.
+
+A topology create reads the accepted entry from the shared Build. A primitive create carries
+explicit ownership in `Step::Create`; its executor reads the immutable action recorded for the
+invoked attempt through the existing lane projection. It never substitutes a topology entry for
+that step. Recovery uses the exact predecessor. A create redirected over an unreached predecessor
+retains its existing request and claim disposition through the inherited/fresh-directory decision;
+true recovery retains predecessor properties and application knowledge. The runner reuses the
+existing `create_with_claim` pipeline rather than maintaining a second creation implementation.
+
+Architect 1 reviewed the operation/attempt/lane selection and redirect. Evidence:
+`explicit-launch-step-ownership.log`: 6/6 launch codecs; `explicit-launch-step-wire.log`: 10/10
+Build wire contracts; `explicit-launch-admin-kind.log`: launched-admin kind refusal, 1/1;
+`explicit-launch-provider.log`: provider receives explicit ownership despite a misleading name,
+1/1; `explicit-launch-step-core.log`: core Build controls. Real-process controls:
+`explicit-launch-create-process.log`, normal Build create, 1/1 in 10.63 s;
+`explicit-launch-steps-process.log`, primitive replacement, 1/1 in 9.73 s;
+`explicit-launch-unlisted-step-recovery.log`, a create outside accepted topology followed by total
+fabric loss/recovery, 1/1 in 32.79 s. Initial compilation found a shadowed recovery boolean, and the
+first launch test run found a manual environment fixture missing the now-required fields; both are
+fixed. Neither failed run is counted as behavioral RED evidence.
+
+The e1 end-state remains BUILD. Gossip/private digest wire, lifecycle operations, roster/pin
+ownership, section/operation routing, the free path/name pair and consumer migration are pending.
+The final proof still needs conflicting step/entry ownership across immutable attempts and equal
+attempt numbers in different lanes, plus requested create semantics on both recovery directory
+arms. Existing recovery-marker controls remain evidence for inheritance, not a substitute for
+that complete process matrix.
+
 ### Shared property writer implementation evidence (2026-10-31)
 
 The node runtime now has one `NodePropertyWriter` shared by ordinary own-config and caller config

@@ -114,6 +114,11 @@ impl AdminConfig {
     /// is malformed.
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let launch = if get(rdm_core::launch::ENV_NODE_ID).is_some() { Some(Launch::from_env(&get)?) } else { None };
+        if let Some(launch) = &launch {
+            if launch.kind != NodeKind::NodeAdmin {
+                return Err(format!("{} names {}: this executable serves node_admin", rdm_core::launch::ENV_NODE_KIND, launch.kind.name()));
+            }
+        }
         let adopt = match &launch {
             Some(_) => None,
             None => adoption_from_env(&get)?,
@@ -132,7 +137,7 @@ impl AdminConfig {
         // start over an inherited data dir, an adoption launch) a new one, minted before anything else
         // of the boot runs, its telemetry included.
         let node_id = launch.as_ref().map(|l| l.node_id.clone()).unwrap_or_else(NodeId::mint);
-        let mesh = launch.as_ref().map(|l| l.name.mesh.clone()).or_else(|| get("RDM_MESH")).unwrap_or_else(|| "mesh1".into());
+        let mesh = launch.as_ref().map(|l| l.mesh.clone()).or_else(|| get("RDM_MESH")).unwrap_or_else(|| "mesh1".into());
         if !is_valid_mesh_name(&mesh) {
             return Err(format!("RDM_MESH `{mesh}` is not a valid mesh name"));
         }

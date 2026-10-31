@@ -2102,7 +2102,7 @@ impl DriveEnv {
             let Some(node) = op.node().cloned() else { continue };
             let to = crate::executor::executor_for(&op, t);
             match to {
-                Some(to) if to != *me && !kept.contains(&node.mesh) && crate::executor::section_create(&op, t, &to) && !t.first_admin_of(&node) && self.unheard_peer(&op).is_none() => {
+                Some(to) if to != *me && !kept.contains(&node.mesh) && crate::executor::section_create(&op, t, &to) && !t.first_admin_of(&node, &node.mesh, node.kind) && self.unheard_peer(&op).is_none() => {
                     by.entry(node.mesh.clone()).or_insert_with(|| (to, Vec::new())).1.push(op);
                 }
                 _ => {

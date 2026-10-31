@@ -36,6 +36,8 @@ fn launch(store: &Path) -> Launch {
         topology_storage_provider: "file".into(),
         fabric: "fabric1".into(),
         fabric_id: FabricId::mint(),
+        mesh: "mesh1".into(),
+        kind: rdm_core::NodeKind::RpcNode,
         name: "mesh1.rpc.2".parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),

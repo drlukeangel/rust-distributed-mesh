@@ -437,7 +437,7 @@ pub async fn start_on(
     let app_types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
     rdm_core::app_types::check(&app_types).map_err(|k| anyhow!("app type declaration: {k:?}"))?;
     rdm_transport::connections::validate_alpns(alpns).map_err(|e| anyhow!("{e}"))?;
-    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.name.kind.name());
+    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.kind.name());
     // Boxed: the boot is one large state machine, and its caller holds only the box.
     let started = crate::taskdump::watched("start", Box::pin(start_booted(launch, providers, rafka_time, node_hooks, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot))).await;
     if let Err(e) = &started {
@@ -674,7 +674,7 @@ async fn start_booted(
                 step.record("mesh_id", tracing::field::display(&mesh_id));
                 step.record("seeds", seeds.len());
 
-            let topology_view = TopologyView::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds, &app_types.iter().map(String::as_str).collect::<Vec<_>>()).await?;
+            let topology_view = TopologyView::join(&g, &ep0, &launch.fabric_id, &launch.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds, &app_types.iter().map(String::as_str).collect::<Vec<_>>()).await?;
             topology_view.set_author(&rdm_core::PublisherId { node: name.clone(), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() });
             // The name this birth holds is its topology view's (R12): its connections rows name it as their
             // source from here on, and every door names the node by it, whatever name the join hands it
@@ -694,7 +694,7 @@ async fn start_booted(
                 "rdm.node.mesh.update.via-joined",
                 node = %current_name,
                 node_id = %launch.node_id,
-                mesh = %launch.name.mesh,
+                mesh = %launch.mesh,
                 mesh_id = %mesh_id,
                 which = rdm_core::status::WhichMesh::Own.name(),
             )
@@ -771,6 +771,7 @@ async fn start_booted(
                             let pre_node_ready_cell: Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>> = Arc::default();
                             let pre_node_ready_task_cell: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
                             own.set_session(Arc::new(NodeSession {
+                                kind: launch.kind,
                                 name: launch.name.clone(),
                                 node_id: launch.node_id.clone(),
                                 incarnation: launch.incarnation.clone(),
@@ -860,7 +861,7 @@ async fn start_booted(
                             let becoming = Becoming {
                                 boot: boot.clone(),
                                 name: topology_view.node_name(),
-                                kind: launch.name.kind.name(),
+                                kind: launch.kind.name(),
                                 incarnation_id: launch.incarnation.to_string(),
                                 node_id: launch.node_id.clone(),
                                 mesh_id: mesh_id.to_string(),
@@ -880,7 +881,7 @@ async fn start_booted(
                                     incarnation: launch.incarnation.clone(),
                                     fabric_id: launch.fabric_id.clone(),
                                     mesh_id: mesh_id.clone(),
-                                    kind: launch.name.kind,
+                                    kind: launch.kind,
                                 },
                                 node_hooks: node_hooks.clone(),
                                 events: crate::node_hooks::Events::new(topology_view.digest_view.clone(), addressed),
@@ -946,6 +947,7 @@ fn spawn_publisher(topology_view: &TopologyView, digest: &MeshDigest, status: &A
 /// How an rpc node or role node leaves its mesh when stopped and joins it again when started
 /// (`node_self::Session`): the parts it was born with, kept for the rejoin.
 struct NodeSession {
+    kind: rdm_core::NodeKind,
     name: rdm_core::PathName,
     node_id: NodeId,
     incarnation: IncarnationId,
@@ -1130,7 +1132,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
         let becoming = Becoming {
             boot: self.root.clone(),
             name: me.to_string(),
-            kind: s.name.kind.name(),
+            kind: s.kind.name(),
             incarnation_id: s.incarnation.to_string(),
             node_id: s.node_id.clone(),
             mesh_id: s.mesh_id.to_string(),
@@ -1144,7 +1146,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             progress: self.progress.clone(),
         };
         Ok(crate::workflows::node_start::HookParts {
-            birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.name.kind },
+            birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.kind },
             node_hooks: s.node_hooks.clone(),
             events: crate::node_hooks::Events::new(topology_view.digest_view.clone(), s.addressed.clone()),
             cancel: self.birth_cancel.take().expect("the hook's token is handed once"),

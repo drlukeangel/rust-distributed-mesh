@@ -503,7 +503,7 @@ mod tests {
             attempt: 2,
             reason: crate::build_state::AttemptReason::Steps,
             action: Some(crate::accepted::AttemptAction::Steps {
-                steps: vec![Step::DeleteConnections { node: node.clone() }, Step::LeaveMesh { node: node.clone() }, Step::Update { node: node.clone(), name: node.renamed() }, Step::Stop { node: node.renamed() }, Step::Create { node: node.clone(), executable: None }, Step::Delete { node: node.renamed() }],
+                steps: vec![Step::DeleteConnections { node: node.clone() }, Step::LeaveMesh { node: node.clone() }, Step::Update { node: node.clone(), name: node.renamed() }, Step::Stop { node: node.renamed() }, Step::Create { mesh: node.mesh.clone(), kind: node.kind, node: node.clone(), executable: None }, Step::Delete { node: node.renamed() }],
                 pinned: vec![(node.clone(), pin)],
             }),
             opened_by: "mesh1.admin.1".into(),

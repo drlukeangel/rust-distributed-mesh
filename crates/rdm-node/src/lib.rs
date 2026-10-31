@@ -105,7 +105,7 @@ pub struct Role {
 impl Role {
     /// The role `launch` names: the kind of its path.name, the node_type node-admin launched it as.
     pub fn of(launch: &Launch) -> Self {
-        Self { kind: launch.name.kind }
+        Self { kind: launch.kind }
     }
 
     /// The role's name, the kind's name.
@@ -123,7 +123,7 @@ pub fn read_launch() -> Result<Launch> {
 /// [`read_launch`], refused by name when the path's kind is not this role's.
 pub fn launch_for(role: Role) -> Result<Launch> {
     let launch = read_launch()?;
-    if launch.name.kind != role.kind {
+    if launch.kind != role.kind {
         return Err(anyhow!(
             "refusing to start: launched as {} but this executable is a {}",
             launch.name,

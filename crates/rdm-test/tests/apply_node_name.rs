@@ -48,6 +48,8 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric,
+            mesh: "mesh1".into(),
+            kind: rdm_core::NodeKind::RpcNode,
             name: born.clone(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),

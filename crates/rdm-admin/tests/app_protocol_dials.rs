@@ -76,7 +76,7 @@ async fn day0_root(dir: &std::path::Path) -> Running {
 
 /// A launch of `name` by `launcher` into its mesh, admitting on the fabric's root (`RDM_ROOTS`), its
 /// deployment expected by the launcher's join door.
-fn launched_by(launcher: &Running, name: &str, launcher_dir: &std::path::Path) -> (rdm_core::launch::Launch, std::path::PathBuf) {
+fn launched_by(launcher: &Running, name: &str, kind: NodeKind, launcher_dir: &std::path::Path) -> (rdm_core::launch::Launch, std::path::PathBuf) {
     let d = launcher.digest.lock().unwrap().clone();
     let dir = temp_dir("app-dials-launched");
     let runtime = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("app-dials")).unwrap();
@@ -85,12 +85,14 @@ fn launched_by(launcher: &Running, name: &str, launcher_dir: &std::path::Path) -
     let launch = rdm_core::launch::Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
+        mesh: "mesh1".into(),
+        kind: kind,
         name: name.parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
-        listeners: if name.contains(".admin.") { vec![("control".into(), "127.0.0.1:0".parse().unwrap())] } else { vec![] },
+        listeners: if kind == NodeKind::NodeAdmin { vec![("control".into(), "127.0.0.1:0".parse().unwrap())] } else { vec![] },
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
         launcher: Some(rdm_core::launch::Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.clone(),
@@ -263,7 +265,7 @@ fn a_launched_admin_holds_its_joins_member_cert_and_its_app_protocol_dials_are_a
     rt().block_on(async {
         let dir = temp_dir("app-dials-launched-admin");
         let root = day0_root(&dir).await;
-        let (launch, admin_dir) = launched_by(&root, "mesh1.admin.2", &dir);
+        let (launch, admin_dir) = launched_by(&root, "mesh1.admin.2", NodeKind::NodeAdmin, &dir);
         let env = launch.to_env();
         let admin = start_with(
             AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment"),
@@ -290,7 +292,7 @@ fn an_ordinary_node_holds_its_joins_member_cert_and_its_app_protocol_dials_are_a
     rt().block_on(async {
         let dir = temp_dir("app-dials-node");
         let root = day0_root(&dir).await;
-        let (launch, node_dir) = launched_by(&root, "mesh1.rpc.1", &dir);
+        let (launch, node_dir) = launched_by(&root, "mesh1.rpc.1", NodeKind::RpcNode, &dir);
         let node = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
             .await
             .expect("the node starts");
@@ -312,7 +314,7 @@ fn the_day0_root_and_an_ordinary_node_it_launched_dial_each_other_on_an_app_prot
     rt().block_on(async {
         let dir = temp_dir("app-dials-day0-node");
         let root = day0_root(&dir).await;
-        let (launch, node_dir) = launched_by(&root, "mesh1.rpc.1", &dir);
+        let (launch, node_dir) = launched_by(&root, "mesh1.rpc.1", NodeKind::RpcNode, &dir);
         let node = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
             .await
             .expect("the node starts");

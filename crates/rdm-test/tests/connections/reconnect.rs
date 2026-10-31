@@ -63,6 +63,8 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
                 topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
                 fabric: "fabric1".into(),
                 fabric_id: fabric.clone(),
+                mesh: "mesh1".into(),
+                kind: rdm_core::NodeKind::RpcNode,
                 name: name.clone(),
                 node_id: NodeId::mint(),
                 incarnation: IncarnationId::mint(),

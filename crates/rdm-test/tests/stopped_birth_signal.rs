@@ -40,6 +40,8 @@ pub(crate) fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> La
     Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
+        mesh: "mesh1".into(),
+        kind: rdm_core::NodeKind::RpcNode,
         name: name.parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
