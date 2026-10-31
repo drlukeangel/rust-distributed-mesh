@@ -28,7 +28,7 @@ const LAST: &str = "mesh1.admin.1";
 fn digest(fabric: &FabricId, name: &str, mesh_id: &MeshId) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric.clone(),
-        node: MeshNode {
+        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
             node_id: NodeId::mint(),
             name: name.parse().unwrap(),
             endpoint_id: EndpointId(format!("key-{name}-{}", "x".repeat(40))),

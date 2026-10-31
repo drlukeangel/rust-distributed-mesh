@@ -583,7 +583,7 @@ mod tests {
     fn birth(path: &str) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode { node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(format!("key-{path}")), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
+            node: MeshNode { mesh: (path.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (path.parse::<rdm_core::PathName>().unwrap()).kind, node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(format!("key-{path}")), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
             status: MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,

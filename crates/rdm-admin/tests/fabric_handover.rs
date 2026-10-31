@@ -557,7 +557,7 @@ fn member_node(m: &Member, primary: bool) -> Node {
 fn digest_of(r: &ResolvedNode, fabric: &FabricId) -> rdm_core::MeshDigest {
     rdm_core::MeshDigest {
         fabric_id: fabric.clone(),
-        node: rdm_core::MeshNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: rdm_core::EndpointId(r.endpoint_id.to_string()), transport_addr: r.transport_addr, incarnation: r.incarnation.clone(), supersedes: None, runtime: None },
+        node: rdm_core::MeshNode { mesh: r.name.mesh.clone(), kind: r.name.kind, node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: rdm_core::EndpointId(r.endpoint_id.to_string()), transport_addr: r.transport_addr, incarnation: r.incarnation.clone(), supersedes: None, runtime: None },
         status: rdm_core::MemberStatus::Ready,
         node_state: Default::default(),
         admin_api_base: None,

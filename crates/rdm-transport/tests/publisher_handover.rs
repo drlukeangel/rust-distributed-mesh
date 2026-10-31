@@ -33,7 +33,7 @@ fn attr(sp: &Value, k: &str) -> String {
 fn digest(name: &str, port: u16) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode {
+        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
             node_id: NodeId::mint(),
             name: name.parse().unwrap(),
             endpoint_id: EndpointId(format!("key-{name}")),
@@ -57,7 +57,7 @@ fn digest(name: &str, port: u16) -> MeshDigest {
 }
 
 fn primary_of(d: &MeshDigest, revision: u64) -> Primary {
-    Primary { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
+    Primary { mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
 }
 
 struct Node {

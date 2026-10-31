@@ -127,7 +127,7 @@ mod tests {
     fn digest(p: &PathName, status: MemberStatus) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: MeshNode {
+            node: MeshNode { mesh: p.mesh.clone(), kind: p.kind,
                 node_id: crate::model::NodeId::mint(),
                 name: p.clone(),
                 endpoint_id: crate::model::EndpointId(String::new()),

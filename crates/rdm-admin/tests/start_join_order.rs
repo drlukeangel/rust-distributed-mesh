@@ -182,7 +182,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     };
     let digest = rdm_core::MeshDigest { held_hash: Default::default(),
         fabric_id: template.fabric_id.clone(),
-        node: rdm_core::MeshNode { node_id: node.node_id.clone(), name: name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
+        node: rdm_core::MeshNode { mesh: name.mesh.clone(), kind: name.kind, node_id: node.node_id.clone(), name: name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
         status: rdm_core::MemberStatus::Pending,
         node_state: Default::default(),
         admin_api_base: None,

@@ -25,7 +25,7 @@ fn fabric() -> FabricId {
 fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode {
+        node: MeshNode { mesh: mesh.to_string(), kind: rdm_core::NodeKind::RpcNode,
             node_id: node_id.clone(),
             name: format!("{mesh}.rpc.{ordinal}").parse().unwrap(),
             endpoint_id: EndpointId(format!("key{ordinal}")),

@@ -61,7 +61,7 @@ impl Birth {
     fn digest(&self, seq: u64, at_rafka_ms: u64, status: MemberStatus) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: self.fabric.clone(),
-            node: MeshNode {
+            node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: self.node_id.clone(),
                 name: "mesh1.rpc.1".parse().unwrap(),
                 endpoint_id: EndpointId("k".into()),

@@ -465,6 +465,35 @@ attempt numbers in different lanes, plus requested create semantics on both reco
 arms. Existing recovery-marker controls remain evidence for inheritance, not a substitute for
 that complete process matrix.
 
+### Explicit digest ownership and domain projection (2026-10-31)
+
+`MeshNode` and its private positional `WireNode` carry explicit mesh and runtime kind. Both codec
+conversions preserve them. Ordinary/admin boot supplies launch/config ownership, and digest-backed
+projection restores it for live, stopped-digest and projected-unheard births. Mesh-ID indexing,
+recorded-primary capture/readback, declarations and the entry hook read the explicit owner. A name
+that suggests another mesh or kind is no topology violation; an actual unknown mesh still is.
+
+Architect 1 reviewed both wire conversions and found the remaining primary/declaration aliases and
+three domain conversions; those are fixed. The new `digest_projection_preserves_explicit_ownership_and_primary_selection`
+control passes a deliberately conflicting name through the actual digest codec and projection,
+checks stored primary birth/revision in both directions, and verifies MeshId/type selection.
+`explicit-digest-projection-reviewed.log`: 1/1; `explicit-digest-topology-wire.log`: 6/6 frozen topology
+wire controls; `explicit-digest-gossip-wire.log`: 3/3 codec controls; `explicit-digest-topology.log`:
+8/8 topology controls. `explicit-digest-create-process.log`: real-process create/Build control,
+1/1 in 12.94 s, with OTLP export enabled.
+
+Retrieved and read [the create flame](http://192.168.68.99:16687/trace/f4eff64acd2b82b73070cd8d4d5314a2),
+153 spans, saved as `target/evidence/i150/explicit-digest-create-trace.json`. Its RPC-node pipeline
+records WaitForBind complete at 68.320 ms, WaitForMeshJoin complete, and WaitForNodeReady complete at
+128.012 ms; the node-admin creation completes its corresponding steps. This is current increment
+control evidence, not the final-tip free-pair/recovery acceptance flame.
+
+LifecycleOp-only stopped births, Deployed verification, roster/pin ownership, legacy Atlas and
+record lookup, free-pair serialization and consumer migration remain BUILD. Path-based fixture
+conveniences still exist until that coordinated pair cut; no final compatibility layer is accepted.
+Initial compiles caught integration-test crate paths, one shorthand-field fixture edit and one
+non-digest branch receiving digest assignments; these compiler errors are fixed, not behavioral REDs.
+
 ### Shared property writer implementation evidence (2026-10-31)
 
 The node runtime now has one `NodePropertyWriter` shared by ordinary own-config and caller config

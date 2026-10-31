@@ -152,7 +152,7 @@ mod tests {
             let digest_base = MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
-                node: MeshNode {
+                node: MeshNode { mesh: node_name.mesh.clone(), kind: node_name.kind,
                     node_id: node_id.clone(),
                     name: node_name.clone(),
                     endpoint_id: EndpointId(node_key.public().to_string()),

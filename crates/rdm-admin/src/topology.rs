@@ -37,8 +37,6 @@ pub enum TopologyViolation {
         /// The mesh concerned.
         mesh: String,
     },
-    /// A node's kind or mesh field disagrees with its `path.name`.
-    KindMismatch(PathName),
     /// A `(mesh, kind)` group has no primary.
     NoNodeTypePrimary {
         /// The mesh concerned.
@@ -71,7 +69,6 @@ impl fmt::Display for TopologyViolation {
             Self::DuplicateNode(p) => write!(f, "node {p} appears twice"),
             Self::DuplicateMesh(m) => write!(f, "mesh {m} appears twice"),
             Self::NodeInUnknownMesh { node, mesh } => write!(f, "node {node} names mesh {mesh}, which is not in the fabric"),
-            Self::KindMismatch(p) => write!(f, "node {p}: kind or mesh field disagrees with its path.name"),
             Self::NoNodeTypePrimary { mesh, kind } => write!(f, "node type ({mesh}, {kind:?}) has no primary"),
             Self::SplitNodeTypePrimary { mesh, kind, primaries } => {
                 write!(f, "node type ({mesh}, {kind:?}) has {} primaries: {primaries:?}", primaries.len())
@@ -288,9 +285,6 @@ impl Topology {
             if seen.insert(n.name.clone(), ()).is_some() {
                 out.push(V::DuplicateNode(n.name.clone()));
             }
-            if n.kind != n.name.kind || n.mesh != n.name.mesh {
-                out.push(V::KindMismatch(n.name.clone()));
-            }
             if !seen_mesh.contains_key(&n.mesh) {
                 out.push(V::NodeInUnknownMesh { node: n.name.clone(), mesh: n.mesh.clone() });
             }
@@ -496,12 +490,14 @@ mod tests {
 
     #[test]
     fn structural_mismatches_are_named() {
+        let mut explicit = mn();
+        explicit.nodes[2].name = "elsewhere.gateway.north".parse().unwrap();
+        assert!(explicit.is_converged(), "a free path/name does not select mesh or kind: {:?}", explicit.violations());
         let mut t = mn();
         t.nodes.push(t.nodes[4].clone());
         t.nodes[2].mesh = "mesh9".into();
         let v = t.violations();
         assert!(v.contains(&TopologyViolation::DuplicateNode("mesh1.rpc.3".parse().unwrap())), "{v:?}");
-        assert!(v.contains(&TopologyViolation::KindMismatch("mesh1.rpc.1".parse().unwrap())), "{v:?}");
         assert!(v.contains(&TopologyViolation::NodeInUnknownMesh { node: "mesh1.rpc.1".parse().unwrap(), mesh: "mesh9".into() }), "{v:?}");
     }
 

@@ -979,7 +979,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     rdm_core::app_types::check(&join_types).map_err(|k| format!("app type declaration: {k:?}"))?;
     let join_digest: Option<MeshDigest> = joins_through.as_ref().map(|(_, _, runtime)| MeshDigest { held_hash: rdm_core::app_types::hash(&join_types.iter().cloned().collect()),
         fabric_id: cfg.fabric_id.clone(),
-        node: MeshNode {
+        node: MeshNode { mesh: cfg.mesh.clone(), kind: NodeKind::NodeAdmin,
             node_id: node_id.clone(),
             name: name.clone(),
             endpoint_id: EndpointId(key.public().to_string()),
@@ -1814,7 +1814,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // Own digest, published on the topology cadence.
                             let digest = Arc::new(Mutex::new(MeshDigest { held_hash: topology_view.held_hash(),
                                 fabric_id: cfg.fabric_id.clone(),
-                                node: MeshNode {
+                                node: MeshNode { mesh: cfg.mesh.clone(), kind: NodeKind::NodeAdmin,
                                     node_id: node_id.clone(),
                                     name: handed.as_ref().and_then(|(n, _)| n.clone()).unwrap_or_else(|| name.clone()),
                                     endpoint_id: EndpointId(key.public().to_string()),
@@ -2056,7 +2056,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             let span = tracing::info_span!("rdm.node_admin.node.update.via-types-read", node_id = %d.node.node_id, incarnation = %d.node.incarnation, subject = %d.node.name);
                                             async move {
                                                 let birth = (d.node.node_id.clone(), d.node.incarnation.clone());
-                                                if d.node.name.kind == rdm_core::NodeKind::NodeAdmin {
+                                                if d.node.kind == rdm_core::NodeKind::NodeAdmin {
                                                     // node.get of its own row, on op 0x23 (Q285).
                                                     let filter = rdm_core::filter::Filter::new().eq("id", [d.node.node_id.to_string()]);
                                                     let read = rdm_client::NodeRpc::new(&client).read(&rdm_transport::NodeTarget::ExactNode(d.node.node_id.clone()), rdm_core::filter::Entity::Nodes, &filter, &rdm_transport::CallOptions::default()).await;
@@ -2825,7 +2825,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // view, and deleted or re-admitted by its path.name and this admin's atlas (Q207,
                                                     // node-investigation.md).
                                                     if let (true, Some(callers)) = (holds_role, control_atlas.callers().cloned()) {
-                                                        for d in recovery.digest_view.returned_births().into_iter().filter(|d| d.node.name.mesh == mesh) {
+                                                        for d in recovery.digest_view.returned_births().into_iter().filter(|d| d.node.mesh == mesh) {
                                                             let (recovery, callers, atlas) = (recovery.clone(), callers.clone(), control_atlas.clone());
                                                             // Ended at this admin's stop where it stands (the stop gate's `until_stopped`).
                                                             tokio::spawn(stop.until_stopped(async move {
@@ -3023,7 +3023,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 );
                                                 // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
                                                 records.set_heard_dead(topology_view.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
-                                                    topology_view.digest_view.all().into_iter().find(|d| d.node.name.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
+                                                    topology_view.digest_view.all().into_iter().find(|d| d.node.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
                                                 });
                                                 // Decide on the view as it is now: a cached view can predate the primary record this admin holds
                                                 // (a hand-over just taken), and a role is announced from the decision, never from a stale one.
@@ -3204,7 +3204,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // R-S2: a mesh primary the fabric-primary's view gained or changed is sent the down op.
                                                 fabric_states.address_changed_mesh_primaries(&t, fabric_primary);
                                                 let addr = rdm_transport::topology::gossip_addr;
-                                                let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
+                                                let admins: Vec<_> = heard.iter().filter(|d| d.node.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
                                                 backbone.join_admins(admins).await;
                                                 // The turn dials no member of its own mesh: a member joins through this admin, and a
                                                 // held member gone stale is dialled by §6's repair alone (gossip.md §6, §8; Q84).

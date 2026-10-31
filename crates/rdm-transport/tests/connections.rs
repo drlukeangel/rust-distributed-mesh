@@ -552,7 +552,7 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
         let own = rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric.clone(),
-            node: rdm_core::MeshNode {
+            node: rdm_core::MeshNode { mesh: dialer.peer.birth.name.mesh.clone(), kind: dialer.peer.birth.name.kind,
                 node_id: dialer.peer.birth.node_id.clone(),
                 name: dialer.peer.birth.name.clone(),
                 endpoint_id: rdm_core::EndpointId(dialer.ep.id().to_string()),

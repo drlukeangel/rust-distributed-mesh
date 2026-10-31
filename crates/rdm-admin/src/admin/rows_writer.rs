@@ -87,12 +87,12 @@ impl MeshRowsWriter {
         // none, and a whole write from this admin's older copy would replace what its primary wrote.
         let primaried: std::collections::BTreeSet<&str> = held
             .iter()
-            .filter(|d| d.node.name.mesh != self.mesh && d.node.name.kind == crate::model::NodeKind::NodeAdmin && d.is_primary.is_some() && !deleted(&d.node.node_id))
-            .map(|d| d.node.name.mesh.as_str())
+            .filter(|d| d.node.mesh != self.mesh && d.node.kind == crate::model::NodeKind::NodeAdmin && d.is_primary.is_some() && !deleted(&d.node.node_id))
+            .map(|d| d.node.mesh.as_str())
             .collect();
         // A deleted birth is never written: its node's record is written `Deleted` by its delete.
-        for d in held.iter().filter(|d| !deleted(&d.node.node_id) && writes.contains(&d.node.name.mesh) && !primaried.contains(d.node.name.mesh.as_str()) && (d.node.name.mesh != self.mesh || own)) {
-            let mesh_id = if d.node.name.mesh == self.mesh { Some(self.mesh_id.clone()) } else { d.mesh_id.clone() };
+        for d in held.iter().filter(|d| !deleted(&d.node.node_id) && writes.contains(&d.node.mesh) && !primaried.contains(d.node.mesh.as_str()) && (d.node.mesh != self.mesh || own)) {
+            let mesh_id = if d.node.mesh == self.mesh { Some(self.mesh_id.clone()) } else { d.mesh_id.clone() };
             // The birth's address and the primaries the view holds, put whole on its record from the copy
             // this admin holds; a `Deleted` record is left as it stands.
             let written = self

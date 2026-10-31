@@ -455,7 +455,7 @@ impl JoinDoor {
                 span.record("config_keys", config.as_ref().map_or(0, |c| c.len()) as u64);
                 // The member cert is issued for this exact birth BEFORE it is admitted: a refused
                 // issuance leaves nothing installed for its key and completes no report.
-                let birth = crate::certs::BirthIdentity { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), mesh: d.node.name.mesh.clone(), endpoint_key: d.node.endpoint_id.clone() };
+                let birth = crate::certs::BirthIdentity { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), mesh: d.node.mesh.clone(), endpoint_key: d.node.endpoint_id.clone() };
                 let issue = match self.issuer.issue_member(&birth) {
                     Ok(c) => c,
                     Err(crate::certs::IssueFailure::NoRafkaTime(why)) => {
@@ -592,7 +592,7 @@ mod tests {
     fn digest_of(d: &Deployed) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
-            node: MeshNode {
+            node: MeshNode { mesh: d.name.mesh.clone(), kind: d.name.kind,
                 node_id: d.node_id.clone(),
                 name: d.name.clone(),
                 endpoint_id: d.endpoint_id.clone(),

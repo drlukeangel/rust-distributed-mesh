@@ -160,7 +160,7 @@ async fn peer(name: &str, expiry_ms: Option<u64>, admin: &MeshNode) -> Peer {
     let key = iroh::SecretKey::generate();
     let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), &[APP.to_vec()]).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the peer binds an IPv4 socket");
-    let birth = MeshNode {
+    let birth = MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
         node_id: NodeId::mint(),
         name: name.parse().unwrap(),
         endpoint_id: EndpointId(key.public().to_string()),

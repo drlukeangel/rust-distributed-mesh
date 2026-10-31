@@ -586,7 +586,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
             .installed
             .iter()
             .flat_map(|m| m.members.iter())
-            .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.name.mesh == self.name.mesh)
+            .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.mesh == self.name.mesh)
             .filter_map(rdm_transport::topology::gossip_addr)
             .collect();
         let _ = topology_view.join_peers_as("admin.session.mesh", mesh_peers).await;
@@ -732,10 +732,10 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         let mut admins = Vec::new();
         for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == self.fabric_id && d.node.name != self.me) {
             if let Some(a) = rdm_transport::topology::gossip_addr(d) {
-                if d.node.name.mesh == self.mesh {
+                if d.node.mesh == self.mesh {
                     mesh_peers.push(a.clone());
                 }
-                if d.node.name.kind == NodeKind::NodeAdmin {
+                if d.node.kind == NodeKind::NodeAdmin {
                     admins.push(a);
                 }
             }
@@ -768,7 +768,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         // meshes' ids from this hydration sync, never from the Build records (Q227).
         for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == self.fabric_id) {
             if let Some(id) = &d.mesh_id {
-                self.records.meshes.lock().unwrap().entry(d.node.name.mesh.clone()).or_insert_with(|| id.clone());
+                self.records.meshes.lock().unwrap().entry(d.node.mesh.clone()).or_insert_with(|| id.clone());
             }
         }
         // The mesh exists when the maker names another birth its primary, though its answer lists none

@@ -614,7 +614,7 @@ async fn start_booted(
     // This birth's digest as it reports it: the address is the one the bound endpoint holds.
     let digest = MeshDigest { held_hash: rdm_core::app_types::hash(&app_types.iter().cloned().collect()),
         fabric_id: launch.fabric_id.clone(),
-        node: MeshNode {
+        node: MeshNode { mesh: launch.mesh.clone(), kind: launch.kind,
             node_id: launch.node_id.clone(),
             name: launch.name.clone(),
             endpoint_id: rdm_core::EndpointId(key.public().to_string()),
@@ -823,7 +823,7 @@ async fn start_booted(
                                     let mut told: Option<(NodeId, IncarnationId)> = None;
                                     loop {
                                         primaries.borrow_and_update();
-                                        let mut primary = topology_view.primaries().mesh(&node.name.mesh);
+                                        let mut primary = topology_view.primaries().mesh(&node.mesh);
                                         if mesh_primary_moved(told.as_ref(), primary.as_ref()) && owed.is_empty() {
                                             let state = node_state_of(*status.lock().unwrap());
                                             tracing::info_span!("rdm.node_rpc.status.update.via-mesh-primary-moved", node = %topology_view.held_name(&node.name), state = ?state, to = %primary.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
@@ -838,7 +838,7 @@ async fn start_booted(
                                                 // the topology names now.
                                                 Declared::MeshPrimaryMoved => {
                                                     primaries.borrow_and_update();
-                                                    primary = topology_view.primaries().mesh(&node.name.mesh);
+                                                    primary = topology_view.primaries().mesh(&node.mesh);
                                                 }
                                                 Declared::Unanswered => {
                                                     owed.unanswered();
@@ -1219,7 +1219,7 @@ impl crate::workflows::node_start::AfterHook for RpcAfterHook {
             .installed
             .iter()
             .flat_map(|m| m.members.iter())
-            .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.name.mesh == self.name.mesh)
+            .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.mesh == topology_view.mesh_name())
             .filter_map(rdm_transport::topology::gossip_addr)
             .collect();
         let _ = topology_view.join_peers_as("node.mesh_join", mesh_peers).await;
@@ -1513,13 +1513,13 @@ async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &Topolog
     let birth = |h: Option<rdm_core::Primary>| h.map(|h| (h.node_id, h.incarnation));
     let mut primaries = topology_view.primaries().subscribe();
     primaries.borrow_and_update();
-    let from = birth(topology_view.primaries().mesh(&me.name.mesh));
+    let from = birth(topology_view.primaries().mesh(&me.mesh));
     let moved = async {
         loop {
             if primaries.changed().await.is_err() {
                 std::future::pending::<()>().await;
             }
-            if birth(topology_view.primaries().mesh(&me.name.mesh)) != from {
+            if birth(topology_view.primaries().mesh(&me.mesh)) != from {
                 break;
             }
         }
@@ -1556,7 +1556,7 @@ fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topol
             .digest_view
             .current(topology_view.digest_view.staleness_floor())
             .into_iter()
-            .filter(|d| d.node.name.mesh == mesh && d.node.node_id != *primary && d.node.node_id != *me)
+            .filter(|d| d.node.mesh == mesh && d.node.node_id != *primary && d.node.node_id != *me)
             .map(|d| (d.node.name.clone(), d.node.node_id.clone()))
             .collect();
     }
@@ -1584,14 +1584,14 @@ async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_
     let node = topology_view.held_name(&me.name);
     let req = StatusRequest::DeclareNodeState { node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), state, operation: operation.clone() };
     let op_name = operation.as_ref().map(|o| o.operation.clone()).unwrap_or_default();
-    let Some(primary) = topology_view.primaries().mesh(&me.name.mesh) else {
+    let Some(primary) = topology_view.primaries().mesh(&me.mesh) else {
         tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = "", route = "none", outcome = "no-primary: this birth holds no primary role for its mesh", definitive = false)
             .in_scope(|| tracing::info!("no primary role is held for this birth's mesh: the declaration stays owed"));
         return false;
     };
     let to = topology_view.digest_view.current(topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| primary.node_id.to_string());
     let policy = {
-        let (held, topology_view, me_id, primary_id, mesh) = (held.clone(), topology_view.clone(), me.node_id.clone(), primary.node_id.clone(), me.name.mesh.clone());
+        let (held, topology_view, me_id, primary_id, mesh) = (held.clone(), topology_view.clone(), me.node_id.clone(), primary.node_id.clone(), me.mesh.clone());
         rdm_transport::RoutePolicy(Arc::new(move |attempt| declaration_route(&held, &topology_view, &me_id, &primary_id, &mesh, attempt)))
     };
     let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Owed, route: Some(policy), ..rdm_transport::CallOptions::default() };
@@ -1653,8 +1653,8 @@ async fn forward_read(me: &Kicked, read: &rdm_core::status::Read, req: &rdm_core
         _ => tracing::info_span!("rdm.node.fabric.serve.via-forward", node = %node, read = op, pairs = %pairs, mesh_primary = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
     };
     let forwarded = async {
-        let Some(primary) = me.topology_view.primaries().mesh(&me.digest.node.name.mesh) else {
-            return rdm_core::reply::status::not_ready(format!("{node} keeps no atlas to answer {op}, and holds no mesh-primary of {} to forward it to", me.digest.node.name.mesh));
+        let Some(primary) = me.topology_view.primaries().mesh(&me.digest.node.mesh) else {
+            return rdm_core::reply::status::not_ready(format!("{node} keeps no atlas to answer {op}, and holds no mesh-primary of {} to forward it to", me.digest.node.mesh));
         };
         let to = me.topology_view.digest_view.current(me.topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| primary.node_id.to_string());
         tracing::Span::current().record("mesh_primary", to.as_str());
@@ -1732,8 +1732,8 @@ fn serve_read(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 _ => tracing::info_span!("rdm.node.fabric.serve.via-forward", node = %node, read = op, pairs = %pairs, mesh_primary = empty, outcome = empty, detail = empty, "otel.kind" = "internal"),
             };
             let forwarded = async {
-                let Some(primary) = me.topology_view.primaries().mesh(&me.digest.node.name.mesh) else {
-                    return Err(ReadReply::NotReady { reason: format!("{node} keeps no atlas to answer {op}, and holds no mesh-primary of {} to forward it to", me.digest.node.name.mesh) });
+                let Some(primary) = me.topology_view.primaries().mesh(&me.digest.node.mesh) else {
+                    return Err(ReadReply::NotReady { reason: format!("{node} keeps no atlas to answer {op}, and holds no mesh-primary of {} to forward it to", me.digest.node.mesh) });
                 };
                 let to = me.topology_view.digest_view.current(me.topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| primary.node_id.to_string());
                 tracing::Span::current().record("mesh_primary", to.as_str());

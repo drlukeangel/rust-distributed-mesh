@@ -42,7 +42,7 @@ fn fabric() -> FabricId {
 fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode {
+        node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             node_id: NodeId::mint(),
             name: format!("mesh1.rpc.{ordinal}").parse().unwrap(),
             endpoint_id: EndpointId(format!("key{ordinal}")),

@@ -1086,7 +1086,7 @@ mod tests {
         rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: rdm_core::MeshNode {
+            node: rdm_core::MeshNode { mesh: p.mesh.clone(), kind: p.kind,
                 node_id: NodeId::mint(),
                 name: p.clone(),
                 endpoint_id: crate::model::EndpointId(String::new()),

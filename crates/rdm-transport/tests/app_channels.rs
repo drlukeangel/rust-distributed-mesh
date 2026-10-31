@@ -505,7 +505,7 @@ async fn a_learned_type_is_receivable_but_its_undeclared_author_cannot_publish_i
 fn member_digest(n: &Member) -> rdm_core::MeshDigest {
     rdm_core::MeshDigest {
         fabric_id: n.topology_view.fabric_id().clone(),
-        node: rdm_core::MeshNode {
+        node: rdm_core::MeshNode { mesh: (n.author.node.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (n.author.node.parse::<rdm_core::PathName>().unwrap()).kind,
             node_id: n.author.node_id.clone(),
             name: n.author.node.parse().unwrap(),
             endpoint_id: rdm_core::EndpointId(n.endpoint_id().to_string()),

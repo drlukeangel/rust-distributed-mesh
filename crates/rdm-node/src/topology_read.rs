@@ -147,7 +147,7 @@ impl TopologyDoor {
             // of, or of its own mesh, has none to answer from it, and the map is not built (Q266).
             let mut stored: std::collections::BTreeMap<String, Vec<StoredNode>> = Default::default();
             let mut stored_ids = std::collections::BTreeMap::new();
-            let unheld = mesh.as_ref().is_none_or(|m| held.is_empty() && *m != me.node.name.mesh);
+            let unheld = mesh.as_ref().is_none_or(|m| held.is_empty() && *m != me.node.mesh);
             if let Some(source) = self.stored.as_ref().filter(|_| unheld) {
                 let map = match source().await {
                     Ok(map) => map,
@@ -159,7 +159,7 @@ impl TopologyDoor {
                 stored_ids = map.mesh_ids;
                 for n in map.nodes {
                     let m = n.name.split('.').next().unwrap_or_default().to_string();
-                    if m != me.node.name.mesh && held.iter().all(|s| s.mesh != m) && mesh.as_ref().is_none_or(|want| *want == m) {
+                    if m != me.node.mesh && held.iter().all(|s| s.mesh != m) && mesh.as_ref().is_none_or(|want| *want == m) {
                         stored.entry(m).or_default().push(n);
                     }
                 }
@@ -229,7 +229,7 @@ impl TopologyDoor {
             // The rafka-time this node adopted and which primary it is, read from the primaries it
             // holds: the puller applies its own rule to the pair (`rafka_time::adopt_pulled`).
             let time_ms = self.time.try_now_ms().unwrap_or(time_ms);
-            let kind = crate::rafka_time::primary_held(self.topology_view.primaries(), &me.node.name.mesh, &me.node.node_id);
+            let kind = crate::rafka_time::primary_held(self.topology_view.primaries(), &me.node.mesh, &me.node.node_id);
             let r = TopologyReply::RafkaTime { ms: time_ms, kind };
             bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
             if let Err(e) = sink.data(r).await {
@@ -446,7 +446,7 @@ pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_transport::topology::TopU
         Box::pin(async move {
             let mut done = rdm_transport::topology::TopUpDone::default();
             for mesh in meshes {
-                let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.name.mesh, &topology_view, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
+                let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.mesh, &topology_view, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
                 done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
             }
             Ok(done)
@@ -600,7 +600,7 @@ mod tests {
         let own_digest = MeshDigest {
             held_hash: Default::default(),
             fabric_id,
-            node: MeshNode {
+            node: MeshNode { mesh: "mesh1".to_string(), kind: NodeKind::NodeAdmin,
                 node_id: NodeId::mint(),
                 name: PathName::new("mesh1", NodeKind::NodeAdmin, 1),
                 endpoint_id: EndpointId(ep.id().to_string()),

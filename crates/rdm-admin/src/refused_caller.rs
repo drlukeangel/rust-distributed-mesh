@@ -443,7 +443,7 @@ mod tests {
         let report = rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id,
-            node: rdm_core::MeshNode {
+            node: rdm_core::MeshNode { mesh: caller.mesh.clone(), kind: caller.kind,
                 node_id: caller.node_id.clone(),
                 name: caller.name.clone(),
                 endpoint_id: deployed.endpoint_id.clone(),
@@ -550,7 +550,7 @@ mod tests {
         let report = rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id,
-            node: rdm_core::MeshNode {
+            node: rdm_core::MeshNode { mesh: caller.mesh.clone(), kind: caller.kind,
                 node_id: caller.node_id.clone(),
                 name: caller.name.clone(),
                 endpoint_id: deployed.endpoint_id.clone(),

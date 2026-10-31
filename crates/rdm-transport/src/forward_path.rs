@@ -346,7 +346,7 @@ mod tests {
     fn digest(ordinal: u32, id: &NodeId, birth: &IncarnationId, seq: u64) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode {
+            node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: id.clone(),
                 name: format!("mesh1.rpc.{ordinal}").parse().unwrap(),
                 endpoint_id: EndpointId(format!("key{ordinal}")),

@@ -13,7 +13,7 @@ use std::sync::Arc;
 fn member(fabric: &FabricId, name: &str, seq: u64) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric.clone(),
-        node: MeshNode {
+        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
             node_id: NodeId::mint(),
             name: name.parse().unwrap(),
             endpoint_id: EndpointId(format!("key-{name}-{}", "x".repeat(40))),

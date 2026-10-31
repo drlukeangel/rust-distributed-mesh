@@ -201,7 +201,7 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
         assert!(digest_view.record(MeshDigest {
             held_hash: Default::default(),
             fabric_id,
-            node: MeshNode {
+            node: MeshNode { mesh: "mesh1".to_string(), kind: NodeKind::RpcNode,
                 node_id: target_node_id,
                 name: PathName::new("mesh1", NodeKind::RpcNode, 2),
                 endpoint_id: EndpointId(SecretKey::generate().public().to_string()),

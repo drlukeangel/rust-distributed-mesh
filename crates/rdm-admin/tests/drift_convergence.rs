@@ -228,7 +228,7 @@ fn birth(world: &World, digest_view: &DigestView, fabric_id: &FabricId, path: &s
     let pid = world.add(path, n.node_id.as_str());
     digest_view.record(MeshDigest { held_hash: Default::default(),
         fabric_id: fabric_id.clone(),
-        node: MeshNode {
+        node: MeshNode { mesh: n.mesh.clone(), kind: n.kind,
             node_id: n.node_id.clone(),
             name: n.name.clone(),
             endpoint_id: n.endpoint_id.clone().unwrap(),

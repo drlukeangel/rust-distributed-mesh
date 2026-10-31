@@ -652,7 +652,7 @@ mod tests {
             MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: FabricId::mint(),
-                node: rdm_core::MeshNode {
+                node: rdm_core::MeshNode { mesh: self.starting.path.mesh.clone(), kind: self.starting.path.kind,
                     node_id: self.starting.node_id.clone(),
                     name: self.starting.path.clone(),
                     endpoint_id: rdm_core::EndpointId(

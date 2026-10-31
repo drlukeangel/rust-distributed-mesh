@@ -2715,7 +2715,7 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         let rpc = &b["rpc2"];
         assert!(topology_view.digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
-            node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), kind: rpc.node.kind, node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         let (server_delivery, caller_delivery) = (Arc::new(OnceLock::<rdm_transport::Delivery>::new()), Arc::new(OnceLock::<rdm_transport::Delivery>::new()));
@@ -2868,7 +2868,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let rpc = &b["rpc2"];
         assert!(topology_view.digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
-            node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), kind: rpc.node.kind, node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         let (server_delivery, caller_delivery) = (Arc::new(OnceLock::<rdm_transport::Delivery>::new()), Arc::new(OnceLock::<rdm_transport::Delivery>::new()));
@@ -2938,7 +2938,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         let incarnation = rpc.node.incarnation_id.clone().unwrap();
         assert!(digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
-            node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
+            node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), kind: rpc.node.kind, node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         // The birth's stop: its Stopped row, and the view's stop of it.
@@ -3132,7 +3132,7 @@ fn replayed_start_leaves_stopped(marked_other_birth: bool) -> bool {
         let marked = if marked_other_birth { IncarnationId::mint() } else { incarnation.clone() };
         assert!(digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
-            node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: marked.clone(), supersedes: None, runtime: None },
+            node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), kind: rpc.node.kind, node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: marked.clone(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         let stop = rdm_core::LifecycleOp { node_id: rpc.node.node_id.clone(), incarnation: marked.clone(), name: rpc.node.name.clone(), build_id: "b-stop".into(), attempt: 1, operation: format!("node.stop:{}", rpc.node.name), event_at_rafka_ms: 1, traceparent: None, tracestate: None };

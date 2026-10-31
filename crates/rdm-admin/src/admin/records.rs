@@ -504,7 +504,7 @@ impl Records {
     /// writer yet, and the Join is answered on the held declaration. `Ok(true)` written, `Ok(false)` held.
     pub async fn declare_app_types_or_hold(&self, d: &rdm_core::MeshDigest, types: std::collections::BTreeSet<String>) -> Result<bool, String> {
         let rows = self.rows.get().ok_or_else(|| "this admin holds no node-row writer".to_string())?;
-        if rows.writes_now(&d.node.name.mesh, &d.node.name).await {
+        if rows.writes_now(&d.node.mesh, &d.node.name).await {
             rows.declare_app_types(d, types).await.map(|_| true)
         } else {
             tracing::info_span!("rdm.node_admin.node.update.via-declaration-held", node = %rows.me(), subject = %d.node.name, node_id = %d.node.node_id, types = types.len())
