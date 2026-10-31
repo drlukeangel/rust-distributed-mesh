@@ -5,7 +5,7 @@ use rdm_client::{NodeStatus, NodeView};
 use rdm_node::leadership::{fabric_primary, primary_of};
 
 fn row(name: &str, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
-    NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: name.parse().unwrap(),
         kind,
         mesh: "mesh1".into(),

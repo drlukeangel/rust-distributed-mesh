@@ -71,7 +71,7 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
 /// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
 /// and the tags and config its record carries (Q203: config is never gossiped).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>, config: BTreeMap<String, String>) -> NodeView {
-    NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: n.name.clone(),
         kind: n.kind,
         mesh: n.mesh.clone(),
@@ -156,6 +156,7 @@ fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<Gos
         // Its storage_persistence and the topology_storage_provider it writes, as its row records them
         // (storage.md §1, §2): two properties under two names.
         v.storage_persistence = row.as_ref().and_then(|r| r.storage_persistence);
+        v.placement = row.as_ref().and_then(|r| r.placement);
         v.topology_storage_provider = row.as_ref().and_then(|r| r.topology_storage_provider.clone());
         if let Some(declared) = row.as_ref().and_then(|r| r.app_types.clone()).filter(|t| Some(&t.incarnation) == n.incarnation_id.as_ref()) {
             v.types = declared.types;
@@ -185,6 +186,7 @@ fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<Gos
             let mut v = node_view(&n, None, None, r.tags.clone(), r.config.clone());
             v.executable = r.executable.clone();
             v.storage_persistence = r.storage_persistence;
+            v.placement = r.placement;
             v.topology_storage_provider = r.topology_storage_provider.clone();
             v.data_dir_unreadable = Some(DataDirUnreadable { path: unreadable.path, cause: unreadable.cause });
             out.push(v);
@@ -214,6 +216,7 @@ pub fn own_row_view(view: &Topology, records: &Atlas, row: &crate::storage::Node
     let mut v = node_view(&n, None, None, row.tags.clone(), row.config.clone());
     v.executable = row.executable.clone();
     v.storage_persistence = row.storage_persistence;
+    v.placement = row.placement;
     v.topology_storage_provider = row.topology_storage_provider.clone();
     if let Some(declared) = row.app_types.clone().filter(|t| Some(&t.incarnation) == n.incarnation_id.as_ref()) {
         v.types = declared.types;

@@ -21,7 +21,7 @@ pub const ADMIN: &str = "mesh1.admin.9";
 /// and that is not born yet.
 pub fn node(name: &str, node_id: &NodeId, endpoint: Option<String>, addr: Option<SocketAddr>, incarnation: Option<IncarnationId>) -> NodeView {
     let name: PathName = name.parse().unwrap_or_else(|e| panic!("{name} is no path.name: {e:?}"));
-    NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         kind: name.kind,
         mesh: name.mesh.clone(),
         name,

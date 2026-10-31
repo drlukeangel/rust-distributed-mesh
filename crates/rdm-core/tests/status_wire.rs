@@ -159,6 +159,8 @@ fn replies_match_the_frozen_sixty_three_variant_wire_schema() {
                 "00",
                 // storage_persistence None and topology_storage_provider None (storage.md §1, §2), appended last
                 "00", "00",
+                // placement None (build.md §1; every node property on the row a read answers), appended last
+                "00",
             ),
         ),
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31", "00")),
@@ -296,7 +298,7 @@ fn the_largest_mesh_deleted_fits_the_request_ceiling() {
 /// One node as a `node.get` answer carries it: an rpc node with its birth, provider, address, load
 /// and gossip stats, a tag and a config entry, the optional fields it lacks absent.
 fn node_view() -> NodeView {
-    NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: "mesh1.rpc.1".parse().unwrap(),
         kind: rdm_core::NodeKind::RpcNode,
         mesh: "mesh1".into(),

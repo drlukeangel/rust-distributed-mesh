@@ -2595,7 +2595,7 @@ mod tests {
     }
 
     fn node_view() -> crate::views::NodeView {
-        crate::views::NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+        crate::views::NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
             name: "mesh1.rpc.12".parse().unwrap(),
             kind: crate::NodeKind::RpcNode,
             mesh: "mesh1".into(),

@@ -228,6 +228,12 @@ pub struct NodeView {
     /// fact, beside the fabric's intent on the Fabric row. `None` for a row that records none.
     #[serde(default)]
     pub topology_storage_provider: Option<String>,
+    /// The node's `placement` (build.md §1), as its row records it from its create spec: every node
+    /// property is on the row a read answers (node-rpc-envelope.md, OwnRow), so a submitter composes a
+    /// whole Build from it. `None` for a row that records none. Appended last (the reply's frozen
+    /// schema moves by one trailing field).
+    #[serde(default)]
+    pub placement: Option<crate::meta::PlacementMeta>,
 }
 
 /// A birth's member cert as `node.get` surfaces it (fabric-certs.md §Tracking: `cert { issued_at,

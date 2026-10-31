@@ -518,7 +518,7 @@ mod tests {
             "is_primary": false, "is_fabric_primary": false, "admin_api_base": null, "transport_addr": null, "listeners": [],
             "declared": null, "stopped": false, "load": null, "gossip": null, "tags": [], "config": {}, "data_dir_lost": null,
             "data_dir_unreadable": null, "types": [], "held": [], "held_hash": vec![0u8; 32], "cert": null, "executable": null,
-            "storage_persistence": null, "topology_storage_provider": null,
+            "storage_persistence": null, "placement": null, "topology_storage_provider": null,
         }))
         .expect("a node row");
         v.tags = tags.iter().map(|t| t.to_string()).collect();
