@@ -805,8 +805,9 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     // With evidence the sample is read from the spans: the mesh-primary's write of the status to the last
     // node-admin applying it to its own topology; without, from the call's Complete to every node-admin's
     // `node.topology.get` holding it, polled.
-    let (mut stops, mut starts, mut unseen) = (Vec::new(), Vec::new(), std::collections::BTreeSet::new());
-    for _ in 0..run.samples() {
+    // Each sample no span names applied, by status: the admins it missed, kept on the row it is left out of.
+    let (mut stops, mut starts, mut unseen) = (Vec::new(), Vec::new(), std::collections::BTreeMap::<&str, Vec<String>>::new());
+    for sample in 0..run.samples() {
         // A stop reaches a node's own topology as `leaving` (the held statuses: pending, ready,
         // connections-deleting, leaving); the row's stopped is the mesh-primary's.
         for (status, out) in [("leaving", &mut stops), ("ready", &mut starts)] {
@@ -841,19 +842,22 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
             };
             match sampled {
                 Ok(ms) => out.push(ms),
-                Err(missing) => unseen.extend(missing),
+                Err(missing) => unseen.entry(status).or_default().push(format!("sample {sample}: {}", missing.join(","))),
             }
         }
     }
-    if run == Run::Samples {
-        rows.time_p99("M3", "a stop to every node-admin's own view", stops, 4000.0);
-        rows.time_p99("M3", "a start to every node-admin's own view", starts, 4000.0);
-    } else {
-        rows.time("M3", "a stop to every node-admin's own view", stops, Some(4000.0), None);
-        rows.time("M3", "a start to every node-admin's own view", starts, Some(4000.0), None);
-    }
-    if !unseen.is_empty() {
-        println!("[load] M3: no span names the change applied at {unseen:?}: those samples are left out");
+    for (status, samples, what) in [("leaving", stops, "a stop to every node-admin's own view"), ("ready", starts, "a start to every node-admin's own view")] {
+        let n = rows.rows.len();
+        if run == Run::Samples {
+            rows.time_p99("M3", what, samples, 4000.0);
+        } else {
+            rows.time("M3", what, samples, Some(4000.0), None);
+        }
+        // A sample no span names applied is left out, and named on its row (the run's stdout is not kept).
+        if let Some(left_out) = unseen.get(status) {
+            println!("[load] M3 {what}: no span names the change applied at {left_out:?}: those samples are left out");
+            rows.rows[n]["unseen"] = json!(left_out);
+        }
     }
 
     if run == Run::Baseline {
