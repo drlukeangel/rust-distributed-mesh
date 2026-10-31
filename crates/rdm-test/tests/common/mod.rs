@@ -425,7 +425,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     };
 
     // The node is live, published Pending then Ready, at the assigned endpoints.
-    assert_eq!(provider.inspect(&created.handle).await, DeploymentStatus::Running);
+    assert_eq!(provider.inspect(&created.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
     let published = sink.nodes.lock().unwrap().clone();
     assert_eq!(published.iter().map(|n| n.status).collect::<Vec<_>>(), vec![NodeStatus::Pending, NodeStatus::Ready]);
     let reported = created.node.transport_addr.expect("a created node carries the address it reported");
@@ -507,9 +507,9 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     let elsewhere = rdm_core::RuntimeFact { control_domain: format!("{}-another", fact.control_domain), ..fact.clone() };
     assert!(matches!(adopt(&*provider, &elsewhere), Err(AdoptRefusal::ForeignControlDomain { .. })), "a locator of another domain is refused");
     let adopted = adopt(&*provider, &fact).expect("the same domain adopts the published runtime");
-    assert_eq!(provider.inspect(&adopted).await, DeploymentStatus::Running);
-    provider.terminate(&adopted, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
-    assert!(matches!(provider.inspect(&created.handle).await, DeploymentStatus::Exited { .. }));
+    assert_eq!(provider.inspect(&adopted, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
+    provider.terminate(&adopted, TerminationMode::Graceful { grace: Duration::from_secs(5) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
+    assert!(matches!(provider.inspect(&created.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }));
     if let Some(c) = &prepared.container {
         c.remove_fabric().await.unwrap();
     }

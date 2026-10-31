@@ -86,7 +86,7 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
             .delete_node(&DeleteRequest { build_id: leave_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
             .await
             .unwrap_or_else(|e| panic!("the member's node.delete: {e}"));
-        assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }), "the member's runtime is proven exited");
+        assert!(matches!(provider.inspect(&first.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the member's runtime is proven exited");
         assert_eq!((terminal.node_id.as_str(), Some(terminal.incarnation_id.as_str())), (first.node.node_id.as_str(), first.node.incarnation_id.as_ref().map(|i| i.as_str())), "the terminal receipt names the member's exact birth");
 
         let frames: std::collections::BTreeMap<_, _> = spans.0.lock().unwrap().iter().filter(|(_, (n, _, f))| n == "rdm.node_admin.node.update.via-command-frame" && f.get("node").map(String::as_str) == Some("mesh1.rpc.1")).map(|(n, (_, _, f))| (*n, f["frame"].clone())).collect();

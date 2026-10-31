@@ -32,24 +32,24 @@ impl DeploymentProvider for Exits {
     fn control_domain(&self) -> String {
         "i143-3072-delete".into()
     }
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         Err(DeployError::Spawn { node: spec.node.to_string(), reason: "this cell births nothing".into() })
     }
-    async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+    async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         self.terminated.lock().unwrap().push(h.deployment_id.to_string());
         Ok(())
     }
-    async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, h: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         if self.terminated.lock().unwrap().contains(&h.deployment_id.to_string()) {
             DeploymentStatus::Exited { code: Some(0) }
         } else {
             DeploymentStatus::Running
         }
     }
-    async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+    async fn find(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
         Ok(rdm_admin::deployment::provider::Found::NeverLaunched)
     }
 }
@@ -182,25 +182,24 @@ impl DeploymentProvider for StopStepFaultProvider {
     fn control_domain(&self) -> String {
         "stop-step-faults".into()
     }
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         Err(DeployError::Spawn {
             node: spec.node.to_string(),
             reason: "stop deploys nothing".into(),
         })
     }
-    async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+    async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         self.status.lock().unwrap().clone()
     }
-    async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
     async fn find(
         &self,
-        _: &ResolvedNodeLaunch,
-    ) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+        _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
         Ok(rdm_admin::deployment::provider::Found::NeverLaunched)
     }
 }

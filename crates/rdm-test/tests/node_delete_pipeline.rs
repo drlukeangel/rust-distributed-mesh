@@ -85,7 +85,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::Ready], "the pipeline does not publish Leaving from a stop answer; the command owner records the node report");
         let (digest, _) = admin.observer.topology_view.digest_view.get(first.node.node_id.as_str()).expect("the node's digest");
         assert_eq!(digest.status, MemberStatus::Leaving, "the admin side holds the status it set from the node's last report, its stop's Leaving (node-status.md \"Status report\"); the node's heartbeats carry none (gossip.md §3.1 `Digest`)");
-        assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
+        assert!(matches!(provider.inspect(&first.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }));
         assert!(UdpSocket::bind(port).is_ok(), "the runtime released its port");
         // node-delete.md step 3: "Retain the data dir, node-identity.json and endpoint key." An
         // Ephemeral path's delete keeps them too: no step of the delete releases storage.
@@ -142,7 +142,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
             .delete_node(&DeleteRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), unreached: false })
             .await
             .unwrap();
-        assert!(matches!(provider.inspect(&again.handle).await, DeploymentStatus::Exited { .. }), "the delete ended the runtime");
+        assert!(matches!(provider.inspect(&again.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the delete ended the runtime");
         let again_dir = std::path::PathBuf::from(again.node.data_dir.clone().expect("the birth's data dir"));
         assert!(again_dir.is_dir() && again_dir.join("node-key").is_file(), "Persistent/Release: the delete keeps the data dir and its endpoint key: {again_dir:?}");
         let kept = builds.read_build(&again_build).await.unwrap().steps;

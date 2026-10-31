@@ -1410,20 +1410,20 @@ mod tests {
         fn control_domain(&self) -> String {
             self.domain.clone()
         }
-        async fn spawn(&self, spec: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<crate::deployment::provider::DeploymentHandle, crate::deployment::provider::DeployError> {
+        async fn spawn(&self, spec: &crate::deployment::provider::ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<crate::deployment::provider::DeploymentHandle, crate::deployment::provider::DeployError> {
             Err(crate::deployment::provider::DeployError::Spawn { node: spec.node.to_string(), reason: "this provider only answers inspections".into() })
         }
-        async fn terminate(&self, _: &crate::deployment::provider::DeploymentHandle, _: crate::deployment::provider::TerminationMode) -> Result<(), crate::deployment::provider::DeployError> {
+        async fn terminate(&self, _: &crate::deployment::provider::DeploymentHandle, _: crate::deployment::provider::TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), crate::deployment::provider::DeployError> {
             Ok(())
         }
-        async fn inspect(&self, _: &crate::deployment::provider::DeploymentHandle) -> crate::deployment::provider::DeploymentStatus {
+        async fn inspect(&self, _: &crate::deployment::provider::DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> crate::deployment::provider::DeploymentStatus {
             self.inspected.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.status.clone()
         }
-        async fn signal_stop(&self, _: &crate::deployment::provider::DeploymentHandle) -> Result<(), crate::deployment::provider::DeployError> {
+        async fn signal_stop(&self, _: &crate::deployment::provider::DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> Result<(), crate::deployment::provider::DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<crate::deployment::provider::Found, crate::deployment::provider::DeployError> {
+        async fn find(&self, _: &crate::deployment::provider::ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<crate::deployment::provider::Found, crate::deployment::provider::DeployError> {
             Ok(crate::deployment::provider::Found::NeverLaunched)
         }
     }

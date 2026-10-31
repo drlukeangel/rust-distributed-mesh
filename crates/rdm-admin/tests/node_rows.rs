@@ -741,20 +741,20 @@ mod writer {
         fn control_domain(&self) -> String {
             "node-rows".into()
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
             self.spawned.fetch_add(1, Ordering::SeqCst);
             Err(DeployError::Spawn { node: spec.node.to_string(), reason: "this provider launches nothing".into() })
         }
-        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
             DeploymentStatus::Unknown
         }
-        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+        async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+        async fn find(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
             Ok(rdm_admin::deployment::provider::Found::NeverLaunched)
         }
     }
@@ -1016,19 +1016,19 @@ mod writer {
         fn control_domain(&self) -> String {
             "node-rows".into()
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
             Err(DeployError::Spawn { node: spec.node.to_string(), reason: "the lost executor launches nothing".into() })
         }
-        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
             DeploymentStatus::Unknown
         }
-        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+        async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+        async fn find(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
             self.entered.notify_one();
             std::future::pending().await
         }
@@ -1052,20 +1052,20 @@ mod writer {
         fn control_domain(&self) -> String {
             "node-rows".into()
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
             self.spawned.lock().unwrap().push(spec.deployment_id.clone());
             Err(DeployError::Spawn { node: spec.node.to_string(), reason: "this provider launches nothing".into() })
         }
-        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
             DeploymentStatus::Unknown
         }
-        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+        async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+        async fn find(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
             self.found.lock().unwrap().push(spec.deployment_id.clone());
             Ok(if self.exited.lock().unwrap().as_ref() == Some(&spec.deployment_id) { rdm_admin::deployment::provider::Found::Exited(None) } else { rdm_admin::deployment::provider::Found::NeverLaunched })
         }
@@ -1203,21 +1203,21 @@ mod writer {
         fn control_domain(&self) -> String {
             "node-rows".into()
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
             self.spawned.lock().unwrap().push(spec.deployment_id.clone());
             Err(DeployError::Spawn { node: spec.node.to_string(), reason: "this provider launches nothing".into() })
         }
-        async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+        async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             self.terminated.lock().unwrap().push(h.deployment_id.clone());
             Ok(())
         }
-        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
             DeploymentStatus::Unknown
         }
-        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+        async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+        async fn find(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
             let first = { let mut f = self.found.lock().unwrap(); f.push(spec.deployment_id.clone()); f.len() == 1 };
             Ok(match first {
                 true => rdm_admin::deployment::provider::Found::Running(DeploymentHandle { deployment_id: spec.deployment_id.clone(), provider: ProviderKind::Process, pid: Some(4242), start: Some(7), container: None, domain: Some("node-rows".into()) }),
@@ -1391,21 +1391,21 @@ mod writer {
         fn control_domain(&self) -> String {
             self.inner.control_domain()
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
             self.spawned.lock().unwrap().push(spec.deployment_id.clone());
             Err(DeployError::Spawn { node: spec.node.to_string(), reason: "this provider launches nothing".into() })
         }
-        async fn terminate(&self, h: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
-            self.inner.terminate(h, mode).await
+        async fn terminate(&self, h: &DeploymentHandle, mode: TerminationMode, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
+            self.inner.terminate(h, mode, deadline).await
         }
-        async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
-            self.inner.inspect(h).await
+        async fn inspect(&self, h: &DeploymentHandle, deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
+            self.inner.inspect(h, deadline).await
         }
-        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+        async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
-            self.inner.find(spec).await
+        async fn find(&self, spec: &ResolvedNodeLaunch, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+            self.inner.find(spec, deadline).await
         }
     }
 
@@ -1489,7 +1489,7 @@ mod writer {
                 listeners: vec![],
             };
             let launcher = rdm_admin::deployment::process::ProcessDeploymentProvider::new();
-            let handle = launcher.spawn(&spec).await.expect("A launches its birth");
+            let handle = launcher.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect("A launches its birth");
             let record: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("deployment.json")).expect("the launch record")).unwrap();
             let b_builds = MemoryBuildStateAdapter::new();
             let accepted = rdm_admin::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
@@ -1498,7 +1498,7 @@ mod writer {
             let on_disk = OnDisk { inner: rdm_admin::deployment::process::ProcessDeploymentProvider::new(), spawned: Mutex::default() };
             let b_err = create_attempt_executing("/bin/sleep", &b_records, &on_disk, &Unheard, &b_builds, &build, "mesh1.rpc.12", 2, &data_root).await;
             // The process B stopped is gone to every provider of the domain.
-            let after = on_disk.inner.find(&spec).await;
+            let after = on_disk.inner.find(&spec, rdm_admin::deployment::deadline::Deadline::step()).await;
             let _ = std::fs::remove_dir_all(&data_root);
             (a_identity, record, b_err, on_disk.spawned.into_inner().unwrap(), after, handle)
         });

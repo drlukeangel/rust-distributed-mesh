@@ -558,32 +558,32 @@ impl DeploymentProvider for FaultedProvider {
             real
         }
     }
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
-        self.inner.spawn(spec).await
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
+        self.inner.spawn(spec, deadline).await
     }
-    async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
+    async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         if self.faults.in_force(Probe::ProviderTerminate { pid: handle.pid, deployment_id: handle.deployment_id.to_string() }) {
             return Err(DeployError::Terminate {
                 deployment: handle.deployment_id.to_string(),
                 reason: format!("testkit: {} refuses the terminate of pid {:?} while its provider-terminate cut is armed; nothing was signalled", self.faults.name, handle.pid),
             });
         }
-        self.inner.terminate(handle, mode).await
+        self.inner.terminate(handle, mode, deadline).await
     }
-    async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, handle: &DeploymentHandle, deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         if self.faults.in_force(Probe::ProviderInspect { pid: handle.pid }) {
             return DeploymentStatus::Unknown;
         }
-        self.inner.inspect(handle).await
+        self.inner.inspect(handle, deadline).await
     }
-    async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
-        self.inner.signal_stop(handle).await
+    async fn signal_stop(&self, handle: &DeploymentHandle, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
+        self.inner.signal_stop(handle, deadline).await
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
-        self.inner.find(spec).await
+    async fn find(&self, spec: &ResolvedNodeLaunch, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+        self.inner.find(spec, deadline).await
     }
-    async fn bind_ip(&self, node: &rdm_admin::model::PathName, birth: &rdm_admin::model::DeploymentId) -> Result<std::net::IpAddr, DeployError> {
-        self.inner.bind_ip(node, birth).await
+    async fn bind_ip(&self, node: &rdm_admin::model::PathName, birth: &rdm_admin::model::DeploymentId, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<std::net::IpAddr, DeployError> {
+        self.inner.bind_ip(node, birth, deadline).await
     }
     fn launched(&self) -> Vec<DeploymentHandle> {
         self.inner.launched()
@@ -591,8 +591,8 @@ impl DeploymentProvider for FaultedProvider {
     fn exits(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.exits()
     }
-    async fn failure_detail(&self, handle: &DeploymentHandle, data_dir: &std::path::Path) -> String {
-        self.inner.failure_detail(handle, data_dir).await
+    async fn failure_detail(&self, handle: &DeploymentHandle, data_dir: &std::path::Path, deadline: rdm_admin::deployment::deadline::Deadline) -> String {
+        self.inner.failure_detail(handle, data_dir, deadline).await
     }
 }
 

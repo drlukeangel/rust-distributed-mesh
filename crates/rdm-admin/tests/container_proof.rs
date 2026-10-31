@@ -106,15 +106,15 @@ async fn find_tells_a_running_container_launch_a_terminated_one_and_one_never_la
     let Some(p) = provider(&fabric).await else { return };
     let _cleanup = Fabric(fabric.clone());
     let (spec, never) = (launch(&p, &fabric, 0), launch(&p, &fabric, 1));
-    assert_eq!(p.find(&never).await.unwrap(), Found::NeverLaunched, "no container and no launch of it");
-    let h = p.spawn(&spec).await.expect("the launch");
-    assert_eq!(p.find(&spec).await.unwrap(), Found::Running(h.clone()), "its container runs");
-    p.terminate(&h, TerminationMode::Immediate).await.expect("terminate the launch");
+    assert_eq!(p.find(&never, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap(), Found::NeverLaunched, "no container and no launch of it");
+    let h = p.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the launch");
+    assert_eq!(p.find(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap(), Found::Running(h.clone()), "its container runs");
+    p.terminate(&h, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.expect("terminate the launch");
     assert_eq!(daemon_state(&container_id(&h)), "absent", "terminate removes the container");
-    assert!(matches!(p.find(&spec).await.unwrap(), Found::Exited(_)), "the launch ran and its container is gone: exited");
+    assert!(matches!(p.find(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(_)), "the launch ran and its container is gone: exited");
     let fresh = ContainerDeploymentProvider::prepare(&fabric).await.unwrap();
-    assert!(matches!(fresh.find(&spec).await.unwrap(), Found::Exited(_)), "a provider of the same domain that never saw the launch proves it exited too");
-    assert_eq!(fresh.find(&never).await.unwrap(), Found::NeverLaunched);
+    assert!(matches!(fresh.find(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(_)), "a provider of the same domain that never saw the launch proves it exited too");
+    assert_eq!(fresh.find(&never, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap(), Found::NeverLaunched);
 }
 
 /// CONTRACT (Q79, node-replace.md: a replace re-births at the same path.name while its predecessor,
@@ -130,15 +130,15 @@ async fn a_new_birth_at_a_name_whose_stopped_predecessor_still_runs_gets_its_own
     let _cleanup = Fabric(fabric.clone());
     let name = launch(&p, &fabric, 0).node;
     let first = launch(&p, &fabric, 0);
-    let first_ip = p.bind_ip(&name, &first.deployment_id).await.expect("an address for the first birth");
+    let first_ip = p.bind_ip(&name, &first.deployment_id, rdm_admin::deployment::deadline::Deadline::step()).await.expect("an address for the first birth");
     let first = ResolvedNodeLaunch { transport: SocketAddr::new(first_ip, 20000), ..first };
-    let held = p.spawn(&first).await.expect("the first birth's container runs");
-    assert_eq!(p.bind_ip(&name, &first.deployment_id).await.expect("the first birth's address again"), first_ip, "a birth binds the address it holds again");
+    let held = p.spawn(&first, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the first birth's container runs");
+    assert_eq!(p.bind_ip(&name, &first.deployment_id, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the first birth's address again"), first_ip, "a birth binds the address it holds again");
     // The first birth is renamed and stopped: its container keeps running, and its address with it.
     let second = ResolvedNodeLaunch { node: name.clone(), ..launch(&p, &fabric, 1) };
-    let second_ip = p.bind_ip(&name, &second.deployment_id).await.expect("an address for the new birth");
+    let second_ip = p.bind_ip(&name, &second.deployment_id, rdm_admin::deployment::deadline::Deadline::step()).await.expect("an address for the new birth");
     let second = ResolvedNodeLaunch { transport: SocketAddr::new(second_ip, 20000), ..second };
-    p.spawn(&second).await.unwrap_or_else(|e| panic!("the new birth at {name} starts on its own address ({second_ip}; the stopped birth holds {first_ip}): {e}"));
+    p.spawn(&second, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap_or_else(|e| panic!("the new birth at {name} starts on its own address ({second_ip}; the stopped birth holds {first_ip}): {e}"));
     assert_ne!(second_ip, first_ip, "the new birth at {name} is given an address of its own");
     assert_eq!(daemon_state(&container_id(&held)), "running", "the stopped predecessor still runs on its address");
 }
@@ -155,13 +155,13 @@ async fn a_launch_whose_container_is_never_created_leaves_a_record_that_reads_ex
     let Some(p) = provider(&fabric).await else { return };
     let _cleanup = Fabric(fabric.clone());
     let spec = ResolvedNodeLaunch { transport: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), 20000), ..launch(&p, &fabric, 0) };
-    let refused = p.spawn(&spec).await.expect_err("docker cannot place an address outside the fabric network");
+    let refused = p.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect_err("docker cannot place an address outside the fabric network");
     let listed = std::process::Command::new("docker").args(["ps", "-aq", "--filter", &format!("label=rafka.fabric={fabric}")]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "", "no container of the fabric exists after {refused}");
-    assert!(matches!(p.find(&spec).await.unwrap(), Found::Exited(_)), "the launch's record names it and no container is left");
+    assert!(matches!(p.find(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(_)), "the launch's record names it and no container is left");
     let fresh = ContainerDeploymentProvider::prepare(&fabric).await.unwrap();
-    assert!(matches!(fresh.find(&spec).await.unwrap(), Found::Exited(_)), "a provider of the same domain that never saw the launch reads the same record");
-    assert_eq!(fresh.find(&launch(&p, &fabric, 1)).await.unwrap(), Found::NeverLaunched, "another launch has no record");
+    assert!(matches!(fresh.find(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(_)), "a provider of the same domain that never saw the launch reads the same record");
+    assert_eq!(fresh.find(&launch(&p, &fabric, 1), rdm_admin::deployment::deadline::Deadline::step()).await.unwrap(), Found::NeverLaunched, "another launch has no record");
 }
 
 /// CONTRACT: a container runtime is named by its provider control domain (the Docker daemon) and
@@ -176,7 +176,7 @@ async fn a_container_is_its_docker_domain_and_immutable_id_and_a_reused_name_nev
     let _cleanup = Fabric(fabric.clone());
     let spec = launch(&p, &fabric, 0);
 
-    let first = p.spawn(&spec).await.expect("first birth");
+    let first = p.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect("first birth");
     let id1 = container_id(&first);
     assert!(id1.len() == 64 && id1.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "the immutable id, never the name: {id1}");
     assert_eq!(first.domain.as_deref(), Some(p.control_domain().as_str()));
@@ -185,8 +185,8 @@ async fn a_container_is_its_docker_domain_and_immutable_id_and_a_reused_name_nev
     assert_eq!(fact.locator, RuntimeLocator::Container { id: id1.clone() });
     assert_eq!(fact.control_domain, p.control_domain());
 
-    p.terminate(&first, TerminationMode::Immediate).await.expect("terminate the first birth");
-    let second = p.spawn(&spec).await.expect("second birth at the same path and name");
+    p.terminate(&first, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.expect("terminate the first birth");
+    let second = p.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect("second birth at the same path and name");
     let id2 = container_id(&second);
     assert_ne!(id1, id2, "the reused name is a new runtime");
     assert_eq!(daemon_state(&id2), "running");
@@ -194,11 +194,11 @@ async fn a_container_is_its_docker_domain_and_immutable_id_and_a_reused_name_nev
     // A provider that never saw either birth: the old id is not the runtime the name now runs.
     let fresh = ContainerDeploymentProvider::prepare(&fabric).await.unwrap();
     let old = adopt(&fresh, &fact).expect("same domain: the old fact is adopted as what it names");
-    assert_ne!(fresh.inspect(&old).await, DeploymentStatus::Running, "the old id never inspects as the new runtime");
-    assert_ne!(p.inspect(&first).await, DeploymentStatus::Running);
-    assert!(fresh.terminate(&old, TerminationMode::Immediate).await.is_ok(), "the old id, already removed, terminates as done (Q145)");
+    assert_ne!(fresh.inspect(&old, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running, "the old id never inspects as the new runtime");
+    assert_ne!(p.inspect(&first, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
+    assert!(fresh.terminate(&old, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.is_ok(), "the old id, already removed, terminates as done (Q145)");
     assert_eq!(daemon_state(&id2), "running", "no control of the old id reached the runtime the name now runs");
-    let found = p.find(&spec).await.unwrap().running().expect("the name resolves to its current runtime");
+    let found = p.find(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap().running().expect("the name resolves to its current runtime");
     assert_eq!(container_id(&found), id2);
 }
 
@@ -210,7 +210,7 @@ async fn a_successor_in_the_same_docker_domain_adopts_inspects_and_controls_a_co
     let fabric = fabric_name("successor");
     let Some(launcher) = provider(&fabric).await else { return };
     let _cleanup = Fabric(fabric.clone());
-    let launched = launcher.spawn(&launch(&launcher, &fabric, 0)).await.expect("launch");
+    let launched = launcher.spawn(&launch(&launcher, &fabric, 0), rdm_admin::deployment::deadline::Deadline::step()).await.expect("launch");
     let id = container_id(&launched);
     let fact: RuntimeFact = launched.fact().unwrap();
 
@@ -220,12 +220,12 @@ async fn a_successor_in_the_same_docker_domain_adopts_inspects_and_controls_a_co
     let adopted = adopt(&successor, &fact).expect("same domain: adopted");
     assert_eq!(container_id(&adopted), id, "the exact container");
     assert_eq!(adopted.deployment_id, launched.deployment_id);
-    assert_eq!(successor.inspect(&adopted).await, DeploymentStatus::Running);
+    assert_eq!(successor.inspect(&adopted, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
 
-    successor.terminate(&adopted, TerminationMode::Immediate).await.expect("the successor stops it");
+    successor.terminate(&adopted, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the successor stops it");
     assert_eq!(daemon_state(&id), "absent", "the successor's control reached the exact container");
-    assert!(matches!(successor.inspect(&adopted).await, DeploymentStatus::Exited { .. }), "its terminal state is held");
-    assert_ne!(launcher.inspect(&launched).await, DeploymentStatus::Running, "the launcher sees it gone too");
+    assert!(matches!(successor.inspect(&adopted, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "its terminal state is held");
+    assert_ne!(launcher.inspect(&launched, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running, "the launcher sees it gone too");
 }
 
 /// CONTRACT: an authority in another provider control domain never treats a container locator as
@@ -236,7 +236,7 @@ async fn an_admin_in_another_docker_domain_refuses_the_locator_by_name_and_touch
     let fabric = fabric_name("foreign");
     let Some(p) = provider(&fabric).await else { return };
     let _cleanup = Fabric(fabric.clone());
-    let launched = p.spawn(&launch(&p, &fabric, 0)).await.expect("launch");
+    let launched = p.spawn(&launch(&p, &fabric, 0), rdm_admin::deployment::deadline::Deadline::step()).await.expect("launch");
     let id = container_id(&launched);
     let fact = launched.fact().unwrap();
 
@@ -251,7 +251,7 @@ async fn an_admin_in_another_docker_domain_refuses_the_locator_by_name_and_touch
     let process = ProcessDeploymentProvider::new();
     assert!(matches!(adopt(&process, &fact), Err(AdoptRefusal::OtherProvider { .. })), "a process provider never adopts a container");
     assert_eq!(daemon_state(&id), "running", "a refusal touches nothing");
-    assert_eq!(p.inspect(&launched).await, DeploymentStatus::Running);
+    assert_eq!(p.inspect(&launched, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
 }
 
 /// R14 item 6: two independent runtimes see one mounted namespace. Hard-link insertion
@@ -275,7 +275,7 @@ async fn containers_share_a_store_root_with_exclusive_inserts_atomic_replacement
         spec.args = vec![role.into()];
         spec.env.insert(rdm_core::launch::ENV_STORE_DIR.into(), store.display().to_string());
     }
-    let (a, b) = tokio::join!(p.spawn(&a), p.spawn(&b));
+    let (a, b) = tokio::join!(p.spawn(&a, rdm_admin::deployment::deadline::Deadline::step()), p.spawn(&b, rdm_admin::deployment::deadline::Deadline::step()));
     let a = a.expect("writer container");
     let b = b.expect("reader container");
     let actors = [&a, &b];
@@ -324,7 +324,7 @@ async fn a_missing_container_store_root_is_refused_without_creating_it() {
     let missing = std::env::temp_dir().join(format!("{fabric}-node-missing"));
     let mut spec = launch(&p, &fabric, 0);
     spec.env.insert(rdm_core::launch::ENV_STORE_DIR.into(), missing.display().to_string());
-    let err = p.spawn(&spec).await.expect_err("a missing store namespace is refused");
+    let err = p.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect_err("a missing store namespace is refused");
     assert!(err.to_string().contains("RDM_STORE_DIR") && err.to_string().contains(missing.to_str().unwrap()), "{err}");
     assert!(!missing.exists(), "the missing store namespace was not created");
 }

@@ -30,24 +30,23 @@ mod tests {
         fn control_domain(&self) -> String {
             self.domain.clone()
         }
-        async fn spawn(&self, _spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        async fn spawn(&self, _spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
             unreachable!()
         }
         async fn terminate(
             &self,
             handle: &DeploymentHandle,
-            _mode: TerminationMode,
-        ) -> Result<(), DeployError> {
+            _mode: TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), DeployError> {
             self.terminated.lock().unwrap().push(handle.clone());
             Ok(())
         }
-        async fn inspect(&self, _handle: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _handle: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> DeploymentStatus {
             self.status.clone()
         }
-        async fn signal_stop(&self, _handle: &DeploymentHandle) -> Result<(), DeployError> {
+        async fn signal_stop(&self, _handle: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, _spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+        async fn find(&self, _spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<Found, DeployError> {
             Ok(Found::NeverLaunched)
         }
     }
@@ -187,21 +186,21 @@ mod tests {
         fn control_domain(&self) -> String {
             self.inner.control_domain()
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
-            self.inner.spawn(spec).await
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
+            self.inner.spawn(spec, deadline).await
         }
-        async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
-            self.inner.terminate(handle, mode).await
+        async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode, deadline: crate::deployment::deadline::Deadline) -> Result<(), DeployError> {
+            self.inner.terminate(handle, mode, deadline).await
         }
-        async fn inspect(&self, _handle: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _handle: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> DeploymentStatus {
             let _guard = DropGuard(self.dropped.clone());
             std::future::pending().await
         }
-        async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
-            self.inner.signal_stop(handle).await
+        async fn signal_stop(&self, handle: &DeploymentHandle, deadline: crate::deployment::deadline::Deadline) -> Result<(), DeployError> {
+            self.inner.signal_stop(handle, deadline).await
         }
-        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
-            self.inner.find(spec).await
+        async fn find(&self, spec: &ResolvedNodeLaunch, deadline: crate::deployment::deadline::Deadline) -> Result<Found, DeployError> {
+            self.inner.find(spec, deadline).await
         }
     }
 

@@ -163,23 +163,23 @@ impl DeploymentProvider for Inspected {
     fn control_domain(&self) -> String {
         "fabric-handover".into()
     }
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         Err(DeployError::Spawn { node: spec.node.to_string(), reason: "a fabric_handover cell births nothing".into() })
     }
-    async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+    async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, h: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         if self.exited.lock().unwrap().contains(&h.deployment_id.to_string()) {
             DeploymentStatus::Exited { code: Some(0) }
         } else {
             DeploymentStatus::Running
         }
     }
-    async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+    async fn find(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<Found, DeployError> {
         Ok(Found::NeverLaunched)
     }
 }

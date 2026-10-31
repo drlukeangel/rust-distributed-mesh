@@ -98,7 +98,7 @@ impl DeploymentProvider for ControlledExitProvider {
         rdm_core::runtime::process_control_domain().expect("process control domain")
     }
 
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         Err(DeployError::Spawn {
             node: spec.node.to_string(),
             reason: "this cell tests node.delete, not spawn".into(),
@@ -108,8 +108,7 @@ impl DeploymentProvider for ControlledExitProvider {
     async fn terminate(
         &self,
         handle: &DeploymentHandle,
-        mode: TerminationMode,
-    ) -> Result<(), DeployError> {
+        mode: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         self.terminates
             .lock()
             .unwrap()
@@ -117,15 +116,15 @@ impl DeploymentProvider for ControlledExitProvider {
         Ok(())
     }
 
-    async fn inspect(&self, _handle: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, _handle: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         self.status_after_terminate.lock().unwrap().clone()
     }
 
-    async fn signal_stop(&self, _handle: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, _handle: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
 
-    async fn find(&self, _spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+    async fn find(&self, _spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<Found, DeployError> {
         Ok(Found::NeverLaunched)
     }
 }
@@ -689,7 +688,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         fn control_domain(&self) -> String {
             rdm_core::runtime::process_control_domain().expect("process control domain")
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
             Err(DeployError::Spawn {
                 node: spec.node.to_string(),
                 reason: "node_delete_step_faults spawns nothing".into(),
@@ -698,22 +697,21 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         async fn terminate(
             &self,
             handle: &DeploymentHandle,
-            mode: TerminationMode,
-        ) -> Result<(), DeployError> {
+            mode: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             self.terminates.lock().unwrap().push((handle.deployment_id.clone(), mode));
             Ok(())
         }
-        async fn inspect(&self, _handle: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _handle: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
             self.inspects
                 .lock()
                 .unwrap()
                 .pop_front()
                 .unwrap_or(DeploymentStatus::Exited { code: Some(0) })
         }
-        async fn signal_stop(&self, _handle: &DeploymentHandle) -> Result<(), DeployError> {
+        async fn signal_stop(&self, _handle: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, _spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+        async fn find(&self, _spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<Found, DeployError> {
             Ok(Found::NeverLaunched)
         }
     }

@@ -60,13 +60,13 @@ async fn until_host(hand: &dyn Hand, want: &[&str], what: &str) {
 /// `Running` again.
 async fn a_suspended_runtime_reads_os_stopped_and_running_again_when_continued(hand: &dyn Hand) {
     until_host(hand, &["idle", "running"], "the runtime alive").await;
-    assert_eq!(hand.provider().inspect(hand.handle()).await, DeploymentStatus::Running, "an alive runtime that is not suspended");
+    assert_eq!(hand.provider().inspect(hand.handle(), rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running, "an alive runtime that is not suspended");
     hand.suspend().await;
     until_host(hand, &["os-stopped"], "the runtime suspended").await;
-    assert_eq!(hand.provider().inspect(hand.handle()).await, DeploymentStatus::OsStopped, "the operating system holds it suspended");
+    assert_eq!(hand.provider().inspect(hand.handle(), rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::OsStopped, "the operating system holds it suspended");
     hand.resume().await;
     until_host(hand, &["idle", "running"], "the runtime continued").await;
-    assert_eq!(hand.provider().inspect(hand.handle()).await, DeploymentStatus::Running, "continued, it runs again");
+    assert_eq!(hand.provider().inspect(hand.handle(), rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running, "continued, it runs again");
 }
 
 /// CONTRACT (deployment-provider.md §2.5, §2.8): a suspended runtime that the host then kills reads
@@ -75,12 +75,12 @@ async fn a_suspended_runtime_reads_os_stopped_and_running_again_when_continued(h
 async fn a_stopped_runtime_that_then_exits_reads_exited_with_its_code(hand: &dyn Hand) {
     hand.suspend().await;
     until_host(hand, &["os-stopped"], "the runtime suspended").await;
-    assert_eq!(hand.provider().inspect(hand.handle()).await, DeploymentStatus::OsStopped);
+    assert_eq!(hand.provider().inspect(hand.handle(), rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::OsStopped);
     hand.kill().await;
     until_host(hand, &["exited"], "the runtime gone").await;
     let until = Instant::now() + Duration::from_secs(5);
     loop {
-        let status = hand.provider().inspect(hand.handle()).await;
+        let status = hand.provider().inspect(hand.handle(), rdm_admin::deployment::deadline::Deadline::step()).await;
         if status == (DeploymentStatus::Exited { code: hand.killed_code() }) {
             return;
         }
@@ -99,10 +99,10 @@ async fn a_stopped_runtime_that_then_exits_reads_exited_with_its_code(hand: &dyn
 async fn a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited(hand: &dyn Hand) {
     hand.suspend().await;
     until_host(hand, &["os-stopped"], "the runtime suspended").await;
-    assert_eq!(hand.provider().inspect(hand.handle()).await, DeploymentStatus::OsStopped);
-    hand.provider().terminate(hand.handle(), TerminationMode::Graceful { grace: Duration::from_secs(1) }).await.expect("the terminate of the exact handle");
+    assert_eq!(hand.provider().inspect(hand.handle(), rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::OsStopped);
+    hand.provider().terminate(hand.handle(), TerminationMode::Graceful { grace: Duration::from_secs(1) }, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the terminate of the exact handle");
     until_host(hand, &["exited"], "the terminated runtime gone").await;
-    let status = hand.provider().inspect(hand.handle()).await;
+    let status = hand.provider().inspect(hand.handle(), rdm_admin::deployment::deadline::Deadline::step()).await;
     assert!(matches!(status, DeploymentStatus::Exited { .. }), "a terminated suspended runtime reads Exited: {status:?}");
 }
 
@@ -125,9 +125,9 @@ async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_shows_no_appli
     let held = hand.heartbeat();
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(hand.heartbeat(), held, "a suspended runtime writes nothing");
-    assert_eq!(hand.provider().inspect(hand.handle()).await, DeploymentStatus::OsStopped);
+    assert_eq!(hand.provider().inspect(hand.handle(), rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::OsStopped);
     let t = Instant::now();
-    hand.provider().terminate(hand.handle(), TerminationMode::Immediate).await.expect("the immediate terminate of the exact handle");
+    hand.provider().terminate(hand.handle(), TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the immediate terminate of the exact handle");
     until_host(hand, &["exited"], "the terminated runtime gone").await;
     let took = t.elapsed();
     // No grace: it ends before the stop ladder's grace could have run (a graceful terminate waits it).
@@ -135,7 +135,7 @@ async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_shows_no_appli
     assert!(took < grace, "the immediate terminate of a suspended runtime takes no grace: {took:?}, the grace {grace:?}");
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(hand.heartbeat(), held, "no application progress is observed after the suspension: its heartbeat never grew again (took {took:?})");
-    let status = hand.provider().inspect(hand.handle()).await;
+    let status = hand.provider().inspect(hand.handle(), rdm_admin::deployment::deadline::Deadline::step()).await;
     assert!(matches!(status, DeploymentStatus::Exited { .. }), "the ended runtime reads Exited: {status:?}");
     eprintln!("immediate terminate of a suspended runtime: {took:?}, heartbeat held at {held} (no application progress observed)");
 }
@@ -145,7 +145,7 @@ async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_shows_no_appli
 /// started) reads `Running`, never `OsStopped` and never `Exited`.
 async fn an_idle_runtime_reads_running(hand: &dyn Hand) {
     until_host(hand, &["idle"], "the runtime idle").await;
-    assert_eq!(hand.provider().inspect(hand.handle()).await, DeploymentStatus::Running);
+    assert_eq!(hand.provider().inspect(hand.handle(), rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
 }
 
 mod process {
@@ -182,7 +182,7 @@ mod process {
                 transport: "127.0.0.1:0".parse().unwrap(),
                 listeners: vec![],
             };
-            let handle = provider.spawn(&spec).await.expect("the launch");
+            let handle = provider.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the launch");
             Self { provider, handle, dir }
         }
         fn pid(&self) -> u32 {
@@ -314,7 +314,7 @@ mod process {
         stopped_rx.recv().unwrap().unwrap_or_else(|e| panic!("the tracer could not stop the worker: {e}"));
         let seen = letters(pid).unwrap();
         assert!(seen.contains(&'t') && seen.iter().any(|l| !matches!(l, 't' | 'T' | 'Z' | 'X' | 'x')), "the host shows one task stopped and one live task that is not: {seen:?}");
-        let status = child.provider().inspect(child.handle()).await;
+        let status = child.provider().inspect(child.handle(), rdm_admin::deployment::deadline::Deadline::step()).await;
         tx.send(()).unwrap();
         tracer.join().unwrap();
         assert_eq!(status, DeploymentStatus::Running, "one live task that is not stopped: the group runs ({seen:?})");
@@ -329,14 +329,14 @@ mod process {
         let successor = ProcessDeploymentProvider::new();
         let fact = child.handle().fact().expect("an exact handle has a fact");
         let adopted = rdm_admin::deployment::provider::adopt(&successor, &fact).expect("the same control domain adopts it");
-        assert_eq!(successor.inspect(&adopted).await, DeploymentStatus::Running);
+        assert_eq!(successor.inspect(&adopted, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
         child.kill().await;
         let until = Instant::now() + Duration::from_secs(5);
         while std::path::Path::new(&format!("/proc/{}", child.pid())).exists() {
             assert!(Instant::now() < until, "the killed child was never reaped");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert_eq!(successor.inspect(&adopted).await, DeploymentStatus::Exited { code: None });
+        assert_eq!(successor.inspect(&adopted, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { code: None });
     }
 }
 
@@ -408,7 +408,7 @@ mod container {
         let provider = provider(&fabric).await?;
         let cleanup = Fabric(fabric.clone());
         let spec = launch(&provider, &fabric, 0);
-        let handle = provider.spawn(&spec).await.expect("the launch");
+        let handle = provider.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the launch");
         Some(Container { provider, handle, data_dir: spec.data_dir, _fabric: cleanup })
     }
 
@@ -421,7 +421,7 @@ mod container {
         let mut spec = launch(&provider, &fabric, 0);
         spec.executable = std::path::PathBuf::from("/usr/bin/sh");
         spec.args = vec!["-c".into(), heartbeat_script(&spec.data_dir.join("hb"))];
-        let handle = provider.spawn(&spec).await.expect("the launch");
+        let handle = provider.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the launch");
         Some(Container { provider, handle, data_dir: spec.data_dir, _fabric: cleanup })
     }
 
@@ -462,18 +462,18 @@ mod container {
         let mut spec = launch(&provider, &fabric, 0);
         spec.executable = std::path::PathBuf::from("/usr/bin/sh");
         spec.args = vec!["-c".into(), "echo its last words; exit 3".into()];
-        let handle = provider.spawn(&spec).await.expect("the launch");
+        let handle = provider.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the launch");
         let c = Container { provider, handle, data_dir: spec.data_dir, _fabric: cleanup };
         until_host(&c, &["exited"], "the container exited by itself").await;
-        assert_eq!(c.provider.inspect(&c.handle).await, DeploymentStatus::Exited { code: Some(3) }, "it exited by itself with its own code");
+        assert_eq!(c.provider.inspect(&c.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { code: Some(3) }, "it exited by itself with its own code");
         let mode = TerminationMode::Graceful { grace: Duration::from_secs(1) };
-        c.provider.terminate(&c.handle, mode).await.expect("the terminate of an exited container");
+        c.provider.terminate(&c.handle, mode, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the terminate of an exited container");
         let o = std::process::Command::new("docker").args(["inspect", &c.id()]).output().unwrap();
         assert!(!o.status.success(), "the exited container is removed from the host: {}", String::from_utf8_lossy(&o.stdout));
         let log = std::fs::read_to_string(c.data_dir.join("container.log")).unwrap_or_default();
         assert!(log.contains("its last words"), "its logs are kept beside the data dir: {log:?}");
-        assert_eq!(c.provider.inspect(&c.handle).await, DeploymentStatus::Exited { code: Some(3) }, "the removed container still reads Exited with its code");
-        c.provider.terminate(&c.handle, mode).await.expect("a runtime already removed terminates as done");
+        assert_eq!(c.provider.inspect(&c.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { code: Some(3) }, "the removed container still reads Exited with its code");
+        c.provider.terminate(&c.handle, mode, rdm_admin::deployment::deadline::Deadline::step()).await.expect("a runtime already removed terminates as done");
     }
 
     /// The container side of R19: a container created and not started.

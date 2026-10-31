@@ -149,7 +149,7 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
             for s in READY_PREREQUISITES {
                 assert!(at(s.name()) < at(CreateStep::WaitForNodeReady.name()), "{} before Ready", s.name());
             }
-            provider.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
+            provider.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
         }
     }
     // Whatever runs for this node stops with the test, by signal: it deletes its connections, stops and exports its
@@ -161,7 +161,7 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
         .and_then(|r| r.output.clone())
         .and_then(|h| serde_json::from_value(h).ok())
         .expect("the runtime was deployed and its handle receipted");
-    provider.terminate(&handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
+    provider.terminate(&handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
     let _ = std::fs::remove_dir_all(&template.data_root);
     handle.pid.expect("a process handle carries its pid")
 }
@@ -205,7 +205,7 @@ impl NodeObserver for ExitsWhenAsked<'_> {
     async fn ready(&self, _node: &Node) -> Result<(), String> {
         let view = self.builds.read_build(&self.build_id).await.unwrap();
         let handle = view.steps.iter().find(|r| r.step == CreateStep::DeployRuntime.name()).and_then(|r| r.output.clone()).expect("the runtime was deployed");
-        self.provider.terminate(&serde_json::from_value(handle).unwrap(), TerminationMode::Immediate).await.unwrap();
+        self.provider.terminate(&serde_json::from_value(handle).unwrap(), TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
         Err("not Ready: the node does not answer".to_string())
     }
 }

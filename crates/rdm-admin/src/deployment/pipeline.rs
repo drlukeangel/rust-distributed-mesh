@@ -1055,6 +1055,18 @@ impl StepFailure {
     fn coded(code: rdm_core::outcome::Code, reason: String) -> Self { Self { reason, code } }
 }
 
+/// A provider's failure as its step's: a call past its deadline stays `DeadlineExceeded` (Q304),
+/// never a refusal or an absence.
+impl From<super::provider::DeployError> for StepFailure {
+    fn from(e: super::provider::DeployError) -> Self {
+        let code = match e {
+            super::provider::DeployError::Deadline { .. } => rdm_core::outcome::Code::DeadlineExceeded,
+            _ => rdm_core::outcome::Code::FailedPrecondition,
+        };
+        Self { reason: e.to_string(), code }
+    }
+}
+
 impl std::fmt::Display for PipelineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} failed: {}", self.step, self.reason)
@@ -1515,7 +1527,7 @@ impl DeploymentPipeline<'_> {
             executor = %self.template.executor(),
         );
         self.provider
-            .terminate(stranded, TerminationMode::Graceful { grace: self.timeouts.stop_grace })
+            .terminate(stranded, TerminationMode::Graceful { grace: self.timeouts.stop_grace }, super::deadline::Deadline::stop(self.timeouts.stop_grace))
             .instrument(span)
             .await
             .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: the earlier attempt's runtime was launched by another executor and never joined; stopping it failed: {e}", req.node) , code: rdm_core::outcome::Code::FailedPrecondition })
@@ -1568,7 +1580,7 @@ impl DeploymentPipeline<'_> {
         if let Some(r) = &read {
             span.record("read_status", format!("{:?}", r.status).as_str()).record("read_revision", r.revision);
         }
-        match self.provider.find(&spec).instrument(span.clone()).await {
+        match self.provider.find(&spec, super::deadline::Deadline::step()).instrument(span.clone()).await {
             Ok(Found::Exited(_)) => {
                 span.record("outcome", "launched-exited");
                 span.in_scope(|| tracing::info!("the claim names a birth this operation allocated whose deployment the provider proves was launched and has exited: the birth is decided afresh"));
@@ -1624,7 +1636,7 @@ impl DeploymentPipeline<'_> {
             let alive = match &earlier {
                 // A runtime the operating system holds suspended is not gone (deployment-provider.md
                 // §2.5): its birth is kept, never launched over.
-                Some(h) => match self.provider.inspect(h).await {
+                Some(h) => match self.provider.inspect(h, super::deadline::Deadline::step()).await {
                     DeploymentStatus::Running | DeploymentStatus::OsStopped => true,
                     DeploymentStatus::Exited { .. } | DeploymentStatus::Unknown => false,
                 },
@@ -1665,7 +1677,7 @@ impl DeploymentPipeline<'_> {
         // one this admin publishes for the birth.
         let bind_ip = self
             .provider
-            .bind_ip(&req.node, &id.deployment_id)
+            .bind_ip(&req.node, &id.deployment_id, super::deadline::Deadline::step())
             .await
             .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: no address to bind: {e}", req.node) , code: rdm_core::outcome::Code::FailedPrecondition })?;
         let bind_addr = SocketAddr::new(bind_ip, 0);
@@ -1804,16 +1816,20 @@ impl DeploymentPipeline<'_> {
             }
         };
         let handle: DeploymentHandle = self
-            .step(run, CreateStep::DeployRuntime.name(), async {
+            .step_with(run, CreateStep::DeployRuntime.name(), async {
                 let spec = spec_for(rdm_transport::current_traceparent());
-                if let Some(h) = self.provider.find(&spec).await.map_err(|e| e.to_string())?.running() {
+                // One deadline for the step's provider calls (Q304): the find that resolves this exact
+                // launch and the spawn spend the same budget, and a call past it fails the step by
+                // name, its outcome unknown.
+                let deadline = super::deadline::Deadline::step();
+                if let Some(h) = self.provider.find(&spec, deadline).await.map_err(StepFailure::from)?.running() {
                     tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
                     return Ok(h);
                 }
                 if let Some(before) = before_launch {
                     before.await;
                 }
-                self.provider.spawn(&spec).await.map_err(|e| e.to_string())
+                self.provider.spawn(&spec, deadline).await.map_err(StepFailure::from)
             })
             .await?;
         // What this admin deployed, held before the node can report: its `JoinNode` is verified
@@ -1894,12 +1910,13 @@ impl DeploymentPipeline<'_> {
             .step_with(run, CreateStep::WaitForBind.name(), async {
                 let mut reported = reported.ok_or_else(|| format!("{}: the handle names no exact runtime to verify a join against", req.node))?;
                 let until = Instant::now() + self.timeouts.bind;
+                let wait = super::deadline::Deadline::after(self.timeouts.bind);
                 loop {
                     if let Some(d) = reported.borrow().clone() {
                         return Bound::of(&d).map_err(|e| StepFailure::from(format!("{}: {e}", req.node)));
                     }
-                    if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
-                        let detail = self.provider.failure_detail(&handle, &data_dir).await;
+                    if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle, super::deadline::Deadline::step().within(Some(wait))).await {
+                        let detail = self.provider.failure_detail(&handle, &data_dir, super::deadline::Deadline::step()).await;
                         return Err(StepFailure::coded(rdm_core::outcome::Code::Unavailable, format!("runtime exited (code {code:?}) before reporting where it bound: {detail}")));
                     }
                     let left = until.saturating_duration_since(Instant::now());
@@ -1972,8 +1989,8 @@ impl DeploymentPipeline<'_> {
                     )));
                 }
                 // A runtime that exited will never report: its own last words, now, not a timeout.
-                if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
-                    let detail = self.provider.failure_detail(&handle, &data_dir).await;
+                if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle, super::deadline::Deadline::step().within(Some(super::deadline::Deadline::after(until.saturating_duration_since(Instant::now()))))).await {
+                    let detail = self.provider.failure_detail(&handle, &data_dir, super::deadline::Deadline::step()).await;
                     return Err(StepFailure::coded(rdm_core::outcome::Code::Unavailable, format!("runtime exited (code {code:?}) before its join was admitted: {detail}")));
                 }
                 let left = until.saturating_duration_since(Instant::now());
@@ -1999,8 +2016,8 @@ impl DeploymentPipeline<'_> {
                     Err(e) if Instant::now() >= until => return Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, e)),
                     Err(not_ready) => {
                         // A runtime that exited will never be Ready: its own last words, now, not a timeout.
-                        if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
-                            let detail = self.provider.failure_detail(&handle, &data_dir).await;
+                        if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle, super::deadline::Deadline::step().within(Some(super::deadline::Deadline::after(until.saturating_duration_since(Instant::now()))))).await {
+                            let detail = self.provider.failure_detail(&handle, &data_dir, super::deadline::Deadline::step()).await;
                             return Err(StepFailure::coded(rdm_core::outcome::Code::Unavailable, format!("runtime exited (code {code:?}) before it was Ready ({not_ready}): {detail}")));
                         }
                         if let Some(blocker) = self.observer.ready_blocker(&node).await {
@@ -2428,7 +2445,7 @@ impl DeploymentPipeline<'_> {
 
     /// Resolves when this deployment's own runtime has exited.
     async fn until_exited(&self, handle: &DeploymentHandle) {
-        while !matches!(self.provider.inspect(handle).await, DeploymentStatus::Exited { .. }) {
+        while !matches!(self.provider.inspect(handle, super::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -2519,6 +2536,12 @@ impl DeploymentPipeline<'_> {
     async fn terminate_step_when(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle, when: Terminate, mut mode: TerminationMode) -> Result<TerminalReceipt, PipelineError> {
         let name = node.name.clone();
         self.step_with(run, DeleteStep::TerminateRuntime.name(), async {
+            // One deadline for the step's inspection, terminate and re-inspection (Q304): a graceful
+            // stop's grace is inside it, and it never resets within the step.
+            let deadline = match mode {
+                TerminationMode::Graceful { grace } => super::deadline::Deadline::stop(grace),
+                TerminationMode::Immediate => super::deadline::Deadline::step(),
+            };
             let receipt = |exit_code: Option<i32>, verdict: Option<&str>| -> Result<TerminalReceipt, StepFailure> {
                 Ok(TerminalReceipt {
                     node: name.to_string(),
@@ -2537,7 +2560,7 @@ impl DeploymentPipeline<'_> {
                     Terminate::Explicit => "an explicit delete's TerminateRuntime inspects the exact runtime at its instant and terminates it, an os-stopped one Immediate",
                     _ => "node recovery's TerminateRuntime inspects the exact runtime at its instant and terminates it on every read but os-stopped",
                 };
-                match self.inspected_at(node, handle, "terminate", why).await {
+                match self.inspected_at(node, handle, "terminate", why, deadline).await {
                     DeploymentStatus::Running if when == Terminate::Backbone => return receipt(None, Some("running")),
                     DeploymentStatus::Exited { code } if when == Terminate::Backbone => return receipt(code, Some("exited")),
                     DeploymentStatus::Running => Some("running"),
@@ -2556,11 +2579,12 @@ impl DeploymentPipeline<'_> {
             } else {
                 None
             };
-            if let Err(e) = self.provider.terminate(handle, mode).await {
-                return Err(StepFailure::from(e.to_string()));
+            // A terminate past its deadline is never done: its outcome is unknown, by name.
+            if let Err(e) = self.provider.terminate(handle, mode, deadline).await {
+                return Err(StepFailure::from(e));
             }
             // Only an exact inspection that says the runtime exited is terminal proof.
-            let exit_code = match self.provider.inspect(handle).await {
+            let exit_code = match self.provider.inspect(handle, deadline).await {
                 DeploymentStatus::Running => return Err(StepFailure::from(format!("{name} still runs after the stop ladder"))),
                 DeploymentStatus::OsStopped => return Err(StepFailure::from(format!("{name}: the operating system holds its runtime suspended after the stop ladder (os-stopped)"))),
                 DeploymentStatus::Unknown => return Err(StepFailure::from(format!("{name}: the provider cannot inspect its runtime after the stop ladder"))),
@@ -2620,8 +2644,8 @@ impl DeploymentPipeline<'_> {
 
     /// node.runtime.inspect of `node`'s exact runtime by this pipeline's executor for `caller`, at the
     /// caller's instant (node-runtime-inspect.md): the provider's answer, spanned with its verdict.
-    async fn inspected_at(&self, node: &Node, handle: &DeploymentHandle, caller: &'static str, why: &'static str) -> DeploymentStatus {
-        let status = self.provider.inspect(handle).await;
+    async fn inspected_at(&self, node: &Node, handle: &DeploymentHandle, caller: &'static str, why: &'static str, deadline: super::deadline::Deadline) -> DeploymentStatus {
+        let status = self.provider.inspect(handle, deadline).await;
         let verdict = match &status {
             DeploymentStatus::Running => "running",
             DeploymentStatus::OsStopped => "os-stopped",
@@ -2648,7 +2672,7 @@ impl DeploymentPipeline<'_> {
     /// `Running` is the live target, and an `Exited` or `Unknown` runtime is asked nothing more than
     /// the stop's call already asks it.
     async fn stop_skipped_os_stopped(&self, run: &Run<'_>, node: &Node, handle: &DeploymentHandle) -> bool {
-        let status = self.inspected_at(node, handle, "delete", "the delete inspects the exact runtime at its instant: an os-stopped one answers no stop").await;
+        let status = self.inspected_at(node, handle, "delete", "the delete inspects the exact runtime at its instant: an os-stopped one answers no stop", super::deadline::Deadline::step()).await;
         if status != DeploymentStatus::OsStopped {
             return false;
         }
@@ -2830,23 +2854,23 @@ mod tests {
         fn control_domain(&self) -> String {
             "process:cell".into()
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, super::super::provider::DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, super::super::provider::DeployError> {
             Err(super::super::provider::DeployError::Spawn { node: spec.node.to_string(), reason: "this provider only answers inspections".into() })
         }
-        async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode) -> Result<(), super::super::provider::DeployError> {
+        async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), super::super::provider::DeployError> {
             self.terminated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             match &self.refuse {
                 Some(reason) => Err(super::super::provider::DeployError::Terminate { deployment: h.deployment_id.to_string(), reason: reason.clone() }),
                 None => Ok(()),
             }
         }
-        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> DeploymentStatus {
             self.status.clone()
         }
-        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), super::super::provider::DeployError> {
+        async fn signal_stop(&self, _: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> Result<(), super::super::provider::DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, super::super::provider::DeployError> {
+        async fn find(&self, _: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<Found, super::super::provider::DeployError> {
             Ok(Found::NeverLaunched)
         }
     }
@@ -2911,25 +2935,25 @@ mod tests {
         fn control_domain(&self) -> String {
             "process:cell".into()
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, super::super::provider::DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, super::super::provider::DeployError> {
             Err(super::super::provider::DeployError::Spawn { node: spec.node.to_string(), reason: "this provider only answers inspections".into() })
         }
-        async fn terminate(&self, _: &DeploymentHandle, mode: TerminationMode) -> Result<(), super::super::provider::DeployError> {
+        async fn terminate(&self, _: &DeploymentHandle, mode: TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), super::super::provider::DeployError> {
             self.terminated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.modes.lock().unwrap().push(mode);
             Ok(())
         }
-        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> DeploymentStatus {
             if self.terminated.load(std::sync::atomic::Ordering::SeqCst) == 0 {
                 DeploymentStatus::OsStopped
             } else {
                 DeploymentStatus::Exited { code: Some(137) }
             }
         }
-        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), super::super::provider::DeployError> {
+        async fn signal_stop(&self, _: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> Result<(), super::super::provider::DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, super::super::provider::DeployError> {
+        async fn find(&self, _: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<Found, super::super::provider::DeployError> {
             Ok(Found::NeverLaunched)
         }
     }
@@ -3165,20 +3189,20 @@ mod tests {
         fn control_domain(&self) -> String {
             "process:cell".into()
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, super::super::provider::DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, super::super::provider::DeployError> {
             self.envs.lock().unwrap().push(spec.env.clone());
             Err(super::super::provider::DeployError::Spawn { node: spec.node.to_string(), reason: "this cell launches nothing".into() })
         }
-        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), super::super::provider::DeployError> {
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), super::super::provider::DeployError> {
             Ok(())
         }
-        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> DeploymentStatus {
             DeploymentStatus::Unknown
         }
-        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), super::super::provider::DeployError> {
+        async fn signal_stop(&self, _: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> Result<(), super::super::provider::DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, super::super::provider::DeployError> {
+        async fn find(&self, _: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<Found, super::super::provider::DeployError> {
             Ok(Found::NeverLaunched)
         }
     }
@@ -3227,7 +3251,7 @@ mod tests {
         fn control_domain(&self) -> String {
             rdm_core::runtime::process_control_domain().expect("this process has a control domain")
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, super::super::provider::DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, super::super::provider::DeployError> {
             let refused = |reason: String| super::super::provider::DeployError::Spawn { node: spec.node.to_string(), reason };
             let fact = RuntimeFact::of_this_process(&spec.deployment_id.to_string()).map_err(refused)?;
             let (pid, start) = match fact.locator {
@@ -3274,16 +3298,16 @@ mod tests {
             });
             Ok(handle)
         }
-        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), super::super::provider::DeployError> {
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), super::super::provider::DeployError> {
             Ok(())
         }
-        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> DeploymentStatus {
             DeploymentStatus::Running
         }
-        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), super::super::provider::DeployError> {
+        async fn signal_stop(&self, _: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> Result<(), super::super::provider::DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, super::super::provider::DeployError> {
+        async fn find(&self, _: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<Found, super::super::provider::DeployError> {
             Ok(Found::NeverLaunched)
         }
     }

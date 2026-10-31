@@ -284,10 +284,15 @@ pub enum TerminationMode {
 /// node-recovery.md step 3, Q145): the provider's `terminate(mode)` on every read but `OsStopped`,
 /// which recovery leaves as it is; of an exited runtime the provider removes what it left. The answer
 /// is what the read at the step's instant found; a terminate the provider refuses is the error, by name.
+/// The read and the terminate spend one deadline (Q304): a graceful stop's grace and a step's bound.
 pub async fn terminate_unless_os_stopped(provider: &dyn DeploymentProvider, handle: &DeploymentHandle, mode: TerminationMode) -> Result<DeploymentStatus, String> {
-    let found = provider.inspect(handle).await;
+    let deadline = match mode {
+        TerminationMode::Graceful { grace } => super::deadline::Deadline::stop(grace),
+        TerminationMode::Immediate => super::deadline::Deadline::step(),
+    };
+    let found = provider.inspect(handle, deadline).await;
     if found != DeploymentStatus::OsStopped {
-        provider.terminate(handle, mode).await.map_err(|e| e.to_string())?;
+        provider.terminate(handle, mode, deadline).await.map_err(|e| e.to_string())?;
     }
     Ok(found)
 }
@@ -335,9 +340,11 @@ pub enum Inspected {
 /// named why.
 ///
 /// The inspect answers within [`INSPECT_BOUND`] over both providers (Q273): past it, `Unavailable` with
-/// the reason `deadline`, never a proof of exit, and the investigation's tickles follow.
+/// the reason `deadline`, never a proof of exit, and the investigation's tickles follow. The same
+/// instant is the provider's own deadline (Q304), so the provider ends the command it started.
 pub async fn inspect_runtime(provider: &dyn DeploymentProvider, fact: &RuntimeFact, data_dir: Option<&str>, incarnation: &str) -> Inspected {
-    match tokio::time::timeout(INSPECT_BOUND, inspect_unbounded(provider, fact, data_dir, incarnation)).await {
+    let deadline = super::deadline::Deadline::after(INSPECT_BOUND);
+    match tokio::time::timeout_at(deadline.at(), inspect_unbounded(provider, fact, data_dir, incarnation, deadline)).await {
         Ok(inspected) => inspected,
         Err(_) => Inspected::Unavailable(format!("deadline: the provider did not answer within {INSPECT_BOUND:?}")),
     }
@@ -347,13 +354,13 @@ pub async fn inspect_runtime(provider: &dyn DeploymentProvider, fact: &RuntimeFa
 /// setting.
 pub const INSPECT_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
-async fn inspect_unbounded(provider: &dyn DeploymentProvider, fact: &RuntimeFact, data_dir: Option<&str>, incarnation: &str) -> Inspected {
+async fn inspect_unbounded(provider: &dyn DeploymentProvider, fact: &RuntimeFact, data_dir: Option<&str>, incarnation: &str, deadline: super::deadline::Deadline) -> Inspected {
     use DeploymentStatus as S;
     let handle = match adopt(provider, fact) {
         Ok(handle) => handle,
         Err(e) => return Inspected::Unavailable(format!("the provider refused to adopt its runtime: {e}")),
     };
-    let inspected = provider.inspect(&handle).await;
+    let inspected = provider.inspect(&handle, deadline).await;
     match with_exit_code(inspected, fact, data_dir.map(std::path::Path::new), incarnation).await {
         Ok(S::Exited { code }) => Inspected::Exited(code),
         Ok(S::Running) => Inspected::Running,
@@ -401,6 +408,21 @@ pub enum DeployError {
         /// Why it failed.
         reason: String,
     },
+    /// A provider command answered nothing by the deadline it was handed (Q304, rdm#241): its client
+    /// was ended. For a mutation the external outcome is unknown, never a launch that did not happen,
+    /// an exit or a done terminate; the workflow resolves the exact launch before it acts again.
+    Deadline {
+        /// The command (`container.run`, `container.inspect`, `process.spawn`, …).
+        operation: String,
+        /// The deployment the command was for, when it names one.
+        deployment: String,
+        /// The time the command ran before it was ended.
+        elapsed: std::time::Duration,
+        /// The bound its deadline was taken from.
+        bound: std::time::Duration,
+        /// Whether the command changes the runtime (its outcome is then unknown).
+        mutation: bool,
+    },
     /// The provider cannot run on this host (named, never a silent pass).
     Unsupported {
         /// The provider.
@@ -415,13 +437,23 @@ impl std::fmt::Display for DeployError {
         match self {
             Self::Spawn { node, reason } => write!(f, "deploying {node} failed: {reason}"),
             Self::Terminate { deployment, reason } => write!(f, "terminating deployment {deployment} failed: {reason}"),
+            Self::Deadline { operation, deployment, elapsed, bound, mutation } => write!(
+                f,
+                "{operation} for deployment {deployment} answered nothing within its deadline ({} ms bound, ended after {} ms){}",
+                bound.as_millis(),
+                elapsed.as_millis(),
+                if *mutation { "; its external outcome is unknown" } else { "" }
+            ),
             Self::Unsupported { provider, reason } => write!(f, "{provider:?} provider is unsupported on this host: {reason}"),
         }
     }
 }
 
 /// Realises and deletes runtimes (`docs/architecture/deployment-provider.md` §2): starts a launch,
-/// stops a runtime and reports what it knows of one.
+/// stops a runtime and reports what it knows of one. Every call that reaches outside the process
+/// takes the one absolute [`Deadline`](super::deadline::Deadline) its step hands it and enforces it
+/// around that I/O: past it the call ends with [`DeployError::Deadline`] (or `Unknown` for an
+/// inspection), and the provider picks no timeout of its own and never retries (Q304).
 #[async_trait::async_trait]
 pub trait DeploymentProvider: Send + Sync {
     /// The provider's kind.
@@ -432,29 +464,29 @@ pub trait DeploymentProvider: Send + Sync {
     /// its data dir (`write_launch_record`) is durable before the runtime's executable runs, so a
     /// runtime that runs always has its record and an executor lost at any point of the spawn
     /// leaves [`find`](Self::find) a record to read.
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError>;
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<DeploymentHandle, DeployError>;
     /// Stop the runtime `handle` as `mode` says.
-    async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError>;
+    async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode, deadline: super::deadline::Deadline) -> Result<(), DeployError>;
     /// The state of the runtime `handle`.
-    async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus;
+    async fn inspect(&self, handle: &DeploymentHandle, deadline: super::deadline::Deadline) -> DeploymentStatus;
 
     /// Stage one of the stop ladder: ask the runtime to delete its connections and stop
     /// (SIGTERM). A runtime already gone is not an error.
-    async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError>;
+    async fn signal_stop(&self, handle: &DeploymentHandle, deadline: super::deadline::Deadline) -> Result<(), DeployError>;
 
     /// What became of this exact launch (`spec.deployment_id`) in this provider's control domain
     /// ([`Found`]): its runtime runs (a re-run after a crash mid-`DeployRuntime` adopts it instead of
     /// starting a second one), it ran and has exited, or it was never launched.
     /// `Err` names the record of the launch that could not be read, or a state this provider cannot
     /// place in any of the three.
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError>;
+    async fn find(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<Found, DeployError>;
 
     /// The host address the runtime of `birth` (its deployment, at `node`) binds on, with port 0 (the
     /// operating system assigns the port; the node reports it at its join). Loopback for a process; a
     /// container's own address on the fabric network, which belongs to the birth that holds it.
     /// `Err` names why no address can be given (a container network the daemon cannot list, or
     /// one with no address left).
-    async fn bind_ip(&self, _node: &crate::model::PathName, _birth: &crate::model::DeploymentId) -> Result<std::net::IpAddr, DeployError> {
+    async fn bind_ip(&self, _node: &crate::model::PathName, _birth: &crate::model::DeploymentId, _deadline: super::deadline::Deadline) -> Result<std::net::IpAddr, DeployError> {
         Ok(std::net::IpAddr::from([127, 0, 0, 1]))
     }
 
@@ -475,13 +507,16 @@ pub trait DeploymentProvider: Send + Sync {
     /// The runtime's last words, for a named failure when it stopped early.
     /// Default: the tail of `stderr.log` in its data dir, read on the blocking pool; a log that
     /// cannot be read is named, never an empty detail.
-    async fn failure_detail(&self, _handle: &DeploymentHandle, data_dir: &std::path::Path) -> String {
+    async fn failure_detail(&self, _handle: &DeploymentHandle, data_dir: &std::path::Path, deadline: super::deadline::Deadline) -> String {
         let path = data_dir.join("stderr.log");
-        crate::blocking::blocking_io(move || match std::fs::read_to_string(&path) {
-            Ok(text) => tail(&text, 5),
-            Err(e) => format!("{}: {e}", path.display()),
-        })
-        .await
+        let shown = path.display().to_string();
+        deadline
+            .run(crate::blocking::blocking_io(move || match std::fs::read_to_string(&path) {
+                Ok(text) => tail(&text, 5),
+                Err(e) => format!("{}: {e}", path.display()),
+            }))
+            .await
+            .unwrap_or_else(|elapsed| format!("{shown}: not read within its deadline ({} ms)", elapsed.as_millis()))
     }
 }
 
@@ -552,19 +587,19 @@ mod tests {
         fn control_domain(&self) -> String {
             format!("remote:{}", self.0)
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
             Err(DeployError::Spawn { node: spec.node.to_string(), reason: "not in this test".into() })
         }
-        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, _: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> DeploymentStatus {
             DeploymentStatus::Unknown
         }
-        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+        async fn signal_stop(&self, _: &DeploymentHandle, _deadline: crate::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+        async fn find(&self, _: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<Found, DeployError> {
             Ok(Found::NeverLaunched)
         }
     }
@@ -655,7 +690,7 @@ mod tests {
         let dir = crate::test_support::tempdir("failure-detail-fifo");
         let fifo = dir.join("stderr.log");
         let h = DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60("dep-a")).unwrap(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
-        let (heard, detail) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, b"boom\n".to_vec(), Box::pin(async move { RemotePool("d").failure_detail(&h, &dir).await }));
+        let (heard, detail) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, b"boom\n".to_vec(), Box::pin(async move { RemotePool("d").failure_detail(&h, &dir, crate::deployment::deadline::Deadline::step()).await }));
         assert!(heard, "the runtime stopped while stderr.log was read");
         assert_eq!(detail, "boom");
     }
@@ -666,7 +701,7 @@ mod tests {
         let dir = crate::test_support::tempdir("failure-detail-unreadable");
         std::fs::create_dir_all(dir.join("stderr.log")).unwrap();
         let h = DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60("dep-a")).unwrap(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
-        let detail = RemotePool("d").failure_detail(&h, &dir).await;
+        let detail = RemotePool("d").failure_detail(&h, &dir, crate::deployment::deadline::Deadline::step()).await;
         assert!(detail.contains("stderr.log"), "{detail:?}");
     }
 }

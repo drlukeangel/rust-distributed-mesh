@@ -3,7 +3,9 @@
 //! Node-admin owns topology, identity, endpoints, readiness and restart vs
 //! replacement; a provider only realises or deletes one runtime.
 
+pub mod client;
 pub mod container;
+pub mod deadline;
 pub mod declared;
 pub mod endpoint;
 pub mod pipeline;

@@ -140,19 +140,19 @@ impl DeploymentProvider for Host {
     fn control_domain(&self) -> String {
         DOMAIN.into()
     }
-    async fn spawn(&self, _: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         unreachable!("adoption launches nothing")
     }
-    async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+    async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         unreachable!("adoption terminates nothing")
     }
-    async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         unreachable!("adoption inspects nothing")
     }
-    async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         unreachable!("adoption stops nothing")
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+    async fn find(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
         Ok(rdm_admin::deployment::provider::Found::NeverLaunched)
     }
 }

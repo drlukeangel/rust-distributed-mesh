@@ -164,8 +164,8 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     std::fs::create_dir_all(old_dir.join("wal")).unwrap();
     std::fs::write(old_dir.join("wal").join("seg-0"), b"records").unwrap();
     // The runtime exits outside any workflow.
-    rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
-    assert!(matches!(rig.provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }), "the runtime exited");
+    rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
+    assert!(matches!(rig.provider.inspect(&first.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the runtime exited");
     rig.log.lock().unwrap().clear();
     let old_inc = first.node.incarnation_id.clone().unwrap();
 
@@ -210,7 +210,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     assert_eq!(second.node.endpoint_id, first.node.endpoint_id, "the same endpoint key, loaded from the inherited data dir");
     assert_eq!(second.node.data_dir, first.node.data_dir, "the inherited data dir");
     assert_eq!(std::fs::read(old_dir.join("wal").join("seg-0")).unwrap(), b"records", "storage retained");
-    assert_eq!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Running);
+    assert_eq!(rig.provider.inspect(&second.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
 
     // Delete, target, then create: nothing sent to the exited process.
     let log = rig.log.lock().unwrap().clone();
@@ -229,8 +229,8 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
         assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some(kind) && f.get("build_id") == Some(&recover_build.log().to_string())), "the {kind} workflow ran as its pipeline");
     }
     assert!(!all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("recover")), "no recovery pipeline of its own");
-    rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
-    assert!(matches!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Exited { .. }), "the new node was stopped");
+    rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
+    assert!(matches!(rig.provider.inspect(&second.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the new node was stopped");
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
 }
 
@@ -256,7 +256,7 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
-    rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+    rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
     // The inherited data dir lost its endpoint key.
     std::fs::remove_file(old_dir.join("node-key")).unwrap();
     rig.log.lock().unwrap().clear();
@@ -268,7 +268,7 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
     let err = match outcome {
         Err(e) => e,
         Ok(created) => {
-            rig.provider.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+            rig.provider.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
             panic!("a create over an inherited data dir with no endpoint key was created as {} with key {:?}", created.node.node_id, created.node.endpoint_id);
         }
     };
@@ -312,7 +312,7 @@ async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_o
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
     let saved_key = std::fs::read_to_string(old_dir.join("node-key")).expect("read original node-key");
-    rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+    rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
 
     // Case 2 (Broken): corrupt `node-key` while `old_dir` still exists on disk.
     std::fs::write(old_dir.join("node-key"), "not-valid-hex").unwrap();
@@ -334,7 +334,7 @@ async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_o
         .unwrap_or_else(|e| panic!("repaired create: {e}"));
     assert_eq!(repaired.node.endpoint_id, first.node.endpoint_id, "repaired dir retains endpoint key");
     assert_eq!(repaired.node.data_dir, first.node.data_dir, "repaired dir keeps the same path");
-    rig.provider.terminate(&repaired.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+    rig.provider.terminate(&repaired.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
 
     // Case 1 (Gone): remove `old_dir` completely; `inspect_transport_key` classifies it as `Gone`,
     // and recovery over a newly allocated `data_dir` (`data_dir: None`) mints a new key in a new dir.
@@ -349,7 +349,7 @@ async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_o
     assert_ne!(fresh.node.endpoint_id, first.node.endpoint_id, "new endpoint key minted in fresh dir");
     assert_ne!(fresh.node.data_dir, first.node.data_dir, "fresh data_dir allocated beside old_dir");
     assert!(!old_dir.exists(), "absent old_dir is never recreated");
-    rig.provider.terminate(&fresh.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+    rig.provider.terminate(&fresh.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
 }
 

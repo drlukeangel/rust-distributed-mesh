@@ -74,27 +74,132 @@ pub struct ContainerDeploymentProvider {
     /// The Docker daemon this provider drives: the control domain a
     /// container id means something in.
     domain: String,
+    /// The docker client every command runs through.
+    docker: Docker,
 }
 
-async fn docker(args: &[&str]) -> Result<String, String> {
-    docker_with_env(args, &std::collections::BTreeMap::new()).await
+/// The docker client every command of this provider runs through ([`super::client`]): each
+/// invocation under the deadline its caller hands it, with its own span. The program is `docker`;
+/// a test stands in another.
+#[derive(Debug, Clone)]
+pub(crate) struct Docker {
+    program: String,
 }
 
-/// [`docker`], the client run with `env` in its own environment as well (each secret a `-e K` names).
-async fn docker_with_env(args: &[&str], env: &std::collections::BTreeMap<String, String>) -> Result<String, String> {
-    // Killed on drop: a caller's bound (node.runtime.inspect's, Q273) that expires ends the client too.
-    let out = Command::new("docker")
-        .args(args)
-        .envs(env)
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await
-        .map_err(|e| format!("docker {}: {e}", args.first().unwrap_or(&"")))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        Err(format!("docker {}: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&out.stderr).trim()))
+/// What one docker invocation acts on, for its span and its failure.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct On<'a> {
+    deployment: Option<&'a str>,
+    container: Option<&'a str>,
+    env: Option<&'a std::collections::BTreeMap<String, String>>,
+}
+
+/// A docker command that gave no answer: the provider's error text, and the typed deadline it stays.
+#[derive(Debug, Clone)]
+pub(crate) struct DockerError {
+    failure: super::client::Failure,
+    operation: &'static str,
+    deployment: Option<String>,
+    text: String,
+}
+
+impl DockerError {
+    /// The provider's error for it: a deadline stays [`DeployError::Deadline`], every other failure
+    /// is `wrap`ped with its text.
+    pub(crate) fn into_deploy(self, wrap: impl FnOnce(String) -> DeployError) -> DeployError {
+        match self.failure {
+            super::client::Failure::Deadline { elapsed, bound, mutation } => DeployError::Deadline {
+                operation: self.operation.to_string(),
+                deployment: self.deployment.unwrap_or_default(),
+                elapsed,
+                bound,
+                mutation,
+            },
+            _ => wrap(self.text),
+        }
+    }
+
+    /// Whether the daemon answered that no object has the name (and nothing else). A deadline or a
+    /// client that could not run never says so.
+    pub(crate) fn says_absent(&self) -> bool {
+        matches!(self.failure, super::client::Failure::Answered { .. }) && inspect_says_absent(&self.text)
+    }
+
+    /// Whether the daemon answered with `needle` in its reply.
+    fn answered(&self, needle: &str) -> bool {
+        matches!(self.failure, super::client::Failure::Answered { .. }) && self.text.contains(needle)
+    }
+}
+
+impl std::fmt::Display for DockerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl Default for Docker {
+    fn default() -> Self {
+        Self { program: "docker".into() }
+    }
+}
+
+/// Every verb that changes a runtime, a container or a network: past its deadline its outcome is
+/// unknown.
+const MUTATIONS: &[&str] = &["run", "rm", "stop", "kill", "create", "import", "pause", "unpause"];
+
+impl Docker {
+    /// The client run as `program` (tests).
+    #[cfg(test)]
+    pub(crate) fn program(program: impl Into<String>) -> Self {
+        Self { program: program.into() }
+    }
+
+    /// `args` under `deadline` in control domain `domain`: the client's stdout and stderr.
+    async fn run(&self, domain: Option<&str>, args: &[&str], deadline: super::deadline::Deadline, on: On<'_>, stderr_is_data: bool) -> Result<super::client::Answer, DockerError> {
+        let empty = std::collections::BTreeMap::new();
+        let (object, verb) = match args {
+            ["network", v, ..] => ("network", *v),
+            ["image", v, ..] => ("image", *v),
+            ["version", ..] | ["info", ..] => ("daemon", args[0]),
+            [v, ..] => ("container", *v),
+            [] => ("container", ""),
+        };
+        let operation: &'static str = operation_name(object, verb);
+        let mutation = MUTATIONS.contains(&verb);
+        let call = super::client::Invocation { operation, args, env: on.env.unwrap_or(&empty), deployment: on.deployment, container: on.container, mutation, stderr_is_data };
+        super::client::run(&self.program, domain, &call, deadline).await.map_err(|failure| DockerError {
+            text: failure.message(&self.program, args.first().unwrap_or(&"")),
+            failure,
+            operation,
+            deployment: on.deployment.map(str::to_string),
+        })
+    }
+
+    /// `args` under `deadline`: the client's stdout, trimmed.
+    async fn text(&self, domain: Option<&str>, args: &[&str], deadline: super::deadline::Deadline, on: On<'_>) -> Result<String, DockerError> {
+        self.run(domain, args, deadline, on, false).await.map(|a| String::from_utf8_lossy(&a.stdout).trim().to_string())
+    }
+}
+
+/// The span name of a docker verb on `object` (`container.run`, `network.inspect`, …).
+fn operation_name(object: &str, verb: &str) -> &'static str {
+    match (object, verb) {
+        ("container", "run") => "container.run",
+        ("container", "inspect") => "container.inspect",
+        ("container", "stop") => "container.stop",
+        ("container", "kill") => "container.kill",
+        ("container", "wait") => "container.wait",
+        ("container", "logs") => "container.logs",
+        ("container", "rm") => "container.rm",
+        ("container", "ps") => "container.ps",
+        ("network", "inspect") => "network.inspect",
+        ("network", "create") => "network.create",
+        ("network", "rm") => "network.rm",
+        ("image", "inspect") => "image.inspect",
+        ("image", "import") => "image.import",
+        ("daemon", "version") => "daemon.version",
+        ("daemon", "info") => "daemon.info",
+        _ => "container.other",
     }
 }
 
@@ -129,11 +234,15 @@ fn container_name(spec: &ResolvedNodeLaunch) -> String {
 
 /// Every address a container holds on `network` right now (`docker network inspect`). `Err`
 /// names the inspect that failed: a daemon that cannot answer never reads as no address taken.
-pub(crate) async fn network_addresses(network: &str) -> Result<std::collections::BTreeSet<IpAddr>, String> {
-    docker(&["network", "inspect", "--format", "{{range .Containers}}{{.IPv4Address}} {{end}}", network])
+pub(crate) async fn network_addresses(docker: &Docker, domain: Option<&str>, network: &str, deadline: super::deadline::Deadline) -> Result<std::collections::BTreeSet<IpAddr>, DockerError> {
+    docker
+        .text(domain, &["network", "inspect", "--format", "{{range .Containers}}{{.IPv4Address}} {{end}}", network], deadline, On::default())
         .await
         .map(|out| parse_network_addresses(&out))
-        .map_err(|e| format!("the addresses taken on network {network}: {e}"))
+        .map_err(|mut e| {
+            e.text = format!("the addresses taken on network {network}: {}", e.text);
+            e
+        })
 }
 
 /// The addresses of a `docker network inspect` listing (`<ip>/<prefix>` separated by spaces).
@@ -375,17 +484,17 @@ pub(crate) fn candidate_subnets(pool: (Ipv4Addr, u8), fabric: &str) -> Vec<Ipv4A
 /// Create the fabric's network on a node-admin-chosen subnet: an `--ip`
 /// assignment needs a user-configured subnet. A subnet another network
 /// already uses is skipped.
-async fn create_fabric_network(fabric: &str, name: &str) -> Result<(), String> {
+async fn create_fabric_network(docker: &Docker, fabric: &str, name: &str, deadline: super::deadline::Deadline) -> Result<(), String> {
     let pool = subnet_pool_from_env()?;
     let mut last = String::new();
     for net in candidate_subnets(pool, fabric) {
         let gateway = Ipv4Addr::from(u32::from(net) + 1);
         let subnet = format!("{net}/24");
-        match docker(&["network", "create", "--label", &format!("rafka.fabric={fabric}"), "--subnet", &subnet, "--gateway", &gateway.to_string(), name]).await {
+        match docker.text(None, &["network", "create", "--label", &format!("rafka.fabric={fabric}"), "--subnet", &subnet, "--gateway", &gateway.to_string(), name], deadline, On::default()).await {
             Ok(_) => return Ok(()),
             // A concurrent admin of the same fabric created it first.
-            Err(_) if docker(&["network", "inspect", name]).await.is_ok() => return Ok(()),
-            Err(e) if e.contains("overlap") => last = e,
+            Err(_) if docker.text(None, &["network", "inspect", name], deadline, On::default()).await.is_ok() => return Ok(()),
+            Err(e) if e.answered("overlap") => last = e.to_string(),
             Err(e) => return Err(format!("cannot create network {name} on {subnet}: {e}")),
         }
     }
@@ -396,19 +505,26 @@ impl ContainerDeploymentProvider {
     /// Check the host can run containers, then make sure the runtime image
     /// and the fabric's network exist. An unsupported host is refused by name.
     pub async fn prepare(fabric: &str) -> Result<Self, DeployError> {
+        Self::prepare_with(Docker::default(), fabric, super::deadline::Deadline::step()).await
+    }
+
+    /// [`Self::prepare`] through `docker`, every command under `deadline`.
+    pub(crate) async fn prepare_with(docker: Docker, fabric: &str, deadline: super::deadline::Deadline) -> Result<Self, DeployError> {
         let unsupported = |reason: String| DeployError::Unsupported { provider: ProviderKind::Container, reason };
         if !cfg!(target_os = "linux") {
             return Err(unsupported("the container provider needs Linux network namespaces".into()));
         }
-        docker(&["version", "--format", "{{.Server.Version}}"])
+        docker
+            .text(None, &["version", "--format", "{{.Server.Version}}"], deadline, On::default())
             .await
-            .map_err(|e| unsupported(format!("no reachable container runtime: {e}")))?;
-        if docker(&["image", "inspect", RUNTIME_IMAGE]).await.is_err() {
-            let mut child = Command::new("docker")
+            .map_err(|e| e.into_deploy(|e| unsupported(format!("no reachable container runtime: {e}"))))?;
+        if docker.text(None, &["image", "inspect", RUNTIME_IMAGE], deadline, On::default()).await.is_err() {
+            let mut child = Command::new(&docker.program)
                 .args(["import", "-", RUNTIME_IMAGE])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
                 .spawn()
                 .map_err(|e| unsupported(format!("docker import: {e}")))?;
             {
@@ -417,18 +533,25 @@ impl ContainerDeploymentProvider {
                 // An empty tar archive: two zero blocks.
                 stdin.write_all(&[0u8; 1024]).await.map_err(|e| unsupported(format!("docker import: {e}")))?;
             }
-            let out = child.wait_with_output().await.map_err(|e| unsupported(format!("docker import: {e}")))?;
+            // Under the same deadline as every other command: past it the client is dropped, and
+            // killed with it.
+            let out = deadline
+                .run(child.wait_with_output())
+                .await
+                .map_err(|elapsed| DeployError::Deadline { operation: "image.import".into(), deployment: String::new(), elapsed, bound: deadline.bound(), mutation: true })?
+                .map_err(|e| unsupported(format!("docker import: {e}")))?;
             if !out.status.success() {
                 return Err(unsupported(format!("cannot create {RUNTIME_IMAGE}: {}", String::from_utf8_lossy(&out.stderr).trim())));
             }
         }
         let name = format!("rafka-{}", docker_safe(fabric));
-        if docker(&["network", "inspect", &name]).await.is_err() {
-            create_fabric_network(fabric, &name).await.map_err(unsupported)?;
+        if docker.text(None, &["network", "inspect", &name], deadline, On::default()).await.is_err() {
+            create_fabric_network(&docker, fabric, &name, deadline).await.map_err(unsupported)?;
         }
-        let ipam = docker(&["network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}} {{.Gateway}};{{end}}", &name])
+        let ipam = docker
+            .text(None, &["network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}} {{.Gateway}};{{end}}", &name], deadline, On::default())
             .await
-            .map_err(|e| unsupported(e))?;
+            .map_err(|e| e.into_deploy(unsupported))?;
         let network = ipam
             .split(';')
             .filter_map(|c| {
@@ -439,8 +562,8 @@ impl ContainerDeploymentProvider {
             })
             .next()
             .ok_or_else(|| unsupported(format!("network {name} has no IPv4 subnet ({ipam})")))?;
-        let daemon = docker(&["info", "--format", "{{.ID}}"]).await.map_err(unsupported)?;
-        let daemon = if daemon.trim().is_empty() { docker(&["info", "--format", "{{.Name}}"]).await.map_err(unsupported)? } else { daemon };
+        let daemon = docker.text(None, &["info", "--format", "{{.ID}}"], deadline, On::default()).await.map_err(|e| e.into_deploy(unsupported))?;
+        let daemon = if daemon.trim().is_empty() { docker.text(None, &["info", "--format", "{{.Name}}"], deadline, On::default()).await.map_err(|e| e.into_deploy(unsupported))? } else { daemon };
         Ok(Self {
             fabric: fabric.into(),
             network,
@@ -448,6 +571,7 @@ impl ContainerDeploymentProvider {
             data_dirs: Mutex::new(HashMap::new()),
             ips: Mutex::new(NodeIps::default()),
             domain: format!("container:{}", daemon.trim()),
+            docker,
         })
     }
 
@@ -456,38 +580,43 @@ impl ContainerDeploymentProvider {
         &self.network
     }
 
-    /// Remove every container of the fabric and its network.
+    /// Remove every container of the fabric and its network, each command under a step's deadline.
     pub async fn remove_fabric(&self) -> Result<(), DeployError> {
         let err = |reason: String| DeployError::Terminate { deployment: format!("fabric {}", self.fabric), reason };
-        let ids = docker(&["ps", "-aq", "--filter", &format!("label=rafka.fabric={}", self.fabric)]).await.map_err(err)?;
+        let ids = self.docker_text(&["ps", "-aq", "--filter", &format!("label=rafka.fabric={}", self.fabric)], super::deadline::Deadline::step(), On::default()).await.map_err(|e| e.into_deploy(err))?;
         for id in ids.split_whitespace() {
-            docker(&["rm", "-f", id]).await.map_err(err)?;
+            self.docker_text(&["rm", "-f", id], super::deadline::Deadline::step(), On { container: Some(id), ..On::default() }).await.map_err(|e| e.into_deploy(err))?;
         }
-        docker(&["network", "rm", &self.network.name]).await.map_err(err)?;
+        self.docker_text(&["network", "rm", &self.network.name], super::deadline::Deadline::step(), On::default()).await.map_err(|e| e.into_deploy(err))?;
         Ok(())
     }
 
-    /// What became of this launch's container, by its name (the name carries the deployment id):
-    /// one that runs is the live runtime; one that exited or is dead ran and has exited; one Docker
-    /// created and never started was never launched. None by that name: the launch's record
+    /// One docker command of this provider, in its control domain, under `deadline`.
+    async fn docker_text(&self, args: &[&str], deadline: super::deadline::Deadline, on: On<'_>) -> Result<String, DockerError> {
+        self.docker.text(Some(&self.domain), args, deadline, on).await
+    }
+
+    /// What became of this launch's container, by its name (the name carries the deployment id),
+    /// every command under `deadline`: one that runs is the live runtime; one that exited or is dead
+    /// ran and has exited. One Docker created and never started is never read as absence (Q304): that
+    /// exact container is removed without `--force` (one that started meanwhile refuses it) and read
+    /// absent before the launch record decides; a removal or a read that fails or passes its
+    /// deadline fails the find, and nothing is launched. None by that name: the launch's record
     /// ([`LAUNCH_FILE`], written before the container is created) in the data dir names it and no
     /// container of it is left, so it has exited (it ran and was removed, or its executor was lost
-    /// before the container existed); else it was never launched. `Err` names a `docker inspect` that failed for any other reason, or
-    /// answered what this build cannot read (a status it cannot place included), or a launch record
-    /// that cannot be read.
-    async fn find_by_name(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+    /// before the container existed); else it was never launched. `Err` names a `docker inspect` that
+    /// failed for any other reason, passed its deadline ([`DeployError::Deadline`]), or answered what
+    /// this build cannot read (a status it cannot place included), or a launch record that cannot be
+    /// read.
+    async fn find_by_name(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<Found, DeployError> {
         let name = container_name(spec);
         let named = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason: format!("finding container {name}: {reason}") };
-        let state = match docker(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}} {{.Id}}", &name]).await {
+        let deployment = spec.deployment_id.to_string();
+        let on = On { deployment: Some(deployment.as_str()), ..On::default() };
+        let state = match self.docker_text(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}} {{.Id}}", &name], deadline, on).await {
             Ok(state) => state,
-            Err(e) if inspect_says_absent(&e) => {
-                let (dir, deployment) = (spec.data_dir.clone(), spec.deployment_id.clone());
-                return match crate::blocking::blocking_io(move || recorded_launch(&dir, &deployment)).await.map_err(named)? {
-                    true => Ok(Found::Exited(None)),
-                    false => Ok(Found::NeverLaunched),
-                };
-            }
-            Err(e) => return Err(named(e)),
+            Err(e) if e.says_absent() => return self.by_launch_record(spec).await.map_err(named),
+            Err(e) => return Err(e.into_deploy(named)),
         };
         let mut parts = state.split_whitespace();
         let (Some(status), Some(pid), Some(id)) = (parts.next(), parts.next(), parts.next()) else {
@@ -496,11 +625,34 @@ impl ContainerDeploymentProvider {
         match container_launch(status).map_err(named)? {
             ContainerLaunch::Running => {}
             ContainerLaunch::Exited => return Ok(Found::Exited(None)),
-            ContainerLaunch::NeverStarted => return Ok(Found::NeverLaunched),
+            ContainerLaunch::NeverStarted => {
+                let on = On { deployment: Some(deployment.as_str()), container: Some(id), ..On::default() };
+                self.docker_text(&["rm", id], deadline, on)
+                    .await
+                    .map_err(|e| e.into_deploy(|r| named(format!("the created container {id} was not removed, so nothing is launched: {r}"))))?;
+                match self.docker_text(&["inspect", "--format", "{{.Id}}", id], deadline, on).await {
+                    Err(e) if e.says_absent() => {}
+                    Ok(_) => return Err(named(format!("the created container {id} is still there after its removal, so nothing is launched"))),
+                    Err(e) => return Err(e.into_deploy(|r| named(format!("the created container {id} was removed, but its absence could not be read, so nothing is launched: {r}")))),
+                }
+                tracing::info_span!("rdm.node_admin.deployment.remove.via-created-container", node = %spec.node, deployment_id = %spec.deployment_id, container = id)
+                    .in_scope(|| tracing::info!("a container Docker created and never started is removed by its exact id and read absent before the launch record decides"));
+                return self.by_launch_record(spec).await.map_err(named);
+            }
         }
         let id = id.to_string();
         self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
         Ok(Found::Running(self.handle(spec.deployment_id.clone(), id, pid.parse().ok().filter(|p| *p > 0))))
+    }
+
+    /// No container of the launch is left: its record says whether it ran ([`Found::Exited`]) or was
+    /// never launched.
+    async fn by_launch_record(&self, spec: &ResolvedNodeLaunch) -> Result<Found, String> {
+        let (dir, deployment) = (spec.data_dir.clone(), spec.deployment_id.clone());
+        Ok(match crate::blocking::blocking_io(move || recorded_launch(&dir, &deployment)).await? {
+            true => Found::Exited(None),
+            false => Found::NeverLaunched,
+        })
     }
 
     fn launched_handles(&self) -> Vec<DeploymentHandle> {
@@ -536,7 +688,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         self.domain.clone()
     }
 
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         let err = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason };
         let ip = spec.transport.ip();
         if let Some((n, a)) = spec.listeners.iter().find(|(_, a)| a.ip() != ip) {
@@ -627,39 +779,53 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
         // `docker run -d` answers the immutable id: the runtime's identity,
         // not the (reusable) name.
-        let id = docker_with_env(&argv, &client_env).await.map_err(err)?.trim().to_string();
+        // Past the deadline the run's outcome is unknown (Q304): never a launch that did not happen;
+        // the next attempt's find resolves this exact launch before anything is launched again.
+        let deployment = spec.deployment_id.to_string();
+        let id = self
+            .docker_text(&argv, deadline, On { deployment: Some(deployment.as_str()), env: Some(&client_env), ..On::default() })
+            .await
+            .map_err(|e| e.into_deploy(err))?;
         self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
-        let pid = docker(&["inspect", "--format", "{{.State.Pid}}", &id]).await.map_err(err)?.parse::<u32>().ok().filter(|p| *p > 0);
+        let pid = self
+            .docker_text(&["inspect", "--format", "{{.State.Pid}}", &id], deadline, On { deployment: Some(deployment.as_str()), container: Some(&id), ..On::default() })
+            .await
+            .map_err(|e| e.into_deploy(err))?
+            .parse::<u32>()
+            .ok()
+            .filter(|p| *p > 0);
         // The pipeline registers this exact handle and makes its runtime fact
         // available to the birth (`MakeRuntimeFactAvailableToBirth`).
         Ok(self.handle(spec.deployment_id.clone(), id, pid))
     }
 
-    async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
+    async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode, deadline: super::deadline::Deadline) -> Result<(), DeployError> {
         let name = self.container_of(handle)?;
         let err = |reason: String| DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason };
+        let deployment = handle.deployment_id.to_string();
+        let on = On { deployment: Some(deployment.as_str()), container: Some(name), ..On::default() };
         // A runtime already removed terminates as done (Q145): the daemon's "No such container" on
-        // any of the calls below is that, so a re-run of the step succeeds.
-        let gone = |reason: &String| reason.contains("No such container");
+        // any of the calls below is that, so a re-run of the step succeeds. A call past its deadline
+        // is never that: the terminate is not done, and its outcome is unknown.
         let code = match mode {
-            TerminationMode::Graceful { grace } => match docker(&["stop", "-t", &grace.as_secs().max(1).to_string(), name]).await {
-                Ok(_) => docker(&["inspect", "--format", "{{.State.ExitCode}}", name]).await.ok().and_then(|c| c.parse().ok()),
-                Err(e) if gone(&e) => return Ok(self.removed(handle, name, None)),
-                Err(e) => return Err(err(e)),
+            TerminationMode::Graceful { grace } => match self.docker_text(&["stop", "-t", &grace.as_secs().max(1).to_string(), name], deadline, on).await {
+                Ok(_) => self.docker_text(&["inspect", "--format", "{{.State.ExitCode}}", name], deadline, on).await.ok().and_then(|c| c.parse().ok()),
+                Err(e) if e.says_absent() => return Ok(self.removed(handle, name, None)),
+                Err(e) => return Err(e.into_deploy(err)),
             },
             // Forced termination: the daemon's kill (SIGKILL), never a stop, which delivers SIGTERM
             // first and thaws a paused container so it runs its handler (i144 R23). The kill is
             // waited out, and the wait answers the exit code.
             TerminationMode::Immediate => {
-                match docker(&["kill", name]).await {
+                match self.docker_text(&["kill", name], deadline, on).await {
                     Ok(_) => {}
-                    Err(e) if gone(&e) => return Ok(self.removed(handle, name, None)),
-                    Err(e) => return Err(err(e)),
+                    Err(e) if e.says_absent() => return Ok(self.removed(handle, name, None)),
+                    Err(e) => return Err(e.into_deploy(err)),
                 }
-                let waited = match docker(&["wait", name]).await {
+                let waited = match self.docker_text(&["wait", name], deadline, on).await {
                     Ok(w) => w,
-                    Err(e) if gone(&e) => return Ok(self.removed(handle, name, None)),
-                    Err(e) => return Err(err(e)),
+                    Err(e) if e.says_absent() => return Ok(self.removed(handle, name, None)),
+                    Err(e) => return Err(e.into_deploy(err)),
                 };
                 let waited = waited.trim();
                 Some(waited.parse().map_err(|e| err(format!("docker wait {name} answered {waited:?}, which is not an exit code: {e}")))?)
@@ -670,57 +836,60 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         // a re-run keeps them before it removes it.
         let data_dir = self.data_dirs.lock().unwrap().get(name).map(|(d, _)| d.clone());
         if let Some(dir) = data_dir {
-            let logs = Command::new("docker").args(["logs", name]).stdin(std::process::Stdio::null()).output().await.map_err(|e| err(format!("docker logs {name}: {e}")))?;
-            if !logs.status.success() {
-                let reason = format!("docker logs {name}: {}", String::from_utf8_lossy(&logs.stderr).trim());
-                if gone(&reason) {
-                    return Ok(self.removed(handle, name, code));
-                }
-                return Err(err(reason));
-            }
+            let logs = match self.docker.run(Some(&self.domain), &["logs", name], deadline, on, true).await {
+                Ok(logs) => logs,
+                Err(e) if e.says_absent() => return Ok(self.removed(handle, name, code)),
+                Err(e) => return Err(e.into_deploy(err)),
+            };
             let file = dir.join("container.log");
             let written = file.clone();
             crate::blocking::blocking_io(move || std::fs::write(&written, [&logs.stdout[..], &logs.stderr[..]].concat()))
                 .await
                 .map_err(|e| err(format!("the container's logs cannot be kept at {}: {e}", file.display())))?;
         }
-        match docker(&["rm", "-f", name]).await {
+        match self.docker_text(&["rm", "-f", name], deadline, on).await {
             Ok(_) => {}
-            Err(e) if gone(&e) => {}
-            Err(e) => return Err(err(e)),
+            Err(e) if e.says_absent() => {}
+            Err(e) => return Err(e.into_deploy(err)),
         }
         self.removed(handle, name, code);
         Ok(())
     }
 
-    async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus {
+    /// A read past its deadline is `Unknown`, never absent or exited.
+    async fn inspect(&self, handle: &DeploymentHandle, deadline: super::deadline::Deadline) -> DeploymentStatus {
         let Ok(name) = self.container_of(handle) else { return DeploymentStatus::Unknown };
         if let Some(code) = self.exited.lock().unwrap().get(name) {
             return DeploymentStatus::Exited { code: *code };
         }
-        match docker(&["inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", name]).await {
+        let deployment = handle.deployment_id.to_string();
+        match self.docker_text(&["inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", name], deadline, On { deployment: Some(deployment.as_str()), container: Some(name), ..On::default() }).await {
             Ok(s) => status_of(&s),
             Err(_) => DeploymentStatus::Unknown,
         }
     }
 
-    async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, handle: &DeploymentHandle, deadline: super::deadline::Deadline) -> Result<(), DeployError> {
         let name = self.container_of(handle)?;
-        match self.inspect(handle).await {
-            DeploymentStatus::Running => docker(&["kill", "--signal", "TERM", name])
-                .await
-                .map(|_| ())
-                .map_err(|reason| DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason }),
+        let err = |reason: String| DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason };
+        match self.inspect(handle, deadline).await {
+            DeploymentStatus::Running => {
+                let deployment = handle.deployment_id.to_string();
+                self.docker_text(&["kill", "--signal", "TERM", name], deadline, On { deployment: Some(deployment.as_str()), container: Some(name), ..On::default() })
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.into_deploy(err))
+            }
             // The daemon unpauses a paused container to deliver a signal (measured 2026-10-15, Docker
             // 29.6.2: `paused` reads `running` right after `docker kill --signal TERM`), and the provider
             // never continues a suspended runtime (deployment-provider.md §5): nothing is sent, by name.
-            DeploymentStatus::OsStopped => Err(DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason: format!("{name} is paused (os-stopped): a signal would unpause it, and the provider continues no suspended runtime; nothing was sent") }),
+            DeploymentStatus::OsStopped => Err(err(format!("{name} is paused (os-stopped): a signal would unpause it, and the provider continues no suspended runtime; nothing was sent"))),
             DeploymentStatus::Exited { .. } | DeploymentStatus::Unknown => Ok(()),
         }
     }
 
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
-        self.find_by_name(spec).await
+    async fn find(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<Found, DeployError> {
+        self.find_by_name(spec, deadline).await
     }
 
     fn launched(&self) -> Vec<DeploymentHandle> {
@@ -732,14 +901,14 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     /// belongs to the birth it was given to: that birth binds it again, and a new birth at the same
     /// `path.name` (a replace re-births there while its renamed predecessor's container still runs,
     /// Q79) is given one no container holds. The addresses already taken on the network are asked of
-    /// the daemon (no lock held across it); a daemon that cannot answer, or a network with no address
-    /// left, is an error naming it.
-    async fn bind_ip(&self, node: &crate::model::PathName, birth: &crate::model::DeploymentId) -> Result<IpAddr, DeployError> {
+    /// the daemon (no lock held across it); a daemon that cannot answer by the deadline, or a network
+    /// with no address left, is an error naming it.
+    async fn bind_ip(&self, node: &crate::model::PathName, birth: &crate::model::DeploymentId, deadline: super::deadline::Deadline) -> Result<IpAddr, DeployError> {
         let err = |reason: String| DeployError::Spawn { node: node.to_string(), reason };
         if let Some(ip) = self.ips.lock().unwrap().held.get(birth) {
             return Ok(*ip);
         }
-        let on_network = network_addresses(&self.network.name).await.map_err(err)?;
+        let on_network = network_addresses(&self.docker, Some(&self.domain), &self.network.name, deadline).await.map_err(|e| e.into_deploy(err))?;
         let mut ips = self.ips.lock().unwrap();
         if let Some(ip) = ips.held.get(birth) {
             return Ok(*ip);
@@ -760,14 +929,15 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         Err(err(format!("every node address of the fabric network {} is held ({} taken)", self.network.name, taken.len())))
     }
 
-    async fn failure_detail(&self, handle: &DeploymentHandle, _data_dir: &Path) -> String {
+    async fn failure_detail(&self, handle: &DeploymentHandle, _data_dir: &Path, deadline: super::deadline::Deadline) -> String {
         let name = match self.container_of(handle) {
             Ok(name) => name,
             Err(e) => return e.to_string(),
         };
-        match Command::new("docker").args(["logs", "--tail", "20", name]).output().await {
+        let deployment = handle.deployment_id.to_string();
+        match self.docker.run(Some(&self.domain), &["logs", "--tail", "20", name], deadline, On { deployment: Some(deployment.as_str()), container: Some(name), ..On::default() }, true).await {
             Ok(o) => tail(&String::from_utf8_lossy(&[&o.stdout[..], &o.stderr[..]].concat()), 5),
-            Err(e) => format!("docker logs: {e}"),
+            Err(e) => e.to_string(),
         }
     }
 }
@@ -1013,5 +1183,200 @@ mod tests {
         }
         assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "RDM_FABRIC=fabric1"), "a non-secret entry stays -e K=V: {argv}");
         assert!(!client.contains_key("RDM_FABRIC"), "only secrets ride the client's environment");
+    }
+
+    // ---- Q304 (rdm#241): every docker command under its step's deadline, the launch resolved ----
+
+    /// A stand-in for the docker client in its own directory: it logs every call and answers from its
+    /// state file (`absent`, `created`, `running`); a `hang-<verb>` file makes that verb never answer.
+    struct FakeDocker {
+        dir: std::path::PathBuf,
+    }
+
+    impl FakeDocker {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("rdm-fake-docker-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("data")).unwrap();
+            let s = dir.display();
+            let script = format!(
+                r#"#!/bin/bash
+S={s}
+echo "$*" >> $S/calls
+st=$(cat $S/state 2>/dev/null || echo absent)
+case "$1" in
+  version) echo 29.6.2 ;;
+  image) exit 0 ;;
+  info) echo fake-daemon ;;
+  network) case "$*" in *IPAM*) echo "10.231.7.0/24 10.231.7.1;" ;; *Containers*) echo "" ;; *) echo net ;; esac ;;
+  inspect)
+    [ -f $S/hang-inspect ] && exec sleep 600
+    case "$st" in
+      absent) echo "Error: No such object: ${{@: -1}}" >&2; exit 1 ;;
+      created) echo "created 0 cid1" ;;
+      running) echo "running 4242 cid1" ;;
+    esac ;;
+  rm)
+    [ -f $S/hang-rm ] && exec sleep 600
+    if [ -f $S/start-before-rm ]; then echo running > $S/state; echo "Error response from daemon: cannot remove container cid1: container is running: stop the container before removing or force remove" >&2; exit 1; fi
+    echo absent > $S/state; echo cid1 ;;
+  run)
+    echo created > $S/state
+    if [ -f $S/hang-run ]; then echo running > $S/state; exec sleep 600; fi
+    echo running > $S/state; echo cid1 ;;
+  *) exit 0 ;;
+esac
+"#
+            );
+            let bin = dir.join("docker");
+            std::fs::write(&bin, script).unwrap();
+            std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            Self { dir }
+        }
+        fn set(&self, state: &str) {
+            std::fs::write(self.dir.join("state"), state).unwrap();
+        }
+        fn flag(&self, f: &str) {
+            std::fs::write(self.dir.join(f), "").unwrap();
+        }
+        fn calls(&self) -> Vec<String> {
+            std::fs::read_to_string(self.dir.join("calls")).unwrap_or_default().lines().map(str::to_string).collect()
+        }
+        fn runs(&self) -> usize {
+            self.calls().iter().filter(|c| c.starts_with("run ")).count()
+        }
+        async fn provider(&self) -> ContainerDeploymentProvider {
+            ContainerDeploymentProvider::prepare_with(Docker::program(self.dir.join("docker").display().to_string()), "fab", super::super::deadline::Deadline::step()).await.unwrap()
+        }
+        fn spec(&self) -> ResolvedNodeLaunch {
+            ResolvedNodeLaunch {
+                secrets: Default::default(),
+                withhold: Vec::new(),
+                node: "mesh1.rpc.1".parse().unwrap(),
+                deployment_id: crate::model::DeploymentId::mint(),
+                executable: "/bin/true".into(),
+                args: vec![],
+                env: Default::default(),
+                data_dir: self.dir.join("data"),
+                transport: "10.231.7.5:0".parse().unwrap(),
+                listeners: vec![],
+            }
+        }
+    }
+
+    impl Drop for FakeDocker {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn short() -> super::super::deadline::Deadline {
+        super::super::deadline::Deadline::after(std::time::Duration::from_millis(400))
+    }
+
+    /// rdm#241 proofs 1 and 2: a run that hangs ends at its deadline with its outcome unknown, never a
+    /// launch that did not happen; the run had in fact started the container, and the next find
+    /// adopts exactly that one runtime: nothing is launched a second time.
+    #[tokio::test]
+    async fn a_run_past_its_deadline_is_an_unknown_outcome_and_the_next_find_adopts_the_one_runtime() {
+        let fake = FakeDocker::new("lost-reply");
+        let p = fake.provider().await;
+        let spec = fake.spec();
+        fake.flag("hang-run");
+        match p.spawn(&spec, short()).await {
+            Err(DeployError::Deadline { operation, mutation: true, .. }) => assert_eq!(operation, "container.run"),
+            other => panic!("a hung run is a deadline with its outcome unknown, got {other:?}"),
+        }
+        match p.find(&spec, super::super::deadline::Deadline::step()).await.unwrap() {
+            Found::Running(h) => assert_eq!(h.container.as_deref(), Some("cid1"), "the exact container is adopted"),
+            other => panic!("the launch that did start is found running, got {other:?}"),
+        }
+        assert_eq!(fake.runs(), 1, "exactly one run was ever issued: {:?}", fake.calls());
+    }
+
+    /// rdm#241 proof 3: a container Docker created is never absence; when it starts between the
+    /// inspection and its cleanup, the removal (without `--force`) is refused, the find fails, and
+    /// nothing is force-killed or launched again.
+    #[tokio::test]
+    async fn a_created_container_that_starts_before_its_cleanup_is_neither_forced_nor_launched_again() {
+        let fake = FakeDocker::new("created-starts");
+        let p = fake.provider().await;
+        let spec = fake.spec();
+        fake.set("created");
+        fake.flag("start-before-rm");
+        let err = p.find(&spec, super::super::deadline::Deadline::step()).await.expect_err("a refused removal fails the find");
+        assert!(err.to_string().contains("nothing is launched"), "{err}");
+        let calls = fake.calls();
+        assert!(calls.iter().any(|c| c == "rm cid1"), "the exact id is removed without force: {calls:?}");
+        assert!(!calls.iter().any(|c| c.starts_with("rm -f") || c.starts_with("kill")), "never forced: {calls:?}");
+        assert_eq!(fake.runs(), 0);
+        std::fs::remove_file(fake.dir.join("start-before-rm")).unwrap();
+        assert!(matches!(p.find(&spec, super::super::deadline::Deadline::step()).await.unwrap(), Found::Running(_)), "the next find adopts the runtime that started");
+    }
+
+    /// A created container whose removal succeeds and whose absence is read: the launch record
+    /// decides, so a launch whose record names it reads exited, and the removal was by exact id.
+    #[tokio::test]
+    async fn a_created_container_is_removed_by_its_exact_id_and_read_absent_before_the_record_decides() {
+        let fake = FakeDocker::new("created-removed");
+        let p = fake.provider().await;
+        let spec = fake.spec();
+        record_launch(&spec.data_dir, &spec.deployment_id).unwrap();
+        fake.set("created");
+        assert_eq!(p.find(&spec, super::super::deadline::Deadline::step()).await.unwrap(), Found::Exited(None));
+        let calls = fake.calls();
+        let rm = calls.iter().position(|c| c == "rm cid1").expect("removed by exact id");
+        assert!(calls[rm + 1..].iter().any(|c| c.starts_with("inspect --format {{.Id}} cid1")), "its absence is read after the removal: {calls:?}");
+    }
+
+    /// rdm#241 proof 4: a cleanup that passes its deadline launches no replacement.
+    #[tokio::test]
+    async fn a_cleanup_past_its_deadline_launches_no_replacement() {
+        let fake = FakeDocker::new("cleanup-hangs");
+        let p = fake.provider().await;
+        let spec = fake.spec();
+        fake.set("created");
+        fake.flag("hang-rm");
+        match p.find(&spec, short()).await {
+            Err(DeployError::Deadline { operation, mutation: true, .. }) => assert_eq!(operation, "container.rm"),
+            other => panic!("a hung cleanup is a deadline, got {other:?}"),
+        }
+        assert_eq!(fake.runs(), 0, "no replacement is launched");
+    }
+
+    /// rdm#241 proof 5: an inspection past its deadline is never absent or exited.
+    #[tokio::test]
+    async fn an_inspection_past_its_deadline_is_never_absent_or_exited() {
+        let fake = FakeDocker::new("inspect-hangs");
+        let p = fake.provider().await;
+        let spec = fake.spec();
+        record_launch(&spec.data_dir, &spec.deployment_id).unwrap();
+        fake.set("running");
+        let handle = p.handle(spec.deployment_id.clone(), "cid1".into(), None);
+        fake.flag("hang-inspect");
+        match p.find(&spec, short()).await {
+            Err(DeployError::Deadline { mutation: false, .. }) => {}
+            other => panic!("a hung inspection fails the find, never absent or exited: {other:?}"),
+        }
+        assert_eq!(p.inspect(&handle, short()).await, DeploymentStatus::Unknown);
+        assert_eq!(fake.runs(), 0);
+    }
+
+    /// rdm#241 proof 6: an executor lost after its run was submitted: its successor (another
+    /// provider instance over the same daemon) resolves the same durable launch, by its name, to the
+    /// one runtime, and launches nothing.
+    #[tokio::test]
+    async fn a_successor_resolves_the_same_durable_launch_after_its_executor_is_lost() {
+        let fake = FakeDocker::new("successor");
+        let spec = fake.spec();
+        fake.flag("hang-run");
+        let lost = fake.provider().await;
+        assert!(matches!(lost.spawn(&spec, short()).await, Err(DeployError::Deadline { .. })));
+        drop(lost);
+        let successor = fake.provider().await;
+        assert!(matches!(successor.find(&spec, super::super::deadline::Deadline::step()).await.unwrap(), Found::Running(_)));
+        let name = container_name(&spec);
+        assert!(fake.calls().iter().any(|c| c.ends_with(&name)), "found by the launch's own name {name}");
+        assert_eq!(fake.runs(), 1);
     }
 }

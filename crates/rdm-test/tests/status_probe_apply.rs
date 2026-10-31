@@ -124,6 +124,6 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         let deleted = common::node_command_completion(&observer.client, &target, &all).await;
         assert!(matches!(&deleted, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Established { .. }), held, .. } if held.is_empty()), "{deleted:?}");
 
-        let _ = provider.terminate(&created.handle, TerminationMode::Graceful { grace: std::time::Duration::from_secs(2) }).await;
+        let _ = provider.terminate(&created.handle, TerminationMode::Graceful { grace: std::time::Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await;
     })
 }

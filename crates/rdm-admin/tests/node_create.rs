@@ -99,7 +99,7 @@ impl DeploymentProvider for ImmediateReportProvider {
         rdm_core::runtime::process_control_domain().expect("process control domain")
     }
 
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         assert_eq!(
             spec.transport.port(),
             0,
@@ -162,11 +162,11 @@ impl DeploymentProvider for ImmediateReportProvider {
         Ok(handle)
     }
 
-    async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+    async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
 
-    async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         let maybe_report = self.pending_report.lock().unwrap().take();
         if let Some(report) = maybe_report {
             self.joins.report(&report);
@@ -174,11 +174,11 @@ impl DeploymentProvider for ImmediateReportProvider {
         DeploymentStatus::Running
     }
 
-    async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
 
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+    async fn find(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<Found, DeployError> {
         Ok(Found::NeverLaunched)
     }
 }
@@ -627,7 +627,7 @@ impl DeploymentProvider for StepFaultProvider {
         rdm_core::runtime::process_control_domain().expect("process control domain")
     }
 
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         assert_eq!(
             spec.transport.port(),
             0,
@@ -693,8 +693,7 @@ impl DeploymentProvider for StepFaultProvider {
     async fn terminate(
         &self,
         handle: &DeploymentHandle,
-        _: TerminationMode,
-    ) -> Result<(), DeployError> {
+        _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         self.terminate_calls
             .lock()
             .unwrap()
@@ -702,7 +701,7 @@ impl DeploymentProvider for StepFaultProvider {
         Ok(())
     }
 
-    async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         if *self.deliver_join_on_inspect.lock().unwrap() {
             if let Some(report) = self.pending_report.lock().unwrap().take() {
                 self.joins.report(&report);
@@ -711,11 +710,11 @@ impl DeploymentProvider for StepFaultProvider {
         self.inspect_status.lock().unwrap().clone()
     }
 
-    async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
 
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+    async fn find(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<Found, DeployError> {
         Ok(self.find_result.lock().unwrap().clone())
     }
 }

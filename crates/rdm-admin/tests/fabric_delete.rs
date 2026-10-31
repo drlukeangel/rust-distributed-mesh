@@ -64,16 +64,16 @@ impl DeploymentProvider for Fleet {
     fn control_domain(&self) -> String {
         DOMAIN.into()
     }
-    async fn spawn(&self, _: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         unreachable!("a mesh or fabric delete launches nothing here")
     }
-    async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+    async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         let pid = h.pid.unwrap();
         self.running_pids.lock().unwrap().remove(&pid);
         self.terminated.lock().unwrap().push(self.pids[&pid].clone());
         Ok(())
     }
-    async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, h: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         let pid = h.pid.unwrap();
         if self.running_pids.lock().unwrap().contains(&pid) {
             DeploymentStatus::Running
@@ -81,10 +81,10 @@ impl DeploymentProvider for Fleet {
             DeploymentStatus::Exited { code: Some(0) }
         }
     }
-    async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+    async fn find(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
         Ok(rdm_admin::deployment::provider::Found::NeverLaunched)
     }
 }

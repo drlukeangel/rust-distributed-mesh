@@ -42,9 +42,9 @@ async fn a_launched_process_sees_the_launch_contract_its_spec_names_and_never_it
         listeners: vec![],
     };
     let p = ProcessDeploymentProvider::new();
-    let h = p.spawn(&spec).await.unwrap();
+    let h = p.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
     for _ in 0..200 {
-        if !matches!(p.inspect(&h).await, DeploymentStatus::Running) {
+        if !matches!(p.inspect(&h, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -85,9 +85,9 @@ async fn a_launched_process_never_inherits_a_declared_name_and_sees_the_declared
     };
     assert!(!format!("{spec:?}").contains("the value RDM holds"), "the spec's debug form names no declared value: {spec:?}");
     let p = ProcessDeploymentProvider::new();
-    let h = p.spawn(&spec).await.unwrap();
+    let h = p.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
     for _ in 0..200 {
-        if !matches!(p.inspect(&h).await, DeploymentStatus::Running) {
+        if !matches!(p.inspect(&h, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;

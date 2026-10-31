@@ -184,14 +184,14 @@ impl DeploymentProvider for Fleet {
     fn control_domain(&self) -> String {
         DOMAIN.into()
     }
-    async fn spawn(&self, _: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         unreachable!("a mesh leave launches nothing")
     }
-    async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+    async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         self.terminated.lock().unwrap().push(self.pids[&h.pid.unwrap()].clone());
         Ok(())
     }
-    async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, h: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         let mut blind = self.blind_once.lock().unwrap();
         let terminated = h.pid.and_then(|pid| self.pids.get(&pid)).is_some_and(|n| self.terminated.lock().unwrap().contains(n));
         if *blind == h.pid && terminated {
@@ -200,10 +200,10 @@ impl DeploymentProvider for Fleet {
         }
         DeploymentStatus::Exited { code: Some(0) }
     }
-    async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+    async fn find(&self, _: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
         Ok(rdm_admin::deployment::provider::Found::NeverLaunched)
     }
 }

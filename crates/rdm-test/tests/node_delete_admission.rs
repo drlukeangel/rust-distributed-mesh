@@ -60,23 +60,23 @@ impl DeploymentProvider for Stubborn<'_> {
     fn control_domain(&self) -> String {
         self.inner.control_domain()
     }
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
-        self.inner.spawn(spec).await
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
+        self.inner.spawn(spec, deadline).await
     }
-    async fn terminate(&self, h: &DeploymentHandle, m: TerminationMode) -> Result<(), DeployError> {
-        self.inner.terminate(h, m).await
+    async fn terminate(&self, h: &DeploymentHandle, m: TerminationMode, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
+        self.inner.terminate(h, m, deadline).await
     }
-    async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
-        self.inner.inspect(h).await
+    async fn inspect(&self, h: &DeploymentHandle, deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
+        self.inner.inspect(h, deadline).await
     }
-    async fn signal_stop(&self, h: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, h: &DeploymentHandle, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         if self.ignore_stop {
             return Ok(());
         }
-        self.inner.signal_stop(h).await
+        self.inner.signal_stop(h, deadline).await
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, rdm_admin::deployment::provider::DeployError> {
-        self.inner.find(spec).await
+    async fn find(&self, spec: &ResolvedNodeLaunch, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, rdm_admin::deployment::provider::DeployError> {
+        self.inner.find(spec, deadline).await
     }
 }
 
@@ -89,7 +89,7 @@ fn timeouts() -> Timeouts {
 
 async fn exited(provider: &ProcessDeploymentProvider, h: &DeploymentHandle) -> bool {
     for _ in 0..100 {
-        if matches!(provider.inspect(h).await, DeploymentStatus::Exited { .. }) {
+        if matches!(provider.inspect(h, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }) {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -199,7 +199,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             .await
             .unwrap_or_else(|e| panic!("create A: {e}"));
         process
-            .terminate(&a.handle, TerminationMode::Immediate)
+            .terminate(&a.handle, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step())
             .await
             .unwrap();
         assert!(exited(&process, &a.handle).await, "A exited");
@@ -231,7 +231,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         // commanding side awaits. A's exit counts for nothing:
         // every command and every proof is on B's own birth and handle.
         deleted.unwrap_or_else(|e| panic!("delete B: {e}"));
-        assert!(matches!(process.inspect(&b.handle).await, DeploymentStatus::Exited { .. }), "B's own runtime is terminal");
+        assert!(matches!(process.inspect(&b.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "B's own runtime is terminal");
         let steps = builds.read_build(&build).await.unwrap().steps;
         let output = |name: &str| steps.iter().find(|r| r.step == name).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{name} receipted with an output"));
         let admission: CommandAdmission = serde_json::from_value(output("StopNode")).unwrap();

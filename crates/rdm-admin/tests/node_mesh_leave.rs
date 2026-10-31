@@ -83,7 +83,7 @@ impl DeploymentProvider for LeaveTestProvider {
         "process:leave-cell".into()
     }
 
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         Err(DeployError::Spawn {
             node: spec.node.to_string(),
             reason: "this cell tests node.mesh.leave, not spawn".into(),
@@ -93,20 +93,19 @@ impl DeploymentProvider for LeaveTestProvider {
     async fn terminate(
         &self,
         _handle: &DeploymentHandle,
-        _mode: TerminationMode,
-    ) -> Result<(), DeployError> {
+        _mode: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
 
-    async fn inspect(&self, _handle: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, _handle: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         DeploymentStatus::Running
     }
 
-    async fn signal_stop(&self, _handle: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, _handle: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
 
-    async fn find(&self, _spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+    async fn find(&self, _spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<Found, DeployError> {
         Ok(Found::NeverLaunched)
     }
 }

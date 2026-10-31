@@ -1319,7 +1319,7 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
         fn control_domain(&self) -> String {
             REC_DOMAIN.into()
         }
-        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
             let n = self.spawn_calls.fetch_add(1, Ordering::SeqCst) + 1;
             self.spawn_inherited
                 .lock()
@@ -1374,8 +1374,7 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
         async fn terminate(
             &self,
             handle: &DeploymentHandle,
-            mode: TerminationMode,
-        ) -> Result<(), DeployError> {
+            mode: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             self.terminates
                 .lock()
                 .unwrap()
@@ -1388,7 +1387,7 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
             }
             Ok(())
         }
-        async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus {
+        async fn inspect(&self, handle: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
             if handle.deployment_id == self.old_dep {
                 self.inspects
                     .lock()
@@ -1402,10 +1401,10 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
                 DeploymentStatus::Running
             }
         }
-        async fn signal_stop(&self, _handle: &DeploymentHandle) -> Result<(), DeployError> {
+        async fn signal_stop(&self, _handle: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, _spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+        async fn find(&self, _spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<Found, DeployError> {
             Ok(Found::NeverLaunched)
         }
     }

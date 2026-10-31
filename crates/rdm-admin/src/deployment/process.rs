@@ -533,15 +533,85 @@ impl DeploymentProvider for ProcessDeploymentProvider {
     }
 
     /// The data dir, logs, records and the fork run on the blocking pool (`blocking::blocking_io`).
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    /// Past `deadline` the spawn's outcome is unknown: the blocking work finishes on its thread, and
+    /// the next attempt's `find` resolves the exact launch.
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         let (owned, children, exits, failpoints) = (spec.clone(), self.children.clone(), self.exits.clone(), self.failpoints.clone());
-        let (pid, start) = crate::blocking::blocking_io(move || spawn_on_disk(&owned, &children, &exits, &failpoints)).await?;
+        let (pid, start) = deadline
+            .run(crate::blocking::blocking_io(move || spawn_on_disk(&owned, &children, &exits, &failpoints)))
+            .await
+            .map_err(|elapsed| past(deadline, elapsed, "process.spawn", &spec.deployment_id, true))??;
         // The pipeline registers this exact handle and makes its runtime fact
         // available to the birth (`MakeRuntimeFactAvailableToBirth`).
         Ok(self.handle(spec.deployment_id.clone(), pid, start))
     }
 
-    async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
+    async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode, deadline: super::deadline::Deadline) -> Result<(), DeployError> {
+        deadline
+            .run(self.terminate_within(handle, mode))
+            .await
+            .map_err(|elapsed| past(deadline, elapsed, "process.terminate", &handle.deployment_id, true))?
+    }
+
+    async fn signal_stop(&self, handle: &DeploymentHandle, deadline: super::deadline::Deadline) -> Result<(), DeployError> {
+        let Some(pid) = handle.pid else {
+            return Err(DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason: "no pid".into() });
+        };
+        match self.inspect(handle, deadline).await {
+            DeploymentStatus::Running => {
+                #[cfg(unix)]
+                signal(pid, libc::SIGTERM);
+                Ok(())
+            }
+            // The provider signals no runtime the operating system holds suspended outside a
+            // terminate, as the container provider cannot (deployment-provider.md §2.5, §5): by name.
+            DeploymentStatus::OsStopped => Err(DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason: format!("pid {pid} is held suspended by the operating system (os-stopped): the provider signals no suspended runtime outside a terminate; nothing was sent") }),
+            DeploymentStatus::Exited { .. } | DeploymentStatus::Unknown => Ok(()),
+        }
+    }
+
+    /// The deployment record and /proc are read on the blocking pool (`blocking::blocking_io`),
+    /// until `deadline`.
+    async fn find(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<Found, DeployError> {
+        let owned = spec.clone();
+        let on_disk = deadline
+            .run(crate::blocking::blocking_io(move || find_on_disk(&owned)))
+            .await
+            .map_err(|elapsed| past(deadline, elapsed, "process.find", &spec.deployment_id, false))??;
+        Ok(match on_disk {
+            OnDisk::Running(pid, start) => Found::Running(self.handle(spec.deployment_id.clone(), pid, start)),
+            OnDisk::Exited(pid, start) => Found::Exited(Some(self.handle(spec.deployment_id.clone(), pid, start))),
+            OnDisk::NeverLaunched => Found::NeverLaunched,
+        })
+    }
+
+    fn launched(&self) -> Vec<DeploymentHandle> {
+        self.children
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, l)| l.exit.is_none())
+            .map(|(pid, l)| self.handle(l.deployment_id.clone(), *pid, l.start))
+            .collect()
+    }
+
+    /// The state letters of the exact runtime's whole thread group (deployment-provider.md §2.6),
+    /// for a child of this provider and an adopted runtime alike; a child's exit code is its wait's.
+    /// /proc is read on the blocking pool; a read past `deadline` is `Unknown`.
+    async fn inspect(&self, handle: &DeploymentHandle, deadline: super::deadline::Deadline) -> DeploymentStatus {
+        deadline.run(self.inspect_within(handle)).await.unwrap_or(DeploymentStatus::Unknown)
+    }
+}
+
+/// A process call past its deadline: the typed failure, its outcome unknown for a mutation.
+fn past(deadline: super::deadline::Deadline, elapsed: Duration, operation: &str, deployment: &crate::model::DeploymentId, mutation: bool) -> DeployError {
+    tracing::info_span!("rdm.node_admin.deployment.update.via-provider-command", operation, deployment_id = %deployment, deadline_ms = deadline.bound().as_millis() as u64, elapsed_ms = elapsed.as_millis() as u64, outcome = "deadline", mutation, external_outcome = if mutation { "unknown" } else { "" })
+        .in_scope(|| tracing::info!("the provider call passed its deadline: its blocking work finishes on its thread, and nothing of its outcome is assumed"));
+    DeployError::Deadline { operation: operation.to_string(), deployment: deployment.to_string(), elapsed, bound: deadline.bound(), mutation }
+}
+
+impl ProcessDeploymentProvider {
+    async fn terminate_within(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
         let Some(pid) = handle.pid else {
             return Err(DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason: "no pid".into() });
         };
@@ -565,47 +635,10 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         Ok(())
     }
 
-    async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
-        let Some(pid) = handle.pid else {
-            return Err(DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason: "no pid".into() });
-        };
-        match self.inspect(handle).await {
-            DeploymentStatus::Running => {
-                #[cfg(unix)]
-                signal(pid, libc::SIGTERM);
-                Ok(())
-            }
-            // The provider signals no runtime the operating system holds suspended outside a
-            // terminate, as the container provider cannot (deployment-provider.md §2.5, §5): by name.
-            DeploymentStatus::OsStopped => Err(DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason: format!("pid {pid} is held suspended by the operating system (os-stopped): the provider signals no suspended runtime outside a terminate; nothing was sent") }),
-            DeploymentStatus::Exited { .. } | DeploymentStatus::Unknown => Ok(()),
-        }
-    }
-
-    /// The deployment record and /proc are read on the blocking pool (`blocking::blocking_io`).
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
-        let owned = spec.clone();
-        Ok(match crate::blocking::blocking_io(move || find_on_disk(&owned)).await? {
-            OnDisk::Running(pid, start) => Found::Running(self.handle(spec.deployment_id.clone(), pid, start)),
-            OnDisk::Exited(pid, start) => Found::Exited(Some(self.handle(spec.deployment_id.clone(), pid, start))),
-            OnDisk::NeverLaunched => Found::NeverLaunched,
-        })
-    }
-
-    fn launched(&self) -> Vec<DeploymentHandle> {
-        self.children
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(_, l)| l.exit.is_none())
-            .map(|(pid, l)| self.handle(l.deployment_id.clone(), *pid, l.start))
-            .collect()
-    }
-
     /// The state letters of the exact runtime's whole thread group (deployment-provider.md §2.6),
     /// for a child of this provider and an adopted runtime alike; a child's exit code is its wait's.
     /// /proc is read on the blocking pool.
-    async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect_within(&self, handle: &DeploymentHandle) -> DeploymentStatus {
         let Some(pid) = handle.pid else { return DeploymentStatus::Unknown };
         let exit_of = || self.children.lock().unwrap().get(&pid).filter(|l| handle.start.is_none() || l.start == handle.start).map(|l| l.exit);
         if let Some(Some(code)) = exit_of() {
@@ -852,7 +885,7 @@ mod tests {
     async fn a_successor_controls_the_exact_process_and_never_a_recycled_pid() {
         let dir = std::env::temp_dir().join(format!("rafka-process-adopt-{}", std::process::id()));
         let launcher = ProcessDeploymentProvider::new();
-        let h = launcher.spawn(&launch(&dir)).await.unwrap();
+        let h = launcher.spawn(&launch(&dir), crate::deployment::deadline::Deadline::step()).await.unwrap();
         // The handle names exactly the runtime it started; making its fact
         // available to the birth is the pipeline's step, not the provider's.
         let fact = h.fact().expect("an exact handle");
@@ -863,20 +896,20 @@ mod tests {
         let RuntimeLocator::Process { pid, start } = fact.locator.clone() else { panic!() };
         forged.locator = RuntimeLocator::Process { pid, start: start + 1 };
         let forged = adopt(&successor, &forged).unwrap();
-        assert!(matches!(successor.inspect(&forged).await, DeploymentStatus::Exited { .. }), "a recycled pid is not the old birth");
-        successor.terminate(&forged, TerminationMode::Immediate).await.unwrap();
+        assert!(matches!(successor.inspect(&forged, crate::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "a recycled pid is not the old birth");
+        successor.terminate(&forged, TerminationMode::Immediate, crate::deployment::deadline::Deadline::step()).await.unwrap();
         assert!(alive(pid), "nothing was signalled through a recycled pid");
         // The exact fact: the successor inspects and stops it.
         let adopted = adopt(&successor, &fact).unwrap();
-        assert_eq!(successor.inspect(&adopted).await, DeploymentStatus::Running);
-        successor.terminate(&adopted, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+        assert_eq!(successor.inspect(&adopted, crate::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
+        successor.terminate(&adopted, TerminationMode::Graceful { grace: Duration::from_secs(2) }, crate::deployment::deadline::Deadline::step()).await.unwrap();
         for _ in 0..100 {
-            if launcher.inspect(&h).await != DeploymentStatus::Running {
+            if launcher.inspect(&h, crate::deployment::deadline::Deadline::step()).await != DeploymentStatus::Running {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(matches!(launcher.inspect(&h).await, DeploymentStatus::Exited { .. }));
+        assert!(matches!(launcher.inspect(&h, crate::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -886,7 +919,7 @@ mod tests {
         let dir = crate::test_support::tempdir("process-find-fifo");
         let spec = launch(&dir);
         let fifo = dir.join(DEPLOYMENT_FILE);
-        let (heard, found) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, br#"{"deployment_id":"another","pid":1}"#.to_vec(), Box::pin(async move { ProcessDeploymentProvider::new().find(&spec).await }));
+        let (heard, found) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, br#"{"deployment_id":"another","pid":1}"#.to_vec(), Box::pin(async move { ProcessDeploymentProvider::new().find(&spec, crate::deployment::deadline::Deadline::step()).await }));
         assert!(heard, "the runtime stopped while the deployment record was read");
         assert_eq!(found.unwrap(), Found::NeverLaunched, "another launch's record");
     }
@@ -902,13 +935,13 @@ mod tests {
         let dir = crate::test_support::tempdir("process-find-three");
         let p = ProcessDeploymentProvider::new();
         let never = launch(&dir);
-        assert_eq!(p.find(&never).await.unwrap(), Found::NeverLaunched, "no record in the data dir");
+        assert_eq!(p.find(&never, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::NeverLaunched, "no record in the data dir");
         let spec = launch(&dir);
-        let h = p.spawn(&spec).await.unwrap();
-        assert_eq!(p.find(&spec).await.unwrap(), Found::Running(h.clone()), "its process runs");
-        assert_eq!(p.find(&never).await.unwrap(), Found::NeverLaunched, "the record names another launch");
-        p.terminate(&h, TerminationMode::Immediate).await.unwrap();
-        assert!(matches!(p.find(&spec).await.unwrap(), Found::Exited(Some(_))), "its process is gone");
+        let h = p.spawn(&spec, crate::deployment::deadline::Deadline::step()).await.unwrap();
+        assert_eq!(p.find(&spec, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::Running(h.clone()), "its process runs");
+        assert_eq!(p.find(&never, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::NeverLaunched, "the record names another launch");
+        p.terminate(&h, TerminationMode::Immediate, crate::deployment::deadline::Deadline::step()).await.unwrap();
+        assert!(matches!(p.find(&spec, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(Some(_))), "its process is gone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -924,9 +957,9 @@ mod tests {
         let dir = crate::test_support::tempdir("process-lost-after-spawn");
         let spec = launch(&dir);
         let slot = std::sync::Arc::new(Mutex::new(None));
-        ProcessDeploymentProvider::lost_after_spawn(slot.clone()).spawn(&spec).await.expect_err("the executor is lost inside the spawn");
+        ProcessDeploymentProvider::lost_after_spawn(slot.clone()).spawn(&spec, crate::deployment::deadline::Deadline::step()).await.expect_err("the executor is lost inside the spawn");
         let pid = slot.lock().unwrap().expect("the child existed when the executor was lost");
-        let found = ProcessDeploymentProvider::new().find(&spec).await;
+        let found = ProcessDeploymentProvider::new().find(&spec, crate::deployment::deadline::Deadline::step()).await;
         // The orphan list stays empty: the child is ours, killed by its exact pid and reaped.
         assert!(signal(pid, libc::SIGKILL), "the child {pid} was alive to kill");
         // SAFETY: waitpid(2) on the child this test spawned; the status is not read.
@@ -949,12 +982,12 @@ mod tests {
         let marker = dir.join("ran");
         let spec = ResolvedNodeLaunch { executable: "/bin/sh".into(), args: vec!["-c".into(), "touch \"$0\"; sleep 30".into(), marker.display().to_string()], ..launch(&dir) };
         let slot = std::sync::Arc::new(Mutex::new(None));
-        let refused = ProcessDeploymentProvider::lost_before_record(slot.clone()).spawn(&spec).await.expect_err("the executor is lost at the gate");
+        let refused = ProcessDeploymentProvider::lost_before_record(slot.clone()).spawn(&spec, crate::deployment::deadline::Deadline::step()).await.expect_err("the executor is lost at the gate");
         let pid = slot.lock().unwrap().expect("the child waited at the gate when the executor was lost");
         assert!(refused.to_string().contains("failpoint"), "{refused}");
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists(), "the child at the gate ended and was reaped");
         assert!(!marker.exists(), "its executable never ran");
-        assert_eq!(ProcessDeploymentProvider::new().find(&spec).await.unwrap(), Found::NeverLaunched, "no record names the launch");
+        assert_eq!(ProcessDeploymentProvider::new().find(&spec, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::NeverLaunched, "no record names the launch");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -967,10 +1000,10 @@ mod tests {
         let spec = ResolvedNodeLaunch { executable: "/bin/sh".into(), args: vec!["-c".into(), "touch \"$0\"; sleep 30".into(), marker.display().to_string()], ..launch(&dir) };
         // The record's temporary file is a directory: it cannot be created.
         std::fs::create_dir_all(dir.join(format!("{DEPLOYMENT_FILE}.tmp"))).unwrap();
-        let refused = ProcessDeploymentProvider::new().spawn(&spec).await.expect_err("no record, no launch");
+        let refused = ProcessDeploymentProvider::new().spawn(&spec, crate::deployment::deadline::Deadline::step()).await.expect_err("no record, no launch");
         assert!(refused.to_string().contains(DEPLOYMENT_FILE), "the refusal names the record: {refused}");
         assert!(!marker.exists(), "its executable never ran");
-        assert_eq!(ProcessDeploymentProvider::new().find(&spec).await.unwrap(), Found::NeverLaunched);
+        assert_eq!(ProcessDeploymentProvider::new().find(&spec, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::NeverLaunched);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -981,9 +1014,9 @@ mod tests {
     async fn a_launch_whose_executable_cannot_run_leaves_a_record_that_reads_exited() {
         let dir = crate::test_support::tempdir("process-exec-fails");
         let spec = ResolvedNodeLaunch { executable: dir.join("no-such-executable"), ..launch(&dir) };
-        let refused = ProcessDeploymentProvider::new().spawn(&spec).await.expect_err("the executable does not exist");
+        let refused = ProcessDeploymentProvider::new().spawn(&spec, crate::deployment::deadline::Deadline::step()).await.expect_err("the executable does not exist");
         assert!(refused.to_string().contains("no-such-executable"), "{refused}");
-        assert!(matches!(ProcessDeploymentProvider::new().find(&spec).await.unwrap(), Found::Exited(Some(_))), "its record names a process that is gone");
+        assert!(matches!(ProcessDeploymentProvider::new().find(&spec, crate::deployment::deadline::Deadline::step()).await.unwrap(), Found::Exited(Some(_))), "its record names a process that is gone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -993,11 +1026,11 @@ mod tests {
     async fn an_unreadable_deployment_record_is_an_error_naming_it() {
         let dir = crate::test_support::tempdir("process-find-unreadable");
         std::fs::create_dir_all(dir.join(DEPLOYMENT_FILE)).unwrap();
-        let err = ProcessDeploymentProvider::new().find(&launch(&dir)).await.expect_err("an unreadable record is not an absent one");
+        let err = ProcessDeploymentProvider::new().find(&launch(&dir), crate::deployment::deadline::Deadline::step()).await.expect_err("an unreadable record is not an absent one");
         assert!(err.to_string().contains(DEPLOYMENT_FILE), "{err}");
         std::fs::remove_dir(dir.join(DEPLOYMENT_FILE)).unwrap();
         std::fs::write(dir.join(DEPLOYMENT_FILE), b"not json").unwrap();
-        let err = ProcessDeploymentProvider::new().find(&launch(&dir)).await.expect_err("an unparsable record is not an absent one");
+        let err = ProcessDeploymentProvider::new().find(&launch(&dir), crate::deployment::deadline::Deadline::step()).await.expect_err("an unparsable record is not an absent one");
         assert!(err.to_string().contains(DEPLOYMENT_FILE), "{err}");
     }
 
@@ -1012,7 +1045,7 @@ mod tests {
             Box::pin(async move {
                 let p = ProcessDeploymentProvider::new();
                 let h = p.handle(DeploymentId::mint(), me, process_start_token(me));
-                p.inspect(&h).await
+                p.inspect(&h, crate::deployment::deadline::Deadline::step()).await
             })
         });
         assert!(waited, "the inspection finished on the runtime's thread while the blocking pool was held");
@@ -1027,9 +1060,9 @@ mod tests {
         let spec = launch(&dir);
         let p = std::sync::Arc::new(ProcessDeploymentProvider::new());
         let spawner = p.clone();
-        let (waited, h) = crate::test_support::op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| Box::pin(async move { spawner.spawn(&spec).await }));
+        let (waited, h) = crate::test_support::op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| Box::pin(async move { spawner.spawn(&spec, crate::deployment::deadline::Deadline::step()).await }));
         let h = h.unwrap();
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(p.terminate(&h, TerminationMode::Immediate)).unwrap();
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(p.terminate(&h, TerminationMode::Immediate, crate::deployment::deadline::Deadline::step())).unwrap();
         assert!(waited, "the spawn finished on the runtime's thread while the blocking pool was held");
     }
 
@@ -1042,11 +1075,11 @@ mod tests {
         let dir = crate::test_support::tempdir("process-exits-watch");
         let p = ProcessDeploymentProvider::new();
         let mut exits = p.exits();
-        let h = p.spawn(&launch(&dir)).await.unwrap();
+        let h = p.spawn(&launch(&dir), crate::deployment::deadline::Deadline::step()).await.unwrap();
         assert!(tokio::time::timeout(Duration::from_millis(300), exits.changed()).await.is_err(), "nothing moves while the runtime runs");
         assert!(signal(h.pid.expect("a pid"), libc::SIGKILL), "the runtime was alive to kill");
         tokio::time::timeout(Duration::from_secs(5), exits.changed()).await.expect("the exit never moved the watch").expect("the provider lives");
-        assert!(matches!(p.inspect(&h).await, DeploymentStatus::Exited { .. }), "the exit is the provider's");
+        assert!(matches!(p.inspect(&h, crate::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the exit is the provider's");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

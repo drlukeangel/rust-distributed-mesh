@@ -171,7 +171,7 @@ impl DeploymentProvider for Fleet {
     fn control_domain(&self) -> String {
         DOMAIN.into()
     }
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         let pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
         let handle = DeploymentHandle {
             deployment_id: spec.deployment_id.clone(),
@@ -208,11 +208,11 @@ impl DeploymentProvider for Fleet {
         });
         Ok(handle)
     }
-    async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+    async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         self.terminated.lock().unwrap().push(h.pid.unwrap());
         Ok(())
     }
-    async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
+    async fn inspect(&self, h: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         // The executor waiting for a report that never comes dies at its wait's inspection of the runtime.
         if *self.dies.lock().unwrap() == Dies::BeforeJoin {
             self.reached.notify_one();
@@ -224,10 +224,10 @@ impl DeploymentProvider for Fleet {
             DeploymentStatus::Exited { code: Some(143) }
         }
     }
-    async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+    async fn signal_stop(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
+    async fn find(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
         use rdm_admin::deployment::provider::Found;
         Ok(match self.spawned.lock().unwrap().iter().find(|s| s.handle.deployment_id == spec.deployment_id) {
             Some(s) if self.running(s.pid) => Found::Running(s.handle.clone()),

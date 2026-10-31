@@ -53,8 +53,8 @@ impl DeploymentProvider for Killable {
     fn control_domain(&self) -> String {
         self.inner.control_domain()
     }
-    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
-        let h = self.inner.spawn(spec).await?;
+    async fn spawn(&self, spec: &ResolvedNodeLaunch, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
+        let h = self.inner.spawn(spec, deadline).await?;
         self.spawned.lock().unwrap().push(h.pid.unwrap());
         if self.kill_at == Some(KillAt::AfterSpawn) {
             self.reached.notify_one();
@@ -62,17 +62,17 @@ impl DeploymentProvider for Killable {
         }
         Ok(h)
     }
-    async fn terminate(&self, h: &DeploymentHandle, m: TerminationMode) -> Result<(), DeployError> {
-        self.inner.terminate(h, m).await
+    async fn terminate(&self, h: &DeploymentHandle, m: TerminationMode, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
+        self.inner.terminate(h, m, deadline).await
     }
-    async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
-        self.inner.inspect(h).await
+    async fn inspect(&self, h: &DeploymentHandle, deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
+        self.inner.inspect(h, deadline).await
     }
-    async fn signal_stop(&self, h: &DeploymentHandle) -> Result<(), DeployError> {
-        self.inner.signal_stop(h).await
+    async fn signal_stop(&self, h: &DeploymentHandle, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
+        self.inner.signal_stop(h, deadline).await
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, rdm_admin::deployment::provider::DeployError> {
-        self.inner.find(spec).await
+    async fn find(&self, spec: &ResolvedNodeLaunch, deadline: rdm_admin::deployment::deadline::Deadline) -> Result<rdm_admin::deployment::provider::Found, rdm_admin::deployment::provider::DeployError> {
+        self.inner.find(spec, deadline).await
     }
 }
 
@@ -234,7 +234,7 @@ async fn killed_then_rerun(kill_at: KillAt) {
         assert_eq!(done, vec![want], "{}: Complete receipts by attempt", step.name());
     }
 
-    process.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
+    process.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
     let _ = std::fs::remove_dir_all(&template.data_root);
 }
 
@@ -332,7 +332,7 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
             assert_eq!(done, vec![want], "{}: Complete receipts by attempt", step.name());
         }
 
-        process.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
+        process.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
         let _ = std::fs::remove_dir_all(&template.data_root);
     })
 }

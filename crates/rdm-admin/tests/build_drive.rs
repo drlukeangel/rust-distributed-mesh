@@ -4104,7 +4104,7 @@ fn a_provider_exit_runs_one_reconcile_pass() {
         let wakes = Wakes::new();
         let dir = std::env::temp_dir().join(format!("reconcile-provider-exit-{}", MeshId::mint()));
         let spec = rdm_admin::deployment::provider::ResolvedNodeLaunch { secrets: Default::default(), withhold: Vec::new(), node: "mesh1.rpc.9".parse().unwrap(), deployment_id: rdm_admin::model::DeploymentId::mint(), executable: "/bin/sleep".into(), args: vec!["30".into()], env: Default::default(), data_dir: dir.clone(), transport: "127.0.0.1:0".parse().unwrap(), listeners: vec![] };
-        let h = wakes.provider.spawn(&spec).await.expect("the runtime starts");
+        let h = wakes.provider.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the runtime starts");
         let (passes, task) = reconciler(&r.env, &wakes, None);
         tokio::time::sleep(SETTLE).await;
         // SAFETY: kill(2) of the child this cell's provider started, by its exact pid.
