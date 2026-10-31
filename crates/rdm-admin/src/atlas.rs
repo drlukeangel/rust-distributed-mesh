@@ -875,6 +875,11 @@ impl Atlas {
         // The path's index entry still names a node a rename moved off it (its claim released, the
         // entry left): that row names another path, so it is not the birth at this one.
         let row = rows.node_at(path).await.map_err(|e| format!("nodes.storage: the node row at {path} could not be read: {e}"))?.filter(|r| r.name == *path);
+        // A version written by a birth this atlas holds deleted is ignored where the atlas holds a record
+        // of the path (build.md: "a deleted birth whose writes every reader refuses"; Q109), as `fill`
+        // ignores it: a deleted birth still running writes its own row at the path, and the record of
+        // the birth that re-created it is the path's.
+        let row = row.map(|r| self.folded_at(path, r));
         let accepted = self.held.lock().unwrap().accepted.get(&path.to_string()).map(|a| a.operation.clone());
         // A path no node row is written at holds no record: "no record", never a birth read from the
         // gossip view (Q197).
@@ -911,6 +916,28 @@ impl Atlas {
         // Live for acceptance from the ops alone: created, and not stopped or deleted since.
         let live = !deleted && !stopped;
         Ok(Some(AtlasRow { name: path.clone(), node_id: row.node_id.clone(), incarnation: birth, status, stopped, live, accepted, observed: observed_status, birth_source: "node-row" }))
+    }
+
+    /// `read`, the row a read of the store answered at `path`, as this atlas folds it: one written by a
+    /// birth the atlas holds deleted (its record deleted with that birth, or a node.delete of it
+    /// completed) is the atlas's own record at the path, when it holds one written by another birth;
+    /// one `rdm.node_admin.node.reject.via-deleted-birth` span names it. Every other row is answered as read.
+    fn folded_at(&self, path: &PathName, read: NodeRow) -> NodeRow {
+        let Some(w) = read.writer.clone() else { return read };
+        let held = self.held.lock().unwrap();
+        let deleted = held.records.get(&w.node_id).is_some_and(|d| matches!(d.status, NodeStatus::Deleted | NodeStatus::Withdrawn) && d.birth(&w.incarnation_id).is_some())
+            || held.effects.get(w.incarnation_id.as_str()).is_some_and(|e| e.lifecycle == Lifecycle::Deleted);
+        if !deleted {
+            return read;
+        }
+        let kept = held.records.values().filter(|r| r.name == *path && r.writer != read.writer && !matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn)).max_by_key(|r| (r.node_id != read.node_id, r.revision)).cloned();
+        match kept {
+            Some(kept) => {
+                crate::node_rows::ignored_version("atlas-row", &read, &w, &format!("{} {:?} at revision {}", kept.node_id, kept.status, kept.revision));
+                kept
+            }
+            None => read,
+        }
     }
 
     /// `fabric.atlas.get`: one row for every node `paths` names (the current Build's topology), in
@@ -1028,6 +1055,40 @@ mod tests {
             out.entry(path(p).mesh.clone()).or_default().push(path(p));
         }
         out
+    }
+
+    /// CONTRACT (build.md: "a deleted birth whose writes every reader refuses"; Q109): a deleted birth
+    /// still running (a paused node-admin a recovery deleted, resumed) writes its own row at its
+    /// path.name after the birth that re-created the path claimed it, so the store's row at the path is
+    /// the deleted birth's. The atlas row Build acceptance reads is the re-created birth's, live: a
+    /// node.stop of the path is accepted.
+    /// Must NOT happen: the path read `Deleted` from the deleted birth's own write and a stop of its
+    /// live successor refused `node-not-live` (S2 container seed 1431101 round 40, candidate 187fe558a).
+    #[tokio::test]
+    async fn a_deleted_births_own_write_at_its_path_never_hides_the_birth_that_re_created_it() {
+        let at = path("mesh2.admin.1");
+        let (mut old, old_inc) = record("mesh2.admin.1", NodeStatus::Deleted);
+        let (mut new, new_inc) = record("mesh2.admin.1", NodeStatus::Ready);
+        new.birth_mut(&new_inc, &at).declared.insert(rdm_core::status::NodeState::Ready);
+        let atlas = atlas_of(&[&old, &new], &["mesh2"]).await;
+        // The deleted birth, resumed, writes its own record at the path: the store's row there is its.
+        old.status = NodeStatus::Ready;
+        old.writer = Some(crate::storage::BirthRef { node_id: old.node_id.clone(), incarnation_id: old_inc.clone() });
+        new.writer = Some(crate::storage::BirthRef { node_id: new.node_id.clone(), incarnation_id: new_inc.clone() });
+        let store = MemoryNodesStorage::default();
+        store.put_node(&new).await.unwrap();
+        store.put_node(&old).await.unwrap();
+        store.index_path(&at, &old.node_id).await.unwrap();
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        use crate::model::{Fabric, FabricId, ProviderKind, ScopeStatus};
+        let observed = crate::topology::Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: Vec::new(), nodes: Vec::new() };
+        let row = atlas.row(&at, &store, &builds, &observed).await.unwrap().expect("a record is written at the path");
+        assert_eq!((row.node_id.clone(), row.status, row.live), (new.node_id.clone(), NodeStatus::Ready, true), "the re-created birth is the path's, live: {row:?}");
+        // A row its writer wrote while live is answered as read.
+        let (other, _) = record("mesh2.rpc.1", NodeStatus::Ready);
+        store.put_node(&other).await.unwrap();
+        store.index_path(&other.name, &other.node_id).await.unwrap();
+        assert_eq!(atlas.row(&other.name, &store, &builds, &observed).await.unwrap().map(|r| r.node_id), Some(other.node_id.clone()));
     }
 
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:31
