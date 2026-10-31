@@ -5,7 +5,7 @@
 //! and appends none twice; a new provider holding lines the old one does not is refused by name, and
 //! nothing switches."
 //!
-//! A provider answers the copy through [`ProviderLines`]: its five stores as their lines, each with the
+//! A provider answers the copy through [`ProviderLines`]: its stores as their lines, each with the
 //! op its writer wrote it with, and its claims as their content. It stores and returns what it is
 //! given and decides nothing (Q109); [`copy`] decides. The copy runs once changes are blocked and the
 //! outstanding writes have finished (steps 1 and 2), so neither provider changes beneath it.
@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 /// (i149 plan, "OTLP span-assertion bar").
 pub const COPY_SPAN: &str = "rdm.node_admin.build.update.via-storage-copy";
 
-/// One of the five stores of a provider (storage.md §2).
+/// One of the stores of a provider (storage.md §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Store {
     /// `fabric.storage`.
@@ -41,11 +41,13 @@ pub enum Store {
     Connections,
     /// `builds.storage`.
     Builds,
+    /// Node-owned properties and writer-birth lifecycle records, including apply recognition.
+    NodeRecords,
 }
 
 impl Store {
-    /// The five stores, in the order a copy takes them.
-    pub const ALL: [Store; 5] = [Store::Fabric, Store::Meshes, Store::Nodes, Store::Connections, Store::Builds];
+    /// The stores, in the order a copy takes them.
+    pub const ALL: [Store; 6] = [Store::Fabric, Store::Meshes, Store::Nodes, Store::Connections, Store::Builds, Store::NodeRecords];
 
     /// The store's name.
     pub fn name(self) -> &'static str {
@@ -55,6 +57,7 @@ impl Store {
             Self::Nodes => "nodes",
             Self::Connections => "connections",
             Self::Builds => "builds",
+            Self::NodeRecords => "node-records",
         }
     }
 
@@ -67,6 +70,7 @@ impl Store {
             Self::Nodes => NODES_FILE,
             Self::Connections => CONNECTIONS_FILE,
             Self::Builds => BUILDS_FILE,
+            Self::NodeRecords => crate::store_root::NODE_RECORDS_FILE,
         }
     }
 }
@@ -124,7 +128,7 @@ pub enum ClaimTaken {
     Held(Vec<u8>),
 }
 
-/// A provider's five stores as their lines, and its claims: what a copy reads from the old provider and
+/// A provider's stores as their lines, and its claims: what a copy reads from the old provider and
 /// appends to the new one. Persistence only: every method stores or returns what it is given.
 #[async_trait]
 pub trait ProviderLines: Send + Sync {
@@ -162,7 +166,7 @@ pub struct CopyRun {
 /// What a copy did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Copied {
-    /// How many lines of the old provider, over its five stores, the new one holds verified in source
+    /// How many lines of the old provider, over its stores, the new one holds verified in source
     /// order: all of them once the copy finishes.
     pub source_position: u64,
     /// How many lines this copy appended.
@@ -296,7 +300,7 @@ async fn copy_in(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn Pr
 }
 
 /// RDM's file provider's lines and claims for one fabric, on the store dir it was registered at: the
-/// five store files and the `locks/` of its root (`<store_dir>/<fabric_id>/`), and the fabric's claim
+/// store files and the `locks/` of its root (`<store_dir>/<fabric_id>/`), and the fabric's claim
 /// of its name in the fabrics' name index beside the roots (`<store_dir>/fabrics/`).
 pub struct FileProviderLines {
     stores: Vec<(Store, StoreLog)>,

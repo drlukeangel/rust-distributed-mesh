@@ -37,6 +37,127 @@ pub struct NodeProperties {
     pub app_types: Option<crate::nodes_storage::AppTypes>,
     /// The entities the node declared it holds at join.
     pub held: BTreeSet<String>,
+    /// Build operations already applied to this node. Persisted with their effect so a lost
+    /// reply cannot repeat an old Build over a later node or caller update. Attempts are not
+    /// part of this identity: another attempt is a repeat of the same operation.
+    #[serde(default)]
+    pub applied: BTreeSet<PropertyApplication>,
+}
+
+/// Existing Build and operation identities, scoped by the property record's node ID.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PropertyApplication {
+    /// The Build applying the entry.
+    pub build_id: String,
+    /// The operation within that Build.
+    pub operation: String,
+}
+
+/// One running node's serialized property write path. All its property commands use this
+/// instance. The task owning the lock also owns the provider call: cancelling a caller never
+/// releases write ordering while that call can still commit.
+#[derive(Clone)]
+pub struct NodePropertyWriter {
+    records: std::sync::Arc<dyn NodeRecordsStorage>,
+    current: std::sync::Arc<tokio::sync::Mutex<Option<NodeProperties>>>,
+}
+
+/// A durable property effect, or recognition of an earlier durable application.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyWritten {
+    /// The complete durable record, including fields untouched by this command.
+    pub record: NodeProperties,
+    /// The Build operation was already applied and its effect was not repeated.
+    pub already_applied: bool,
+}
+
+impl NodePropertyWriter {
+    /// Create the single writer for a running node. The first command reads its own retained
+    /// record, or uses the launch/join properties when no record has been written yet.
+    pub fn new(records: std::sync::Arc<dyn NodeRecordsStorage>) -> Self {
+        Self {
+            records,
+            current: Default::default(),
+        }
+    }
+
+    /// Publish the actual bound addresses and join declaration at this start, preserving
+    /// retained config, tags and application recognition for the same node ID.
+    pub async fn bound(
+        &self,
+        initial: NodeProperties,
+        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+    ) -> Result<PropertyWritten, StorageError> {
+        self.update(
+            initial.clone(),
+            None,
+            move |record| {
+                record.birth = initial.birth;
+                record.endpoint_id = initial.endpoint_id;
+                record.transport_addr = initial.transport_addr;
+                record.listeners = initial.listeners;
+                record.app_types = initial.app_types;
+                record.held = initial.held;
+            },
+            publish,
+        )
+        .await
+    }
+
+    /// Apply a command to the latest owned properties. `publish` installs the durable result
+    /// into the application's local view while still holding the same ordering lock. Neither
+    /// the command's future nor its receiver owns the lifetime of a pending provider write.
+    pub async fn update(
+        &self,
+        initial: NodeProperties,
+        application: Option<PropertyApplication>,
+        change: impl FnOnce(&mut NodeProperties) + Send + 'static,
+        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+    ) -> Result<PropertyWritten, StorageError> {
+        use tracing::Instrument;
+        let (records, current) = (self.records.clone(), self.current.clone());
+        // Dropping JoinHandle detaches the admitted write; it does not cancel it. In
+        // particular no timeout may allow a second command to overtake the first call.
+        tokio::spawn(
+            async move {
+                let mut held = current.lock().await;
+                if held.is_none() {
+                    *held = Some(
+                        records
+                            .properties(&initial.birth.node_id)
+                            .await?
+                            .unwrap_or(initial),
+                    );
+                }
+                let mut next = held.as_ref().expect("initialized above").clone();
+                let already_applied = application
+                    .as_ref()
+                    .is_some_and(|a| next.applied.contains(a));
+                if !already_applied {
+                    change(&mut next);
+                    if let Some(application) = application {
+                        next.applied.insert(application);
+                    }
+                    if let Err(error) = records.put_properties(&next).await {
+                        // An error may be a lost acknowledgement. The next admitted command must
+                        // resolve the exact durable record, including application identities,
+                        // before it can change anything. Never reuse a pre-write cached value.
+                        *held = None;
+                        return Err(error);
+                    }
+                    *held = Some(next.clone());
+                }
+                publish(&next);
+                Ok(PropertyWritten {
+                    record: next,
+                    already_applied,
+                })
+            }
+            .instrument(tracing::Span::current()),
+        )
+        .await
+        .expect("property writer task panicked")
+    }
 }
 
 /// Lifecycle state for one subject, written only under its writer's own birth.
@@ -100,6 +221,13 @@ pub struct NodeLifecycle {
 ///
 /// Successful writes are durable. Implementations return the requested exact key; they never
 /// select a primary, substitute an earlier writer, or treat an I/O error as absence.
+///
+/// A put owns the submitted backend operation until that operation has ended. On **every**
+/// return, including an error, that issued operation can no longer commit in the future. An
+/// error may have lost the acknowledgement of an already committed record, so readers still
+/// resolve it by its exact key. A transport deadline with a pending backend mutation is not a
+/// completed put: the adapter must retain the original operation until its outcome resolves.
+/// Callers retain the future through cancellation; adapters retain any lower-level operation.
 #[async_trait]
 pub trait NodeRecordsStorage: Send + Sync {
     /// Persist the node's complete property record at its node ID.
@@ -183,7 +311,7 @@ impl NodeRecordsStorage for MemoryNodeRecords {
 
 /// The shared log containing the two record kinds.
 #[cfg(feature = "file-backend")]
-pub const NODE_RECORDS_FILE: &str = "node-records.jsonl";
+pub use crate::store_root::NODE_RECORDS_FILE;
 
 #[cfg(feature = "file-backend")]
 const PROPERTIES_FORMAT: &str = "node-properties/1";
@@ -210,6 +338,11 @@ impl FileNodeRecords {
 
     fn key(node: &NodeId, writer: &RecordBirth) -> String {
         format!("{}/{}/{}", node, writer.node_id, writer.incarnation_id)
+    }
+
+    /// Wait until every append already issued through this file has ended.
+    pub async fn finish_issued_writes(&self) {
+        self.log.finish_issued_writes().await;
     }
 }
 

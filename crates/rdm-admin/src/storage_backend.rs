@@ -58,6 +58,8 @@ pub struct StorageBoundaries {
     /// `nodes.storage`: the runtimes the admin started, every mesh's Node rows and the facts on each
     /// birth, its address and primaries included.
     pub nodes: Arc<dyn NodesStorage>,
+    /// Node-owned properties and lifecycle state addressed by the writing primary's birth.
+    pub node_records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>,
     /// `nodes.storage`'s runtime rows on the fabric's shared store root, in no admin's data dir: where an
     /// externally started node-admin (the Day-0 admin, an adoption launch), whose runtime no launcher
     /// recorded, keeps its own runtime row, and where a later adoption launch on the same store root
@@ -173,17 +175,19 @@ impl StorageBackend for FileBackend {
         let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.log_writer()).await.map_err(storage_err)?);
+        let node_records = Arc::new(rdm_node::node_records::FileNodeRecords::open(&root).await.map_err(storage_err)?);
         // Every runtime row is a line of the root's nodes.jsonl: the root's rows are the nodes store's.
         let root_runtimes: Option<Arc<dyn NodesStorage>> = Some(nodes.clone() as Arc<dyn NodesStorage>);
         let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.log_writer()).await.map_err(|e| e.to_string())?);
         let finish_writes: FinishWrites = {
-            let (meshes, nodes, fabric) = (meshes.clone(), nodes.clone(), fabric.clone());
+            let (meshes, nodes, fabric, node_records) = (meshes.clone(), nodes.clone(), fabric.clone(), node_records.clone());
             Arc::new(move || {
-                let (meshes, nodes, fabric) = (meshes.clone(), nodes.clone(), fabric.clone());
+                let (meshes, nodes, fabric, node_records) = (meshes.clone(), nodes.clone(), fabric.clone(), node_records.clone());
                 Box::pin(async move {
                     meshes.finish_issued_writes().await;
                     nodes.finish_issued_writes().await;
                     fabric.finish_issued_writes().await;
+                    node_records.finish_issued_writes().await;
                 })
             })
         };
@@ -194,7 +198,7 @@ impl StorageBackend for FileBackend {
                 Box::pin(async move { Ok(Arc::new(crate::storage::FileConnectionsStorage::open(&root, &name, &writer).await?) as Arc<dyn ConnectionsStorage>) })
             })
         };
-        Ok(StorageBoundaries { fabric, meshes, nodes, root_runtimes, connections, builds, finish_writes, writes_to })
+        Ok(StorageBoundaries { fabric, meshes, nodes, node_records, root_runtimes, connections, builds, finish_writes, writes_to })
     }
 }
 
@@ -348,6 +352,11 @@ impl TopologyStorageHandle {
 
     /// `nodes.storage`, through this handle.
     pub fn nodes(self: &Arc<Self>) -> Arc<dyn NodesStorage> {
+        Arc::new(Through(self.clone()))
+    }
+
+    /// Node records through the current provider, including migration write admission.
+    pub fn node_records(self: &Arc<Self>) -> Arc<dyn rdm_node::node_records::NodeRecordsStorage> {
         Arc::new(Through(self.clone()))
     }
 
@@ -514,6 +523,27 @@ impl Through {
     }
     fn write(&self) -> crate::storage_handle::Admitted<AdminStores> {
         self.0.current.write()
+    }
+}
+
+#[async_trait]
+impl rdm_node::node_records::NodeRecordsStorage for Through {
+    async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
+        let w = self.0.current.write();
+        w.boundaries.node_records.put_properties(record).await
+    }
+    async fn properties(&self, node: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().boundaries.node_records.properties(node).await
+    }
+    async fn put_lifecycle(&self, record: &rdm_node::node_records::NodeLifecycle) -> Result<(), crate::storage_error::StorageError> {
+        let w = self.0.current.write();
+        w.boundaries.node_records.put_lifecycle(record).await
+    }
+    async fn lifecycle(&self, node: &crate::model::NodeId, writer: &rdm_node::node_records::RecordBirth) -> Result<Option<rdm_node::node_records::NodeLifecycle>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().boundaries.node_records.lifecycle(node, writer).await
+    }
+    async fn lifecycles(&self, mesh: &crate::model::MeshId) -> Result<Vec<rdm_node::node_records::NodeLifecycle>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().boundaries.node_records.lifecycles(mesh).await
     }
 }
 
@@ -835,6 +865,7 @@ impl StorageBackend for MemoryBackend {
             fabric: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             meshes: Arc::new(crate::storage::MemoryMeshStorage::default()),
             nodes: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            node_records: Arc::new(rdm_node::node_records::MemoryNodeRecords::default()),
             root_runtimes: None,
             connections,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),

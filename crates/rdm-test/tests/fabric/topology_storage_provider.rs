@@ -30,12 +30,13 @@ const FILE: &str = "file";
 /// A name no executable of the testkit registers.
 const UNREGISTERED: &str = "no-such-provider";
 /// The five record stores, one append-only file each on a provider's fabric root (storage.md §2).
-const STORES: [&str; 5] = [
+const STORES: [&str; 6] = [
     rdm_admin::store_root::FABRIC_FILE,
     rdm_admin::store_root::MESHES_FILE,
     rdm_admin::store_root::NODES_FILE,
     rdm_admin::store_root::CONNECTIONS_FILE,
     rdm_admin::store_root::BUILDS_FILE,
+    rdm_node::node_records::NODE_RECORDS_FILE,
 ];
 
 fn owner(test: &str) -> Owner {

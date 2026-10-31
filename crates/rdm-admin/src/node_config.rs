@@ -31,6 +31,8 @@ use std::sync::Arc;
 /// admin's own config (the mesh-primary is a member of its mesh and the writer of its own row too),
 /// and the lock that makes every config change one at a time.
 pub struct NodeConfigs {
+    records: std::sync::OnceLock<Arc<dyn rdm_node::node_records::NodeRecordsStorage>>,
+    own_properties: std::sync::OnceLock<rdm_node::node_records::NodePropertyWriter>,
     client: Arc<NodeRpcClient>,
     own: crate::status_rpc::Configure,
     one_at_a_time: tokio::sync::Mutex<()>,
@@ -134,7 +136,23 @@ impl NodeConfigs {
     /// The door over `client`; `own` holds this admin's config when it is the subject; `written` is
     /// the record the writer of this admin's mesh rows holds (`NodeRows::with_written`).
     pub fn new(client: Arc<NodeRpcClient>, own: crate::status_rpc::Configure, written: Arc<crate::node_rows::WrittenRows>) -> Self {
-        Self { client, own, one_at_a_time: tokio::sync::Mutex::new(()), written, views: Default::default(), topology: Default::default(), pushes: Default::default() }
+        Self { records: Default::default(), own_properties: Default::default(), client, own, one_at_a_time: tokio::sync::Mutex::new(()), written, views: Default::default(), topology: Default::default(), pushes: Default::default() }
+    }
+
+    /// Bind the configured provider's node records. Every access follows provider migration.
+    pub fn uses_records(&self, records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>) {
+        let _ = self.own_properties.set(rdm_node::node_records::NodePropertyWriter::new(records.clone()));
+        let _ = self.records.set(records);
+    }
+
+    /// The shared records used for current property reads and exact lifecycle resolution.
+    pub fn records(&self) -> Option<&Arc<dyn rdm_node::node_records::NodeRecordsStorage>> {
+        self.records.get()
+    }
+
+    /// This admin's own serialized property writer, shared by local and downward updates.
+    pub fn own_properties(&self) -> Option<&rdm_node::node_records::NodePropertyWriter> {
+        self.own_properties.get()
     }
 
     /// The client this door tells births through: the mesh-primary's node.name.update tells a birth its

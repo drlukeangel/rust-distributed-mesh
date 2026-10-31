@@ -1516,6 +1516,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 written.feeds(control.atlas.clone());
                                 control.atlas.writes(&own_mesh);
                                 let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), configure.clone(), written.clone());
+                                configs.uses_records(topology_storage.node_records());
                                 // A command it sends down that a mesh-primary not yet holding the primary refused waits on the view's next change (D12).
                                 configs.watch_views(records.subscribe_view());
                                 // An owed push of a node's row up to the fabric-primary reads the view again on each send (Q235 P3).
