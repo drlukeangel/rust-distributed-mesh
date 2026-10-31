@@ -334,6 +334,50 @@ identified the existing hierarchy acquisition and explicit handover preparation 
 shared integration point. No new persisted counter/state machine is needed. This focused evidence
 does not close i150, its takeover requirement, or its Rafka integration.
 
+### Build entry execution through the shared writer (2026-10-31)
+
+The mesh-primary reads the immutable full entry from the shared Build row. Config and tag diff
+steps share `PropertyApplication::entry` and one exact target pinned by an existing typed Build
+receipt before the request. The pin survives a failed child step and same-attempt retries. An
+unapplied ambiguous request cannot be redirected to a new occupant of the path. The node persists
+config, tags and application recognition in one effect through `NodePropertyWriter`.
+
+The existing claim contains the immutable launch snapshot, including application evidence.
+Create/replacement snapshots mark their entry; recovery captures the predecessor's current map,
+tags and existing evidence from the same read. Repeating a claim hands on that original snapshot.
+The node initializes its first record from it before Ready. Recognition suppresses config/tag replay
+in the planner; storage and placement differences remain owed. Metadata completion on a recovered
+birth requires its inherited durable application evidence and never resends the old property call.
+No new retry queue, timer or separate store is used.
+
+Working-checkout evidence (`target/evidence/i150/`, not a final gate):
+- `entry-properties-writer-final.log`: 12/12 passed, 0.05 s; lost acknowledgement, later local
+  config/tags, writer recreation and a following Build's empty-map/empty-tags override.
+- `entry-properties-recovery-claim-fixed.log`: 11/11 passed; recovered application planning and
+  immutable recovery claim snapshot included. The first claim test omitted its fixture's path index;
+  the fixture now uses the same `write_record` operation as existing claim fixtures.
+- `entry-properties-node-endpoint.log`: ordinary node's actual Node RPC endpoint, complete entry
+  apply, later own map/tag update, repeat recognition; 1/1 passed, 0.05 s.
+- `entry-properties-target-pin.log`: existing create/pipeline cell includes same-attempt pin reuse,
+  failed child-step reuse and refusal of a different occupant; 1/1 passed, 0.01 s.
+- `entry-properties-metadata-refusal.log`: committed application evidence, refused lifecycle write,
+  repeat finishes metadata with no resolvable node endpoint and preserves later properties;
+  1/1 passed, 0.02 s.
+- `entry-properties-claims-fixed.log`: 32/32 claim/recovery controls passed, 0.02 s. The deliberately
+  fabricated lost-executor claim now includes the launch snapshot a real claim writes.
+- `entry-properties-process.log`: existing real-process Build override/own-write and restart controls,
+  2/2 passed, 14.60 s. This is not the missing combined process reply-loss/recovery proof.
+- `entry-properties-wire.log`: 7/7 frozen Status controls passed; request position 37 is appended.
+- `entry-properties-launch.log`: 6/6 launch environment controls passed, including application
+  evidence round-trip.
+
+Architect 1 inspected the replay/metadata distinction and found no further concrete flaw in that
+delta; the combined process proofs remain required. A broader admin-unit run passed 620/623 and
+found one missing-birth classification regression (fixed to existing `Incomplete`) plus two old
+workflow fixtures expecting the removed own-config callback/up-chain behavior. Those two remain
+owned by i150.e3.s4's deletion of the legacy routes/fixtures; they must pass before landing.
+The complete initiative, final gate, lifecycle takeover and Rafka integration remain BUILD.
+
 ### Shared property writer implementation evidence (2026-10-31)
 
 The node runtime now has one `NodePropertyWriter` shared by ordinary own-config and caller config
@@ -341,7 +385,8 @@ application. Its admitted task owns serialization, provider admission, the actua
 publication through caller cancellation. Property records carry the applied Build/operation set
 with the effect; attempts do not enter duplicate recognition. Reopening the file proves a repeated
 application preserves a later own update, while a different Build can still override it. Production
-Build commands do not carry those identities yet: e4 remains BUILD.
+Build commands carry the same typed entry identity through `ApplyNodeProperties`; e4 remains BUILD
+until its process loss/recovery and startup obligation proofs are complete.
 
 The new record trait requires every returned put, including a failed one, to have finished its
 backend operation: it cannot still commit later. An error may conceal an already committed effect;

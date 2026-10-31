@@ -6,7 +6,7 @@
 pub use crate::node_config::{NodeConfigs, NodeConfigsSlot};
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::atlas::{Atlas, ConfigInstall};
     use crate::fabric_storage::MemoryFabricStorage;
@@ -24,7 +24,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
 
-    struct RefusingNodesStorage(MemoryNodesStorage);
+    pub(crate) struct RefusingNodesStorage(pub(crate) MemoryNodesStorage);
 
     #[async_trait::async_trait]
     impl NodesStorage for RefusingNodesStorage {

@@ -380,6 +380,7 @@ pub fn step_key(step: &rdm_core::build::Step) -> String {
 /// The exact birth an operation on an existing birth carries (build.md §4.4): the node id and incarnation
 /// the gates pinned at acceptance, which the executing mesh-primary verifies before any effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PinnedBirth {
     /// The node.id.
     pub node_id: NodeId,

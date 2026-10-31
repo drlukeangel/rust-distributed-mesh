@@ -1000,7 +1000,7 @@ pub fn plan_for_build_created(build: &crate::build_state::BuildProjection, obser
     // the path's replacement follows it as the next attempt's (proposal executable-bindings-at-create.md
     // rule 5: "never in the same attempt").
     let topology_steps: Vec<crate::build_state::BuildStepReceipt> = build.steps.iter().filter(|s| !build.attempt_actions.contains_key(&s.attempt)).cloned().collect();
-    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed), &BTreeSet::new(), &build.steps, replacing.map(|r| (r, topology_steps.as_slice())), atlas, created)
+    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed), &BTreeSet::new(), &build.steps, replacing.map(|r| (&build.build_id, r, topology_steps.as_slice())), atlas, created)
 }
 
 /// The replacements `topology` owes against `observed` and `recorded` before any attempt ran: what a
@@ -1038,7 +1038,7 @@ pub(crate) fn replacement_pins(replacements: &[BuildOperation], pinned: &[(PathN
 /// entry's onto the row: a plain create, or a replacement's successor whose minted node is the row's,
 /// Q305). A write the node or a caller makes after it stands until the next Build. A path `planned` creates, or whose executable the row does not record, is the create's or
 /// the replacement's, whose claim writes its properties.
-fn properties_owed(topology: &FabricTopology, recorded: &Recorded, steps: &[crate::build_state::BuildStepReceipt], planned: &[BuildOperation]) -> Vec<BuildOperation> {
+fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, recorded: &Recorded, steps: &[crate::build_state::BuildStepReceipt], planned: &[BuildOperation]) -> Vec<BuildOperation> {
     let receipted = |operation: &str, step: &str| steps.iter().any(|r| r.operation == operation && r.step == step && r.outcome == crate::build_state::StepOutcome::Complete);
     // The node this Build's create at `path` minted (its AllocateIdentity receipt's output).
     let minted = |path: &PathName| {
@@ -1066,12 +1066,13 @@ fn properties_owed(topology: &FabricTopology, recorded: &Recorded, steps: &[crat
         if claimed(path, row) {
             continue;
         }
-        let config = row.config.as_ref().is_some_and(|c| *c != spec.config) || row.storage_persistence.is_some_and(|s| s != spec.storage_persistence) || row.placement.is_some_and(|p| p != spec.placement);
+        let applied = row.applied.contains(&rdm_core::properties::PropertyApplication::entry(build_id, path));
+        let config = (!applied && row.config.as_ref().is_some_and(|c| *c != spec.config)) || row.storage_persistence.is_some_and(|s| s != spec.storage_persistence) || row.placement.is_some_and(|p| p != spec.placement);
         let mut owed = Vec::new();
         if config {
             owed.push(BuildOperation::UpdateConfig { node: path.clone(), entry: None });
         }
-        if let Some(tags) = &row.tags {
+        if let Some(tags) = row.tags.as_ref().filter(|_| !applied) {
             let added: BTreeSet<String> = spec.tags.difference(tags).cloned().collect();
             let removed: BTreeSet<String> = tags.difference(&spec.tags).cloned().collect();
             if !added.is_empty() {
@@ -1092,6 +1093,8 @@ fn properties_owed(topology: &FabricTopology, recorded: &Recorded, steps: &[crat
 /// Build applies the diff"), each `None` where the row was not read for it or records none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedRow {
+    /// Atomic property applications recorded by the node, including inherited knowledge.
+    pub applied: BTreeSet<rdm_core::properties::PropertyApplication>,
     /// The node the row names.
     pub node_id: NodeId,
     /// The sha256 its executable binding records.
@@ -1118,13 +1121,15 @@ pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, prope
     for p in topology.meshes.values().flat_map(|m| m.nodes.iter()) {
         let row = crate::node_rows::record_at(rows, p).await.map_err(|e| format!("the row at {p} could not be read for its executable: {e}"))?;
         if let Some(mut row) = row.filter(|r| r.status != NodeStatus::Deleted) {
+            let mut applied = BTreeSet::new();
             if let Some(properties) = properties {
                 if let Some(own) = properties.properties(&row.node_id).await.map_err(|error| format!("the properties of {} could not be read: {error}", row.node_id))? {
                     row.config = own.config;
                     row.tags = own.tags;
+                    applied = own.applied;
                 }
             }
-            out.insert(p.clone(), RecordedRow { node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config: Some(row.config), tags: Some(row.tags), storage_persistence: row.storage_persistence, placement: row.placement });
+            out.insert(p.clone(), RecordedRow { applied, node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config: Some(row.config), tags: Some(row.tags), storage_persistence: row.storage_persistence, placement: row.placement });
         }
     }
     Ok(out)
@@ -1342,7 +1347,7 @@ fn plan_with(
     open_deletes: &BTreeSet<String>,
     held: &BTreeSet<String>,
     steps: &[crate::build_state::BuildStepReceipt],
-    replacements: Option<(&Recorded, &[crate::build_state::BuildStepReceipt])>,
+    replacements: Option<(&crate::build::BuildId, &Recorded, &[crate::build_state::BuildStepReceipt])>,
     atlas: Option<&AtlasBirth>,
     created: &BTreeSet<String>,
 ) -> BuildPlan {
@@ -1506,7 +1511,7 @@ fn plan_with(
     // replacement, over that predecessor's data dir, never by the generic create below. Every create
     // launches the path's entry's executable.
     let replacements = replacements.filter(|_| action.is_none());
-    let creates_owed = replacements.map(|(recorded, steps)| replacement_creates_owed(topology, steps, recorded)).unwrap_or_default();
+    let creates_owed = replacements.map(|(_, recorded, steps)| replacement_creates_owed(topology, steps, recorded)).unwrap_or_default();
     for (name, m) in &topology.meshes {
         if !mesh_exists(name) {
             ops.push(BuildOperation::CreateMesh { mesh: name.clone(), mesh_id: m.mesh_id.clone() });
@@ -1535,9 +1540,9 @@ fn plan_with(
             }
         }
     }
-    if let Some((recorded, steps)) = replacements {
+    if let Some((build_id, recorded, steps)) = replacements {
         ops.extend(replacements_owed(topology, observed, recorded, steps));
-        let applied = properties_owed(topology, recorded, steps, &ops);
+        let applied = properties_owed(build_id, topology, recorded, steps, &ops);
         ops.extend(applied);
     }
     // A live or stopped node of a kept mesh that the topology no longer names is deleted
@@ -1723,6 +1728,10 @@ mod tests {
 
     fn counts(name: &str, a: u32, r: u32) -> MeshDesired {
         MeshDesired::of(name.to_string(), [(rdm_core::NodeKind::NodeAdmin, a), (rdm_core::NodeKind::RpcNode, r)])
+    }
+
+    fn property_build_id() -> crate::build::BuildId {
+        crate::build::BuildId::parse(&rdm_core::fixture_crockford60("property-build")).unwrap()
     }
 
     #[test]
@@ -2695,7 +2704,7 @@ mod tests {
         let birth = |name: &str, o: &Topology| o.node(&name.parse().unwrap()).map(|n| crate::build::ExitedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap() }).unwrap();
         let on = |name: &str, tag: Option<&str>, o: &Topology| {
             let node = o.node(&name.parse().unwrap()).unwrap();
-            (node.name.clone(), RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id: node.node_id.clone(), sha256: tag.map(|t| format!("{t}-{}", node.name.kind.name())) })
+            (node.name.clone(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: node.node_id.clone(), sha256: tag.map(|t| format!("{t}-{}", node.name.kind.name())) })
         };
         // Every member on "a", but mesh1.rpc.1 on "b" already and mesh2.admin.2 a row with no executable.
         let mut recorded: Recorded = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.2", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|p| on(p, Some("a"), &o)).collect();
@@ -2741,7 +2750,7 @@ mod tests {
         let mut live_again = after_delete.clone();
         live_again.nodes.push(successor.clone());
         let mut on_entry = recorded.clone();
-        on_entry.insert("mesh1.admin.2".parse().unwrap(), RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-node_admin".into()) });
+        on_entry.insert("mesh1.admin.2".parse().unwrap(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-node_admin".into()) });
         assert_eq!(replacement_plan(&next, &live_again, &on_entry, receipts.clone()), all[2..].to_vec(), "a live successor on its entry is the member");
         // Its create receipted: never replaced again, whatever its row reads.
         let mut done = receipts;
@@ -2770,7 +2779,7 @@ mod tests {
         let path: PathName = "mesh2.rpc.1".parse().unwrap();
         let node = o.node(&path).unwrap().clone();
         let birth = crate::build::ExitedBirth { node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().unwrap() };
-        let mut recorded: Recorded = o.nodes.iter().filter(|n| n.name.kind == NodeKind::NodeAdmin).map(|n| (n.name.clone(), RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("b-{}", n.name.kind.name())) })).collect();
+        let mut recorded: Recorded = o.nodes.iter().filter(|n| n.name.kind == NodeKind::NodeAdmin).map(|n| (n.name.clone(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("b-{}", n.name.kind.name())) })).collect();
         let step = |s: &str, output: Option<serde_json::Value>| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
@@ -2793,7 +2802,7 @@ mod tests {
             assert_eq!(replacement_plan(&next, view, &recorded, receipts.clone()), vec![create.clone()], "the row Deleted: the remaining work is the create");
         }
         // The row still live, naming the birth on its old sha: the delete of that exact birth is finished, then the create.
-        recorded.insert(path.clone(), RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id: birth.node_id.clone(), sha256: Some("a-rpc_node".into()) });
+        recorded.insert(path.clone(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: birth.node_id.clone(), sha256: Some("a-rpc_node".into()) });
         let finish = BuildOperation::DeleteNode { node: path.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() };
         for view in [&gone, &leaving] {
             assert_eq!(replacement_plan(&next, view, &recorded, receipts.clone()), vec![finish.clone(), create.clone()], "the row live: the delete is finished, then the create");
@@ -2808,7 +2817,7 @@ mod tests {
     #[test]
     fn the_members_off_their_entries_are_named_until_each_row_records_its_sha() {
         let next = on_entries(&t(&[("mesh1", 2, 1)]), "b");
-        let row = |tag: Option<&str>, kind: &str| RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: tag.map(|t| format!("{t}-{kind}")) };
+        let row = |tag: Option<&str>, kind: &str| RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: tag.map(|t| format!("{t}-{kind}")) };
         let mut recorded: Recorded = [("mesh1.admin.1".parse().unwrap(), row(Some("b"), "node_admin")), ("mesh1.admin.2".parse().unwrap(), row(None, "node_admin")), ("mesh1.rpc.1".parse().unwrap(), row(Some("a"), "rpc_node"))].into();
         assert_eq!(paths_owed_replacement(&next, &recorded).iter().map(ToString::to_string).collect::<Vec<_>>(), ["mesh1.admin.2", "mesh1.rpc.1"]);
         recorded.insert("mesh1.admin.2".parse().unwrap(), row(Some("b"), "node_admin"));
@@ -2837,7 +2846,7 @@ mod tests {
 
     /// What the rows record: every live member of `o` on `tag`'s executable of its kind.
     fn rows_on(o: &Topology, tag: &str) -> Recorded {
-        o.nodes.iter().map(|n| (n.name.clone(), RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("{tag}-{}", n.name.kind.name())) })).collect()
+        o.nodes.iter().map(|n| (n.name.clone(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("{tag}-{}", n.name.kind.name())) })).collect()
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 1: "the complete topology, an array of nodes,
@@ -2922,6 +2931,37 @@ mod tests {
     /// node.config.update is the last write), and a path the plan creates is the create's. Must NOT
     /// happen: an operation for a property that does not differ, one for a row that records none, or one
     /// planned again after its Complete.
+    // @feature: node-records
+    /// CONTRACT (i150 R8): application knowledge inherited by a recovered birth suppresses
+    /// property replay without a completion receipt; unfinished lifecycle metadata still runs.
+    #[test]
+    fn a_recovered_entry_preserves_later_properties_and_finishes_owed_metadata() {
+        use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
+        let mut topology = t(&[("mesh1", 1, 1)]);
+        let path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let persistent = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
+        topology.meshes.get_mut("mesh1").unwrap().set_spec(NodeSpec {
+            config: [("source".into(), "entry".into())].into(), tags: ["entry".into()].into(),
+            storage_persistence: persistent, ..NodeSpec::default_for(path.clone())
+        }).unwrap();
+        let build_id = property_build_id();
+        let mut recorded: Recorded = [(path.clone(), RecordedRow {
+            node_id: NodeId::mint(), sha256: None,
+            config: Some([("source".into(), "node".into())].into()),
+            tags: Some(["node".into()].into()),
+            storage_persistence: Some(StorageMeta::Ephemeral), placement: Some(Default::default()),
+            applied: [rdm_core::properties::PropertyApplication::entry(&build_id, &path)].into(),
+        })].into();
+        assert_eq!(properties_owed(&build_id, &topology, &recorded, &[], &[]),
+            vec![BuildOperation::UpdateConfig { node: path.clone(), entry: None }],
+            "a missing metadata completion is still owed, with no tag replay");
+        recorded.get_mut(&path).unwrap().storage_persistence = Some(persistent);
+        assert!(properties_owed(&build_id, &topology, &recorded, &[], &[]).is_empty(),
+            "a lost reply is not permission to overwrite later properties");
+        assert_eq!(properties_owed(&crate::build::BuildId::mint(), &topology, &recorded, &[], &[]).len(), 3,
+            "a later Build applies the whole entry again");
+    }
+
     #[test]
     fn a_reconcile_applies_each_property_that_differs_from_the_row_by_its_own_operation() {
         use crate::build_state::{BuildStepReceipt, StepOutcome};
@@ -2934,20 +2974,20 @@ mod tests {
         let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
         let zone = |z: &str| [("zone".to_string(), z.to_string())].into_iter().collect::<BTreeMap<String, String>>();
         topology.meshes.get_mut("mesh1").unwrap().set_spec(NodeSpec { config: zone("b"), tags: labels(&["x"]), storage_persistence: persistent, ..NodeSpec::default_for(rpc.clone()) }).unwrap();
-        let row = |config: BTreeMap<String, String>, tags: BTreeSet<String>, storage: StorageMeta| RecordedRow { node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(tags), storage_persistence: Some(storage), placement: Some(Default::default()) };
+        let row = |config: BTreeMap<String, String>, tags: BTreeSet<String>, storage: StorageMeta| RecordedRow { applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(tags), storage_persistence: Some(storage), placement: Some(Default::default()) };
         let mut recorded: Recorded = [(rpc.clone(), row(zone("a"), labels(&["y"]), StorageMeta::Ephemeral))].into();
-        recorded.insert(admin.clone(), RecordedRow { node_id: NodeId::mint(), sha256: None, config: Some(BTreeMap::new()), tags: Some(BTreeSet::new()), storage_persistence: None, placement: None });
+        recorded.insert(admin.clone(), RecordedRow { applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(BTreeMap::new()), tags: Some(BTreeSet::new()), storage_persistence: None, placement: None });
         let all = vec![BuildOperation::UpdateConfig { node: rpc.clone(), entry: None }, BuildOperation::CreateTags { node: rpc.clone(), labels: labels(&["x"]) }, BuildOperation::DeleteTags { node: rpc.clone(), labels: labels(&["y"]) }];
-        assert_eq!(properties_owed(&topology, &recorded, &[], &[]), all, "each property that differs, by its own operation");
+        assert_eq!(properties_owed(&property_build_id(), &topology, &recorded, &[], &[]), all, "each property that differs, by its own operation");
         assert_eq!(all.iter().map(BuildOperation::key).collect::<Vec<_>>(), ["node.config.update:mesh1.rpc.1", "node.tag.create:mesh1.rpc.1", "node.tag.delete:mesh1.rpc.1"]);
         let storage_only: Recorded = [(rpc.clone(), row(zone("b"), labels(&["x"]), StorageMeta::Ephemeral))].into();
-        assert_eq!(properties_owed(&topology, &storage_only, &[], &[]), vec![BuildOperation::UpdateConfig { node: rpc.clone(), entry: None }], "a storage-only difference is the config op's row write");
+        assert_eq!(properties_owed(&property_build_id(), &topology, &storage_only, &[], &[]), vec![BuildOperation::UpdateConfig { node: rpc.clone(), entry: None }], "a storage-only difference is the config op's row write");
         let same: Recorded = [(rpc.clone(), row(zone("b"), labels(&["x"]), persistent))].into();
-        assert_eq!(properties_owed(&topology, &same, &[], &[]), vec![], "nothing differs");
+        assert_eq!(properties_owed(&property_build_id(), &topology, &same, &[], &[]), vec![], "nothing differs");
         let complete = BuildStepReceipt { mesh: None, build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), attempt: 1, operation: "node.config.update:mesh1.rpc.1".into(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
-        assert_eq!(properties_owed(&topology, &recorded, &[complete], &[]), all[1..].to_vec(), "a Complete operation is not planned again");
+        assert_eq!(properties_owed(&property_build_id(), &topology, &recorded, &[complete], &[]), all[1..].to_vec(), "a Complete operation is not planned again");
         let created = [BuildOperation::CreateNode { node: rpc.clone(), over: None, executable: None, entry: None }];
-        assert_eq!(properties_owed(&topology, &recorded, &[], &created), vec![], "a path the plan creates is the create's");
+        assert_eq!(properties_owed(&property_build_id(), &topology, &recorded, &[], &created), vec![], "a path the plan creates is the create's");
         // An attempt's plan through the journal and back: the operations keep their names.
         let json = serde_json::to_value(&all).unwrap();
         assert_eq!(json[0]["op"], "update_config");
@@ -2977,27 +3017,27 @@ mod tests {
         let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
         let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
         let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
-        let own: Recorded = [(rpc.clone(), RecordedRow { node_id: NodeId::mint(), sha256: None, config: Some(port.clone()), tags: Some(labels(&["y"])), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) })].into();
+        let own: Recorded = [(rpc.clone(), RecordedRow { applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(port.clone()), tags: Some(labels(&["y"])), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) })].into();
         let create = "node.create:mesh1.rpc.1";
         let claimed = vec![receipt(1, create, "AllocateIdentity", None), receipt(1, create, "PrepareStorage", None), receipt(1, create, "Complete", None)];
-        assert_eq!(properties_owed(&cur, &own, &claimed, &[]), vec![], "the create's claim applied the entry: the node's own writes since stand");
+        assert_eq!(properties_owed(&property_build_id(), &cur, &own, &claimed, &[]), vec![], "the create's claim applied the entry: the node's own writes since stand");
         let cut = vec![receipt(1, create, "AllocateIdentity", None), receipt(1, create, "PrepareStorage", None)];
-        assert_eq!(properties_owed(&cur, &own, &cut, &[]), vec![], "an executor lost after the claim: the claim applied the entry all the same");
+        assert_eq!(properties_owed(&property_build_id(), &cur, &own, &cut, &[]), vec![], "an executor lost after the claim: the claim applied the entry all the same");
         let unclaimed = vec![receipt(1, create, "AllocateIdentity", None)];
         let all = vec![BuildOperation::UpdateConfig { node: rpc.clone(), entry: None }, BuildOperation::DeleteTags { node: rpc.clone(), labels: labels(&["y"]) }];
-        assert_eq!(properties_owed(&cur, &own, &unclaimed, &[]), all, "a create that never claimed the name applied nothing");
+        assert_eq!(properties_owed(&property_build_id(), &cur, &own, &unclaimed, &[]), all, "a create that never claimed the name applied nothing");
         let untagged = vec![receipt(1, "node.tag.delete:mesh1.rpc.1", "Complete", None)];
-        assert_eq!(properties_owed(&cur, &own, &untagged, &[]), all[..1].to_vec(), "the label this Build deleted, written again since, stands; the config it never applied is applied");
+        assert_eq!(properties_owed(&property_build_id(), &cur, &own, &untagged, &[]), all[..1].to_vec(), "the label this Build deleted, written again since, stands; the config it never applied is applied");
         let b = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let successor = own[&rpc].node_id.clone();
         let minted = |id: &NodeId| receipt(2, create, "AllocateIdentity", Some(serde_json::json!({ "node_id": id.as_str() })));
         let replaced = vec![deleted_receipt(1, "mesh1.rpc.1", &b), minted(&successor), receipt(2, create, "PrepareStorage", None), receipt(2, create, "Complete", None)];
-        assert_eq!(properties_owed(&cur, &own, &replaced, &[]), vec![], "a replacement's successor's claim wrote its entry's properties: its own writes since stand");
+        assert_eq!(properties_owed(&property_build_id(), &cur, &own, &replaced, &[]), vec![], "a replacement's successor's claim wrote its entry's properties: its own writes since stand");
         let other = vec![deleted_receipt(1, "mesh1.rpc.1", &b), minted(&NodeId::mint()), receipt(2, create, "PrepareStorage", None)];
-        assert_eq!(properties_owed(&cur, &own, &other, &[]), all, "a create whose minted node is not the row's proves nothing of it: the entry's are applied");
+        assert_eq!(properties_owed(&property_build_id(), &cur, &own, &other, &[]), all, "a create whose minted node is not the row's proves nothing of it: the entry's are applied");
         let unnamed = vec![deleted_receipt(1, "mesh1.rpc.1", &b), receipt(2, create, "PrepareStorage", None)];
-        assert_eq!(properties_owed(&cur, &own, &unnamed, &[]), all, "a replacement's create that recorded no identity proves nothing: the entry's are applied");
-        assert_eq!(properties_owed(&cur, &own, &[], &[]), all, "a later Build applies the entry's config and tags");
+        assert_eq!(properties_owed(&property_build_id(), &cur, &own, &unnamed, &[]), all, "a replacement's create that recorded no identity proves nothing: the entry's are applied");
+        assert_eq!(properties_owed(&property_build_id(), &cur, &own, &[], &[]), all, "a later Build applies the entry's config and tags");
     }
 
     /// CONTRACT (Q166, build.md §1: "`config` is the application's map and nothing else (RDM never reads
@@ -3054,7 +3094,7 @@ mod tests {
         let cur = t(&[("mesh1", 1, 1)]);
         let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
         let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.rpc.1", R, true)], &["mesh1"]);
-        let row = |config: BTreeMap<String, String>| RecordedRow { node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) };
+        let row = |config: BTreeMap<String, String>| RecordedRow { applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) };
         let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
         let mut recorded: Recorded = [(rpc.clone(), row(port))].into();
         recorded.insert("mesh1.admin.1".parse().unwrap(), RecordedRow { storage_persistence: None, placement: None, ..row(BTreeMap::new()) });
@@ -3199,7 +3239,7 @@ mod tests {
         after.nodes.retain(|x| x.name.to_string() != "mesh2.gateway.2");
         after.nodes.push(successor.clone());
         let mut on = rows.clone();
-        on.insert("mesh2.gateway.2".parse().unwrap(), RecordedRow { config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-gateway".into()) });
+        on.insert("mesh2.gateway.2".parse().unwrap(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-gateway".into()) });
         let done = vec![deleted_receipt(1, "mesh2.gateway.2", &gone), receipt(1, "node.delete:mesh2.gateway.2", "Complete", None), receipt(1, "node.create:mesh2.gateway.2", "Complete", None)];
         let left: Vec<BuildOperation> = ["mesh1.gateway.2", "mesh1.gateway.1", "mesh2.gateway.1"].iter().flat_map(|p| replace(p)).collect();
         assert_eq!(replacement_plan(&next, &after, &on, done.clone()), left, "the next attempt finishes the rest");

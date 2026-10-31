@@ -682,6 +682,17 @@ pub enum StatusRequest {
         /// The new root's secret.
         secret: RootSecretHex,
     },
+    /// Apply one complete Build entry at the exact birth. Recognition and properties are
+    /// persisted together by the node. Repeating this application preserves later changes.
+    /// Position 37 on the wire.
+    ApplyNodeProperties {
+        /// The node instance.
+        node_id: NodeId,
+        /// The addressed runtime incarnation.
+        incarnation: IncarnationId,
+        /// The complete entry and its existing Build identity.
+        entry: crate::properties::EntryProperties,
+    },
 }
 
 /// A read as one shape (Q167): the entity, the exact birth a `node.connection.get` reads, and the filter.
@@ -1105,6 +1116,7 @@ impl StatusRequest {
             Self::StartNode { .. } => "start-node",
             Self::UpdateNodeConfig { .. } => "update-node-config",
             Self::ApplyNodeConfig { .. } => "apply-node-config",
+            Self::ApplyNodeProperties { .. } => "apply-node-properties",
             Self::ApplyNodeName { .. } => "apply-node-name",
             Self::UpdateName { .. } => "node.name.update",
             Self::DeleteConnections { .. } => "delete-connections",
@@ -2129,7 +2141,7 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 37;
+    const REQUEST_VARIANTS: u32 = 38;
     const REPLY_VARIANTS: u32 = 63;
 
     type Request = StatusRequest;
@@ -2467,6 +2479,10 @@ mod tests {
             StatusRequest::Get { entity: crate::filter::Entity::Nodes, node: None, filter: crate::filter::Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold", "silver"]) },
             StatusRequest::UpdateRoots { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), roots: vec!["ab".into()], phase: RootsPhase::Distributed, secret: Some(RootSecretHex("cd".into())) },
             StatusRequest::UpdateRoot { secret: RootSecretHex("ab".into()) },
+            StatusRequest::ApplyNodeProperties { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), entry: crate::properties::EntryProperties {
+                application: crate::properties::PropertyApplication { build_id: "build-a".into(), operation: "entry".into() },
+                config: Default::default(), tags: Default::default(),
+            } },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {

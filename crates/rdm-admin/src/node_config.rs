@@ -175,6 +175,7 @@ impl NodeConfigs {
         let mut initial = self.own_snapshot(subject, properties.config)
             .ok_or_else(|| format!("{}: own property writer is not bound", subject.name))?;
         initial.tags = properties.tags;
+        initial.applied = properties.applied;
         let channels = self.own_channels.get().expect("own snapshot requires channels").clone();
         self.own_properties.get().expect("production own writer is bound").bound(initial,
             move |record| { channels.set_config(record.config.clone()); channels.set_tags(record.tags.clone()); })
@@ -193,12 +194,57 @@ impl NodeConfigs {
             }))
     }
 
+    /// A Build's complete entry uses this admin's ordinary property writer.
+    pub async fn own_entry(&self, subject: &crate::model::Node, entry: rdm_core::properties::EntryProperties) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
+        let initial = self.own_snapshot(subject, entry.config.clone())?;
+        let channels = self.own_channels.get()?.clone();
+        Some(self.own_properties.get()?.entry(initial, entry,
+            move |record| { channels.set_config(record.config.clone()); channels.set_tags(record.tags.clone()); })
+            .await.map(|written| if written.already_applied { rdm_core::reply::already_applied() } else { rdm_core::reply::applied() }))
+    }
+
     /// A downward tag command to this admin is a local write, with no command to its primary.
     pub async fn own_tags(&self, subject: &crate::model::Node, change: rdm_node::node_records::TagChange) -> Option<Result<StatusReply, crate::storage_error::StorageError>> {
         let channels = self.own_channels.get()?.clone();
         let initial = self.own_snapshot(subject, channels.config().unwrap_or_default())?;
         Some(self.own_properties.get()?.tags(initial, change, None,
             move |record| channels.set_tags(record.tags.clone())).await)
+    }
+
+    /// Read entry knowledge from the exact node's shared property record.
+    pub async fn entry_applied(&self, node_id: &rdm_core::NodeId, application: &rdm_core::properties::PropertyApplication) -> Result<bool, String> {
+        Ok(self.records().ok_or_else(|| "node records are not bound".to_string())?
+            .properties(node_id).await.map_err(|error| error.to_string())?
+            .is_some_and(|record| record.applied.contains(application)))
+    }
+
+    /// Carry a Build entry from its mesh-primary to the pinned node, then finish the
+    /// lifecycle metadata owed by that entry. Recognition at the node never skips this write.
+    pub async fn apply_entry(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, placed: (rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)) -> Result<(), String> {
+        let subject = view.own(&birth.node_id).ok_or_else(|| format!("{me}: property target {} is not held", birth.node_id))?;
+        if !birth.is(subject) {
+            return Err(format!("{me}: property target {} has a different incarnation", birth.node_id));
+        }
+        if !view.is_mesh_primary(&subject.mesh, me_id) {
+            return Err(format!("{me}: property target {} is not in its mesh-primary's view", birth.node_id));
+        }
+        let applied = self.entry_applied(&birth.node_id, &entry.application).await?;
+        if !applied {
+            let reply = if birth.node_id == *me_id {
+                self.own_entry(subject, entry).await.ok_or_else(|| format!("{me}: own property writer is not bound"))?
+                    .map_err(|error| error.to_string())?
+            } else {
+                let exact = ExactBirth { target: NodeTarget::ExactNode(birth.node_id.clone()), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() };
+                NodeRpc::new(&self.client).properties_apply(&exact, entry, &CallOptions::default()).await.map_err(|error| error.to_string())?
+            };
+            if !matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
+                return Err(format!("{me}: property target {} answered {}", birth.node_id, reply.name()));
+            }
+        }
+        self.written.update(storage, &birth.node_id, None, |row| {
+            row.storage_persistence = Some(placed.0);
+            row.placement = Some(placed.1);
+        }).await?.ok_or_else(|| format!("{me}: lifecycle record of {} is absent after property apply", birth.node_id))
     }
 
     /// The client this door tells births through: the mesh-primary's node.name.update tells a birth its
@@ -952,6 +998,53 @@ mod tests {
     use crate::storage::MemoryNodesStorage;
     use rdm_transport::StaticResolver;
     use std::collections::{BTreeMap, BTreeSet};
+
+    // @feature: node-records
+    /// CONTRACT (i150 R8): a property effect may precede a failed metadata write. A repeat
+    /// finishes metadata without contacting the node or overwriting its later own properties.
+    #[tokio::test]
+    async fn an_applied_entry_finishes_failed_metadata_without_repeating_the_node_effect() {
+        use rdm_core::meta::{PersistentDisposition, PlacementMeta, StorageMeta};
+        use rdm_core::properties::{EntryProperties, PropertyApplication};
+        use rdm_node::node_records::{MemoryNodeRecords, NodeProperties, NodeRecordsStorage, RecordBirth};
+        let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
+        admin.is_primary = true; admin.is_fabric_primary = true; admin.status = NodeStatus::Ready;
+        admin.incarnation_id = Some(IncarnationId::mint());
+        let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
+        node.status = NodeStatus::Ready; node.incarnation_id = Some(IncarnationId::mint());
+        let birth = crate::build::PinnedBirth::of(&node).unwrap();
+        let view = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
+            nodes: vec![admin.clone(), node.clone()],
+        };
+        let storage = MemoryNodesStorage::default();
+        let written = Arc::new(crate::node_rows::WrittenRows::default());
+        written.put(&storage, &NodeRow { storage_persistence: Some(StorageMeta::Ephemeral), placement: Some(PlacementMeta::default()), ..NodeRow::new(node.name.clone(), node.node_id.clone(), NodeStatus::Ready) }).await.unwrap();
+        let records = Arc::new(MemoryNodeRecords::default());
+        let application = PropertyApplication::entry(&rdm_core::BuildId::mint(), &node.name);
+        let own = NodeProperties {
+            birth: RecordBirth { node_id: node.node_id.clone(), incarnation_id: birth.incarnation.clone() },
+            config: [("source".into(), "later-node-write".into())].into(), tags: ["node".into()].into(),
+            endpoint_id: None, transport_addr: None, listeners: vec![], app_types: None,
+            held: Default::default(), applied: [application.clone()].into(),
+        };
+        records.put_properties(&own).await.unwrap();
+        let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[9u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        // No node endpoint is registered: any repeat of the property RPC makes this test fail.
+        let client = Arc::new(NodeRpcClient::new(endpoint.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
+        let door = NodeConfigs::new(client, Default::default(), written.clone());
+        assert!(door.records.set(records.clone()).is_ok());
+        let entry = EntryProperties { application, config: [("source".into(), "entry".into())].into(), tags: ["entry".into()].into() };
+        let placed = (StorageMeta::Persistent { disposition: PersistentDisposition::Preserve }, PlacementMeta::default());
+        let refusing = crate::workflows::node_config_update::tests::RefusingNodesStorage(MemoryNodesStorage::default());
+        let error = door.apply_entry(&admin.name, &admin.node_id, &view, &refusing, &birth, entry.clone(), placed).await.unwrap_err();
+        assert!(error.contains("simulated disk refusal"), "{error}");
+        door.apply_entry(&admin.name, &admin.node_id, &view, &storage, &birth, entry, placed).await.unwrap();
+        assert_eq!(written.row_of(&node.node_id).unwrap().storage_persistence, Some(placed.0));
+        assert_eq!(records.properties(&node.node_id).await.unwrap(), Some(own));
+        endpoint.close().await;
+    }
 
     // CONTRACT (`docs/architecture/lifecycles/node-config-update.md:5` — "`node.config.update` replaces a
     // node's application config, the whole map: a PUT, never a patch.",

@@ -716,7 +716,7 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
         }
         // Downward exact-node operations are answered by the birth they reach (`self_subject`), which
         // this admin answers as once its view holds it.
-        StatusRequest::ApplyNodeState { .. } | StatusRequest::ProbeNodeState { .. } | StatusRequest::ApplyNodeConfig { .. } | StatusRequest::ApplyNodeName { .. } => {
+        StatusRequest::ApplyNodeState { .. } | StatusRequest::ProbeNodeState { .. } | StatusRequest::ApplyNodeConfig { .. } | StatusRequest::ApplyNodeProperties { .. } | StatusRequest::ApplyNodeName { .. } => {
             (rdm_core::reply::status::not_ready(format!("{me_name} holds no view of itself yet: {} is answered by the birth it reaches once its view holds it", req.op())), None)
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
@@ -972,6 +972,21 @@ impl StatusDoor {
         }
     }
 
+    /// The exact node's durable entry knowledge, read from the shared record at need.
+    pub async fn entry_applied(&self, node_id: &NodeId, application: &rdm_core::properties::PropertyApplication) -> Result<bool, String> {
+        self.configs.get().ok_or_else(|| "node property client is not bound".to_string())?
+            .entry_applied(node_id, application).await
+    }
+
+    /// A Build entry follows the same downward route and node writer as caller changes.
+    pub async fn apply_build_entry(&self, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, storage: rdm_core::meta::StorageMeta, placement: rdm_core::meta::PlacementMeta) -> Result<(), String> {
+        self.commands.admitted().await;
+        let view = self.topology.read().await.clone();
+        let me = self.held_name_in(&view);
+        self.configs.get().ok_or_else(|| format!("{me}: node property client is not bound"))?
+            .apply_entry(&me, &self.node_id, &view, &*self.nodes_storage, birth, entry, (storage, placement)).await
+    }
+
     /// node.mesh.leave of the birth `(node_id, incarnation)` of this admin's mesh, its connections
     /// deleted (node-mesh-leave.md; node-replace.md step 1): this mesh-primary sends `LeaveMesh` on
     /// NodeCommand 0x22 to the exact birth (its own birth in-process), writes leaving on the birth's row
@@ -1200,6 +1215,7 @@ impl StatusDoor {
         // serving its own record is a node here, regardless of the primary roles it holds.
         let own_property = match req {
             StatusRequest::ApplyNodeConfig { incarnation, .. } => Some(incarnation),
+            StatusRequest::ApplyNodeProperties { node_id, incarnation, .. } if *node_id == self.node_id => Some(incarnation),
             StatusRequest::CreateTags { node_id, incarnation, .. } | StatusRequest::DeleteTags { node_id, incarnation, .. } if *node_id == self.node_id => Some(incarnation),
             _ => None,
         };
@@ -1215,6 +1231,7 @@ impl StatusDoor {
             };
             let result = match req {
                 StatusRequest::ApplyNodeConfig { config, .. } => configs.own_config(subject, config.clone()).await,
+                StatusRequest::ApplyNodeProperties { entry, .. } => configs.own_entry(subject, entry.clone()).await,
                 StatusRequest::CreateTags { labels, .. } => configs.own_tags(subject, rdm_node::node_records::TagChange::Create(labels.clone())).await,
                 StatusRequest::DeleteTags { scope, .. } => configs.own_tags(subject, rdm_node::node_records::TagChange::Delete(scope.clone())).await,
                 _ => unreachable!("selected own property commands only"),

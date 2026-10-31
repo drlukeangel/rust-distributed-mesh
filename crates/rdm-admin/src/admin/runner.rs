@@ -1475,56 +1475,47 @@ impl AdminRunner {
         ended
     }
 
-    /// A property the Build applies in place on `node` (build.md §1, "The Build applies the diff"): at
-    /// this admin, the node's mesh-primary, through the door a caller's command takes. `UpdateConfig`
-    /// puts the entry's config as `node.config.update` does (row first, then the node) and writes the
-    /// entry's storage and placement onto the row with it; `CreateTags` / `DeleteTags` put the labels as
-    /// `node.tag.create` / `node.tag.delete` do. The node is the birth this admin's view holds at the
-    /// path; one the view does not hold yet ends the step incomplete, nothing written.
+    /// Apply the accepted entry through the node's own writer. Config and tag diff steps
+    /// share one durable entry identity and exact target; metadata completion remains owed.
     async fn apply_in_place(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
-        use rdm_core::status::{StatusReply, StatusRequest, TagScope};
-        let me = self.held_name();
         let key = op.key();
-        let held = self.topology.read().await.node(node).and_then(|n| n.incarnation_id.clone().map(|incarnation| (n.node_id.clone(), incarnation)));
-        let Some((node_id, incarnation)) = held else {
-            return Err(crate::executor::RunEnd::Incomplete(format!("{key}: {me} holds no birth at {node}; nothing is written")));
-        };
         let template = self.template_for(node.kind, &node.mesh).await?;
+        let pipeline = self.pipeline(&template);
+        let current = self.topology.read().await.node(node).and_then(crate::build::PinnedBirth::of);
+        if current.is_none() {
+            return Err(crate::executor::RunEnd::Incomplete(format!("{key}: no birth at {node}; nothing is written")));
+        }
+        let application = rdm_core::properties::PropertyApplication::entry(build_id, node);
+        let applied = match (current.as_ref(), self.observer.status_door.get()) {
+            (Some(birth), Some(door)) => door.entry_applied(&birth.node_id, &application).await.map_err(crate::executor::RunEnd::Incomplete)?,
+            _ => false,
+        };
+        let birth = if applied {
+            current.expect("applied evidence names the current exact node")
+        } else {
+            pipeline.property_target(build_id, attempt, node, async {
+                current.ok_or_else(|| format!("{key}: no birth at {node}; nothing is written"))
+            }).await.map_err(crate::executor::RunEnd::from)?
+        };
         let step = match op {
             BuildOperation::UpdateConfig { .. } => "UpdateConfig",
             BuildOperation::CreateTags { .. } => "CreateTags",
             _ => "DeleteTags",
         };
         let put = async {
-            let Some(status_door) = self.observer.status_door.get() else {
-                return Err(format!("{key}: {me} holds no status authority yet to write the row of {node}; nothing is written"));
+            birth.held_in(&*self.topology.read().await, &key, node).map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("{key}: pinned birth {} is not held", birth.node_id))?;
+            let held = self.builds.read_build(build_id).await.map_err(|error| format!("{key}: Build {build_id} could not be read: {error}"))?;
+            let spec = held.topology.mesh(&node.mesh).and_then(|mesh| mesh.spec(node))
+                .ok_or_else(|| format!("{key}: Build {build_id} names no entry for {node}"))?;
+            let entry = rdm_core::properties::EntryProperties {
+                application: rdm_core::properties::PropertyApplication::entry(build_id, node),
+                config: spec.config.clone(), tags: spec.tags.clone(),
             };
-            let reply = match op {
-                BuildOperation::UpdateConfig { entry, .. } => {
-                    // The config is the entry's the fabric-primary put on the operation; the storage and
-                    // placement ride the Build message (Q227: this admin reads no Build record).
-                    let entry = entry.as_ref().ok_or_else(|| format!("{key}: the operation carries no entry of {node} from the fabric-primary that dispatched it; nothing is written"))?;
-                    let held = self.builds.read_build(build_id).await.map_err(|e| format!("{key}: the accepted Build {build_id} could not be read for {node}'s create spec; nothing is written: {e}"))?;
-                    let spec = held.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).cloned().ok_or_else(|| format!("{key}: the accepted Build {build_id} names no create spec for {node}; nothing is written"))?;
-                    let req = StatusRequest::UpdateNodeConfig { node_id, incarnation, config: entry.config.clone() };
-                    match status_door.update_config_from_spec(&req, spec.storage_persistence, spec.placement).await {
-                        StatusReply::ConfigUpdated { .. } => return Ok(()),
-                        refused => refused,
-                    }
-                }
-                BuildOperation::CreateTags { labels, .. } => match status_door.apply(None, &StatusRequest::CreateTags { node_id, incarnation, labels: labels.clone() }).await {
-                    StatusReply::TagsCreated { .. } => return Ok(()),
-                    refused => refused,
-                },
-                BuildOperation::DeleteTags { labels, .. } => match status_door.apply(None, &StatusRequest::DeleteTags { node_id, incarnation, scope: TagScope::Labels(labels.clone()) }).await {
-                    StatusReply::TagsDeleted { .. } => return Ok(()),
-                    refused => refused,
-                },
-                _ => unreachable!("apply_in_place is called for a property applied in place only"),
-            };
-            Err(format!("{key}: {node} answered {reply:?}"))
+            self.observer.status_door.get().ok_or_else(|| format!("{key}: node property door is not bound"))?
+                .apply_build_entry(&birth, entry, spec.storage_persistence, spec.placement).await
         };
-        self.pipeline(&template).apply_in_place(build_id, attempt, node, key.clone(), step, put).await.map_err(crate::executor::RunEnd::from)
+        pipeline.apply_in_place(build_id, attempt, node, key.clone(), step, put).await.map_err(crate::executor::RunEnd::from)
     }
 
     /// A Build's node.create of `node` with no exited birth (`CreateNode { over: None }`, and a Build's

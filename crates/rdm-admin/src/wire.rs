@@ -370,6 +370,7 @@ pub(crate) enum WireOutput {
     RosterAmended(RosterAmended),
     /// The recorded transition under an in-force fabric.delete (Q160).
     PrimariesTaken(crate::build_state::PrimariesTaken),
+    PropertyTarget(crate::build::PinnedBirth),
 }
 
 /// A runtime step's receipt: the runtime by fingerprint.
@@ -511,6 +512,7 @@ enum Produces {
     ExitManifest,
     RosterAmended,
     PrimariesTaken,
+    PropertyTarget,
 }
 
 fn produces(operation: &str, step: &str) -> Option<Produces> {
@@ -522,7 +524,9 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         return Some(Produces::LifecycleOp);
     }
     let ret = |r: DeleteStep| r.name() == step;
-    Some(if is(CreateStep::AllocateIdentity) {
+    Some(if step == "PinPropertyTarget" {
+        Produces::PropertyTarget
+    } else if is(CreateStep::AllocateIdentity) {
         Produces::Identity
     } else if is(CreateStep::WaitForBind) {
         Produces::Bound
@@ -622,6 +626,7 @@ fn output_to_wire(operation: &str, step: &str, v: &serde_json::Value) -> Result<
         Produces::ExitManifest => WireOutput::ExitManifest(typed(v)?),
         Produces::RosterAmended => WireOutput::RosterAmended(typed(v)?),
         Produces::PrimariesTaken => WireOutput::PrimariesTaken(typed(v)?),
+        Produces::PropertyTarget => WireOutput::PropertyTarget(typed(v)?),
     })
 }
 
@@ -659,6 +664,7 @@ fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
         WireOutput::ExitManifest(m) => json(&m),
         WireOutput::RosterAmended(a) => json(&a),
         WireOutput::PrimariesTaken(t) => json(&t),
+        WireOutput::PropertyTarget(t) => json(&t),
     }
 }
 
@@ -883,6 +889,15 @@ mod tests {
 
     /// An endpoint id is the endpoint's key as one string: it has no field to add, so what the reader
     /// refuses is an object where the string is.
+    // @feature: node-records
+    /// CONTRACT (i150 R8): exact property targets have a typed receipt shape; an unknown
+    /// target field is refused by name, never dropped before durable commit.
+    #[test]
+    fn a_property_target_output_with_an_unknown_field_is_refused_by_name() {
+        let pin = crate::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        unknown_field_is_refused_by_name("node.properties.update:mesh1.rpc.1", "PinPropertyTarget", json!({"node_id":pin.node_id,"incarnation":pin.incarnation}), "");
+    }
+
     #[test]
     fn an_endpoint_id_output_that_is_an_object_is_refused_by_name() {
         let step = CreateStep::PrepareStorage.name();

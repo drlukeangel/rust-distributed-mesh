@@ -796,6 +796,7 @@ async fn start_booted(
                             let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
                             let mut initial = property_snapshot(&topology_view, &digest, launch.initial_properties.config.clone());
                             initial.tags = launch.initial_properties.tags.clone();
+                            initial.applied = launch.initial_properties.applied.clone();
                             initial.listeners = listener_addrs.clone();
                             let properties_view = topology_view.clone();
                             property_writer.bound(initial, move |record| { properties_view.set_config(record.config.clone()); properties_view.set_tags(record.tags.clone()); }).await
@@ -1867,7 +1868,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 return Ok(forward_read(&me, &r, &req).await);
             }
             let incarnation = match &req {
-                StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::CreateTags { incarnation, .. } | StatusRequest::DeleteTags { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. } | StatusRequest::UpdateRoots { incarnation, .. } => incarnation,
+                StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeProperties { incarnation, .. } | StatusRequest::CreateTags { incarnation, .. } | StatusRequest::DeleteTags { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. } | StatusRequest::UpdateRoots { incarnation, .. } => incarnation,
                 // No handler on this door for the request: not handled here (R24), decided by dispatch alone.
                 _ => return Ok(crate::node_self::request_not_handled(&me.topology_view.held_name(&me.digest.node.name).to_string(), &req)),
             };
@@ -1925,6 +1926,22 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.topology_view.held_name(&me.digest.node.name), sender = %sender_name, requested = ?state, current = ?current, reason = "node.connection.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state")
                         .in_scope(|| tracing::info!("apply-node-state refused"));
                     Ok(rdm_core::reply::status::rejected_invalid_node_transition(current))
+                }
+                StatusRequest::ApplyNodeProperties { node_id, entry, .. } => {
+                    if node_id != me.digest.node.node_id {
+                        return Ok(crate::node_self::request_not_handled(
+                            &me.topology_view.node_name().to_string(), &StatusRequest::ApplyNodeProperties { node_id, incarnation: me.digest.node.incarnation.clone(), entry }));
+                    }
+                    let initial = property_snapshot(&me.topology_view, &me.digest, entry.config.clone());
+                    let topology = me.topology_view.clone();
+                    match me.property_writer.entry(initial, entry, move |record| {
+                        topology.set_config(record.config.clone());
+                        topology.set_tags(record.tags.clone());
+                    }).await {
+                        Ok(written) => Ok(if written.already_applied { rdm_core::reply::already_applied() } else { rdm_core::reply::applied() }),
+                        Err(error) => Ok(rdm_core::reply::status::bounded_node_row_refused(
+                            &me.topology_view.node_name().to_string(), &error.to_string())),
+                    }
                 }
                 StatusRequest::ApplyNodeConfig { config, revision, .. } => {
                     // node-config-update.md, a caller's update, step 3: the node installs the map over an

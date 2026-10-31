@@ -1319,6 +1319,7 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, propertie
             old
         }
     };
+    let mut applied = std::collections::BTreeSet::new();
     // Recovery inherits the predecessor's acknowledged properties from its own exact ID;
     // a primary's cached lifecycle row cannot stand in for that node-owned record.
     if matches!(of, ClaimFor::Arrival | ClaimFor::Recovery) {
@@ -1326,6 +1327,7 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, propertie
             if let Some(own) = properties.properties(&seed.node_id).await.map_err(|error| RowRefused::Unwritten(format!("{me}: predecessor {} properties could not be read: {error}", seed.node_id)))? {
                 seed.config = own.config;
                 seed.tags = own.tags;
+                applied = own.applied;
             }
         }
     }
@@ -1355,7 +1357,13 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, propertie
     span.record("keys", config.len() as u64).record("tags", labels(&tags).as_str());
     // The storage and placement the claim is handed (its create spec's), else the seed's.
     let (storage_meta, placement) = placed.map_or_else(|| (seed.as_ref().and_then(|p| p.storage_persistence), seed.as_ref().and_then(|p| p.placement)), |(s, p)| (Some(s), Some(p)));
-    let row = NodeRow { config, tags, allocated: allocated.cloned(), executable, predecessor, storage_persistence: storage_meta, placement, topology_storage_provider: written.topology_storage_provider(), ..NodeRow::new(name.clone(), node_id.clone(), status) };
+    if matches!(of, ClaimFor::Create | ClaimFor::Successor | ClaimFor::Replacement) {
+        if let Some(allocation) = allocated {
+            applied.insert(rdm_core::properties::PropertyApplication::entry(&allocation.build_id, name));
+        }
+    }
+    let initial_properties = Some(rdm_core::launch::InitialProperties { config: config.clone(), tags: tags.clone(), applied });
+    let row = NodeRow { initial_properties, config, tags, allocated: allocated.cloned(), executable, predecessor, storage_persistence: storage_meta, placement, topology_storage_provider: written.topology_storage_provider(), ..NodeRow::new(name.clone(), node_id.clone(), status) };
     span.record("awaiting", "put-node-row");
     let claimed = take_name(storage, name, node_id).await;
     let put = match claimed {
@@ -1665,6 +1673,46 @@ mod tests {
     use super::*;
     use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};
     use crate::storage::MemoryNodesStorage;
+
+    // @feature: node-records
+    /// CONTRACT (i150 R8): recovery captures config, tags and apply knowledge at the claim;
+    /// repeating that claim after the predecessor changes hands on the original snapshot.
+    #[tokio::test]
+    async fn a_recovery_claim_preserves_its_complete_property_snapshot() {
+        use rdm_node::node_records::{MemoryNodeRecords, NodeProperties, NodeRecordsStorage, RecordBirth};
+        let storage = MemoryNodesStorage::default();
+        let written = WrittenRows::default();
+        let properties = MemoryNodeRecords::default();
+        let name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let old = NodeId::mint();
+        storage.write_record(&NodeRow::new(name.clone(), old.clone(), NodeStatus::Deleted)).await.unwrap();
+        let build_id = crate::build::BuildId::mint();
+        let application = rdm_core::properties::PropertyApplication::entry(&build_id, &name);
+        let mut own = NodeProperties {
+            birth: RecordBirth { node_id: old.clone(), incarnation_id: IncarnationId::mint() },
+            config: [("source".into(), "node".into())].into(), tags: ["node".into()].into(),
+            endpoint_id: None, transport_addr: None, listeners: vec![], app_types: None,
+            held: Default::default(), applied: [application].into(),
+        };
+        properties.put_properties(&own).await.unwrap();
+        let new = NodeId::mint();
+        let allocated = Allocation { build_id, operation: format!("node.create:{name}"), incarnation: IncarnationId::mint(), deployment_id: crate::model::DeploymentId::mint() };
+        let empty_config = BTreeMap::new();
+        let empty_tags = Default::default();
+        let span = tracing::Span::none();
+        let claim = || seeded_put(&storage, &written, Some(&properties), &name, &name, &new, NodeStatus::Starting, &empty_config, Some(&allocated), None, &empty_tags, None, ClaimFor::Recovery, &span, "");
+        let first = claim().await.unwrap();
+        let first = match first { Claimed::Written { row, .. } => row, _ => panic!("first claim writes") };
+        let snapshot = first.initial_properties.clone().unwrap();
+        assert_eq!(snapshot.config, own.config);
+        assert_eq!(snapshot.tags, own.tags);
+        assert_eq!(snapshot.applied, own.applied, "recovery mints no entry application");
+        own.config.clear(); own.tags.clear(); own.applied.clear();
+        properties.put_properties(&own).await.unwrap();
+        let second = claim().await.unwrap();
+        let second = match second { Claimed::HeldByNode(row) => row, _ => panic!("same exact claim is held") };
+        assert_eq!(second.initial_properties, Some(snapshot), "a lost claim receipt cannot choose another snapshot");
+    }
 
     fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
         let mut n = Node::allocated(name.parse().unwrap());

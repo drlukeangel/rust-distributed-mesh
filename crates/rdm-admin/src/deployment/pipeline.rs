@@ -1780,9 +1780,9 @@ impl DeploymentPipeline<'_> {
             let claimed = rows.written().known_row(&**rows.storage(), &id.node_id).await
                 .map_err(|reason| PipelineError { step: CreateStep::PrepareStorage.name(), reason, code: rdm_core::outcome::Code::FailedPrecondition })?
                 .ok_or_else(|| PipelineError { step: CreateStep::PrepareStorage.name(), reason: format!("{}: exact claim {} has no initial properties; nothing is launched", req.node, id.node_id), code: rdm_core::outcome::Code::FailedPrecondition })?;
-            rdm_core::launch::InitialProperties { config: claimed.config, tags: claimed.tags }
+            claimed.initial_properties.ok_or_else(|| PipelineError { step: CreateStep::PrepareStorage.name(), reason: format!("{}: exact claim {} has no launch snapshot", req.node, id.node_id), code: rdm_core::outcome::Code::FailedPrecondition })?
         } else {
-            req.entry.as_ref().map(|entry| rdm_core::launch::InitialProperties { config: entry.config.clone(), tags: entry.tags.clone() }).unwrap_or_default()
+            req.entry.as_ref().map(|entry| rdm_core::launch::InitialProperties { config: entry.config.clone(), tags: entry.tags.clone(), applied: [rdm_core::properties::PropertyApplication::entry(&req.build_id, &req.node)].into() }).unwrap_or_default()
         };
         let launch = Launch {
             initial_properties,
@@ -2748,6 +2748,25 @@ impl DeploymentPipeline<'_> {
             self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await
         }
         .instrument(span))
+    }
+
+    /// Pin an entry's exact target with the existing durable step receipts before any apply.
+    /// Unlike runtime preparation, this decision survives failed and completed diff steps.
+    pub async fn property_target(&self, build_id: &BuildId, attempt: u32, node: &PathName, decide: impl std::future::Future<Output = Result<crate::build::PinnedBirth, String>> + Send) -> Result<crate::build::PinnedBirth, PipelineError> {
+        let operation = rdm_core::properties::PropertyApplication::entry(build_id, node).operation;
+        let view = self.builds.read_build(build_id).await.map_err(|error| PipelineError { step: "PinPropertyTarget", reason: error.to_string(), code: rdm_core::outcome::Code::FailedPrecondition })?;
+        let mut pin = None;
+        for receipt in view.steps.iter().filter(|receipt| receipt.operation == operation && receipt.step == "PinPropertyTarget" && receipt.outcome == StepOutcome::Complete) {
+            let birth: crate::build::PinnedBirth = serde_json::from_value(receipt.output.clone().unwrap_or(serde_json::Value::Null))
+                .map_err(|error| PipelineError { step: "PinPropertyTarget", reason: format!("{operation}: invalid target receipt: {error}"), code: rdm_core::outcome::Code::FailedPrecondition })?;
+            if pin.as_ref().is_some_and(|prior| *prior != birth) {
+                return Err(PipelineError { step: "PinPropertyTarget", reason: format!("{operation}: conflicting exact target receipts"), code: rdm_core::outcome::Code::FailedPrecondition });
+            }
+            pin = Some(birth);
+        }
+        if let Some(pin) = pin { return Ok(pin); }
+        let mut run = self.begin(build_id, attempt, node, operation).await?;
+        self.step(&mut run, "PinPropertyTarget", decide).await
     }
 
     /// A property of `node` a Build applies in place (build.md §1, "The Build applies the diff") as the
