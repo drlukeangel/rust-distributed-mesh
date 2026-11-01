@@ -3321,7 +3321,7 @@ fn representatives(f: &Formed, st: &Stable) -> Vec<String> {
     let admin = st
         .admins
         .iter()
-        .filter(|n| n["name"] != st.fp["name"] && n["name"] != "mesh1.admin.1")
+        .filter(|n| n["name"] != st.fp["name"] && location(n) != Estate::path("mesh1.admin", "1"))
         .map(|n| location(&n))
         .min()
         .expect("a node-admin that is neither the fabric-primary nor the Day-0 admin");
@@ -3521,7 +3521,7 @@ async fn restart_run(cell: &str, shape: Shape) {
     for (i, node) in order.iter().cloned().chain(std::iter::once(String::new())).enumerate() {
         // C3's node-admin: neither the fabric-primary nor the Day-0 admin, read at the moment.
         let node = if node.is_empty() {
-            st.admins.iter().filter(|n| n["name"] != st.fp["name"] && n["name"] != "mesh1.admin.1").map(|n| location(&n)).min().expect("a node-admin that is neither the fabric-primary nor the Day-0 admin")
+            st.admins.iter().filter(|n| n["name"] != st.fp["name"] && location(n) != Estate::path("mesh1.admin", "1")).map(|n| location(&n)).min().expect("a node-admin that is neither the fabric-primary nor the Day-0 admin")
         } else {
             node
         };
