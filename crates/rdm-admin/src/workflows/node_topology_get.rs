@@ -182,6 +182,7 @@ mod tests {
                         return None;
                     }
                     let view = NodeView {
+                        properties: Default::default(),
                         name,
                         kind: NodeKind::RpcNode,
                         mesh: "mesh1".to_string(),

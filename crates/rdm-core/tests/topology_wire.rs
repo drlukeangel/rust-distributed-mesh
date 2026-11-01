@@ -91,6 +91,7 @@ fn own_row() -> rdm_core::views::NodeView {
         executable: None,
         storage_persistence: None,
         placement: None,
+        properties: Default::default(),
         topology_storage_provider: None,
     }
 }
@@ -118,9 +119,10 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
         (RafkaTime { ms: 1_000, kind: None }, "0d e807 00"),
         (RafkaTime { ms: 300, kind: Some(PrimaryKind::FabricPrimary) }, "0d ac02 01 01"),
         (RafkaTime { ms: 7, kind: Some(PrimaryKind::MeshPrimary) }, "0d 07 01 00"),
-        // Q234: the reader's own whole row, a `NodeView` in its field order, then the row's revision (P1).
+        // Q234: the reader's own whole row, a `NodeView` in its field order (its trailing properties Read,
+        // Q318), then the row's revision (P1).
         (OwnRow { node: own_row(), revision: 3 }, "0e 05 6d2e727063 01 31 01 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 00 00 00 00 \
-            0000000000000000000000000000000000000000000000000000000000000000 00 00 00 00 00 03"),
+            0000000000000000000000000000000000000000000000000000000000000000 00 00 00 00 00 00 03"),
     ];
     for (r, hex) in fixtures {
         variants.insert(Topology::encode_reply(&r).unwrap()[0]);

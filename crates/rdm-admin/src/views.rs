@@ -71,7 +71,7 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
 /// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
 /// and the tags and config its record carries (Q203: config is never gossiped).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>, config: BTreeMap<String, String>) -> NodeView {
-    NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: n.name.clone(),
         kind: n.kind,
         mesh: n.mesh.clone(),
@@ -317,9 +317,10 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
                         node.held_hash = rdm_core::app_types::hash(&node.held);
                         if let Some(declared) = own.app_types { node.types = declared.types; }
                     }
-                    // A node whose current property record is absent has no properties to answer: they
-                    // are unavailable, named, never a lifecycle row's copy (node-config-update.md step 4).
-                    Ok(None) => return rdm_core::reply::status::not_ready(format!("path {:?}, name {:?}: node {} has no property record: its properties are unavailable", me.path, me.name, node.node_id)),
+                    // A node whose current property record is absent is listed with its lifecycle facts, its
+                    // properties unavailable, named, never a lifecycle row's copy (node-config-update.md step 4;
+                    // Q318: per node, not per read; a pair on them matches it not).
+                    Ok(None) => node.properties = rdm_core::views::PropertyRecord::Unavailable { reason: format!("node {} has no property record: its properties are unavailable", node.node_id) },
                     Err(error) => return rdm_core::reply::status::not_ready(format!("path {:?}, name {:?}: node record {} could not be read: {error}", me.path, me.name, node.node_id)),
                 }
             }

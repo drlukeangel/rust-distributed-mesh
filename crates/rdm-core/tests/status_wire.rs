@@ -165,6 +165,8 @@ fn replies_match_the_frozen_sixty_three_variant_wire_schema() {
                 "00", "00",
                 // placement None (build.md §1; every node property on the row a read answers), appended last
                 "00",
+                // properties Read (Q318: a node's property record read, or Unavailable), appended last
+                "00",
             ),
         ),
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010c303132333435363738396162", "00", "010c343132333435363738396162", "00")),
@@ -339,6 +341,7 @@ fn node_view() -> NodeView {
         config: [("tier".to_string(), "gold".to_string())].into(),
         data_dir_lost: None,
         data_dir_unreadable: None,
+        properties: Default::default(),
     }
 }
 

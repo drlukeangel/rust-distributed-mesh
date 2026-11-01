@@ -211,6 +211,9 @@ pub enum Value {
     Set(Vec<String>),
     /// The row lacks the property.
     Absent,
+    /// The row's value of the property is not known (its record is unavailable, Q318): no pair on it
+    /// matches, negated or not.
+    Unknown,
 }
 
 impl Value {
@@ -240,6 +243,11 @@ fn page_name(v: &impl Serialize) -> Option<String> {
 
 impl Row for NodeView {
     fn value(&self, property: &str) -> Value {
+        // A node whose property record is unavailable (Q318) holds no known config or tags: no pair on
+        // them matches it, negated or not.
+        if matches!(self.properties, crate::views::PropertyRecord::Unavailable { .. }) && (property.starts_with("config.") || property == "tags") {
+            return Value::Unknown;
+        }
         if let Some(key) = property.strip_prefix("config.") {
             return Value::of(self.config.get(key));
         }
@@ -438,6 +446,7 @@ impl Filter {
                 Value::One(v) => values.contains(&v),
                 Value::Set(set) => values.iter().any(|v| set.contains(v)),
                 Value::Absent => false,
+                Value::Unknown => return false,
             };
             any != not
         })

@@ -578,3 +578,46 @@ async fn status_of(view: &Topology, records: &MemoryNodesStorage, id: &NodeId) -
     let n = answer(view, records, &Ok(BTreeMap::new()), Filter::new().eq("id", [id.to_string()])).await.into_iter().next().expect("the birth is answered");
     (n.status, n.stopped)
 }
+
+/// CONTRACT (query.md §1: "Properties are read separately at the subject node ID. A missing
+/// current-writer record is unavailable"; "`node.get` materializes records"; Q318): a node whose own
+/// property record is not written yet is listed by `node.get` with its lifecycle facts and
+/// `properties: Unavailable` naming it, its config and tags empty; a pair on its tags or config does not
+/// match it, negated or not; a node whose record is read answers `Read` and its own tags. Must NOT
+/// happen: the whole read refused for one node's missing record, or the unavailable node matched by
+/// a negated property pair.
+#[tokio::test]
+async fn a_node_with_no_property_record_is_listed_unavailable_and_no_property_pair_matches_it() {
+    let mut admin = node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    admin.is_primary = true;
+    admin.is_fabric_primary = true;
+    let (owned, bare) = (node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let view = Topology {
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
+        nodes: vec![admin.clone(), owned.clone(), bare.clone()],
+    };
+    let records = MemoryNodesStorage::default();
+    for n in [&admin, &owned, &bare] {
+        let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
+        row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
+        records.write_record(&row).await.unwrap();
+    }
+    // The admin and mesh1.rpc.1 wrote their own property records; mesh1.rpc.2 has not yet.
+    own(&admin.node_id, BTreeMap::new(), Default::default()).await;
+    own(&owned.node_id, BTreeMap::from([("zone".to_string(), "eu-1".to_string())]), ["gold".to_string()].into()).await;
+    let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
+
+    let all = answer(&view, &records, &planned, Filter::new().eq("mesh", ["mesh1"])).await;
+    assert_eq!(all.len(), 3, "every node is listed, the one with no property record included: {all:#?}");
+    let of = |id: &NodeId| all.iter().find(|n| &n.node_id == id).unwrap_or_else(|| panic!("{id} listed: {all:#?}")).clone();
+    let b = of(&bare.node_id);
+    assert!(matches!(&b.properties, rdm_core::views::PropertyRecord::Unavailable { reason } if reason.contains(bare.node_id.as_str())), "its properties are unavailable, naming it: {b:?}");
+    assert_eq!((b.status, b.tags.len(), b.config.len()), (rdm_core::views::NodeStatus::Ready, 0, 0), "its lifecycle facts stand, its properties empty: {b:?}");
+    let o = of(&owned.node_id);
+    assert_eq!((o.properties.clone(), o.tags.clone()), (rdm_core::views::PropertyRecord::Read, ["gold".to_string()].into()), "a node whose record is read answers its own tags");
+
+    let ids = |nodes: Vec<rdm_core::views::NodeView>| nodes.into_iter().map(|n| n.node_id).collect::<Vec<_>>();
+    assert_eq!(ids(answer(&view, &records, &planned, Filter::new().eq("tags", ["gold"])).await), [owned.node_id.clone()], "[tags: gold] matches the node that carries it");
+    assert_eq!(ids(answer(&view, &records, &planned, Filter::new().not("config.zone", ["eu-1"])).await), [admin.node_id.clone()], "a negated config pair matches the node whose record lacks the value, never the node whose record is unavailable");
+}

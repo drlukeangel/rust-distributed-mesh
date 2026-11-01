@@ -2670,6 +2670,7 @@ mod tests {
             config: [("tier".to_string(), "gold".to_string())].into(),
             data_dir_lost: None,
             data_dir_unreadable: None,
+            properties: Default::default(),
         }
     }
 
