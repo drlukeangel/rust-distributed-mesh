@@ -52,6 +52,21 @@ evidence, which the lead reviews before anything lands: its own `post-land-gate.
 the cells it ran with their results, and the Jaeger links of the traces that show the fix working
 (the rules `lane-dispatch.sh` writes into `seat-rules.md`, item 7).
 
+### 1.0 How the lead runs the verbs
+
+- **One verb per call, its whole output read.** Each verb prints the next step: `lane-prep.sh` its
+  `PREPPED` line, `lane-dispatch.sh` its `SEAT TYPE` line and the three numbered launch steps,
+  `post-land-gate.sh` its `GREEN` or `RED` line. Never chain verbs in one command or trim their output
+  (`| tail`), so the printed step is never lost.
+- **Launch from the lane.** A seat starts in the session's working directory: `EnterWorktree` into the
+  lane, the Agent call, `ExitWorktree` with `action: keep`, as `lane-dispatch.sh` prints them.
+- **Dispatch ahead.** A unit is dispatched as soon as it is known, while the current seats run, so its
+  agent type is registered by the time a lane frees and the launch follows at once. A follow-up unit of
+  an issue that already has an agent type (the lane prepped again, `--issue` the same) is `registered`
+  and launches at once.
+- **A lane's work reaches the lead lane only through `lane-land.sh`**; nothing commits to the lead
+  lane's branch by hand while seats are rebasing on it.
+
 ### 1.1 A unit on a lead lane
 
 An initiative the lead integrates in its own lane (the **lead lane**) before it lands on main gives each
