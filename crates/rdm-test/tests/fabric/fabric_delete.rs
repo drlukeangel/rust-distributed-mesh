@@ -377,8 +377,9 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
     assert_eq!(count(&grown, |o| at_loc(o, "node.create", &Estate::path("mesh1.rpc", "2")), "Complete"), 0, "the outstanding create is never run again: {:?}", listed(&grown));
     let receipts = receipts_at(&estate, &fp.0, &id).await;
     torn_down(&receipts, 2, &id_in(&ids, "mesh2.admin", "1"));
-    // mesh1.rpc.2's node id is the one its create's claim took the name for.
-    let rpc2 = named(&estate.spans(), "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| rdm_test::estate::names_location(sp, "subject", &Estate::path("mesh1.rpc", "2")) && sp["attributes"]["moment"] == "claim").and_then(|sp| sp["attributes"]["node_id"].as_str().map(String::from)).unwrap_or_else(|| panic!("mesh1.rpc.2's create claimed its name for a node id"));
+    // mesh1.rpc.2's node id is the one its create launched it under: its own boot names it (the claim's
+    // span is the lost fabric-primary's, whose evidence the kill may cut).
+    let rpc2 = named(&estate.spans(), "rdm.mesh.node.create.via-boot").into_iter().find(|sp| rdm_test::estate::at_location(sp, &Estate::path("mesh1.rpc", "2"))).and_then(|sp| sp["attributes"]["node_id"].as_str().map(String::from)).unwrap_or_else(|| panic!("mesh1.rpc.2's boot names its node id"));
     let deleted = count(&receipts, |o| of_id(o, "node.delete", &rpc2), "Complete");
     let left: Vec<u32> = estate.live_runtimes().into_iter().map(|(_, pid)| pid).collect();
     assert!(!left.contains(&launched[0]), "the outstanding runtime of mesh1.rpc.2 is captured and deleted: {left:?}");

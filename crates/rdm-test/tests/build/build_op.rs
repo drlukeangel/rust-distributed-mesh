@@ -972,12 +972,12 @@ impl Caller {
 
 /// The next `Blocked` frame of `stream`. A terminal frame or a broken stream before it is a defect of
 /// the cell; frames before it are returned beside it.
-async fn next_blocked(stream: &mut BuildStream) -> (Vec<BuildFrame>, (String, String)) {
+async fn next_blocked(stream: &mut BuildStream) -> (Vec<BuildFrame>, (String, String, rdm_core::OperationId)) {
     let mut before = Vec::new();
     loop {
         let frame = tokio::time::timeout(Duration::from_secs(90), stream.next()).await.expect("a frame within the bound").expect("the stream goes on").expect("the stream does not break");
         match frame {
-            BuildFrame::Blocked { step, reason, .. } => return (before, (step, reason)),
+            BuildFrame::Blocked { step, reason, operation, .. } => return (before, (step, reason, operation)),
             BuildFrame::Complete { .. } | BuildFrame::Failed { .. } => panic!("the Build ended before the Blocked frame: {frame:?} after {before:?}"),
             other => before.push(other),
         }
@@ -1026,16 +1026,19 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     rdm_test::write_pre_node_ready_knob(&estate.root, &blocked, A).unwrap();
     let grown = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] };
     let mut stream = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.expect("the fabric-primary accepts the grown shape");
-    let (before_a, (step, reason)) = next_blocked(&mut stream).await;
+    let (before_a, (step, reason, operation)) = next_blocked(&mut stream).await;
     assert_eq!(step, "WaitForNodeReady", "the blocked step: {reason}");
-    assert!(reason.contains(&blocked.path) && reason.contains(&blocked.name) && reason.contains(A) && reason.contains("primary-addressed"), "the frame names the birth, the hook's reason and its retry event: {reason}");
+    // The frame's operation is the birth's create at its (path, name); its reason names the birth by
+    // node id, the hook's reason and its retry event.
+    assert_eq!((operation.action.as_str(), operation.subject.clone()), ("node.create", Some(rdm_core::OperationSubject::Location(blocked.clone()))), "the frame names the birth's create: {operation:?}");
+    assert!(reason.contains(": pre_node_ready is blocked: ") && reason.contains(A) && reason.contains("primary-addressed"), "the frame names the birth, the hook's reason and its retry event: {reason}");
     assert!(!before_a.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })));
 
     // Reruns blocked for the same reason: the executor's probes address the birth, so its hook runs
     // again on each; wait until it has been blocked for A three more times.
     wait_for("three more attempts blocked for A", Duration::from_secs(60), || async { (knob_attempts(&knob, &blocked, A) >= 4).then_some(()) }).await;
     rdm_test::write_pre_node_ready_knob(&estate.root, &blocked, B).unwrap();
-    let (before_b, (step_b, reason_b)) = next_blocked(&mut stream).await;
+    let (before_b, (step_b, reason_b, _)) = next_blocked(&mut stream).await;
     assert_eq!(step_b, "WaitForNodeReady");
     assert!(reason_b.contains(B) && !reason_b.contains(A), "the next Blocked frame is the changed reason, never A again: {reason_b}");
     assert!(!before_b.iter().any(|f| matches!(f, BuildFrame::Step { step, .. } if step == "WaitForNodeReady")), "the step is still in flight: {before_b:?}");

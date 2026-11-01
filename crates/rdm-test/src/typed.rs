@@ -55,10 +55,14 @@ impl Estate {
         if let Some(w) = wire.as_mut().filter(|w| w.entry == self.admin && w.entry_id.is_some()) {
             let id = w.entry_id.as_ref().unwrap();
             if w.stale {
-                let views = Nodes::new(w.peers.carrier_for(id.clone())).get(&rdm_client::Filter::new().eq("id", [id.as_str()])).await.expect("the exact entry admin answers node.get");
-                assert!(views.iter().any(|node| &node.node_id == id), "the exact entry admin is listed");
-                self.note(&w.peers, &views);
-                w.stale = false;
+                // A node-admin that is not a primary forwards every read to its mesh-primary (query.md §1,
+                // Q243): while its view names none, its read is refused and the wire stays stale, read
+                // again by the next call; the carrier still reaches the entry by its id.
+                if let Ok(views) = Nodes::new(w.peers.carrier_for(id.clone())).get(&rdm_client::Filter::new().eq("id", [id.as_str()])).await {
+                    assert!(views.iter().any(|node| &node.node_id == id), "the exact entry admin is listed");
+                    self.note(&w.peers, &views);
+                    w.stale = false;
+                }
             }
             return w.peers.carrier_for(id.clone());
         }

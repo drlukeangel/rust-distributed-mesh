@@ -225,8 +225,10 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
 
     // Joined: the observer is a new neighbour of mesh1's primary, which puts the stripped full of
     // every source it has published into the Mesh.
-    until_arrival("the observer hears mesh2's forwarded full on mesh1's channel and the backbone mesh topology", Duration::from_secs(60), &observer.arrivals, || {
-        let backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { mesh, .. } if mesh == "mesh2"));
+    // The backbone mesh topology carries loads: a member's load is its own digest's, so the first backbone
+    // topology published before mesh2's rpc nodes published theirs carries none yet.
+    until_arrival("the observer hears mesh2's forwarded full on mesh1's channel and the backbone mesh topology carrying loads", Duration::from_secs(60), &observer.arrivals, || {
+        let backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { mesh, digests, .. } if mesh == "mesh2" && digests.iter().any(|d| d.in_flight.is_some())));
         (!observer.forwarded_fulls_of("mesh2").is_empty() && backbone).then_some(())
     })
     .await;

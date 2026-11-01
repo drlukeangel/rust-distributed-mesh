@@ -188,15 +188,10 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     assert_eq!(read[&PathName::new("mesh1.rpc", "2").unwrap()].tags, ["zone_a".to_string()].into(), "the node carries the tags its entry named, from its claim");
     assert_eq!((&row["record"]["initial_properties"]["config"], &row["record"]["initial_properties"]["tags"]), (&json!({"zone": "a"}), &json!(["zone_a"])), "its claim records its create spec's config and tags as its launch snapshot: {row}");
     assert_eq!(read[&PathName::new("mesh1.rpc", "2").unwrap()].config, zone, "the node carries the config its create spec named");
-    // Spans reach the evidence folder in batches (rdm-transport telemetry), so the join the node made is read once it is there.
-    let node_id = created.node_id.to_string();
-    let joins: Vec<Value> = rdm_test::estate::wait_for("the join span of mesh1.rpc.2 in the evidence", SETTLE, || async {
-        let joins: Vec<Value> = estate.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.node.update.via-join" && s["attributes"]["node_id"] == json!(node_id)).collect();
-        (!joins.is_empty()).then_some(joins)
-    })
-    .await;
-    let keys: Vec<&str> = joins.iter().filter_map(|j| j["attributes"]["config_keys"].as_str()).collect();
-    assert!(keys.contains(&"1") && !keys.contains(&"0"), "its first join hands it the config, never none: {joins:#?}");
+    // The node writes its own property record from its launch snapshot (its join answer is not where
+    // config lives).
+    let own = estate.node_properties(&created.node_id).expect("the created node's own property record");
+    assert_eq!((own.config.clone(), own.tags.clone()), (zone.clone(), ["zone_a".to_string()].into()), "the created node's own record holds its spec's config and tags: {own:?}");
     assert_eq!(read[&PathName::new("mesh1.rpc", "1").unwrap()].executable.as_ref(), Some(&rpc), "and every other node's");
 
     // A, from its earlier read: refused, nothing accepted, (path mesh1.rpc, name 2) untouched.

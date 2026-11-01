@@ -192,7 +192,14 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         .min_by_key(|r| at(r))
         .expect("the fabric primary created a node-admin into the lost mesh under the accepted Build");
     let created = creates_admin(first).expect("the first attempt's create");
-    let (recovery_admin, recovery_admin_id) = (PathName::new(attr(&created, "node_path"), attr(&created, "node_name")).expect("a create names its location"), attr(&created, "node_id"));
+    let recovery_admin = PathName::new(attr(&created, "node_path"), attr(&created, "node_name")).expect("a create names its location");
+    // Its node id is the one its create's claim took the name for.
+    let recovery_admin_id = named(&spans, "rdm.node_admin.node.create.via-node-row")
+        .into_iter()
+        .filter(|c| rdm_test::estate::names_location(c, "subject", &recovery_admin) && attr(c, "moment") == "claim" && at(c) > at(first))
+        .min_by_key(|c| at(c))
+        .map(|c| attr(c, "node_id"))
+        .unwrap_or_else(|| panic!("{recovery_admin:?}'s create claimed its name for a node id"));
     let joined: Vec<&Value> = named(&spans, "rdm.node.mesh.update.via-joining").into_iter().filter(|j| rdm_test::estate::of_node(j, &recovery_admin, &recovery_admin_id) && at(j) > at(first)).collect();
     assert!(!joined.is_empty() && joined.iter().all(|j| attr(j, "mesh_id") == lost_mesh_id), "{recovery_admin:?} joined under {lost}'s own MeshId: it never minted: {joined:?}");
     let adopted = named(&spans, "rdm.node_admin.mesh.update.via-held-state-adopted").into_iter().filter(|a| attr(a, "publisher") == recovery_admin_id && attr(a, "mesh_id") == lost_mesh_id && at(a) > at(first)).count();
@@ -519,7 +526,7 @@ async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_record
     // durable, and the Build's attempt is open.
     let door = rdm_test::faults::Door::at(&estate, &fp).await;
     let cut = "steps:create";
-    door.arm(cut, json!({"kind": "receipt", "step": "PrepareStorage", "operation": "node.create:mesh1.rpc.3"})).await;
+    door.arm(cut, json!({"kind": "receipt", "step": "PrepareStorage", "operation": "node.create", "node": rdm_core::OperationSubject::Location(Estate::path("mesh1.rpc", "3"))})).await;
     let rpc1: rdm_client::PathName = Estate::path("mesh1.rpc", "1");
     let stream = estate.nodes_obj().await.steps(vec![rdm_core::build::Step::Stop { node: rpc1 }, rdm_core::build::Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: Estate::path("mesh1.rpc", "3"), executable: Some(estate.executables.of(rdm_client::LaunchKind::RpcNode)) }]).await.unwrap_or_else(|e| panic!("the Build is accepted: {e}"));
     let held = door.wait_held(cut).await;

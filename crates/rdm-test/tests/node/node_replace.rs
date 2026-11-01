@@ -290,7 +290,8 @@ fn assert_mesh_primary_ran_the_recovery(
             .into_iter()
             .find(|sp| attr(sp, "attempt") == attempt)
             .unwrap_or_else(|| panic!("{fp_at:?}'s run of the reported attempt"));
-        assert!(at_location(drift, &fp_at) && attr(drift, "lane") == mesh && attr(drift, "executor") == mp_birth && attr(drift, "outcome") == "complete", "{drift}");
+        // The drift run names its reporting mesh-primary by node id; the claim and the run by its birth.
+        assert!(at_location(drift, &fp_at) && attr(drift, "lane") == mesh && attr(drift, "executor") == s(&mp["node_id"]) && attr(drift, "outcome") == "complete", "{drift}");
     }
     let started = named(run, "rdm.node_admin.build.serve.via-attempt-run")
         .into_iter()
@@ -1089,20 +1090,20 @@ async fn steps_naming_an_unknown_node_are_refused_unknown_node_naming_the_step_a
     estate.artifact("refused.json", &json!({"reason": reason, "detail": detail, "span": refused[0]}));
 }
 
-/// CONTRACT (node-replace.md step 3: "Its row inherits config and tags from the predecessor row (the
-/// retained `<name>-old` row ...), whose labels leave the active tags index"; Inherited: "The
-/// successor's tag-index entries use its own id. Retained predecessor labels are removed from the
-/// active index, not erased from its row"): mesh2's primary tells `mesh2.rpc.1` a config and a tag,
+/// CONTRACT (node-replace.md "Properties": "Tags remain in the subject's own property record; a
+/// current-pair lookup selects the successor's ID, not the predecessor's properties"; query.md:
+/// "Historical records ... remain queryable by their own IDs and matching properties"): mesh2's
+/// primary tells `mesh2.rpc.1` a config and a tag,
 /// then the node is replaced up to the successor's create (no delete of the predecessor). The
 /// predecessor leaves its mesh, takes `<name>-old` live and is stopped there; the successor's claim at
 /// `<name>`, the name it released, puts its row with its Build entry's config and tags (Q305,
 /// node-replace.md "Properties"): this Build of steps takes its entry from its topology, which names
 /// none of the config and the tag the calls wrote, so the successor's row carries neither, never the
 /// retained `.old` row's (`seeded_from` the predecessor all the same). The claim then marks the
-/// retained row `inherited_by` the successor (its labels leave the tags index; the row keeps them). The
-/// successor's join under `<name>` hands it no config; node.get by the tag names nobody, while the
-/// predecessor stays retained at `<name>-old` with its tag on its row. Must NOT happen: the dead
-/// predecessor's config or tags copied onto the successor.
+/// retained row `inherited_by` the successor. The successor's join under `<name>` hands it no config;
+/// node.get by the tag names the retained predecessor alone, which stays at `<name>-old` with its tag
+/// in its own property record, never the successor. Must NOT happen: the dead predecessor's config or
+/// tags copied onto the successor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_its_create_and_the_retained_row_leaves_the_tags_index() {
     let (estate, _build) = two_mesh_estate("a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_its_create_and_the_retained_row_leaves_the_tags_index").await;
@@ -1175,7 +1176,7 @@ async fn a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_it
         .into_iter()
         .map(|n| n.node_id.to_string())
         .collect();
-    assert!(selected.is_empty(), "the tags index names neither the successor, whose entry named no tag, nor the retained predecessor: {selected:?}");
+    assert_eq!(selected, vec![s(&before["node_id"])], "a read by the tag names the retained predecessor, whose own record keeps it, and never the successor, whose entry named no tag: {selected:?}");
     let retained = estate.node_values().await.into_iter().find(|n| n["node_id"] == before["node_id"]).unwrap_or_else(|| panic!("the predecessor is retained at {old_name:?}"));
     assert_eq!(retained["name"], json!(old_name), "predecessor keeps its path and changes only its name");
     let retained_record = rdm_admin::store_log::read_record(&estate.fabric_store_root().join(rdm_node::node_records::NODE_RECORDS_FILE), "node-properties", Some(member.node_id.as_str())).expect("durable retained predecessor properties");
@@ -1930,8 +1931,8 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
     };
     assert_eq!((u64::from(ended.0), ended.2.as_str()), (delete_attempt, "DeleteConnections"), "the stream names the failed step: {ended:?}");
 
-    let operation = format!("node.connection.delete:{node:?}");
-    let failed_step = |p: &Value| p["steps"].as_array().cloned().unwrap_or_default().into_iter().find(|r| r["operation"] == operation.as_str() && r["attempt"] == json!(delete_attempt) && r["outcome"]["failed"].is_object());
+    let subject = OperationSubject::Node(node_id_of(&before));
+    let failed_step = |p: &Value| p["steps"].as_array().cloned().unwrap_or_default().into_iter().find(|r| is_operation(&r["operation"], "node.connection.delete", &subject) && r["attempt"] == json!(delete_attempt) && r["outcome"]["failed"].is_object());
     let held = build_log::build_fact(&estate, &birth_build, "the node.connection.delete attempt ends Failed", SETTLE, |p| failed_step(&serde_json::to_value(p).expect("a Build view serializes")).is_some())
         .await
         .unwrap_or_else(|end| panic!("{end}"));
@@ -2282,14 +2283,10 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     // at its node id, still holds the config and the tag.
     let exited = estate.node_properties(&s(&before["node_id"]).parse().unwrap()).expect("the exited node's property record stays");
     assert_eq!((exited.config.clone(), exited.tags.clone()), (told.clone(), labels.clone()), "the exited node's property record keeps its config and tag: {exited:?}");
-    // The new node is handed that config in its join answer (node-start.md step 2), before it
-    // publishes anything or declares readiness: the claim was written before it was launched.
-    let joined = wait_for("the new node's join is exported", Duration::from_secs(60), || async {
-        let spans = estate.spans();
-        named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).cloned()
-    })
-    .await;
-    assert_eq!((s(&joined["attributes"]["outcome"]), s(&joined["attributes"]["config_keys"])), ("installed".to_string(), "1".to_string()), "the new node's join answer hands its row's config: {joined}");
+    // The new node writes its own property record from its launch snapshot, the exited birth's
+    // acknowledged config and tags (node-recovery.md; its join answer is not where config lives).
+    let own = wait_for("the new node's own property record", Duration::from_secs(30), || async { estate.node_properties(&s(&after["node_id"]).parse().unwrap()) }).await;
+    assert_eq!((own.config.clone(), own.tags.clone()), (told.clone(), labels.clone()), "the new node's own record holds the exited birth's config and tag: {own:?}");
     let carried = wait_for(&format!("the new {node_path:?} carries the config"), Duration::from_secs(30), || async { let n = estate.node_value(node_path).await; (n["config"] == told_json).then_some(n) }).await;
     assert_eq!(carried["node_id"], after["node_id"], "the new node, not the exited one, carries it");
     assert_eq!(estate.node_view(node_path).await.tags, labels, "the new node's row carries the exited node's tag");
@@ -2968,10 +2965,11 @@ async fn a_superseded_birth_that_comes_back_is_refused_reported_and_killed() {
     assert!(!alive(pid as u64), "the returning birth's process was terminated: {facts}");
     let reported = spans.iter().any(|sp| sp["name"] == "rdm.node_admin.node.update.via-returned-reported" && sp["attributes"]["node_id"] == old_id.as_str());
     assert!(reported, "its mesh-primary reported it to the fabric-primary: {facts}");
-    let operation = format!("node.terminate:{node:?}@{}", s(&before["incarnation_id"]));
-    let terminated = spans.iter().any(|sp| sp["name"] == "rdm.node_admin.deployment.update.via-step" && sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["outcome"] == "complete" && sp.to_string().contains(&operation));
-    let receipted = spans.iter().any(|sp| sp.to_string().contains(&operation));
-    assert!(terminated || receipted, "the fabric-primary ran TerminateRuntime under {operation}: {facts}");
+    // node.terminate of the exact returned birth: its run's span names the birth, and its TerminateRuntime
+    // step completed under it.
+    let runs: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-terminate-returned").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == old_id && sp["attributes"]["incarnation_id"] == before["incarnation_id"]).collect();
+    let terminated = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["outcome"] == "complete" && runs.iter().any(|run| descends_from(&spans, sp, run)));
+    assert!(terminated, "TerminateRuntime ran under node.terminate of {node:?}@{}: {runs:?} {facts}", s(&before["incarnation_id"]));
     assert_eq!(last["live_at_path"], json!([s(&after["node_id"])]), "the path keeps one live birth, the re-created one: {facts}");
 }
 

@@ -80,15 +80,17 @@ fn deletes_are_causal(estate: &Estate, steps: &[Step]) {
             .unwrap_or_else(|| panic!("no span accepted build {}", step.build_id))
             .clone();
         for node in &step.deleted {
+            // A view's name is the node's (path, name) pair, held here as its JSON.
+            let at: rdm_core::PathName = serde_json::from_str(node).unwrap_or_else(|e| panic!("{node}: not a path and name: {e}"));
             let delete = named(&spans, "rdm.node_admin.node.delete.via-build")
                 .into_iter()
-                .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["build_id"] == step.build_id.as_str())
+                .find(|s| rdm_test::estate::at_location(s, &at) && s["attributes"]["build_id"] == step.build_id.as_str())
                 .unwrap_or_else(|| panic!("{node}: no removal under build {}", step.build_id))
                 .clone();
             assert!(descends_from(&spans, &delete, &accepted), "{node}: its removal descends from its Build");
             let delete = named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
                 .into_iter()
-                .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["pipeline"] == "delete" && descends_from(&spans, s, &delete));
+                .find(|s| rdm_test::estate::at_location(s, &at) && s["attributes"]["pipeline"] == "delete" && descends_from(&spans, s, &delete));
             assert!(delete.is_some(), "{node}: a delete pipeline ran under its removal");
         }
     }
