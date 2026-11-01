@@ -4,7 +4,7 @@
 
 ### i151 (queued: starts after i150 lands) — one `Resend` for every Node RPC call, `on_node_investigated`
 
-Ruled Q311, Q312 (Luke, 2026-11-01). Nothing is broken today; built after i150 lands. Proposal: [151-consolidate-event-callers-add-investigation-hook.md](proposal/151-consolidate-event-callers-add-investigation-hook.md). No i151 code in i150.
+Ruled Q311 to Q316 (Luke, 2026-11-01: one `Resend` the caller owns, attempts per resolved birth for a primary-addressed call, `on_call_failed` at the caller and `on_node_investigated` at the primary, no application exception in RDM). Nothing is broken today; built after i150 lands. Proposal: [151-consolidate-event-callers-add-investigation-hook.md](proposal/151-consolidate-event-callers-add-investigation-hook.md). No i151 code in i150.
 
 ### i150 removal debt (Luke, 2026-11-01: each item found no longer needed is listed here and removed at the end)
 

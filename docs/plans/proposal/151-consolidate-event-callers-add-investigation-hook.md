@@ -1,7 +1,8 @@
 # i151 proposal: one `Resend` for every Node RPC call, and the `on_node_investigated` hook
 
-Status: ruled by Luke 2026-11-01 (Q311, Q312, Q313); reviewed against the code and pages by the lead
-2026-11-01 (R-151.1 to R-151.12 below; R-151.6 ruled A by Luke, Q313). A new initiative,
+Status: ruled by Luke 2026-11-01 (Q311 to Q316); reviewed against the code and pages by the lead
+2026-11-01 (R-151.1 to R-151.13 below; R-151.6 ruled A by Luke, Q313; R-151.1 rewritten and R-151.13
+added by Q314, Q315, Q316). A new initiative,
 i151: nothing is broken today, so it starts after i150 (rdm#245) lands and never rides inside i150.
 Origin: Luke, 2026-11-01: "we shouldn't have multiple ways to do the same thing; timelimit should be
 inside resend; resend should have attempts"; `Budget` becomes `TimeLimit`, `Owed` becomes `Resend`
@@ -16,6 +17,14 @@ Every claim below is marked verified (read in code or page, cited), inferred, or
   mesh-primary itself or, for any other caller, the mesh-primary it reports the birth to; the lead picks
   the time limit (§3).
 - **Q312 (Luke):** yes to the hook, `on_node_investigated` (§7).
+- **Q313 (Luke):** a call addressed to a primary counts its attempts per birth the view names for the
+  role (§6, R-151.6).
+- **Q314 (Luke):** a second hook, `on_call_failed`, at the caller, carrying the stored reason, the
+  sender and the receiver (§7, R-151.13).
+- **Q315 (Luke):** the caller owns the mechanism: `attempts` and `time_limit` are set by whoever opens
+  the call, RDM's values the default (R-151.1).
+- **Q316 (Luke):** no use case for an application inside RDM: no exception for Rafka's write leg; the
+  application acts on the event and owns its duplicate boundary (R-151.1, §11).
 
 ## 1. What is built today (verified)
 
@@ -77,17 +86,17 @@ pub struct Resend {
 pub struct TimeLimit(pub Duration);
 ```
 
-- **R-151.1 `attempts` is a field; 3 is its one default** (`Resend::default()`), read as Q311's number.
-  Two callers are one attempt by their own page or invariant, not by taste: the tickle's direct probe
-  ("one QUIC connect", node-recovery.md step 2; the ladder goes on to the peers, node-tickle.md "Ladder")
-  and Rafka's write leg to a replica (`broker_data_op.rs:300`, `once: true`; writer-ingress
-  `context.rs:283`: the writer's leg policy decides which replica is asked next, and the transport's
-  duplicate window is in memory and does not survive a broker restart, so a resent frame after a
-  restart is a second delivery: the writer owns that boundary, node-rpc.md §52 "moving reader/writer
-  retry policy into the connections/reachability layer" forbidden). A 3-attempt tickle inside an
-  investigation that itself starts an investigation on an unanswered call would be recursion. `once`
-  is removed; those two sites are `Resend { attempts: 1, .. }`. `unsent_is_final` stays: it is the
-  carrier's one inner call's rule (node-rpc.md §36.1), not a resend count.
+- **R-151.1 The caller owns the mechanism (Q315, Q316).** `Resend { attempts, time_limit }` is set by
+  whoever opens the call; `Resend::default()` is RDM's values (3 attempts, Q311; `TimeLimit` 10 s, §3),
+  and every RDM call site passes its own by §3. No field is RDM-only and RDM makes no exception for an
+  application's call: the tickle's direct probe passes `attempts: 1` because its page says one connect
+  (node-recovery.md step 2; the ladder, not the call, goes on to the peers), and a 3-attempt probe
+  inside an investigation that itself marks a spent call would be recursion. Rafka's write leg runs on
+  the same `Resend` as every call; what Rafka does when it is spent (ask the next replica) and how it
+  stays correct across a replica restart (the transport's duplicate window is in memory,
+  `delivery.rs`; a resent frame after the replica restarted is a second delivery) are Rafka's, acted
+  on through `on_call_failed` (R-151.13) and written in Rafka's proposal (§11). `once` is removed.
+  `unsent_is_final` stays: it is the carrier's one inner call's rule (node-rpc.md §36.1), not a count.
 - `CallOptions.budget` and `CallOptions.once` are replaced by `CallOptions.resend`.
 - **R-151.2 What an attempt is and which clock runs inside it (verified against `until_end`).** An
   attempt is one send of the request: direct, or through the carrier the route policy names (#7),
@@ -188,7 +197,7 @@ Production cadences: publish cadence 2 s (`RDM_GOSSIP_INTERVAL_MS`), staleness f
 
 | Mechanism | Value | Scope | Starts / resets when | On exhaustion | Source and rationale |
 |---|---|---|---|---|---|
-| Attempts | 3, the first send included; 1 for the tickle's direct probe and Rafka's write leg | one call (under R-151.6 arm A: one call to one resolved birth) | the call opens; never reset for an exact birth: a receiver re-resolved to another birth ends the call `ReceiverGone` (existing) and a retarget is the owner's new call; under arm A a new birth the view names for the role starts its own three | the call ends to its owner by name (R-151.4) and the birth is recorded unanswered (R-151.8) | Q311 (3); node-recovery.md step 2 and node-rpc.md §52 (the two 1s): existing |
+| Attempts | the caller's; `Resend::default()` 3, the first send included; the tickle's direct probe 1 | one call (under R-151.6 arm A: one call to one resolved birth) | the call opens; never reset for an exact birth: a receiver re-resolved to another birth ends the call `ReceiverGone` (existing) and a retarget is the owner's new call; under arm A a new birth the view names for the role starts its own three | the call ends to its owner by name (R-151.4) and the birth is recorded unanswered (R-151.8) | Q311 (3), Q315 (the caller's, RDM's the default); node-recovery.md step 2 (the tickle's 1): existing |
 | Delay before attempt n+1 | `cadence × 2^(n-1)`, ±25 % jitter, capped at the floor: 2 s, 4 s (8 s unused with 3 attempts) | one call | measured from attempt n's start | n/a | `rdm-core/src/delivery.rs:15`, `delivery.rs:39`: existing |
 | Ack wait inside attempt n | that attempt's delay (2 s, 4 s, 8 s) | one attempt | the complete send | the next attempt, or the end at attempt 3 | `client.rs:1457`: existing |
 | `TimeLimit` | 10 s; the receiver's own bound + 10 s where it has one (15 s for connections delete and stop; a Build step's bound + 10 s) | one attempt: resolve, dial, complete send; then the reply from the ack | the attempt's start; the reply's from the ack | the attempt ends `NotSent(Deadline)` or `Indeterminate` | proposed (§3): the default is today's 10 s `Overall`; the per-class values are today's `Split.reply` values; validated by the flame of §8 step 4 |
@@ -271,9 +280,54 @@ owner (many moving parts), C is a correctness loss the pages do not allow. With 
 "resolves its receiver at each attempt" reads "per resolved birth" and the §43 text in §9 carries the
 sentence "a call addressed to a primary counts its attempts per birth the view names for it".
 
-## 7. The hook: `on_node_investigated` (Q312)
+## 7. The hooks: `on_call_failed` (Q314) and `on_node_investigated` (Q312)
 
-- **R-151.10 Called by the primary that investigated**: each mesh-primary for a node of its mesh; the
+Two moments, two places, two hooks (Luke, 2026-11-01):
+
+| Hook | Where | When | Who acts |
+|---|---|---|---|
+| `on_call_failed` | the calling node | its call's attempts are spent | the caller, now: Rafka's writer asks the next replica |
+| `on_node_investigated` | the primary above the birth | the verdict is recorded | Rafka's node-admin: `write -> none` on `recreate` |
+
+- **R-151.13 `on_call_failed`.** Called on the calling node, on a task of its own, once per spent call,
+  after the call has ended to its owner; a notice, gates nothing. `CallFailedCtx { sender, receiver, op,
+  outcome, attempts, elapsed, context }`: `sender` and `receiver` each `(node_id, incarnation, path,
+  name)` (the receiver's birth the one the call was addressed to; under Q313 the last birth resolved;
+  none for a `NodeTarget::Endpoint` call, which names no birth); `op` the request's op; `outcome` the
+  reason the call's span stores, typed: `NotSent(NotSentReason)` (connect refused, connect timed out,
+  endpoint unresolved, no active route, `rdm-core/src/outcome.rs`; today's `node_commands.rs:500` names
+  them `connect-refused`, `connect-timed-out`, `endpoint-unresolved`) or
+  `Indeterminate(IndeterminateReason)` (committed and never acked; acked and no reply within the
+  limit); `attempts` made; `elapsed` from the call's open; `context` the call's trace context, so the
+  application's action parents to the spent call. It runs on every node (the wiring every node has for
+  `on_node_ready`, `rdm-node/src/node_hooks.rs:188`), not only admins. The writer reads `NotSent` as
+  safe to ask another replica and `Indeterminate` as "the frame may have landed", its own idempotency
+  rule deciding (Q316).
+
+fabric-node-hooks.md, a new row in the hooks table:
+
+> | [`on_call_failed`](#on_call_failed) | every node | after one of its calls ends with its attempts spent | nothing; it is a notice |
+
+and a new section:
+
+> ## on_call_failed
+>
+> When a call this node opened ends with its attempts spent ([node-rpc.md §43](node-rpc.md#43-resend-delivery-is-the-runtimes)),
+> RDM calls `on_call_failed` once, with `CallFailedCtx { sender, receiver, op, outcome, attempts,
+> elapsed, context }`, on a task of its own, after the call has ended to its owner. `sender` and
+> `receiver` are each the birth's `(node_id, incarnation, path, name)`; `outcome` is the call's stored
+> reason, `NotSent` with its reason (nothing reached the receiver) or `Indeterminate` with its reason
+> (the request crossed the commit cut and no answer came). The notice gates nothing: the call's owner
+> already has its outcome by name; the application acts by its own rule (ask another node, mark a
+> route) and owns any duplicate boundary a later resend of its own crosses. It is not a verdict on the
+> receiver: that is [`on_node_investigated`](#on_node_investigated), once the primary above the birth
+> has investigated it.
+
+### `on_node_investigated`
+
+- **R-151.10 Called by the primary that investigated** (no `_failed` split of this hook: it fires on
+  every verdict, `reached` included, and `verdict` and `next` say which, as `on_build_ended` carries
+  Complete or Failed in one hook): each mesh-primary for a node of its mesh; the
   fabric-primary for a mesh-primary (R-151.7 case 2). `next` is `rejoin`, `recreate`, or `none` for a
   verdict RDM acts on by neither (fabric recovery's `running` exception, fabric-recovery.md step 3).
 - RDM guarantees nothing between the notice's task and the re-create it names: Rafka orders its own
@@ -454,7 +508,10 @@ staleness floor starts investigation: the clock is now the spent instant, R-151.
 2. `rdm-admin`: #8 and #9's no-reply turns removed, their answer turns kept; every call site given its
    `Resend` (§3); an admin's own spent call writes the Q182 record; `ReportUnanswered` served into the
    same record; `on_node_investigated` called after each verdict, with its ctx in `rdm_admin::wiring`
-   beside `on_build_ended` (`wiring.rs:227`). Cells: fifty callers' reports of one birth within a floor
+   beside `on_build_ended` (`wiring.rs:227`); `on_call_failed` in `rdm-node`'s hook wiring beside
+   `on_node_ready` (`node_hooks.rs:188`), called by the transport client's owner on every node. Cells:
+   a spent call calls `on_call_failed` once with the stored reason, both births and the call's trace
+   context; a call that is answered never calls it. Cells: fifty callers' reports of one birth within a floor
    start one investigation; a mesh-primary's spent call to a node and a peer node's spent call to the
    same node both end in the one record; a spent call to a mesh-primary is reported to the
    fabric-primary; the hook fires once per verdict with `next` as node-recovery.md step 3 decides.
@@ -466,11 +523,14 @@ staleness floor starts investigation: the clock is now the spent instant, R-151.
 ## 11. Rafka build
 
 - Rafka's 45 `Budget::` uses move to `Resend` with the RDM pin: `Overall(d)` becomes
-  `Resend { attempts: 3, time_limit: TimeLimit(d) }`; its ten `once: true` sites become
-  `attempts: 1` where the page or invariant says one (the write leg, R-151.1) and `attempts: 3`
-  otherwise, each named in the landing. The writer's leg policy (which replica is asked next, the
-  route vote, `context.rs:46-57`) stays: it is reader/writer retry policy (node-rpc.md §52), not a
-  resend.
+  `Resend { attempts: 3, time_limit: TimeLimit(d) }`, or `Resend::default()` where `d` is 10 s; its ten
+  `once: true` sites choose their own `attempts` (Q315), each named in the landing with its reason. No
+  site is told its number by RDM (Q316).
+- The writer's leg policy (which replica is asked next, the route vote, `context.rs:46-57`) stays and
+  is driven by `on_call_failed`'s `outcome`: `NotSent` asks the next replica; `Indeterminate` goes
+  through the writer's own idempotency rule. How a resent frame stays one write across a replica
+  restart (the replica keeping the delivery it accepted durably, Kafka's producer id and sequence, or
+  the writer's own frame identity) is Rafka's proposal, not this one.
 - node-admin implements `on_node_investigated`: on `next = recreate` it writes the broker's
   `write -> none` rows (replica-routing.md §6 step 1), taking it out of its topics' write sets, and
   orders that write before the new birth's re-sync by its own rule (the re-sync stays on
