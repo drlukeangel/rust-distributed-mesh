@@ -1953,8 +1953,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         return Ok(rdm_core::reply::status::bounded_config_row_refused(
                             &me.topology_view.node_name().to_string(), &error.to_string()));
                     }
-                    let installed = true;
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.node_id, sender = %sender_name, keys = config.len(), installed, outcome = "applied", "otel.kind" = "internal")
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.node_id, sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the config its mesh-primary sent is durable on its property record"));
                     Ok(rdm_core::reply::applied())
                 }
