@@ -286,7 +286,6 @@ pub trait StartNode: super::node_mesh_join::MeshJoin {
 /// refresh and the report, in that order, for `node` as it plugs into each step.
 pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(), N::Error> {
     let Starting { root, mut name, path, node_id, client, rafka_time } = node.starting();
-    let mesh = node.join_digest().node.mesh;
     // 1. and 2. node.mesh.join (node-mesh-join.md), the one primitive: the report, the answer's
     //    rafka-time, cert and name taken before the node says anything, then the mesh channel holding
     //    that name and the status frames the join answered: node.joined. With no authority, the
@@ -297,7 +296,8 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
         Joining::AcceptingPrimary { label } => {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node_path = %path.path, node_name = %name, node_id = %node_id, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
             let to = node.resolve_join_to().await?;
-            let mesh_id = node.join_digest().mesh_id.as_ref().map(ToString::to_string).unwrap_or_default();
+            let digest = node.join_digest();
+            let (mesh, mesh_id) = (digest.node.mesh, digest.mesh_id.as_ref().map(ToString::to_string).unwrap_or_default());
             let operation = node.operation().unwrap_or_else(|| match kind {
                 StartKind::FirstStart => rdm_core::OperationId::location("node.create", &path),
                 StartKind::AfterStop => rdm_core::OperationId::node("node.start", &node_id),
