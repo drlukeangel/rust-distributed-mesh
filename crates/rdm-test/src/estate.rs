@@ -1648,6 +1648,45 @@ fn line_carries_name(mut line: &[u8], names: &[&str]) -> bool {
     false
 }
 
+/// The location a node view carries in its `name`: its separate path and name fields.
+pub fn location(node: &Value) -> rdm_core::PathName {
+    serde_json::from_value(node["name"].clone()).expect("a node view carries separate path and name fields")
+}
+
+/// Whether span `sp` names `location` as its node: its separate `node_path` and `node_name` fields.
+pub fn at_location(sp: &Value, location: &rdm_core::PathName) -> bool {
+    names_location(sp, "node", location)
+}
+
+/// Whether span `sp` names `location` in its `<field>_path` and `<field>_name` fields (`node`, `subject`, ...).
+pub fn names_location(sp: &Value, field: &str, location: &rdm_core::PathName) -> bool {
+    sp["attributes"][format!("{field}_path")] == location.path.as_str() && sp["attributes"][format!("{field}_name")] == location.name.as_str()
+}
+
+/// Whether a Build record's `operation` (a structured `OperationId`) is `action` on `subject`, whatever
+/// its step position or occurrence.
+pub fn is_operation(op: &Value, action: &str, subject: &rdm_core::OperationSubject) -> bool {
+    serde_json::from_value::<rdm_core::OperationId>(op.clone()).is_ok_and(|o| o.action == action && o.subject.as_ref() == Some(subject))
+}
+
+/// Whether span `sp` records `action` on `subject`: its `operation` and `operation_subject` fields.
+pub fn span_operation(sp: &Value, action: &str, subject: &rdm_core::OperationSubject) -> bool {
+    sp["attributes"]["operation"] == action && sp["attributes"]["operation_subject"] == format!("{:?}", Some(subject))
+}
+
+/// The exact birth a node view row names: its node id and incarnation.
+pub fn birth_of(row: &Value) -> rdm_core::framing::Birth {
+    rdm_core::framing::Birth {
+        node_id: serde_json::from_value(row["node_id"].clone()).expect("a view row names its node id"),
+        incarnation: serde_json::from_value(row["incarnation_id"].clone()).expect("a view row names its incarnation"),
+    }
+}
+
+/// The probe's `--target` naming the birth currently at `location`: `path:` and its JSON path and name.
+pub fn path_target(location: &rdm_core::PathName) -> String {
+    format!("path:{}", serde_json::to_string(location).expect("a location serializes"))
+}
+
 /// Spans by name.
 pub fn named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     spans.iter().filter(|s| s["name"] == name).collect()
