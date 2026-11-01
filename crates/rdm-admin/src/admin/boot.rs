@@ -3387,8 +3387,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 {
                                                     let durable_rows = fabric_rows.for_pass(now.is_fabric_primary(&me_id), &*drift_nodes, &me).await;
                                                     // The births a rename moved off the entry the accepted topology names them by (their
-                                                    // current records' provenance, query.md §1): those entries' nodes, never surplus.
-                                                    let moved = drift_control.moved_off_entries(&now).await;
+                                                    // current records' provenance, query.md §1): those entries' nodes, never surplus. Read
+                                                    // only by the drift's author, the fabric-primary (`reconcile_drift`); every other admin
+                                                    // reads no record for it (Q227).
+                                                    let moved = if now.is_fabric_primary(&me_id) { drift_control.moved_off_entries(&now).await } else { Default::default() };
                                 let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &digest_view, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh_unheard(mesh, digest_view.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| (digest_view.backbone_meshes().contains(mesh) || now.members().any(|n| n.mesh == mesh)) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh), &moved).await;
                                                     // The attempt is planned from the view as it is now.
                                                     if opened.is_some() {

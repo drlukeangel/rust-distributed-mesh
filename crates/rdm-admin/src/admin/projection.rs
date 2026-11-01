@@ -215,11 +215,16 @@ impl RowNames {
             rows.names.insert((node_id, incarnation), (published, name));
         }
         // A publishing birth is listed at the name it published whatever its row says; its row is read
-        // only for whether it released the name (unreadable: not known to, and the birth keeps today's rule).
+        // only where another birth is listed at that name too, and only for whether it released the name
+        // (unreadable: not known to, and the birth keeps today's rule). Q227: no start reads the store for
+        // the births that speak for themselves.
         for (node_id, incarnation, published) in publishing {
-            let (name, released) = row_name(me, &*store, &node_id, &incarnation, &published).await;
-            if released { rows.released.insert((node_id.clone(), incarnation.clone())); }
-            rows.names.insert((node_id, incarnation), (published, name));
+            if listed.get(&published).copied().unwrap_or(0) < 2 {
+                continue;
+            }
+            if let (_, true) = row_name(me, &*store, &node_id, &incarnation, &published).await {
+                rows.released.insert((node_id, incarnation));
+            }
         }
         rows
     }
