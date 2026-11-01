@@ -45,13 +45,9 @@ application recognition. Replacement initializes from its own Build entry, inclu
 
 ## Deferred application and startup
 
-A stopped process remains alive with its Node RPC endpoint bound. When property application is
-deferred, its mesh-primary records an identified obligation on the lifecycle record. Durable
-acceptance is distinct from the node having applied that effect.
-
-Startup selects an obligation explicitly. If startup receives A and B is accepted before A's
-acknowledgement, that acknowledgement clears only A. B remains owed until B is acknowledged as
-applied. Generic Ready and an earlier environment snapshot do not discharge B.
+A stopped process remains alive with its Node RPC endpoint bound and applies an update as a running
+node does. A node that does not answer ends the command `ConfigNotApplied` by name; nothing is
+recorded for it.
 
 Launch properties initialize an absent own record. Existing durable properties and application
 recognition survive startup; an older environment must not overwrite them. The own-property
