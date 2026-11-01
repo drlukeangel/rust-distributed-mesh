@@ -888,7 +888,9 @@ pub(crate) fn adopt_held_mesh_state(answer: &crate::wire::JoinAnswer, records: &
         }
         declared.hold_mesh(mesh_id.clone(), state);
     }
-    tracing::info_span!("rdm.node_admin.mesh.update.via-held-state-adopted", mesh, mesh_id = %mesh_id, state = ?state, served_by = %answer.served_by, publisher = %publisher)
+    // The adopting admin is named by the name its join was admitted under, as every admin span names its node.
+    let (node_path, node_name) = answer.control.name.as_ref().map(|n| (n.path.as_str(), n.name.as_str())).unwrap_or_default();
+    tracing::info_span!("rdm.node_admin.mesh.update.via-held-state-adopted", node_path, node_name, mesh, mesh_id = %mesh_id, state = ?state, served_by = %answer.served_by, publisher = %publisher)
         .in_scope(|| tracing::info!("the mesh's held lifecycle state is adopted as it exists: no transition, no durable write"));
 }
 
