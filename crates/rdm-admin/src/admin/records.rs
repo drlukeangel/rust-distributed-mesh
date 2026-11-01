@@ -1053,6 +1053,8 @@ mod tests {
     /// mesh's records are persisted under its writer birth.
     #[tokio::test]
     async fn a_view_naming_this_admin_mesh_primary_installs_only_after_its_issued_writes_settled_and_its_snapshot_persisted() {
+        let capture = crate::span_capture::Capture::new("takeover-prepared");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let (fabric_id, mesh_id) = (FabricId::mint(), MeshId::mint());
         let me = member("1", NodeKind::NodeAdmin, true);
         let rpc = member("1", NodeKind::RpcNode, true);
@@ -1093,6 +1095,14 @@ mod tests {
         let results: Vec<(rdm_core::PrimaryRole, rdm_core::Primary)> = lifecycle.primary_records().await.unwrap().into_iter().flat_map(|b| b.records).collect();
         assert!(results.iter().any(|(role, p)| *role == rdm_core::PrimaryRole::MeshPrimary && p.is_birth(&me.node_id, me.incarnation_id.as_ref().unwrap()) && p.revision == 1), "the election's result is persisted at its own identity: {results:?}");
         assert!(records.rows.get().unwrap().written().filled("mesh1"), "the writer's copy of the mesh is the snapshot");
+        let spans = capture.named("rdm.node_admin.primary.update.via-takeover-prepared");
+        for s in &spans {
+            eprintln!("span {} trace {} {:?}", s.name, s.trace_id, s.attributes);
+        }
+        let field = |k: &str| spans.first().and_then(|s| s.attributes.get(k).cloned()).unwrap_or_default();
+        assert_eq!(spans.len(), 1, "one preparation span: {spans:?}");
+        assert_eq!((field("outcome"), field("settled"), field("frozen"), field("records"), field("meshes")), ("prepared".into(), "true".into(), "1".into(), "2".into(), "mesh1".into()), "the preparation settled, froze mesh1's snapshot and persisted its two records: {spans:?}");
+        assert!(field("primaries").contains("mesh-primary="), "the election's results it persisted are named: {spans:?}");
     }
 
     /// CONTRACT: docs/architecture/lifecycles/node-primary-update.md:76-80 "Preparation fails or remains
@@ -1124,6 +1134,9 @@ mod tests {
         };
         assert!(!first.is_mesh_primary("mesh1", &me.node_id) && !topology.read().await.is_mesh_primary("mesh1", &me.node_id), "the role is installed over an outstanding preparation");
         let spans = capture.named("rdm.node_admin.primary.update.via-takeover-prepared");
+        for s in &spans {
+            eprintln!("span {} trace {} {:?}", s.name, s.trace_id, s.attributes);
+        }
         assert!(spans.iter().any(|s| s.attributes.get("outcome").map(String::as_str) == Some("outstanding") && s.attributes.get("error").is_some_and(|e| e.contains("refused for the cell"))), "the outstanding preparation is one span naming the storage error: {spans:?}");
         // The predecessor's late write of the member's row, after the snapshot froze.
         let mut late = nodes.node(&rpc.node_id).await.unwrap().unwrap();
