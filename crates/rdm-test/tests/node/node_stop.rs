@@ -448,18 +448,18 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
     estate.record_trace_url(update["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (node-rpc-envelope.md "Node properties": config "is a field of the node record ... a
-/// rejoining node gets it back in its join answer"; node-config-update.md: row first, node second; the
-/// stopped arm node.name.update already completes on, proposal node-properties-own-commands.md §2.3):
-/// `node.config.update` of the stopped `mesh1.rpc.1` at its mesh-primary ends `node.config.updated`
-/// on the row: the row at `mesh1.rpc.1` holds the whole config, and the stopped node is sent nothing
-/// (the via-config span says `apply=stopped`, no `answered`; no ApplyNodeConfig reaches it). Then
-/// `node.start` makes the same process rejoin: its join is handed the row's config
-/// (`via-join` `config_keys=1`), and `node.get` lists the same birth `ready` carrying it.
-/// What must NOT happen: `ConfigNotApplied` (`not-sent`) for a stopped node, or a call to it.
+/// CONTRACT (node-config-update.md, Deferred application and startup: "A stopped process remains alive
+/// with its Node RPC endpoint bound"; a caller's update, step 2: "The node's property writer applies the
+/// whole map to its latest owned state and issues one put"): `node.config.update` of the stopped
+/// `mesh1.rpc.1` at its mesh-primary ends `node.config.updated`: the stopped process, still bound, is
+/// sent `ApplyNodeConfig` once and its own writer puts the map (the via-config span says
+/// `apply=direct`, no `answered`; one `via-apply-node-config` at the node). Then `node.start` makes the
+/// same process rejoin (`via-join` admitted), and `node.get` lists the same birth `ready` carrying the
+/// config. What must NOT happen: `ConfigNotApplied` for a stopped node, or the started birth without
+/// the config.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carries_it() {
-    let test = "a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carries_it";
+async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_start_carries_it() {
+    let test = "a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_start_carries_it";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
@@ -477,8 +477,8 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
     let held = view_of(&estate.nodes_obj().await, &path).await;
     assert!(held.stopped && held.status == NodeStatus::Stopped, "{held:?}");
 
-    // The update: one call to the fabric-primary, here mesh1's mesh-primary too, the row written, the
-    // stopped node told nothing.
+    // The update: one call to the fabric-primary, here mesh1's mesh-primary too, and the stopped node,
+    // still bound, applies it through its own writer.
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().expect("the stopped node's birth") };
     let carrier = estate.carrier().await;
@@ -486,7 +486,7 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
         .config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
         .await
         .expect("node.config.update answered");
-    assert!(matches!(&reply, StatusReply::ConfigUpdated { node_id, incarnation, config, .. } if *node_id == before.node_id && Some(incarnation) == before.incarnation_id.as_ref() && *config == told), "a stopped node's config update completes on its row: {reply:?}");
+    assert!(matches!(&reply, StatusReply::ConfigUpdated { node_id, incarnation, config, .. } if *node_id == before.node_id && Some(incarnation) == before.incarnation_id.as_ref() && *config == told), "a stopped node's config update completes once its writer put it: {reply:?}");
 
     let started = frames(nodes.start(&path).await.expect("the start was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
@@ -510,12 +510,13 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
     let spans = estate.spans();
     let update = named(&spans, "rdm.node_admin.node.update.via-config").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string()).expect("the mesh-primary served the node.config.update");
     let a = &update["attributes"];
-    assert_eq!((s(&a["outcome"]), s(&a["apply"]), s(&a["subject"]), s(&a["answered"])), ("config-updated".into(), "stopped".into(), before.node_id.to_string(), String::new()), "the stopped node is sent nothing: {update:#?}");
-    assert!(named(&spans, "rdm.node_admin.node.update.via-apply-node-config").is_empty(), "no ApplyNodeConfig reached the stopped node");
+    assert_eq!((s(&a["outcome"]), s(&a["apply"]), s(&a["answered"])), ("config-updated".into(), "direct".into(), String::new()), "the stopped node's own writer applied it: {update:#?}");
+    let applied = named(&spans, "rdm.node_admin.node.update.via-apply-node-config").into_iter().filter(|sp| sp["trace_id"] == update["trace_id"]).count();
+    assert_eq!(applied, 1, "one ApplyNodeConfig reached the stopped, still bound node");
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["command"] == "start-node" && at_location(sp, &path)).expect("the start command was sent");
     let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").expect("the start's rejoin was installed");
     assert!(rdm_test::estate::names_location(&join, "admitted", &path) && join["attributes"]["config_keys"] == "1", "the join answer hands the row's config: {join:#?}");
-    eprintln!("trace {}: via-config outcome=config-updated apply=stopped; trace {}: via-join admitted at {path:?} config_keys=1", s(&update["trace_id"]), s(&join["trace_id"]));
+    eprintln!("trace {}: via-config outcome=config-updated apply=direct; trace {}: via-join admitted at {path:?} config_keys=1", s(&update["trace_id"]), s(&join["trace_id"]));
     estate.record_trace_url(update["trace_id"].as_str().unwrap_or(""));
 }
 
@@ -1307,7 +1308,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     // The fabric-primary's drift pass is held: the failed create leaves its node surplus, and drift's
     // removal of it waits for the release.
     let drift = Door::at(&estate, &fp).await;
-    drift.arm("drift-pass", serde_json::json!({"kind": "drift-pass", "node": fp})).await;
+    drift.arm("drift-pass", serde_json::json!({"kind": "drift-pass", "node": id_at(&fp)})).await;
     // The old primary holds the node's node.started at its status door: the declaration stays owed.
     let door = Door::at(&estate, &primary).await;
     door.arm("declaration", serde_json::json!({"kind": "declaration", "node": node, "state": "Ready"})).await;

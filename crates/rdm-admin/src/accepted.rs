@@ -403,6 +403,22 @@ impl RenameIntent {
     }
 }
 
+/// A map keyed by step position, written as `[position, value]` pairs: [`AttemptAction`] is internally
+/// tagged, so serde buffers its content, and a buffered JSON map key is a string no integer reads back
+/// from.
+mod by_position {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer, V: Serialize>(map: &BTreeMap<u32, V>, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(map.iter())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, V: Deserialize<'de>>(d: D) -> Result<BTreeMap<u32, V>, D::Error> {
+        Ok(Vec::<(u32, V)>::deserialize(d)?.into_iter().collect())
+    }
+}
+
 /// What one attempt of a Build does beyond realizing its topology: a standalone node op, a recovery
 /// or steps, targeted to the births they act on. Never part of the topology.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,6 +513,7 @@ pub enum AttemptAction {
         /// The birth each path a step acts on held at acceptance.
         pinned: Vec<(PathName, PinnedBirth)>,
         /// Rename intent keyed by the original one-based step position.
+        #[serde(with = "by_position")]
         rename_intents: BTreeMap<u32, RenameIntent>,
     },
     /// Terminate the runtime of a deleted birth heard again (node-investigation.md, Q110, Q128): the
@@ -1738,6 +1755,19 @@ impl AcceptedStore {
 mod tests {
     use super::*;
     use crate::model::*;
+
+    /// CONTRACT (build.md §5.3: the Build journal holds every attempt's action and reads it back): an
+    /// attempt's steps whose third step renames a replace's predecessor keep that rename intent through
+    /// their JSON record. What must NOT happen: a record written that no read decodes (a buffered
+    /// map's string key `"3"` read as no position).
+    // @feature: node-replace
+    #[test]
+    fn a_steps_action_with_a_rename_intent_survives_its_json_record() {
+        let original = PathName::new("mesh1.admin", "3").unwrap();
+        let action = AttemptAction::Steps { steps: vec![], pinned: vec![], rename_intents: [(3, RenameIntent::Replacement { original })].into() };
+        let line = serde_json::to_string(&action).unwrap();
+        assert_eq!(serde_json::from_str::<AttemptAction>(&line).unwrap(), action, "{line}");
+    }
 
     fn n(name: PathName, mesh: &str, kind: rdm_core::NodeKind, status: NodeStatus, primary: bool) -> Node {
         let mut node = Node::allocated(name.clone(), mesh, kind);
