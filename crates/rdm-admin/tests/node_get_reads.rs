@@ -37,7 +37,7 @@ async fn answer(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admi
 /// holds them.
 async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin::views::Planned, filter: &Filter) -> StatusReply {
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
-    let atlas = rdm_admin::atlas::Atlas::default();
+    let atlas = crate::fed_atlas().await;
     let meshes: Vec<String> = view.meshes.iter().map(|m| m.name.clone()).collect();
     atlas.fill(status, meshes).await.expect("the records are read");
     rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin", "1"), view, &loads, &atlas, planned, filter, &|_| {}, None).await
@@ -388,7 +388,7 @@ async fn nodes_get_and_fabrics_get_answer_from_the_atlas_while_the_nodes_store_f
         row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name).cert = Some(rdm_admin::storage::CertDates { issued_at: 1_000_000, expires_at, issuer_expires_at: 20_000_000, renew_at: expires_at - 1_000 });
         records.write_record(&row).await.unwrap();
     }
-    let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
+    let atlas = crate::fed_atlas().await;
     atlas.scope(&records, ["mesh1".to_string()].into()).await.expect("the fabric-primary takes mesh1: its atlas is filled from the node records, once");
     let store = Arc::new(Unreadable::default());
     let fp = fabric_primary_at(&admin, view, atlas, store.clone());
@@ -438,7 +438,7 @@ async fn an_unacknowledged_stop_reads_ready_and_the_row_answers_each_state_it_ta
     peer_row.birth_mut(peer.incarnation_id.as_ref().unwrap(), &peer.name);
     records.write_record(&peer_row).await.unwrap();
     // The fabric-primary, mesh1's primary too: every mesh taken, mesh1's rows its writer's.
-    let atlas = rdm_admin::atlas::Atlas::default();
+    let atlas = crate::fed_atlas().await;
     atlas.scope(&records, ["mesh1".to_string(), "mesh2".to_string()].into()).await.unwrap();
     atlas.writes("mesh1");
     use rdm_core::views::NodeStatus as Read;

@@ -387,6 +387,12 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolver = Arc::new(StaticResolver::new());
+    // The fabric-primary the door's view names resolves to this one served door too: a redirect it
+    // answers is followed once and ends at the door again.
+    let fabric_primary = door.control.topology.read().await.fabric_primary().map(|n| n.node_id.clone()).filter(|id| *id != node_id);
+    if let Some(fp) = fabric_primary {
+        resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id: fp, name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: incarnation.clone() });
+    }
     resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id, name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation });
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = Arc::new(NodeRpcClient::new(caller, resolver).with_caller_system("rdm"));
@@ -588,7 +594,7 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
     assert_eq!(claim_row.len(), 2, "each attempt's PrepareStorage opened the claim via-node-row span: {claim_row:?}");
     for claim in &claim_row {
         assert_eq!(claim["attributes"]["outcome"], "row-written", "the claim row was written: {claim}");
-        assert_eq!(claim["attributes"]["awaited"], "writer-check,read-previous-row,read-old-row,put-node-row", "the claim span names every await of the claim: {claim}");
+        assert_eq!(claim["attributes"]["awaited"], "writer-check,read-previous-row,put-node-row", "the claim span names every await of the claim: {claim}");
         assert_eq!(claim["attributes"]["awaiting"], "done", "the claim completed every await: {claim}");
     }
     // Each step's wall and, for one that ran blocking calls, their wait for a thread and their run.
@@ -1191,7 +1197,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
         let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: IncarnationId::mint() };
         // The rename reaches the node's mesh-primary only with a name within the grammar.
         let (mp, route) = (NodeId::mint(), rdm_transport::RouteChoice::Direct);
-        for (bad, says) in [("Rpc", "\"Rpc\""), (".old", "starts with '.'"), ("", "empty")] {
+        for (bad, says) in [("Rpc", "name `Rpc` must contain"), (".old", "name `.old` must contain"), ("", "name `` must contain")] {
             let refused = nodes.name_update(&birth, &mp, &route, &rdm_core::PathName { path: "mesh1.rpc".into(), name: bad.into() }).await.expect("a typed refusal");
             assert!(matches!(&refused, rdm_core::status::StatusReply::RejectedName { reason } if reason.contains(says)), "{bad:?}: {refused:?}");
         }
@@ -1408,15 +1414,16 @@ fn a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_
     match &end {
         Some(CallEnd::Rejected { reason, detail }) => {
             assert_eq!(reason, "not-fabric-primary", "the admin without the role refuses by name: {detail}");
-            assert!(detail.contains("names mesh1.admin.1"), "the refusal names the fabric-primary the admin sees: {detail}");
+            assert!(detail.contains("already followed"), "the redirect to the fabric-primary the admin sees is followed once: {detail}");
         }
         other => panic!("a Build call to an admin without the fabric-primary role ends Rejected not-fabric-primary, not {other:?}"),
     }
     let spans = cap.spans();
     let refused = spans_named(&spans, "rdm.node_admin.build.reject.via-not-fabric-primary");
-    assert_eq!(refused.len(), 1, "the refusal has its own reject span: {spans:?}");
+    // Once at the first call and once at the redirect it named, the same door.
+    assert_eq!(refused.len(), 2, "the refusal has its own reject span: {spans:?}");
     let a = &refused[0]["attributes"];
-    assert_eq!((a["route"].as_str(), a["node"].as_str(), a["fabric_primary"].as_str()), (Some("build.create"), Some("mesh1.admin.2"), Some("mesh1.admin.1")), "the reject span names the call, the refusing admin and the fabric-primary it named: {}", refused[0]);
+    assert_eq!((a["route"].as_str(), a["node_path"].as_str(), a["node_name"].as_str(), a["fabric_primary"].as_str().is_some_and(|f| !f.is_empty())), (Some("build.create"), Some("mesh1.admin"), Some("2"), true), "the reject span names the call, the refusing admin and the fabric-primary it named: {}", refused[0]);
     for door in ["rdm.node_admin.build.create.via-node-rpc", "rdm.node_admin.build.update.via-node-rpc"] {
         assert!(spans_named(&spans, door).is_empty(), "nothing was admitted: no {door} span: {spans:?}");
     }

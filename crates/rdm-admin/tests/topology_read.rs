@@ -182,7 +182,7 @@ async fn a_mesh_primary_that_has_published_nothing_serves_the_members_its_view_h
     assert_eq!((read.meshes, read.installed.len()), (1, 1), "the primary's own mesh is served");
     assert_eq!((read.installed[0].mesh.as_str(), read.installed[0].topology_version), ("mesh1", 0));
     assert_eq!(read.installed[0].members.len(), 2, "its own digest and the member its view holds");
-    assert_eq!(read.installed[0].publisher.node, server.resolved.node_id.to_string());
+    assert_eq!(read.installed[0].publisher.node_id, server.resolved.node_id);
     server.ep.close().await;
     caller.ep.close().await;
 }
@@ -476,9 +476,11 @@ fn a_read_from_a_peer_mesh_returns_the_readers_own_mesh_but_holds_none_of_it_as_
         caller.ep.close().await;
     });
     let installs = cap.named("rdm.mesh.topology.update.via-read-install");
-    let mut got: Vec<(&str, &str, &str)> = installs.iter().map(|a| (a["node"].as_str(), a["mesh"].as_str(), a["members"].as_str())).collect();
+    // The reader installs: every install span names the one reading node, by its node id.
+    let mut got: Vec<(&str, &str)> = installs.iter().map(|a| (a["mesh"].as_str(), a["members"].as_str())).collect();
     got.sort();
-    assert_eq!(got, vec![("mesh1.rpc.2", "mesh1", "3"), ("mesh1.rpc.2", "mesh3", "2")], "{installs:?}");
+    assert_eq!(got, vec![("mesh1", "3"), ("mesh3", "2")], "{installs:?}");
+    assert!(installs.iter().all(|a| !a["node"].is_empty() && a["node"] == installs[0]["node"]), "{installs:?}");
 }
 
 // @feature: node-lifecycle
@@ -765,7 +767,7 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
     });
     assert!(cap.named("rdm.mesh.entry.update.via-rafka-time-adopted").is_empty(), "a top-up adopts no rafka-time: {:?}", cap.named("rdm.mesh.entry.update.via-rafka-time-adopted"));
     let installed = cap.named("rdm.mesh.topology.update.via-read-install");
-    assert_eq!(installed.iter().map(|a| (a["node"].as_str(), a["mesh"].as_str(), a["topology_version"].as_str())).collect::<Vec<_>>(), vec![("mesh1.rpc.1", "mesh2", "7")], "{installed:?}");
+    assert_eq!(installed.iter().map(|a| (a["mesh"].as_str(), a["topology_version"].as_str())).collect::<Vec<_>>(), vec![("mesh2", "7")], "{installed:?}");
 }
 
 // @feature: rafka-time

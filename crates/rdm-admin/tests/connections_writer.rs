@@ -388,7 +388,7 @@ async fn a_carrier_names_its_own_connection_only_when_its_latest_direct_is_not_c
     failed.reason = Some("dial failed".into());
     writer.record(failed).await.unwrap();
     let why = writer.connection_not_active(&dest.node_id).await.expect("a Failed connection is not Active");
-    assert_eq!(why, "mesh1.rpc.2 -> mesh1.rpc.3 Direct failed (dial failed)");
+    assert_eq!(why, format!("{} -> {} Direct failed (dial failed)", me.node_id, dest.node_id));
     assert_eq!(writer.connection_not_active(&NodeId::mint()).await, None, "another node's connection is not named");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -432,11 +432,11 @@ async fn a_carrier_names_the_connection_a_dial_has_just_failed_however_slow_the_
     let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
     writer.direct_failed(&resolved(&dest), "timed out");
     let why = writer.connection_after_dial(&resolved(&dest), "timed out").await.expect("the failed dial's fact is named");
-    assert_eq!(why, "mesh2.rpc.1 -> mesh2.admin.1 Direct failed (timed out)");
+    assert_eq!(why, format!("{} -> {} Direct failed (timed out)", me.node_id, dest.node_id));
     let held_now = tokio::time::timeout(std::time::Duration::from_millis(100), writer.connection_not_active(&dest.node_id)).await.expect("the read answers from what is held, never waiting for the write");
     assert_eq!(held_now, None, "the Failed row has not landed, so no fact is held yet");
     writer.observations_landed().await;
-    assert_eq!(writer.connection_not_active(&dest.node_id).await.as_deref(), Some("mesh2.rpc.1 -> mesh2.admin.1 Direct failed (timed out)"), "once landed the fact is held");
+    assert_eq!(writer.connection_not_active(&dest.node_id).await.as_deref(), Some(format!("{} -> {} Direct failed (timed out)", me.node_id, dest.node_id).as_str()), "once landed the fact is held");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -572,7 +572,7 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
     let told: Arc<Mutex<Option<PathName>>> = Arc::default();
     let (cell, birth) = (told.clone(), me.name.clone());
     writer.follow_held_name(move || cell.lock().unwrap().clone().unwrap_or_else(|| birth.clone())).unwrap();
-    assert!(writer.follow_held_name(|| rdm_core::PathName::new("mesh1.rpc", "9").unwrap()).is_err_and(|e| e.contains("mesh1.rpc.7") && e.contains("already reads its name")), "one place holds the name");
+    assert!(writer.follow_held_name(|| rdm_core::PathName::new("mesh1.rpc", "9").unwrap()).is_err_and(|e| e.contains(me.node_id.as_str()) && e.contains("already reads its name")), "one place holds the name");
     let target = resolved(&peer);
     writer.direct_connected(&target);
     writer.observations_landed().await;
