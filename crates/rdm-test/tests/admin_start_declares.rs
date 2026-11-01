@@ -3,9 +3,10 @@
 //! Ready is set by "the node's mesh-primary" from "the node's node.started report, after every
 //! start gate").
 //!
-//! CONTRACT (Q47): the first start owes a Ready declaration. A subsequent commanded
-//! start reports NodeJoined and NodeStarted on 0x22; its primary records Ready before
-//! returning the completion. The open start sends no separate readiness declaration.
+//! CONTRACT (Q47, Q93; node-start.md step 5): the first start owes a Ready declaration. A subsequent
+//! commanded start reports NodeJoined and NodeStarted on 0x22; its primary records Ready before
+//! returning the completion. "The node also declares Ready to its mesh-primary as an owed message, as
+//! it declares Stopped (Q36, Q87); frame and declaration apply once (Q49)."
 //!
 //! The mesh's primary is a real Day-0 node-admin in this process; it launches the second admin and
 //! commands its stop and start. Its own process: the cell holds process-wide state (the stop flag).
@@ -173,8 +174,22 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         tokio::time::timeout(DECLARED, spans.recorded("rdm.node_admin.node.update.via-command-frame", |f| f.get("node_id").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("frame").map(String::as_str) == Some("node-started"))).await.expect("the mesh-primary records NodeStarted on the open command stream");
         let door = root.status_door().unwrap();
         assert_eq!(door.declared.lock().unwrap().node(&launch.node_id, &launch.incarnation), Some(rdm_core::status::NodeState::Ready));
-        let ready_declarations: Vec<_> = own_declarations(&spans, &launch.name).into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready"))).collect();
-        assert_eq!(ready_declarations, first, "the open start reports readiness on its stream, with no second Ready declaration");
+        let started = tokio::time::timeout(DECLARED, async {
+            loop {
+                let held: Vec<_> = own_declarations(&spans, &launch.name).into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready")) && f.get("operation").map(String::as_str) == Some("node.start")).collect();
+                if !held.is_empty() {
+                    return held;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the start declares its Ready naming the start, beside its NodeStarted frame");
+        assert_eq!(started.len(), 1, "the start's Ready is declared once: {started:#?}");
+        assert_eq!(started[0]["to_node_id"], root_id, "to its mesh's primary: {started:#?}");
+        assert!(matches!(started[0]["outcome"].as_str(), "applied" | "already-applied"), "frame and declaration apply once: the declaration is applied or answered already applied: {started:#?}");
+        let first_again: Vec<_> = own_declarations(&spans, &launch.name).into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready")) && f.get("operation").is_none()).collect();
+        assert_eq!(first_again, first, "the first start's declaration stands beside it: {first_again:#?}");
 
         admin.leave().await;
         root.leave().await;

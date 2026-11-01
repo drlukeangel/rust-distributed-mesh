@@ -191,7 +191,13 @@ async fn stop_then_start(test: &str, node: &PathName) {
     // Ready"), applied by the mesh primary.
     let ready: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|sp| names_node(sp) && attr(sp, "frame") == "node-started" && attr(sp, "operation") == "node.start").collect();
     assert_eq!(ready.len(), 1, "{node:?}'s NodeStarted is recorded on its open start stream: {ready:#?}");
-    assert!(declared_of("Ready", "node.start").is_empty(), "the open start sends no separate Ready declaration");
+    // node-start.md step 5 (Q93): "The node also declares Ready to its mesh-primary as an owed message, as
+    // it declares Stopped (Q36, Q87); frame and declaration apply once (Q49)." The start's Ready declaration
+    // names the start, and is applied or answered already applied beside the NodeStarted frame.
+    let ready_declared = declared_of("Ready", "node.start");
+    let answered: Vec<String> = ready_declared.iter().map(|sp| attr(sp, "outcome")).filter(|o| o == "applied" || o == "already-applied").collect();
+    assert!(!answered.is_empty(), "{node:?}'s start declared its Ready naming the start, answered by its mesh primary: {ready_declared:#?}");
+    assert!(answered.iter().filter(|o| *o == "applied").count() <= 1, "{node:?}'s start Ready declaration applied at most once: {ready_declared:#?}");
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| names_node(sp) && sp["attributes"]["command"] == "start-node").expect("the start command was sent");
     let call = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && attr(sp, "op") == "34").expect("the start call was made on 0x22");
     // The stop's transport cut closed its connection, so the start dials afresh or rides a connection
