@@ -3760,7 +3760,7 @@ mod tests {
         assert_eq!(reply, R::RequestNotHandled { request: "fabric.get".into() });
         assert!(effect.is_none(), "{effect:?}");
         let rejected: Vec<(String, String)> = capture.named("rdm.node.status.reject.via-request-not-handled").into_iter().map(|s| (s.attributes["request"].clone(), s.attributes["node"].clone())).collect();
-        assert_eq!(rejected, vec![("fabric.get".to_string(), "mesh1.admin.1".to_string())], "the reject span names the request and the admin");
+        assert_eq!(rejected, vec![("fabric.get".to_string(), me.node_id.to_string())], "the reject span names the request and the admin, by its node id");
     }
 
     /// CONTRACT (node-identity-and-state.md 4.3: "Once a node-admin is created in a mesh it is that

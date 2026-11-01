@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(owed_spans.len(), 1);
         assert_eq!(
             owed_spans[0].attributes.get("operation").map(String::as_str),
-            Some("node.stop:mesh1.rpc.1")
+            Some("node.stop")
         );
         assert_eq!(
             capture.named("rdm.node_admin.status.reject.via-reserved-position").len(),

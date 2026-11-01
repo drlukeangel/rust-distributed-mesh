@@ -955,14 +955,11 @@ mod tests {
         assert!(day0.adopt.is_none());
         assert!(!day0.fabric_id_named);
 
-        // Valid adoption launch at mesh1.admin.1: adopts RDM_FABRIC_ID and RDM_MESH, mints no mesh_id, mints its own node_id.
-        let adopted = AdminConfig::from_env(env_of(&[
-            ("RDM_NODE_NAME", "mesh1.admin.1"),
-            ("RDM_FABRIC_ID", "fab000000001"),
-            ("RDM_MESH", "mesh1"),
-            ("RDM_STORE_DIR", "/tmp/rdm-store"),
-        ]))
-        .expect("valid adoption launch config succeeds");
+        // Valid adoption launch at (mesh1.admin, 1): adopts RDM_FABRIC_ID and RDM_MESH, mints no mesh_id, mints its own node_id.
+        let at = [("RDM_NODE_PATH", "mesh1.admin"), ("RDM_NODE_NAME", "1")];
+        let with = |extra: &[(&'static str, &'static str)]| env_of(&[&at[..], extra].concat());
+        let adopted = AdminConfig::from_env(with(&[("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")]))
+            .expect("valid adoption launch config succeeds");
         assert_eq!(adopted.adopt, Some(rdm_core::PathName::new("mesh1.admin", "1").unwrap()));
         assert_eq!(adopted.fabric_id, FabricId::parse("fab000000001").unwrap());
         assert!(adopted.fabric_id_named);
@@ -971,56 +968,30 @@ mod tests {
         assert_ne!(adopted.node_id, day0.node_id);
 
         // Refused when RDM_LAUNCHER is set without RDM_NODE_ID.
-        let err = AdminConfig::from_env(env_of(&[
-            ("RDM_NODE_NAME", "mesh1.admin.1"),
-            ("RDM_LAUNCHER", "mesh1.admin.2"),
-            ("RDM_FABRIC_ID", "fab000000001"),
-            ("RDM_MESH", "mesh1"),
-            ("RDM_STORE_DIR", "/tmp/rdm-store"),
-        ]))
-        .unwrap_err();
+        let err = AdminConfig::from_env(with(&[("RDM_LAUNCHER", "mesh1.admin.2"), ("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")])).unwrap_err();
         assert!(err.contains("RDM_LAUNCHER=mesh1.admin.2 is set without RDM_NODE_ID"), "{err}");
 
-        // Refused when RDM_NODE_NAME is not a node-admin.
-        let err = AdminConfig::from_env(env_of(&[
-            ("RDM_NODE_NAME", "mesh1.rpc.1"),
-            ("RDM_FABRIC_ID", "fab000000001"),
-            ("RDM_MESH", "mesh1"),
-            ("RDM_STORE_DIR", "/tmp/rdm-store"),
-        ]))
-        .unwrap_err();
-        assert!(err.contains("names a rpc-node"), "{err}");
+        // Refused when RDM_NODE_PATH is missing: the path is never parsed out of the name.
+        let err = AdminConfig::from_env(env_of(&[("RDM_NODE_NAME", "1"), ("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")])).unwrap_err();
+        assert!(err.contains("RDM_NODE_PATH is required"), "{err}");
+
+        // Refused when RDM_NODE_KIND names another kind: the kind is explicit, never read off the path.
+        let rpc = rdm_core::NodeKind::RpcNode.name();
+        let err = AdminConfig::from_env(env_of(&[&at[..], &[("RDM_NODE_KIND", rpc), ("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")]].concat())).unwrap_err();
+        assert!(err.contains("requires node_admin"), "{err}");
 
         // Refused when RDM_FABRIC_ID is missing.
-        let err = AdminConfig::from_env(env_of(&[
-            ("RDM_NODE_NAME", "mesh1.admin.1"),
-            ("RDM_MESH", "mesh1"),
-            ("RDM_STORE_DIR", "/tmp/rdm-store"),
-        ]))
-        .unwrap_err();
+        let err = AdminConfig::from_env(with(&[("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store")])).unwrap_err();
         assert!(err.contains("RDM_FABRIC_ID is required"), "{err}");
 
-        // Refused when RDM_MESH is missing or differs from RDM_NODE_NAME's mesh.
-        let err = AdminConfig::from_env(env_of(&[
-            ("RDM_NODE_NAME", "mesh1.admin.1"),
-            ("RDM_FABRIC_ID", "fab000000001"),
-            ("RDM_MESH", "mesh2"),
-            ("RDM_STORE_DIR", "/tmp/rdm-store"),
-        ]))
-        .unwrap_err();
-        assert!(err.contains("RDM_MESH=mesh2 and RDM_NODE_NAME=mesh1.admin.1"), "{err}");
+        // Refused when RDM_MESH is missing: the mesh is explicit, never read off the path.
+        let err = AdminConfig::from_env(with(&[("RDM_FABRIC_ID", "fab000000001"), ("RDM_STORE_DIR", "/tmp/rdm-store")])).unwrap_err();
+        assert!(err.contains("RDM_MESH is required"), "{err}");
 
-        // Refused when RDM_MESH_PRIMARY or RDM_FABRIC_PRIMARY is set with RDM_NODE_NAME.
+        // Refused when RDM_MESH_PRIMARY or RDM_FABRIC_PRIMARY is set with an adoption launch.
         for flag in ["RDM_MESH_PRIMARY", "RDM_FABRIC_PRIMARY"] {
-            let err = AdminConfig::from_env(env_of(&[
-                ("RDM_NODE_NAME", "mesh1.admin.1"),
-                ("RDM_FABRIC_ID", "fab000000001"),
-                ("RDM_MESH", "mesh1"),
-                ("RDM_STORE_DIR", "/tmp/rdm-store"),
-                (flag, "1"),
-            ]))
-            .unwrap_err();
-            assert!(err.contains(&format!("{flag} is set with RDM_NODE_NAME=mesh1.admin.1")), "{err}");
+            let err = AdminConfig::from_env(env_of(&[&at[..], &[("RDM_FABRIC_ID", "fab000000001"), ("RDM_MESH", "mesh1"), ("RDM_STORE_DIR", "/tmp/rdm-store"), (flag, "1")]].concat())).unwrap_err();
+            assert!(err.contains(&format!("{flag} is set with RDM_NODE_NAME=\"1\", RDM_NODE_PATH=\"mesh1.admin\"")), "{err}");
         }
     }
 }

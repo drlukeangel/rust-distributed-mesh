@@ -872,7 +872,7 @@ mod tests {
     }
 
     fn roster_birth(name: PathName) -> Value {
-        json!({ "node": name, "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string() })
+        json!({ "mesh": "mesh1", "kind": rdm_core::NodeKind::NodeAdmin, "node": name, "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string() })
     }
 
     fn terminal() -> Value {
@@ -899,7 +899,7 @@ mod tests {
     #[test]
     fn a_property_target_output_with_an_unknown_field_is_refused_by_name() {
         let pin = crate::build::PinnedBirth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.properties.update"), "PinPropertyTarget", json!({"node_id":pin.node_id,"incarnation":pin.incarnation}), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.properties.update"), "PinPropertyTarget", serde_json::to_value(&pin).unwrap(), "");
     }
 
     #[test]

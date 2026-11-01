@@ -119,8 +119,9 @@ mod tests {
         assert_eq!(back, Rows::Nodes(rows), "every row, in order");
 
         let mut over = vec![node(0, 10), node(1, 70 * 1024), node(2, 10)];
+        let past = over[1].node_id.to_string();
         let Err(ReadReply::ReadOverBound { read, row, bytes, max }) = rdm_client::read_frames(Rows::Nodes(std::mem::take(&mut over)).into_rows(), "node.get") else { panic!("a row past the frame is refused") };
-        assert_eq!((read.as_str(), row.as_str(), max), ("node.get", "mesh1.rpc.2", Read::MAX_REPLY_FRAME_BYTES as u64));
+        assert_eq!((read.as_str(), row.as_str(), max), ("node.get", past.as_str(), Read::MAX_REPLY_FRAME_BYTES as u64), "the row past the frame is named by its node id");
         assert!(bytes > max);
     }
 }

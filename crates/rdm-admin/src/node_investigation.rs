@@ -617,8 +617,8 @@ mod tests {
             *rig.asked.lock().unwrap(),
             vec![
                 "direct".to_string(),
-                "mesh1.rpc.3".to_string(),
-                "mesh2.rpc.1".to_string()
+                r3.node_id.to_string(),
+                m1.node_id.to_string()
             ],
             "direct probe first, then the two leads in path order before non-lead mesh1.rpc.2"
         );

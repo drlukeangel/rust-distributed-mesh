@@ -230,7 +230,10 @@ mod tests {
         let launch = Launch::from_env(|k| match k {
             "RDM_FABRIC" => Some("fabric1".into()),
             "RDM_FABRIC_ID" => Some(rdm_core::FabricId::mint().to_string()),
-            "RDM_NODE_NAME" => Some("mesh2.admin.1".into()),
+            "RDM_NODE_PATH" => Some("mesh2.admin".into()),
+            "RDM_NODE_NAME" => Some("1".into()),
+            "RDM_MESH" => Some("mesh2".into()),
+            "RDM_NODE_KIND" => Some(NodeKind::NodeAdmin.name().into()),
             "RDM_NODE_ID" => Some(rdm_core::NodeId::mint().to_string()),
             "RDM_INCARNATION_ID" => Some(rdm_core::IncarnationId::mint().to_string()),
             "RDM_TRANSPORT_ADDR" => Some("127.0.0.1:0".into()),

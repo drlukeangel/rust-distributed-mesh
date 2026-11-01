@@ -910,7 +910,8 @@ mod tests {
         ]);
         assert!(one_pending.node_type_primary("mesh1", NodeKind::NodeAdmin).is_some(), "mesh1 has its primary");
         let blockers: Vec<String> = mesh_blockers(&one_pending, &meshes, &planned).iter().map(|m| m.to_string()).collect();
-        assert_eq!(blockers, ["mesh1.rpc.1(not-ready)"], "the one node that is not ready is what blocks entry");
+        let rpc1 = &one_pending.node(&PathName::new("mesh1.rpc", "1").unwrap()).unwrap().node_id;
+        assert_eq!(blockers, [format!("node_id={rpc1}(not-ready)")], "the one node that is not ready is what blocks entry, by its node id");
     }
 
     /// CONTRACT (states.md:16, Q240): a mesh is ready when every planned birth of the accepted Build that
@@ -952,7 +953,8 @@ mod tests {
             node(PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Pending, false),
         ]);
         let blockers: Vec<String> = mesh_blockers(&one_pending, &meshes, &planned).iter().map(|m| m.to_string()).collect();
-        assert_eq!(blockers, ["mesh2.rpc.2(not-ready)"], "the birth that is not stopped and not ready still blocks, the stopped one is not named");
+        let rpc2 = &one_pending.node(&PathName::new("mesh2.rpc", "2").unwrap()).unwrap().node_id;
+        assert_eq!(blockers, [format!("node_id={rpc2}(not-ready)")], "the birth that is not stopped and not ready still blocks, the stopped one is not named");
     }
 
     /// CONTRACT (states.md, Resize and executable replacement: a Build that changes the accepted topology

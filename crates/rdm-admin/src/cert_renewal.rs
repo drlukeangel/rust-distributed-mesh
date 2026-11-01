@@ -1191,7 +1191,7 @@ mod tests {
         assert_eq!(create_spans[0].attributes.get("outcome").map(String::as_str), Some("minted"));
         let installed_spans = capture.named("rdm.node_admin.issuer.update.via-installed");
         assert_eq!(installed_spans.len(), 1);
-        assert_eq!(installed_spans[0].attributes.get("node").map(String::as_str), Some("mesh1.admin.1"));
+        assert_eq!((installed_spans[0].attributes.get("node_path").map(String::as_str), installed_spans[0].attributes.get("node_name").map(String::as_str)), (Some("mesh1.admin"), Some("1")));
         let written = nodes_store.node(&me.node_id).await.unwrap().and_then(|row| row.birth(&incarnation).and_then(|b| b.signing_cert.clone())).expect("signing_cert written on record");
         assert!(written.expires_at > old_signing.expires_at);
     }

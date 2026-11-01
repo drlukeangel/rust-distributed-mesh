@@ -2294,7 +2294,7 @@ mod tests {
         assert_eq!(t.mesh_view("mesh1").unwrap().status, ScopeStatus::Pending, "mesh1.rpc.2 is planned and not heard");
         assert!(t.mesh_view("mesh2").is_none(), "mesh2 is planned and does not exist yet: the view lists what is observed, so the Build still plans its creation");
         let why = t.mesh_unready("mesh1", records.planned().get("mesh1")).iter().map(|m| m.to_string()).collect::<Vec<_>>();
-        assert_eq!(why, ["mesh1.rpc.2(no-birth-heard)"], "the node behind a pending mesh is named");
+        assert_eq!(why, [r#"path="mesh1.rpc", name="2"(no-birth-heard)"#], "the node behind a pending mesh is named by its planned (path, name): no birth stands there");
     }
 
     /// CONTRACT (R-S3, states.md): a mesh's lifecycle is pending, ready, leaving, dead. A mesh
@@ -4076,7 +4076,7 @@ mod tests {
         assert!(NodeId::parse(&day0.node_id.to_string()).is_ok(), "a canonical minted node id: {}", day0.node_id);
         assert_ne!(day0.node_id, again.node_id, "every start with no launcher mints its own node id");
         let fabric = FabricId::mint().to_string();
-        let adoption = cfg(&[("RDM_NODE_NAME", "100000000000"), ("RDM_FABRIC_ID", fabric.as_str()), ("RDM_MESH", "mesh1")]);
+        let adoption = cfg(&[("RDM_NODE_PATH", "mesh1.admin"), ("RDM_NODE_NAME", "1"), ("RDM_FABRIC_ID", fabric.as_str()), ("RDM_MESH", "mesh1")]);
         assert!(adoption.adopt.is_some() && adoption.launch.is_none(), "an adoption launch: {adoption:?}");
         assert_ne!(adoption.node_id, day0.node_id, "an adoption launch is a new birth with its own node.id");
         let given = NodeId::mint();
