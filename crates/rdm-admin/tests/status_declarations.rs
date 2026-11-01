@@ -712,16 +712,15 @@ fn a_config_update_naming_a_node_at_its_old_row_name_is_decided_for_that_exact_b
     eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config subject=mesh1.rpc.1-old outcome=config-updated");
 }
 
-/// CONTRACT (node-rpc-envelope.md "Node properties": config "is a field of the node record ... a
-/// rejoining node gets it back in its join answer"; node-config-update.md: row first, node second, as
-/// node.name.update completes a stopped node on the row, proposal node-properties-own-commands.md §2.3):
-/// `node.config.update` of `mesh1.rpc.2`, listed stopped in the mesh-primary's view (its row at its
-/// name) ends `node.config.updated` on the row: the row at `mesh1.rpc.2` holds the whole config, keeping
-/// the tags it carried, and the birth is told nothing (it serves Status here, and hears no call). The
-/// via-config span says `config-updated` with `apply=stopped` and no answer. What must NOT happen: an
-/// ApplyNodeConfig sent to the stopped node, or `ConfigNotApplied` for it.
+/// CONTRACT (node-config-update.md, Deferred application and startup: "A stopped process remains alive
+/// with its Node RPC endpoint bound"; a caller's update, step 2: "The node's property writer applies the
+/// whole map to its latest owned state and issues one put"; "Config and tags are independent fields;
+/// changing config does not replace tags"): `node.config.update` of `mesh1.rpc.2`, stopped in the
+/// mesh-primary's view, is sent to the stopped birth once and ends `node.config.updated`: its own record
+/// holds the whole config and keeps the tags it carried. The via-config span says `config-updated` with
+/// `apply=direct`. What must NOT happen: the update completed with nothing applied, or the tags dropped.
 #[test]
-fn a_stopped_nodes_config_update_completes_on_its_row_and_tells_the_node_nothing() {
+fn a_stopped_nodes_config_update_is_applied_by_its_bound_writer_and_keeps_its_tags() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
@@ -732,21 +731,23 @@ fn a_stopped_nodes_config_update_completes_on_its_row_and_tells_the_node_nothing
         let config: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
         let client = client_of(&rig, &b["admin2"]).await;
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(stopped), config.clone(), &CallOptions::default()).await.expect("a typed reply");
-        assert_eq!(updated(&reply), updated_of(stopped, &config), "a stopped node's config update completes on its row");
-        let row = rig.nodes.record_at(&stopped.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
-        let (row_config, row_tags) = props(&rig, &row.node_id).await;
-        assert_eq!((row.node_id.clone(), row_config.clone(), row_tags.clone()), (stopped.node.node_id.clone(), config, labels(&["edge"])), "the row holds the whole config and keeps its tags");
-        assert!(node.seen.lock().unwrap().is_empty(), "the stopped node is told nothing: {:?}", node.seen.lock().unwrap());
+        assert_eq!(updated(&reply), updated_of(stopped, &config), "a stopped node's config update completes once its writer put it");
+        assert_eq!(props(&rig, &stopped.node.node_id).await, (config.clone(), labels(&["edge"])), "its own record holds the whole config and keeps its tags");
+        assert_eq!(
+            node.seen.lock().unwrap().clone(),
+            vec![StatusRequest::ApplyNodeConfig { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap(), config, revision: 0 }],
+            "the stopped birth, still bound, is told once"
+        );
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-config");
     assert_eq!(spans.len(), 1, "{spans:?}");
     let (trace_id, attrs) = &spans[0];
     assert_eq!(
         (attrs.get("outcome").map(String::as_str), attrs.get("apply").map(String::as_str), attrs.get("subject").map(String::as_str), attrs.get("answered")),
-        (Some("config-updated"), Some("stopped"), Some("mesh1.rpc.2"), None),
+        (Some("config-updated"), Some("direct"), Some("mesh1.rpc.2"), None),
         "{attrs:?}"
     );
-    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config subject=mesh1.rpc.2 apply=stopped outcome=config-updated (nothing sent)");
+    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config subject=mesh1.rpc.2 apply=direct outcome=config-updated");
 }
 
 /// CONTRACT (node-config-update.md, a caller's update, steps 2-3: the node's property writer puts the

@@ -155,7 +155,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         );
 
         // 2. Rename predecessor node[1] to `mesh1.rpc.old.1` (step 2 of node-replace.md).
-        let renamed_row = rows.rename_row(&pred1, &old1).await.expect("rename_row");
+        let renamed_row = rows.rename_row_with_intent(&pred1, &old1, &rdm_admin::accepted::RenameIntent::Replacement { original: name1.clone() }).await.expect("rename_row");
         assert_eq!(renamed_row.name, old1);
         assert_eq!(renamed_row.renamed_from, Some(name1.clone()));
         assert!(

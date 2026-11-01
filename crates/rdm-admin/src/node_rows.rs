@@ -672,10 +672,16 @@ impl NodeRows {
 
     /// Move `record`'s row to `to` (`node.name.update`), preserving its config, tags and `node_type`.
     pub async fn rename_row(&self, record: &Node, to: &PathName) -> Result<NodeRow, RowRefused> {
+        self.rename_row_with_intent(record, to, &crate::accepted::RenameIntent::Ordinary).await
+    }
+
+    /// [`Self::rename_row`] under the intent Build admission fixed: a replace step's
+    /// `RenameIntent::Replacement` retains the predecessor its successor is created from.
+    pub async fn rename_row_with_intent(&self, record: &Node, to: &PathName, intent: &crate::accepted::RenameIntent) -> Result<NodeRow, RowRefused> {
         let me = self.writer_check(&record.mesh, to).await?;
         let known = self.written.known_row(&*self.storage, &record.node_id).await.map_err(|why| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: {why}", me_path = &me.path, me_name = &me.name)))?;
         let from = known.as_ref().map_or_else(|| record.name.clone(), |r| r.name.clone());
-        match move_row(&*self.storage, &self.written, &me, record, &from, to).await {
+        match move_row_with_intent(&*self.storage, &self.written, &me, record, &from, to, intent).await {
             Ok((_, Some(written))) => Ok(written),
             Ok((_, None)) => self.written.row_of(&record.node_id).filter(|r| r.name == *to).ok_or_else(|| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: no record of {} stands at path {to_path:?}, name {to_name:?}", record.node_id, me_path = &me.path, me_name = &me.name, to_path = &to.path, to_name = &to.name))),
             Err(RenameRefused::NameHeld(h)) => Err(RowRefused::NameHeld(h)),
@@ -1280,12 +1286,16 @@ pub fn released_its_name(row: &NodeRow) -> bool {
 /// location says nothing about the old node: it may have been renamed and still be live.
 /// An absent exact-ID record is unknown, not deletion evidence. `name` is diagnostic only.
 pub async fn deleted_birth(storage: &dyn NodesStorage, name: &PathName, node_id: &NodeId) -> Result<Option<String>, crate::storage_error::StorageError> {
-    if let Some(row) = storage.node(node_id).await?.filter(released_its_name) {
+    let own = storage.node(node_id).await?;
+    if let Some(row) = own.as_ref().filter(|r| released_its_name(r)) {
         return Ok(Some(format!("path {:?}, name {:?} (node {node_id}) is a deleted birth: its exact record is {:?}", name.path, name.name, row.status)));
     }
     // Re-created at its path and name (a fabric recovery whose old writer never wrote the record
-    // Deleted): another node's live claim holds the name (Q181).
-    if let Some(by) = storage.name_claim(name).await?.filter(|by| by != node_id) {
+    // Deleted): another node's live claim holds the name its record still stands at (Q181). A node
+    // whose record was renamed away (a replacement's predecessor) is not deleted by a claim at the
+    // name it left.
+    let at_name = own.as_ref().is_some_and(|r| r.name == *name);
+    if let Some(by) = storage.name_claim(name).await?.filter(|by| by != node_id && at_name) {
         if !storage.node(&by).await?.is_some_and(|r| released_its_name(&r)) {
             return Ok(Some(format!("path {:?}, name {:?} (node {node_id}) is a deleted birth: node {by} holds the name", name.path, name.name)));
         }

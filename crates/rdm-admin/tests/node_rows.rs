@@ -1851,7 +1851,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         let mut pred_stopped = recovered_north.clone();
         pred_stopped.status = NodeStatus::Leaving;
         pred_stopped.stopped = true;
-        let old_row = mp.rows.rename_row(&pred_stopped, &old_key).await.expect("predecessor moves to path mesh1.broker, name north-old");
+        let old_row = mp.rows.rename_row_with_intent(&pred_stopped, &old_key, &rdm_admin::accepted::RenameIntent::Replacement { original: north_key.clone() }).await.expect("predecessor moves to path mesh1.broker, name north-old");
         assert_eq!((old_row.path().as_str(), old_row.node_name().as_str(), old_row.node_type()), ("mesh1.broker", "north-old", "broker"));
         assert_eq!(storage.record_at(&north_key).await.unwrap(), None, "mesh1.broker.north is free for the successor's claim");
 
