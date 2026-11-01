@@ -787,6 +787,76 @@
           "test": "own_properties_survive_node_restart"
         }
       ]
+    },
+    "i143-260-process": {
+      "issue": 260,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "a_path_move_preserves_the_node_identity",
+          "source": "crates/rdm-test/tests/node_records.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/a_path_move_preserves_the_node_identity/estate cargo test -p rdm-test --test main node_records::a_path_move_preserves_the_node_identity -- --exact",
+          "dir": "target/i143-acceptance/260/process/a_path_move_preserves_the_node_identity",
+          "evidence": "runner",
+          "test": "a_path_move_preserves_the_node_identity"
+        },
+        {
+          "name": "a_deleted_birth_cannot_hide_its_successor",
+          "source": "crates/rdm-test/tests/node_records.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/a_deleted_birth_cannot_hide_its_successor/estate cargo test -p rdm-test --test main node_records::a_deleted_birth_cannot_hide_its_successor -- --exact",
+          "dir": "target/i143-acceptance/260/process/a_deleted_birth_cannot_hide_its_successor",
+          "evidence": "runner",
+          "test": "a_deleted_birth_cannot_hide_its_successor"
+        },
+        {
+          "name": "all_node_fields_survive_node_restart",
+          "source": "crates/rdm-test/tests/node_records.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/all_node_fields_survive_node_restart/estate cargo test -p rdm-test --test main node_records::all_node_fields_survive_node_restart -- --exact",
+          "dir": "target/i143-acceptance/260/process/all_node_fields_survive_node_restart",
+          "evidence": "runner",
+          "test": "all_node_fields_survive_node_restart"
+        },
+        {
+          "name": "a_regained_primary_waits_for_its_earlier_put",
+          "source": "crates/rdm-test/tests/node_records.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/a_regained_primary_waits_for_its_earlier_put/estate cargo test -p rdm-test --test main node_records::a_regained_primary_waits_for_its_earlier_put -- --exact",
+          "dir": "target/i143-acceptance/260/process/a_regained_primary_waits_for_its_earlier_put",
+          "evidence": "runner",
+          "test": "a_regained_primary_waits_for_its_earlier_put"
+        },
+        {
+          "name": "takeover_survives_mesh_primary_restart",
+          "source": "crates/rdm-test/tests/node_records.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/takeover_survives_mesh_primary_restart/estate cargo test -p rdm-test --test main node_records::takeover_survives_mesh_primary_restart -- --exact",
+          "dir": "target/i143-acceptance/260/process/takeover_survives_mesh_primary_restart",
+          "evidence": "runner",
+          "test": "takeover_survives_mesh_primary_restart"
+        },
+        {
+          "name": "an_applied_build_update_survives_node_restart",
+          "source": "crates/rdm-test/tests/node_records.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/an_applied_build_update_survives_node_restart/estate cargo test -p rdm-test --test main node_records::an_applied_build_update_survives_node_restart -- --exact",
+          "dir": "target/i143-acceptance/260/process/an_applied_build_update_survives_node_restart",
+          "evidence": "runner",
+          "test": "an_applied_build_update_survives_node_restart"
+        },
+        {
+          "name": "a_start_preserves_a_newer_owed_update",
+          "source": "crates/rdm-test/tests/node_records.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/a_start_preserves_a_newer_owed_update/estate cargo test -p rdm-test --test main node_records::a_start_preserves_a_newer_owed_update -- --exact",
+          "dir": "target/i143-acceptance/260/process/a_start_preserves_a_newer_owed_update",
+          "evidence": "runner",
+          "test": "a_start_preserves_a_newer_owed_update"
+        },
+        {
+          "name": "current_node_reads_survive_fabric_primary_restart",
+          "source": "crates/rdm-test/tests/node_records.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/current_node_reads_survive_fabric_primary_restart/estate cargo test -p rdm-test --test main node_records::current_node_reads_survive_fabric_primary_restart -- --exact",
+          "dir": "target/i143-acceptance/260/process/current_node_reads_survive_fabric_primary_restart",
+          "evidence": "runner",
+          "test": "current_node_reads_survive_fabric_primary_restart"
+        }
+      ]
     }
   },
   "rshape_jobs": {
