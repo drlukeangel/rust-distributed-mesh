@@ -6,7 +6,8 @@
 //! CONTRACT (Q47, Q93; node-start.md step 5): the first start owes a Ready declaration. A subsequent
 //! commanded start reports NodeJoined and NodeStarted on 0x22; its primary records Ready before
 //! returning the completion. "The node also declares Ready to its mesh-primary as an owed message, as
-//! it declares Stopped (Q36, Q87); frame and declaration apply once (Q49)."
+//! it declares Stopped (Q36, Q87); frame and declaration apply once (Q49)." Q93 supersedes Q47's line
+//! "The open start sends no separate readiness declaration."
 //!
 //! The mesh's primary is a real Day-0 node-admin in this process; it launches the second admin and
 //! commands its stop and start. Its own process: the cell holds process-wide state (the stop flag).

@@ -78,7 +78,9 @@ async fn view_of(nodes: &Nodes, node: &PathName) -> NodeView {
 /// `ready`, and every other node reports it holds that birth again with the overlay gone.
 /// The mesh primary records the start's Pending once, while it accepts the start's join report and
 /// before it answers it, and takes the start's `NodeJoined` as already applied (node-mesh-join.md
-/// step 10). No runtime exits, no node is created, nothing is repaired.
+/// step 10). The start also declares Ready to its mesh primary as an owed message naming the start;
+/// frame and declaration apply once (node-start.md step 5; Q49). Q93 supersedes Q47's line "the open
+/// start sends no separate Ready declaration". No runtime exits, no node is created, nothing is repaired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth() {
     stop_then_start("a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth", &node_at()).await;
@@ -87,7 +89,9 @@ async fn a_stop_keeps_the_process_and_a_start_rejoins_it_as_the_same_birth() {
 /// CONTRACT: the same holds for a node-admin: a mesh's non-primary admin is stopped by its mesh primary
 /// (its tasks held, its gossip topics left, its connections cut), stays alive with its endpoint bound,
 /// and a start makes the same process rejoin: the same node id, incarnation, endpoint key and port,
-/// `ready` again, and every other node reports it held again.
+/// `ready` again, and every other node reports it held again. Its start declares Ready as an owed
+/// message naming the start (node-start.md step 5); Q93 supersedes Q47's line "the open start sends no
+/// separate Ready declaration".
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stopped_node_admin_keeps_its_process_and_a_start_rejoins_it_as_the_same_birth() {
     stop_then_start("a_stopped_node_admin_keeps_its_process_and_a_start_rejoins_it_as_the_same_birth", &Estate::path("mesh1.admin", "2")).await;
