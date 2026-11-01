@@ -168,7 +168,8 @@ transport.**
   reads it so an answer from such a birth is not `reached`, `offline.rs:396`). Under i151 the record is
   fed by two writers: this admin's own call whose attempts ended unanswered, and a report. One new
   Status request on the upward path the declarations use (node-rpc-envelope.md Status, `0x1B`):
-  `ReportUnanswered { node_id, incarnation }`, sent with `Resend::default()` to the primary above the
+  `ReportCallFailed { sender, receiver, op, outcome }` (the same facts `on_call_failed` carries, Q314,
+  so the primary stores the reason, not only the fact), sent with `Resend::default()` to the primary above the
   birth, answered at once (`Accepted`, or `SubjectUnknown` for a birth the primary does not hold, which
   ends the report by name). The primary writes the report into the same record; the watch's tick
   investigates each birth there as it does today, "once per silence (not again within a staleness
@@ -202,7 +203,7 @@ Production cadences: publish cadence 2 s (`RDM_GOSSIP_INTERVAL_MS`), staleness f
 | Ack wait inside attempt n | that attempt's delay (2 s, 4 s, 8 s) | one attempt | the complete send | the next attempt, or the end at attempt 3 | `client.rs:1457`: existing |
 | `TimeLimit` | 10 s; the receiver's own bound + 10 s where it has one (15 s for connections delete and stop; a Build step's bound + 10 s) | one attempt: resolve, dial, complete send; then the reply from the ack | the attempt's start; the reply's from the ack | the attempt ends `NotSent(Deadline)` or `Indeterminate` | proposed (§3): the default is today's 10 s `Overall`; the per-class values are today's `Split.reply` values; validated by the flame of §8 step 4 |
 | Early wake | the resolver's change, the call's own state change | one call | n/a | n/a | `client.rs:1283`: existing |
-| Report `ReportUnanswered` | one request, `Resend::default()`, to the primary above the birth | one caller, one birth | the attempts of a call to that birth end unanswered | spanned and dropped: the record is the primary's | proposed (R-151.8) |
+| Report `ReportCallFailed` | one request, `Resend::default()`, to the primary above the birth | one caller, one birth | the attempts of a call to that birth end unanswered | spanned and dropped: the record is the primary's | proposed (R-151.8) |
 | Coalescing | one unanswered record per exact birth; one investigation per silence | one primary | an answer from the birth, a digest of the exact birth, the birth leaving the view clear it | not a timing value | `node_commands.rs:533`, node-recovery.md step 3: existing |
 | Investigation start | the watch's tick (every gossip interval), half a floor after the mark | one primary | the mark: silence past the floor (existing), a command never sent for a reachability reason (existing), the attempts of a call spent (proposed, R-151.8) | n/a | node-recovery.md "Detection", step 1, step 2: existing; the spent-call mark: proposed |
 | Responder's resend of a response | the same schedule, no attempt count; ends on the ack, caught up, or the receiver gone | one response | the request's stream is lost | n/a (R-151.9) | `delivery.rs:1082`, `:905-919`: existing |
@@ -478,13 +479,13 @@ New:
 
 > A node that does not answer a call is silent, whatever it gossips (Q182): a call whose attempts end
 > unanswered records its birth unanswered at the primary above it (the caller itself when it is that
-> primary; any other caller reports the birth to it with Status `ReportUnanswered`; nothing for the
+> primary; any other caller reports the birth to it with Status `ReportCallFailed`; nothing for the
 > fabric-primary, whose silence is fabric recovery's), and the primary's watch starts node
 > investigation on that birth as silence does, once per silence,
 
 node-rpc-envelope.md, Status (`0x1B`), after `ProbeNodeState` (`:779`): one new request variant,
 
-> `ReportUnanswered { node_id: NodeId, incarnation: IncarnationId }`: a caller's report that its call to
+> `ReportCallFailed { sender: Birth, receiver: Birth, op: u8, outcome: RpcOutcome }` (`Birth` the `(node_id, incarnation, path, name)` of each end): a caller's report that its call to
 > this exact birth ended with its attempts spent and no answer (node-rpc.md §43); answered `Accepted`,
 > or `SubjectUnknown` for a birth the receiver is not the primary above.
 
@@ -506,7 +507,7 @@ staleness floor starts investigation: the clock is now the spent instant, R-151.
    connection does and is not resent after its commit; a slow dial no longer eats the reply window; a
    late response to a spent call is acked (R-151.9, existing behaviour pinned).
 2. `rdm-admin`: #8 and #9's no-reply turns removed, their answer turns kept; every call site given its
-   `Resend` (§3); an admin's own spent call writes the Q182 record; `ReportUnanswered` served into the
+   `Resend` (§3); an admin's own spent call writes the Q182 record; `ReportCallFailed` served into the
    same record; `on_node_investigated` called after each verdict, with its ctx in `rdm_admin::wiring`
    beside `on_build_ended` (`wiring.rs:227`); `on_call_failed` in `rdm-node`'s hook wiring beside
    `on_node_ready` (`node_hooks.rs:188`), called by the transport client's owner on every node. Cells:
