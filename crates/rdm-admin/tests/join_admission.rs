@@ -245,12 +245,12 @@ fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row:
 
 /// CONTRACT (R-JN1 items 2 and 5; node-start.md step 2): a held birth's start registered by an
 /// admin that holds no stopped digest of it (it joined after the stop: no last accepted name) is
-/// still a held birth: its join reads the row at its name and hands the row's name in the answer, and
-/// no config: the node's properties are its own record (node-config-update.md). Whether a join is reconciled to its row is what registered the deployment says
+/// still a held birth: its join reads the row at its name and hands the row's name in the answer; the
+/// node's properties are its own record (node-config-update.md). Whether a join is reconciled to its row is what registered the deployment says
 /// (`Deployed::held`), never inferred from a last accepted name.
 #[test]
-fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_name_and_no_config() {
-    let cell = "a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_name_and_no_config";
+fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_name() {
+    let cell = "a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_name";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let cap = capture(cell);
@@ -404,12 +404,12 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
 /// CONTRACT (node-recovery.md step 4: "Its config is seeded from the Deleted row at that
 /// path.name"; node-create.md step 1: the claim is written before anything is launched;
 /// node-config-update.md "Launch properties initialize an absent own record"): a first start whose row
-/// at its create spec's name is its own (the create's claim) is installed once and handed no config:
-/// its properties are its own record, initialized from its launch snapshot. No digest carries the
+/// at its create spec's name is its own (the create's claim) is installed once; its properties are its
+/// own record, initialized from its launch snapshot. No digest carries the
 /// config (Q203).
 #[test]
-fn a_first_start_whose_row_is_its_own_claim_is_installed_once_and_handed_no_config() {
-    let cell = "a_first_start_whose_row_is_its_own_claim_is_installed_once_and_handed_no_config";
+fn a_first_start_whose_row_is_its_own_claim_is_installed_once() {
+    let cell = "a_first_start_whose_row_is_its_own_claim_is_installed_once";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let cap = capture(cell);
