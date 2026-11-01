@@ -180,6 +180,8 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
 /// declare probe) is answered `RejectedNotPrimary { ReceiverNotPrimary { needed: "mesh-primary of
 /// mesh1" } }`, its own role decision (`status_rpc.rs`'s `decide`). Must NOT happen: a declaration
 /// addressed to the admin holding no role, or `RequestNotHandled` from a node-admin for a declaration.
+/// The restarted node's start declares Ready as an owed message naming the start (node-start.md step 5);
+/// Q93 supersedes Q47's line "the open start sends no second Ready declaration".
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_own_decision() {
     let test = "a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_own_decision";
@@ -216,8 +218,9 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
     estate.stop().await;
 
     let spans = estate.spans();
-    // An open start reports on its command stream to the primary. Q36's separate
-    // declaration remains for a report with no open stream.
+    // An open start reports on its command stream to the primary, and also declares Ready to it as an
+    // owed message naming the start (node-start.md step 5; Q93 supersedes Q47's line "the open start
+    // sends no second Ready declaration"); frame and declaration apply once (Q49).
     let started: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-frame")
         .into_iter()
         .filter(|sp| sp["attributes"]["node_id"] == rpc1v["node_id"] && sp["attributes"]["incarnation_id"] == rpc1v["incarnation_id"] && sp["attributes"]["frame"] == "node-started" && sp["attributes"]["operation"] == "node.start" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
@@ -228,7 +231,9 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == rpc1v["node_id"] && sp["attributes"]["operation"] == "node.start" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
         .collect();
-    assert!(declared_own.is_empty(), "the open start sends no second Ready declaration: {declared_own:#?}");
+    assert!(!declared_own.is_empty(), "the start declares its Ready naming the start: {declared_own:#?}");
+    assert!(declared_own.iter().all(|sp| sp["attributes"]["to"] == primary_id), "the start's declaration goes to the role's primary and to no other admin: {declared_own:#?}; holder {primary_id}");
+    assert!(declared_own.iter().any(|sp| sp["attributes"]["definitive"] == "true" && ["applied", "already-applied"].contains(&sp["attributes"]["outcome"].as_str().unwrap_or_default())), "the primary takes it, applied or already applied beside the frame: {declared_own:#?}");
     let trace = r["traceparent"].as_str().and_then(|tp| tp.split('-').nth(1)).unwrap_or_default().to_string();
     println!("a declaration at the admin holding no primary role: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
