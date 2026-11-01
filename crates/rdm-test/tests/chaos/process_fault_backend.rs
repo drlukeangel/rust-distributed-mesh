@@ -7,6 +7,7 @@
 //!   (`rdm_test::process_faults`) on a real estate.
 //! The cell does not touch the fabric-primary node-admin, and no mesh loses every node-admin.
 
+use rdm_core::PathName;
 use rdm_test::estate::location;
 use rdm_test::elections::{advertised_fabric_primaries, primaries_as_expected};
 use rdm_client::NodeStatus;
@@ -99,9 +100,9 @@ async fn estate(cell: &str, admins: u32, rpcs: u32) -> Estate {
     estate
 }
 
-async fn published(estate: &Estate, node: &str) -> ExactRuntime {
+async fn published(estate: &Estate, node: &PathName) -> ExactRuntime {
     let dir = estate.data_dir(node).await;
-    ExactRuntime::published(std::path::Path::new(&dir)).unwrap_or_else(|r| panic!("{node}: no exact runtime published in {dir}: {r:?}"))
+    ExactRuntime::published(std::path::Path::new(&dir)).unwrap_or_else(|r| panic!("{node:?}: no exact runtime published in {dir}: {r:?}"))
 }
 
 fn primaries(nodes: &[Value]) -> (bool, String) {
@@ -202,7 +203,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     // process's start under a loaded box (an export batch) took 3 s, which held the runtime past the decision.
     let nodes_during = estate.node_values().await;
     let (roles_during, detail_during) = primaries(&nodes_during);
-    let during = nodes_during.iter().find(|n| n["name"] == hold.as_str()).cloned();
+    let during = nodes_during.iter().find(|n| location(n) == hold).cloned();
     let attempt_during = attempt_of(&estate, &build_id).await;
     let outcomes: Vec<Value> = std::thread::scope(|scope| {
         let calls: Vec<_> = (0..2).map(|_| scope.spawn(|| estate.probe(&["get", "--target", &hold_exact, "--budget-ms", "1500", "--key", "83"]))).collect();
@@ -275,7 +276,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
 
     // ---- A node-admin that is neither mesh primary nor fabric primary: killed by exact runtime.
     let nodes = estate.node_values().await;
-    let admin_n = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false && n["name"] != "mesh1.admin.1").cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
+    let admin_n = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false && location(n) != Estate::path("mesh1.admin", "1")).cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
     let admin = location(&admin_n);
     let admin_rt = published(&estate, &admin).await;
     let admin_dir = estate.data_dir(&admin).await;
@@ -293,7 +294,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     // Ready in the view is the new birth's own digest; the recovery is done when its mesh-primary's
     // submit followed the recovery's operations to the attempt's terminal frame.
     wait_for("the node-admin's recovery is followed to its terminal", Duration::from_secs(60), || async {
-        named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().any(|sp| attr(sp, "node") == admin && attr(sp, "outcome").starts_with("complete: attempt")).then_some(())
+        named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().any(|sp| rdm_test::estate::at_location(sp, &admin) && attr(sp, "outcome").starts_with("complete: attempt")).then_some(())
     })
     .await;
     estate.settled_views(&[("mesh1", 3, 3)]).await;
@@ -312,40 +313,43 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     // The recoveries are attempts of mesh1's drift lane (R-BI7: its mesh-primary runs them in its own
     // mesh's lane, numbered from 1 there; the fabric lane's attempt number is not theirs).
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| attr(r, "build_id") == build_id && attr(r, "lane") == "mesh1").collect();
-    let recovery_for = |path: &str, reason: &str, operation: &str| -> Value {
+    // A recovery plans the delete of the exact lost birth, keyed by its node id, and the create at its location.
+    let recovery_for = |path: &PathName, reason: &str, operation: &str| -> Value {
         reconciles
             .iter()
-            .find(|r| attr(r, "reason") == reason && attr(r, "operations").contains(&format!("{operation}:{path}")))
+            .find(|r| attr(r, "reason") == reason && rdm_test::estate::plans_operation(r, operation, &rdm_core::OperationSubject::Location(path.clone())))
             .cloned()
             .cloned()
-            .unwrap_or_else(|| panic!("a {reason} attempt of {build_id} running {operation}:{path}: {reconciles:?}"))
+            .unwrap_or_else(|| panic!("a {reason} attempt of {build_id} running {operation} at {path:?}: {reconciles:?}"))
     };
     // The rpc node and the secondary node-admin: each its mesh-primary's recovery (node-recovery.md,
     // mesh-recovery.md:8-9).
     let (rpc_rec, admin_rec) = (recovery_for(&kill, "recovery", "node.create"), recovery_for(&admin, "recovery", "node.create"));
-    for rec in [&rpc_rec, &admin_rec] {
-        let path = attr(rec, "operations").rsplit(':').next().unwrap_or_default().to_string();
-        assert_eq!(attr(rec, "operations"), format!("node.delete:{path},node.create:{path}"), "the recovery's two operations, in order: {rec}");
+    for (rec, path, lost) in [(&rpc_rec, &kill, kill_n), (&admin_rec, &admin, &admin_n)] {
+        let lost_id = rdm_core::NodeId::parse(&s(&lost["node_id"])).expect("a settled node id");
+        let planned = rdm_test::estate::planned_operations(rec);
+        let is = |op: &String, action: &str, subject: rdm_core::OperationSubject| op.contains(&format!("action: {action:?}")) && op.contains(&format!("subject: {:?}", Some(subject)));
+        assert!(planned.len() == 2 && is(&planned[0], "node.delete", rdm_core::OperationSubject::Node(lost_id.clone())) && is(&planned[1], "node.create", rdm_core::OperationSubject::Location(path.clone())), "the recovery's two operations, in order: {rec}");
     }
     for path in [&kill, &admin] {
         assert!(
-            named(&spans, "rdm.node_admin.build.update.via-reconcile").iter().all(|r| !(attr(r, "reason") == "proven-drift" && attr(r, "operations").contains(&format!(":{path:?}")))),
+            named(&spans, "rdm.node_admin.build.update.via-reconcile").iter().all(|r| !(attr(r, "reason") == "proven-drift" && (rdm_test::estate::plans_operation(r, "node.create", &rdm_core::OperationSubject::Location((*path).clone())) || attr(r, "operations").contains(&format!("{:?}", path))))),
             "the Fabric's drift never repairs {path:?}: its mesh-primary recovers it"
         );
-        let mesh_primary = s(&nodes0.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh1's primary")["name"]);
-        let submits: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| attr(sp, "node") == path.as_str()).collect();
+        let mesh_primary = s(&nodes0.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh1's primary")["node_id"]);
+        let submits: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| rdm_test::estate::at_location(sp, path)).collect();
         assert!(submits.iter().any(|sp| attr(sp, "submitter") == mesh_primary && attr(sp, "outcome").starts_with("complete: attempt")), "{path:?}: its mesh-primary {mesh_primary} submitted the recovery and followed it to its end: {submits:?}");
     }
     assert_eq!(attr(&rpc_rec, "build_id"), build_id);
     assert!(named(&spans, "rdm.node_admin.build.create.via-proven-drift").is_empty(), "no Build is minted for drift");
     // The pipeline in the recovery reconcile's own trace: a lane's attempt number also names an
     // attempt of the fabric lane, whose create pipeline of the same path is the node's first birth.
-    let pipeline_of = |kind: &str, path: &str, attempt: u64, rec: &Value| -> Value {
+    let pipeline_of = |kind: &str, path: &PathName, attempt: u64, rec: &Value| -> Value {
         named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
             .into_iter()
-            .find(|p| p["trace_id"] == rec["trace_id"] && attr(p, "pipeline") == kind && attr(p, "node") == path && attr(p, "build_id") == build_id && num(&p["attributes"]["attempt"]) == attempt)
+            .find(|p| p["trace_id"] == rec["trace_id"] && attr(p, "pipeline") == kind && rdm_test::estate::at_location(p, path) && attr(p, "build_id") == build_id && num(&p["attributes"]["attempt"]) == attempt)
             .cloned()
-            .unwrap_or_else(|| panic!("a {kind} pipeline span of {path} at attempt {attempt} in the recovery's trace"))
+            .unwrap_or_else(|| panic!("a {kind} pipeline span of {path:?} at attempt {attempt} in the recovery's trace"))
     };
     let mut recoveries = Vec::new();
     for (path, rec, kind) in [(&kill, &rpc_rec, "create"), (&admin, &admin_rec, "create")] {
@@ -353,7 +357,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
         let pipe = pipeline_of(kind, path, attempt, rec);
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipe["span_id"]).collect();
         assert!(!steps.is_empty(), "{path:?}: step spans are children of the {kind} pipeline");
-        assert!(steps.iter().all(|st| st["trace_id"] == pipe["trace_id"] && attr(st, "node") == path.as_str()), "{path:?}: every step shares the pipeline's trace");
+        assert!(steps.iter().all(|st| st["trace_id"] == pipe["trace_id"] && rdm_test::estate::at_location(st, path)), "{path:?}: every step shares the pipeline's trace");
         assert!(steps.iter().any(|st| attr(st, "step") == "WaitForBind" || attr(st, "step").to_lowercase().contains("bind")), "{path:?}: the birth waited for its bind: {:?}", steps.iter().map(|st| attr(st, "step")).collect::<Vec<_>>());
         recoveries.push(json!({
             "path": path, "attempt": rec["attributes"]["attempt"], "reason": rec["attributes"]["reason"], "action": rec["attributes"]["action"], "operations": rec["attributes"]["operations"],
