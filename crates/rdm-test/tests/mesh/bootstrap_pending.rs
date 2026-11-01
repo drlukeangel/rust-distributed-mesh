@@ -79,8 +79,8 @@ async fn pending_contract(cell: &str) {
     let create = created.build_id.to_string();
     let build = estate.carrier().await.build(&created.build_id).await.expect("build.get [id] of the creation Build");
     let nodes = estate.settled_views(&[mesh("mesh1"), mesh("mesh2")]).await;
-    let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).expect("mesh2 elects a primary");
-    let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("one fabric primary");
+    let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.clone()).expect("mesh2 elects a primary");
+    let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).expect("one fabric primary");
     // The provider every mesh2 member actually ran on, from the view (and, on containers, its
     // immutable container id).
     let provider = estate.owner.provider.clone();
@@ -226,7 +226,7 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
     // The restart, node.stop then node.start through the rectifier (Q183): attempts of the accepted Build.
     let restart_build = estate.stop_then_start(&target.parse().unwrap()).await.0.build_id.to_string();
     let after = estate.settled_views(&shape).await;
-    let after = after.iter().find(|n| n.name.to_string() == target).cloned().expect("the restarted admin in the view");
+    let after = after.iter().find(|n| n.name == target).cloned().expect("the restarted admin in the view");
     let mesh_name = target.split('.').next().unwrap().to_string();
     estate.stop().await;
     let spans = estate.spans();
@@ -279,12 +279,12 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     let accepted = built.build_id.to_string();
     let before = estate.settled_views(&shape).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let fabric_primary = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("one fabric primary");
+    let fabric_primary = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).expect("one fabric primary");
     // The lost mesh is a sole-admin mesh that does not hold the fabric-primary role.
     let lost_admin = bootstrap_admin_not_fabric_primary(&before);
     let lost = lost_admin.split('.').next().unwrap().to_string();
     let mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
-    let admin_before = before.iter().find(|n| n.name.to_string() == lost_admin).cloned().unwrap();
+    let admin_before = before.iter().find(|n| n.name == lost_admin).cloned().unwrap();
     let attempt_before = u64::from(estate.carrier().await.build(&built.build_id).await.expect("build.get [id] of the accepted Build").attempt);
     estate.enter(&Estate::path(&fabric_primary)).await;
 

@@ -164,7 +164,7 @@ async fn a_lost_fabric_primary_whose_runtime_lives_in_another_control_domain_is_
 async fn new_birth_within(estate: &Estate, node: &str, old: &str, within: Duration) -> Option<rdm_core::views::NodeView> {
     let until = std::time::Instant::now() + within;
     while std::time::Instant::now() < until {
-        let found = estate.node_views().await.into_iter().find(|n| n.name.to_string() == node && n.node_id.to_string() != old && n.status == rdm_core::views::NodeStatus::Ready);
+        let found = estate.node_views().await.into_iter().find(|n| n.name == node && n.node_id.to_string() != old && n.status == rdm_core::views::NodeStatus::Ready);
         if found.is_some() {
             return found;
         }

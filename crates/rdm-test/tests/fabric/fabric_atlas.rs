@@ -79,10 +79,10 @@ async fn a_start_of_another_meshs_node_sent_the_moment_its_stop_completes_is_adm
                 Estate::complete(&mut start).await;
             }
             Err(e) => {
-                refused_starts.push(format!("{node}: {e}"));
+                refused_starts.push(format!("{node:?}: {e}"));
                 // The cell goes on to the next node with this one started, so every node is asked.
                 estate.until_stopped_at_the_fabric_primary(&node).await;
-                Estate::workflow(&format!("node.start of {node}"), estate.nodes_obj().await.start(&node).await).await;
+                Estate::workflow(&format!("node.start of {node:?}"), estate.nodes_obj().await.start(&node).await).await;
             }
         }
         let after = estate.until_node(&node.to_string(), "the node ready again after its stop and start", std::time::Duration::from_secs(60), |n| {
@@ -118,15 +118,15 @@ async fn a_stop_of_another_meshs_node_sent_the_moment_its_start_completes_is_adm
                 Estate::complete(&mut stop).await;
             }
             Err(e) => {
-                refused_stops.push(format!("{node}: {e}"));
+                refused_stops.push(format!("{node:?}: {e}"));
                 // The cell goes on with this node stopped, so every node is asked.
                 let views_live = |n: Option<&rdm_client::NodeView>| n.filter(|n| serde_json::to_value(n).map(|v| v["status"] == "ready" && v["stopped"] == false).unwrap_or(false)).map(|_| ());
                 estate.until_node(&node.to_string(), "the started node live at the asked admin", std::time::Duration::from_secs(60), views_live).await;
-                Estate::workflow(&format!("node.stop of {node}"), estate.nodes_obj().await.stop(&node).await).await;
+                Estate::workflow(&format!("node.stop of {node:?}"), estate.nodes_obj().await.stop(&node).await).await;
             }
         }
         estate.until_stopped_at_the_fabric_primary(&node).await;
-        Estate::workflow(&format!("node.start of {node}"), estate.nodes_obj().await.start(&node).await).await;
+        Estate::workflow(&format!("node.start of {node:?}"), estate.nodes_obj().await.start(&node).await).await;
         estate.until_node(&node.to_string(), "the node ready again", std::time::Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             (n["status"] == "ready" && n["stopped"] == false).then_some(())
@@ -192,7 +192,7 @@ async fn the_atlas_names_a_stop_at_its_admission_and_its_receipts_before_complet
     fp_door.wait_held("atlas:claimed").await;
     let at_acceptance = atlas(&estate, "R-FA2: fabric.atlas.get while the accepted stop's attempt is held before its dispatch").await;
     let row = at_acceptance.node(&node.to_string()).unwrap_or_else(|| panic!("R-FA2: the atlas holds no row of {node:?}: {at_acceptance:#?}"));
-    assert_eq!(row.accepted.as_deref(), Some(format!("node.stop:{node}").as_str()), "R-FA2: the atlas names the accepted stop on {node:?} before its attempt runs: {row:#?}");
+    assert_eq!(row.accepted.as_deref(), Some(format!("node.stop:{node:?}").as_str()), "R-FA2: the atlas names the accepted stop on {node:?} before its attempt runs: {row:#?}");
     assert!(!row.stopped, "R-FA2: an accepted stop whose attempt has not run does not stop the node in the atlas: {row:#?}");
     fp_door.release("atlas:claimed").await;
     Estate::complete(&mut stop).await;
@@ -237,15 +237,15 @@ async fn a_delayed_observation_of_another_meshs_node_never_moves_the_atlas_back(
     for before in targets.iter().filter(|n| n["kind"] == "node_admin") {
         let node = path_of(before);
         let birth = (before["node_id"].as_str().unwrap_or_default().to_string(), before["incarnation_id"].as_str().unwrap_or_default().to_string());
-        Estate::workflow(&format!("node.stop of {node}"), estate.nodes_obj().await.stop(&node).await).await;
-        atlas_holds_for(&estate, &node, 1, "R-FA3: after the stop's Complete", |row| if row.stopped { Ok(()) } else { Err(format!("{node} is not stopped in the atlas")) }).await;
-        Estate::workflow(&format!("node.start of {node}"), estate.nodes_obj().await.start(&node).await).await;
+        Estate::workflow(&format!("node.stop of {node:?}"), estate.nodes_obj().await.stop(&node).await).await;
+        atlas_holds_for(&estate, &node, 1, "R-FA3: after the stop's Complete", |row| if row.stopped { Ok(()) } else { Err(format!("{node:?} is not stopped in the atlas")) }).await;
+        Estate::workflow(&format!("node.start of {node:?}"), estate.nodes_obj().await.start(&node).await).await;
         atlas_holds_for(&estate, &node, 2, "R-FA3: after the start's Complete", |row| {
             if row.stopped || status_of(row) != "ready" {
-                return Err(format!("{node} is not live in the atlas"));
+                return Err(format!("{node:?} is not live in the atlas"));
             }
             if (row.node_id.to_string(), row.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default()) != birth {
-                return Err(format!("{node} is not the birth it was before its stop and start"));
+                return Err(format!("{node:?} is not the birth it was before its stop and start"));
             }
             Ok(())
         }).await;
@@ -281,7 +281,7 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
     for d in &mesh2_doors {
         d.arm("atlas:no-gossip", json!({"kind": "announcement", "announcement": "aggregate-in-flight", "channel": "backbone"})).await;
     }
-    Estate::workflow(&format!("the predecessor's half of the replace of {node}"), estate.nodes_obj().await.steps(rdm_test::steps::predecessor_steps(&node).expect("valid replacement fixture name")).await).await;
+    Estate::workflow(&format!("the predecessor's half of the replace of {node:?}"), estate.nodes_obj().await.steps(rdm_test::steps::predecessor_steps(&node).expect("valid replacement fixture name")).await).await;
     // No wait: the read goes out on the Build's Complete.
     let listed = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [&estate.node_view(&renamed.to_string()).await.mesh])).await.expect("node.get [mesh] at the fabric-primary");
     let read = atlas(&estate, "R-FA2: fabric.atlas.get on the Build's Complete").await;
@@ -291,17 +291,17 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
     let at_old = listed.iter().find(|n| n.name == renamed).cloned();
     assert!(
         at_old.as_ref().is_some_and(|n| n.stopped && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()),
-        "mesh.nodes.get at the fabric-primary lists {node:?}'s birth stopped at {renamed} on the Build's Complete: {listed:#?}"
+        "mesh.nodes.get at the fabric-primary lists {node:?}'s birth stopped at {renamed:?} on the Build's Complete: {listed:#?}"
     );
     assert!(!listed.iter().any(|n| n.name == node && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()), "the renamed birth is not answered at {node:?} too: {listed:#?}");
     // `fabric.atlas.get` answers the paths the current Build names (R-FA4): the birth the rename moved
     // off `<path>` is not at it.
-    assert!(read.node(&node.to_string()).is_none_or(|row| row.node_id.to_string() != before["node_id"].as_str().unwrap_or_default()), "R-FA2: on the Build's Complete the atlas holds no birth of {node} at {node:?}: {read:#?}");
+    assert!(read.node(&node.to_string()).is_none_or(|row| row.node_id.to_string() != before["node_id"].as_str().unwrap_or_default()), "R-FA2: on the Build's Complete the atlas holds no birth of {node:?} at {node:?}: {read:#?}");
     estate.stop().await;
     let spans = estate.spans();
     let executed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|sp| attr(sp, "outcome") == "complete" && attr(sp, "executor").starts_with("mesh2.admin.")).collect();
     assert!(!executed.is_empty(), "mesh2's primary executed the Build: {:#?}", named(&spans, "rdm.node_admin.build.update.via-dispatch"));
-    let taken: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-receipt").into_iter().filter(|sp| attr(sp, "operation") == format!("node.update:{node}") || attr(sp, "operation") == format!("node.stop:{renamed}")).collect();
+    let taken: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-receipt").into_iter().filter(|sp| attr(sp, "operation") == format!("node.update:{node:?}") || attr(sp, "operation") == format!("node.stop:{renamed:?}")).collect();
     assert_eq!(taken.len(), 2, "the rename's and the stop's receipts are taken into the atlas as they stream up: {taken:#?}");
 }
 
@@ -325,7 +325,7 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
     let renamed = node.renamed().unwrap();
     let nodes = estate.nodes_obj().await;
     // The node's connections deleted and its mesh left: the precondition of a live rename.
-    Estate::workflow(&format!("node.connection.delete and node.mesh.leave of {node}"), nodes.steps(vec![rdm_core::build::Step::DeleteConnections { node: node.clone() }, rdm_core::build::Step::LeaveMesh { node: node.clone() }]).await).await;
+    Estate::workflow(&format!("node.connection.delete and node.mesh.leave of {node:?}"), nodes.steps(vec![rdm_core::build::Step::DeleteConnections { node: node.clone() }, rdm_core::build::Step::LeaveMesh { node: node.clone() }]).await).await;
     let id = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
     let node_id: rdm_core::NodeId = serde_json::from_value(targets[0]["node_id"].clone()).expect("a node id");
     let birth = rdm_client::ExactBirth {
@@ -340,7 +340,7 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
     let read = estate.node_values().await;
     let at: Vec<String> = read.iter().filter(|n| n["node_id"] == targets[0]["node_id"]).map(|n| id(n, "name")).collect();
     estate.stop().await;
-    assert_eq!(at, vec![renamed.to_string()], "the fabric-primary's node read lists the birth of {node:?} at {renamed} once the rename was answered: {read:#?}");
+    assert_eq!(at, vec![renamed.to_string()], "the fabric-primary's node read lists the birth of {node:?} at {renamed:?} once the rename was answered: {read:#?}");
     let spans = estate.spans();
     let mp = id(primary, "name");
     let forwarded: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-forward").into_iter().filter(|sp| attr(sp, "node") == mp && attr(sp, "op") == "node.name.update").collect();
@@ -368,10 +368,10 @@ async fn a_reconcile_removing_a_primary_right_after_its_only_other_admins_start_
     let other_id: rdm_core::NodeId = serde_json::from_value(targets[2]["node_id"].clone()).expect("a node id");
     let fp = estate.fabric_view().await.fabric_primary.expect("fabric.get names the fabric-primary");
     let fp_view = estate.node_views().await.into_iter().find(|n| n.name == fp).expect("the fabric-primary is listed");
-    Estate::workflow(&format!("node.stop of {other}"), estate.nodes_obj().await.stop(&other).await).await;
+    Estate::workflow(&format!("node.stop of {other:?}"), estate.nodes_obj().await.stop(&other).await).await;
     // The fabric-primary's gossip view holds the stop: the birth dropped and its stop overlay held.
     estate.peers().await.fact(&fp_view, "mesh2", "the fabric-primary's view holds the stopped node-admin stopped", |v| v.birth(&other_id).is_none() && v.overlay(&other_id, "node.stop:").is_some()).await;
-    Estate::workflow(&format!("node.start of {other}"), estate.nodes_obj().await.start(&other).await).await;
+    Estate::workflow(&format!("node.start of {other:?}"), estate.nodes_obj().await.start(&other).await).await;
     // No wait: the Reconcile goes out on the start's Complete.
     let current = estate.current().await;
     let mut held = current.held(&estate.executables).unwrap_or_else(|e| panic!("{e}"));
@@ -388,5 +388,5 @@ async fn a_reconcile_removing_a_primary_right_after_its_only_other_admins_start_
     estate.stop().await;
     let spans = estate.spans();
     let last_admin: Vec<Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().cloned().collect();
-    assert!(refused.is_none() && last_admin.is_empty(), "R-FA1: the Reconcile removing {primary:?} right after {other}'s start completed was refused: {refused:?}; last-admin spans: {last_admin:#?}");
+    assert!(refused.is_none() && last_admin.is_empty(), "R-FA1: the Reconcile removing {primary:?} right after {other:?}'s start completed was refused: {refused:?}; last-admin spans: {last_admin:#?}");
 }

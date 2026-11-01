@@ -213,7 +213,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let held: String = nodes
         .iter()
         .find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode && !n.is_primary)
-        .map(|n| n.name.to_string())
+        .map(|n| n.name.clone())
         .unwrap_or_else(|| panic!("mesh2 holds an rpc node that is not its rpc primary: {nodes:?}"));
     let held = held.as_str();
     let mut hold = Held { rt: rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&estate.data_dir(held).await)).unwrap_or_else(|r| panic!("{held}: no exact runtime published: {r:?}")), hung: None };

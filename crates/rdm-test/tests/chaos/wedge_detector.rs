@@ -500,7 +500,7 @@ impl Run {
     }
 
     async fn names(&self) -> Vec<String> {
-        self.estate.node_views().await.iter().map(|n| n.name.to_string()).collect()
+        self.estate.node_views().await.iter().map(|n| n.name.clone()).collect()
     }
 
     /// `node` once the admin the estate asks lists it ready.
@@ -520,7 +520,7 @@ impl Run {
         let mut stream = self.spawn(kind).await;
         self.complete(&mut stream).await;
         self.estate
-            .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.name.to_string()) && n.status == NodeStatus::Ready).map(|n| n.name.to_string()))
+            .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.name.to_string()) && n.status == NodeStatus::Ready).map(|n| n.name.clone()))
             .await
     }
 
@@ -733,7 +733,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
     let build_id = Run::id_of(&stream);
     let door = Door::at(&run.estate, admin).await;
     let held = door.wait_held(id).await;
-    let op = format!("node.create:{admin}");
+    let op = format!("node.create:{admin:?}");
     let want = create_order[..CreateStep::ORDER.iter().position(|s| *s == stops_at).expect("stops_at is a create step")].to_vec();
     // The pipeline goes on while the admin boots, and stops where it needs the admin Ready.
     build_log::build_fact(&run.estate, &build_id, &format!("the Build reaches the held admin (complete receipts exactly {want:?})"), Duration::from_secs(60), |b| done_steps(&serde_json::to_value(b).expect("a Build view serializes"), &op, 1) == want)

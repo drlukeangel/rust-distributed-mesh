@@ -84,8 +84,8 @@ impl Caller {
         let mut at = None;
         while let Some(named) = moved {
             let to: rdm_core::PathName = named.ok_or_else(|| format!("a stream ended FabricPrimaryMoved naming no fabric-primary: {first:?} {streams:?}"))?.parse().map_err(|e| format!("FabricPrimaryMoved names {e:?}, which is not a path.name"))?;
-            let carrier = self.peers.carrier_following(&self.entry, &to).await.map_err(|e| format!("the caller cannot reach {to}, the fabric-primary FabricPrimaryMoved names: {e}"))?;
-            let mut stream = Nodes::new(carrier.clone()).resume(self.kind.clone(), &self.accepted).await.map_err(|e| format!("Build {} was not resumed at {to}: {e}", self.accepted.build_id))?;
+            let carrier = self.peers.carrier_following(&self.entry, &to).await.map_err(|e| format!("the caller cannot reach {to:?}, the fabric-primary FabricPrimaryMoved names: {e}"))?;
+            let mut stream = Nodes::new(carrier.clone()).resume(self.kind.clone(), &self.accepted).await.map_err(|e| format!("Build {} was not resumed at {to:?}: {e}", self.accepted.build_id))?;
             let mut frames: Vec<Frame> = Vec::new();
             moved = loop {
                 match stream.next().await {
@@ -98,8 +98,8 @@ impl Caller {
                             break Some(to);
                         }
                     }
-                    Some(Err(e)) => return Err(format!("the stream resumed at {to} broke before its terminal: {e}; its frames: {frames:?}")),
-                    None => return Err(format!("the stream resumed at {to} ended with no terminal; its frames: {frames:?}")),
+                    Some(Err(e)) => return Err(format!("the stream resumed at {to:?} broke before its terminal: {e}; its frames: {frames:?}")),
+                    None => return Err(format!("the stream resumed at {to:?} ended with no terminal; its frames: {frames:?}")),
                 }
             };
             streams.push(frames);
@@ -367,7 +367,7 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
     let heir = if old.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     kill(&mut estate, &old).await;
-    estate.until_view("the surviving admin is its mesh's primary", Duration::from_secs(90), |views| views.iter().any(|n| n.name.to_string() == heir && n.is_primary).then_some(())).await;
+    estate.until_view("the surviving admin is its mesh's primary", Duration::from_secs(90), |views| views.iter().any(|n| n.name == heir && n.is_primary).then_some(())).await;
     let watcher = nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] != mesh).map(|n| s(&n["name"])).expect("an admin of the other mesh");
     let heard = estate
         .until_view_at(&Estate::path(&watcher), &format!("{watcher} names {heir} {mesh}'s primary"), Duration::from_secs(60), |views| {
@@ -623,7 +623,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     let resume = rdm_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the Build's steps");
     let step_keys: Vec<String> = {
         let p = p.parse::<rdm_core::PathName>().unwrap();
-        vec![format!("node.connection.delete:{p}"), format!("node.mesh.leave:{p}"), format!("node.update:{p}"), format!("node.stop:{p_old}"), format!("node.create:{p}"), format!("node.delete:{p_old}")]
+        vec![format!("node.connection.delete:{p:?}"), format!("node.mesh.leave:{p:?}"), format!("node.update:{p:?}"), format!("node.stop:{p_old}"), format!("node.create:{p:?}"), format!("node.delete:{p_old}")]
     };
     for key in &step_keys {
         assert!(resume.completed.iter().any(|(op, step)| op == key && step == "Complete"), "build.get holds the Complete receipt of {key}: {resume:?}");

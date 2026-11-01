@@ -1687,6 +1687,18 @@ pub fn path_target(location: &rdm_core::PathName) -> String {
     format!("path:{}", serde_json::to_string(location).expect("a location serializes"))
 }
 
+/// The operations a reconcile span plans (`operations`, the executor's `{:?}` of their keys), one item each.
+pub fn planned_operations(sp: &Value) -> Vec<String> {
+    let all = sp["attributes"]["operations"].as_str().unwrap_or_default();
+    all.split("OperationId {").skip(1).map(|item| format!("OperationId {{{item}")).collect()
+}
+
+/// Whether a reconcile span plans `action` on `subject`, whatever its step position or occurrence.
+pub fn plans_operation(sp: &Value, action: &str, subject: &rdm_core::OperationSubject) -> bool {
+    let (action, subject) = (format!("action: {action:?}"), format!("subject: {:?}", Some(subject)));
+    planned_operations(sp).iter().any(|op| op.contains(&action) && op.contains(&subject))
+}
+
 /// Spans by name.
 pub fn named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     spans.iter().filter(|s| s["name"] == name).collect()

@@ -1759,7 +1759,7 @@ impl Run {
     /// The admins a read is asked of, each by path.name: the entry first, then every other admin ever seen.
     /// Each is asked over Node RPC at its own path.name, so a dead entry is passed over, never handed over to.
     fn candidates(&self, f: &Formed) -> Vec<String> {
-        let entry = f.estate.admin.to_string();
+        let entry = f.estate.admin.clone();
         let first = self.known.iter().filter(|n| **n == entry);
         let others = self.known.iter().filter(|n| **n != entry);
         first.chain(others).cloned().collect()

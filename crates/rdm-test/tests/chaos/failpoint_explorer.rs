@@ -741,7 +741,7 @@ async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: V
     let held = door.wait_held(id).await;
     // The pipeline goes on while the admin boots, and stops at the step that needs the admin Ready,
     // which only the release lets complete: it must settle at `receipts_before` receipts.
-    let op = format!("node.create:{admin}");
+    let op = format!("node.create:{admin:?}");
     let want = create_order[..receipts_before].to_vec();
     let receipts = |b: &rdm_admin::build_state::BuildProjection| done_steps(&serde_json::to_value(b).expect("a Build view serializes"), &op, Some(1));
     let b = run.build_fact(&exec, &build_id, &format!("`{id}`: the Build holds a receipt for every step before WaitForNodeReady (through {}) and waits on the held admin", want.last().unwrap()), |b| receipts(b) == want).await;

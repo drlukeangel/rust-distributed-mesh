@@ -79,7 +79,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connect
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.expect("mesh2 carries its id").to_string();
     // mesh2's members are grown by mesh2's admin primary (the lowest NodeId of its admins).
-    let mesh2_primary = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).unwrap();
+    let mesh2_primary = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.clone()).unwrap();
     let mesh1_primary = estate.mesh_view("mesh1").await.primary_admin.expect("mesh1 roles a primary admin");
 
     // B: grow mesh2. Once its first attempt is claimed, lose mesh2's node-admins. Its births run one

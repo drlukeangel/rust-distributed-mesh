@@ -195,7 +195,7 @@ fn rows<'a>(history: &'a [Value], to: &str, kind: &str) -> Vec<&'a Value> {
 async fn connections_delete_ids(estate: &Estate, node: &str, ids: &[String]) -> rdm_core::status::StatusReply {
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
     let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
-    let target = mesh.iter().find(|n| n.name.to_string() == node).cloned().unwrap_or_else(|| panic!("no {node} in mesh1"));
+    let target = mesh.iter().find(|n| n.name == node).cloned().unwrap_or_else(|| panic!("no {node} in mesh1"));
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(target.node_id.clone()), node_id: target.node_id.clone(), incarnation: target.incarnation_id.clone().expect("a live birth") };
     let ids = ids.iter().map(|i| rdm_core::ConnectionId::parse(i).unwrap_or_else(|e| panic!("{i} is not a connection id: {e:?}"))).collect();
     estate.nodes_obj().await.connections_delete(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &rdm_core::status::ConnectionScope::Connections(ids)).await.expect("node.connection.delete answered")
@@ -752,7 +752,7 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "{frames:?}");
     for admin in views.iter().filter(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.name != p.name) {
         let view = estate.node_views_at(&admin.name).await.unwrap_or_else(|| panic!("{:?} answers node.get", admin.name));
-        let primary: Vec<String> = view.iter().filter(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).collect();
+        let primary: Vec<String> = view.iter().filter(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.clone()).collect();
         assert_eq!(primary, vec![na2_name.clone()], "{} names {na2_name} mesh2's primary", admin.name);
     }
     estate.stop().await;

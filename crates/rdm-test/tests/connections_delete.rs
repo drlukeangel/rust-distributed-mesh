@@ -176,7 +176,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         let drop = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.node_id == peer.node_id);
         expect(
             drop.is_some_and(|e| e.state == ConnectionState::Disconnected && e.source.name == born && e.id != to_peer.id && e.reason.as_deref() == Some("node.connection.delete")),
-            format!("the latest entry for the peer route is its drop, written under {born} with its own id and the cut's reason: {drop:?}"),
+            format!("the latest entry for the peer route is its drop, written under {born:?} with its own id and the cut's reason: {drop:?}"),
         );
         let admin_now = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.name.to_string() == "mesh1.admin.1");
         expect(admin_now.is_some_and(|e| e.state == ConnectionState::Connected), format!("the admin route was not named and is still connected: {admin_now:?}"));
