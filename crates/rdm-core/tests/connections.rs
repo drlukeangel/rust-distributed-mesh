@@ -290,20 +290,22 @@ fn carriers_are_asked_from_the_topology_in_id_order_spread_by_source() {
     let dest = NodeId::parse(&rdm_core::fixture_crockford60("carrier-9")).unwrap();
     let incarnation = IncarnationId::parse(&rdm_core::fixture_crockford60("d2")).unwrap();
     let own = NodeId::parse(&rdm_core::fixture_crockford60("carrier-1")).unwrap();
+    let at_path = |n: &str| rdm_core::PathName::new("mesh1.rpc", n).unwrap();
+    let carrier = |n: &str| NodeId::parse(&rdm_core::fixture_crockford60(&format!("carrier-{n}"))).unwrap();
+    // Path order is not node-id order: carrier-4 stands first by path, carrier-2 last.
     let topology = vec![
-        (NodeId::parse(&rdm_core::fixture_crockford60("carrier-4")).unwrap(), "mesh1".into(), NodeKind::RpcNode),
-        (NodeId::parse(&rdm_core::fixture_crockford60("carrier-2")).unwrap(), "mesh1".into(), NodeKind::RpcNode),
-        (own.clone(), "mesh1".into(), NodeKind::RpcNode),
-        (dest.clone(), "mesh1".into(), NodeKind::RpcNode),
-        (NodeId::parse(&rdm_core::fixture_crockford60("carrier-3")).unwrap(), "mesh1".into(), NodeKind::RpcNode),
-        (NodeId::parse(&rdm_core::fixture_crockford60("peer")).unwrap(), "mesh2".into(), NodeKind::RpcNode),
-        (NodeId::parse(&rdm_core::fixture_crockford60("admin")).unwrap(), "mesh1".into(), NodeKind::NodeAdmin),
+        (carrier("4"), at_path("1"), "mesh1".into(), NodeKind::RpcNode),
+        (carrier("2"), at_path("3"), "mesh1".into(), NodeKind::RpcNode),
+        (own.clone(), at_path("0"), "mesh1".into(), NodeKind::RpcNode),
+        (dest.clone(), at_path("9"), "mesh1".into(), NodeKind::RpcNode),
+        (carrier("3"), at_path("2"), "mesh1".into(), NodeKind::RpcNode),
+        (NodeId::parse(&rdm_core::fixture_crockford60("peer")).unwrap(), rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2".into(), NodeKind::RpcNode),
+        (NodeId::parse(&rdm_core::fixture_crockford60("admin")).unwrap(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1".into(), NodeKind::NodeAdmin),
     ];
     let order = carrier_order(&own, "mesh1", &dest, &incarnation, true, &[NodeKind::RpcNode], topology.clone());
-    let mut in_id_order = [NodeId::parse(&rdm_core::fixture_crockford60("carrier-2")).unwrap(), NodeId::parse(&rdm_core::fixture_crockford60("carrier-3")).unwrap(), NodeId::parse(&rdm_core::fixture_crockford60("carrier-4")).unwrap()];
-    in_id_order.sort();
+    let in_path_order = [carrier("4"), carrier("3"), carrier("2")];
     let at = (rdm_core::connections::spread(&own.to_string(), &dest.to_string(), incarnation.as_str()) % 3) as usize;
-    let expected: Vec<NodeId> = (0..3).map(|k| in_id_order[(at + k) % 3].clone()).collect();
+    let expected: Vec<NodeId> = (0..3).map(|k| in_path_order[(at + k) % 3].clone()).collect();
     assert_eq!(order, expected, "the mesh's carriers in path order from the spread, wrapping");
     assert_eq!(carrier_order(&own, "mesh1", &dest, &incarnation, true, &[NodeKind::RpcNode], topology.clone()), order, "the order is deterministic");
     let firsts: std::collections::BTreeSet<NodeId> = (1..=8u32)

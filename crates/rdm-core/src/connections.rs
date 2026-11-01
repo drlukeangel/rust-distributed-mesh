@@ -630,24 +630,24 @@ pub fn carrier_order(
     destination_incarnation: &IncarnationId,
     proxy: bool,
     carriers: &[NodeKind],
-    candidates: impl IntoIterator<Item = (NodeId, String, NodeKind)>,
+    candidates: impl IntoIterator<Item = (NodeId, PathName, String, NodeKind)>,
 ) -> Vec<NodeId> {
     if !proxy || carriers.is_empty() {
         return Vec::new();
     }
-    let mut eligible: Vec<NodeId> = candidates
+    let mut eligible: Vec<(PathName, NodeId)> = candidates
         .into_iter()
-        .filter(|(c, mesh, kind)| c != own && c != destination && mesh == own_mesh && carriers.contains(kind))
-        .map(|(name, _, _)| name)
+        .filter(|(c, _, mesh, kind)| c != own && c != destination && mesh == own_mesh && carriers.contains(kind))
+        .map(|(id, location, _, _)| (location, id))
         .collect();
     eligible.sort();
     eligible.dedup();
     if eligible.is_empty() {
-        return eligible;
+        return Vec::new();
     }
     let at = (spread(&own.to_string(), &destination.to_string(), destination_incarnation.as_str()) % eligible.len() as u64) as usize;
     eligible.rotate_left(at);
-    eligible
+    eligible.into_iter().map(|(_, id)| id).collect()
 }
 
 /// FNV-1a 64 over `source`, `destination` and `destination_incarnation`, each followed by a 0xff

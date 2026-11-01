@@ -1538,7 +1538,7 @@ impl Dialer {
                     &destination.incarnation,
                     self.alpn.proxy,
                     &self.alpn.carriers,
-                    live.iter().map(|n| (n.node_id.clone(), n.mesh.clone(), n.kind)),
+                    live.iter().map(|n| (n.node_id.clone(), n.name.clone(), n.mesh.clone(), n.kind)),
                 );
                 if order.is_empty() {
                     return Err(ConnectError::NotSent { reason });
