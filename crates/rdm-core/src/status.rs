@@ -1458,11 +1458,6 @@ pub enum StatusReply {
         node: String,
         /// The store's refusal.
         reason: String,
-        /// The row's config as it stands (the write refused, it is what it was): a node's own update
-        /// installs it over an older revision (P2); empty when the writer holds no row.
-        config: BTreeMap<String, String>,
-        /// The row's revision as it stands; 0 when the writer holds no row.
-        revision: u64,
     },
     /// The mesh-primary wrote the node's row, and the exact birth did not apply the config: the
     /// record holds the new config, the birth does not.
@@ -1979,7 +1974,7 @@ impl StatusReply {
     /// `ConfigRowRefused` for `node`, the store's refusal `reason`, each within its budget so the
     /// reply always fits the Status reply bound.
     pub fn config_row_refused(node: &str, reason: &str) -> Self {
-        Self::ConfigRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES), config: BTreeMap::new(), revision: 0 }
+        Self::ConfigRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
     /// `ConfigNotApplied` for `node`: the birth `answered` (a reply or call-end name), and why, each
@@ -2410,7 +2405,7 @@ mod tests {
             (StatusReply::CurrentStopped { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::ConfigUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() }, ReplyKind::Success),
             (StatusReply::Reserved22 { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into(), config: Default::default(), revision: 0 }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::Blocked { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } }, ReplyKind::Success),
             (StatusReply::NameUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),

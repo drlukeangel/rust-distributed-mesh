@@ -137,8 +137,8 @@ fn replies_match_the_frozen_sixty_three_variant_wire_schema() {
         // node_id | incarnation | the row as written: config (len 1: "k" "v") | revision 3 (P1)
         (ConfigUpdated { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "150c3031323334353637383961620c39776370726667777674687901016b0176"),
         (Reserved22 { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 }, "16210a208010"),
-        // node | reason | the row as it stands: config (len 0) | revision 0 (P2)
-        (ConfigRowRefused { node: "n".into(), reason: "r".into(), config: Default::default(), revision: 0 }, "17016e01720000"),
+        // node | reason
+        (ConfigRowRefused { node: "n".into(), reason: "r".into() }, "17016e0172"),
         (ConfigNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "18016e01610172"),
         (Blocked { node_id: node(), incarnation: birth(), reason: "r".into(), retry_on: RetryOn::TargetReachable { node_id: node() } }, "190c3031323334353637383961620c3977637072666777767468790172010c303132333435363738396162"),
         (NameUpdated { node_id: node(), incarnation: birth() }, "1a0c3031323334353637383961620c397763707266677776746879"),

@@ -480,7 +480,8 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                         use rdm_core::status::StatusReply as R;
                         let (outcome, config) = match door.update(config).await {
                             Ok(reply) => match &reply {
-                                R::ConfigUpdated { config, .. } | R::ConfigRowRefused { config, .. } => (reply.name().to_string(), config.clone()),
+                                R::ConfigUpdated { config, .. } => (reply.name().to_string(), config.clone()),
+                                R::ConfigRowRefused { .. } => (reply.name().to_string(), Default::default()),
                                 other => (format!("{other:?}"), Default::default()),
                             },
                             Err(end) => (format!("{end:?}"), Default::default()),

@@ -57,7 +57,7 @@ pub fn rejected_unmatched_completion(field: String, expected: String, reported: 
 pub fn start_failed(step: String, reason: String) -> StatusReply { StatusReply::StartFailed { step, reason } }
 /// Construct the typed rejected-config outcome.
 /// Construct the typed config-row-refused outcome.
-pub fn config_row_refused(node: String, reason: String) -> StatusReply { StatusReply::ConfigRowRefused { node, reason, config: Default::default(), revision: 0 } }
+pub fn config_row_refused(node: String, reason: String) -> StatusReply { StatusReply::ConfigRowRefused { node, reason } }
 /// Construct the typed config-not-applied outcome.
 pub fn config_not_applied(node: String, answered: String, reason: String) -> StatusReply { StatusReply::ConfigNotApplied { node, answered, reason } }
 /// Construct the typed rejected-admitting-connections outcome.

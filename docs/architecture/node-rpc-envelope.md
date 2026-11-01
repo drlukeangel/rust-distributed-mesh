@@ -902,7 +902,7 @@ pub enum StatusReply {
     CurrentStopped { node_id: NodeId, incarnation: IncarnationId },
     ConfigUpdated { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String> },
     Reserved22 { keys: u32, bytes: u32, max_keys: u32, max_bytes: u32 }, // position 22, reserved (Q203): never sent
-    ConfigRowRefused { node: String, reason: String, config: BTreeMap<String, String> },
+    ConfigRowRefused { node: String, reason: String },
     ConfigNotApplied { node: String, answered: String, reason: String },
     Blocked { node_id: NodeId, incarnation: IncarnationId, reason: String, retry_on: RetryOn },
     NameUpdated { node_id: NodeId, incarnation: IncarnationId },
