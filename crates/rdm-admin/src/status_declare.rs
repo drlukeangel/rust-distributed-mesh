@@ -286,15 +286,14 @@ impl Declarer {
     /// node holds the role, or the same node holds it in a new birth. What an authority applied for
     /// a Mesh report is memory of its birth, so a restart (same NodeId, new incarnation) must be
     /// told again; an authority whose birth the view does not yet name changes nothing.
-    pub(crate) fn reowe_moved(&self, me: &PathName, view: &Topology) {
-        let Some(own) = view.node(me) else { return };
+    pub(crate) fn reowe_moved(&self, me: &PathName, mesh: &str, view: &Topology) {
         let mut done = self.done.lock().unwrap();
         let mut pending = self.pending.lock().unwrap();
         let moved: Vec<Key> = done
             .iter()
             .filter(|(key, (_, by, by_birth))| {
                 let now = match key {
-                    Key::OwnState(..) => view.node_type_primary(&own.mesh, NodeKind::NodeAdmin),
+                    Key::OwnState(..) => view.node_type_primary(mesh, NodeKind::NodeAdmin),
                     Key::Mesh(..) => view.fabric_primary(),
                 };
                 now.is_some_and(|n| &n.node_id != by || matches!((&n.incarnation_id, by_birth), (Some(now), Some(then)) if now != then))
@@ -374,9 +373,9 @@ impl Declarer {
     /// When the view names this admin, the declaration goes through this admin's own door
     /// (`status_door`), decided exactly as a peer's would be; no role is assumed. `addressed` is
     /// the authorities that sent this admin their down op since the last sweep.
-    pub async fn sweep(self: &Arc<Self>, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, status_door: Option<&crate::status_rpc::StatusDoor>, addressed: &BTreeSet<NodeId>, wake: &Arc<DeclareWake>) {
-        self.withdraw_unowned(me, me_id, view);
-        self.reowe_moved(me, view);
+    pub async fn sweep(self: &Arc<Self>, me: &PathName, mesh: &str, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, status_door: Option<&crate::status_rpc::StatusDoor>, addressed: &BTreeSet<NodeId>, wake: &Arc<DeclareWake>) {
+        self.withdraw_unowned(me, mesh, me_id, view);
+        self.reowe_moved(me, mesh, view);
         for (p, target) in self.due(me_id, view, addressed) {
             let addressed_now = addressed.contains(&target.node_id);
             if &target.node_id == me_id {
@@ -495,11 +494,10 @@ impl Declarer {
     /// it is not its Mesh's admin primary. A
     /// key withdrawn is forgotten whole, so holding the role again owes it afresh. A view that
     /// names no primary of the role withdraws nothing: the role is unknown, not moved.
-    pub(crate) fn withdraw_unowned(&self, me: &PathName, me_id: &NodeId, view: &Topology) {
-        let Some(own) = view.own(me_id) else { return };
+    pub(crate) fn withdraw_unowned(&self, me: &PathName, mesh: &str, me_id: &NodeId, view: &Topology) {
         let primary_of = |key: &Key| match key {
             Key::OwnState(..) => None,
-            Key::Mesh(..) => Some(view.node_type_primary(&own.mesh, NodeKind::NodeAdmin)),
+            Key::Mesh(..) => Some(view.node_type_primary(mesh, NodeKind::NodeAdmin)),
         };
         let lost: Vec<(Key, crate::model::NodeId)> = self
             .requests
@@ -655,10 +653,10 @@ mod tests {
         let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let d = Declarer::new();
         owe_all(&d);
-        d.withdraw_unowned(&me, &id_of(1), &view(1, 1));
+        d.withdraw_unowned(&me, "mesh1", &id_of(1), &view(1, 1));
         assert_eq!(d.owed(), 2, "every role is still this admin's");
 
-        d.withdraw_unowned(&me, &id_of(1), &view(2, 1));
+        d.withdraw_unowned(&me, "mesh1", &id_of(1), &view(2, 1));
         let left: Vec<Key> = d.pending.lock().unwrap().keys().cloned().collect();
         assert_eq!(left, vec![Key::OwnState(INC.into(), NodeState::Ready)], "the Mesh key is the new mesh primary's; its own birth stays owed");
     }
@@ -670,7 +668,7 @@ mod tests {
         owe_all(&d);
         d.done.lock().unwrap().insert(Key::Mesh("m1".into(), MeshState::Ready), ("applied".into(), NodeId::mint(), None));
         d.pending.lock().unwrap().remove(&Key::Mesh("m1".into(), MeshState::Ready));
-        d.withdraw_unowned(&me, &id_of(1), &view(2, 1));
+        d.withdraw_unowned(&me, "mesh1", &id_of(1), &view(2, 1));
         assert_eq!(d.answered(&Key::Mesh("m1".into(), MeshState::Ready)), None, "forgotten whole");
         owe_all(&d);
         assert!(d.pending.lock().unwrap().contains_key(&Key::Mesh("m1".into(), MeshState::Ready)), "owed again once the role is back");
@@ -686,7 +684,7 @@ mod tests {
             n.is_primary = false;
             n.is_fabric_primary = false;
         }
-        d.withdraw_unowned(&me, &id_of(1), &v);
+        d.withdraw_unowned(&me, "mesh1", &id_of(1), &v);
         assert_eq!(d.owed(), 2);
     }
 
@@ -710,7 +708,7 @@ mod tests {
         answered_by(&d, &own, &fp);
         answered_by(&d, &mesh, &fp);
 
-        d.reowe_moved(&me, &v);
+        d.reowe_moved(&me, "mesh2", &v);
         assert!(!d.pending.lock().unwrap().contains_key(&mesh), "the same birth of the same authority answered it: nothing is re-owed");
 
         for n in &mut v.nodes {
@@ -718,7 +716,7 @@ mod tests {
                 n.incarnation_id = Some(IncarnationId::mint());
             }
         }
-        d.reowe_moved(&me, &v);
+        d.reowe_moved(&me, "mesh2", &v);
         let owed: Vec<Key> = d.pending.lock().unwrap().keys().cloned().collect();
         assert!(owed.contains(&own) && owed.contains(&mesh), "a new birth of the same authority rebuilt its applied state: {owed:?}");
         assert_eq!(d.answered(&mesh), None);
@@ -741,7 +739,7 @@ mod tests {
                 n.incarnation_id = Some(IncarnationId::mint());
             }
         }
-        d.reowe_moved(&me, &v);
+        d.reowe_moved(&me, "mesh2", &v);
         assert!(!d.pending.lock().unwrap().contains_key(&mesh));
         assert!(d.answered(&mesh).is_some());
     }
@@ -759,7 +757,7 @@ mod tests {
         for n in &mut moved.nodes {
             n.is_fabric_primary = n.node_id == id_of(2);
         }
-        d.reowe_moved(&me, &moved);
+        d.reowe_moved(&me, "mesh2", &moved);
         assert!(d.pending.lock().unwrap().contains_key(&mesh));
     }
 
@@ -897,7 +895,7 @@ mod tests {
         d.done.lock().unwrap().insert(Key::OwnState(INC.into(), NodeState::Ready), ("applied".into(), mesh1_primary.node_id.clone(), mesh1_primary.incarnation_id.clone()));
         let moved = view(1, 1);
         let moved = Topology { nodes: moved.nodes.into_iter().map(|mut n| { if n.name == mesh1_primary.name { n.incarnation_id = mesh1_primary.incarnation_id.clone(); } n }).collect(), ..moved };
-        d.reowe_moved(&me, &moved);
+        d.reowe_moved(&me, "mesh1", &moved);
         assert!(d.pending.lock().unwrap().is_empty(), "the fabric-primary role moved, its own mesh's primary did not: nothing is owed again");
     }
 
@@ -1148,7 +1146,7 @@ mod tests {
         owed_from_view(&d, &me, &re_born.node_id, &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, None, |_| 7, &v, &ids);
         assert_eq!(d.owed(), 0, "the deleted birth's roles owe this admin nothing: {:?}", d.pending.lock().unwrap().keys().collect::<Vec<_>>());
         d.owe(mesh_key(), Receiver::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 });
-        d.withdraw_unowned(&me, &re_born.node_id, &v);
+        d.withdraw_unowned(&me, "mesh1", &re_born.node_id, &v);
         assert_eq!(d.owed(), 0, "the mesh-primary role is the deleted birth's, not this admin's: the Mesh key is withdrawn");
     }
 

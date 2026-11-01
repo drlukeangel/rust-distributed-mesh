@@ -478,6 +478,8 @@ mod tests {
             traceparent: None,
             tracestate: None,
         };
+        // Each attempt is claimed before its executor writes a receipt: the fold holds an attempt's action from its claim.
+        let claim = |attempt: u32| BuildFact::Claim(crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt, executor: rdm_core::framing::Birth { node_id: rdm_core::NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse("n4w3mjy921q8").unwrap() } });
         let mut facts = vec![
             BuildFact::Accepted(crate::build_state::BuildAccepted {
                 build_id: build_id.clone(), submitted_change: None, submitted_at_ms: 0,
@@ -493,6 +495,7 @@ mod tests {
                 opened_at_ms: 900,
                 context: None,
             }),
+            claim(1),
             BuildFact::Step(BuildStepReceipt {
                 mesh: None,
                 build_id: build_id.clone(),
@@ -541,6 +544,7 @@ mod tests {
             opened_at_ms: 2_000,
             context: None,
         }));
+        facts.push(claim(2));
         facts.push(BuildFact::Step(BuildStepReceipt {
             mesh: None,
             build_id: build_id.clone(),
@@ -564,6 +568,7 @@ mod tests {
             opened_at_ms: 3_000,
             context: None,
         }));
+        facts.push(claim(3));
         facts.push(BuildFact::Step(BuildStepReceipt {
             mesh: None,
             build_id,

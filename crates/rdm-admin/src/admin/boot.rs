@@ -2378,7 +2378,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         return;
                                                     }
                                                     declarer.owe_own(&mesh, &me_id, &incarnation, state, operation);
-                                                    declarer.sweep(&me, &me_id, &view, &client, status_door.get().map(|a| a.as_ref()), &BTreeSet::new(), &wake).await;
+                                                    declarer.sweep(&me, &mesh, &me_id, &view, &client, status_door.get().map(|a| a.as_ref()), &BTreeSet::new(), &wake).await;
                                                 })
                                             })
                                         };
@@ -2464,7 +2464,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 };
                                                 crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own, records.declare_gate(), own_mesh_held, own_mesh_changed_at, &view, &mesh_ids);
                                                 rdm_node::node_rpc::feed_once(&digest_view, &resolver, &me_id.to_string());
-                                                declarer.sweep(&me, &me_id, &view, &client, status_door.get().map(|a| a.as_ref()), &addressed, &records.wake).await;
+                                                declarer.sweep(&me, &mesh, &me_id, &view, &client, status_door.get().map(|a| a.as_ref()), &addressed, &records.wake).await;
                                                 drop(turn);
                                                 // One coalesced wake from the inputs, never a timer: a poke during the sweep is
                                                 // the stored permit, so the next sweep runs at once; a burst runs one.
@@ -2914,6 +2914,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             gate: stop_gate.clone(),
                                             me: name.clone(),
                                             me_id: node_id.clone(),
+                                            mesh: cfg.mesh.clone(),
                                             incarnation: incarnation.clone(),
                                             topology_view: topology_view.clone(),
                                             topology: control.topology.clone(),

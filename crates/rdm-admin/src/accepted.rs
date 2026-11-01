@@ -1414,12 +1414,14 @@ fn plan_with(
         | AttemptAction::Delete { kind, mesh: mesh, path, node_id, from_incarnation },
     ) = action
     {
-        // A delete of a stopped the predecessor name `<name>-old` at the same path is admitted from the record the fabric-primary holds of
-        // that exact birth, never from a view (only the renaming executor's view names the path):
-        // it is planned until its `Complete` names the birth. A delete of the last admin of a deleted
-        // mesh (mesh-delete.md step 7) is the ordinary node.delete of that exact birth, planned while
-        // the view holds it.
-        let stopped_old = matches!(action, Some(AttemptAction::Delete { .. })) && observed.births().any(|n| n.node_id == *node_id && n.stopped && n.renamed_from.is_some());
+        // A delete of a stopped retained predecessor (its name `<name>-old` at the same path) is admitted
+        // from the record the fabric-primary holds of that exact birth, never from a view (a view that did
+        // not run the replace may never name it): it is planned until its `Complete` names the birth. The
+        // admission admits a delete of nothing else but the last admin of a deleted mesh (mesh-delete.md
+        // step 7), whose mesh the accepted topology no longer names: that one is the ordinary node.delete
+        // of that exact birth, planned while the view holds it.
+        let stopped_old = matches!(action, Some(AttemptAction::Delete { .. }))
+            && (topology.meshes.contains_key(mesh.as_str()) || observed.births().any(|n| n.node_id == *node_id && n.stopped && n.renamed_from.is_some()));
         let pin = crate::build::PinnedBirth { kind: *kind, mesh: mesh.clone(), node_id: node_id.clone(), incarnation: from_incarnation.clone() };
         let held = stopped_old
             || match atlas {
@@ -2097,12 +2099,14 @@ mod tests {
         for status in [NodeStatus::ConnectionsDeleting, NodeStatus::Leaving, NodeStatus::Dead, NodeStatus::Ready] {
             let mut o = mn();
             let mut old = n(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, status, false);
+            old.renamed_from = Some(old.name.clone());
             old.name = old.name.renamed().unwrap();
             old.stopped = status == NodeStatus::Leaving;
             o.nodes.push(old);
             assert_eq!(plan(&cur, &o, None).operations, vec![], "{status:?}");
             let mut missing = mn();
             let mut old = n(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, status, false);
+            old.renamed_from = Some(old.name.clone());
             old.name = old.name.renamed().unwrap();
             missing.nodes.retain(|x| x.name.clone() != PathName::new("mesh1.rpc", "2").unwrap());
             missing.nodes.push(old);
@@ -2351,6 +2355,7 @@ mod tests {
         let from = held.node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().incarnation_id.clone().unwrap();
         let node_id = held.node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().node_id.clone();
         let mut stopped = held.node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().clone();
+        stopped.renamed_from = Some(stopped.name.clone());
         stopped.name = path.clone();
         stopped.status = NodeStatus::Leaving;
         stopped.stopped = true;
@@ -2958,11 +2963,12 @@ mod tests {
             (vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None)], BuildReject::ExecutableMissing { node: rdm_core::PathName::new("mesh1.rpc", "4").unwrap() }),
             (vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, None)], BuildReject::ExecutableMissing { node: rdm_core::PathName::new("mesh2.admin", "1").unwrap() }),
             (vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, Some("b"))], BuildReject::NodeNamedTwice { node: rdm_core::PathName::new("mesh1.admin", "1").unwrap() }),
-            (vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.rpc", "1-old").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("b"))], BuildReject::UnknownNode { node: PathName::new("mesh1.rpc", "1-old").unwrap(), step: None }),
             (vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Some("b"))], BuildReject::MeshWithoutAdmin { mesh: "mesh2".into() }),
         ] {
             assert_eq!(compile(&cur, &reconcile(request.clone()), &mn()), Err(want), "{request:?}");
         }
+        let ordinary = vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.rpc", "1-old").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("b"))];
+        assert!(compile(&cur, &reconcile(ordinary), &mn()).is_ok(), "a name ending in -old is an ordinary name: spelling alone never makes a retained predecessor");
         assert!(BuildReject::NoNodeListed.to_string().contains("fabric.delete"), "the refusal names fabric.delete");
     }
 

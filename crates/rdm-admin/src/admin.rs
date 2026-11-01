@@ -130,16 +130,16 @@ mod tests {
         assert!(watched.is_empty() && marks.is_empty(), "a heard node-admin that answers its commands is not watched: {watched:?} {marks:?}");
         let silent = crate::offline::silent_set(view.members().filter(|n| n.node_id == member.node.node_id), &digest_view, now, now_ms, floor);
         assert!(silent.iter().all(|s| s.marked_at_ms.is_none()), "heard within the floor: no mark: {silent:?}");
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-        let plan = crate::primary_watch::plan(&view, &me, &(me_id, primary.node.incarnation.clone()), &mut crate::primary_watch::Said::default(), &|_| false, &|_| false);
+        let plan = crate::primary_watch::plan(&view, "mesh1", &(me_id, primary.node.incarnation.clone()), &mut crate::primary_watch::Said::default(), &|_| false, &|_| false);
         assert_eq!(plan, crate::primary_watch::Plan::default(), "the primary watch investigates no live node-admin");
     }
 
     #[tokio::test]
     async fn a_recovery_that_ends_failed_is_recorded_as_its_failed_step_never_as_submitted() {
-        let failed = RecoveryEnd::Failed { attempt: 3, operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.rpc", "1").unwrap()), step: "NodeDeleted".into(), reason: "the exited-verdict row is missing".into() };
+        let operation = rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.rpc", "1").unwrap());
+        let failed = RecoveryEnd::Failed { attempt: 3, operation: operation.clone(), step: "NodeDeleted".into(), reason: "the exited-verdict row is missing".into() };
         let (outcome, r) = settle(Ok(failed));
-        assert_eq!(outcome, "failed: attempt 3 node.delete:mesh2.rpc.1 step NodeDeleted: the exited-verdict row is missing");
+        assert_eq!(outcome, format!("failed: attempt 3 {operation:?} step NodeDeleted: the exited-verdict row is missing"));
         assert_eq!(r, Err(outcome.clone()), "a failed recovery is not a submitted one: the next tick submits again");
         let (outcome, r) = settle(Ok(RecoveryEnd::Complete { attempt: 3 }));
         assert_eq!((outcome.as_str(), r), ("complete: attempt 3", Ok(())));
@@ -1272,7 +1272,7 @@ mod tests {
         assert_eq!(receipts_of(&memory, &build_id, &op.key()).await, vec![], "an undecided step is not receipted");
         // (3) The claim won and the receipt is refused: the step is uncommitted.
         let refused = create_mesh_step(&Records::default(), &meshes, &RefusesReceipts(memory.clone()), &fixture_actor(false), "100000000000", &build_id, 1, &op).await.expect_err("the Build state refuses the receipt");
-        assert!(refused.contains("Complete receipt of create-mesh:mesh2") && refused.contains("was not written") && refused.contains("journal refused"), "{refused}");
+        assert!(refused.contains(&format!("Complete receipt of {:?}", op.key())) && refused.contains("was not written") && refused.contains("journal refused"), "{refused}");
         assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(mesh_id.clone()), "the claim stands");
         assert_eq!(receipts_of(&memory, &build_id, &op.key()).await, vec![], "the refused receipt is not in the log");
         // The next run settles the uncertain step by its natural key.
@@ -1897,13 +1897,17 @@ mod tests {
         ]).await;
         let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         crate::fabric_storage::claim_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is claimed");
+        // The exited birth's node record stays in the store, Deleted (a delete appends its status, never removes it).
+        let nodes_storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let row = crate::storage::NodeRow { replacement_from: None, kind: NodeKind::RpcNode, mesh: "mesh2".into(), initial_properties: None, topology_storage_provider: None, name: path.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        crate::node_rows::write_record(&*nodes_storage, &row).await.unwrap().unwrap();
         let recovery = RecoverySubmitter {
             me: rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
             me_id: view.node(&rdm_core::PathName::new("mesh2.admin", "1").unwrap()).unwrap().node_id.clone(),
             topology: Arc::new(RwLock::new(view)),
             digest_view,
             provider: Arc::new(Answers { domain: String::new(), status: crate::deployment::provider::DeploymentStatus::Unknown, inspected: Default::default() }),
-            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            nodes_storage,
             written: Default::default(),
             door: Default::default(),
             client: None,
@@ -2096,7 +2100,7 @@ mod tests {
         assert_eq!(closed.len(), 1, "the close is spanned once: {closed:?}");
         let a = &closed[0].attributes;
         let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-        assert_eq!((attr("operation"), attr("build_id"), attr("attempt"), attr("by")), ("node.delete:mesh2.rpc.1".to_string(), "9r7cpewghdkk".to_string(), "2".to_string(), "attempt-failed".to_string()), "the attempt the facts ended: {a:?}");
+        assert_eq!((attr("operation"), attr("build_id"), attr("attempt"), attr("by")), ("node.delete".to_string(), "9r7cpewghdkk".to_string(), "2".to_string(), "attempt-failed".to_string()), "the attempt the facts ended: {a:?}");
         eprintln!("span rdm.mesh.topology.update.via-deleting-closed-by-facts trace_id={} {a:?}", closed[0].trace_id);
         // A late copy of the closed attempt's overlay (a frame, a mesh topology) is applied once, not again.
         assert!(!digest_view.deleting(op.clone()), "the closed overlay is not opened again by a copy of it");
@@ -2177,7 +2181,7 @@ mod tests {
         assert_eq!(closed.len(), 1, "the close is spanned once: {closed:?}");
         let a = &closed[0].attributes;
         let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-        assert_eq!((attr("operation"), attr("attempt"), attr("by")), ("node.delete:mesh2.rpc.1".to_string(), "1".to_string(), "attempt-failed".to_string()), "{a:?}");
+        assert_eq!((attr("operation"), attr("attempt"), attr("by")), ("node.delete".to_string(), "1".to_string(), "attempt-failed".to_string()), "{a:?}");
         eprintln!("span rdm.mesh.topology.update.via-deleting-closed-by-facts trace_id={} {a:?}", closed[0].trace_id);
 
         // Another Build: the fabric lane's attempt 1 failed; mesh2's attempt 1 still runs.
@@ -3310,7 +3314,7 @@ mod tests {
 
     /// CONTRACT (CLAUDE.md read rule: a kind with no projection is a point read through its store
     /// index; R12/R13: the mesh-primary writes the row, a stopped node is told nothing): `mesh1.rpc.1`
-    /// is stopped and its mesh-primary moves its row to `mesh1.rpc.old.1` on the fabric's shared store
+    /// is stopped and its mesh-primary moves its row to `mesh1.rpc.1-old` on the fabric's shared store
     /// root. Another admin, which performed no rename and holds nothing of it, lists the stopped birth
     /// at the row's name: its view reads the name through the row's `(path, name)` key. What must NOT
     /// happen: that admin listing the birth at `mesh1.rpc.1`, the name its digest last published, so a
@@ -3337,7 +3341,7 @@ mod tests {
             tracestate: None,
         }));
         // The mesh-primary's rename on the shared root, through the one writer of a row's move.
-        let to: PathName = rdm_core::PathName::new("mesh1.rpc.old", "1").unwrap();
+        let to: PathName = held.node.name.renamed().unwrap();
         let mut record = Node::allocated(held.node.name.clone(), held.node.mesh.clone(), held.node.kind);
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
@@ -3739,7 +3743,7 @@ mod tests {
     }
 
     /// A birth born `mesh1.rpc.7` and stopped there, its row moved twice by its mesh-primary on the
-    /// fabric's shared store root (to `mesh1.rpc.1`, then to `mesh1.rpc.old.1`), and another admin's
+    /// fabric's shared store root (to `mesh1.rpc.1`, then to `mesh1.rpc.1-old`), and another admin's
     /// view over the same root, whose row reads are probed.
     #[cfg(feature = "file-backend")]
     async fn renamed_twice(cell: &str) -> (std::path::PathBuf, MeshDigest, Arc<ProbedRows>, Arc<RwLock<Topology>>, Arc<Records>, DigestView) {
@@ -3784,8 +3788,8 @@ mod tests {
 
     /// CONTRACT (CLAUDE.md read rule: "id: only a lookup by id that cannot read the store's own key";
     /// "add the index, never the scan"): a stopped birth whose row was moved twice (`mesh1.rpc.7` to
-    /// `mesh1.rpc.1`, then to `mesh1.rpc.old.1`) is listed by another admin's
-    /// view at the row's current name, `mesh1.rpc.old.1`, read by the birth's node id through the
+    /// `mesh1.rpc.1`, then to `mesh1.rpc.1-old`) is listed by another admin's
+    /// view at the row's current name, `mesh1.rpc.1-old`, read by the birth's node id through the
     /// node row's id index: one read, no `(path, name)` key guessed. What must NOT happen: the birth
     /// listed at a name it no longer holds, or its name found by trying the keys a move could reach.
     #[cfg(feature = "file-backend")]
@@ -3795,7 +3799,8 @@ mod tests {
         view_projector(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), view.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, digest_view.clone(), records.clone())().await;
         let t = view.read().await.clone();
         let names: Vec<PathName> = t.nodes.iter().map(|n| n.name.clone()).collect();
-        let (moved, now): (PathName, PathName) = (rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), rdm_core::PathName::new("mesh1.rpc.old", "1").unwrap());
+        let moved: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let now = moved.renamed().unwrap();
         assert!(t.node(&now).is_some_and(|n| n.node_id == held.node.node_id && n.stopped), "the stopped birth is listed at its row's current name: {names:?}");
         assert!(t.node(&held.node.name).is_none() && t.node(&moved).is_none(), "nothing is listed at a name the row moved from: {names:?}");
         assert_eq!((ProbedRows::count(&probed.key_reads), ProbedRows::count(&probed.id_reads)), (0, 1), "the birth's row is read once, by its node id, and no (path, name) key is tried");

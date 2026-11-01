@@ -302,7 +302,7 @@ mod tests {
         // StatusAuthority setup to test status report, ProbeNodeState, and ApplyNodeState.
         let fabric_id = view.fabric.id.clone();
         let mesh1_id = MeshId::mint();
-        let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), mesh1_id)].into_iter().collect();
+        let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), mesh1_id.clone())].into_iter().collect();
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
         let topology = Arc::new(tokio::sync::RwLock::new(view));
         let stopped_published: Arc<Mutex<Vec<(Declaration, DeclaredOperation)>>> = Arc::default();
@@ -361,7 +361,20 @@ mod tests {
             let _ = door.configure.set(Arc::new(|_held| Box::pin(async {})));
         }
 
-        // node-status.md:5-7 — Status never moves through a meta or config put.
+        // node-status.md:5-7 — Status never moves through a meta or config put. The put goes through this
+        // admin's own property writer, bound as boot binds it (`NodeConfigs::uses_records`, `bound_own`).
+        {
+            use rdm_node::node_records::MemoryNodeRecords;
+            let ep = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[11u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let client = Arc::new(rdm_transport::NodeRpcClient::new(ep.clone(), Arc::new(rdm_transport::StaticResolver::new())).with_caller_system("rdm"));
+            let configs = crate::node_config::NodeConfigs::new(client, Default::default(), Arc::new(crate::node_rows::WrittenRows::default()));
+            let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+            let snapshot = topology.read().await.clone();
+            let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", &mesh1_id, admin_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+            configs.uses_records(Arc::new(MemoryNodeRecords::default()), channels);
+            configs.bound_own(snapshot.own(&admin_id).unwrap(), Default::default()).await.unwrap();
+            let _ = door.configs.set(Arc::new(configs));
+        }
         let config_req = StatusRequest::ApplyNodeConfig {
             node_id: admin_id.clone(),
             incarnation: admin_inc.clone(),

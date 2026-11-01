@@ -2075,7 +2075,7 @@ pub(crate) mod tests {
         assert_eq!(spans.len(), 1, "one span for the one refused put: {spans:?}");
         let a = &spans[0].attributes;
         let attr = |k: &str| a.get(k).map(String::as_str).unwrap_or_default().to_string();
-        assert_eq!(attr("node"), "mesh1.rpc.1", "{a:?}");
+        assert_eq!((attr("node_path"), attr("node_name")), ("mesh1.rpc".to_string(), "1".to_string()), "{a:?}");
         assert_eq!(attr("node_id"), held.node_id.to_string(), "{a:?}");
         assert_eq!(attr("incarnation_id"), held.incarnation_id.clone().unwrap().as_str(), "the exact birth: {a:?}");
         assert_eq!(attr("status"), "dead", "the status it was writing: {a:?}");
@@ -2086,7 +2086,7 @@ pub(crate) mod tests {
         let no_birth = capture.named("rdm.node_admin.node.reject.via-no-birth");
         assert_eq!(no_birth.len(), 1, "the unborn record is its own refusal: {no_birth:?}");
         let b = &no_birth[0].attributes;
-        assert_eq!((b.get("node").map(String::as_str), b.get("status").map(String::as_str)), (Some("mesh1.rpc.1"), Some("pending-reconnect")), "{b:?}");
+        assert_eq!((b.get("node_path").map(String::as_str), b.get("node_name").map(String::as_str), b.get("status").map(String::as_str)), (Some("mesh1.rpc"), Some("1"), Some("pending-reconnect")), "{b:?}");
         eprintln!("span rdm.node_admin.node.reject.via-no-birth trace_id={} {b:?}", no_birth[0].trace_id);
     }
 }
