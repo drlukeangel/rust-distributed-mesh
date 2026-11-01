@@ -86,13 +86,15 @@ fn a_mesh_deleted_report_whose_manifest_cannot_be_read_is_refused_by_name_and_th
     let spans = cap.spans();
     keep("manifest_unread", &trace_id, &spans);
     let (source, op, cause) = source_failed(&unreached);
-    assert!(source.contains("Build storage") && source.contains("mesh2.admin.1") && op.contains("read-committed pdz453kf4br6") && op.contains(&format!("{reference:?}")) && cause.contains("no such device"), "{source} | {op} | {cause}");
+    assert!(source.contains("Build storage") && source.contains("mesh2.admin.1") && op.contains("read-committed pdz453kf4br6") && op.contains("for the manifest ManifestReference {") && cause.contains("no such device"), "{source} | {op} | {cause}");
     let (_, _, cause) = source_failed(&not_ready);
     assert!(cause.contains("interrupted"), "the storage read's failure is a fact of the read: {cause}");
     let named = refusals(&spans, &trace_id);
     for r in [&unreached, &not_ready] {
         let (source, op, cause) = source_failed(r);
-        assert!(named.contains(&("mesh-deleted".to_string(), source, op, cause)), "each read failure is its reject span naming the call and the three fields: {named:?}");
+        // The reply's fields are bounded (a cut field ends `…`); the span holds them whole.
+        let op = op.trim_end_matches('…').to_string();
+        assert!(named.iter().any(|(kind, s, o, c)| kind == "mesh-deleted" && *s == source && o.starts_with(&op) && *c == cause), "each read failure is its reject span naming the call and the three fields: {named:?}");
     }
 }
 

@@ -407,13 +407,16 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
             rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
         ]);
+        // Every listed node carries its spec (`FabricTopology::validate`).
+        let rpc2 = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        accepted_top.meshes.get_mut("mesh1").unwrap().spec_by_path.insert(rpc2.clone(), rdm_core::meta::NodeSpec::default_for(rpc2, "mesh1", rdm_core::NodeKind::RpcNode));
         accepted_top.meshes.insert(
             "mesh2".into(),
             rdm_admin::accepted::MeshTopology {
                 name: "mesh2".into(),
                 mesh_id: mesh2_id.clone(),
                 nodes: std::collections::BTreeSet::from([rdm_core::PathName::new("mesh2.admin", "1").unwrap()]),
-                spec_by_path: Default::default(),
+                spec_by_path: [(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), rdm_core::meta::NodeSpec::default_for(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin))].into(),
             },
         );
         let planned_ops = rdm_admin::accepted::plan(&accepted_top, &*view.read().await, None).operations;

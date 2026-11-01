@@ -176,8 +176,10 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_stop_is_still_runni
     let artifact = std::env::temp_dir().join("i143-testkit").join(cell);
     std::fs::create_dir_all(&artifact).unwrap();
     std::fs::write(artifact.join("spans.jsonl"), spans.iter().map(|s| s.to_string() + "\n").collect::<String>()).unwrap();
-    let me = "mesh1.admin.1";
-    let named = |name: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && s["attributes"]["node"] == me).collect() };
+    // The admin at mesh1.admin 1: admin spans name it by path and name, node spans by its node id.
+    let held = |s: &Value| s["attributes"]["node_path"] == "mesh1.admin" && s["attributes"]["node_name"] == "1";
+    let me_id = spans.iter().filter(|s| held(s)).find_map(|s| s["attributes"]["node_id"].as_str().map(str::to_string)).unwrap_or_default();
+    let named = |name: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && (held(s) || s["attributes"]["node"] == me_id.as_str())).collect() };
     // node-stop.md steps 2-3: the whole node.connection.delete { All } first, then the hold, then the
     // stop's own transport cut, whose span wraps the cut (its start is when the cut began).
     let all = named("rdm.node_admin.connection.delete.via-stop");

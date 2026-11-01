@@ -426,7 +426,7 @@ async fn a_stopped_node_whose_stop_receipt_cannot_be_read_is_skipped_by_its_own_
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0), "nothing was submitted");
     let unreadable = spans.spans("rdm.node_admin.node.reject.via-unreadable-stop-receipt");
-    assert!(unreadable.iter().any(|(_, a)| (a["node_path"].as_str(), a["node_name"].as_str()) == (stopped().path.as_str(), stopped().name.as_str()) && a["reason"].contains("does not decode")), "{unreadable:?}");
+    assert!(unreadable.iter().any(|(_, a)| (a["node_path"].as_str(), a["node_name"].as_str()) == (stopped().path.as_str(), stopped().name.as_str()) && a["reason"].contains("cannot be decoded")), "{unreadable:?}");
     let told_as_missing = spans.spans("rdm.node_admin.node.reject.via-no-current-stop-receipt");
     assert!(!told_as_missing.iter().any(|(_, a)| (a["node_path"].as_str(), a["node_name"].as_str()) == (stopped().path.as_str(), stopped().name.as_str())), "an unreadable receipt is not a missing one: {told_as_missing:?}");
 }

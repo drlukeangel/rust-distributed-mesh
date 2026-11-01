@@ -277,7 +277,7 @@ impl MemberDoor {
         let revision = primary_view.node_type_primary(&mesh, kind).map_or(0, |r| r.revision) + 1;
         // Step 4 on the successor the mesh-primary's pre-check named (step 2): no election here (Q129).
         let Some(successor) = successor else {
-            return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me:?} is a {node_type} primary: its mesh-primary's command names no successor"), rdm_core::outcome::Code::FailedPrecondition);
+            return rdm_core::reply::handover::bounded_failed(STEP, &format!("path {:?}, name {:?} is a {node_type} primary: its mesh-primary's command names no successor", me.path, me.name), rdm_core::outcome::Code::FailedPrecondition);
         };
         tracing::Span::current().record("successor", successor.node_id.as_str());
         let entries = vec![(node_type.to_string(), self.me_birth(), successor.clone(), revision)];

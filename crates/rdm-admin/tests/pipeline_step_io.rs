@@ -298,7 +298,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
     let step1 = finished
         .iter()
         .map(attrs_of)
-        .find(|a| a.get("step").map(String::as_str) == Some("PrepareStorage") && a.get("node").map(String::as_str) == Some("mesh1.rpc.3"))
+        .find(|a| a.get("step").map(String::as_str) == Some("PrepareStorage") && a.get("node_path").map(String::as_str) == Some("mesh1.rpc") && a.get("node_name").map(String::as_str) == Some("3"))
         .unwrap_or_else(|| panic!("no PrepareStorage span for mesh1.rpc.3: {finished:?}"));
     assert_eq!(step1.get("outcome").map(String::as_str), Some("cancelled"), "cancelled PrepareStorage records outcome=cancelled: {step1:?}");
     assert_eq!(step1.get("awaiting").map(String::as_str), Some("claim"), "PrepareStorage names the claim await it was holding: {step1:?}");
@@ -308,7 +308,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
         .iter()
         .filter(|s| s.name == "rdm.node_admin.node.create.via-node-row")
         .map(attrs_of)
-        .find(|a| a.get("subject").map(String::as_str) == Some("mesh1.rpc.3") && a.get("moment").map(String::as_str) == Some("claim"))
+        .find(|a| a.get("subject_path").map(String::as_str) == Some("mesh1.rpc") && a.get("subject_name").map(String::as_str) == Some("3") && a.get("moment").map(String::as_str) == Some("claim"))
         .unwrap_or_else(|| panic!("the claim via-node-row span must open before writer_check: {finished:?}"));
     assert_eq!(claim1.get("outcome").map(String::as_str), Some("cancelled"), "cancelled claim span records outcome=cancelled: {claim1:?}");
     assert_eq!(claim1.get("awaiting").map(String::as_str), Some("writer-check"), "claim span names writer-check as the await that did not return: {claim1:?}");
@@ -317,7 +317,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
     let step2 = finished
         .iter()
         .map(attrs_of)
-        .find(|a| a.get("step").map(String::as_str) == Some("PrepareStorage") && a.get("node").map(String::as_str) == Some("mesh1.rpc.4"))
+        .find(|a| a.get("step").map(String::as_str) == Some("PrepareStorage") && a.get("node_path").map(String::as_str) == Some("mesh1.rpc") && a.get("node_name").map(String::as_str) == Some("4"))
         .unwrap_or_else(|| panic!("no PrepareStorage span for mesh1.rpc.4: {finished:?}"));
     assert_eq!(step2.get("outcome").map(String::as_str), Some("cancelled"), "cancelled PrepareStorage records outcome=cancelled: {step2:?}");
     assert_eq!(step2.get("awaited").map(String::as_str), Some("entry-spec,claim"), "PrepareStorage names the completed entry-spec read and claim awaits: {step2:?}");
@@ -329,10 +329,10 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
         .iter()
         .filter(|s| s.name == "rdm.node_admin.node.create.via-node-row")
         .map(attrs_of)
-        .find(|a| a.get("subject").map(String::as_str) == Some("mesh1.rpc.4") && a.get("moment").map(String::as_str) == Some("claim"))
+        .find(|a| a.get("subject_path").map(String::as_str) == Some("mesh1.rpc") && a.get("subject_name").map(String::as_str) == Some("4") && a.get("moment").map(String::as_str) == Some("claim"))
         .unwrap_or_else(|| panic!("no claim span for mesh1.rpc.4: {finished:?}"));
     assert_eq!(claim2.get("outcome").map(String::as_str), Some("row-written"), "{claim2:?}");
-    assert_eq!(claim2.get("awaited").map(String::as_str), Some("writer-check,read-previous-row,read-old-row,put-node-row"), "{claim2:?}");
+    assert_eq!(claim2.get("awaited").map(String::as_str), Some("writer-check,read-previous-row,put-node-row"), "{claim2:?}");
     assert_eq!(claim2.get("awaiting").map(String::as_str), Some("done"), "{claim2:?}");
 }
 

@@ -1355,7 +1355,7 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
         assert_eq!(status().await, NodeStatus::ConnectionsDeleted, "the new attempt's Established sets connections-deleted");
         drop(router);
     });
-    let rows: Vec<String> = capture.spans().iter().filter(|sp| sp["name"] == "rdm.node_admin.node.update.via-row-status" && sp["attributes"]["subject"] == "mesh1.rpc.1").map(|sp| format!("{}:{}", sp["attributes"]["status"].as_str().unwrap_or_default(), sp["attributes"]["outcome"].as_str().unwrap_or_default())).collect();
+    let rows: Vec<String> = capture.spans().iter().filter(|sp| sp["name"] == "rdm.node_admin.node.update.via-row-status" && sp["attributes"]["subject_path"] == "mesh1.rpc" && sp["attributes"]["subject_name"] == "1").map(|sp| format!("{}:{}", sp["attributes"]["status"].as_str().unwrap_or_default(), sp["attributes"]["outcome"].as_str().unwrap_or_default())).collect();
     assert_eq!(rows, ["ConnectionsDeleting:written", "ConnectionsDeleting:unchanged", "ConnectionsDeleted:written"], "the mesh-primary's row writes, in order: connections-deleted only from the Established completion");
 }
 

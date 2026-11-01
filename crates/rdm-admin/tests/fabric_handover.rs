@@ -895,7 +895,7 @@ fn an_update_whose_successor_is_unheard_fails_by_name_with_the_investigations_ve
         let _ = f.n._router.shutdown().await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
         let r = f.p.door.update_own_primaries(Moving::BothRoles, "b1", 1, &op, None).await;
-        assert!(matches!(&r, Err(RoleMoveEnd::Failed { step, reason, .. }) if step == "primary-update" && reason.starts_with("the successor is unheard after the update: mesh1.admin.2")), "{r:?}");
+        assert!(matches!(&r, Err(RoleMoveEnd::Failed { step, reason, .. }) if step == "primary-update" && reason.starts_with(&format!("the successor is unheard after the update: {}", f.n.resolved.node_id))), "{r:?}");
         assert_eq!(f.p.door.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "nothing was answered, so nothing was installed at P");
         assert_eq!(spans.named(INVESTIGATION).len(), 1);
         let _ = (&f.m, &f.x);
@@ -945,7 +945,7 @@ fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_o
         assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
         assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
         let bare = f.b1.door.serve(Request::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b1".into(), run: 1, operation: update_operation(PrimaryRole::NodeTypePrimary(RPC), &rdm_core::OperationId::node("node.stop", &f.b2.as_ref().unwrap().resolved.node_id)), successor: None }).await;
-        assert!(matches!(&bare, Reply::Failed { reason, .. } if reason == "mesh1.rpc.1 is a rpc-node primary: its mesh-primary's command names no successor"), "{bare:?}");
+        assert!(matches!(&bare, Reply::Failed { reason, .. } if reason == r#"path "mesh1.rpc", name "1" is a rpc-node primary: its mesh-primary's command names no successor"#), "{bare:?}");
         let _ = &f.x;
     });
 }

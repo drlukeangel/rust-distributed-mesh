@@ -820,7 +820,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     assert_eq!(declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Dead), "and held as applied");
     match &again {
         Ok(Claimed::Written { row, seeded_from }) => {
-            assert_eq!(seeded_from.as_ref(), Some(&last.node_id), "seeded from the Deleted row");
+            assert_eq!(seeded_from.as_ref(), None, "a plain create names no seed: the Deleted row's location is not provenance");
             assert_eq!(row.config, Default::default(), "its create spec's config, none: a plain create inherits no config (Q166)");
         }
         other => panic!("the recreated mesh's admin claims path `mesh2.admin`, name `1` over the Deleted row: {other:?}"),
@@ -831,7 +831,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     let dead = named("rdm.node_admin.mesh.update.via-dead-row");
     assert!(dead.iter().any(|s| s["attributes"]["mesh_id"] == mesh_id.as_str() && s["attributes"]["outcome"] == "applied" && s["attributes"]["writer"] == "acting-primary"), "no Dead row held: the fabric-primary writes Dead as acting primary: {dead:#?}");
     let claims: Vec<String> = named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s["attributes"]["subject_path"] == last.name.path && s["attributes"]["subject_name"] == last.name.name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
-    assert_eq!(claims, ["row-held-by-node", "name-held", "row-seeded"], "{claims:?}");
+    assert_eq!(claims, ["row-held-by-node", "name-held", "row-written"], "a plain create's claim names no seed: {claims:?}");
     eprintln!("trace {trace_id}: delete.via-node-row not-mesh-primary then row-deleted, mesh.update.via-dead-row applied acting-primary, via-node-row claim row-seeded seeded_from={}", last.node_id);
 }
 

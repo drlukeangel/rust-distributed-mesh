@@ -169,7 +169,7 @@ async fn a_status_call_carried_to_a_dead_target_names_the_admins_lost_connection
     let origin = NodeRpcClient::new(origin_ep, resolver);
     let (out, _) = origin.call_via::<Status>(&admin_target(&r), &dead.node_id, &probe(&dead), &CallOptions::default()).await;
     match &out {
-        RpcOutcome::NotSent(n) => assert!(matches!(n.reason(), NotSentReason::ConnectionLost(why) if why.starts_with("mesh1.admin.2 -> mesh1.rpc.2 Direct ")), "{out:?}"),
+        RpcOutcome::NotSent(n) => assert!(matches!(n.reason(), NotSentReason::ConnectionLost(why) if why.starts_with(&format!("{} -> {} Direct ", r.admin.node_id, dead.node_id))), "{out:?}"),
         other => panic!("the admin names its lost connection to the dead target: {other:?}"),
     }
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
