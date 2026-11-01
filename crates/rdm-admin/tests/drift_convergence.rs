@@ -182,6 +182,9 @@ struct Estate {
     claims: Arc<dyn rdm_admin::storage::MeshStorage>,
     /// The application the fabric-primary's drive sends its Build notices to (Q256).
     told: crate::Told,
+    /// Every birth's lifecycle record, as the fabric's shared store root holds them: claimed for each
+    /// birth the estate's view has held.
+    rows: Arc<rdm_admin::storage::MemoryNodesStorage>,
 }
 
 const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 3), ("mesh2", 2, 3)];
@@ -216,7 +219,7 @@ async fn estate() -> Estate {
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), topology, &fp_birth, &fp.mesh).await.unwrap();
     let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), digest_view: digest_view.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), builds: builds.clone(), hear_after_birth: std::sync::atomic::AtomicBool::new(false), recovering: Mutex::new(Vec::new()), fail_recovery_create: std::sync::atomic::AtomicBool::new(false) });
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), view.clone(), runner.clone());
-    Estate { provider: Provider(world.clone()), world, builds, accepted, view, digest_view, runner, dispatch, records: Arc::new(exit_records()), claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), told: crate::Told::default() }
+    Estate { provider: Provider(world.clone()), world, builds, accepted, view, digest_view, runner, dispatch, records: Arc::new(exit_records()), claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()), told: crate::Told::default(), rows: Arc::default() }
 }
 
 /// A new birth at `path`: a runtime in the world, a digest in the topology view, a live node.
@@ -532,9 +535,17 @@ impl Estate {
 
     /// `me`'s Build door over the estate's Build log, view, accepted Build and in-flight rows.
     async fn door_at(&self, me: &PathName) -> Arc<rdm_admin::control_plane::ControlPlane> {
+        // Each birth the view holds has its lifecycle record claimed, as its create or join claims it.
+        for n in self.view.read().await.births() {
+            if rdm_admin::storage::NodesStorage::node(&*self.rows, &n.node_id).await.unwrap().is_none() {
+                let row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), n.status);
+                let _ = rdm_admin::node_rows::write_record(&*self.rows, &row).await;
+            }
+        }
         let mut cp = crate::control_plane(self.builds.clone(), self.accepted.clone(), me.clone(), self.view.read().await.clone(), crate::adopted_time());
         cp.topology = self.view.clone();
         cp.claims = self.claims.clone();
+        let _ = cp.node_rows.set(self.rows.clone());
         Arc::new(cp)
     }
 
@@ -1106,6 +1117,8 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
     let verdict = rdm_admin::admin::inspection_of(&e.provider, &None, Some(&row)).await;
     assert!(matches!(verdict, Inspected::Exited(_)), "the row's exact runtime reads exited: {verdict:?}");
 
+    // Its lifecycle record stands on the store root beside its runtime row (claimed at its birth).
+    rdm_admin::node_rows::write_record(&*e.rows, &rdm_admin::storage::NodeRow::new(row.name.clone(), row.mesh.clone(), row.kind, row.node_id.clone(), NodeStatus::Ready)).await.unwrap().unwrap();
     // The mesh-primary opens and claims the recovery at its own door and runs it (R-BI7).
     let submitted = e.door_at(&mp.clone()).await.open_recovery("node-recovery", row.name.clone(), row.node_id.clone(), row.incarnation_id.clone()).await;
     let Ok(rdm_admin::control_plane::Recovery::Opened(o)) = submitted else { panic!("{lost:?}'s recovery was not opened: {:?}", submitted.map(|_| ()).map_err(|r| format!("{r:?}"))) };

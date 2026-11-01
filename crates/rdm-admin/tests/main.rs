@@ -33,13 +33,16 @@ pub fn adopted_time() -> rdm_transport::clock::RafkaTime {
     t
 }
 
-/// A control plane as boot wires it: its own node id is set (boot sets it from its birth, `boot.rs`),
-/// here the one the view holds at `me`.
+/// A control plane as boot wires it: its own node id and incarnation are set (boot sets them from its
+/// birth, `boot.rs`), here the birth the view holds at `me`.
 pub fn control_plane(builds: std::sync::Arc<dyn rdm_admin::build_state::BuildStateAdapter>, accepted: std::sync::Arc<rdm_admin::accepted::AcceptedStore>, me: rdm_core::PathName, topology: rdm_admin::topology::Topology, time: rdm_transport::clock::RafkaTime) -> rdm_admin::control_plane::ControlPlane {
-    let id = topology.node(&me).map(|n| n.node_id.clone());
+    let birth = topology.node(&me).map(|n| (n.node_id.clone(), n.incarnation_id.clone()));
     let cp = rdm_admin::control_plane::ControlPlane::new(builds, accepted, me, topology, time);
-    if let Some(id) = id {
+    if let Some((id, incarnation)) = birth {
         let _ = cp.node_id.set(id);
+        if let Some(incarnation) = incarnation {
+            let _ = cp.incarnation.set(incarnation);
+        }
     }
     cp
 }
