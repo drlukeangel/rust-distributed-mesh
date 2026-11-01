@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 /// A node row of `mesh` at `ordinal`, its config carrying `note` bytes.
 fn node(mesh: &str, ordinal: usize, note: usize) -> NodeView {
-    let name = format!("{mesh}.rpc.{ordinal}");
+    let name = serde_json::json!({ "path": format!("{mesh}.rpc"), "name": ordinal.to_string() });
     let mut n: NodeView = serde_json::from_value(serde_json::json!({
         "name": name, "kind": "rpc_node", "mesh": mesh, "node_id": NodeId::mint(), "endpoint_id": null,
         "incarnation_id": null, "deployment_id": null, "provider": "process", "data_dir": null, "status": "ready",
