@@ -103,10 +103,15 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
     assert!(ordinary_during.is_empty(), "an ordinary node holds the peer mesh as topology through the cut: {ordinary_during:?}");
     drop(cut);
     let healed_at = now_ns();
+    // The node-admins after the heal, by node id: the cut leaves mesh2 with no member the fabric-primary
+    // hears, and a node-admin the fabric-primary reaches by no call is re-created at its path and name, a
+    // new node (mesh-investigation.md step 5, "No member answers"; on the process provider its old runtime
+    // is terminated). Each node-admin at the four locations learns the peer mesh again.
     wait_for("every node-admin learns the peer mesh again", Duration::from_secs(60), || async {
+        let now: BTreeSet<String> = estate.node_views().await.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| n.node_id.to_string()).collect();
         let spans = estate.spans();
         let learned: BTreeSet<String> = named(&spans, "rdm.mesh.topology.update.via-mesh-learned").into_iter().filter(|sp| at(sp) >= healed_at).map(|sp| attr(sp, "node")).collect();
-        admins.iter().all(|a| learned.contains(a)).then_some(())
+        (now.len() == admins.len() && now.iter().all(|a| learned.contains(a))).then_some(())
     })
     .await;
     tokio::time::sleep(Duration::from_secs(10)).await;
