@@ -2,6 +2,10 @@
 
 ## i150 dependency — node-owned properties (2026-10-31)
 
+### i151 (queued: starts after i150 lands) — one `Resend` for every Node RPC call, `on_node_investigated`
+
+Ruled Q311, Q312 (Luke, 2026-11-01). Nothing is broken today; built after i150 lands. Proposal: [151-consolidate-event-callers-add-investigation-hook.md](proposal/151-consolidate-event-callers-add-investigation-hook.md). No i151 code in i150.
+
 ### i150 removal debt (Luke, 2026-11-01: each item found no longer needed is listed here and removed at the end)
 
 | # | Item | Where | Why it is dead | Removal needs |
