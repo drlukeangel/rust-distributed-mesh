@@ -3045,8 +3045,8 @@ async fn completed_recovery_span(estate: &Estate, node: &PathName, node_id: &Val
 /// the other; an open or claim of either lane written by a mesh-primary that is not the fabric-primary;
 /// either member recovered twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_members_of_two_meshes_killed_at_once_are_recovered_in_their_own_lanes_at_the_same_time() {
-    let (mut estate, birth_build) = two_mesh_estate("two_members_of_two_meshes_killed_at_once_are_recovered_in_their_own_lanes_at_the_same_time").await;
+async fn two_members_of_two_meshes_killed_at_once_are_recovered_by_their_own_mesh_primaries_at_the_same_time() {
+    let (mut estate, birth_build) = two_mesh_estate("two_members_of_two_meshes_killed_at_once_are_recovered_by_their_own_mesh_primaries_at_the_same_time").await;
     let nodes = estate.node_values().await;
     let member_of = |mesh: &str| nodes.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "rpc_node" && n["is_primary"] != true).map(location).min().unwrap_or_else(|| panic!("an rpc member of {mesh} holding no primary role"));
     let primary_of = |mesh: &str| nodes.iter().find(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("{mesh}'s primary"));
@@ -3109,8 +3109,8 @@ async fn two_members_of_two_meshes_killed_at_once_are_recovered_in_their_own_lan
 /// opened twice; the second recovery's submit dropped (a later attempt of the Build taking the mesh
 /// first); either member recovered twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_members_of_one_mesh_killed_at_once_are_recovered_one_after_the_other_in_its_lane() {
-    let (mut estate, birth_build) = fabric_of("two_members_of_one_mesh_killed_at_once_are_recovered_one_after_the_other_in_its_lane", &[("mesh1", 1, 1), ("mesh2", 1, 3)], Duration::from_secs(90)).await;
+async fn two_members_of_one_mesh_killed_at_once_are_recovered_one_after_the_other_by_its_mesh_primary() {
+    let (mut estate, birth_build) = fabric_of("two_members_of_one_mesh_killed_at_once_are_recovered_one_after_the_other_by_its_mesh_primary", &[("mesh1", 1, 1), ("mesh2", 1, 3)], Duration::from_secs(90)).await;
     let nodes = estate.node_values().await;
     let mut members: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node" && n["is_primary"] != true).map(location).collect();
     members.sort();
