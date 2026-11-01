@@ -568,8 +568,8 @@ async fn all_node_fields_survive_node_restart() {
     let spans = estate.spans();
     let write = named(&spans, "rdm.node.record.update.via-properties")
         .into_iter()
-        .find(|sp| attr(sp, "node_id") == recovered.node_id.as_str() && attr(sp, "outcome") == "durable")
-        .unwrap_or_else(|| panic!("the recovered node persists its own properties ({})", recovered.node_id));
+        .find(|sp| attr(sp, "node_id") == before.node_id.as_str() && attr(sp, "outcome") == "durable")
+        .unwrap_or_else(|| panic!("the node's own update is one durable node-owned write ({})", before.node_id));
     estate.record_trace_url(write["trace_id"].as_str().unwrap());
 }
 
