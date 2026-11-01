@@ -73,6 +73,8 @@ registered in its wiring by name:
 | `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, `node-records.jsonl`, with the `layout` marker and the `locks/` of the name claims and in-flight rows; every line a whole record with its writer's operation identity, the latest line for a key its current state, nothing removed |
 | the application's | the application's binaries, at `start_on` | its own stores; Rafka binds the traits to its system topics |
 
+A provider is one set of stores for the fabric, reached by every node that writes: a node's own record is written by the node and read by its primaries. A backend that keeps its stores in one process, the testkit's `memory` backend, serves a single-process fabric only.
+
 A name is bound to its place at registration. A node can move only between the providers its own
 executable registers; a provider no executable has is an executable replacement, not a storage
 change.

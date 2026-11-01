@@ -1090,7 +1090,9 @@ pub(crate) fn replacement_pins(replacements: &[BuildOperation], pinned: &[(PathN
 /// `node.tag.create` / `node.tag.delete` is, and every property once its create claimed the name (`PrepareStorage`, which writes the
 /// entry's onto the row: a plain create, or a replacement's successor whose minted node is the row's,
 /// Q305). A write the node or a caller makes after it stands until the next Build. A path `planned` creates, or whose executable the row does not record, is the create's or
-/// the replacement's, whose claim writes its properties.
+/// the replacement's, whose claim writes its properties. A path whose node's property record is
+/// unavailable ([`RecordedRow::properties`]) is owed its `node.config.update`, whose step fails by name
+/// (Q321): never nothing owed, and never the entry sent over a record that may hold a later own update.
 fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, recorded: &Recorded, steps: &[crate::build_state::BuildStepReceipt], planned: &[BuildOperation]) -> Vec<BuildOperation> {
     let receipted = |operation: &rdm_core::OperationId, step: &str| steps.iter().any(|r| r.operation == *operation && r.step == step && r.outcome == crate::build_state::StepOutcome::Complete);
     // The node this Build's create at `path` minted (its AllocateIdentity receipt's output).
@@ -1125,7 +1127,10 @@ fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, 
             continue;
         }
         let applied = row.applied.contains(&rdm_core::properties::PropertyApplication::entry(build_id, path));
-        let config = (!applied && row.config.as_ref().is_some_and(|c| *c != spec.config)) || row.storage_persistence.is_some_and(|s| s != spec.storage_persistence) || row.placement.is_some_and(|p| p != spec.placement);
+        // An unavailable record is never nothing owed (query.md): its apply is planned, and its step
+        // ends Failed by name, nothing sent over the record (`NodeConfigs::apply_entry`; Q321).
+        let unavailable = matches!(row.properties, rdm_core::views::PropertyRecord::Unavailable { .. });
+        let config = unavailable || (!applied && row.config.as_ref().is_some_and(|c| *c != spec.config)) || row.storage_persistence.is_some_and(|s| s != spec.storage_persistence) || row.placement.is_some_and(|p| p != spec.placement);
         let mut owed = Vec::new();
         if config {
             owed.push(BuildOperation::UpdateConfig { node_id: recorded[&path].node_id.clone(), kind: spec.kind, mesh: spec.mesh.clone(), node: path.clone(), entry: None });
@@ -1169,6 +1174,10 @@ pub struct RecordedRow {
     pub storage_persistence: Option<rdm_core::meta::StorageMeta>,
     /// The placement the row records.
     pub placement: Option<rdm_core::meta::PlacementMeta>,
+    /// Whether the node's own property record was read: `Unavailable`, naming the node, when the row
+    /// is live and its node's current record is missing (query.md: "A missing current-writer record is
+    /// unavailable"), never taken for a record that matches its entry.
+    pub properties: rdm_core::views::PropertyRecord,
 }
 
 /// [`RecordedRow`] of each path of a topology that a live row is written at.
@@ -1185,15 +1194,22 @@ pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, prope
         if let Some(row) = row.filter(|r| r.status != NodeStatus::Deleted) {
             // The path's config and tags are its node's own property record, never a lifecycle row's:
             // a node that wrote none carries none known.
-            let (mut applied, mut config, mut tags) = (BTreeSet::new(), None, None);
-            if let Some(properties) = properties {
-                if let Some(own) = properties.properties(&row.node_id).await.map_err(|error| format!("the properties of {} could not be read: {error}", row.node_id))? {
+            // A live row whose node's record is missing, or that no node records store is open to read
+            // it from, is the record unavailable (query.md), named; never a record that matches its entry.
+            let (mut applied, mut config, mut tags, mut record) = (BTreeSet::new(), None, None, rdm_core::views::PropertyRecord::Read);
+            let read = match properties {
+                Some(properties) => properties.properties(&row.node_id).await.map_err(|error| format!("the properties of {} could not be read: {error}", row.node_id))?.ok_or_else(|| format!("node {} at path {:?}, name {:?} has no property record: its properties are unavailable", row.node_id, p.path, p.name)),
+                None => Err(format!("node {} at path {:?}, name {:?}: no node records store is open to read its property record from: its properties are unavailable", row.node_id, p.path, p.name)),
+            };
+            match read {
+                Ok(own) => {
                     config = Some(own.config);
                     tags = Some(own.tags);
                     applied = own.applied;
                 }
+                Err(reason) => record = rdm_core::views::PropertyRecord::Unavailable { reason },
             }
-            out.insert(p.clone(), RecordedRow { mesh: row.mesh.clone(), kind: row.kind, applied, node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config, tags, storage_persistence: row.storage_persistence, placement: row.placement });
+            out.insert(p.clone(), RecordedRow { mesh: row.mesh.clone(), kind: row.kind, applied, node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config, tags, storage_persistence: row.storage_persistence, placement: row.placement, properties: record });
         }
     }
     Ok(out)
@@ -2830,7 +2846,7 @@ mod tests {
         let birth = |name: PathName, o: &Topology| o.node(&name.clone()).map(|n| crate::build::ExitedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap() }).unwrap();
         let on = |name: PathName, tag: Option<&str>, o: &Topology| {
             let node = o.node(&name.clone()).unwrap();
-            (node.name.clone(), RecordedRow { mesh: node.mesh.clone(), kind: node.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: node.node_id.clone(), sha256: tag.map(|t| format!("{t}-{}", node.kind.name())) })
+            (node.name.clone(), RecordedRow { mesh: node.mesh.clone(), kind: node.kind, applied: Default::default(), properties: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: node.node_id.clone(), sha256: tag.map(|t| format!("{t}-{}", node.kind.name())) })
         };
         // Every member on "a", but mesh1.rpc.1 on "b" already and mesh2.admin.2 a row with no executable.
         let mut recorded: Recorded = [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.rpc", "2").unwrap(), PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.rpc", "1").unwrap()].iter().map(|p| on(p.clone(), Some("a"), &o)).collect();
@@ -2877,7 +2893,7 @@ mod tests {
         let mut live_again = after_delete.clone();
         live_again.nodes.push(successor.clone());
         let mut on_entry = recorded.clone();
-        on_entry.insert(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), kind: successor.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-node_admin".into()) });
+        on_entry.insert(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), kind: successor.kind, applied: Default::default(), properties: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-node_admin".into()) });
         assert_eq!(replacement_plan(&next, &live_again, &on_entry, receipts.clone()), all[2..].to_vec(), "a live successor on its entry is the member");
         // Its create receipted: never replaced again, whatever its row reads.
         let mut done = receipts;
@@ -2906,7 +2922,7 @@ mod tests {
         let path: PathName = rdm_core::PathName::new("mesh2.rpc", "1").unwrap();
         let node = o.node(&path).unwrap().clone();
         let birth = crate::build::ExitedBirth { node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().unwrap() };
-        let mut recorded: Recorded = o.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| (n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("b-{}", n.kind.name())) })).collect();
+        let mut recorded: Recorded = o.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| (n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, applied: Default::default(), properties: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("b-{}", n.kind.name())) })).collect();
         let step = |s: &str, output: Option<serde_json::Value>| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
@@ -2929,7 +2945,7 @@ mod tests {
             assert_eq!(replacement_plan(&next, view, &recorded, receipts.clone()), vec![create.clone()], "the row Deleted: the remaining work is the create");
         }
         // The row still live, naming the birth on its old sha: the delete of that exact birth is finished, then the create.
-        recorded.insert(path.clone(), RecordedRow { mesh: "mesh2".into(), kind: NodeKind::RpcNode, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: birth.node_id.clone(), sha256: Some("a-rpc_node".into()) });
+        recorded.insert(path.clone(), RecordedRow { mesh: "mesh2".into(), kind: NodeKind::RpcNode, applied: Default::default(), properties: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: birth.node_id.clone(), sha256: Some("a-rpc_node".into()) });
         let finish = BuildOperation::DeleteNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".into(), node: path.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() };
         for view in [&gone, &leaving] {
             assert_eq!(replacement_plan(&next, view, &recorded, receipts.clone()), vec![finish.clone(), create.clone()], "the row live: the delete is finished, then the create");
@@ -2944,7 +2960,7 @@ mod tests {
     #[test]
     fn the_members_off_their_entries_are_named_until_each_row_records_its_sha() {
         let next = on_entries(&t(&[("mesh1", 2, 1)]), "b");
-        let row = |tag: Option<&str>, kind: &str| RecordedRow { mesh: "mesh1".into(), kind: if kind == "node_admin" { NodeKind::NodeAdmin } else { NodeKind::RpcNode }, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: tag.map(|t| format!("{t}-{kind}")) };
+        let row = |tag: Option<&str>, kind: &str| RecordedRow { mesh: "mesh1".into(), kind: if kind == "node_admin" { NodeKind::NodeAdmin } else { NodeKind::RpcNode }, applied: Default::default(), properties: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: tag.map(|t| format!("{t}-{kind}")) };
         let mut recorded: Recorded = [(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), row(Some("b"), "node_admin")), (rdm_core::PathName::new("mesh1.admin", "2").unwrap(), row(None, "node_admin")), (rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), row(Some("a"), "rpc_node"))].into();
         assert_eq!(paths_owed_replacement(&next, &recorded).iter().cloned().collect::<Vec<_>>(), [PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.rpc", "1").unwrap()]);
         recorded.insert(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), row(Some("b"), "node_admin"));
@@ -2973,7 +2989,7 @@ mod tests {
 
     /// What the rows record: every live member of `o` on `tag`'s executable of its kind.
     fn rows_on(o: &Topology, tag: &str) -> Recorded {
-        o.nodes.iter().map(|n| (n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("{tag}-{}", n.kind.name())) })).collect()
+        o.nodes.iter().map(|n| (n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, applied: Default::default(), properties: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("{tag}-{}", n.kind.name())) })).collect()
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 1: "the complete topology, an array of nodes,
@@ -3078,7 +3094,7 @@ mod tests {
             config: Some([("source".into(), "node".into())].into()),
             tags: Some(["node".into()].into()),
             storage_persistence: Some(StorageMeta::Ephemeral), placement: Some(Default::default()),
-            applied: [rdm_core::properties::PropertyApplication::entry(&build_id, &path)].into(),
+            applied: [rdm_core::properties::PropertyApplication::entry(&build_id, &path)].into(), properties: Default::default(),
         })].into();
         assert_eq!(properties_owed(&build_id, &topology, &recorded, &[], &[]),
             vec![BuildOperation::UpdateConfig { node_id: recorded[&path].node_id.clone(), kind: NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), entry: None }],
@@ -3102,9 +3118,9 @@ mod tests {
         let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
         let zone = |z: &str| [("zone".to_string(), z.to_string())].into_iter().collect::<BTreeMap<String, String>>();
         topology.meshes.get_mut("mesh1").unwrap().set_spec(NodeSpec { config: zone("b"), tags: labels(&["x"]), storage_persistence: persistent, ..NodeSpec::default_for(rpc.clone(), "mesh1", NodeKind::RpcNode) }).unwrap();
-        let row = |config: BTreeMap<String, String>, tags: BTreeSet<String>, storage: StorageMeta| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(tags), storage_persistence: Some(storage), placement: Some(Default::default()) };
+        let row = |config: BTreeMap<String, String>, tags: BTreeSet<String>, storage: StorageMeta| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, applied: Default::default(), properties: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(tags), storage_persistence: Some(storage), placement: Some(Default::default()) };
         let mut recorded: Recorded = [(rpc.clone(), row(zone("a"), labels(&["y"]), StorageMeta::Ephemeral))].into();
-        recorded.insert(admin.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(BTreeMap::new()), tags: Some(BTreeSet::new()), storage_persistence: None, placement: None });
+        recorded.insert(admin.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, applied: Default::default(), properties: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(BTreeMap::new()), tags: Some(BTreeSet::new()), storage_persistence: None, placement: None });
         let all = vec![BuildOperation::UpdateConfig { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), entry: None }, BuildOperation::CreateTags { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), labels: labels(&["x"]) }, BuildOperation::DeleteTags { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), labels: labels(&["y"]) }];
         assert_eq!(properties_owed(&property_build_id(), &topology, &recorded, &[], &[]), all, "each property that differs, by its own operation");
         assert_eq!(all.iter().map(BuildOperation::key).collect::<Vec<_>>(), [rdm_core::OperationId::node("node.config.update", &recorded[&rpc].node_id), rdm_core::OperationId::node("node.tag.create", &recorded[&rpc].node_id), rdm_core::OperationId::node("node.tag.delete", &recorded[&rpc].node_id)]);
@@ -3120,6 +3136,53 @@ mod tests {
         let json = serde_json::to_value(&all).unwrap();
         assert_eq!(json[0]["op"], "update_config");
         assert_eq!(serde_json::from_value::<Vec<BuildOperation>>(json).unwrap(), all);
+    }
+
+    // @feature: node-records
+    /// CONTRACT (query.md: "A missing current-writer record is unavailable; neither another writer's
+    /// value nor a raw last-written-path index supplies a fallback. Record read errors remain named
+    /// errors, not empty results"; i150 R8/R9; Q321): a Reconcile's plan reads each live row's own
+    /// property record. mesh1.admin.1's record is written and matches its entry: nothing owed.
+    /// mesh1.rpc.1's is missing: its row is read `Unavailable`, naming the node and the record, and its
+    /// `node.config.update` is owed, the apply whose step fails by name. Rows read with no node records
+    /// store open are unavailable too, named. A row read for no properties (a fixture's) owes nothing,
+    /// as before. Once mesh1.rpc.1's record is readable and matches its entry, a later plan owes nothing.
+    /// Must NOT happen: a missing record taken for one that matches its entry, the Reconcile planning
+    /// nothing over it.
+    #[tokio::test]
+    async fn a_reconcile_owes_the_apply_of_a_node_whose_property_record_is_unavailable_and_nothing_for_one_that_matches() {
+        use crate::node_rows::WriteRecord;
+        use rdm_core::views::PropertyRecord;
+        use rdm_node::node_records::{MemoryNodeRecords, NodeProperties, NodeRecordsStorage, RecordBirth};
+        let topology = t(&[("mesh1", 1, 1)]);
+        let (admin, rpc) = (PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.rpc", "1").unwrap());
+        let rows = crate::storage::MemoryNodesStorage::default();
+        let records = MemoryNodeRecords::default();
+        let mut ids = BTreeMap::new();
+        for p in [&admin, &rpc] {
+            let id = NodeId::mint();
+            rows.write_record(&crate::storage::NodeRow::new(p.clone(), "mesh1", topology.node_spec(p).unwrap().kind, id.clone(), NodeStatus::Ready)).await.unwrap();
+            ids.insert(p.clone(), id);
+        }
+        let own = |id: &NodeId| NodeProperties {
+            birth: RecordBirth { node_id: id.clone(), incarnation_id: IncarnationId::mint() },
+            config: BTreeMap::new(), tags: BTreeSet::new(), endpoint_id: None, transport_addr: None, listeners: vec![], app_types: None,
+            held: Default::default(), applied: Default::default(),
+        };
+        records.put_properties(&own(&ids[&admin])).await.unwrap();
+        let recorded = recorded_executables(&rows, Some(&records), &topology).await.unwrap();
+        assert_eq!(recorded[&admin].properties, PropertyRecord::Read, "a written record is read");
+        assert!(matches!(&recorded[&rpc].properties, PropertyRecord::Unavailable { reason } if reason.contains(ids[&rpc].as_str()) && reason.contains("has no property record")), "{:?}", recorded[&rpc].properties);
+        let apply = BuildOperation::UpdateConfig { node_id: ids[&rpc].clone(), kind: NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), entry: None };
+        assert_eq!(properties_owed(&property_build_id(), &topology, &recorded, &[], &[]), vec![apply.clone()], "an unavailable record is never nothing owed");
+        let unread = recorded_executables(&rows, None, &topology).await.unwrap();
+        assert!(unread.values().all(|r| matches!(&r.properties, PropertyRecord::Unavailable { reason } if reason.contains("no node records store is open"))), "{unread:?}");
+        assert_eq!(properties_owed(&property_build_id(), &topology, &unread, &[], &[]).len(), 2, "no store to read from is unavailable, named, at every path");
+        let fixture: Recorded = recorded.iter().map(|(p, r)| (p.clone(), RecordedRow { properties: PropertyRecord::Read, ..r.clone() })).collect();
+        assert_eq!(properties_owed(&property_build_id(), &topology, &fixture, &[], &[]), vec![], "a row read for no properties owes nothing, as before");
+        records.put_properties(&own(&ids[&rpc])).await.unwrap();
+        let readable = recorded_executables(&rows, Some(&records), &topology).await.unwrap();
+        assert_eq!(properties_owed(&property_build_id(), &topology, &readable, &[], &[]), vec![], "a readable record that matches its entry owes nothing");
     }
 
     /// CONTRACT (build.md §1, "The Build applies the diff", and its last line: "A node's `config` and
@@ -3145,7 +3208,7 @@ mod tests {
         let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
         let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
-        let own: Recorded = [(rpc.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(port.clone()), tags: Some(labels(&["y"])), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) })].into();
+        let own: Recorded = [(rpc.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, applied: Default::default(), properties: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(port.clone()), tags: Some(labels(&["y"])), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) })].into();
         let create = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap());
         let claimed = vec![receipt(1, &create, "AllocateIdentity", None), receipt(1, &create, "PrepareStorage", None), receipt(1, &create, "Complete", None)];
         assert_eq!(properties_owed(&property_build_id(), &cur, &own, &claimed, &[]), vec![], "the create's claim applied the entry: the node's own writes since stand");
@@ -3222,7 +3285,7 @@ mod tests {
         let cur = t(&[("mesh1", 1, 1)]);
         let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let o = observed(vec![n(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, true)], &["mesh1"]);
-        let row = |config: BTreeMap<String, String>| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) };
+        let row = |config: BTreeMap<String, String>| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, applied: Default::default(), properties: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) };
         let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
         let mut recorded: Recorded = [(rpc.clone(), row(port))].into();
         recorded.insert(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), RecordedRow { kind: NodeKind::NodeAdmin, storage_persistence: None, placement: None, ..row(BTreeMap::new()) });
@@ -3370,7 +3433,7 @@ mod tests {
         after.nodes.retain(|x| x.name.clone() != PathName::new("mesh2.gateway", "2").unwrap());
         after.nodes.push(successor.clone());
         let mut on = rows.clone();
-        on.insert(rdm_core::PathName::new("mesh2.gateway", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), kind: successor.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-gateway".into()) });
+        on.insert(rdm_core::PathName::new("mesh2.gateway", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), kind: successor.kind, applied: Default::default(), properties: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-gateway".into()) });
         let done = vec![deleted_receipt(1, PathName::new("mesh2.gateway", "2").unwrap(), "mesh2", NodeKind::Gateway, &gone), receipt(1, &rdm_core::OperationId::node("node.delete", &gone.node_id), "Complete", None), receipt(1, &rdm_core::OperationId::location("node.create", &PathName::new("mesh2.gateway", "2").unwrap()), "Complete", None)];
         let left: Vec<BuildOperation> = [PathName::new("mesh1.gateway", "2").unwrap(), PathName::new("mesh1.gateway", "1").unwrap(), PathName::new("mesh2.gateway", "1").unwrap()].iter().flat_map(|p| replace(p.clone())).collect();
         assert_eq!(replacement_plan(&next, &after, &on, done.clone()), left, "the next attempt finishes the rest");

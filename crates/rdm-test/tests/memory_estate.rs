@@ -10,7 +10,7 @@
 use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::storage_backend::MemoryBackend;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_client::{BuildCarrier, BuildId, Builds, Fabrics, LaunchKind, NodeStatus, Nodes, PathName, ScopeStatus};
+use rdm_client::{BuildCarrier, BuildFrame, BuildId, Builds, Fabrics, NodeStatus, Nodes, PathName, ScopeStatus};
 use rdm_test::executables::{Current, Executables};
 use rdm_core::build::BuildPhase;
 use rdm_test::estate::{bin_dir, named, Estate};
@@ -131,10 +131,12 @@ async fn until_fabric_ready(fabrics: &Fabrics) {
 /// step spanned `writes_to = "memory"`; `node.create` of two rpc nodes in mesh1 completes and lists
 /// them ready; once the fabric has first reached ready, `node.stop` of the
 /// first stops it (its node-type primary role moving to the second) and `node.start` brings it back; before
-/// that, a Reconcile changing mesh1.rpc.1's config alone completes and the node carries the config
-/// (build.md §1, "The Build applies the diff": `config` in place, as `node.config.update` applies a
-/// map; the executor reads the entry in the accepted Build the memory log holds); `build.get [id]` of the
-/// first create's Build answers it Complete with its step receipts. Through all of it the admin
+/// that, a Reconcile changing mesh1.rpc.1's config alone fails its `UpdateConfig` step by name, naming
+/// the node and its property record, which the rpc node keeps in its own process's memory store and the
+/// admin cannot read (storage.md §2: a backend that keeps its stores in one process serves a
+/// single-process fabric only; query.md: "A missing current-writer record is unavailable"; Q321), its
+/// span `rdm.node_admin.deployment.update.via-step` failed with that reason; `build.get [id]` of the
+/// create's Build answers it Complete with its step receipts. Through all of it the admin
 /// writes nothing of its own to disk:
 /// its data dir holds no store (no `nodes/`, no `attempt-context/`), and every file under the fabric's
 /// store dir is the rpc node's own `connections/` rows. Must NOT happen: a row of the admin's
@@ -154,7 +156,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
     let (data_dir, store_dir) = (cfg.data_dir.clone(), cfg.store_dir.clone());
     let launched = Launched(store_dir.clone());
     let started = std::time::Instant::now();
-    rt.block_on(async {
+    let rpc_id = rt.block_on(async {
         let running = start_on(cfg, Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, rdm_admin::storage_backend::TopologyStorageProviders::new().register(MEMORY, Arc::new(MemoryBackend))).await.expect("the Day-0 admin comes up on the memory backend");
         let me = running.digest.lock().unwrap().clone();
         tokio::time::timeout(WRONG, async {
@@ -181,21 +183,23 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         // Each create names its path and the executable it runs (proposal executable-bindings-at-create.md
         // rule 1): the complete topology with one more rpc node, read from the admin now.
         let executables = Executables::testkit("process");
-        let one_more = || async {
-            let current = Current::read(&carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
-            let nodes = current.with_one_more("mesh1", LaunchKind::RpcNode, &executables);
-            (current.based_on, nodes)
-        };
-        let (based_on, request) = one_more().await;
-        let created = Estate::workflow("node.create of an rpc node in mesh1", nodes.create_named(based_on, request).await).await;
+        // Both rpc nodes in one node.create: a stop moves the stopped node's node-type primary role to a
+        // secondary of its type, and each create's claim writes its node's properties. A later
+        // Reconcile meets mesh1.rpc.1's own record, which the node wrote in its own process (below).
+        let current = Current::read(&carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
+        let mut two_more = current.counts_of("mesh1");
+        two_more.rpc_node += 2;
+        let request = current.resized(&[two_more], false, &executables);
+        let created = Estate::workflow("node.create of two rpc nodes in mesh1", nodes.create_named(current.based_on, request).await).await;
         until_status(&nodes, &node, NodeStatus::Ready).await;
-        // A stop moves the stopped node's node-type primary role to a secondary of its type: a second rpc node.
-        let (based_on, request) = one_more().await;
-        Estate::workflow("node.create of a second rpc node in mesh1", nodes.create_named(based_on, request).await).await;
         until_status(&nodes, &rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), NodeStatus::Ready).await;
         until_fabric_ready(&fabrics).await;
-        // A Reconcile that changes mesh1.rpc.1's config alone: the Build's `node.config.update` reads the
-        // entry in the accepted Build the admin's own log holds, and the node carries it.
+        // A Reconcile that changes mesh1.rpc.1's config alone. The rpc node keeps its own property record
+        // in its own process's memory store, which this admin cannot read (storage.md §2: such a backend
+        // serves a single-process fabric only): the record is unavailable (query.md), so the Build's
+        // `node.config.update` ends its `UpdateConfig` step Failed by name, naming the node and its record,
+        // and sends nothing over it (i150 R8/R9; Q321), never Complete with nothing applied.
+        let rpc_id = nodes.get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.unwrap_or_else(|e| panic!("node.get [{node:?}]: {e}")).into_iter().find(|n| n.name == node).unwrap_or_else(|| panic!("node.get lists no {node:?}")).node_id;
         let zone: std::collections::BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
         let current = Current::read(&carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
         let request = current.held(&executables).unwrap_or_else(|e| panic!("{e}")).into_values().flat_map(|m| m.into_values()).map(|mut s| {
@@ -205,14 +209,24 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
             s
         });
         let mut stream = carrier.create(rdm_core::build::BuildChange::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes: request.collect() }).await.unwrap_or_else(|e| panic!("build.create of the config-only Reconcile: {e}"));
-        Estate::until_complete(&mut stream).await;
-        tokio::time::timeout(WRONG, async {
-            while !nodes.get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.unwrap_or_else(|e| panic!("node.get [mesh]: {e}")).iter().any(|n| n.name == node && n.config == zone) {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+        let config_build = stream.build_id().clone();
+        let (operation, step, reason) = tokio::time::timeout(WRONG, async {
+            let mut frames = Vec::new();
+            while let Some(frame) = stream.next().await {
+                let frame = frame.unwrap_or_else(|e| panic!("the stream of the config-only Reconcile {config_build} broke: {e}"));
+                frames.push(frame.clone());
+                match frame {
+                    BuildFrame::Failed { operation, step, reason, .. } => return (operation, step, reason),
+                    BuildFrame::Complete { .. } => panic!("the config-only Reconcile {config_build} completed over mesh1.rpc.1's unavailable record: {frames:?}"),
+                    _ => {}
+                }
             }
+            panic!("the stream of the config-only Reconcile {config_build} ended without a terminal frame: {frames:?}")
         })
         .await
-        .unwrap_or_else(|_| panic!("{node:?} never carried the config its entry names"));
+        .unwrap_or_else(|_| panic!("the config-only Reconcile {config_build} never ended"));
+        assert_eq!((operation, step.as_str()), (rdm_core::OperationId::node("node.config.update", &rpc_id), "UpdateConfig"), "the Reconcile fails at mesh1.rpc.1's config apply: {reason}");
+        assert!(reason.contains(rpc_id.as_str()) && reason.contains("has no property record") && reason.contains("not applied"), "the failure names the node and its record: {reason}");
         Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;
         Estate::workflow("node.start of mesh1.rpc.1", nodes.start(&node).await).await;
         until_status(&nodes, &node, NodeStatus::Ready).await;
@@ -220,6 +234,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         assert_eq!(receipts.phase, BuildPhase::Complete, "the create's Build is Complete: {receipts:#?}");
         assert!(!receipts.steps.is_empty(), "build.get answers the create's step receipts: {receipts:#?}");
         running.leave().await;
+        rpc_id
     });
     eprintln!("memory estate: boot to leave in {} ms", started.elapsed().as_millis());
     drop(launched);
@@ -240,4 +255,12 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
     assert_eq!(opened.len(), 1, "one storage step of this admin's boot: {opened:?}");
     assert_eq!(opened[0]["attributes"]["writes_to"].as_str(), Some("memory"), "the admin's boundaries are the memory backend's: {}", opened[0]);
     eprintln!("span rdm.mesh.node.resolve.via-storage-opened trace_id={} writes_to=memory; spans: {}", opened[0]["trace_id"], artifacts.display());
+    // The config apply's step, as this run's spans hold it: UpdateConfig of mesh1.rpc.1 failed, its
+    // reason naming the node and its unavailable record.
+    let failed: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["step"].as_str() == Some("UpdateConfig") && sp["attributes"]["detail"].as_str() == Some("failed") && sp["attributes"]["reason"].as_str().is_some_and(|r| r.contains(rpc_id.as_str()) && r.contains("has no property record")))
+        .collect();
+    assert_eq!(failed.len(), 1, "one failed UpdateConfig step of mesh1.rpc.1, named: {failed:?}");
+    eprintln!("span rdm.node_admin.deployment.update.via-step trace_id={} step=UpdateConfig detail=failed reason={}", failed[0]["trace_id"], failed[0]["attributes"]["reason"]);
 }
