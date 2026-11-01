@@ -7,6 +7,8 @@
 //! so its look at the lost mesh's admins answers `unproven`. A lost mesh the survivors can inspect is
 //! recovered the same way (`fabric_primary::losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_backbone`).
 
+use rdm_core::PathName;
+use rdm_test::estate::location;
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use rdm_test::netfault::{udp_ports, Partition};
@@ -42,11 +44,11 @@ async fn estate_of(test: &str, shape: &[(&str, u32, u32)]) -> Estate {
 /// `signal` to every process of mesh1, the Day-0 admin included. The pids signalled.
 async fn lose_mesh1(estate: &Estate, nodes: &[Value], signal: &str) -> Vec<u64> {
     for n in nodes.iter().filter(|n| n["mesh"] != "mesh1" && n["kind"] == "node_admin") {
-        Door::at(estate, &s(&n["name"])).await.arm("foreign-domain", json!({"kind": "provider-domain"})).await;
+        Door::at(estate, &location(&n)).await.arm("foreign-domain", json!({"kind": "provider-domain"})).await;
     }
     let mut pids = Vec::new();
     for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && n["name"] != "mesh1.admin.1") {
-        pids.push(estate.pid_of(&s(&n["name"])).await);
+        pids.push(estate.pid_of(&location(&n)).await);
     }
     pids.extend(estate.bootstrap_pid().map(u64::from));
     if signal == "-KILL" {
@@ -64,11 +66,11 @@ async fn lose_mesh1(estate: &Estate, nodes: &[Value], signal: &str) -> Vec<u64> 
 async fn lose_mesh1_unproven(estate: &Estate, nodes: &[Value]) -> Vec<u64> {
     let mut pids = Vec::new();
     for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && n["name"] != "mesh1.admin.1") {
-        pids.push(estate.pid_of(&s(&n["name"])).await);
+        pids.push(estate.pid_of(&location(&n)).await);
     }
     pids.extend(estate.bootstrap_pid().map(u64::from));
     for n in nodes.iter().filter(|n| n["mesh"] != "mesh1" && n["kind"] == "node_admin") {
-        Door::at(estate, &s(&n["name"])).await.arm("mesh1-unproven", json!({"kind": "provider-unproven", "pids": pids})).await;
+        Door::at(estate, &location(&n)).await.arm("mesh1-unproven", json!({"kind": "provider-unproven", "pids": pids})).await;
     }
     estate.fabric_ready();
     for pid in &pids {
@@ -95,10 +97,10 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from
     let nodes = estate.node_values().await;
     let fp = "mesh1.admin.1";
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
-    assert_eq!(s(&primary["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
+    assert_eq!(location(&primary), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let old_node_id = s(&primary["node_id"]);
     let backbone = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["is_primary"] == true && n["kind"] == "node_admin").expect("mesh2's primary")["name"]);
-    estate.enter(&Estate::path(&backbone)).await;
+    estate.enter(&backbone).await;
     lose_mesh1_unproven(&estate, &nodes).await;
     let killed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
@@ -107,7 +109,7 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from
     estate
         .until_view(&format!("the node re-created at {fp} is restored as mesh-primary and fabric-primary"), decision + floor * 20 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
-            let primaries: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
+            let primaries: Vec<PathName> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).collect();
             assert!(primaries.iter().all(|h| h == fp), "only the node at {fp} is ever fabric-primary: {primaries:?}");
             ns.iter().find(|n| n["name"] == fp && s(&n["node_id"]) != old_node_id && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true).map(|_| ())
         })
@@ -145,7 +147,7 @@ async fn a_lost_fabric_primary_whose_runtime_lives_in_another_control_domain_is_
     let old_id = s(&nodes.iter().find(|n| n["name"] == "mesh1.admin.1").expect("mesh1.admin.1")["node_id"]);
     let backbone = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin").expect("mesh2's admin")["name"]);
     lose_mesh1(&estate, &nodes, "-KILL").await;
-    estate.enter(&Estate::path(&backbone)).await;
+    estate.enter(&backbone).await;
     let floor = rdm_transport::topology::staleness_floor();
     let deleted = wait_for("the lost mesh1.admin.1's row is written Deleted", floor * 12 + Duration::from_secs(60), || async {
         let rows = spans_where(&estate.spans(), "rdm.node_admin.node.delete.via-node-row", "subject", "mesh1.admin.1");
@@ -207,7 +209,7 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
     let old_key = std::fs::read(old_dir.join("node-key")).expect("the old birth's endpoint key");
     let backbone = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin").expect("mesh2's admin")["name"]);
     lose_mesh1_unproven(&estate, &nodes).await;
-    estate.enter(&Estate::path(&backbone)).await;
+    estate.enter(&backbone).await;
     let floor = rdm_transport::topology::staleness_floor();
     let recreated = new_birth_within(&estate, "mesh1.admin.1", &old_id, floor * 12 + Duration::from_secs(120)).await;
     let told = match &recreated {
@@ -219,7 +221,7 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
             let id = n.node_id.to_string();
             wait_for(&format!("the fabric's views name {id} mesh-primary and fabric-primary"), floor * 12 + Duration::from_secs(60), || async {
                 let views = estate.node_views().await;
-                assert!(views.iter().filter(|v| v.is_fabric_primary).all(|v| v.name.to_string() == "mesh1.admin.1"), "only the node at mesh1.admin.1 is ever fabric-primary");
+                assert!(views.iter().filter(|v| v.is_fabric_primary).all(|v| v.name == Estate::path("mesh1.admin", "1")), "only the node at mesh1.admin.1 is ever fabric-primary");
                 views.iter().any(|v| v.node_id.to_string() == id && v.is_fabric_primary && v.is_primary).then_some(())
             })
             .await;
@@ -267,13 +269,13 @@ async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_r
     // Lose mesh1, inspectable from mesh2: no provider-domain cut.
     let mut pids = Vec::new();
     for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && n["name"] != "mesh1.admin.1") {
-        pids.push(estate.pid_of(&s(&n["name"])).await);
+        pids.push(estate.pid_of(&location(&n)).await);
     }
     for pid in pids {
         estate.kill_pid(pid as u32);
     }
     estate.kill_bootstrap();
-    estate.enter(&Estate::path(&winner_name)).await;
+    estate.enter(&winner_name).await;
     let floor = rdm_transport::topology::staleness_floor();
     let recreated = new_birth_within(&estate, "mesh1.admin.1", &old_id, floor * 12 + Duration::from_secs(120)).await;
     let told = match &recreated {
@@ -332,14 +334,14 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     let mut estate = estate_of(test, &shape).await;
     let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
-    assert_eq!(s(&primary["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
+    assert_eq!(location(&primary), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let (fp_id, fp_inc) = (s(&primary["node_id"]), s(&primary["incarnation_id"]));
     let victim_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] != true && n["is_fabric_primary"] != true).cloned().expect("a mesh2 node-admin that is neither primary");
-    let (victim, victim_id) = (s(&victim_row["name"]), s(&victim_row["node_id"]));
+    let (victim, victim_id) = (location(&victim_row), s(&victim_row["node_id"]));
     let mesh2_primary = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2's primary")["name"]);
-    let admins: Vec<String> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["name"])).collect();
-    let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
-    let mesh1: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh1").map(|n| s(&n["name"])).collect();
+    let admins: Vec<PathName> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| location(&n)).collect();
+    let everyone: Vec<PathName> = nodes.iter().map(|n| location(&n)).collect();
+    let mesh1: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == "mesh1").map(|n| location(&n)).collect();
     let others: Vec<String> = everyone.iter().filter(|n| **n != victim).cloned().collect();
     estate.enter(&Estate::path(fp)).await;
     let root = estate.fabric_store_root();
@@ -360,7 +362,7 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     // forwarded topology"; mesh-investigation.md: "Only that receipt starts or resets t"): mesh1 as its mesh
     // channel and its join's topology read hand it is topology, never silent. The cut follows its first
     // backbone install of mesh1.
-    wait_for(&format!("{victim} holds mesh1 by direct backbone receipt before the cut"), floor * 2, || async {
+    wait_for(&format!("{victim:?} holds mesh1 by direct backbone receipt before the cut"), floor * 2, || async {
         named(&estate.spans(), "rdm.mesh.topology.update.via-snapshot-installed").into_iter().find(|sp| attr(sp, "node") == victim && attr(sp, "channel") == "backbone" && attr(sp, "mesh") == "mesh1").map(|_| ())
     })
     .await;
@@ -370,7 +372,7 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     let cut = match Partition::start(&udp_ports(&nodes, &[victim.clone()]), &udp_ports(&nodes, &others)) {
         Ok(p) => p,
         Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
-            eprintln!("SKIPPED by name: the host cannot drop {victim}'s UDP: {why}");
+            eprintln!("SKIPPED by name: the host cannot drop {victim:?}'s UDP: {why}");
             estate.stop().await;
             return;
         }
@@ -378,14 +380,14 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     };
     let cut_at = now_ns();
     // Held past mesh investigation's decision step on mesh1, at the cut admin.
-    let decided = wait_for(&format!("{victim} reaches mesh investigation's decision step on mesh1 under the cut"), floor * 12 + Duration::from_secs(60), || async {
+    let decided = wait_for(&format!("{victim:?} reaches mesh investigation's decision step on mesh1 under the cut"), floor * 12 + Duration::from_secs(60), || async {
         intact();
         named(&estate.spans(), "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().find(|sp| at(sp) >= cut_at && attr(sp, "node") == victim && attr(sp, "mesh") == "mesh1" && attr(sp, "outcome") == "unreachable").map(at)
     })
     .await;
     // And past the backbone arm's node investigation of the fabric-primary: its inspection first, then,
     // unreached, the inspection's answer is the verdict (node-investigation.md, Q273).
-    wait_for(&format!("{victim}'s node investigation of {fp} reaches its verdict, unreached"), floor * 12 + Duration::from_secs(60), || async {
+    wait_for(&format!("{victim:?}'s node investigation of {fp} reaches its verdict, unreached"), floor * 12 + Duration::from_secs(60), || async {
         intact();
         named(&estate.spans(), "rdm.node.tickle.returns-unknown.via-unreached").into_iter().find(|sp| at(sp) >= decided && attr(sp, "caller") == victim && attr(sp, "node_id") == fp_id && attr(sp, "next") == "verdict").map(|_| ())
     })
@@ -408,7 +410,7 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
         .into_iter()
         .filter(|sp| at(sp) >= cut_at && attr(sp, "node_id") == victim_id && bare(attr(sp, "build_id")) == bare(s(&claimed["hit"]["build_id"])) && attr(sp, "attempt") == claimed["hit"]["attempt"].to_string())
         .collect();
-    assert!(!opened.is_empty(), "the held attempt is the recovery of {victim} the fabric-primary opened: {claimed}");
+    assert!(!opened.is_empty(), "the held attempt is the recovery of {victim:?} the fabric-primary opened: {claimed}");
     drop(cut);
     let healed = std::time::Instant::now();
     let healed_ns = now_ns();
@@ -417,11 +419,11 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     // Within a floor of the heal (and the sweep's gossip interval), every admin's view converges.
     for admin in &admins {
         let within = (floor + gossip).saturating_sub(healed.elapsed());
-        wait_for(&format!("{admin}'s view holds mesh1 ready and {fp} ({fp_id}) mesh1's one primary and the one fabric-primary within a floor of the heal"), within, || async {
+        wait_for(&format!("{admin:?}'s view holds mesh1 ready and {fp} ({fp_id}) mesh1's one primary and the one fabric-primary within a floor of the heal"), within, || async {
             intact();
             let v = estate.node_values_at(admin).await;
-            let fps: Vec<String> = v.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
-            let primaries: Vec<String> = v.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).collect();
+            let fps: Vec<PathName> = v.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).collect();
+            let primaries: Vec<PathName> = v.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).collect();
             let ready = mesh1.iter().all(|name| v.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready"));
             let same = v.iter().any(|n| n["name"] == fp && s(&n["node_id"]) == fp_id && s(&n["incarnation_id"]) == fp_inc && n["is_primary"] == true && n["is_fabric_primary"] == true);
             (ready && same && fps == vec![fp.to_string()] && primaries == vec![fp.to_string()]).then_some(())
@@ -431,7 +433,7 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     // Within the same floor the cut admin's backbone arm hears the fabric-primary and ends; its span, read
     // below, is written at that end, so the estate is not stopped before it.
     let within = (floor + gossip).saturating_sub(healed.elapsed());
-    wait_for(&format!("{victim}'s backbone arm on {fp} ends within a floor of the heal"), within, || async {
+    wait_for(&format!("{victim:?}'s backbone arm on {fp} ends within a floor of the heal"), within, || async {
         named(&estate.spans(), "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().any(|sp| at(sp) >= cut_at && attr(sp, "node") == victim).then_some(())
     })
     .await;
@@ -459,8 +461,8 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     // The span's `verdict` is its last investigation's (after the heal, `reached`); each `running` read is
     // an event of it.
     let read_running = |sp: &Value| sp["events"].as_array().is_some_and(|ev| ev.iter().any(|e| s(&e["attributes"]["verdict"]) == "running" && s(&e["attributes"]["subject"]) == fp));
-    assert!(ran.iter().any(|sp| attr(sp, "arm") == "backbone" && read_running(sp)), "{victim} ran fabric recovery's backbone arm on {fp} and read it running: {ran:#?}");
-    eprintln!("the cut held {held_ms} ms; {victim}'s backbone arm: {:?}", ran.iter().map(|sp| (attr(sp, "arm"), read_running(sp), attr(sp, "outcome"))).collect::<Vec<_>>());
+    assert!(ran.iter().any(|sp| attr(sp, "arm") == "backbone" && read_running(sp)), "{victim:?} ran fabric recovery's backbone arm on {fp} and read it running: {ran:#?}");
+    eprintln!("the cut held {held_ms} ms; {victim:?}'s backbone arm: {:?}", ran.iter().map(|sp| (attr(sp, "arm"), read_running(sp), attr(sp, "outcome"))).collect::<Vec<_>>());
 
     // Q209 (node-recovery.md "Detection and the verdict": "After a retryable recovery-submit failure, that
     // exact birth becomes eligible again after a backoff doubling from the gossip interval to the staleness
@@ -479,24 +481,24 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     for (node_id, submits) in &mut cut_submits {
         submits.sort_by_key(|sp| at(sp));
         for pair in submits.windows(2) {
-            let backoff_ms: u64 = attr(pair[0], "backoff_ms").parse().unwrap_or_else(|_| panic!("{victim}'s failed submit of {node_id} records its backoff: {}", pair[0]));
-            assert!(Duration::from_millis(backoff_ms) <= floor, "{victim}'s backoff of {node_id} is at most the staleness floor: {backoff_ms} ms");
+            let backoff_ms: u64 = attr(pair[0], "backoff_ms").parse().unwrap_or_else(|_| panic!("{victim:?}'s failed submit of {node_id} records its backoff: {}", pair[0]));
+            assert!(Duration::from_millis(backoff_ms) <= floor, "{victim:?}'s backoff of {node_id} is at most the staleness floor: {backoff_ms} ms");
             let gap_ms = at(pair[1]).saturating_sub(end(pair[0])) / 1_000_000;
-            assert!(gap_ms + 2 >= backoff_ms, "{victim} submitted {node_id} again {gap_ms} ms after a failed submit whose backoff was {backoff_ms} ms: {} then {}", pair[0], pair[1]);
+            assert!(gap_ms + 2 >= backoff_ms, "{victim:?} submitted {node_id} again {gap_ms} ms after a failed submit whose backoff was {backoff_ms} ms: {} then {}", pair[0], pair[1]);
             paced += 1;
         }
         let inspections = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(in_cut).filter(|sp| attr(sp, "inspector") == victim && attr(sp, "node_id") == *node_id).count();
-        assert!(inspections <= submits.len() + 1, "{victim} inspected {node_id} only for a submit: {inspections} inspections, {} submits", submits.len());
-        eprintln!("Q209: {victim} under the {held_ms} ms cut: {node_id} submitted {} times (every tick: {}), inspected {inspections} times, backoffs {:?} ms", submits.len(), held_ms / gossip.as_millis().max(1) as u64, submits.iter().map(|sp| attr(sp, "backoff_ms")).collect::<Vec<_>>());
+        assert!(inspections <= submits.len() + 1, "{victim:?} inspected {node_id} only for a submit: {inspections} inspections, {} submits", submits.len());
+        eprintln!("Q209: {victim:?} under the {held_ms} ms cut: {node_id} submitted {} times (every tick: {}), inspected {inspections} times, backoffs {:?} ms", submits.len(), held_ms / gossip.as_millis().max(1) as u64, submits.iter().map(|sp| attr(sp, "backoff_ms")).collect::<Vec<_>>());
     }
-    assert!(paced > 0, "{victim} failed a recovery of a mesh2 birth and submitted it again under the cut, so the backoff was read: {cut_submits:?}");
+    assert!(paced > 0, "{victim:?} failed a recovery of a mesh2 birth and submitted it again under the cut, so the backoff was read: {cut_submits:?}");
     // The held recovery of the cut admin is accepted and unfinished: mesh2's primary follows it and never
     // submits it as competing work (Q209); every open the fabric-primary makes for that birth names one attempt.
     let attempts: std::collections::BTreeSet<(String, String)> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| at(sp) >= cut_at && before_stop(sp) && attr(sp, "node_id") == victim_id).map(|sp| (bare(attr(sp, "build_id")), attr(sp, "attempt"))).collect();
-    assert_eq!(attempts.len(), 1, "one attempt for {victim}'s accepted, unfinished recovery: {attempts:?}");
+    assert_eq!(attempts.len(), 1, "one attempt for {victim:?}'s accepted, unfinished recovery: {attempts:?}");
     let mut followed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| at(sp) >= cut_at && before_stop(sp) && attr(sp, "submitter") == mesh2_primary && attr(sp, "node_id") == victim_id).collect();
     followed.sort_by_key(|sp| at(sp));
-    assert!(followed.windows(2).all(|p| at(p[1]) >= end(p[0])), "{mesh2_primary} never submits {victim} while its submit is in flight: {followed:#?}");
+    assert!(followed.windows(2).all(|p| at(p[1]) >= end(p[0])), "{mesh2_primary} never submits {victim:?} while its submit is in flight: {followed:#?}");
     if let Some(run) = ran.first() {
         estate.record_trace_url(&s(&run["trace_id"]));
     }
@@ -528,7 +530,7 @@ async fn an_own_mesh_executor_that_reaches_the_fabric_primary_through_no_peer_an
     let mut estate = estate_of(test, &shape).await;
     let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
-    assert_eq!(s(&primary["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
+    assert_eq!(location(&primary), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let (fp_id, fp_inc) = (s(&primary["node_id"]), s(&primary["incarnation_id"]));
     let victim = s(&nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["name"] != fp).expect("mesh1's other node-admin")["name"]);
     estate.enter(&Estate::path(fp)).await;
@@ -633,10 +635,10 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric-primary");
-    assert_eq!(s(&primary["name"]), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
+    assert_eq!(location(&primary), fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let lost_id = s(&primary["node_id"]);
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string());
-    let members: Vec<(String, String)> = nodes.iter().filter(|n| n["kind"] != "node_admin").map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect();
+    let members: Vec<(String, String)> = nodes.iter().filter(|n| n["kind"] != "node_admin").map(|n| (location(&n), s(&n["incarnation_id"]))).collect();
     assert_eq!(members.len(), 2, "two members serve: {nodes:#?}");
     let custody = rdm_test::test_certs::custody_of(&estate.bootstrap_data_dir("mesh1"), "mesh1");
     let store = rdm_test::estate::estate_store_dir(&estate.root);
@@ -663,7 +665,7 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     })
     .await;
     for (name, inc) in &members {
-        assert!(after.iter().any(|n| s(&n["name"]) == *name && s(&n["incarnation_id"]) == *inc && n["status"] == "ready"), "{name} keeps its birth {inc}, ready: {after:#?}");
+        assert!(after.iter().any(|n| location(&n) == *name && s(&n["incarnation_id"]) == *inc && n["status"] == "ready"), "{name} keeps its birth {inc}, ready: {after:#?}");
     }
     assert_eq!(estate.mesh_view("mesh1").await.id.map(|i| i.to_string()), mesh_id, "mesh1 keeps its MeshId");
     // The adoption's attempt closed at its Ready: the adopted fabric-primary runs the next Build on mesh1.

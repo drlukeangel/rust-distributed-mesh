@@ -1658,6 +1658,12 @@ pub fn at_location(sp: &Value, location: &rdm_core::PathName) -> bool {
     names_location(sp, "node", location)
 }
 
+/// Whether span `sp` is one of the node at `location` whose node id is `node_id`: an admin's span
+/// names its node by `node_path` and `node_name`, a node's own span by its id (`node` or `node_id`).
+pub fn of_node(sp: &Value, location: &rdm_core::PathName, node_id: &str) -> bool {
+    at_location(sp, location) || ["node", "node_id"].iter().any(|k| sp["attributes"][*k].as_str() == Some(node_id))
+}
+
 /// Whether span `sp` names `location` in its `<field>_path` and `<field>_name` fields (`node`, `subject`, ...).
 pub fn names_location(sp: &Value, field: &str, location: &rdm_core::PathName) -> bool {
     sp["attributes"][format!("{field}_path")] == location.path.as_str() && sp["attributes"][format!("{field}_name")] == location.name.as_str()
@@ -1735,11 +1741,11 @@ pub fn iroh_observation_shape(sp: &Value) -> Result<(), String> {
 /// moment; `None` when no claim of it was won), read from its `via-claim-decision` span. An attempt's reconcile continues the trace of
 /// the request that created the attempt only while the fabric-primary that holds that request's
 /// context decides the claim; after the role moved, the new fabric-primary starts the attempt's trace.
-pub fn claim_decider(spans: &[Value], build_id: &str, attempt: &str) -> Option<String> {
+pub fn claim_decider(spans: &[Value], build_id: &str, attempt: &str) -> Option<rdm_core::PathName> {
     named(spans, "rdm.node_admin.build.update.via-claim-decision")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == build_id && s["attributes"]["attempt"] == attempt && s["attributes"]["outcome"] == "won")
-        .map(|s| s["attributes"]["node"].as_str().unwrap_or_default().to_string())
+        .and_then(|s| rdm_core::PathName::new(s["attributes"]["node_path"].as_str()?, s["attributes"]["node_name"].as_str()?).ok())
 }
 
 pub fn descends_from(spans: &[Value], child: &Value, ancestor: &Value) -> bool {

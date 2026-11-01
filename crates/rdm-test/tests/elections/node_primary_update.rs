@@ -7,6 +7,8 @@
 //! Each cell runs a two-mesh fabric of two node-admins and three rpc nodes per mesh. A cell that
 //! kills the fabric primary is permitted by R-P1; no other cell kills a fabric-primary node-admin.
 
+use rdm_core::PathName;
+use rdm_test::estate::location;
 use rdm_test::estate::{descends_from, iroh_observation_shape, named, wait_for, Estate, Owner};
 use rdm_test::netfault::{udp_ports, Partition};
 use serde_json::Value;
@@ -38,7 +40,7 @@ fn num(sp: &Value, k: &str) -> Option<i64> {
 }
 
 fn names() -> BTreeSet<String> {
-    ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=3).map(move |i| format!("{m}.rpc.{i}")))).collect()
+    ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.admin"), &i.to_string())).chain((1..=3).map(move |i| Estate::path(&format!("{m}.rpc"), &i.to_string())))).collect()
 }
 
 /// The caller of a Build: the objects it submitted over, kept so that it can follow the Build to the
@@ -186,7 +188,7 @@ fn node<'a>(nodes: &'a [Value], name: &str) -> &'a Value {
 }
 
 fn fabric_primary(nodes: &[Value]) -> Option<String> {
-    nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"]))
+    nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n))
 }
 
 async fn kill(estate: &mut Estate, name: &str) {
@@ -212,11 +214,11 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     let mesh = old.split('.').next().unwrap().to_string();
     let heir = if old.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
     let other_mesh = if mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let other_primary = nodes.iter().find(|n| n["mesh"] == other_mesh && n["is_primary"] == true).map(|n| (s(&n["name"]), s(&n["node_id"]))).unwrap();
+    let other_primary = nodes.iter().find(|n| n["mesh"] == other_mesh && n["is_primary"] == true).map(|n| (location(&n), s(&n["node_id"]))).unwrap();
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     let discriminating = other_primary.1 < heir_id;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    estate.enter(&Estate::path(&heir)).await;
+    estate.enter(&heir).await;
     let mut stop = estate.nodes_obj().await.stop(&old.parse().unwrap()).await.expect("node.stop of old");
     let accepted = stop.accepted().clone();
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
@@ -324,7 +326,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     .await;
 
     // The hand-over: the fabric-primary is stopped and killed; the surviving admin of its mesh becomes the fabric-primary.
-    estate.enter(&Estate::path(&successor)).await;
+    estate.enter(&successor).await;
     let mut stop = estate.nodes_obj().await.stop(&old.parse().unwrap()).await.expect("node.stop of the fabric-primary");
     let accepted = stop.accepted().clone();
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
@@ -363,20 +365,20 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
     let (mut estate, nodes) = fabric("a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone").await;
     let fp = fabric_primary(&nodes).expect("one fabric primary");
     let mesh = if fp.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
-    let old = nodes.iter().find(|n| n["mesh"] == mesh && n["is_primary"] == true).map(|n| s(&n["name"])).unwrap();
+    let old = nodes.iter().find(|n| n["mesh"] == mesh && n["is_primary"] == true).map(|n| location(&n)).unwrap();
     let heir = if old.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     kill(&mut estate, &old).await;
     estate.until_view("the surviving admin is its mesh's primary", Duration::from_secs(90), |views| views.iter().any(|n| n.name == heir && n.is_primary).then_some(())).await;
-    let watcher = nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] != mesh).map(|n| s(&n["name"])).expect("an admin of the other mesh");
+    let watcher = nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] != mesh).map(|n| location(&n)).expect("an admin of the other mesh");
     let heard = estate
-        .until_view_at(&Estate::path(&watcher), &format!("{watcher} names {heir} {mesh}'s primary"), Duration::from_secs(60), |views| {
+        .until_view_at(&watcher, &format!("{watcher} names {heir} {mesh}'s primary"), Duration::from_secs(60), |views| {
             let ns = Estate::values(views);
             ns.iter().any(|n| n["name"] == heir.as_str() && n["node_id"] == heir_id.as_str() && n["is_primary"] == true).then_some(ns)
         })
         .await;
     estate.stop().await;
-    let primaries: Vec<String> = heard.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).collect();
+    let primaries: Vec<PathName> = heard.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).collect();
     assert_eq!(primaries, vec![heir.clone()], "{watcher} names one {mesh} primary, {heir}: {heard:#?}");
 }
 
@@ -402,7 +404,7 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
     let fp = fabric_primary(&nodes).expect("one fabric primary");
     let fp_node = node(&nodes, &fp).clone();
     let (mine, theirs): (Vec<String>, Vec<String>) = {
-        let side = |incumbent: bool| nodes.iter().filter(|n| (n["mesh"] == fp_node["mesh"]) == incumbent).map(|n| s(&n["name"])).collect::<Vec<_>>();
+        let side = |incumbent: bool| nodes.iter().filter(|n| (n["mesh"] == fp_node["mesh"]) == incumbent).map(|n| location(&n)).collect::<Vec<_>>();
         (side(true), side(false))
     };
     let other_primary = s(&nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] != fp_node["mesh"] && n["is_primary"] == true).expect("the other mesh's primary")["name"]);
@@ -439,7 +441,7 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
     // Both pre-cut admin paths are asked on every pass, until each answers with a ready birth at every
     // pre-cut path.name and names the node at fp's path.name fabric-primary: an answer teaches the estate
     // the births re-created during the cut, which it dials from then on.
-    let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
+    let everyone: Vec<PathName> = nodes.iter().map(|n| location(&n)).collect();
     let deadline = tokio::time::Instant::now() + floor * 12 + Duration::from_secs(120);
     loop {
         let mut healed = 0;

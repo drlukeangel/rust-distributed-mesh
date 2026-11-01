@@ -520,7 +520,7 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
         let root = start_with(launch_day0(&root_dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-        let launch = launch_by(&root, &PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
+        let launch = launch_by(&root, PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let env = launch.to_env();
         let admin = start_with(AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment"), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() })

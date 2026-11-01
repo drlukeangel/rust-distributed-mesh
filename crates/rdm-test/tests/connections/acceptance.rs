@@ -126,6 +126,8 @@
 //! | connections-deleting refuses all but 0x1B, 0x21, 0x22 | `a:status_rpc::connections_deleting_mesh_primary_serves_status_checks_exact_birth`; `a:admin_serves_forward::a_connections_deleting_admin_refuses_forward_by_name`; `t:forward::a_nested_forward_and_a_carrier_deleting_connections_are_still_refused_by_name` | none | `an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work_by_name` |
 //! | the process runs; gossip still heard | `p:connections_all::a_standalone_all_closes_the_log_connections_and_leaves_the_node_heard_on_gossip` | `p:node/node_connections_delete::a_standalone_connections_delete_completes_on_connections_deleted_and_leaves_the_process_running` | - |
 
+use rdm_core::PathName;
+use rdm_test::estate::location;
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
@@ -167,11 +169,11 @@ async fn born(cell: &str) -> Estate {
 }
 
 fn stream(estate: &Estate, from: &str, to: &str, payload: &str) -> Value {
-    estate.probe(&["stream", "--target", &format!("path:{from}"), "--destination", &format!("path:{to}"), "--value", payload, "--key", "x"])
+    estate.probe(&["stream", "--target", &rdm_test::estate::path_target(&from), "--destination", &rdm_test::estate::path_target(&to), "--value", payload, "--key", "x"])
 }
 
 fn block_direct(estate: &Estate, from: &str, to: &str, blocked: bool) {
-    let (t, d) = (format!("path:{from}"), format!("path:{to}"));
+    let (t, d) = (rdm_test::estate::path_target(&from), rdm_test::estate::path_target(&to));
     let mut args = vec!["block-direct", "--target", t.as_str(), "--destination", d.as_str(), "--key", "x"];
     if !blocked {
         args.push("--release");
@@ -181,7 +183,7 @@ fn block_direct(estate: &Estate, from: &str, to: &str, blocked: bool) {
 }
 
 fn snapshot(estate: &Estate, node: &str) -> Value {
-    let out = estate.probe(&["snapshot", "--target", &format!("path:{node}"), "--key", "x"]);
+    let out = estate.probe(&["snapshot", "--target", &rdm_test::estate::path_target(&node), "--key", "x"]);
     assert_eq!(out["outcome"], "Reply", "{node} answers the snapshot door: {out}");
     out
 }
@@ -312,7 +314,7 @@ async fn a_peer_holds_none_of_a_sources_failed_history_or_its_proxy() {
     .await;
 
     // 1. The source's failures: six on the control ALPN, then a blocked open on the app protocol.
-    let seeded = estate.probe(&["record-proxy", "--target", &format!("path:{SOURCE}"), "--destination", &format!("path:{DEST}"), "--carrier", &format!("path:{CARRIER}"), "--failed-attempts", "6", "--key", "x"]);
+    let seeded = estate.probe(&["record-proxy", "--target", &rdm_test::estate::path_target(&SOURCE), "--destination", &rdm_test::estate::path_target(&DEST), "--carrier", &rdm_test::estate::path_target(&CARRIER), "--failed-attempts", "6", "--key", "x"]);
     assert_eq!(seeded["proxy_recorded"], true, "{seeded}");
     block_direct(&estate, SOURCE, DEST, true);
     let open = stream(&estate, SOURCE, DEST, "after-failures");
@@ -371,7 +373,7 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
 
     // 1. The deletion will be refused: the dial's Direct Connected append passes, every later one
     // is refused until released. Then the block is released.
-    let armed = estate.probe(&["fault", "--target", &format!("path:{SOURCE}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
+    let armed = estate.probe(&["fault", "--target", &rdm_test::estate::path_target(&SOURCE), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
     assert_eq!(armed["fault"], "armed", "{armed}");
     block_direct(&estate, SOURCE, DEST, false);
 
@@ -387,7 +389,7 @@ async fn a_restored_direct_disconnects_the_proxy_before_the_next_open_goes_direc
     assert_eq!(during["kind"].as_str(), Some(format!("proxy via {CARRIER}").as_str()), "the Proxy stays effective until its deletion lands: {during}");
 
     // 3. Released: the deletion lands, then an open goes Direct.
-    let released = estate.probe(&["fault", "--target", &format!("path:{SOURCE}"), "--release", "--key", "x"]);
+    let released = estate.probe(&["fault", "--target", &rdm_test::estate::path_target(&SOURCE), "--release", "--key", "x"]);
     assert_eq!(released["fault"], "released", "{released}");
     wait_for("the deletion landed", Duration::from_secs(15), || async {
         let snap = snapshot(&estate, SOURCE);
@@ -489,7 +491,7 @@ async fn a_carrier_that_lost_its_connection_refuses_by_name_and_the_source_disco
 async fn many_failed_attempts_grow_the_raw_log_and_hold_one_direct_and_one_proxy() {
     let cell = "many_failed_attempts_grow_the_raw_log_and_hold_one_direct_and_one_proxy";
     let mut estate = born(cell).await;
-    let seeded = estate.probe(&["record-proxy", "--target", &format!("path:{SOURCE}"), "--destination", &format!("path:{DEST}"), "--carrier", &format!("path:{CARRIER}"), "--failed-attempts", "12", "--key", "x"]);
+    let seeded = estate.probe(&["record-proxy", "--target", &rdm_test::estate::path_target(&SOURCE), "--destination", &rdm_test::estate::path_target(&DEST), "--carrier", &rdm_test::estate::path_target(&CARRIER), "--failed-attempts", "12", "--key", "x"]);
     assert_eq!(seeded["proxy_recorded"], true, "{seeded}");
     let control = rdm_core::connections::ALPN;
     let history = estate.connection_history(SOURCE);
@@ -522,7 +524,7 @@ async fn foreign_dialer(name: &str, target: &Value, cert: Vec<u8>) -> (rdm_trans
     let resolver = std::sync::Arc::new(rdm_transport::StaticResolver::new());
     resolver.insert(rdm_transport::ResolvedNode { mesh: s(&target["mesh"]), kind: serde_json::from_value(target["kind"].clone()).unwrap(),
         node_id: rdm_core::NodeId::parse(&s(&target["node_id"])).unwrap(),
-        name: s(&target["name"]).parse().unwrap(),
+        name: location(&target).parse().unwrap(),
         endpoint_id: s(&target["endpoint_id"]).parse().expect("the target's endpoint key"),
         transport_addr: s(&target["transport_addr"]).parse().expect("the target's transport address"),
         incarnation: rdm_core::IncarnationId::parse(&s(&target["incarnation_id"])).unwrap(),
@@ -721,7 +723,7 @@ async fn an_all_closes_every_data_plane_connection_and_the_node_refuses_new_work
     let after = estate.connections_obj().await.get(&birth, &rdm_client::Filter::new()).await.expect("Status 0x1B still answers while connections are deleted");
     assert!(open(&after).is_empty(), "no connection is open once the drops landed: {after:?} (before: {before:?})");
     assert!(drops.iter().all(|r| r["source"]["name"] == SOURCE), "every drop under the source's name: {drops:?}");
-    let refused = estate.probe(&["snapshot", "--target", &format!("path:{SOURCE}"), "--key", "x"]);
+    let refused = estate.probe(&["snapshot", "--target", &rdm_test::estate::path_target(&SOURCE), "--key", "x"]);
     assert!(s(&refused["refused"]).starts_with("ConnectionsDeleting"), "a new call is refused by name: {refused}");
     estate.stop().await;
 }
@@ -752,7 +754,7 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "{frames:?}");
     for admin in views.iter().filter(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.name != p.name) {
         let view = estate.node_views_at(&admin.name).await.unwrap_or_else(|| panic!("{:?} answers node.get", admin.name));
-        let primary: Vec<String> = view.iter().filter(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.clone()).collect();
+        let primary: Vec<PathName> = view.iter().filter(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.clone()).collect();
         assert_eq!(primary, vec![na2_name.clone()], "{} names {na2_name} mesh2's primary", admin.name);
     }
     estate.stop().await;

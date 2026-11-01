@@ -30,10 +30,10 @@ use rdm_test::originate::Seams;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-/// Every entry in `name`'s kept log under the fabric's store root, in the order written.
-fn kept_log(store: &std::path::Path, fabric: &FabricId, name: &PathName) -> Vec<NodeConnection> {
+/// Every entry in the kept log of the node `source` under the fabric's store root, in the order written.
+fn kept_log(store: &std::path::Path, fabric: &FabricId, source: &NodeId) -> Vec<NodeConnection> {
     let root = rdm_admin::store_root::StoreRoot::open(store, fabric).expect("the store root opens");
-    rdm_node::storage::connection_history(root.dir(), &name.to_string()).unwrap_or_else(|e| panic!("{name:?}'s kept log: {e}"))
+    rdm_node::storage::connection_history(root.dir(), source).unwrap_or_else(|e| panic!("{source}'s kept log: {e}"))
 }
 
 #[test]
@@ -49,7 +49,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         let born: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
                 let peer_name: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
         let launch_of = |name: &PathName| {
-            let dir = root.join(name.to_string());
+            let dir = root.join(&name.path).join(&name.name);
             std::fs::create_dir_all(&dir).unwrap();
             RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
             let key = node::load_or_mint_key(&dir).unwrap();
@@ -124,18 +124,18 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
             }
         }
         cut_seams.connections.observations_landed().await;
-        let before = kept_log(&store, &fabric, &born);
-        for dest in ["mesh1.admin.1", "mesh1.rpc.2"] {
-            assert!(before.iter().any(|e| e.source.name == born && e.destination.name.to_string() == dest), "the node holds a route to {dest}: {before:#?}");
+        let before = kept_log(&store, &fabric, &cut.node_id);
+        for dest in [&admin.launcher.node_id, &peer.node_id] {
+            assert!(before.iter().any(|e| e.source.name == born && &e.destination.node_id == dest), "the node holds a route to {dest}: {before:#?}");
         }
 
         // The open entries, as the node holds them (what node.connection.get returns).
-        let open = |dest: &str| -> NodeConnection {
+        let open = |dest: &NodeId| -> NodeConnection {
             let held = cut_seams.connections.held();
             let held = held.lock().unwrap();
-            held.own_latest_directs().into_iter().find(|e| e.destination.name.to_string() == dest && e.state == ConnectionState::Connected).cloned().unwrap_or_else(|| panic!("the node holds an open route to {dest}"))
+            held.own_latest_directs().into_iter().find(|e| &e.destination.node_id == dest && e.state == ConnectionState::Connected).cloned().unwrap_or_else(|| panic!("the node holds an open route to {dest}"))
         };
-        let to_peer = open("mesh1.rpc.2");
+        let to_peer = open(&peer.node_id);
         let peer_key = peer.node_id.clone();
         let pooled_to_peer = || {
             let key = cut_seams.resolver.resolve(&NodeTarget::ExactNode(peer_key.clone())).map(|n| n.endpoint_id).ok();
@@ -158,7 +158,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         };
         let delete = |ids: Vec<ConnectionId>| NodeCommandRequest::DeleteConnections { node_id: cut.node_id.clone(), incarnation: cut.incarnation.clone(), scope: ConnectionScope::Connections(ids) };
         let never = ConnectionId::mint();
-        let to_admin = open("mesh1.admin.1");
+        let to_admin = open(&admin.launcher.node_id);
         let deleted = crate::common::node_command_completion(&admin.observer.client, &target, &delete(vec![to_peer.id.clone(), never.clone()])).await;
         assert_eq!(deleted, NodeCommandReply::ConnectionsDeleted { closed: vec![to_peer.id.clone()], not_open: vec![never.clone()], held: vec![to_admin.id.clone()], receipt: None }, "the peer route is cut, the unknown id named, the admin route still held");
 
@@ -172,19 +172,19 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         expect(!pooled_to_peer(), "the node's data-plane client no longer pools a connection to its peer".into());
         // The drop is queued and lands behind the answer (Q169): the cell reads the log once it has.
         cut_seams.connections.observations_landed().await;
-        let log = kept_log(&store, &fabric, &born);
+        let log = kept_log(&store, &fabric, &cut.node_id);
         let drop = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.node_id == peer.node_id);
         expect(
             drop.is_some_and(|e| e.state == ConnectionState::Disconnected && e.source.name == born && e.id != to_peer.id && e.reason.as_deref() == Some("node.connection.delete")),
             format!("the latest entry for the peer route is its drop, written under {born:?} with its own id and the cut's reason: {drop:?}"),
         );
-        let admin_now = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.name.to_string() == "mesh1.admin.1");
+        let admin_now = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.node_id == admin.launcher.node_id);
         expect(admin_now.is_some_and(|e| e.state == ConnectionState::Connected), format!("the admin route was not named and is still connected: {admin_now:?}"));
         let again = crate::common::node_command_completion(&admin.observer.client, &target, &delete(vec![to_peer.id.clone()])).await;
         expect(matches!(&again, NodeCommandReply::ConnectionsDeleted { closed, not_open, .. } if closed.is_empty() && not_open == &vec![to_peer.id.clone()]), format!("the same id again is named not open: {again:?}"));
         let empty = crate::common::node_command_completion(&admin.observer.client, &target, &delete(vec![])).await;
         expect(matches!(&empty, NodeCommandReply::RejectedConnectionScope { reason } if reason.contains("at least one")), format!("an empty list is refused by name: {empty:?}"));
-        let after = kept_log(&store, &fabric, &born).len();
+        let after = kept_log(&store, &fabric, &cut.node_id).len();
         expect(after == log.len(), format!("the repeat and the refusal wrote nothing: {} entries, then {after}", log.len()));
         assert!(wrong.is_empty(), "{} wrong after the cut:\n{}", wrong.len(), wrong.join("\n"));
         let _ = std::fs::remove_dir_all(&root);
@@ -218,7 +218,7 @@ fn an_all_whose_drops_cannot_land_answers_at_once_and_closes_every_live_connecti
         std::fs::create_dir_all(&store).unwrap();
         let born: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let deadline = Duration::from_millis(1500);
-        let dir = root.join(born.to_string());
+        let dir = root.join(&born.path).join(&born.name);
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();

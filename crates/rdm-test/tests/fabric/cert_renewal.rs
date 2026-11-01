@@ -630,8 +630,8 @@ async fn a_successor_mesh_primary_continues_the_schedule_from_the_rows() {
     let member = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
     let incarnation = member.incarnation_id.clone().expect("the member's birth");
 
-    estate.enter(&Estate::path("mesh1.admin.2")).await;
-    let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.admin.1")).await.expect("node.stop of mesh1.admin.1 is accepted");
+    estate.enter(&Estate::path("mesh1.admin", "2")).await;
+    let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.admin", "1")).await.expect("node.stop of mesh1.admin.1 is accepted");
     let accepted = stop.accepted().clone();
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
@@ -917,7 +917,7 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_throu
     for at in ["mesh1.admin.1", "mesh2.admin.1"] {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
-            let shown = estate.node_views_at(&Estate::path(at)).await.and_then(|vs| vs.into_iter().find(|v| v.name.to_string() == "mesh2.admin.1")).and_then(|v| v.cert);
+            let shown = estate.node_views_at(&Estate::path(at)).await.and_then(|vs| vs.into_iter().find(|v| v.name == Estate::path("mesh2.admin", "1"))).and_then(|v| v.cert);
             if shown.as_ref().is_some_and(|c| (c.issued_at, c.expires_at) == (issued_at, expires_at)) {
                 break;
             }

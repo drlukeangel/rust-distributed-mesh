@@ -11,6 +11,7 @@
 //! The detectors are `rdm_test::wedge`: they judge a cut by the consequences it leaves,
 //! never by the injector's success and never by a duration.
 
+use rdm_test::estate::location;
 use rdm_core::outcome::{IndeterminateReason, NotSentReason, PreCommit, RequestFinished};
 use rdm_core::ping::Ping;
 use rdm_core::protocol::NodeProtocol;
@@ -540,7 +541,7 @@ impl Run {
         let nodes = self.estate.node_values().await;
         match watch {
             Watch::NewNodes(before) => {
-                let new: Vec<&Value> = nodes.iter().filter(|n| !before.contains(&s(&n["name"]))).collect();
+                let new: Vec<&Value> = nodes.iter().filter(|n| !before.contains(&location(&n))).collect();
                 (new.iter().any(|n| n["status"] == "ready"), if new.is_empty() { "absent from the view".into() } else { new.iter().map(|n| format!("{}={}", n["name"], n["status"])).collect::<Vec<_>>().join(",") })
             }
             Watch::Node(name) => match nodes.iter().find(|n| n["name"] == name.as_str()) {
@@ -811,7 +812,7 @@ async fn silent_case(run: &Run) {
     let mut ev = Evidence::new(Family::SilentRuntime, id);
     let nodes = run.estate.node_values().await;
     let target = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["is_primary"] == false && n["status"] == "ready").cloned().unwrap_or_else(|| panic!("a ready non-primary rpc node: {nodes:?}"));
-    let (name, node_id, incarnation) = (s(&target["name"]), s(&target["node_id"]), s(&target["incarnation_id"]));
+    let (name, node_id, incarnation) = (location(&target), s(&target["node_id"]), s(&target["incarnation_id"]));
     let exact = format!("exact:{node_id}");
     let pid = run.estate.pid_of(&name).await;
     let data_dir = run.estate.data_dir(&name).await;
@@ -828,16 +829,16 @@ async fn silent_case(run: &Run) {
 
     // The fault: the exact runtime's tasks but its leader held by a tracer, acknowledged by the OS
     // process state of each held task (`t`), read from `/proc`.
-    let rt = rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&data_dir)).unwrap_or_else(|r| panic!("{name}: no exact runtime published: {r:?}"));
+    let rt = rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&data_dir)).unwrap_or_else(|r| panic!("{name:?}: no exact runtime published: {r:?}"));
     assert_eq!(u64::from(rt.pid), pid, "the published runtime is the one the estate launched");
-    let hung = rt.hang().unwrap_or_else(|r| panic!("{name} (pid {pid}) is held: {r:?}"));
+    let hung = rt.hang().unwrap_or_else(|r| panic!("{name:?} (pid {pid}) is held: {r:?}"));
     let tasks = hung.held.clone();
     let state_after_stop = if !tasks.is_empty() && tasks.iter().all(|t| proc_state(u64::from(*t)) == Some('t')) { 't' } else { '?' };
     let primitive = json!({"hang": tasks, "pid": pid, "node": name});
     ev.primitive = Some(Primitive { armed: true, ack: primitive.clone() });
 
     // The topology consequence: the view stops calling it ready, within the staleness window.
-    let silent_view = run.estate.until_node(&name, &format!("{name} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.status != NodeStatus::Ready).cloned()).await;
+    let silent_view = run.estate.until_node(&name, &format!("{name:?} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.status != NodeStatus::Ready).cloned()).await;
     let silent_view = serde_json::to_value(silent_view).expect("a view serializes");
 
     // The hold ends inside the silent window: past the second unreached tickle ladder node investigation
@@ -862,7 +863,7 @@ async fn silent_case(run: &Run) {
     // Thaw.
     hung.release();
     let acked = true;
-    let ended = wait_for(&format!("{name} (pid {pid}) runs again"), Duration::from_secs(10), || async { tasks.iter().all(|t| proc_state(u64::from(*t)) != Some('t')).then_some(true) }).await;
+    let ended = wait_for(&format!("{name:?} (pid {pid}) runs again"), Duration::from_secs(10), || async { tasks.iter().all(|t| proc_state(u64::from(*t)) != Some('t')).then_some(true) }).await;
     ev.release = Some(Release { acked, hold_ended: ended });
     ev.fault = Some(FaultAck { held: state_after_stop == 't', names: Some(json!({"pid": pid, "held_tasks": tasks, "proc_state": "t", "view_status": silent_view["status"]})), held_at_last_read });
     ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
@@ -871,7 +872,7 @@ async fn silent_case(run: &Run) {
     // Recovery: the same birth is ready again and serves the value stored before the freeze.
     let back = run
         .estate
-        .until_node(&name, &format!("{name} back as {incarnation}"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.incarnation_id.as_ref().is_some_and(|i| i.to_string() == incarnation) && n.status == NodeStatus::Ready).cloned())
+        .until_node(&name, &format!("{name:?} back as {incarnation}"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.incarnation_id.as_ref().is_some_and(|i| i.to_string() == incarnation) && n.status == NodeStatus::Ready).cloned())
         .await;
     let back = serde_json::to_value(back).expect("a view serializes");
     let kept = run.estate.probe(&["get", "--target", &exact, "--key", "77"]);

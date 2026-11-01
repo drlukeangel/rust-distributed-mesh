@@ -17,6 +17,8 @@
 //! and only then runs node.create of mesh2's first node-admin (span `via-recovery`); a reconcile of
 //! B by a mesh1 admin names mesh2's admin primary as the previous executor.
 
+use rdm_core::PathName;
+use rdm_test::estate::location;
 use crate::build_log;
 use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, Meshes};
 use rdm_test::typed::BuildSpec;
@@ -42,18 +44,18 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-fn names(meshes: &[(&str, u32, u32)]) -> BTreeSet<String> {
+fn names(meshes: &[(&str, u32, u32)]) -> BTreeSet<PathName> {
     let mut out = BTreeSet::new();
     for (m, a, r) in meshes {
-        out.extend((1..=*a).map(|i| format!("{m}.admin.{i}")));
-        out.extend((1..=*r).map(|i| format!("{m}.rpc.{i}")));
+        out.extend((1..=*a).map(|i| Estate::path(&format!("{m}.admin"), &i.to_string())));
+        out.extend((1..=*r).map(|i| Estate::path(&format!("{m}.rpc"), &i.to_string())));
     }
     out
 }
 
-/// name -> incarnation
-fn births(nodes: &[rdm_client::NodeView]) -> BTreeMap<String, String> {
-    nodes.iter().map(|n| (n.name.to_string(), n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default())).collect()
+/// location -> incarnation
+fn births(nodes: &[rdm_client::NodeView]) -> BTreeMap<PathName, String> {
+    nodes.iter().map(|n| (n.name.clone(), n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default())).collect()
 }
 
 /// The Build that reconciles the fabric to `mesh2` with `r2` rpc nodes beside `mesh1`.
@@ -79,8 +81,10 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connect
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.expect("mesh2 carries its id").to_string();
     // mesh2's members are grown by mesh2's admin primary (the lowest NodeId of its admins).
-    let mesh2_primary = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.clone()).unwrap();
-    let mesh1_primary = estate.mesh_view("mesh1").await.primary_admin.expect("mesh1 roles a primary admin");
+    let mesh2_primary = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.node_id.clone()).unwrap();
+    let mesh1_primary_id = estate.mesh_view("mesh1").await.primary_admin.expect("mesh1 roles a primary admin");
+    let mesh1_primary = before.iter().find(|n| n.node_id == mesh1_primary_id).map(|n| n.name.clone()).expect("mesh1's primary admin is settled");
+    let mesh1_admin_ids: BTreeSet<String> = before.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin).map(|n| n.node_id.to_string()).collect();
 
     // B: grow mesh2. Once its first attempt is claimed, lose mesh2's node-admins. Its births run one
     // after another (~55 ms each on the process provider), so six of them keep the first attempt
@@ -88,17 +92,20 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connect
     let stream = estate.submit(&BuildSpec::Fabric(shape(9))).await;
     let b = stream.build_id().to_string();
     // Active fabric-wide: the fabric-primary's mesh already sees mesh2's admin holding B's first attempt.
-    build_log::build_fact(&estate, &b, "mesh1's admin sees B's first attempt held by mesh2's admin", Duration::from_secs(30), |p| p.attempt == 1 && p.state == BuildState::Running && p.executor.as_deref() == Some(mesh2_primary.as_str()))
+    build_log::build_fact(&estate, &b, "mesh1's admin sees B's first attempt held by mesh2's admin", Duration::from_secs(30), |p| p.attempt == 1 && p.state == BuildState::Running && p.executor.as_ref().is_some_and(|e| e.node_id == mesh2_primary))
         .await
         .unwrap_or_else(|end| panic!("{end}"));
     // mesh2's node-admins and every birth B's first attempt launched; the members born before B
     // (rpc.1..3) stay alive, so a member of mesh2 can say it cannot reach its own node-admin.
-    let kept: BTreeSet<String> = (1..=3).map(|i| format!("mesh2.rpc.{i}")).collect();
+    let kept: BTreeSet<PathName> = (1..=3).map(|i| Estate::path("mesh2.rpc", &i.to_string())).collect();
+    // A runtime's data dir is named by its node id: every birth B launched is mesh2's, so a runtime
+    // whose id is neither mesh1's nor a kept member's is lost.
+    let survivors: BTreeSet<String> = before.iter().filter(|n| n.mesh == "mesh1" || kept.contains(&n.name)).map(|n| n.node_id.to_string()).collect();
+    let kept_ids: BTreeSet<String> = before.iter().filter(|n| kept.contains(&n.name)).map(|n| n.node_id.to_string()).collect();
     estate.fabric_ready();
     for (dir, pid) in estate.live_runtimes() {
-        let name = dir.file_name().unwrap().to_string_lossy().to_string();
-        let path = name.split('-').next().unwrap_or_default().to_string();
-        if path.starts_with("mesh2.") && !kept.contains(&path) {
+        let id = dir.file_name().unwrap().to_string_lossy().to_string();
+        if !survivors.contains(&id) {
             let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
         }
     }
@@ -123,12 +130,12 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connect
     let (old, new) = (births(&before), births(&after));
     for (name, incarnation) in &old {
         let now_inc = &new[name];
-        if name.starts_with("mesh2.admin.") {
-            assert_ne!(now_inc, incarnation, "{name} is a new birth");
+        if name.path == "mesh2.admin" {
+            assert_ne!(now_inc, incarnation, "{name:?} is a new birth");
         } else if kept.contains(name) {
-            assert_eq!(now_inc, incarnation, "{name} stayed alive through the loss and keeps its birth");
+            assert_eq!(now_inc, incarnation, "{name:?} stayed alive through the loss and keeps its birth");
         } else {
-            assert_eq!(now_inc, incarnation, "{name} was never touched");
+            assert_eq!(now_inc, incarnation, "{name:?} was never touched");
         }
     }
     let (before, after) = (Estate::values(&before), Estate::values(&after));
@@ -141,11 +148,11 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connect
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     // The verdict: the fabric-primary's probes of mesh2 went through a member that answered and
     // reported mesh2's node-admins lost, the latest probe decided, and the node.create opened.
-    let create = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().find(|r| attr(r, "mesh") == "mesh2" && attr(r, "node").starts_with("mesh1.")).unwrap_or_else(|| panic!("the node.create of mesh2's node-admin opened (via-recovery)")).clone();
-    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|p| attr(p, "mesh") == "mesh2" && attr(p, "node") == attr(&create, "node") && at(p) > killed_ns && at(p) < at(&create)).collect();
+    let create = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().find(|r| attr(r, "mesh") == "mesh2" && attr(r, "node_path") == "mesh1.admin").unwrap_or_else(|| panic!("the node.create of mesh2's node-admin opened (via-recovery)")).clone();
+    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|p| attr(p, "mesh") == "mesh2" && mesh1_admin_ids.contains(&attr(p, "node")) && at(p) > killed_ns && at(p) < at(&create)).collect();
     let last = probes.iter().max_by_key(|p| at(p)).unwrap_or_else(|| panic!("mesh2 was probed by the fabric-primary before its verdict"));
     assert_eq!(attr(last, "outcome"), "connection-lost", "the latest probe: a member of mesh2 cannot reach its node-admins: {probes:#?}");
-    assert!(kept.contains(&attr(last, "carrier")), "the carrier is a member that stayed alive: {last}");
+    assert!(kept_ids.contains(&attr(last, "carrier")), "the carrier is a member that stayed alive: {last}");
     assert!(
         named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").iter().any(|v| attr(v, "mesh") == "mesh2" && attr(v, "outcome") == "connection-lost" && at(v) <= at(&create)),
         "the verdict was recorded before the node.create attempt opened"
@@ -154,16 +161,16 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connect
     let early: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .chain(named(&spans, "rdm.node_admin.node.update.via-build"))
-        .filter(|c| attr(c, "build_id") == b && attr(c, "node").starts_with("mesh2.") && at(c) > killed_ns && at(c) < at(&create))
-        .map(|c| format!("{} attempt {} at {}", attr(c, "node"), attr(c, "attempt"), at(c)))
+        .filter(|c| attr(c, "build_id") == b && attr(c, "node_path").starts_with("mesh2.") && at(c) > killed_ns && at(c) < at(&create))
+        .map(|c| format!("{}/{} attempt {} at {}", attr(c, "node_path"), attr(c, "node_name"), attr(c, "attempt"), at(c)))
         .collect();
     assert!(early.is_empty(), "nothing of mesh2 is created before its verdict (via-recovery at {}): {early:?}", at(&create));
-    let accepting = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("a fabric-primary before the loss");
+    let accepting = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("a fabric-primary before the loss");
     let takeover = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|r| {
             let a = &r["attributes"];
-            a["build_id"] == b.as_str() && a["previous_executor"] == mesh2_primary.as_str() && a["executor"].as_str().is_some_and(|e| e.starts_with("mesh1."))
+            a["build_id"] == b.as_str() && a["previous_executor"].as_str().is_some_and(|p| p.contains(mesh2_primary.as_str())) && a["executor_node_id"].as_str().is_some_and(|e| mesh1_admin_ids.contains(e))
         })
         .unwrap_or_else(|| panic!("no takeover of {b} by a mesh1 admin"))
         .clone();
@@ -180,7 +187,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connect
     for admin in after.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin") {
         let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
-            .find(|sp| sp["attributes"]["node"] == admin["name"] && sp["attributes"]["incarnation_id"] == admin["incarnation_id"])
+            .find(|sp| rdm_test::estate::of_node(sp, &location(admin), admin["node_id"].as_str().unwrap_or_default()) && sp["attributes"]["incarnation_id"] == admin["incarnation_id"])
             .unwrap_or_else(|| panic!("{} reports ready", admin["name"]))
             .clone();
         let held = ready["attributes"]["runtime_facts_held"].as_u64().or_else(|| ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0);

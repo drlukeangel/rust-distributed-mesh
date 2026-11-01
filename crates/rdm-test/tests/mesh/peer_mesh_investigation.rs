@@ -10,6 +10,8 @@
 //! (`Rungs::configured`, from the staleness floor `RDM_STALENESS_MS`): probe 1, the silent mark,
 //! probe 2 and the decision at 20 s, 30 s, 40 s and 60 s at the 30 s default floor.
 
+use rdm_core::PathName;
+use rdm_test::estate::location;
 use rdm_client::{NodeView, ScopeStatus};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::typed::fabric_view_of;
@@ -67,7 +69,7 @@ fn status_word(status: ScopeStatus) -> String {
 }
 
 fn births(nodes: &[Value]) -> BTreeMap<String, String> {
-    nodes.iter().map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect()
+    nodes.iter().map(|n| (location(&n), s(&n["incarnation_id"]))).collect()
 }
 
 fn signal(pid: u32, sig: &str) {
@@ -91,19 +93,19 @@ async fn fixture(cell: &str) -> Fixture {
     let built = estate.reconcile_shape("fabric1", &shape).await;
     let accepted = built.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
-    let fabric_primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let fabric_primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
     let lost = if fabric_primary.starts_with("mesh1.") { "mesh2" } else { "mesh1" }.to_string();
     let lost_mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let attempt_before = estate.attempt_of_build(&accepted).await;
     // Control goes through the fabric primary's advertised API, which no fault here touches.
-    estate.enter(&Estate::path(&fabric_primary)).await;
+    estate.enter(&fabric_primary).await;
     // The fault falls on an established fabric, so the cells that assert the fabric stays ready start
     // from ready.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     // The fault falls on a mesh whose status is published: the fabric is ready at the
     // fabric-primary's apply of the mesh's ready, the moment the mesh's primary sends it (states.md), so
     // the fixture waits for that send and its first repeat in the primary's own spans.
-    let primary = before.iter().find(|n| n["mesh"] == lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("the lost mesh has a primary node-admin");
+    let primary = before.iter().find(|n| n["mesh"] == lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).expect("the lost mesh has a primary node-admin");
     wait_for("the lost mesh's primary has sent its ready status and repeated it", Duration::from_secs(60), || {
         let spans = estate.spans();
         let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "scope") == format!("mesh:{lost}") && attr(sp, "node") == primary && attr(sp, "status") == "ready").count();
@@ -464,7 +466,7 @@ async fn an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stop
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
-    let side = |m: &str| -> Vec<String> { f.before.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin").map(|n| s(&n["name"])).collect() };
+    let side = |m: &str| -> Vec<PathName> { f.before.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin").map(|n| location(&n)).collect() };
     let (mine, theirs) = (side(if f.lost == "mesh1" { "mesh2" } else { "mesh1" }), side(&f.lost));
     let cut = match Partition::start(&udp_ports(&f.before, &mine), &udp_ports(&f.before, &theirs)) {
         Ok(p) => p,
@@ -627,7 +629,7 @@ async fn an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
-    let side = |m: &str| -> Vec<String> { f.before.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin").map(|n| s(&n["name"])).collect() };
+    let side = |m: &str| -> Vec<PathName> { f.before.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin").map(|n| location(&n)).collect() };
     let (mine, theirs) = (side(if f.lost == "mesh1" { "mesh2" } else { "mesh1" }), side(&f.lost));
     let cut = match Partition::start(&udp_ports(&f.before, &mine), &udp_ports(&f.before, &theirs)) {
         Ok(p) => p,
@@ -708,14 +710,14 @@ async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_e
     estate.reconcile_shape("fabric1", &shape).await;
     let before = values(&estate.settled_views(&shape).await);
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    let fp = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let fp = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
     let fp_mesh = fp.split('.').next().unwrap().to_string();
     let lost: Vec<String> = ["mesh1", "mesh2", "mesh3"].iter().filter(|m| **m != fp_mesh).map(|m| m.to_string()).collect();
     let mut mesh_ids = BTreeMap::new();
     for m in &lost {
         mesh_ids.insert(m.clone(), estate.mesh_view(m).await.id.expect("the mesh has its id").to_string());
     }
-    estate.enter(&Estate::path(&fp)).await;
+    estate.enter(&fp).await;
     let old = births(&before);
     for (path, pid) in estate.live_runtimes() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -730,7 +732,7 @@ async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_e
         let (estate, old, lost) = (&estate, old.clone(), lost.clone());
         async move {
             let now = births(&estate.node_values().await);
-            lost.iter().all(|m| (1..=2).any(|i| { let n = format!("{m}.admin.{i}"); now.get(&n).is_some_and(|inc| old.get(&n) != Some(inc)) })).then_some(())
+            lost.iter().all(|m| (1..=2).any(|i| { let n = Estate::path(&format!("{m}.admin"), &i.to_string()); now.get(&n).is_some_and(|inc| old.get(&n) != Some(inc)) })).then_some(())
         }
     })
     .await;
@@ -786,10 +788,10 @@ async fn elected_primary_holds_its_checklist_for_the_killed_primary_then_republi
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
-    let primary = f.before.iter().find(|n| n["mesh"] == f.lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("the peer mesh has a primary node-admin");
-    let survivor = f.before.iter().filter(|n| n["mesh"] == f.lost.as_str() && n["kind"] == "node_admin").map(|n| s(&n["name"])).find(|n| *n != primary).expect("the peer mesh has a second node-admin");
+    let primary = f.before.iter().find(|n| n["mesh"] == f.lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).expect("the peer mesh has a primary node-admin");
+    let survivor = f.before.iter().filter(|n| n["mesh"] == f.lost.as_str() && n["kind"] == "node_admin").map(|n| location(&n)).find(|n| *n != primary).expect("the peer mesh has a second node-admin");
     let fault_ms = now_ms();
-    let (_, pid) = f.runtimes(&format!("{}.admin.", f.lost)).into_iter().find(|(n, _)| *n == primary).unwrap_or_else(|| panic!("{primary} is running"));
+    let (_, pid) = f.runtimes(&format!("{}.admin.", f.lost)).into_iter().find(|(n, _)| *n == primary).unwrap_or_else(|| panic!("{primary:?} is running"));
     f.estate.kill_pid(pid);
     if primary == "mesh1.admin.1" {
         f.estate.kill_bootstrap();
@@ -862,7 +864,7 @@ async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degra
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
     let frozen = format!("{}.rpc.1", f.lost);
-    let frozen_id = f.before.iter().find(|n| s(&n["name"]) == frozen).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("{frozen} in the view"));
+    let frozen_id = f.before.iter().find(|n| location(&n) == frozen).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("{frozen} in the view"));
     let (_, frozen_pid) = f.lost_members().into_iter().find(|(n, _)| *n == frozen).unwrap_or_else(|| panic!("{frozen} is running"));
     let admins = f.lost_admins();
     assert_eq!(admins.len(), 2, "both admins of {} are running: {admins:?}", f.lost);
@@ -887,7 +889,7 @@ async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degra
         let (estate, frozen, frozen_id) = (&f.estate, frozen.clone(), frozen_id.clone());
         async move {
             let nodes = estate.node_values().await;
-            nodes.iter().any(|n| s(&n["name"]) == frozen && n["status"] == "ready" && s(&n["node_id"]) != frozen_id).then_some(())
+            nodes.iter().any(|n| location(&n) == frozen && n["status"] == "ready" && s(&n["node_id"]) != frozen_id).then_some(())
         }
     })
     .await;

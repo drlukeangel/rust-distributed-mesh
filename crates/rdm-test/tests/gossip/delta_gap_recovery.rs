@@ -19,6 +19,7 @@
 //! delta applies at that baseline. mesh2's primary is never asked: no topology read of mesh2 answers
 //! the member. The frames the member hears omit loads while the backbone mesh topology carries them.
 
+use rdm_core::PathName;
 use bytes::Bytes;
 use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
@@ -35,7 +36,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const CELL: &str = "mesh_member_recovers_delta_gap_from_own_primary";
-const MEMBER: &str = "mesh1.rpc.1";
+/// The member whose gap is read: mesh1's rpc node. Its topology spans name it by its node id.
+fn member_at() -> rdm_core::PathName {
+    Estate::path("mesh1.rpc", "1")
+}
 
 fn owner() -> Owner {
     Owner {
@@ -201,6 +205,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 2)];
     estate.reconcile_shape("fabric1", &shape).await;
     let nodes = estate.settled_views(&shape).await;
+    let member_id = nodes.iter().find(|n| n.name == member_at()).map(|n| n.node_id.to_string()).expect("the member's settled view");
     let fabric_view = estate.fabric_view().await;
     let fabric = fabric_view.id.clone();
     let mesh1_id = fabric_view.meshes.iter().find(|m| m.name == "mesh1").and_then(|m| m.id.clone()).expect("the fabric view names mesh1's id");
@@ -210,13 +215,13 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // staleness floor is superseded by the lowest Ready node of its type (fabric-node-lifecycle-elections.md),
     // a second change the healthy control below does not make. Which of the two holds the primary is the
     // NodeIds' draw (the lowest complete NodeId), so it is read from the settled view.
-    let held: String = nodes
+    let held: PathName = nodes
         .iter()
         .find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode && !n.is_primary)
         .map(|n| n.name.clone())
         .unwrap_or_else(|| panic!("mesh2 holds an rpc node that is not its rpc primary: {nodes:?}"));
-    let held = held.as_str();
-    let mut hold = Held { rt: rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&estate.data_dir(held).await)).unwrap_or_else(|r| panic!("{held}: no exact runtime published: {r:?}")), hung: None };
+    let held = &held;
+    let mut hold = Held { rt: rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&estate.data_dir(held).await)).unwrap_or_else(|r| panic!("{held:?}: no exact runtime published: {r:?}")), hung: None };
 
     // Joined: the observer is a new neighbour of mesh1's primary, which puts the stripped full of
     // every source it has published into the Mesh.
@@ -255,7 +260,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // The member holds mesh2 before anything changes.
     let member_installed: Vec<Value> = wait_for("the member holds mesh2's projection", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        let v: Vec<Value> = spans_of(&spans, "rdm.mesh.topology.update.via-snapshot-installed", MEMBER, 0).into_iter().filter(|sp| attr(sp, "mesh") == "mesh2").cloned().collect();
+        let v: Vec<Value> = spans_of(&spans, "rdm.mesh.topology.update.via-snapshot-installed", &member_id, 0).into_iter().filter(|sp| attr(sp, "mesh") == "mesh2").cloned().collect();
         (!v.is_empty()).then_some(v)
     })
     .await;
@@ -266,7 +271,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // mesh still settling, whose next changes it applied as deltas since.
     let baseline_version = {
         let spans = estate.spans();
-        spans_of(&spans, "rdm.mesh.topology.update.via-delta", MEMBER, 0).into_iter().filter(|sp| attr(sp, "mesh") == "mesh2").map(|sp| num(sp, "topology_version")).chain(std::iter::once(installed_version)).max().unwrap()
+        spans_of(&spans, "rdm.mesh.topology.update.via-delta", &member_id, 0).into_iter().filter(|sp| attr(sp, "mesh") == "mesh2").map(|sp| num(sp, "topology_version")).chain(std::iter::once(installed_version)).max().unwrap()
     };
     let deltas_before = observer.deltas_of("mesh2").len();
     let t_change_a = now_ns();
@@ -281,7 +286,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     assert_eq!(delta_a.2, delta_a.1 + 1, "one move, one version");
     let applied_a = wait_for("the member applies it at exactly its base", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        spans_of(&spans, "rdm.mesh.topology.update.via-delta", MEMBER, t_change_a).into_iter().find(|sp| attr(sp, "mesh") == "mesh2" && num(sp, "topology_version") == delta_a.2).cloned()
+        spans_of(&spans, "rdm.mesh.topology.update.via-delta", &member_id, t_change_a).into_iter().find(|sp| attr(sp, "mesh") == "mesh2" && num(sp, "topology_version") == delta_a.2).cloned()
     })
     .await;
     assert_eq!(num(&applied_a, "base_version"), delta_a.1);
@@ -295,7 +300,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         .forwarded_fulls_of("mesh2")
         .iter()
         .find_map(|x| match x.frame.data() {
-            Frame::MeshTopology { digests, .. } => digests.iter().find(|d| d.node.name.to_string() == "mesh2.rpc.1").cloned(),
+            Frame::MeshTopology { digests, .. } => digests.iter().find(|d| d.node.name == Estate::path("mesh2.rpc", "1")).cloned(),
             _ => None,
         })
         .expect("mesh2.rpc.1 is in the forwarded full");
@@ -316,7 +321,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     observer.broadcast(&gap_frame).await;
     let gap = wait_for("the member names the version gap", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        spans_of(&spans, "rdm.mesh.topology.update.via-gap", MEMBER, t_gap).first().map(|sp| (*sp).clone())
+        spans_of(&spans, "rdm.mesh.topology.update.via-gap", &member_id, t_gap).first().map(|sp| (*sp).clone())
     })
     .await;
     assert_eq!(attr(&gap, "repair_requested"), "true");
@@ -325,7 +330,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     assert_eq!((num(&gap, "held_version"), num(&gap, "base_version")), (latest, latest + 1), "{gap}");
     let topped = wait_for("the member tops up from its own primary", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        spans_of(&spans, "rdm.mesh.entry.update.via-top-up", MEMBER, t_gap).into_iter().find(|sp| attr(sp, "installed").contains("mesh2@")).cloned()
+        spans_of(&spans, "rdm.mesh.entry.update.via-top-up", &member_id, t_gap).into_iter().find(|sp| attr(sp, "installed").contains("mesh2@")).cloned()
     })
     .await;
     assert_eq!(attr(&topped, "mesh_primary"), "mesh1.admin.1", "the member's own mesh-primary");
@@ -342,17 +347,17 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     assert_eq!(delta_c.1, latest, "the next delta continues from the baseline the member holds");
     let applied_c = wait_for("the member applies the next delta at the baseline", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        spans_of(&spans, "rdm.mesh.topology.update.via-delta", MEMBER, t_resume).into_iter().find(|sp| attr(sp, "mesh") == "mesh2" && num(sp, "topology_version") == delta_c.2).cloned()
+        spans_of(&spans, "rdm.mesh.topology.update.via-delta", &member_id, t_resume).into_iter().find(|sp| attr(sp, "mesh") == "mesh2" && num(sp, "topology_version") == delta_c.2).cloned()
     })
     .await;
     assert_eq!(num(&applied_c, "base_version"), latest);
 
     // ---- a member cut off from every other process hears the full when it is heard again
     let nodes_json: Vec<Value> = nodes.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
-    let ports_of = |names: &[&str]| udp_ports(&nodes_json, &names.iter().map(|n| n.to_string()).collect::<Vec<_>>());
-    let mut others = ports_of(&["mesh1.admin.1", "mesh2.admin.1", "mesh2.rpc.1", "mesh2.rpc.2"]);
+    let ports_of = |names: &[(&str, &str)]| udp_ports(&nodes_json, &names.iter().map(|(path, name)| Estate::path(path, name)).collect::<Vec<_>>());
+    let mut others = ports_of(&[("mesh1.admin", "1"), ("mesh2.admin", "1"), ("mesh2.rpc", "1"), ("mesh2.rpc", "2")]);
     others.push(observer.endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port());
-    let cut = Partition::start(&ports_of(&[MEMBER]), &others).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the member's traffic: {why}"));
+    let cut = Partition::start(&ports_of(&[("mesh1.rpc", "1")]), &others).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the member's traffic: {why}"));
     let cut_at = now_ns();
     hold.hold();
     let delta_e = until_arrival("the observer hears the delta for the held rpc node while the member is cut", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").into_iter().find(|d| d.0 > cut_at)).await;
@@ -362,7 +367,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // follows the latest the member applied.
     let member_latest = {
         let spans = estate.spans();
-        spans_of(&spans, "rdm.mesh.topology.update.via-delta", MEMBER, t_resume).into_iter().filter(|sp| attr(sp, "mesh") == "mesh2").map(|sp| num(sp, "topology_version")).max().unwrap_or(delta_c.2)
+        spans_of(&spans, "rdm.mesh.topology.update.via-delta", &member_id, t_resume).into_iter().filter(|sp| attr(sp, "mesh") == "mesh2").map(|sp| num(sp, "topology_version")).max().unwrap_or(delta_c.2)
     };
     assert!(member_latest >= delta_c.2, "the member applied the baseline's delta and every re-entry delta after it: {member_latest} >= {}", delta_c.2);
     assert_eq!(delta_e.1, member_latest, "the delta follows the latest the member applied");
@@ -372,14 +377,14 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // it: a re-created member is a new birth and installs every source as a new revision.
     wait_for("the member's connections to mesh1 are gone under the cut", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        spans_of(&spans, "rdm.mesh.connection.update.via-neighbour-down", MEMBER, cut_at).into_iter().find(|sp| attr(sp, "channel") == "mesh:mesh1" && attr(sp, "neighbours") == "0").map(|_| ())
+        spans_of(&spans, "rdm.mesh.connection.update.via-neighbour-down", &member_id, cut_at).into_iter().find(|sp| attr(sp, "channel") == "mesh:mesh1" && attr(sp, "neighbours") == "0").map(|_| ())
     })
     .await;
     drop(cut);
     let healed_at = now_ns();
     let full_after_heal = wait_for("the member holds the version the source reached while it was cut", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        spans_of(&spans, "rdm.mesh.topology.update.via-snapshot-installed", MEMBER, healed_at).into_iter().find(|sp| attr(sp, "mesh") == "mesh2" && num(sp, "topology_version") >= delta_e.2).cloned()
+        spans_of(&spans, "rdm.mesh.topology.update.via-snapshot-installed", &member_id, healed_at).into_iter().find(|sp| attr(sp, "mesh") == "mesh2" && num(sp, "topology_version") >= delta_e.2).cloned()
     })
     .await;
     assert_eq!(attr(&full_after_heal, "new_revision"), "false", "the same source publisher: the member resumes inside its revision");
@@ -388,8 +393,8 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // Heard again after the cut, the member needed no top-up and saw no gap: mesh1's primary said
     // what it holds when the member came up as its neighbour.
     let spans = estate.spans();
-    assert!(spans_of(&spans, "rdm.mesh.topology.update.via-gap", MEMBER, cut_at).is_empty(), "the full the primary replays on a heal repaired the member: no gap");
-    let member_peer = nodes.iter().find(|n| n.name.to_string() == MEMBER).and_then(|n| n.endpoint_id.clone()).unwrap();
+    assert!(spans_of(&spans, "rdm.mesh.topology.update.via-gap", &member_id, cut_at).is_empty(), "the full the primary replays on a heal repaired the member: no gap");
+    let member_peer = nodes.iter().find(|n| n.name == member_at()).and_then(|n| n.endpoint_id.clone()).unwrap();
     // The primary's replay row is in the primary's evidence file, appended by its export thread:
     // it lands after the member's install row that the wait above read, not with it (at `5a220a6a`
     // the replay, 2 ms before the install, was read once and was not there yet). Waited for, as
@@ -409,7 +414,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let spans = estate.spans();
     // Nothing the injected delta claimed was applied: the member applied no delta that changed a
     // member to ConnectionsDeleting, and the gap was the only one.
-    let gaps = spans_of(&spans, "rdm.mesh.topology.update.via-gap", MEMBER, t_gap);
+    let gaps = spans_of(&spans, "rdm.mesh.topology.update.via-gap", &member_id, t_gap);
     assert_eq!(gaps.len(), 1, "exactly one gap after the injection, the injected one: {gaps:?}");
     // The join was answered by mesh1's primary; the top-up is a topology read (op 0x1E) of the
     // desynchronized mesh from the same primary and from no other: mesh2's admin served no read
@@ -417,7 +422,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // The member joined at its birth and, cut off and heard again, once more through the commanded
     // node.mesh.join (node-recovery.md step 2, Q87); both joins were answered by mesh1's primary, and the
     // top-up after the gap re-read nothing through a join (no join between the gap and the cut).
-    let joins: Vec<&Value> = named(&spans, "rdm.mesh.entry.serve.via-pull").into_iter().filter(|sp| attr(sp, "node") == MEMBER).collect();
+    let joins: Vec<&Value> = named(&spans, "rdm.mesh.entry.serve.via-pull").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &member_at())).collect();
     assert!(joins.iter().all(|sp| attr(sp, "served_by") == "mesh1.admin.1"), "every join of the member was answered by mesh1's primary: {joins:?}");
     assert!(!joins.iter().any(|sp| at(sp) >= t_gap && at(sp) < cut_at), "the top-up re-read nothing through a join: {joins:?}");
     // Heard again after the cut, the member re-enters through a commanded join once its mesh-primary's
@@ -434,7 +439,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let caller = |sp: &Value| spans.iter().find(|p| p["span_id"] == sp["parent_span_id"]).map(|p| attr(p, "peer")).unwrap_or_default();
     let by_member: Vec<&Value> = reads_after_gap("mesh2.admin.1").into_iter().filter(|sp| { let c = caller(sp); c.is_empty() || member_peer.starts_with(&c) }).collect();
     assert!(by_member.is_empty(), "the remote Mesh's primary is never queried by the member: {by_member:?}");
-    let topup_install = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().find(|sp| attr(sp, "node") == MEMBER && at(sp) >= t_gap).expect("the member installed the top-up by a topology read");
+    let topup_install = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().find(|sp| attr(sp, "node") == member_id && at(sp) >= t_gap).expect("the member installed the top-up by a topology read");
     assert_eq!((attr(topup_install, "mesh"), num(topup_install, "topology_version")), ("mesh2".to_string(), latest));
     // The primary's evidence: the full it put in on a join, and its bytes.
     let admin_fulls: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-full").into_iter().filter(|sp| attr(sp, "node") == "mesh1.admin.1").collect();

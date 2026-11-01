@@ -7,6 +7,7 @@
 //!   (`rdm_test::process_faults`) on a real estate.
 //! The cell does not touch the fabric-primary node-admin, and no mesh loses every node-admin.
 
+use rdm_test::estate::location;
 use rdm_test::elections::{advertised_fabric_primaries, primaries_as_expected};
 use rdm_client::NodeStatus;
 use rdm_test::estate::{descends_from, named, wait_for, Estate, Owner};
@@ -158,7 +159,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let rpcs: Vec<Value> = nodes0.iter().filter(|n| n["kind"] == "rpc_node").cloned().collect();
     assert_eq!(rpcs.len(), 3);
     let (hold_n, kill_n) = (&rpcs[0], &rpcs[1]);
-    let (hold, kill) = (s(&hold_n["name"]), s(&kill_n["name"]));
+    let (hold, kill) = (location(&hold_n), location(&kill_n));
     let attempt_before = attempt_of(&estate, &build_id).await;
 
     // Survivor evidence, complete before any authority disappears: the view, the Build and a value
@@ -184,7 +185,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     // ---- Hold: every task of the exact runtime but its leader held by a tracer, judged by the semantic
     // detector. The provider reads it running, so node investigation tickles it rather than deciding at
     // its inspect (node-investigation.md step 2: `os-stopped`, a whole-process SIGSTOP, is the verdict).
-    let mut ev = Evidence::new(Family::SilentRuntime, format!("silent-runtime:stop-{hold}"));
+    let mut ev = Evidence::new(Family::SilentRuntime, format!("silent-runtime:stop-{hold:?}"));
     let (roles_before, detail_before) = primaries(&nodes0);
     let fp_before = fabric_primary(&nodes0);
     let hung = hold_rt.hang().expect("the exact runtime is held");
@@ -192,7 +193,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let stopped = json!({"applied": "hang", "held": hung.held, "leader": proc_state(hold_rt.pid).map(String::from)});
     ev.primitive = Some(Primitive { armed: true, ack: stopped.clone() });
     let silent_view = estate
-        .until_node(&hold, &format!("{hold} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |n| n.filter(|n| n.status != NodeStatus::Ready).map(|n| serde_json::to_value(n).expect("a view serializes")))
+        .until_node(&hold, &format!("{hold:?} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |n| n.filter(|n| n.status != NodeStatus::Ready).map(|n| serde_json::to_value(n).expect("a view serializes")))
         .await;
     // The hold ends inside the silent window: past the second unreached tickle ladder node investigation
     // decides, and a verdict other than reached re-creates the node (Q111), so nothing the cell needs only
@@ -219,7 +220,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
     ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
     let back = estate
-        .until_node(&hold, &format!("{hold} back as its own birth"), floor * 2 + Duration::from_secs(30), |n| {
+        .until_node(&hold, &format!("{hold:?} back as its own birth"), floor * 2 + Duration::from_secs(30), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             (n["incarnation_id"] == hold_n["incarnation_id"] && n["status"] == "ready").then_some(n)
         })
@@ -264,18 +265,18 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     assert_ne!((replacement_rt.pid, replacement_rt.start), (kill_rt.pid, kill_rt.start));
     assert_ne!(replacement["incarnation_id"], kill_n["incarnation_id"], "a new incarnation: {replacement}");
     assert_eq!(replacement["endpoint_id"], kill_n["endpoint_id"], "the recovered node holds the endpoint key of the data dir it inherited: {replacement}");
-    let fresh = estate.probe(&["get", "--target", &format!("path:{kill}"), "--key", "83"]);
+    let fresh = estate.probe(&["get", "--target", &rdm_test::estate::path_target(&kill), "--key", "83"]);
     assert_eq!(fresh["reply"]["result"], json!({"found": true, "value": "before-fault"}), "the recovered node serves the store of the data dir it inherited: {fresh}");
     assert_eq!(fresh["reply"]["executing_node"], replacement["node_id"], "the new node serves it: {fresh}");
     let old = estate.probe(&["get", "--target", &kill_exact, "--key", "83"]);
     // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
     assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
-    assert_eq!(estate.live_runtimes().iter().filter(|(d, _)| d.file_name().is_some_and(|f| f.to_string_lossy().starts_with(&format!("{kill}-")))).count(), 1, "one runtime serves the path");
+    assert_eq!(estate.live_runtimes().iter().filter(|(d, _)| d.file_name().is_some_and(|f| f.to_string_lossy().starts_with(&format!("{kill:?}-")))).count(), 1, "one runtime serves the path");
 
     // ---- A node-admin that is neither mesh primary nor fabric primary: killed by exact runtime.
     let nodes = estate.node_values().await;
     let admin_n = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false && n["name"] != "mesh1.admin.1").cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
-    let admin = s(&admin_n["name"]);
+    let admin = location(&admin_n);
     let admin_rt = published(&estate, &admin).await;
     let admin_dir = estate.data_dir(&admin).await;
     let admin_killed = admin_rt.apply(Fault::Kill(estate.fabric_ready())).expect("the admin's exact runtime is killed");
@@ -328,12 +329,12 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     }
     for path in [&kill, &admin] {
         assert!(
-            named(&spans, "rdm.node_admin.build.update.via-reconcile").iter().all(|r| !(attr(r, "reason") == "proven-drift" && attr(r, "operations").contains(&format!(":{path}")))),
-            "the Fabric's drift never repairs {path}: its mesh-primary recovers it"
+            named(&spans, "rdm.node_admin.build.update.via-reconcile").iter().all(|r| !(attr(r, "reason") == "proven-drift" && attr(r, "operations").contains(&format!(":{path:?}")))),
+            "the Fabric's drift never repairs {path:?}: its mesh-primary recovers it"
         );
         let mesh_primary = s(&nodes0.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh1's primary")["name"]);
         let submits: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| attr(sp, "node") == path.as_str()).collect();
-        assert!(submits.iter().any(|sp| attr(sp, "submitter") == mesh_primary && attr(sp, "outcome").starts_with("complete: attempt")), "{path}: its mesh-primary {mesh_primary} submitted the recovery and followed it to its end: {submits:?}");
+        assert!(submits.iter().any(|sp| attr(sp, "submitter") == mesh_primary && attr(sp, "outcome").starts_with("complete: attempt")), "{path:?}: its mesh-primary {mesh_primary} submitted the recovery and followed it to its end: {submits:?}");
     }
     assert_eq!(attr(&rpc_rec, "build_id"), build_id);
     assert!(named(&spans, "rdm.node_admin.build.create.via-proven-drift").is_empty(), "no Build is minted for drift");
@@ -351,9 +352,9 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
         let attempt = num(&rec["attributes"]["attempt"]);
         let pipe = pipeline_of(kind, path, attempt, rec);
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipe["span_id"]).collect();
-        assert!(!steps.is_empty(), "{path}: step spans are children of the {kind} pipeline");
-        assert!(steps.iter().all(|st| st["trace_id"] == pipe["trace_id"] && attr(st, "node") == path.as_str()), "{path}: every step shares the pipeline's trace");
-        assert!(steps.iter().any(|st| attr(st, "step") == "WaitForBind" || attr(st, "step").to_lowercase().contains("bind")), "{path}: the birth waited for its bind: {:?}", steps.iter().map(|st| attr(st, "step")).collect::<Vec<_>>());
+        assert!(!steps.is_empty(), "{path:?}: step spans are children of the {kind} pipeline");
+        assert!(steps.iter().all(|st| st["trace_id"] == pipe["trace_id"] && attr(st, "node") == path.as_str()), "{path:?}: every step shares the pipeline's trace");
+        assert!(steps.iter().any(|st| attr(st, "step") == "WaitForBind" || attr(st, "step").to_lowercase().contains("bind")), "{path:?}: the birth waited for its bind: {:?}", steps.iter().map(|st| attr(st, "step")).collect::<Vec<_>>());
         recoveries.push(json!({
             "path": path, "attempt": rec["attributes"]["attempt"], "reason": rec["attributes"]["reason"], "action": rec["attributes"]["action"], "operations": rec["attributes"]["operations"],
             "reconcile": {"trace_id": rec["trace_id"], "span_id": rec["span_id"], "parent_span_id": rec["parent_span_id"], "service": rec["service"]},

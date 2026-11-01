@@ -60,10 +60,10 @@ struct Recorder(Log);
 #[async_trait::async_trait]
 impl LifecycleEvents for Recorder {
     async fn deleting(&self, op: &LifecycleOp) {
-        self.0.lock().unwrap().push(format!("NodeDeleting:{}:{}", op.node_id, op.operation));
+        self.0.lock().unwrap().push(format!("NodeDeleting:{}:{:?}", op.node_id, op.operation));
     }
     async fn deleted(&self, op: &LifecycleOp) {
-        self.0.lock().unwrap().push(format!("NodeDeleted:{}:{}", op.node_id, op.operation));
+        self.0.lock().unwrap().push(format!("NodeDeleted:{}:{:?}", op.node_id, op.operation));
     }
     // A recovery publishes no stop, connections delete, leaving or mesh-deleted event; this cell records the removal
     // events it asserts, and states the rest as not recorded.
@@ -110,8 +110,8 @@ fn path() -> PathName {
     rdm_core::PathName::new("mesh1.rpc", "1").unwrap()
 }
 
-fn receipts(steps: &[rdm_admin::build_state::BuildStepReceipt], operation: &str) -> Vec<String> {
-    steps.iter().filter(|r| r.operation == operation && r.outcome == StepOutcome::Complete).map(|r| r.step.clone()).collect()
+fn receipts(steps: &[rdm_admin::build_state::BuildStepReceipt], operation: &rdm_core::OperationId) -> Vec<String> {
+    steps.iter().filter(|r| r.operation == *operation && r.outcome == StepOutcome::Complete).map(|r| r.step.clone()).collect()
 }
 
 /// The node.delete of an unreached birth, step by step: nothing is sent to it.
@@ -185,19 +185,19 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
 
     // Two operations, each its own workflow's steps once, in order.
     let view = rig.builds.read_build(&recover_build).await.unwrap();
-    let (delete, create) = (format!("node.delete:{}", path()), format!("node.create:{}", path()));
+    let (delete, create) = (rdm_core::OperationId::node("node.delete", &first.node.node_id), rdm_core::OperationId::location("node.create", &path()));
     assert_eq!(receipts(&view.steps, &delete), DELETE_ORDER.map(String::from).to_vec());
     assert_eq!(receipts(&view.steps, &create), CREATE_ORDER.map(String::from).to_vec());
-    let operations: Vec<&str> = view.steps.iter().map(|r| r.operation.as_str()).collect();
-    assert!(operations.iter().all(|o| [delete.as_str(), create.as_str()].contains(o)), "no other operation: {operations:?}");
-    let first_of = |o: &str| operations.iter().position(|x| *x == o).unwrap();
-    let last_of = |o: &str| operations.iter().rposition(|x| *x == o).unwrap();
+    let operations: Vec<&rdm_core::OperationId> = view.steps.iter().map(|r| &r.operation).collect();
+    assert!(operations.iter().all(|o| [&delete, &create].contains(o)), "no other operation: {operations:?}");
+    let first_of = |o: &rdm_core::OperationId| operations.iter().position(|x| *x == o).unwrap();
+    let last_of = |o: &rdm_core::OperationId| operations.iter().rposition(|x| *x == o).unwrap();
     assert!(last_of(&delete) < first_of(&create), "the delete, then the create: {operations:?}");
     // Every receipt the recovery wrote has a wire shape: none is refused before it commits.
     let facts: Vec<rdm_admin::build_state::BuildFact> = view.steps.iter().cloned().map(rdm_admin::build_state::BuildFact::Step).collect();
     let (_, refused) = rdm_admin::fabric_builds::encode_chunks(facts);
     assert!(refused.is_empty(), "a receipt of the recovery has no wire shape: {refused:?}");
-    let output = |operation: &str, step: &str| view.steps.iter().find(|r| r.operation == operation && r.step == step).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{operation} {step} has an output"));
+    let output = |operation: &rdm_core::OperationId, step: &str| view.steps.iter().find(|r| r.operation == *operation && r.step == step).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{operation:?} {step} has an output"));
     assert_eq!(output(&delete, "NodeDeleted")["node_id"], serde_json::to_value(&first.node.node_id).unwrap(), "NodeDeleted names the exited node");
     assert_eq!(output(&delete, "NodeDeleted")["incarnation"], serde_json::to_value(&old_inc).unwrap(), "NodeDeleted names the exact exited birth");
     assert_eq!(output(&delete, "TerminateRuntime")["verdict"], "exited", "the TerminateRuntime step read the runtime exited at its instant: the create takes the inherited data dir");
@@ -217,8 +217,8 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     let (old, new) = (first.node.node_id.to_string(), second.node.node_id.to_string());
     assert!(!log.iter().any(|l| l.starts_with("node.connection.delete:") || l.starts_with("node.stop:")), "nothing is sent to the exited birth: {log:?}");
     let at = |what: &str| log.iter().position(|l| l.starts_with(what)).unwrap_or_else(|| panic!("{what} not in {log:?}"));
-    assert!(at(&format!("NodeDeleting:{old}:{delete}")) < at(&format!("NodeDeleted:{old}:{delete}")), "{log:?}");
-    assert!(at(&format!("NodeDeleted:{old}:{delete}")) < at(&format!("targeted:{old}")) && at(&format!("targeted:{old}")) < at(&format!("ready:{new}")), "node.deleted, the target, then the new node: {log:?}");
+    assert!(at(&format!("NodeDeleting:{old}:{delete:?}")) < at(&format!("NodeDeleted:{old}:{delete:?}")), "{log:?}");
+    assert!(at(&format!("NodeDeleted:{old}:{delete:?}")) < at(&format!("targeted:{old}")) && at(&format!("targeted:{old}")) < at(&format!("ready:{new}")), "node.deleted, the target, then the new node: {log:?}");
     assert_eq!(log.iter().filter(|l| l.starts_with("NodeDeleted")).count(), 1, "{log:?}");
     assert!(rig.sink.removed.lock().unwrap().is_empty(), "no path-keyed removal: only the exact exited birth leaves");
     assert_eq!(*rig.sink.removed_births.lock().unwrap(), vec![(path(), first.node.node_id.clone(), old_inc.clone())], "the exited instance leaves the path once");

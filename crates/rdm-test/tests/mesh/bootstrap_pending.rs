@@ -8,6 +8,7 @@
 //! receives MeshStatus::Pending from the fabric primary, and only then does any of mesh2's own
 //! membership get created; election alone supplies mesh2's primary afterwards.
 
+use rdm_core::PathName;
 use rdm_core::NodeKind;
 use rdm_client::{NodeStatus, NodeView};
 use rdm_test::estate::{claim_decider, descends_from, named, Estate, Owner};
@@ -79,14 +80,16 @@ async fn pending_contract(cell: &str) {
     let create = created.build_id.to_string();
     let build = estate.carrier().await.build(&created.build_id).await.expect("build.get [id] of the creation Build");
     let nodes = estate.settled_views(&[mesh("mesh1"), mesh("mesh2")]).await;
-    let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.clone()).expect("mesh2 elects a primary");
-    let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).expect("one fabric primary");
+    let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().expect("mesh2 elects a primary");
+    let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).cloned().expect("one fabric primary");
+    let bootstrap2 = nodes.iter().find(|n| n.name == Estate::path("mesh2.admin", "1")).cloned().expect("mesh2's bootstrap admin");
+    let of = |sp: &Value, n: &NodeView| rdm_test::estate::of_node(sp, &n.name, n.node_id.as_str());
     // The provider every mesh2 member actually ran on, from the view (and, on containers, its
     // immutable container id).
     let provider = estate.owner.provider.clone();
     let mut mesh2_runtimes: Vec<Value> = Vec::new();
     for n in nodes.iter().filter(|n| n.mesh == "mesh2" && n.kind != NodeKind::NodeAdmin) {
-        mesh2_runtimes.push(json!({"node": n.name.to_string(), "provider": n.provider, "container": estate.container_of(&n.name.to_string()).await}));
+        mesh2_runtimes.push(json!({"node": n.name, "provider": n.provider, "container": estate.container_of(&n.name).await}));
     }
     for r in &mesh2_runtimes {
         assert_eq!(r["provider"], provider.as_str(), "{r}");
@@ -101,40 +104,40 @@ async fn pending_contract(cell: &str) {
     let spans = estate.spans();
 
     // The bootstrap admin hydrated first: its entry join and the accepted Build it then holds.
-    let joined = named(&spans, "rdm.node_admin.fabric.update.via-join").into_iter().find(|j| j["attributes"]["node"] == "mesh2.admin.1").cloned().expect("mesh2.admin.1 joined by entry pull");
+    let joined = named(&spans, "rdm.node_admin.fabric.update.via-join").into_iter().find(|j| of(j, &bootstrap2)).cloned().expect("mesh2.admin.1 joined by entry pull");
     // The Pending hand-off, applied exactly once at that birth.
     let handoffs: Vec<Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == "mesh2").cloned().collect();
     let applied: Vec<&Value> = handoffs.iter().filter(|h| h["attributes"]["outcome"] == "applied").collect();
     assert_eq!(applied.len(), 1, "one Pending applied at mesh2's bootstrap admin: {handoffs:?}");
     let handoff = applied[0];
-    assert_eq!(handoff["attributes"]["target"], "mesh2.admin.1");
+    assert!(rdm_test::estate::names_location(handoff, "target", &bootstrap2.name), "{handoff}");
     assert!(end(&joined) <= start(handoff), "the target hydrated ({}) before Pending was handed to it ({})", end(&joined), start(handoff));
     // Decided at the target through its status door, not as an election.
     let decided: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declaration")
         .into_iter()
-        .filter(|d| d["attributes"]["node"] == "mesh2.admin.1" && d["attributes"]["op"] == "apply-mesh-state" && d["attributes"]["outcome"] == "applied")
+        .filter(|d| of(d, &bootstrap2) && d["attributes"]["op"] == "apply-mesh-state" && d["attributes"]["outcome"] == "applied")
         .collect();
     assert_eq!(decided.len(), 1, "{decided:?}");
     assert_eq!(decided[0]["attributes"]["receiver_is_primary"], "false", "accepting Pending is not an election");
     // Nothing of mesh2's own membership was created before Pending was applied.
-    let members = ["mesh2.admin.2", "mesh2.rpc.1", "mesh2.rpc.2"];
+    let members = [Estate::path("mesh2.admin", "2"), Estate::path("mesh2.rpc", "1"), Estate::path("mesh2.rpc", "2")];
     let member_creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
-        .filter(|c| c["attributes"]["build_id"] == create.as_str() && members.contains(&c["attributes"]["node"].as_str().unwrap_or("")))
+        .filter(|c| c["attributes"]["build_id"] == create.as_str() && members.iter().any(|m| rdm_test::estate::at_location(c, m)))
         .collect();
     assert_eq!(member_creates.len(), members.len(), "each member created once under the creation Build: {member_creates:?}");
     let first_member_create = member_creates.iter().map(|c| start(c)).min().unwrap();
     assert!(end(handoff) <= first_member_create, "Pending applied ({}) before mesh2's first own create ({first_member_create})", end(handoff));
     // The bootstrap admin's Ready follows its hydration; mesh2's primary is elected afterwards.
-    let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|r| r["attributes"]["node"] == "mesh2.admin.1").cloned().expect("mesh2.admin.1 committed Ready");
+    let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|r| of(r, &bootstrap2)).cloned().expect("mesh2.admin.1 committed Ready");
     assert!(end(&joined) <= start(&ready), "Ready after hydration");
     // The elected mesh primary owns the Mesh's later lifecycle: it declares the Mesh's state to the
     // fabric primary, which applies it; and the fabric primary applies the fabric's readiness at
     // the mesh primary. Both come after the elected primary's own Ready.
-    let elected_ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|r| r["attributes"]["node"] == mesh2_primary.as_str()).cloned().expect("the elected primary committed Ready");
+    let elected_ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|r| of(r, &mesh2_primary)).cloned().expect("the elected primary committed Ready");
     let mesh_declared: Vec<&Value> = named(&spans, DECLARATION)
         .into_iter()
-        .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && d["attributes"]["sender"] == mesh2_primary.as_str() && d["attributes"]["node"] == fabric_primary.as_str())
+        .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && d["attributes"]["sender"] == mesh2_primary.node_id.as_str() && of(d, &fabric_primary))
         .collect();
     assert!(mesh_declared.iter().any(|d| matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied"))), "the elected primary's Mesh declaration was certain at the fabric primary: {mesh_declared:?}");
     assert!(mesh_declared.iter().all(|d| start(d) >= end(&elected_ready)), "a Mesh declaration comes from a primary that is already Ready: {mesh_declared:?}");
@@ -143,7 +146,7 @@ async fn pending_contract(cell: &str) {
     assert!(mesh_declared.iter().all(|d| matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")) || (d["attributes"]["outcome"] == "rejected-not-primary" && d["attributes"]["detail"] == "subject-unknown")), "{mesh_declared:?}");
     let mesh2_applied: Vec<&Value> = named(&spans, DECLARATION)
         .into_iter()
-        .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && d["attributes"]["node"] == fabric_primary.as_str() && d["attributes"]["sender"].as_str().is_some_and(|x| x.starts_with("mesh2.admin.")) && d["attributes"]["outcome"] == "applied")
+        .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && of(d, &fabric_primary) && nodes.iter().any(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && d["attributes"]["sender"] == n.node_id.as_str()) && d["attributes"]["outcome"] == "applied")
         .collect();
     assert!(mesh2_applied.len() <= 1, "mesh2's Ready is applied at most once by one fabric primary, whoever declared it: {mesh2_applied:?}");
     // Every attempt the accepting fabric-primary decides descends from the REST request (the
@@ -165,7 +168,7 @@ async fn pending_contract(cell: &str) {
         "build_id": create,
         "attempt": build.attempt,
         "executor": build.executor,
-        "mesh2_primary": mesh2_primary,
+        "mesh2_primary": mesh2_primary.name,
         "provider": provider,
         "mesh2_runtimes": mesh2_runtimes,
         "joined": {"span_id": joined["span_id"], "end": end(&joined), "served_by": joined["attributes"]["joined"]},
@@ -186,12 +189,11 @@ async fn pending_contract(cell: &str) {
 
 
 /// The bootstrap admin (the one handed Pending) of mesh2 or mesh3 that does not hold the fabric-primary role.
-fn bootstrap_admin_not_fabric_primary(settled: &[NodeView]) -> String {
-    ["mesh2.admin.1", "mesh3.admin.1"]
+fn bootstrap_admin_not_fabric_primary(settled: &[NodeView]) -> PathName {
+    [Estate::path("mesh2.admin", "1"), Estate::path("mesh3.admin", "1")]
         .into_iter()
-        .find(|a| settled.iter().any(|n| n.name.to_string() == *a && !n.is_fabric_primary))
+        .find(|a| settled.iter().any(|n| n.name == *a && !n.is_fabric_primary))
         .expect("at most one admin holds the primary role, so one of the two bootstrap admins is off it")
-        .to_string()
 }
 
 /// CONTRACT (#2805, acceptance 8; R-SB1: a restart keeps node.id and incarnation, and a restart of a
@@ -224,24 +226,24 @@ async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() 
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The restart, node.stop then node.start through the rectifier (Q183): attempts of the accepted Build.
-    let restart_build = estate.stop_then_start(&target.parse().unwrap()).await.0.build_id.to_string();
+    let restart_build = estate.stop_then_start(&target).await.0.build_id.to_string();
     let after = estate.settled_views(&shape).await;
     let after = after.iter().find(|n| n.name == target).cloned().expect("the restarted admin in the view");
-    let mesh_name = target.split('.').next().unwrap().to_string();
+    let mesh_name = after.mesh.clone();
     estate.stop().await;
     let spans = estate.spans();
 
     assert_eq!(after.node_id, before.node_id, "the same node");
     assert_eq!(after.incarnation_id, before.incarnation_id, "the same incarnation: a stop then a start keep the birth (node-stop.md, Kept: same node.id, incarnation)");
     assert_eq!(after.status, NodeStatus::Ready, "{after:?}");
-    let readies: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|r| r["attributes"]["node"] == target.as_str()).collect();
+    let readies: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|r| rdm_test::estate::of_node(r, &target, before.node_id.as_str())).collect();
     assert_eq!(readies.len(), 2, "Ready at birth and again after the restart: {readies:?}");
     let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == mesh_name.as_str()).collect();
     let mesh_ids: std::collections::BTreeSet<String> = handoffs.iter().map(|h| s(&h["attributes"]["mesh_id"])).collect();
     assert_eq!(mesh_ids.len(), 1, "one MeshId for {mesh_name} in every hand-off, none minted: {mesh_ids:?}");
     let blocked: Vec<&Value> = named(&spans, "rdm.node_admin.runtime.reject.via-not-ready")
         .into_iter()
-        .filter(|b| b["attributes"]["node"] == target.as_str() && s(&b["attributes"]["detail"]).contains("Pending has not been applied"))
+        .filter(|b| rdm_test::estate::of_node(b, &target, before.node_id.as_str()) && s(&b["attributes"]["detail"]).contains("Pending has not been applied"))
         .collect();
     let result = json!({
         "cell": cell,
@@ -279,20 +281,21 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     let accepted = built.build_id.to_string();
     let before = estate.settled_views(&shape).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let fabric_primary = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).expect("one fabric primary");
+    let fabric_primary_view = before.iter().find(|n| n.is_fabric_primary).cloned().expect("one fabric primary");
+    let fabric_primary = fabric_primary_view.name.clone();
     // The lost mesh is a sole-admin mesh that does not hold the fabric-primary role.
     let lost_admin = bootstrap_admin_not_fabric_primary(&before);
-    let lost = lost_admin.split('.').next().unwrap().to_string();
+    let lost = before.iter().find(|n| n.name == lost_admin).map(|n| n.mesh.clone()).expect("the lost admin's mesh");
     let mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let admin_before = before.iter().find(|n| n.name == lost_admin).cloned().unwrap();
     let attempt_before = u64::from(estate.carrier().await.build(&built.build_id).await.expect("build.get [id] of the accepted Build").attempt);
-    estate.enter(&Estate::path(&fabric_primary)).await;
+    estate.enter(&fabric_primary).await;
 
     // The fault: the lost mesh's only admin runtime, exactly.
     let fault_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let mut killed = 0;
     for (path, pid) in estate.live_runtimes() {
-        if path.file_name().unwrap().to_string_lossy().starts_with(lost_admin.as_str()) {
+        if path.file_name().unwrap().to_string_lossy().starts_with(admin_before.node_id.as_str()) {
             estate.kill_pid(pid);
             killed += 1;
         }
@@ -347,11 +350,11 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     // the killed process's spans not yet exported, so its last send may live only in its receivers'.
     let heard = named(&spans, "rdm.mesh.topology.update.via-mesh-status")
         .into_iter()
-        .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && sp["attributes"]["publisher"] == lost_admin.as_str());
+        .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && sp["attributes"]["publisher"] == admin_before.node_id.as_str());
     let held = sends
         .iter()
         .copied()
-        .filter(|sp| sp["attributes"]["scope"] == scope.as_str() && sp["attributes"]["node"] == lost_admin.as_str())
+        .filter(|sp| sp["attributes"]["scope"] == scope.as_str() && sp["attributes"]["node"] == admin_before.node_id.as_str())
         .chain(heard)
         .filter(|sp| start(sp) < fault_ns)
         .map(|sp| (s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])))
@@ -376,7 +379,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         .collect();
     assert!(!degraded_sends.is_empty(), "the fabric primary sends {scope} degraded at the via-recovery decision: {sends:?}");
     for sp in &degraded_sends {
-        assert_eq!(s(&sp["attributes"]["node"]), fabric_primary, "the mesh's degraded marker is authored by the fabric primary: {sp}");
+        assert_eq!(s(&sp["attributes"]["node"]), fabric_primary_view.node_id.as_str(), "the mesh's degraded marker is authored by the fabric primary: {sp}");
     }
     let republished: Vec<&&Value> = sends
         .iter()
@@ -384,12 +387,12 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         .collect();
     assert!(!republished.is_empty(), "the successor primary republishes the held MeshStatus (a via-status-send for {scope} after the decision): none");
     for sp in &republished {
-        assert_eq!(s(&sp["attributes"]["node"]), lost_admin, "the mesh's status is its own primary's: {sp}");
+        assert_eq!(s(&sp["attributes"]["node"]), s(&recovered["node_id"]), "the mesh's status is its own primary's, the recovered birth at {lost_admin:?}: {sp}");
         assert_eq!((s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])), expected, "the republish is the held MeshStatus it was handed, changed_at preserved: {sp}");
     }
     let checklist_complete = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete")
         .into_iter()
-        .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && sp["attributes"]["node"] == lost_admin.as_str() && start(sp) >= start(&decision))
+        .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && rdm_test::estate::at_location(sp, &lost_admin) && start(sp) >= start(&decision))
         .map(start)
         .min()
         .expect("the successor primary's checklist completed");

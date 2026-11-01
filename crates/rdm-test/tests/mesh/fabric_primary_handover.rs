@@ -28,6 +28,7 @@
 //! chosen here). Every receiver read is made at BOTH surviving meshes, the fabric-primary's own and
 //! the other, so every run covers both placements.
 
+use rdm_test::estate::location;
 use crate::build_log;
 use rdm_test::estate::{descends_from, named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha};
@@ -105,7 +106,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let mesh1_pids: Vec<(String, u64)> = {
         let mut v = Vec::new();
         for n in before.iter().filter(|n| n["mesh"] == "mesh1") {
-            let name = s(&n["name"]);
+            let name = location(&n);
             // The bootstrap admin was adopted on day 0: its pid is the estate's own child.
             let pid = match estate.bootstrap_pid() {
                 Some(p) if name == "mesh1.admin.1" => u64::from(p),
@@ -117,7 +118,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     };
 
     // The Node rows mesh1's admin holds, read from its data dir while it runs.
-    let mesh1_ids: Vec<(String, String)> = before.iter().filter(|n| n["mesh"] == "mesh1").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+    let mesh1_ids: Vec<(String, String)> = before.iter().filter(|n| n["mesh"] == "mesh1").map(|n| (location(&n), s(&n["node_id"]))).collect();
     let mesh1_dir = estate.data_dir(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
     let mesh1_bare: String = mesh1_id.split_once('_').map(|(_, r)| r).unwrap_or(&mesh1_id).replace('-', "").to_lowercase();
 
@@ -125,7 +126,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let mesh2_admin = before
         .iter()
         .find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["status"] == "ready")
-        .map(|n| Estate::path(&s(&n["name"])))
+        .map(|n| Estate::path(&location(&n)))
         .expect("a ready mesh2 admin");
     estate.enter(&mesh2_admin).await;
 
@@ -146,7 +147,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         }
         if std::time::Instant::now() >= settle_by {
             let held: Vec<String> = match &read {
-                Ok(_) => nodes.iter().map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect(),
+                Ok(_) => nodes.iter().map(|n| format!("{}={}", location(&n), s(&n["status"]))).collect(),
                 Err(e) => vec![format!("the read ended: {e}")],
             };
             estate.stop().await;
@@ -169,10 +170,10 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         let inside: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-shutdown-member").into_iter().filter(|sp| sp["attributes"]["build_id"] == b.as_str()).map(|sp| s(&sp["attributes"]["node"])).collect();
         panic!("mesh.delete ends at mesh.deleted with the mesh-primary alive, but no mesh1 node is left after build {b}: the fabric-primary stopped the final primary inside the mesh.delete ({stopped:?}; shutdown-member workflows under {b}: {inside:?})");
     };
-    let final_name = s(&last["name"]);
+    let final_name = location(&last);
     assert!(final_name.starts_with("mesh1.admin."), "the mesh1 node left alive is a node-admin, the final primary: {last}");
     let final_pid = mesh1_pids.iter().find(|(n, _)| *n == final_name).map(|(_, p)| *p).unwrap();
-    assert!(alive(final_pid), "mesh1's final primary {final_name} still runs after mesh.deleted");
+    assert!(alive(final_pid), "mesh1's final primary {final_name:?} still runs after mesh.deleted");
     let fabric_primary_path = estate.fabric_view().await.fabric_primary.expect("the fabric names its primary");
     let fabric_primary = fabric_primary_path.to_string();
     estate.enter(&fabric_primary_path).await;
@@ -186,17 +187,17 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let survivors = ["mesh2", "mesh3"];
     for m in survivors {
         for admin in after_b.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin") {
-            let who = s(&admin["name"]);
-            wait_for(&format!("{who} holds mesh1 dead with {final_name} its only node"), Duration::from_secs(30), || async {
+            let who = location(&admin);
+            wait_for(&format!("{who:?} holds mesh1 dead with {final_name:?} its only node"), Duration::from_secs(30), || async {
                 let dead = named(&estate.spans(), "rdm.mesh.topology.update.via-mesh-status").into_iter().any(|sp| s(&sp["attributes"]["node"]) == who && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "dead" && s(&sp["attributes"]["taken"]) == "true");
-                let held = estate.held_topology_at(&Estate::path(&who)).await?;
+                let held = estate.held_topology_at(&who).await?;
                 let mesh1: Vec<String> = held.members.iter().filter(|d| d.node.mesh == "mesh1").map(|d| d.node.name.to_string()).collect();
                 (dead && mesh1 == [final_name.clone()]).then_some(())
             })
             .await;
         }
     }
-    assert!(alive(final_pid), "mesh1's final primary {final_name} still runs while every peer holds it");
+    assert!(alive(final_pid), "mesh1's final primary {final_name:?} still runs while every peer holds it");
 
     // The completion receipt of mesh.deleted, read from the live Build projection: every birth of mesh1
     // but its final primary, which is not deleted inside its own mesh.delete; no MeshLeft yet.
@@ -212,7 +213,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // The final primary's end: an ordinary node.delete, a separate call, the fabric-primary its
     // executor. The topology names no mesh1, so the call opens its own targeted attempt of the accepted
     // Build (as a delete of a stopped `.old` does), with its own trace.
-    let mut removal = estate.nodes_obj().await.delete(&Estate::path(&final_name)).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {final_name}: {e}"));
+    let mut removal = estate.nodes_obj().await.delete(&final_name).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {final_name:?}: {e}"));
     let accepted = Estate::complete(&mut removal).await;
     let (c, c_attempt) = (accepted.build_id.to_string(), u64::from(accepted.attempt));
     let after = Estate::values(&estate.settles_to_named(&names(&["mesh2", "mesh3"]), Duration::from_secs(60)).await);
@@ -232,7 +233,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     for rx in ["mesh2.rpc.1", "mesh3.rpc.1"] {
         for (name, id) in mesh1_ids.iter() {
             let query = format!("exact:{id}");
-            let target = format!("path:{rx}");
+            let target = rdm_test::estate::path_target(&rx);
             wait_for(&format!("{rx}'s resolver answers Gone for deleted {name}"), Duration::from_secs(30), || async {
                 let r = estate.probe(&["resolve", "--target", &target, "--query", &query]);
                 (r["reply"]["resolution"] == "gone").then_some(())
@@ -288,7 +289,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         s(&r["attributes"]["executor"])
     };
     let owner_name = converged(&b, "mesh.delete:");
-    let delete_executor = converged(&c, &format!("node.delete:{final_name}"));
+    let delete_executor = converged(&c, &format!("node.delete:{final_name:?}"));
     assert_eq!(delete_executor, fabric_primary, "the fabric-primary executes the final primary's node.delete (mesh1 has no other admin)");
 
     // mesh1's members left through the member workflows under B: every member stopped and
@@ -320,11 +321,11 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         assert!(deleted_member.iter().any(|sp| sp["attributes"]["node"] == name.as_str() && s(&sp["attributes"]["operation"]) == format!("node.delete:{name}")), "mesh1's primary published NodeDeleted for {name} under {b}: {deleted_member:?}");
     }
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| s(&sp["attributes"]["submitter"]) == final_name).collect();
-    assert!(recoveries.is_empty(), "the deleted mesh's last admin {final_name} submits no recovery of its deleted members: {} submissions, first {:?}", recoveries.len(), recoveries.first());
+    assert!(recoveries.is_empty(), "the deleted mesh's last admin {final_name:?} submits no recovery of its deleted members: {} submissions, first {:?}", recoveries.len(), recoveries.first());
     // 1. mesh.deleted ends the mesh.delete: nothing of the final primary is stopped under B.
-    assert!(order_in(&final_name, false).is_empty(), "the mesh.delete runs no step on its final primary {final_name} (its node.delete is attempt {c_attempt}): {:?}", order_in(&final_name, false));
+    assert!(order_in(&final_name, false).is_empty(), "the mesh.delete runs no step on its final primary {final_name:?} (its node.delete is attempt {c_attempt}): {:?}", order_in(&final_name, false));
     let inside: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-shutdown-member").into_iter().filter(|sp| sp["attributes"]["node"] == final_name.as_str()).collect();
-    assert!(inside.is_empty(), "no shutdown-member workflow of the final primary {final_name}: {inside:?}");
+    assert!(inside.is_empty(), "no shutdown-member workflow of the final primary {final_name:?}: {inside:?}");
     // Tiers: the ordinary nodes' workflows overlap in time; the other node-admin starts only after the
     // last ordinary node's exit is proven.
     let member = |name: &str| -> (u64, u64) {
@@ -391,12 +392,12 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // frame brought it there is best-effort dissemination (R-NS2), so no particular one is expected.
     let final_exit = terminal_end(&final_name, true);
     let lone: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == final_name && attr_u(sp, "members") == 1 && start_ns(sp) < final_exit).collect();
-    assert!(!lone.is_empty(), "the last admin {final_name} published mesh1's topology with itself the only member while it lived");
+    assert!(!lone.is_empty(), "the last admin {final_name:?} published mesh1's topology with itself the only member while it lived");
     let dead_row: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-dead-row").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
-    assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= start_ns(&completion)), "the last admin {final_name} committed mesh1's row Dead at mesh.deleted: {dead_row:?}");
+    assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= start_ns(&completion)), "the last admin {final_name:?} committed mesh1's row Dead at mesh.deleted: {dead_row:?}");
     let dead_sent: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && sp["attributes"]["scope"] == "mesh:mesh1" && sp["attributes"]["status"] == "dead").collect();
-    assert!(dead_sent.iter().any(|sp| start_ns(sp) < final_exit), "the last admin {final_name} sent MeshStatus Dead for mesh1 while it lived: {dead_sent:?}");
-    eprintln!("bullet 1: {final_name} lone mesh topology trace {}, MeshStatus Dead trace {}", s(&lone[0]["trace_id"]), dead_sent.first().map(|sp| s(&sp["trace_id"])).unwrap_or_default());
+    assert!(dead_sent.iter().any(|sp| start_ns(sp) < final_exit), "the last admin {final_name:?} sent MeshStatus Dead for mesh1 while it lived: {dead_sent:?}");
+    eprintln!("bullet 1: {final_name:?} lone mesh topology trace {}, MeshStatus Dead trace {}", s(&lone[0]["trace_id"]), dead_sent.first().map(|sp| s(&sp["trace_id"])).unwrap_or_default());
 
     // 2. The final primary's node.delete under C, executed by the fabric-primary: its whole node.stop
     // (the delete of a mesh's only node skips node.primary.update, R-MT1: "delete is skipped if it's
@@ -409,13 +410,13 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
         .flat_map(|n| named(&spans, n))
         .filter(|sp| (s(&sp["attributes"]["primary"]) == final_name || s(&sp["attributes"]["node"]) == final_name) && s(&sp["attributes"]["build_id"]) == c && attr_u(sp, "attempt") == c_attempt)
         .collect();
-    assert!(moved.is_empty(), "{final_name} is its mesh's only node: its delete runs no node.primary.update: {moved:#?}");
-    assert_eq!(got, ["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"], "{final_name}: the ordinary node.delete, node.stop first, then the exited verdict");
+    assert!(moved.is_empty(), "{final_name:?} is its mesh's only node: its delete runs no node.primary.update: {moved:#?}");
+    assert_eq!(got, ["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"], "{final_name:?}: the ordinary node.delete, node.stop first, then the exited verdict");
     let c_steps: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == final_name.as_str() && node_delete_run(sp)).collect();
-    assert!(c_steps.iter().all(|sp| sp["attributes"]["outcome"] == "complete"), "{final_name}: every step of its node.delete completed: {c_steps:?}");
+    assert!(c_steps.iter().all(|sp| sp["attributes"]["outcome"] == "complete"), "{final_name:?}: every step of its node.delete completed: {c_steps:?}");
     let row_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| s(&sp["attributes"]["subject"]) == final_name && s(&sp["attributes"]["node"]) == fabric_primary).collect();
-    assert!(row_deleted.iter().any(|sp| sp["attributes"]["outcome"] == "row-deleted" && start_ns(sp) >= final_exit), "the fabric-primary {fabric_primary} wrote {final_name}'s row Deleted after its exited verdict: {row_deleted:?}");
-    let node_deleted = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["build_id"]) == c).cloned().unwrap_or_else(|| panic!("NodeDeleted was published for {final_name} under {c}"));
+    assert!(row_deleted.iter().any(|sp| sp["attributes"]["outcome"] == "row-deleted" && start_ns(sp) >= final_exit), "the fabric-primary {fabric_primary} wrote {final_name:?}'s row Deleted after its exited verdict: {row_deleted:?}");
+    let node_deleted = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["build_id"]) == c).cloned().unwrap_or_else(|| panic!("NodeDeleted was published for {final_name:?} under {c}"));
     assert!(start_ns(&node_deleted) >= final_exit, "NodeDeleted follows the exited verdict: {node_deleted}");
 
     // mesh-left once every birth is proven exited: the receipt over all four births at the
@@ -439,11 +440,11 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let leaving_aggregate: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-leaving-aggregate").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).collect();
     assert!(
         leaving_aggregate.iter().any(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "Leaving" && attr_u(sp, "members") == 1 && sp["attributes"]["published"] == "true" && start_ns(sp) >= final_all_end && end_ns(sp) <= final_cut),
-        "the last admin {final_name} published mesh1's final mesh topology carrying itself Leaving after its All and before its stop's cut: {leaving_aggregate:?}"
+        "the last admin {final_name:?} published mesh1's final mesh topology carrying itself Leaving after its All and before its stop's cut: {leaving_aggregate:?}"
     );
     let final_stopped_at = order.iter().find(|(n, _, _)| n == "StopNode").map(|(_, _, e)| *e).expect("the final primary's stop was answered");
     let final_after_stop: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == final_name && start_ns(sp) > final_stopped_at).collect();
-    assert!(final_after_stop.iter().all(|sp| !routable(sp)), "no node holds the final primary {final_name} routable after its stop: {final_after_stop:?}");
+    assert!(final_after_stop.iter().all(|sp| !routable(sp)), "no node holds the final primary {final_name:?} routable after its stop: {final_after_stop:?}");
     let _ = installed;
 
     // gossip.md, node-stopped lifecycle overlay: mesh1's primary publishes NodeStopped from each
@@ -463,7 +464,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     }
     // The Leaving row is the delete-mesh admission's commit, before the first member stops.
     let leaving_commit: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-leaving-row").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
-    assert!(leaving_commit.iter().any(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["outcome"]) == "applied"), "mesh1's primary {final_name} applied its mesh row Leaving at delete-mesh: {leaving_commit:?}");
+    assert!(leaving_commit.iter().any(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["outcome"]) == "applied"), "mesh1's primary {final_name:?} applied its mesh row Leaving at delete-mesh: {leaving_commit:?}");
     let first_member_stop = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| stop_start(n, false)).min().unwrap();
     assert!(leaving_commit.iter().all(|sp| end_ns(sp) < first_member_stop), "the Leaving row was committed before any member stopped: {leaving_commit:?}");
 
@@ -483,11 +484,11 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // mesh1's last admin stays its mesh's primary to its own stop: it reports its stop to no one,
     // itself included, since after its cut it publishes nothing (node-stop.md step 4; i146 Q37), and
     // its NodeStopped is published once, by its commander.
-    let final_stop = format!("node.stop:{final_name}");
+    let final_stop = format!("node.stop:{final_name:?}");
     let own_primary: Vec<&Value> = named(&spans, "rdm.node_admin.status.reject.via-own-mesh-primary").into_iter().filter(|sp| attr_s(sp, "node") == final_name && attr_s(sp, "operation") == final_stop).collect();
-    assert_eq!(own_primary.len(), 1, "{final_name}'s stop is not reported to itself: {own_primary:#?}");
+    assert_eq!(own_primary.len(), 1, "{final_name:?}'s stop is not reported to itself: {own_primary:#?}");
     let final_stopped: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr_s(sp, "node") == final_name).collect();
-    assert_eq!(final_stopped.len(), 1, "{final_name}'s NodeStopped is published once: {final_stopped:#?}");
+    assert_eq!(final_stopped.len(), 1, "{final_name:?}'s NodeStopped is published once: {final_stopped:#?}");
     let updating = one("rdm.node_admin.primary.update.via-update-primary");
     assert_eq!((attr_s(&updating, "node"), attr_s(&updating, "moving"), attr_s(&updating, "successor"), attr_s(&updating, "outcome")), (final_name.clone(), "fabric-primary".to_string(), fabric_primary.clone(), "updated".to_string()), "mesh1's primary moved the fabric-primary alone to the outside successor: {updating}");
     let finished = one("rdm.node_admin.primary.update.via-issued-writes-finished");
@@ -514,7 +515,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // remaining mesh primaries (R-A2). The other remaining mesh primary, which does not hold the role,
     // pulled once from the new fabric-primary and adopted its time under the mesh-primary rule.
     let primary = fabric_primary.clone();
-    let primary_id = after.iter().find(|n| s(&n["name"]) == primary).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("the fabric primary {primary} is in the settled view"));
+    let primary_id = after.iter().find(|n| location(&n) == primary).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("the fabric primary {primary} is in the settled view"));
     assert!(["mesh2.admin.1", "mesh3.admin.1"].contains(&primary.as_str()), "the role left the deleted mesh1 for a remaining mesh primary: {primary}");
     let other = if primary == "mesh2.admin.1" { "mesh3.admin.1" } else { "mesh2.admin.1" };
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
@@ -530,7 +531,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
 
     // The successor is the primary's exact birth (gossip.md "A primary change on gossip": its digest then
     // carries `is_fabric_primary`, and the other remaining mesh-primary pulled from it above).
-    let h = after.iter().find(|n| s(&n["name"]) == primary).unwrap();
+    let h = after.iter().find(|n| location(&n) == primary).unwrap();
     assert!(attr_s(&installed, "primaries").contains(&format!("-> {}/{} @", s(&h["node_id"]), s(&h["incarnation_id"]))), "the successor is the primary's exact birth: {installed} {h}");
     estate.record_trace_url(&s(&installed["trace_id"]));
 }

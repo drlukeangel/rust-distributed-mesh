@@ -20,6 +20,7 @@
 //! with 0x73 originate and 0x72 snapshot on the roles that originate), so every observed outcome is
 //! the typed `RpcOutcome` of a real Node RPC call.
 
+use rdm_test::estate::location;
 use rdm_core::NodeId;
 use rdm_client::{BuildId, FabricDesired, LaunchKind, MeshDesired, PathName};
 use rdm_transport::stream::StreamItem;
@@ -101,12 +102,12 @@ impl Shape {
         MeshDesired { name: mesh.into(), node_admin: self.node_admin, rpc_node: 0, broker: self.broker, gateway: self.gateway, compute: self.compute }
     }
 
-    fn names(&self) -> BTreeSet<String> {
+    fn names(&self) -> BTreeSet<PathName> {
         let mut out = BTreeSet::new();
         for &m in meshes() {
             for (seg, n) in [("admin", self.node_admin), ("compute", self.compute), ("gateway", self.gateway), ("broker", self.broker)] {
                 for i in 1..=n {
-                    out.insert(format!("{m}.{seg}.{i}"));
+                    out.insert(Estate::path(&format!("{m}.{seg}"), &i.to_string()));
                 }
             }
         }
@@ -142,13 +143,13 @@ fn kind_segment(kind: &str) -> &str {
 }
 
 /// The binding kind (`launch_id`) of a node's role.
-fn launch_id(node: &str) -> &'static str {
-    match node.split('.').nth(1) {
+fn launch_id(node: &PathName) -> &'static str {
+    match node.path.split('.').nth(1) {
         Some("admin") => "node_admin",
         Some("compute") => "compute",
         Some("gateway") => "gateway",
         Some("broker") => "broker",
-        other => panic!("{node}: no role segment ({other:?})"),
+        other => panic!("{node:?}: no role segment ({other:?})"),
     }
 }
 
@@ -200,11 +201,11 @@ fn provider_actions(paths: &[PathBuf], root: &Path) -> Value {
 
 /// The exact executable and image a node of the estate runs, observed from the provider (the
 /// process's `/proc/<pid>/exe`, the container's entry point and bind mount), never from a span.
-async fn observe_launch(estate: &Estate, node: &str) -> Value {
+async fn observe_launch(estate: &Estate, node: &PathName) -> Value {
     use rdm_client::binding::sha256_file;
     let n = estate.node_value(node).await;
     if provider() == "container" {
-        let id = estate.container_of(node).await.unwrap_or_else(|| panic!("{node}: no running container"));
+        let id = estate.container_of(node).await.unwrap_or_else(|| panic!("{node:?}: no running container"));
         let inspect: Value = serde_json::from_str(&docker(&["inspect", "--format", "{{json .}}", &id])).unwrap();
         let path = inspect["Path"].as_str().unwrap().to_string();
         let mount = inspect["Mounts"]
@@ -213,7 +214,7 @@ async fn observe_launch(estate: &Estate, node: &str) -> Value {
             .iter()
             .filter(|m| Path::new(&path).starts_with(m["Destination"].as_str().unwrap()))
             .max_by_key(|m| m["Destination"].as_str().unwrap().len())
-            .unwrap_or_else(|| panic!("{node}: no mount supplies its entry point {path}: {}", inspect["Mounts"]))
+            .unwrap_or_else(|| panic!("{node:?}: no mount supplies its entry point {path}: {}", inspect["Mounts"]))
             .clone();
         let rest = Path::new(&path).strip_prefix(mount["Destination"].as_str().unwrap()).unwrap();
         let source = if rest.as_os_str().is_empty() { mount["Source"].as_str().unwrap().to_string() } else { Path::new(mount["Source"].as_str().unwrap()).join(rest).display().to_string() };
@@ -228,7 +229,7 @@ async fn observe_launch(estate: &Estate, node: &str) -> Value {
             (true, Some(p)) => p as u64,
             _ => estate.pid_of(node).await,
         };
-        let exe = std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|e| panic!("{node}: /proc/{pid}/exe: {e}"));
+        let exe = std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|e| panic!("{node:?}: /proc/{pid}/exe: {e}"));
         json!({
             "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "kind": n["kind"],
             "pid": pid, "exe": exe, "observed_sha256": sha256_file(Path::new(&format!("/proc/{pid}/exe"))).unwrap(),
@@ -369,7 +370,7 @@ async fn settle(f: &Formed) -> Vec<Value> {
 /// authority per domain, and the bound executable each runs (observed from the provider).
 async fn check_identities_and_launches(f: &Formed, nodes: &[Value], inv: &mut Invariants) -> (Vec<Value>, Value) {
     let names = f.shape.names();
-    let have: BTreeSet<String> = nodes.iter().map(|n| s(&n["name"])).collect();
+    let have: BTreeSet<PathName> = nodes.iter().map(|n| location(&n)).collect();
     inv.holds("the view holds exactly the shape's nodes", have == names && nodes.len() == f.shape.total(), json!({"want": names.len(), "have": have.len()}));
     for key in ["node_id", "endpoint_id", "incarnation_id", "deployment_id"] {
         let ids: BTreeSet<String> = nodes.iter().map(|n| s(&n[key])).collect();
@@ -377,11 +378,11 @@ async fn check_identities_and_launches(f: &Formed, nodes: &[Value], inv: &mut In
     }
     for n in nodes {
         NodeId::parse(n["node_id"].as_str().unwrap()).unwrap_or_else(|e| panic!("{}: node_id {} is not a valid logical identity: {e}", n["name"], n["node_id"]));
-        let name = s(&n["name"]);
+        let name = location(&n);
         let (mesh, seg) = (name.split('.').next().unwrap(), name.split('.').nth(1).unwrap());
-        assert_eq!((s(&n["mesh"]).as_str(), kind_segment(n["kind"].as_str().unwrap())), (mesh, seg), "{name}: the view's mesh and kind agree with its path.name");
-        assert_eq!(n["status"], "ready", "{name}");
-        assert_eq!(n["provider"], f.estate.owner.provider.as_str(), "{name}: the provider that holds it");
+        assert_eq!((s(&n["mesh"]).as_str(), kind_segment(n["kind"].as_str().unwrap())), (mesh, seg), "{name:?}: the view's mesh and kind agree with its path.name");
+        assert_eq!(n["status"], "ready", "{name:?}");
+        assert_eq!(n["provider"], f.estate.owner.provider.as_str(), "{name:?}: the provider that holds it");
     }
     inv.holds("every node has a valid NodeId and a path.name whose mesh and role agree with its view", true, json!({"nodes": nodes.len()}));
     // The provider's own record of each runtime.
@@ -389,12 +390,12 @@ async fn check_identities_and_launches(f: &Formed, nodes: &[Value], inv: &mut In
     for name in &names {
         let o = observe_launch(&f.estate, name).await;
         let b = f.set.bindings.iter().find(|b| b.launch_id == launch_id(name)).unwrap();
-        assert_eq!(launched_path(&o), b.executable, "{name} runs the bound executable: {o}");
-        assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{name} runs the bound bytes: {o}");
+        assert_eq!(launched_path(&o), b.executable, "{name:?} runs the bound executable: {o}");
+        assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{name:?} runs the bound bytes: {o}");
         if provider() == "container" {
-            assert_eq!(o["image"], RUNTIME_IMAGE, "{name} runs in the bound image: {o}");
-            assert_eq!(o["mount_read_only"], true, "{name}'s executable is a read-only mount: {o}");
-            assert_eq!(o["container"].as_str().map(str::len), Some(64), "{name}: an immutable container id: {o}");
+            assert_eq!(o["image"], RUNTIME_IMAGE, "{name:?} runs in the bound image: {o}");
+            assert_eq!(o["mount_read_only"], true, "{name:?}'s executable is a read-only mount: {o}");
+            assert_eq!(o["container"].as_str().map(str::len), Some(64), "{name:?}: an immutable container id: {o}");
         }
         launches.push(o);
     }
@@ -409,7 +410,7 @@ async fn check_identities_and_launches(f: &Formed, nodes: &[Value], inv: &mut In
 fn check_primaries(nodes: &[Value], fabric: &Value, inv: &mut Invariants) -> Value {
     let mut per_mesh = BTreeMap::new();
     for &m in meshes() {
-        let primaries: Vec<String> = nodes.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).collect();
+        let primaries: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).collect();
         assert_eq!(primaries.len(), 1, "exactly one mesh primary node-admin in {m}: {primaries:?}");
         per_mesh.insert(m.to_string(), primaries[0].clone());
     }
@@ -488,9 +489,9 @@ fn action_row(c: &Call) -> Value {
 }
 
 /// The role nodes' connection snapshots (originate door, op 0x73), by node name.
-fn snapshot(estate: &Estate, node: &str) -> Value {
-    let c = probe_call(estate, &["snapshot", "--target", &format!("path:{node}"), "--key", "x"]);
-    assert_eq!(c.out["outcome"], "Reply", "{node}: {}", c.out);
+fn snapshot(estate: &Estate, node: &PathName) -> Value {
+    let c = probe_call(estate, &["snapshot", "--target", &rdm_test::estate::path_target(&node), "--key", "x"]);
+    assert_eq!(c.out["outcome"], "Reply", "{node:?}: {}", c.out);
     c.out
 }
 
@@ -518,7 +519,7 @@ async fn converge_connections_with(f: &Formed, inv: &mut Invariants, strict: boo
 
 async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bool, owed_no_connection_to: Option<&str>) -> Value {
     let mut out = BTreeMap::new();
-    let roles: Vec<String> = f.shape.names().into_iter().filter(|n| matches!(launch_id(n), "compute" | "gateway")).collect();
+    let roles: Vec<PathName> = f.shape.names().into_iter().filter(|n| matches!(launch_id(n), "compute" | "gateway")).collect();
     for node in roles {
         let mesh = node.split('.').next().unwrap().to_string();
         let until = Instant::now() + Duration::from_secs(30);
@@ -548,7 +549,7 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
             }
             assert!(
                 Instant::now() < until,
-                "{node} never converged its connections (none to a superseded birth, nothing owed) within 30 s: stale {missing:?}; directs {}; owed {}",
+                "{node:?} never converged its connections (none to a superseded birth, nothing owed) within 30 s: stale {missing:?}; directs {}; owed {}",
                 serde_json::to_string(&directs.iter().map(|d| json!({"to": d["destination"]["name"], "state": d["state"], "kind": d["kind"], "inc": d["destination"]["incarnation"]})).collect::<Vec<_>>()).unwrap(),
                 snap["owed"]
             );
@@ -603,7 +604,7 @@ fn check_formation_chain(f: &Formed, spans: &[Value], inv: &mut Invariants) -> V
     let mut chains = Vec::new();
     for name in f.shape.names().into_iter().filter(|n| n != "mesh1.admin.1") {
         let creates: Vec<&Value> = named(spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|c| c["attributes"]["build_id"] == bid && c["attributes"]["node"] == name.as_str()).collect();
-        assert!(!creates.is_empty(), "{name}: no node.create.via-build under the formation Build");
+        assert!(!creates.is_empty(), "{name:?}: no node.create.via-build under the formation Build");
         // A create re-run by a successor executor leaves the earlier attempt's span; the one that
         // completed the node is the one whose pipeline finished.
         let mut done = None;
@@ -613,16 +614,16 @@ fn check_formation_chain(f: &Formed, spans: &[Value], inv: &mut Invariants) -> V
                 done = Some(((*c).clone(), (*p).clone()));
             }
         }
-        let (create, pipeline) = done.unwrap_or_else(|| panic!("{name}: no deployment pipeline under any of its {} create span(s)", creates.len()));
-        assert!(reconciles.iter().any(|r| descends_from(spans, &create, r)), "{name}: the create runs under a reconcile of the formation Build");
+        let (create, pipeline) = done.unwrap_or_else(|| panic!("{name:?}: no deployment pipeline under any of its {} create span(s)", creates.len()));
+        assert!(reconciles.iter().any(|r| descends_from(spans, &create, r)), "{name:?}: the create runs under a reconcile of the formation Build");
         let steps: Vec<&Value> = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipeline["span_id"]).collect();
-        assert!(!steps.is_empty(), "{name}: deployment steps ran under its pipeline");
-        assert!(steps.iter().all(|st| st["trace_id"] == pipeline["trace_id"] && st["attributes"]["node"] == name.as_str()), "{name}: every step is of its pipeline's trace and node");
-        let launch = create["events"].as_array().into_iter().flatten().find(|e| e["name"] == "launching from the explicit executable binding").cloned().unwrap_or_else(|| panic!("{name}: no explicit-binding launch event on its create span"));
+        assert!(!steps.is_empty(), "{name:?}: deployment steps ran under its pipeline");
+        assert!(steps.iter().all(|st| st["trace_id"] == pipeline["trace_id"] && st["attributes"]["node"] == name.as_str()), "{name:?}: every step is of its pipeline's trace and node");
+        let launch = create["events"].as_array().into_iter().flatten().find(|e| e["name"] == "launching from the explicit executable binding").cloned().unwrap_or_else(|| panic!("{name:?}: no explicit-binding launch event on its create span"));
         let b = f.set.bindings.iter().find(|b| b.launch_id == launch_id(&name)).unwrap();
         // The span records the path the admin launched; a container's launch names the same bound file.
-        assert_eq!(launch["attributes"]["sha256"], b.sha256.as_str(), "{name}: the create launched the bound bytes");
-        assert_eq!(launch["attributes"]["launch_id"], launch_id(&name), "{name}");
+        assert_eq!(launch["attributes"]["sha256"], b.sha256.as_str(), "{name:?}: the create launched the bound bytes");
+        assert_eq!(launch["attributes"]["launch_id"], launch_id(&name), "{name:?}");
         chains.push(json!({
             "node": name, "create_span": create["span_id"], "pipeline_span": pipeline["span_id"], "steps": steps.len(),
             "step_names": steps.iter().map(|st| st["attributes"]["step"].clone()).collect::<Vec<_>>(),
@@ -639,17 +640,17 @@ fn check_runtime_facts(f: &Formed, nodes: &[Value], launches: &[Value], spans: &
     let ready = named(spans, "rdm.mesh.node.update.via-ready");
     let mut rows = Vec::new();
     for n in nodes {
-        let name = s(&n["name"]);
+        let name = location(&n);
         let own: Vec<&&Value> = ready.iter().filter(|r| r["attributes"]["node"] == name.as_str() && r["attributes"]["incarnation_id"] == n["incarnation_id"]).collect();
-        assert!(!own.is_empty(), "{name}: no ready span for its current incarnation");
+        assert!(!own.is_empty(), "{name:?}: no ready span for its current incarnation");
         let r = own[0];
         let a = &r["attributes"];
-        assert_eq!(a["node_id"], n["node_id"], "{name}: the runtime's own NodeId is the view's");
-        assert_eq!(a["provider"], f.estate.owner.provider.as_str(), "{name}: the runtime reports the provider that holds it");
-        assert!(!s(&a["runtime_locator_kind"]).is_empty() && !s(&a["runtime_locator_fingerprint"]).is_empty(), "{name}: the runtime's locator fact is present: {a}");
+        assert_eq!(a["node_id"], n["node_id"], "{name:?}: the runtime's own NodeId is the view's");
+        assert_eq!(a["provider"], f.estate.owner.provider.as_str(), "{name:?}: the runtime reports the provider that holds it");
+        assert!(!s(&a["runtime_locator_kind"]).is_empty() && !s(&a["runtime_locator_fingerprint"]).is_empty(), "{name:?}: the runtime's locator fact is present: {a}");
         let svc = s(&r["service"]);
         let want_service = format!("rshape-{}", if launch_id(&name) == "node_admin" { "node-admin" } else { launch_id(&name) });
-        assert_eq!(svc, want_service, "{name}: the process that reported ready is the consumer's {want_service}");
+        assert_eq!(svc, want_service, "{name:?}: the process that reported ready is the consumer's {want_service}");
         let l = launches.iter().find(|o| o["node"] == name.as_str()).unwrap();
         rows.push(json!({
             "node": name, "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "endpoint_id": n["endpoint_id"], "kind": n["kind"],
@@ -923,8 +924,8 @@ impl RouteRun {
         self.legs.iter().enumerate().map(|(i, l)| json!({"op_seq": i, "leg": l["leg"], "outcome": l["outcome"], "route": l["route"], "carrier": l["carrier"], "resolved": l["resolved"], "terminal": l["terminal"], "trace_id": l["trace_id"]})).collect()
     }
 
-    fn node<'a>(nodes: &'a [Value], name: &str) -> &'a Value {
-        nodes.iter().find(|n| n["name"] == name).unwrap_or_else(|| panic!("no node {name}"))
+    fn node<'a>(nodes: &'a [Value], name: &PathName) -> &'a Value {
+        nodes.iter().find(|n| n["name"] == name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
 
     /// Issue the legs. Same-mesh and cross-mesh exact calls from the controller, the same two carried
@@ -988,11 +989,11 @@ impl RouteRun {
         let before_carrying = held_directs(e);
 
         // 3. carried through a mesh1 gateway: to the same-mesh broker and to the cross-mesh broker.
-        let c = probe_call(e, &["get", "--target", &exact(&b1_id), "--via", &format!("path:{g1}"), "--key", "same-mesh"]);
+        let c = probe_call(e, &["get", "--target", &exact(&b1_id), "--via", &rdm_test::estate::path_target(&g1), "--key", "same-mesh"]);
         assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str()), (Some("Reply"), Some("via-peer")), "{}", c.out);
         assert_eq!(c.out["reply"]["executing_node"], b1["node_id"], "the carrier reached exactly the same-mesh broker: {}", c.out);
         leg(self, "same-mesh-via-gateway", c, "controller", &json!(exact(&b1_id)), &resolved(&b1));
-        let c = probe_call(e, &["get", "--target", &exact(&b2_id), "--via", &format!("path:{g1}"), "--key", "cross-mesh"]);
+        let c = probe_call(e, &["get", "--target", &exact(&b2_id), "--via", &rdm_test::estate::path_target(&g1), "--key", "cross-mesh"]);
         assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str()), (Some("Reply"), Some("via-peer")), "{}", c.out);
         assert_eq!(c.out["reply"]["executing_node"], b2["node_id"], "the mesh1 gateway reached the mesh2 broker: {}", c.out);
         assert_eq!(c.out["reply"]["result"], json!({"found": true, "value": value("cross")}));
@@ -1014,7 +1015,7 @@ impl RouteRun {
             let key = format!("orig-{kind}");
             let held_before = before_carrying.iter().any(|(id, _)| *id == dest_id);
             let route = if held_before { "direct" } else { "direct-unknown" };
-            let c = probe_call(e, &["originate", "--target", &format!("path:{g1}"), "--destination", &format!("path:{dest}"), "--key", &key, "--value", &value(&key)]);
+            let c = probe_call(e, &["originate", "--target", &rdm_test::estate::path_target(&g1), "--destination", &rdm_test::estate::path_target(&dest), "--key", &key, "--value", &value(&key)]);
             assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some(route), Some("reply")), "{g1}'s own call to {dest} follows the Direct fact it held before carrying ({held_before}): {}", c.out);
             wait_for(&format!("{g1} holds a Connected Direct connection to {dest}'s current birth"), Duration::from_secs(30), || async {
                 let snap = snapshot(e, g1);
@@ -1026,7 +1027,7 @@ impl RouteRun {
             assert_eq!(c.out["destination_node_id"], dest_id);
             assert_eq!(c.out["reply"]["executing_node"], dest_id, "{}", c.out);
             assert_eq!(c.out["reply"]["incarnation_id"], d["incarnation_id"], "{}", c.out);
-            leg(self, &format!("gateway-originates-{kind}"), c, g1, &json!(format!("path:{dest}")), &resolved(d));
+            leg(self, &format!("gateway-originates-{kind}"), c, g1, &json!(rdm_test::estate::path_target(&dest)), &resolved(d));
         }
 
         // 6. a compute holds no Direct fact toward the broker: with no fact the call dials directly
@@ -1208,7 +1209,7 @@ async fn restart_with_traffic(
     // `node.stop` over Node RPC: the call follows the fabric-primary role; the stream is not this loop's
     // completion source (the Build log read below is, between the traffic it issues), so it is let go.
     // Once the stop's attempt is complete and the node stopped, `node.start` the same way.
-    let stream = e.nodes_obj().await.stop(&path_of(node)).await.unwrap_or_else(|end| panic!("{node}: node.stop was not accepted: {end}"));
+    let stream = e.nodes_obj().await.stop(node).await.unwrap_or_else(|end| panic!("{node}: node.stop was not accepted: {end}"));
     let (build_id, mut attempt) = (stream.accepted().build_id.to_string(), u64::from(stream.accepted().attempt));
     drop(stream);
     actions.push(json!({"t_ms": t0, "action": "node.stop", "via": "node.stop", "node": node, "attempt": attempt, "build_id": build_id, "incarnation_id": before["incarnation_id"]}));
@@ -1220,7 +1221,7 @@ async fn restart_with_traffic(
         assert_ne!(b["state"], "failed", "{node}: restart Build failed: {b:#}");
         let now = e.node_value_opt(node).await;
         if !start_sent && b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= attempt && now.as_ref().is_some_and(|n| n["stopped"] == true) {
-            let stream = e.nodes_obj().await.start(&path_of(node)).await.unwrap_or_else(|end| panic!("{node}: node.start was not accepted: {end}"));
+            let stream = e.nodes_obj().await.start(node).await.unwrap_or_else(|end| panic!("{node}: node.start was not accepted: {end}"));
             attempt = u64::from(stream.accepted().attempt);
             drop(stream);
             start_sent = true;
@@ -1258,13 +1259,13 @@ async fn issue(f: &Formed, ops: &mut Vec<(SyntheticOp, Call)>, rng: &mut Rng, se
         seq: *seq,
         key: format!("op-{:05}", *seq),
         value: format!("v{}-{:x}", *seq, rng.below(1 << 24)),
-        target: s(&broker["name"]),
+        target: location(&broker),
         target_id: s(&broker["node_id"]),
         via,
         window,
     };
     let exact = format!("exact:{}", op.target_id);
-    let via_arg = op.via.as_ref().map(|v| format!("path:{v}"));
+    let via_arg = op.via.as_ref().map(|v| rdm_test::estate::path_target(&v));
     let mut args = vec!["put", "--target", exact.as_str(), "--key", op.key.as_str(), "--value", op.value.as_str()];
     if let Some(v) = &via_arg {
         args.extend(["--via", v.as_str()]);
@@ -1389,7 +1390,7 @@ async fn mock_traffic_accounts_for_every_outcome_without_uncertain_replay() {
     converge_connections(&f, &mut inv).await;
 
     let brokers: Vec<Value> = nodes.iter().filter(|n| n["kind"] == "broker").cloned().collect();
-    let gateways: Vec<String> = nodes.iter().filter(|n| n["kind"] == "gateway").map(|n| s(&n["name"])).collect();
+    let gateways: Vec<PathName> = nodes.iter().filter(|n| n["kind"] == "gateway").map(|n| location(&n)).collect();
     assert_eq!((brokers.len(), gateways.len()), (6, 6));
     let mut rng = Rng(f.seed);
     let mut seq = 0u64;
@@ -1510,21 +1511,16 @@ fn pid_alive(pid: u64) -> bool {
 /// The bound on connecting to an admin and writing one Build call: the client's own (`build_stream::SEND`).
 const SEND: Duration = Duration::from_secs(10);
 
-/// The node named `name`, as the path.name the typed objects take.
-fn path_of(name: &str) -> PathName {
-    name.parse().unwrap_or_else(|e| panic!("{name} is not a path.name: {e:?}"))
-}
-
 /// `fabric.get` at the admin named `admin`, as the JSON its view serializes to, when it answers for this
 /// Fabric within 2 s; never a panic, so a dead admin is a `None`.
-async fn fabric_at(e: &Estate, admin: &str) -> Option<Value> {
-    e.fabric_view_at(&path_of(admin)).await.map(|v| serde_json::to_value(v).expect("a view serializes"))
+async fn fabric_at(e: &Estate, admin: &PathName) -> Option<Value> {
+    e.fabric_view_at(admin).await.map(|v| serde_json::to_value(v).expect("a view serializes"))
 }
 
 /// `node.get` of every node the admin named `admin` holds, as that admin's own view holds them, when it
 /// answers for this Fabric within 2 s; a dead admin is a `None`.
-async fn nodes_at(e: &Estate, admin: &str) -> Option<Vec<Value>> {
-    e.node_views_at(&path_of(admin)).await.map(|v| Estate::values(&v))
+async fn nodes_at(e: &Estate, admin: &PathName) -> Option<Vec<Value>> {
+    e.node_views_at(admin).await.map(|v| Estate::values(&v))
 }
 
 /// Build `id` as the fabric's Build records fold it now (Q292: every admin reads the Build from the
@@ -1553,17 +1549,17 @@ async fn build_now(e: &Estate, id: &str) -> Value {
 /// without a reply. The first item of the call is read as `BuildCarrier::open` reads it.
 /// `node.create` of one more `kind` node in `mesh` as the complete topology read at `admin`, the path
 /// named on the estate's executable for it.
-async fn created(e: &Estate, admin: &str, mesh: &str, kind: LaunchKind) -> BuildChange {
-    let current = rdm_test::executables::Current::read(&e.carrier_at(&path_of(admin)).await).await.unwrap_or_else(|end| panic!("the current topology at {admin}: {end}"));
+async fn created(e: &Estate, admin: &PathName, mesh: &str, kind: LaunchKind) -> BuildChange {
+    let current = rdm_test::executables::Current::read(&e.carrier_at(admin).await).await.unwrap_or_else(|end| panic!("the current topology at {admin:?}: {end}"));
     let nodes = current.with_one_more(mesh, kind, &e.executables);
     BuildChange::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes }
 }
 
-async fn ask(e: &Estate, admin: &str, change: BuildChange) -> Value {
-    let carrier = e.carrier_at(&path_of(admin)).await;
+async fn ask(e: &Estate, admin: &PathName, change: BuildChange) -> Value {
+    let carrier = e.carrier_at(admin).await;
     let req = BuildRequest::Create { submit: BuildSubmit::Change(change) };
     let opts = CallOptions { budget: Budget::Stream { send: SEND }, ..CallOptions::default() };
-    let first = match carrier.client().call_stream::<Build>(&NodeTarget::CurrentPath(path_of(admin)), &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
+    let first = match carrier.client().call_stream::<Build>(&NodeTarget::CurrentPath(admin.clone()), &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
         Err((RpcOutcome::Reply(r), _)) => Ok(r.into_value()),
         Err((other, _)) => Err(format!("{other:?}")),
         Ok((mut stream, _)) => match stream.next().await {
@@ -1584,7 +1580,7 @@ async fn ask(e: &Estate, admin: &str, change: BuildChange) -> Value {
 
 /// The pid of `name`'s runtime now: the Day-0 admin's own process while it is the one running, else
 /// the provider's record (process: `deployment.json`; container: the container's init).
-async fn node_pid(f: &Formed, name: &str) -> u64 {
+async fn node_pid(f: &Formed, name: &PathName) -> u64 {
     if provider() != "container" && name == "mesh1.admin.1" {
         if let Some(p) = f.estate.bootstrap_pid() {
             if pid_alive(u64::from(p)) {
@@ -1609,7 +1605,7 @@ struct Traffic {
 impl Traffic {
     fn new(seed: u64, nodes: &[Value]) -> Self {
         let brokers: Vec<Value> = nodes.iter().filter(|n| n["kind"] == "broker").cloned().collect();
-        let gateways: Vec<String> = nodes.iter().filter(|n| n["kind"] == "gateway").map(|n| s(&n["name"])).collect();
+        let gateways: Vec<PathName> = nodes.iter().filter(|n| n["kind"] == "gateway").map(|n| location(&n)).collect();
         assert!(!brokers.is_empty() && !gateways.is_empty());
         Self { ops: Vec::new(), rng: Rng(seed), seq: 0, brokers, gateways, aim: None }
     }
@@ -1638,8 +1634,8 @@ struct Stable {
 }
 
 impl Stable {
-    fn fp_name(&self) -> String {
-        s(&self.fp["name"])
+    fn fp_name(&self) -> PathName {
+        location(&self.fp)
     }
 
 
@@ -1720,10 +1716,10 @@ impl Write {
 
     /// The Build change the call submits to the admin `admin`: a create is the complete topology with
     /// the path added on its executable, read there now (proposal executable-bindings-at-create.md rule 1).
-    async fn change(&self, e: &Estate, admin: &str) -> BuildChange {
+    async fn change(&self, e: &Estate, admin: &PathName) -> BuildChange {
         match self {
-            Self::Restart(n) => BuildChange::Stop { node: path_of(n) },
-            Self::Delete(n) => BuildChange::RemoveNode { node: path_of(n) },
+            Self::Restart(n) => BuildChange::Stop { node: n.clone() },
+            Self::Delete(n) => BuildChange::RemoveNode { node: n.clone() },
             Self::Create { mesh, kind } => created(e, admin, mesh, *kind).await,
         }
     }
@@ -1734,16 +1730,16 @@ enum Until {
     /// The node is ready again as the same birth: its node id and incarnation unchanged (node-stop.md
     /// "Kept": a stop and a start keep the node.id, the incarnation and the process). Its `node.start` is
     /// sent once its stop's attempt completed with the node stopped.
-    Restarted { node: String, node_id: String, incarnation: String },
+    Restarted { node: PathName, node_id: String, incarnation: String },
     /// The node is ready under an incarnation other than `old_incarnation`: the new birth a node recovery
     /// put at the path after its runtime died.
-    Recovered { node: String, old_incarnation: String },
+    Recovered { node: PathName, old_incarnation: String },
     /// The node is no longer in the view.
-    Gone { node: String },
+    Gone { node: PathName },
     /// `mesh` holds a ready node-admin that was not in `before`.
     Grew { mesh: String, before: BTreeSet<String> },
     /// A node stands at `node` that is ready and whose NodeId is not `not_node_id`.
-    Joined { node: String, not_node_id: String },
+    Joined { node: PathName, not_node_id: String },
 }
 
 fn progress(msg: &str) {
@@ -1752,7 +1748,7 @@ fn progress(msg: &str) {
 
 impl Run {
     fn new(seed: u64, nodes: &[Value]) -> Self {
-        let known = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["name"])).collect();
+        let known = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| location(&n)).collect();
         Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known, probe_round: 0, build_obs: Vec::new(), roles: None, refused_writes: Vec::new(), attempts: BTreeMap::new(), lane_waits: BTreeMap::new() }
     }
 
@@ -1830,8 +1826,8 @@ impl Run {
     async fn look(&mut self, f: &mut Formed, want_admins: &BTreeMap<String, usize>) -> Result<Stable, String> {
         let Some(nodes) = self.nodes(f).await else { return Err("no admin answers node.get".into()) };
         let fabric = self.fabric(f).await.ok_or("no admin answers fabric.get")?;
-        let roles: BTreeSet<String> = nodes.iter().filter(|n| n["kind"] != "node_admin").map(|n| s(&n["name"])).collect();
-        let want_roles: BTreeSet<String> = self.roles.clone().unwrap_or_else(|| f.shape.names().into_iter().filter(|n| launch_id(n) != "node_admin").collect());
+        let roles: BTreeSet<PathName> = nodes.iter().filter(|n| n["kind"] != "node_admin").map(|n| location(&n)).collect();
+        let want_roles: BTreeSet<PathName> = self.roles.clone().unwrap_or_else(|| f.shape.names().into_iter().filter(|n| launch_id(n) != "node_admin").collect());
         if roles != want_roles {
             return Err(format!("role nodes {roles:?} are not the shape's {want_roles:?}"));
         }
@@ -1855,10 +1851,10 @@ impl Run {
         let key = |v: &[Value]| -> BTreeSet<String> { v.iter().filter(|n| n["kind"] == "node_admin").map(|n| format!("{}={}:{}", n["name"], n["node_id"], n["incarnation_id"])).collect() };
         let entry_key = key(&nodes);
         for a in &admins {
-            let name = s(&a["name"]);
+            let name = location(&a);
             self.known.insert(name.clone());
-            let Some(own_fabric) = fabric_at(&f.estate, &name).await else { return Err(format!("{name} does not answer fabric.get for this Fabric")) };
-            let Some(own_nodes) = nodes_at(&f.estate, &name).await else { return Err(format!("{name} does not answer node.get")) };
+            let Some(own_fabric) = fabric_at(&f.estate, &name).await else { return Err(format!("{name:?} does not answer fabric.get for this Fabric")) };
+            let Some(own_nodes) = nodes_at(&f.estate, &name).await else { return Err(format!("{name:?} does not answer node.get")) };
             if let Err(e) = primaries_as_expected(&own_nodes) {
                 return Err(format!("{}'s own primaries are not the election function's: {e}", a["name"]));
             }
@@ -1874,7 +1870,7 @@ impl Run {
                 return Err(format!("{} names {} as fabric-primary, the entry view {}", a["name"], own_fabric["fabric_primary"], fp["name"]));
             }
         }
-        let fp_name = s(&fp["name"]);
+        let fp_name = location(&fp);
         let own = fabric_at(&f.estate, &fp_name).await.ok_or("the fabric-primary does not answer fabric.get")?;
         let bid = s(&own["build_id"]);
         let b = build_at(&f.estate, &bid).await.ok_or(format!("the fabric-primary's Build log does not answer for Build {bid:?}"))?;
@@ -1910,7 +1906,7 @@ impl Run {
         progress(&format!("checkpoint `{label}` stable after {converged_ms} ms: fabric-primary {} ({})", st.fp_name(), st.fp["node_id"]));
         // The births seen: pid, node, NodeId, incarnation.
         for a in &st.admins {
-            let name = s(&a["name"]);
+            let name = location(&a);
             let have = self.births.iter().any(|b| b["node"] == a["name"] && b["incarnation_id"] == a["incarnation_id"]);
             if !have {
                 let pid = node_pid(f, &name).await;
@@ -1940,7 +1936,7 @@ impl Run {
         let t0 = now_ns();
         let mut answers = Vec::new();
         for a in &st.admins {
-            let v = ask(&f.estate, &s(&a["name"]), BuildChange::RemoveNode { node: path_of(&path) }).await;
+            let v = ask(&f.estate, &location(&a), BuildChange::RemoveNode { node: path.clone() }).await;
             answers.push(json!({"admin": a["name"], "node_id": a["node_id"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "detail": v["detail"]}));
         }
         let t1 = now_ns();
@@ -1976,7 +1972,7 @@ impl Run {
     /// sent as `build_id`: once the stop's attempt is complete and `node` is listed stopped at the
     /// fabric-primary `st` names, the start is asked of it; the attempt it opened is what [`Self::finish`]
     /// and the caller wait for next, and it is returned.
-    async fn start_after_stop(&mut self, f: &Formed, st: &Stable, node: &str, build_id: &str) -> u64 {
+    async fn start_after_stop(&mut self, f: &Formed, st: &Stable, node: &PathName, build_id: &str) -> u64 {
         let want = self.attempts[build_id];
         let until = Instant::now() + Duration::from_secs(120);
         loop {
@@ -1985,33 +1981,33 @@ impl Run {
             if b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= want && stopped {
                 break;
             }
-            assert!(Instant::now() < until, "{node}: the restart's node.stop of {build_id} attempt {want} did not complete with the node stopped within 120 s: {b}");
+            assert!(Instant::now() < until, "{node:?}: the restart's node.stop of {build_id} attempt {want} did not complete with the node stopped within 120 s: {b}");
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        let v = ask(&f.estate, &st.fp_name(), BuildChange::Start { node: path_of(node) }).await;
-        assert_eq!(v["reply"], "started", "the restart's node.start of {node} at {}: {v}", st.fp_name());
+        let v = ask(&f.estate, &st.fp_name(), BuildChange::Start { node: node.clone() }).await;
+        assert_eq!(v["reply"], "started", "the restart's node.start of {node:?} at {}: {v}", st.fp_name());
         let attempt = v["attempt"].as_u64().unwrap_or_else(|| panic!("Started names the attempt it opened: {v}"));
         self.attempts.insert(build_id.to_string(), attempt);
-        self.actions.push(json!({"t_ms": now_ms(), "action": format!("node.start of {node}"), "via": "node.start", "subject": node, "attempt": attempt, "build_id": build_id, "accepted_by": st.fp["name"]}));
+        self.actions.push(json!({"t_ms": now_ms(), "action": format!("node.start of {node:?}"), "via": "node.start", "subject": node, "attempt": attempt, "build_id": build_id, "accepted_by": st.fp["name"]}));
         // The start is an accepted write of its own: it opens the Build's next attempt, as the stop did (Q183).
-        self.writes.push(json!({"what": format!("node.start of {node}"), "op": "node.start", "subject": node, "accepted_by": st.fp["name"], "accepted_by_node_id": st.fp["node_id"], "build_id": build_id, "attempt": attempt, "t_ms": now_ms()}));
+        self.writes.push(json!({"what": format!("node.start of {node:?}"), "op": "node.start", "subject": node, "accepted_by": st.fp["name"], "accepted_by_node_id": st.fp["node_id"], "build_id": build_id, "attempt": attempt, "t_ms": now_ms()}));
         attempt
     }
 
     /// Submit the replace steps of `node` (lifecycles/node-replace.md: one Build of node primitives)
     /// to the fabric-primary over the `node` objects: the Build it runs on. The attempt it opened is
     /// what [`Self::finish`] waits for. The caller's stream is read on a task of its own.
-    async fn write_steps(&mut self, f: &Formed, st: &Stable, what: &str, node: &str) -> String {
+    async fn write_steps(&mut self, f: &Formed, st: &Stable, what: &str, node: &PathName) -> String {
         use rdm_client::Nodes;
         let t0 = now_ms();
-        let nodes = Nodes::new(f.estate.carrier_at(&path_of(&st.fp_name())).await);
+        let nodes = Nodes::new(f.estate.carrier_at(&st.fp_name())).await.clone();
         let path: rdm_core::PathName = node.parse().unwrap();
         let subject = f.estate.node_view(node).await;
         let mut stream = nodes.steps(rdm_test::steps::replace(&path, &subject.mesh, subject.kind).expect("valid replacement fixture name")).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {} refused the replace steps of {node}: {e}", st.fp_name()));
         let (build_id, attempt) = (stream.accepted().build_id.to_string(), stream.accepted().attempt);
         tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
         self.attempts.insert(build_id.clone(), u64::from(attempt));
-        self.actions.push(json!({"t_ms": t0, "action": what, "via": format!("build.create steps {node}"), "status": "started", "build_id": build_id, "accepted_by": st.fp["name"]}));
+        self.actions.push(json!({"t_ms": t0, "action": what, "via": format!("build.create steps {node:?}"), "status": "started", "build_id": build_id, "accepted_by": st.fp["name"]}));
         progress(&format!("{what}: the replace steps of {node} accepted by {} as {build_id} attempt {attempt}", st.fp_name()));
         build_id
     }
@@ -2035,46 +2031,46 @@ impl Run {
                 seen_failed += 1;
             }
             if let (false, Until::Restarted { node, .. }, Some(nodes)) = (start_sent, &until, nodes.as_ref()) {
-                let stopped = nodes.iter().any(|n| n["name"] == node.as_str() && n["stopped"] == true);
+                let stopped = nodes.iter().any(|n| location(n) == *node && n["stopped"] == true);
                 if b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= attempt && stopped {
                     let fp = self.fabric(f).await.map(|v| s(&v["fabric_primary"])).unwrap_or_default();
-                    let v = ask(&f.estate, &fp, BuildChange::Start { node: path_of(node) }).await;
+                    let v = ask(&f.estate, &fp, BuildChange::Start { node: node.clone() }).await;
                     // A mesh whose own attempt is open (a recovery the mesh-primary opened on the same
                     // Build as the stop completed) refuses the start by name (build.md §4.4: "The node's
                     // mesh holds no attempt of its own | build-in-progress, naming the mesh"): the start
                     // is sent again once the Build reads complete past that attempt.
                     if v["reply"] == "build-in-progress" && v["current_build_id"] == build_id {
-                        progress(&format!("the restart's node.start of {node} at {fp} refused while mesh {} holds an attempt of {build_id}: sent again once it ends", s(&v["mesh"])));
+                        progress(&format!("the restart's node.start of {node:?} at {fp} refused while mesh {} holds an attempt of {build_id}: sent again once it ends", s(&v["mesh"])));
                         self.refused_writes.push(json!({"sent_to": fp, "reply": v["reply"], "path": node, "route": "node.start", "held_by": v["held_by"], "mesh": v["mesh"], "t_ms": now_ms()}));
                         attempt = b["attempt"].as_u64().unwrap_or(attempt) + 1;
                         continue;
                     }
-                    assert_eq!(v["reply"], "started", "the restart's node.start of {node} at {fp}: {v}");
+                    assert_eq!(v["reply"], "started", "the restart's node.start of {node:?} at {fp}: {v}");
                     attempt = v["attempt"].as_u64().unwrap_or_else(|| panic!("Started names the attempt it opened: {v}"));
-                    self.actions.push(json!({"t_ms": now_ms(), "action": format!("node.start of {node}"), "via": "node.start", "subject": node, "attempt": attempt, "build_id": build_id, "accepted_by": fp}));
+                    self.actions.push(json!({"t_ms": now_ms(), "action": format!("node.start of {node:?}"), "via": "node.start", "subject": node, "attempt": attempt, "build_id": build_id, "accepted_by": fp}));
                     // The start is an accepted write of its own: it opens the Build's next attempt, as the stop did (Q183).
-                    self.writes.push(json!({"what": format!("node.start of {node}"), "op": "node.start", "subject": node, "accepted_by": fp, "build_id": build_id, "attempt": attempt, "t_ms": now_ms()}));
+                    self.writes.push(json!({"what": format!("node.start of {node:?}"), "op": "node.start", "subject": node, "accepted_by": fp, "build_id": build_id, "attempt": attempt, "t_ms": now_ms()}));
                     start_sent = true;
                     continue;
                 }
             }
             let held = nodes.as_ref().is_some_and(|nodes| match &until {
-                Until::Restarted { node, node_id, incarnation } => nodes.iter().any(|n| n["name"] == node.as_str() && n["status"] == "ready" && n["node_id"] == node_id.as_str() && n["incarnation_id"] == incarnation.as_str()),
-                Until::Recovered { node, old_incarnation } => nodes.iter().any(|n| n["name"] == node.as_str() && n["status"] == "ready" && n["incarnation_id"] != old_incarnation.as_str()),
-                Until::Gone { node } => nodes.iter().all(|n| n["name"] != node.as_str()),
+                Until::Restarted { node, node_id, incarnation } => nodes.iter().any(|n| location(n) == *node && n["status"] == "ready" && n["node_id"] == node_id.as_str() && n["incarnation_id"] == incarnation.as_str()),
+                Until::Recovered { node, old_incarnation } => nodes.iter().any(|n| location(n) == *node && n["status"] == "ready" && n["incarnation_id"] != old_incarnation.as_str()),
+                Until::Gone { node } => nodes.iter().all(|n| location(n) != *node),
                 Until::Grew { mesh, before } => nodes.iter().any(|n| n["kind"] == "node_admin" && n["mesh"] == mesh.as_str() && n["status"] == "ready" && !before.contains(&s(&n["node_id"]))),
-                Until::Joined { node, not_node_id } => nodes.iter().any(|n| n["name"] == node.as_str() && n["status"] == "ready" && n["node_id"] != not_node_id.as_str()),
+                Until::Joined { node, not_node_id } => nodes.iter().any(|n| location(n) == *node && n["status"] == "ready" && n["node_id"] != not_node_id.as_str()),
             });
             let at = match &lane { Some(l) => &b["lanes"][l.as_str()], None => &b };
             if start_sent && at["state"] == "complete" && at["attempt"].as_u64().unwrap_or(0) >= attempt && held {
                 return json!({"build": b, "wall_ms": started.elapsed().as_millis() as u64, "seen_failed_observations": seen_failed});
             }
             assert!(started.elapsed() < Duration::from_secs(120), "Build {build_id} did not complete {} with its effect visible within 120 s: build {b:#}; wanted {}", match &lane { Some(l) => format!("{l}'s lane attempt {attempt}"), None => format!("attempt {attempt}") }, match &until {
-                Until::Restarted { node, incarnation, .. } => format!("{node} ready again as incarnation {incarnation}"),
-                Until::Recovered { node, old_incarnation } => format!("{node} ready under an incarnation other than {old_incarnation}"),
-                Until::Gone { node } => format!("{node} gone"),
+                Until::Restarted { node, incarnation, .. } => format!("{node:?} ready again as incarnation {incarnation}"),
+                Until::Recovered { node, old_incarnation } => format!("{node:?} ready under an incarnation other than {old_incarnation}"),
+                Until::Gone { node } => format!("{node:?} gone"),
                 Until::Grew { mesh, .. } => format!("{mesh} grown by one node-admin"),
-                Until::Joined { node, not_node_id } => format!("{node} ready under a NodeId other than {not_node_id}"),
+                Until::Joined { node, not_node_id } => format!("{node:?} ready under a NodeId other than {not_node_id}"),
             });
             if nodes.is_some() {
                 self.traffic.burst(f, 1, window).await;
@@ -2088,13 +2084,13 @@ impl Run {
 /// Point the estate's entry (the admin the controller and its probes ask) at an admin that is not
 /// about to stop: the node a Build restarts or deletes, or a process about to be killed, is never the
 /// entry while it does.
-async fn point_entry_away(f: &mut Formed, st: &Stable, avoid: &str) {
+async fn point_entry_away(f: &mut Formed, st: &Stable, avoid: &PathName) {
     let keep = st.admins.iter().find(|n| n["name"] != avoid && n["is_fabric_primary"] == true).or_else(|| st.admins.iter().find(|n| n["name"] != avoid)).expect("a second admin to ask");
-    follow(f, &s(&keep["name"])).await;
+    follow(f, &location(&keep)).await;
 }
 
 /// Point the estate's entry at the admin `name` when it is not the entry already.
-async fn follow(f: &mut Formed, name: &str) {
+async fn follow(f: &mut Formed, name: &PathName) {
     let admin = Estate::path(name);
     if f.estate.admin != admin {
         f.estate.enter(&admin).await;
@@ -2103,18 +2099,18 @@ async fn follow(f: &mut Formed, name: &str) {
 
 /// SIGKILL a non-fabric-primary node-admin (a death the story names), recording the host's view of
 /// it; a fabric-primary is never signalled.
-async fn kill_admin(f: &mut Formed, a: &mut Run, st: &Stable, node: &str) -> Value {
+async fn kill_admin(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never killed; it leaves only through a Build");
-    let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not a ready admin")).clone();
+    let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node:?} is not a ready admin")).clone();
     point_entry_away(f, st, node).await;
     let pid = node_pid(f, node).await;
     let t = now_ns();
     f.estate.kill_pid(pid as u32);
     let gone_ns = now_ns();
-    assert!(!pid_alive(pid), "{node}'s process {pid} is gone after the kill");
+    assert!(!pid_alive(pid), "{node:?}'s process {pid} is gone after the kill");
     let rec = json!({"event": "admin.kill", "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "pid": pid, "kill_ns": t, "observed_gone_ns": gone_ns, "was_primary": n["is_primary"]});
-    a.actions.push(json!({"t_ms": now_ms(), "action": "admin.kill", "via": format!("SIGKILL pid {pid} ({node}); a non-fabric-primary death the story names"), "node": node}));
-    progress(&format!("killed {node} (pid {pid})"));
+    a.actions.push(json!({"t_ms": now_ms(), "action": "admin.kill", "via": format!("SIGKILL pid {pid} ({node:?}); a non-fabric-primary death the story names"), "node": node}));
+    progress(&format!("killed {node:?} (pid {pid})"));
     rec
 }
 
@@ -2178,19 +2174,19 @@ async fn prove_path(f: &mut Formed, a: &mut Run, want: &BTreeMap<String, usize>,
 /// until the Build is complete and the node is ready again as the same birth (node-stop.md, node-start.md: a restart
 /// keeps the node.id and the incarnation). The call opens the next attempt of the accepted Build: the
 /// Build id is the fabric's own.
-async fn restart_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
+async fn restart_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, scenario: &str) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a deleting Build");
-    let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not a ready admin")).clone();
+    let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node:?} is not a ready admin")).clone();
     let fabric_build = s(&st.fabric["build_id"]);
     point_entry_away(f, st, node).await;
     let attempt_before = build_at(&f.estate, &fabric_build).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: node.restart"), Write::Restart(node.to_string())).await;
-    assert_eq!(build_id, fabric_build, "{node}: a restart opens the next attempt of the accepted Build (the current build_id stays)");
+    assert_eq!(build_id, fabric_build, "{node:?}: a restart opens the next attempt of the accepted Build (the current build_id stays)");
     let fin = a.finish(f, &build_id, Until::Restarted { node: node.into(), node_id: s(&n["node_id"]), incarnation: s(&n["incarnation_id"]) }, "during-restart").await;
     let now = f.estate.node_value(node).await;
-    assert_eq!(now["node_id"], n["node_id"], "{node}: a restart keeps the logical node");
-    assert_eq!(now["incarnation_id"], n["incarnation_id"], "{node}: a restart keeps the incarnation (node-stop.md, Kept)");
+    assert_eq!(now["node_id"], n["node_id"], "{node:?}: a restart keeps the logical node");
+    assert_eq!(now["incarnation_id"], n["incarnation_id"], "{node:?}: a restart keeps the incarnation (node-stop.md, Kept)");
     let ev = json!({
         "event": "admin.restart", "scenario": scenario, "node": node, "node_id": n["node_id"], "was_primary": n["is_primary"], "incarnation_id": n["incarnation_id"],
         "build_id": build_id, "fabric_build_id_before": fabric_build, "attempt_before": attempt_before, "attempt_after": fin["build"]["attempt"], "executor_after": fin["build"]["executor"], "request_ns": t0, "wall_ms": fin["wall_ms"], "build_failed_observations": fin["seen_failed_observations"],
@@ -2202,7 +2198,7 @@ async fn restart_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str,
 /// A non-fabric-primary node-admin dies (SIGKILL) and the fabric recovers it: the surviving admin of
 /// its mesh takes the role, and a re-born admin stands at the same path.name. Returns the kill record,
 /// what the survivor saw, and the recovered view.
-async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
+async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, scenario: &str) -> Value {
     let mesh = node.split('.').next().unwrap().to_string();
     let survivor = st.admins.iter().find(|n| n["mesh"] == mesh.as_str() && n["name"] != node).unwrap_or_else(|| panic!("{mesh} has a surviving admin")).clone();
     let victim = st.admins.iter().find(|n| n["name"] == node).unwrap().clone();
@@ -2216,7 +2212,7 @@ async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
         let nodes = a.nodes(f).await;
         if let Some(nodes) = &nodes {
             if role_ms.is_none() {
-                if let Some(own) = nodes_at(&f.estate, &s(&survivor["name"])).await {
+                if let Some(own) = nodes_at(&f.estate, &location(&survivor)).await {
                     let me = own.iter().find(|n| n["name"] == survivor["name"]);
                     if me.is_some_and(|m| m["is_primary"] == true) {
                         role_ms = Some(started.elapsed().as_millis() as u64);
@@ -2233,7 +2229,7 @@ async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
         } else {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        assert!(started.elapsed() < Duration::from_secs(120), "{node} killed; no re-born admin stood at its path.name within 120 s; the survivor {} held the primary role after {role_ms:?} ms", survivor["name"]);
+        assert!(started.elapsed() < Duration::from_secs(120), "{node:?} killed; no re-born admin stood at its path.name within 120 s; the survivor {} held the primary role after {role_ms:?} ms", survivor["name"]);
     };
     let ev = json!({
         "event": "admin.kill-and-recover", "scenario": scenario, "node": node, "victim_node_id": victim["node_id"], "victim_incarnation_id": victim["incarnation_id"], "victim_was_primary": victim["is_primary"],
@@ -2265,7 +2261,7 @@ async fn hand_off(f: &mut Formed, a: &mut Run, st: &Stable, scenario: &str, inv:
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: fabric-primary.delete"), Write::Delete(old_name.to_string())).await;
     let fin = a.finish(f, &build_id, Until::Gone { node: old_name.clone() }, "during-handoff").await;
-    let exit_ns = tokio::time::timeout(Duration::from_secs(30), watcher).await.unwrap_or_else(|_| panic!("{old_name} (pid {old_pid}) still runs 30 s after its deleting Build completed")).unwrap();
+    let exit_ns = tokio::time::timeout(Duration::from_secs(30), watcher).await.unwrap_or_else(|_| panic!("{old_name:?} (pid {old_pid}) still runs 30 s after its deleting Build completed")).unwrap();
     let mut want = both(2);
     want.insert(mesh.clone(), 1);
     let after = a.stable(f, &format!("{scenario}: after the fabric-primary deleted"), &want, inv).await;
@@ -2286,7 +2282,7 @@ async fn replace_deleted(f: &mut Formed, a: &mut Run, after_delete: &Stable, del
     let mesh = s(&deleted["old_mesh"]);
     let path = s(&deleted["old_fabric_primary"]);
     let fabric_build = s(&after_delete.fabric["build_id"]);
-    let v = ask(&f.estate, &after_delete.fp_name(), BuildChange::Stop { node: path_of(&path) }).await;
+    let v = ask(&f.estate, &after_delete.fp_name(), BuildChange::Stop { node: path.clone() }).await;
     assert_eq!(v["reply"].as_str(), Some("unknown-node"), "{scenario}: a deleted path cannot be stopped: {v}");
     a.events.push(json!({"event": "deleted.restart-refused", "scenario": scenario, "node": path, "reply": v["reply"], "detail": v["detail"]}));
     a.actions.push(json!({"t_ms": now_ms(), "action": format!("{scenario}: node.stop of the deleted path"), "via": "node.stop", "subject": path, "reply": v["reply"]}));
@@ -2568,11 +2564,11 @@ async fn check_final_shape(f: &Formed, nodes: &[Value], inv: &mut Invariants) ->
     for n in nodes {
         NodeId::parse(n["node_id"].as_str().unwrap()).unwrap_or_else(|e| panic!("{}: node_id {} is not a valid logical identity: {e}", n["name"], n["node_id"]));
         assert_eq!(n["status"], "ready", "{}", n["name"]);
-        let name = s(&n["name"]);
+        let name = location(&n);
         let o = observe_launch(&f.estate, &name).await;
         let b = f.set.bindings.iter().find(|b| b.launch_id == launch_id(&name)).unwrap();
-        assert_eq!(launched_path(&o), b.executable, "{name} runs the bound executable: {o}");
-        assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{name} runs the bound bytes: {o}");
+        assert_eq!(launched_path(&o), b.executable, "{name:?} runs the bound executable: {o}");
+        assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{name:?} runs the bound bytes: {o}");
         launches.push(o);
     }
     let handles: BTreeSet<String> = launches.iter().map(|o| format!("{}{}", o["pid"], o["container"])).collect();
@@ -2605,26 +2601,26 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
         let first: String;
         if st.mesh_of_fp() == mesh {
             let victim = st.secondary_of(mesh);
-            first = s(&victim["name"]);
+            first = location(&victim);
             restart_via_build(&mut f, &mut a, &st, &first, &format!("C3+C4 {mesh}: the non-primary admin restarts")).await;
         } else {
             let victim = st.primary_of(mesh);
-            first = s(&victim["name"]);
+            first = location(&victim);
             kill_and_recover(&mut f, &mut a, &st, &first, &format!("C1+C4 {mesh}: the current mesh-primary dies")).await;
         }
         st = a.stable(&mut f, &format!("C4 {mesh}: first admin {first} recovered"), &both(2), &mut inv).await;
         proofs.push(prove_path(&mut f, &mut a, &both(2), &format!("C4 {mesh} after {first}"), &mut inv).await);
         fp_trail.push(json!({"after": format!("C4 {mesh} first"), "fabric_primary": st.fp_name(), "node_id": st.fp["node_id"]}));
-        let second = st.admins.iter().find(|n| n["mesh"] == mesh && n["name"] != first.as_str()).unwrap_or_else(|| panic!("{mesh} has a second admin")).clone();
-        let second_name = s(&second["name"]);
+        let second = st.admins.iter().find(|n| n["mesh"] == mesh && location(n) != *first).unwrap_or_else(|| panic!("{mesh} has a second admin")).clone();
+        let second_name = location(&second);
         if second_name == st.fp_name() {
-            let (after, ev) = hand_off(&mut f, &mut a, &st, &format!("C2+C4 {mesh}: the fabric-primary {second_name} hands off"), &mut inv).await;
+            let (after, ev) = hand_off(&mut f, &mut a, &st, &format!("C2+C4 {mesh}: the fabric-primary {second_name:?} hands off"), &mut inv).await;
             st = replace_deleted(&mut f, &mut a, &after, &ev, &format!("C2+C4 {mesh}"), &mut inv).await;
         } else {
             restart_via_build(&mut f, &mut a, &st, &second_name, &format!("C4 {mesh}: the second admin restarts")).await;
-            st = a.stable(&mut f, &format!("C4 {mesh}: second admin {second_name} recovered"), &both(2), &mut inv).await;
+            st = a.stable(&mut f, &format!("C4 {mesh}: second admin {second_name:?} recovered"), &both(2), &mut inv).await;
         }
-        proofs.push(prove_path(&mut f, &mut a, &both(2), &format!("C4 {mesh} after {second_name}"), &mut inv).await);
+        proofs.push(prove_path(&mut f, &mut a, &both(2), &format!("C4 {mesh} after {second_name:?}"), &mut inv).await);
         fp_trail.push(json!({"after": format!("C4 {mesh} second"), "fabric_primary": st.fp_name(), "node_id": st.fp["node_id"]}));
     }
 
@@ -2634,7 +2630,7 @@ async fn primaries_story_run(cell: &str, shape: Shape) {
     // identity returns.
     let quiet = meshes().iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
     let incumbent = st.primary_of(&quiet);
-    restart_via_build(&mut f, &mut a, &st, &s(&incumbent["name"]), &format!("C19 {quiet}: the primary restarts and holds no primary role")).await;
+    restart_via_build(&mut f, &mut a, &st, &location(&incumbent), &format!("C19 {quiet}: the primary restarts and holds no primary role")).await;
     st = a.stable(&mut f, &format!("C19 {quiet}: the restarted primary is Ready"), &both(2), &mut inv).await;
     assert_ne!(st.primary_of(&quiet)["node_id"], incumbent["node_id"], "C19: the admin that filled the restarted primary's role keeps it while it lives, whatever NodeId the restarted one holds");
     let back = st.admins.iter().find(|n| n["name"] == incumbent["name"]).unwrap_or_else(|| panic!("C19: the restarted admin {} is in the view", incumbent["name"]));
@@ -2783,7 +2779,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
-    let names_initial: BTreeSet<String> = nodes.iter().map(|n| s(&n["name"])).collect();
+    let names_initial: BTreeSet<PathName> = nodes.iter().map(|n| location(&n)).collect();
     let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     let b0 = f.build_id.clone();
     assert_eq!(s(&st.fabric["build_id"]), b0, "the fabric names the formation Build");
@@ -2795,12 +2791,12 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let fm = st.mesh_of_fp();
     for round in 1..=2 {
         let victim = st.secondary_of(&fm);
-        let node = s(&victim["name"]);
+        let node = location(&victim);
         let ev = restart_via_build(&mut f, &mut a, &st, &node, &format!("R{round}: a Build-executed restart")).await;
         assert_eq!(ev["build_id"], json!(b0), "R{round}: the restart is an attempt of the accepted Build, not a new one");
         // A restart is node.stop then node.start (Q183): two attempts of the accepted Build.
         assert_eq!(ev["attempt_after"].as_u64(), ev["attempt_before"].as_u64().map(|x| x + 2), "R{round}: the attempt advanced by exactly two, the stop's and the start's: {ev}");
-        st = a.stable(&mut f, &format!("R{round}: {node} restarted"), &both(2), &mut inv).await;
+        st = a.stable(&mut f, &format!("R{round}: {node:?} restarted"), &both(2), &mut inv).await;
         assert_eq!(s(&st.fabric["build_id"]), b0, "R{round}: the current build_id stays the formation Build");
         trail.push(json!({"after": format!("R{round}"), "fabric_build_id": st.fabric["build_id"], "attempt": ev["attempt_after"]}));
     }
@@ -2812,11 +2808,11 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let om = meshes().iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
     let fp_at_the_death = st.fp_name();
     let executor = st.primary_of(&om);
-    let executor_name = s(&executor["name"]);
+    let executor_name = location(&executor);
     let survivor = st.secondary_of(&om);
     // A broker that holds no role: its restart starts with its own stop, which the hold below keeps in flight
     // (a primary's restart first commands the primary, which a held primary cannot answer).
-    let broker = st.nodes.iter().filter(|n| n["mesh"] == om.as_str() && n["kind"] == "broker" && n["is_primary"] != true).map(|n| s(&n["name"])).min().unwrap_or_else(|| panic!("R3: {om} holds a broker without a primary role"));
+    let broker = st.nodes.iter().filter(|n| n["mesh"] == om.as_str() && n["kind"] == "broker" && n["is_primary"] != true).map(|n| location(&n)).min().unwrap_or_else(|| panic!("R3: {om} holds a broker without a primary role"));
     let broker_before = f.estate.node_value(&broker).await;
     let fabric_build = s(&st.fabric["build_id"]);
     point_entry_away(&mut f, &st, &executor_name).await;
@@ -2835,7 +2831,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     // command writes no state" (node-stop.md step 1, Q183), so the broker's status says nothing of it.
     let broker_rt = exact_runtime(&f, &broker).await;
     let (mut broker_held, hold_ack) = Held::hold(&broker, &broker_rt);
-    progress(&format!("R3: {broker} held for its restart's stop: {hold_ack}"));
+    progress(&format!("R3: {broker:?} held for its restart's stop: {hold_ack}"));
     let req_ns = now_ns();
     let bid = a.write(&f, &st, "R3: node.restart of a role node under the mesh primary", Write::Restart(broker.to_string())).await;
     assert_eq!(bid, b0, "R3: the role node's restart is an attempt of the accepted Build");
@@ -2846,7 +2842,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
         if b["state"] == "running" && b["executor"] == executor_name.as_str() && b["attempt"].as_u64() == Some(restart_attempt) {
             break (b, restart_attempt);
         }
-        assert!(started.elapsed() < STOP_NODE_SEND_BOUND, "R3: the restart's attempt {restart_attempt} was never seen in flight under {executor_name} with {broker} held within its stop's send bound; build {b:#}");
+        assert!(started.elapsed() < STOP_NODE_SEND_BOUND, "R3: the restart's attempt {restart_attempt} was never seen in flight under {executor_name:?} with {broker:?} held within its stop's send bound; build {b:#}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     let kill = kill_admin(&mut f, &mut a, &st, &executor_name).await;
@@ -2854,9 +2850,9 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let kill_ns = kill["kill_ns"].as_u64().unwrap();
     // The stop-node cannot have been sent before the restart was asked: a kill within the send bound of the
     // request is inside the held stop's bound.
-    assert!(kill_ns.saturating_sub(req_ns) < STOP_NODE_SEND_BOUND.as_nanos() as u64, "R3: {executor_name} was killed {} ms after the restart was asked, past the held stop's bound ({} ms)", (kill_ns - req_ns) / 1_000_000, STOP_NODE_SEND_BOUND.as_millis());
+    assert!(kill_ns.saturating_sub(req_ns) < STOP_NODE_SEND_BOUND.as_nanos() as u64, "R3: {executor_name:?} was killed {} ms after the restart was asked, past the held stop's bound ({} ms)", (kill_ns - req_ns) / 1_000_000, STOP_NODE_SEND_BOUND.as_millis());
     let release_ack = broker_held.release();
-    progress(&format!("R3: {executor_name} killed {} ms after the restart was asked, with attempt {killed_at_attempt} of {bid} in flight and {broker}'s stop held; {broker} released: {release_ack}; {held}", (kill_ns - req_ns) / 1_000_000));
+    progress(&format!("R3: {executor_name:?} killed {} ms after the restart was asked, with attempt {killed_at_attempt} of {bid} in flight and {broker:?}'s stop held; {broker:?} released: {release_ack}; {held}", (kill_ns - req_ns) / 1_000_000));
     let fin = a.finish(&mut f, &bid, Until::Restarted { node: broker.clone(), node_id: s(&broker_before["node_id"]), incarnation: s(&broker_before["incarnation_id"]) }, "during-successor").await;
     a.traffic.aim = None;
     let broker_after = f.estate.node_value(&broker).await;
@@ -2881,7 +2877,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     a.traffic.burst(&f, 6, "steady-after").await;
     let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
     let nodes_end = st.nodes.clone();
-    let names_final: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["name"])).collect();
+    let names_final: BTreeSet<PathName> = nodes_end.iter().map(|n| location(&n)).collect();
     assert_eq!(names_final, names_initial, "the topology is what it was: the same path.names, nothing added or removed");
     let launches_end = check_final_shape(&f, &nodes_end, &mut inv).await;
     let mut verification = Vec::new();
@@ -2945,12 +2941,12 @@ async fn recovery_run(cell: &str, shape: Shape) {
         assert_eq!(e.len(), 1, "the fabric's folded Build shows attempt {n} of {b0}'s lane {lane:?} held by {e:?}");
     }
     let dead_attempt = executors_by_attempt.get(&fabric_lane(killed_at_attempt)).unwrap_or_else(|| panic!("the in-flight attempt {killed_at_attempt} was never observed"));
-    assert!(dead_attempt.contains(&executor_name), "attempt {killed_at_attempt} was held by {executor_name}");
+    assert!(dead_attempt.contains(&executor_name), "attempt {killed_at_attempt} was held by {executor_name:?}");
     let later: Vec<(u64, &BTreeSet<String>)> = executors_by_attempt.iter().filter(|((_, lane, n), _)| lane.is_empty() && *n > killed_at_attempt).map(|((_, _, n), e)| (*n, e)).collect();
     assert!(!later.is_empty(), "the Build advanced past the dead executor's attempt {killed_at_attempt}: {executors_by_attempt:?}");
     // The attempt right after the dead executor's is a surviving admin's. (A later attempt may be held
     // by the executor's path.name again: that is its re-born admin, a new birth.)
-    assert!(!later[0].1.contains(&executor_name), "the attempt after the dead executor's is held by a survivor, not by {executor_name}: {later:?}");
+    assert!(!later[0].1.contains(&executor_name), "the attempt after the dead executor's is held by a survivor, not by {executor_name:?}: {later:?}");
     let kill_ns = kill["kill_ns"].as_u64().unwrap();
     let spans_after: Vec<&Value> = claims.iter().filter(|c| c["build_id"] == b0.as_str() && c["start_unix_nano"].as_u64().unwrap() > kill_ns).collect();
     assert!(!spans_after.is_empty(), "the surviving admins claimed further attempts of {b0} after the executor's death");
@@ -2967,7 +2963,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
         .into_iter()
         .filter(|c| c["attributes"]["build_id"] == b0.as_str() && c["attributes"]["node"] == executor_name.as_str() && start_ns(c) > kill_ns)
         .collect();
-    assert!(!creates.is_empty(), "{executor_name} was re-born by node.create.via-build under {b0}");
+    assert!(!creates.is_empty(), "{executor_name:?} was re-born by node.create.via-build under {b0}");
     // A drift lane numbers its own attempts: a create in a mesh's lane is never the dead executor's attempt,
     // and a fabric-lane create comes after it. A create's lane is its reconcile's, in its own trace.
     let lane_of = |c: &Value| claims.iter().find(|r| r["trace_id"] == c["trace_id"] && r["attempt"].as_u64() == Some(u64::from(attempt_of(c)))).map(|r| s(&r["lane"]));
@@ -2980,9 +2976,9 @@ async fn recovery_run(cell: &str, shape: Shape) {
         "the re-birth is a later attempt than the dead executor's, in its own lane: {:?}",
         creates.iter().map(|c| (lane_of(c), attempt_of(c))).collect::<Vec<_>>()
     );
-    let rebirth_executors: BTreeSet<String> = spans_after.iter().filter(|c| s(&c["operations"]).split(',').any(|op| op == format!("node.create:{executor_name}"))).map(|c| s(&c["executor"])).collect();
-    let survivor_name = s(&survivor["name"]);
-    assert!(rebirth_executors.contains(&survivor_name) && rebirth_executors.iter().all(|e| *e == survivor_name || *e == fp_at_the_death), "the dead admin's re-birth was opened by the fabric-primary {fp_at_the_death} and executed by its mesh's surviving primary admin {survivor_name}: {rebirth_executors:?}");
+    let rebirth_executors: BTreeSet<String> = spans_after.iter().filter(|c| s(&c["operations"]).split(',').any(|op| op == format!("node.create:{executor_name:?}"))).map(|c| s(&c["executor"])).collect();
+    let survivor_name = location(&survivor);
+    assert!(rebirth_executors.contains(&survivor_name) && rebirth_executors.iter().all(|e| *e == survivor_name || *e == fp_at_the_death), "the dead admin's re-birth was opened by the fabric-primary {fp_at_the_death:?} and executed by its mesh's surviving primary admin {survivor_name:?}: {rebirth_executors:?}");
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([b0.clone()]), "the only Build ever accepted is the formation Build");
     let max_attempt = executors_by_attempt.keys().filter(|(_, lane, _)| lane.is_empty()).map(|(_, _, n)| *n).max().unwrap();
@@ -3084,31 +3080,31 @@ impl Rt {
     }
 }
 
-async fn exact_runtime(f: &Formed, node: &str) -> Rt {
+async fn exact_runtime(f: &Formed, node: &PathName) -> Rt {
     if provider() == "container" {
-        let id = f.estate.container_of(node).await.unwrap_or_else(|| panic!("{node}: no running container of the fabric"));
-        Rt::Container(container_faults::inspect(&id).unwrap_or_else(|e| panic!("{node}: inspect {id}: {e}")))
+        let id = f.estate.container_of(node).await.unwrap_or_else(|| panic!("{node:?}: no running container of the fabric"));
+        Rt::Container(container_faults::inspect(&id).unwrap_or_else(|e| panic!("{node:?}: inspect {id}: {e}")))
     } else {
         let dir = f.estate.data_dir(node).await;
-        Rt::Process(ExactRuntime::published(Path::new(&dir)).unwrap_or_else(|r| panic!("{node}: no exact runtime published in {dir}: {r:?}")))
+        Rt::Process(ExactRuntime::published(Path::new(&dir)).unwrap_or_else(|r| panic!("{node:?}: no exact runtime published in {dir}: {r:?}")))
     }
 }
 
 /// The old birth's runtime is terminal as the provider reports it: the pid is gone (or the pid's
 /// start token is another process's), the container is removed or not running. Anything else is a
 /// birth the operation left behind.
-fn terminal_proof(node: &str, old: &Rt) -> Value {
+fn terminal_proof(node: &PathName, old: &Rt) -> Value {
     match old {
         Rt::Process(r) => match r.check() {
             Err(SigRefusal::AlreadyExited { pid }) => json!({"observed": "exited", "pid": pid, "start_token": r.start}),
             Err(SigRefusal::NotThisRuntime { pid, published_start, observed_start }) => json!({"observed": "pid now another process", "pid": pid, "published_start": published_start, "observed_start": observed_start}),
-            other => panic!("{node}: the old birth's exact runtime {r:?} is not terminal: {other:?}"),
+            other => panic!("{node:?}: the old birth's exact runtime {r:?} is not terminal: {other:?}"),
         },
         Rt::Container(c) => match container_faults::inspect(&c.id) {
             Err(e) if e.to_lowercase().contains("no such") => json!({"observed": "removed", "container": c.id, "daemon": e}),
-            Err(e) => panic!("{node}: inspecting the old container {} failed for a reason other than its absence: {e}", c.id),
+            Err(e) => panic!("{node:?}: inspecting the old container {} failed for a reason other than its absence: {e}", c.id),
             Ok(i) => {
-                assert!(!i.running, "{node}: the old birth's container {} is still running: {i:?}", c.id);
+                assert!(!i.running, "{node:?}: the old birth's container {} is still running: {i:?}", c.id);
                 json!({"observed": i.status, "container": i.id, "exit_code": i.exit_code, "oom_killed": i.oom_killed})
             }
         },
@@ -3116,22 +3112,22 @@ fn terminal_proof(node: &str, old: &Rt) -> Value {
 }
 
 /// The new birth runs, and is a different runtime from the old one.
-fn live_and_distinct(node: &str, old: &Rt, new: &Rt) -> Value {
-    assert!(!old.is(new), "{node}: the new birth runs in the old birth's runtime {:?}", old.record());
+fn live_and_distinct(node: &PathName, old: &Rt, new: &Rt) -> Value {
+    assert!(!old.is(new), "{node:?}: the new birth runs in the old birth's runtime {:?}", old.record());
     match new {
-        Rt::Process(r) => assert!(r.check().is_ok(), "{node}: the new birth's exact runtime {r:?} is not alive: {:?}", r.check()),
-        Rt::Container(c) => assert!(container_faults::inspect(&c.id).is_ok_and(|i| i.running), "{node}: the new birth's container {} is not running", c.id),
+        Rt::Process(r) => assert!(r.check().is_ok(), "{node:?}: the new birth's exact runtime {r:?} is not alive: {:?}", r.check()),
+        Rt::Container(c) => assert!(container_faults::inspect(&c.id).is_ok_and(|i| i.running), "{node:?}: the new birth's container {} is not running", c.id),
     }
     json!({"old": old.record(), "new": new.record()})
 }
 
 /// The restarted birth runs in the runtime it ran in before the restart, alive (node-stop.md, node-start.md: the live
 /// process stops and rejoins; no new birth).
-fn live_and_same(node: &str, before: &Rt, after: &Rt) -> Value {
-    assert!(before.is(after), "{node}: a restart keeps the runtime, and the node now runs in another: before {:?}, after {:?}", before.record(), after.record());
+fn live_and_same(node: &PathName, before: &Rt, after: &Rt) -> Value {
+    assert!(before.is(after), "{node:?}: a restart keeps the runtime, and the node now runs in another: before {:?}, after {:?}", before.record(), after.record());
     match after {
-        Rt::Process(r) => assert!(r.check().is_ok(), "{node}: the restarted birth's exact runtime {r:?} is not alive: {:?}", r.check()),
-        Rt::Container(c) => assert!(container_faults::inspect(&c.id).is_ok_and(|i| i.running), "{node}: the restarted birth's container {} is not running", c.id),
+        Rt::Process(r) => assert!(r.check().is_ok(), "{node:?}: the restarted birth's exact runtime {r:?} is not alive: {:?}", r.check()),
+        Rt::Container(c) => assert!(container_faults::inspect(&c.id).is_ok_and(|i| i.running), "{node:?}: the restarted birth's container {} is not running", c.id),
     }
     json!({"before": before.record(), "after": after.record()})
 }
@@ -3146,13 +3142,13 @@ fn op_to(f: &Formed, a: &mut Run, node: &Value, via: Option<&str>, tag: &str, wi
         seq: t.seq,
         key: format!("op-{:05}", t.seq),
         value: format!("{tag}-{}-{:x}", t.seq, t.rng.below(1 << 24)),
-        target: s(&node["name"]),
+        target: location(&node),
         target_id: s(&node["node_id"]),
         via: via.map(String::from),
         window,
     };
     let exact = format!("exact:{}", op.target_id);
-    let via_arg = op.via.as_ref().map(|v| format!("path:{v}"));
+    let via_arg = op.via.as_ref().map(|v| rdm_test::estate::path_target(&v));
     let call = {
         let mut args = vec!["put", "--target", exact.as_str(), "--key", op.key.as_str(), "--value", op.value.as_str()];
         if let Some(v) = &via_arg {
@@ -3165,14 +3161,14 @@ fn op_to(f: &Formed, a: &mut Run, node: &Value, via: Option<&str>, tag: &str, wi
 }
 
 /// The connections `primary` (a gateway or compute) holds toward `node_id`, from its own connection snapshot.
-fn directs_to(estate: &Estate, holder: &str, node_id: &str) -> Vec<Value> {
+fn directs_to(estate: &Estate, holder: &PathName, node_id: &str) -> Vec<Value> {
     snapshot(estate, holder)["own_latest_directs"].as_array().into_iter().flatten().filter(|d| d["destination"]["node_id"] == node_id).cloned().collect()
 }
 
 /// `primary` holds a Connected Direct connection to the current birth of `node_id` and, when `old_inc` is
 /// given, none to that superseded birth. The connections convergence bound is the same 30 s the
 /// formation cells use; a bound that fires is the finding.
-async fn await_connection(estate: &Estate, holder: &str, node_id: &str, new_inc: &str, old_inc: Option<&str>) -> Value {
+async fn await_connection(estate: &Estate, holder: &PathName, node_id: &str, new_inc: &str, old_inc: Option<&str>) -> Value {
     let until = Instant::now() + Duration::from_secs(30);
     let t0 = Instant::now();
     loop {
@@ -3182,7 +3178,7 @@ async fn await_connection(estate: &Estate, holder: &str, node_id: &str, new_inc:
         if current && !stale {
             return json!({"holder": holder, "node_id": node_id, "current_incarnation": new_inc, "superseded_incarnation": old_inc, "converged_ms": t0.elapsed().as_millis() as u64, "connections": d});
         }
-        assert!(Instant::now() < until, "{holder} did not hold a Connected Direct connection to {node_id}'s birth {new_inc} (and none to the superseded {old_inc:?}) within 30 s: {}", serde_json::to_string(&d).unwrap());
+        assert!(Instant::now() < until, "{holder:?} did not hold a Connected Direct connection to {node_id}'s birth {new_inc} (and none to the superseded {old_inc:?}) within 30 s: {}", serde_json::to_string(&d).unwrap());
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -3192,7 +3188,7 @@ async fn await_connection(estate: &Estate, holder: &str, node_id: &str, new_inc:
 /// carrier's Direct connection to the destination is its own fact, a connection it originated for traffic
 /// (connections.md §1 "Two words for a call through a middle node", §6, §8; R-CR6).
 fn carried_get(estate: &Estate, node: &Value, via: &str, key: &str) -> Call {
-    let c = probe_call(estate, &["get", "--target", &format!("exact:{}", s(&node["node_id"])), "--via", &format!("path:{via}"), "--key", key]);
+    let c = probe_call(estate, &["get", "--target", &format!("exact:{}", s(&node["node_id"])), "--via", &rdm_test::estate::path_target(&via), "--key", key]);
     assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str()), (Some("Reply"), Some("via-peer")), "carried call to {} through {via}: {}", node["name"], c.out);
     assert_eq!(c.out["reply"]["executing_node"], node["node_id"], "{}", c.out);
     assert_eq!(c.out["reply"]["incarnation_id"], node["incarnation_id"], "the carried call reached the current birth: {}", c.out);
@@ -3202,22 +3198,22 @@ fn carried_get(estate: &Estate, node: &Value, via: &str, key: &str) -> Call {
 /// `primary` originates a put to `dest` over its held projection: Direct, and the reply names the
 /// destination's current birth. The put is an operation of the cell's ledger (a stable id, its key and
 /// value), so the accounting sees every put the brokers apply. Returns the ledger index.
-fn originate_op(f: &Formed, a: &mut Run, holder: &str, dest: &Value, window: &'static str) -> usize {
+fn originate_op(f: &Formed, a: &mut Run, holder: &PathName, dest: &Value, window: &'static str) -> usize {
     let t = &mut a.traffic;
     t.seq += 1;
     let op = SyntheticOp {
         seq: t.seq,
         key: format!("op-{:05}", t.seq),
         value: format!("orig-{}-{:x}", t.seq, t.rng.below(1 << 24)),
-        target: s(&dest["name"]),
+        target: location(&dest),
         target_id: s(&dest["node_id"]),
         via: Some(holder.to_string()),
         window,
     };
-    let c = probe_call(&f.estate, &["originate", "--target", &format!("path:{holder}"), "--destination", &format!("path:{}", s(&dest["name"])), "--key", &op.key, "--value", &op.value]);
+    let c = probe_call(&f.estate, &["originate", "--target", &rdm_test::estate::path_target(holder), "--destination", &rdm_test::estate::path_target(&location(&dest)), "--key", &op.key, "--value", &op.value]);
     // `direct-unknown` is a pair with no Direct fact: the call dials directly (connections.md section 5).
-    assert!(matches!(c.out["route"].as_str(), Some("direct" | "direct-unknown")), "{holder} originating to {}: {}", dest["name"], c.out);
-    assert_eq!((c.out["outcome"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some("reply")), "{holder} originating to {}: {}", dest["name"], c.out);
+    assert!(matches!(c.out["route"].as_str(), Some("direct" | "direct-unknown")), "{holder:?} originating to {}: {}", dest["name"], c.out);
+    assert_eq!((c.out["outcome"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some("reply")), "{holder:?} originating to {}: {}", dest["name"], c.out);
     assert_eq!(c.out["destination_node_id"], dest["node_id"], "{}", c.out);
     assert_eq!(c.out["reply"]["executing_node"], dest["node_id"], "{}", c.out);
     assert_eq!(c.out["reply"]["incarnation_id"], dest["incarnation_id"], "the originated call reached the current birth: {}", c.out);
@@ -3228,9 +3224,9 @@ fn originate_op(f: &Formed, a: &mut Run, holder: &str, dest: &Value, window: &'s
 /// Restart `node` (never the fabric-primary) through the Build rectifier, keeping the seeded traffic
 /// going until the Build is complete and the node is ready again as the same birth (node-stop.md, Kept).
 /// Any role.
-async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
+async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, scenario: &str) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a deleting Build");
-    let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
+    let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node:?} is not in the settled view")).clone();
     let fabric_build = s(&st.fabric["build_id"]);
     if n["kind"] == "node_admin" {
         point_entry_away(f, st, node).await;
@@ -3238,7 +3234,7 @@ async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scen
     let attempt_before = build_at(&f.estate, &fabric_build).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: node.restart"), Write::Restart(node.to_string())).await;
-    assert_eq!(build_id, fabric_build, "{node}: a restart opens the next attempt of the accepted Build (the current build_id stays)");
+    assert_eq!(build_id, fabric_build, "{node:?}: a restart opens the next attempt of the accepted Build (the current build_id stays)");
     let fin = a.finish(f, &build_id, Until::Restarted { node: node.into(), node_id: s(&n["node_id"]), incarnation: s(&n["incarnation_id"]) }, "during-restart").await;
     let ev = json!({
         "event": "node.restart", "scenario": scenario, "node": node, "kind": n["kind"], "node_id": n["node_id"], "endpoint_id": n["endpoint_id"], "was_primary": n["is_primary"],
@@ -3258,10 +3254,10 @@ async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scen
 /// node.id, incarnation, OS-assigned port and exact runtime" (the port is the caller's to compare, from its
 /// settled views). A role node only: a node-admin's death is `kill_and_recover`'s, and the fabric-primary is
 /// never killed.
-async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
+async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, scenario: &str) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never killed; it leaves only through a deleting Build");
-    let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
-    assert_ne!(n["kind"], "node_admin", "REFUSED: {node} is a node-admin; a node recovery cell kills a broker, gateway, compute or rpc node");
+    let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node:?} is not in the settled view")).clone();
+    assert_ne!(n["kind"], "node_admin", "REFUSED: {node:?} is a node-admin; a node recovery cell kills a broker, gateway, compute or rpc node");
     let (old_id, old_inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
     let fabric_build = s(&st.fabric["build_id"]);
     let dir_old = f.estate.data_dir(node).await;
@@ -3269,7 +3265,7 @@ async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scen
     let t0 = now_ns();
     let kill = kill_exact_runtime(node, &rt_old, f.estate.fabric_ready());
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.kill-runtime", "node": node, "node_id": old_id, "incarnation_id": old_inc, "ack": kill}));
-    progress(&format!("{scenario}: {node} ({old_id}) exact runtime killed; its mesh-primary recovers it"));
+    progress(&format!("{scenario}: {node:?} ({old_id}) exact runtime killed; its mesh-primary recovers it"));
     let started = Instant::now();
     let mut seen_failed = 0u32;
     let (born, build) = loop {
@@ -3284,7 +3280,7 @@ async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scen
         if let (Some(born), true) = (born, b["state"] == "complete") {
             break (born, b);
         }
-        assert!(started.elapsed() < Duration::from_secs(120), "{scenario}: {node}'s exact runtime was killed and no new node stood ready at its path.name with the fabric's Build complete within 120 s: build {b:#}");
+        assert!(started.elapsed() < Duration::from_secs(120), "{scenario}: {node:?}'s exact runtime was killed and no new node stood ready at its path.name with the fabric's Build complete within 120 s: build {b:#}");
         if nodes.is_some() {
             a.traffic.burst(f, 1, "during-recovery").await;
         } else {
@@ -3292,10 +3288,10 @@ async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scen
         }
     };
     let wall_ms = started.elapsed().as_millis() as u64;
-    assert_ne!(s(&born["incarnation_id"]), old_inc, "{node}: a node recovery is a new incarnation (node-recovery.md, New)");
-    assert_eq!(born["endpoint_id"], n["endpoint_id"], "{node}: a node recovery keeps the endpoint key, loaded from the inherited data dir (node-recovery.md, Retained)");
+    assert_ne!(s(&born["incarnation_id"]), old_inc, "{node:?}: a node recovery is a new incarnation (node-recovery.md, New)");
+    assert_eq!(born["endpoint_id"], n["endpoint_id"], "{node:?}: a node recovery keeps the endpoint key, loaded from the inherited data dir (node-recovery.md, Retained)");
     let dir_new = f.estate.data_dir(node).await;
-    assert_eq!(dir_new, dir_old, "{node}: a node recovery creates the new node over the exited node's data dir (node-recovery.md, Retained)");
+    assert_eq!(dir_new, dir_old, "{node:?}: a node recovery creates the new node over the exited node's data dir (node-recovery.md, Retained)");
     let rt_new = exact_runtime(f, node).await;
     let runtimes = live_and_distinct(node, &rt_old, &rt_new);
     let terminal = terminal_proof(node, &rt_old);
@@ -3326,7 +3322,7 @@ fn representatives(f: &Formed, st: &Stable) -> Vec<String> {
         .admins
         .iter()
         .filter(|n| n["name"] != st.fp["name"] && n["name"] != "mesh1.admin.1")
-        .map(|n| s(&n["name"]))
+        .map(|n| location(&n))
         .min()
         .expect("a node-admin that is neither the fabric-primary nor the Day-0 admin");
     vec![broker, gateway, compute, admin]
@@ -3337,8 +3333,8 @@ fn representatives(f: &Formed, st: &Stable) -> Vec<String> {
 /// process rejoins): the same logical node in the same exact birth, its runtime the same
 /// live process as the provider reports it, and routing back on that birth (a call over a held connection
 /// answered by it once its connections were deleted by the stop and dialed again).
-async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, label: &str, inv: &mut Invariants) -> (Value, Stable) {
-    let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
+async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, label: &str, inv: &mut Invariants) -> (Value, Stable) {
+    let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node:?} is not in the settled view")).clone();
     let (kind, mesh, node_id, inc, endpoint) = (s(&n["kind"]), s(&n["mesh"]), s(&n["node_id"]), s(&n["incarnation_id"]), s(&n["endpoint_id"]));
     let rt_before = exact_runtime(f, node).await;
     let gw = format!("{mesh}.gateway.1");
@@ -3350,7 +3346,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
     if serves_proof_store {
         let ci = op_to(f, a, &n, None, "canary", "before-restart");
         (ckey, cval) = (a.traffic.ops[ci].0.key.clone(), a.traffic.ops[ci].0.value.clone());
-        assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node}: the canary was stored before the restart: {}", a.traffic.ops[ci].1.out);
+        assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node:?}: the canary was stored before the restart: {}", a.traffic.ops[ci].1.out);
     }
     // A broker is originated to by its mesh's gateway first, so that gateway holds a Direct connection (its own
     // connection, connections.md §1) to this birth. The other mesh's gateway originates to it too: a
@@ -3365,12 +3361,12 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
     a.traffic.aim = matches!(kind.as_str(), "broker" | "gateway").then(|| node.to_string());
     let ev = restart_node(f, a, st, node, label).await;
     a.traffic.aim = None;
-    let st2 = a.stable(f, &format!("{label}: {node} restarted"), &both(2), inv).await;
-    let n2 = st2.nodes.iter().find(|x| x["name"] == node).unwrap_or_else(|| panic!("{node} is not in the view after its restart")).clone();
-    assert_eq!(n2["node_id"], n["node_id"], "{node}: a restart keeps the logical node");
-    assert_eq!(n2["endpoint_id"], n["endpoint_id"], "{node}: a restart keeps the node's EndpointId (the key in its data dir)");
-    assert_eq!(n2["incarnation_id"], n["incarnation_id"], "{node}: a restart keeps the incarnation (node-stop.md, Kept)");
-    assert_eq!((n2["status"].as_str(), n2["kind"].as_str(), n2["mesh"].as_str()), (Some("ready"), n["kind"].as_str(), n["mesh"].as_str()), "{node}");
+    let st2 = a.stable(f, &format!("{label}: {node:?} restarted"), &both(2), inv).await;
+    let n2 = st2.nodes.iter().find(|x| x["name"] == node).unwrap_or_else(|| panic!("{node:?} is not in the view after its restart")).clone();
+    assert_eq!(n2["node_id"], n["node_id"], "{node:?}: a restart keeps the logical node");
+    assert_eq!(n2["endpoint_id"], n["endpoint_id"], "{node:?}: a restart keeps the node's EndpointId (the key in its data dir)");
+    assert_eq!(n2["incarnation_id"], n["incarnation_id"], "{node:?}: a restart keeps the incarnation (node-stop.md, Kept)");
+    assert_eq!((n2["status"].as_str(), n2["kind"].as_str(), n2["mesh"].as_str()), (Some("ready"), n["kind"].as_str(), n["mesh"].as_str()), "{node:?}");
     if kind == "node_admin" {
         let mut e = ev.clone();
         e["event"] = json!("admin.restart");
@@ -3381,19 +3377,19 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
     let runtimes = live_and_same(node, &rt_before, &rt_after);
     let launch = observe_launch(&f.estate, node).await;
     let b = f.set.bindings.iter().find(|b| b.launch_id == launch_id(node)).unwrap();
-    assert_eq!(launched_path(&launch), b.executable, "{node}: the restarted birth runs the bound executable: {launch}");
-    assert_eq!(launch["observed_sha256"], b.sha256.as_str(), "{node}: the restarted birth runs the bound bytes: {launch}");
+    assert_eq!(launched_path(&launch), b.executable, "{node:?}: the restarted birth runs the bound executable: {launch}");
+    assert_eq!(launch["observed_sha256"], b.sha256.as_str(), "{node:?}: the restarted birth runs the bound bytes: {launch}");
     if serves_proof_store {
         // The same data dir: the canary survived the restart.
         let c = probe_call(&f.estate, &["get", "--target", &format!("exact:{node_id}"), "--key", &ckey]);
-        assert_eq!(c.out["reply"]["result"], json!({"found": true, "value": cval}), "{node}: the value stored before the restart is held after it (same data dir): {}", c.out);
-        assert_eq!(c.out["reply"]["incarnation_id"], n2["incarnation_id"], "{node}: the read was served by the birth the restart kept: {}", c.out);
+        assert_eq!(c.out["reply"]["result"], json!({"found": true, "value": cval}), "{node:?}: the value stored before the restart is held after it (same data dir): {}", c.out);
+        assert_eq!(c.out["reply"]["incarnation_id"], n2["incarnation_id"], "{node:?}: the read was served by the birth the restart kept: {}", c.out);
         f.actions.push(action_row(&c));
         // Routing: an exact write reaches the birth the restart kept.
         let wi = op_to(f, a, &n2, None, "after", "after-restart");
         let w = &a.traffic.ops[wi].1.out;
-        assert_eq!((w["outcome"].as_str(), w["reply"]["result"].clone()), (Some("Reply"), json!({"stored": true})), "{node}: an exact write after the restart: {w}");
-        assert_eq!(w["reply"]["incarnation_id"], n2["incarnation_id"], "{node}: the write was served by the birth the restart kept: {w}");
+        assert_eq!((w["outcome"].as_str(), w["reply"]["result"].clone()), (Some("Reply"), json!({"stored": true})), "{node:?}: an exact write after the restart: {w}");
+        assert_eq!(w["reply"]["incarnation_id"], n2["incarnation_id"], "{node:?}: the write was served by the birth the restart kept: {w}");
     }
     let routing = match kind.as_str() {
         "broker" => {
@@ -3418,7 +3414,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
         }
         "gateway" => {
             let broker = st2.nodes.iter().find(|x| x["name"] == format!("{mesh}.broker.1")).cloned().unwrap();
-            let carried = carried_get(&f.estate, &broker, node, &format!("canary-of-{node}"));
+            let carried = carried_get(&f.estate, &broker, node, &format!("canary-of-{node:?}"));
             let oi = originate_op(f, a, node, &broker, "after-restart");
             let connection = await_connection(&f.estate, node, &s(&broker["node_id"]), &s(&broker["incarnation_id"]), None).await;
             let orig_trace = a.traffic.ops[oi].1.trace_id.clone();
@@ -3437,7 +3433,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
         "runtimes": runtimes, "launch": launch, "canary_key": ckey, "serves_proof_store": serves_proof_store, "restart": ev, "routing": routing, "connections": connections,
     });
     inv.holds(
-        &format!("{label}: {node} ({kind}) restarted as the same logical node in the same exact birth on the same live runtime; the canary in its data dir survived; calls and connections converged back on that birth"),
+        &format!("{label}: {node:?} ({kind}) restarted as the same logical node in the same exact birth on the same live runtime; the canary in its data dir survived; calls and connections converged back on that birth"),
         true,
         json!({"node_id": node_id, "incarnation_id": inc, "runtimes": rec["runtimes"]}),
     );
@@ -3525,7 +3521,7 @@ async fn restart_run(cell: &str, shape: Shape) {
     for (i, node) in order.iter().cloned().chain(std::iter::once(String::new())).enumerate() {
         // C3's node-admin: neither the fabric-primary nor the Day-0 admin, read at the moment.
         let node = if node.is_empty() {
-            st.admins.iter().filter(|n| n["name"] != st.fp["name"] && n["name"] != "mesh1.admin.1").map(|n| s(&n["name"])).min().expect("a node-admin that is neither the fabric-primary nor the Day-0 admin")
+            st.admins.iter().filter(|n| n["name"] != st.fp["name"] && n["name"] != "mesh1.admin.1").map(|n| location(&n)).min().expect("a node-admin that is neither the fabric-primary nor the Day-0 admin")
         } else {
             node
         };
@@ -3537,7 +3533,7 @@ async fn restart_run(cell: &str, shape: Shape) {
     }
     let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
     let nodes_end = st.nodes.clone();
-    let names_final: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["name"])).collect();
+    let names_final: BTreeSet<PathName> = nodes_end.iter().map(|n| location(&n)).collect();
     assert_eq!(names_final, f.shape.names(), "the topology is what it was: the same path.names, nothing added or removed");
     let ids_final: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["node_id"])).collect();
     let ids_initial: BTreeSet<String> = nodes.iter().map(|n| s(&n["node_id"])).collect();
@@ -3618,7 +3614,7 @@ async fn mock_role_restarts_preserve_identity_and_birth() {
 // ---- deletion, replacement and the exact-runtime kill ------------------------------------------
 
 /// Every live admin's view of `name`: whether it lists the path, and under which NodeId.
-async fn admin_views_of(a: &mut Run, f: &Formed, name: &str) -> Vec<Value> {
+async fn admin_views_of(a: &mut Run, f: &Formed, name: &PathName) -> Vec<Value> {
     let mut out = Vec::new();
     for admin in a.candidates(f) {
         if let Some(ns) = nodes_at(&f.estate, &admin).await {
@@ -3631,10 +3627,10 @@ async fn admin_views_of(a: &mut Run, f: &Formed, name: &str) -> Vec<Value> {
 
 /// A topology write at an admin that is not the fabric-primary is refused by name, naming the
 /// fabric-primary, and executes nothing.
-async fn refused_by_a_non_writer(f: &Formed, a: &mut Run, st: &Stable, path: &str, how: Removal) -> Value {
+async fn refused_by_a_non_writer(f: &Formed, a: &mut Run, st: &Stable, path: &PathName, how: Removal) -> Value {
     let non_writer = st.admins.iter().find(|n| n["name"] != st.fp["name"]).expect("an admin that is not the fabric-primary").clone();
     let _ = how;
-    let v = ask(&f.estate, &s(&non_writer["name"]), BuildChange::RemoveNode { node: path_of(path) }).await;
+    let v = ask(&f.estate, &location(&non_writer), BuildChange::RemoveNode { node: path.clone() }).await;
     assert_eq!((v["reply"].as_str(), &v["fabric_primary"]), (Some("not-fabric-primary"), &st.fp["name"]), "a delete sent to {} is refused naming the fabric-primary: {v}", non_writer["name"]);
     let rec = json!({"sent_to": non_writer["name"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "path": path, "route": "delete", "t_ms": now_ms()});
     a.refused_writes.push(rec.clone());
@@ -3656,23 +3652,23 @@ enum Removal {
 /// traffic aimed at it. The old birth's runtime is terminal as the provider reports it, its NodeId is
 /// in no admin's view after the removal is held for a full staleness window, and a call to the exact
 /// NodeId sends nothing. Leaves `a.roles` as the shape without the node.
-async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, label: &str, how: Removal, inv: &mut Invariants) -> (Value, Stable) {
-    let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
+async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, label: &str, how: Removal, inv: &mut Invariants) -> (Value, Stable) {
+    let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node:?} is not in the settled view")).clone();
     let (kind, mesh, node_id, old_inc) = (s(&n["kind"]), s(&n["mesh"]), s(&n["node_id"]), s(&n["incarnation_id"]));
-    assert!(matches!(kind.as_str(), "broker" | "gateway" | "compute"), "{node}: only a role node is deleted here");
+    assert!(matches!(kind.as_str(), "broker" | "gateway" | "compute"), "{node:?}: only a role node is deleted here");
     let rt_before = exact_runtime(f, node).await;
     let gw = format!("{mesh}.gateway.1");
     let ci = op_to(f, a, &n, None, "canary", "before-delete");
     let (ckey, cval) = (a.traffic.ops[ci].0.key.clone(), a.traffic.ops[ci].0.value.clone());
-    assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node}: the canary was stored before the delete: {}", a.traffic.ops[ci].1.out);
+    assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node:?}: the canary was stored before the delete: {}", a.traffic.ops[ci].1.out);
     if kind == "broker" && gw != node {
         originate_op(f, a, &gw, &n, "before-delete");
         await_connection(&f.estate, &gw, &node_id, &old_inc, None).await;
     }
     let refusal = refused_by_a_non_writer(f, a, st, node, how).await;
     let still = f.estate.node_value(node).await;
-    assert_eq!((still["node_id"].clone(), still["incarnation_id"].clone(), still["status"].clone()), (n["node_id"].clone(), n["incarnation_id"].clone(), json!("ready")), "{node}: the refused delete executed nothing: {still}");
-    let mut roles: BTreeSet<String> = a.roles.clone().unwrap_or_else(|| f.shape.names().into_iter().filter(|x| launch_id(x) != "node_admin").collect());
+    assert_eq!((still["node_id"].clone(), still["incarnation_id"].clone(), still["status"].clone()), (n["node_id"].clone(), n["incarnation_id"].clone(), json!("ready")), "{node:?}: the refused delete executed nothing: {still}");
+    let mut roles: BTreeSet<PathName> = a.roles.clone().unwrap_or_else(|| f.shape.names().into_iter().filter(|x| launch_id(x) != "node_admin").collect());
     roles.remove(node);
     a.roles = Some(roles);
     a.traffic.aim = matches!(kind.as_str(), "broker" | "gateway").then(|| node.to_string());
@@ -3681,17 +3677,17 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
     let (build_id, fin) = match how {
         Removal::Delete => {
             let build_id = a.write(f, st, &format!("{label}: delete at the fabric-primary"), Write::Delete(node.to_string())).await;
-            assert_ne!(build_id, before_build, "{node}: a delete changes the topology, so it is a new accepted Build");
+            assert_ne!(build_id, before_build, "{node:?}: a delete changes the topology, so it is a new accepted Build");
             let fin = a.finish(f, &build_id, Until::Gone { node: node.into() }, "during-delete").await;
             (build_id, fin)
         }
         Removal::Replace => {
             let build_id = a.write_steps(f, st, &format!("{label}: authorized replace steps"), node).await;
-            assert_eq!(build_id, before_build, "{node}: steps change no topology, so they are the next attempt of the accepted Build and mint none");
+            assert_eq!(build_id, before_build, "{node:?}: steps change no topology, so they are the next attempt of the accepted Build and mint none");
             a.finish(f, &build_id, Until::Joined { node: node.into(), not_node_id: node_id.clone() }, "during-replace").await;
             // The Build's last step deleted the predecessor at `<node>.old` (its exit proven,
             // NodeDeleted published): nothing is held at that path.
-            let fin = a.finish(f, &build_id, Until::Gone { node: format!("{node}.old") }, "during-delete-of-the-predecessor").await;
+            let fin = a.finish(f, &build_id, Until::Gone { node: format!("{node:?}.old") }, "during-delete-of-the-predecessor").await;
             (build_id, fin)
         }
     };
@@ -3700,9 +3696,9 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
         // The node stands at its path again: the shape is whole.
         a.roles = None;
     }
-    let st2 = a.stable(f, &format!("{label}: {node} deleted"), &both(2), inv).await;
-    assert!(st2.nodes.iter().all(|x| x["node_id"] != n["node_id"]), "{node}: the deleted NodeId is in the settled view");
-    assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node}: the current build_id names the deleting Build (a replace leaves it as it was)");
+    let st2 = a.stable(f, &format!("{label}: {node:?} deleted"), &both(2), inv).await;
+    assert!(st2.nodes.iter().all(|x| x["node_id"] != n["node_id"]), "{node:?}: the deleted NodeId is in the settled view");
+    assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node:?}: the current build_id names the deleting Build (a replace leaves it as it was)");
     let terminal = terminal_proof(node, &rt_before);
     // Terminal delete + held removal, then absence: a full staleness window with the removal held.
     let window = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
@@ -3710,7 +3706,7 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
     let mut looks = 0u32;
     while Instant::now() < until {
         for v in admin_views_of(a, f, node).await {
-            assert!(v["node_id"] != json!(node_id), "{node}: the deleted NodeId {node_id} is back in an admin's view during the convergence window: {v}");
+            assert!(v["node_id"] != json!(node_id), "{node:?}: the deleted NodeId {node_id} is back in an admin's view during the convergence window: {v}");
         }
         looks += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -3719,7 +3715,7 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
     // A call to the exact deleted NodeId sends nothing.
     let gone_i = op_to(f, a, &n, None, "to-deleted", "after-delete");
     let g = &a.traffic.ops[gone_i].1.out;
-    assert_eq!(bucket(g), Bucket::NotSent, "{node}: a call to the deleted NodeId sends nothing: {g}");
+    assert_eq!(bucket(g), Bucket::NotSent, "{node:?}: a call to the deleted NodeId sends nothing: {g}");
     let rec = json!({
         "label": label, "node": node, "kind": kind, "mesh": mesh, "node_id": node_id, "old_incarnation_id": old_inc, "endpoint_id": n["endpoint_id"], "data_dir": n["data_dir"],
         "build_id": build_id, "fabric_build_id_before": before_build, "request_ns": t0, "wall_ms": fin["wall_ms"], "attempt_after": fin["build"]["attempt"], "executor_after": fin["build"]["executor"],
@@ -3728,7 +3724,7 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
         "absence": {"window_ms": window, "looks": looks, "views_at_end": views}, "call_after_removal": {"outcome": g["outcome"], "reason": g["reason"]},
     });
     inv.holds(
-        &format!("{label}: {node} ({kind}) was deleted by the fabric-primary's Build (a non-writer's identical request was refused naming the fabric-primary and executed nothing); the old birth's runtime is terminal; its NodeId stayed out of every admin's view for a full staleness window; a call to it sent nothing"),
+        &format!("{label}: {node:?} ({kind}) was deleted by the fabric-primary's Build (a non-writer's identical request was refused naming the fabric-primary and executed nothing); the old birth's runtime is terminal; its NodeId stayed out of every admin's view for a full staleness window; a call to it sent nothing"),
         true,
         json!({"node_id": node_id, "old_incarnation_id": old_inc, "terminal": rec["old_birth_terminal"], "absence_window_ms": window, "looks": looks}),
     );
@@ -3807,12 +3803,12 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
 /// The replace steps of `node` in `build_id` (node-replace.md "Numbered end-to-end sequence"): its
 /// reconciles executed the Build's six operations, each under its op's own key, in order, and no
 /// other operation of the node or its predecessor.
-fn step_ops_of(spans: &[Value], node: &str, build_id: &str) -> Vec<String> {
-    let old = format!("{node}.old");
+fn step_ops_of(spans: &[Value], node: &PathName, build_id: &str) -> Vec<String> {
+    let old = format!("{node:?}.old");
     // The steps are an attempt of the accepted Build (its via-steps span names the attempt it opened):
     // the reconciles from that attempt on in the fabric lane are the steps'. The formation's earlier
     // attempts of the same Build created the node at its path and are not the steps'.
-    let opened = named(spans, "rdm.node_admin.build.update.via-steps").into_iter().filter(|sp| sp["attributes"]["build_id"] == build_id).map(attempt_of).min().unwrap_or_else(|| panic!("{node}: no via-steps span opened the steps of Build {build_id}"));
+    let opened = named(spans, "rdm.node_admin.build.update.via-steps").into_iter().filter(|sp| sp["attributes"]["build_id"] == build_id).map(attempt_of).min().unwrap_or_else(|| panic!("{node:?}: no via-steps span opened the steps of Build {build_id}"));
     let mut reconciles: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .filter(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["lane"].as_str().unwrap_or("").is_empty() && attempt_of(sp) >= opened)
@@ -3826,8 +3822,8 @@ fn step_ops_of(spans: &[Value], node: &str, build_id: &str) -> Vec<String> {
             }
         }
     }
-    let want = [format!("node.connection.delete:{node}"), format!("node.mesh.leave:{node}"), format!("node.update:{node}"), format!("node.stop:{old}"), format!("node.create:{node}"), format!("node.delete:{old}")];
-    assert_eq!(ops, want.to_vec(), "{node}: the Build's operations, in order");
+    let want = [format!("node.connection.delete:{node:?}"), format!("node.mesh.leave:{node:?}"), format!("node.update:{node:?}"), format!("node.stop:{old}"), format!("node.create:{node:?}"), format!("node.delete:{old}")];
+    assert_eq!(ops, want.to_vec(), "{node:?}: the Build's operations, in order");
     ops
 }
 
@@ -3895,7 +3891,7 @@ fn stop_evidence(spans: &[Value], rec: &Value) -> Value {
 
 /// No Connected Direct connection from `primary` to any birth of `node_id` (a deleted node): its pooled
 /// connections to it are gone. Bounded by the same 30 s as every connections convergence.
-async fn await_no_connection(estate: &Estate, holder: &str, node_id: &str) -> Value {
+async fn await_no_connection(estate: &Estate, holder: &PathName, node_id: &str) -> Value {
     let until = Instant::now() + Duration::from_secs(30);
     let t0 = Instant::now();
     loop {
@@ -3903,7 +3899,7 @@ async fn await_no_connection(estate: &Estate, holder: &str, node_id: &str) -> Va
         if !d.iter().any(|x| x["state"] == "Connected") {
             return json!({"holder": holder, "node_id": node_id, "converged_ms": t0.elapsed().as_millis() as u64, "connections": d});
         }
-        assert!(Instant::now() < until, "{holder} still holds a Connected Direct connection to the deleted {node_id} 30 s after the removal: {}", serde_json::to_string(&d).unwrap());
+        assert!(Instant::now() < until, "{holder:?} still holds a Connected Direct connection to the deleted {node_id} 30 s after the removal: {}", serde_json::to_string(&d).unwrap());
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -3922,32 +3918,32 @@ fn stale_facts_toward(estate: &Estate, f: &Formed, node_id: &str) -> Vec<Value> 
 }
 
 /// The node at `name` in the settled view.
-fn at<'a>(st: &'a Stable, name: &str) -> &'a Value {
-    st.nodes.iter().find(|n| n["name"] == name).unwrap_or_else(|| panic!("{name} is not in the settled view"))
+fn at<'a>(st: &'a Stable, name: &PathName) -> &'a Value {
+    st.nodes.iter().find(|n| n["name"] == name).unwrap_or_else(|| panic!("{name:?} is not in the settled view"))
 }
 
 /// Exact-runtime kill of `node`'s runtime as the provider backends offer it, once the fabric has first
 /// been ready (`ready`, Q74), acknowledged by the provider: a process by the OS (`process_faults`: control domain, pid and start token checked,
 /// then SIGKILL, the exit observed), a container by the daemon (`docker kill` of the immutable id,
 /// then not running).
-fn kill_exact_runtime(node: &str, rt: &Rt, ready: rdm_test::estate::FabricReady) -> Value {
+fn kill_exact_runtime(node: &PathName, rt: &Rt, ready: rdm_test::estate::FabricReady) -> Value {
     match rt {
         Rt::Process(r) => {
-            let applied = r.apply(SigFault::Kill(ready)).unwrap_or_else(|e| panic!("{node}: the exact-runtime kill was refused: {e:?}"));
-            assert!(applied.exited, "{node}: the OS did not show the runtime gone: {applied:?}");
+            let applied = r.apply(SigFault::Kill(ready)).unwrap_or_else(|e| panic!("{node:?}: the exact-runtime kill was refused: {e:?}"));
+            assert!(applied.exited, "{node:?}: the OS did not show the runtime gone: {applied:?}");
             json!({"backend": "process_faults", "fault": "kill", "runtime": rt.record(), "acknowledged_by": "OS: every thread of the pid exited", "state_after": applied.state_after.map(String::from)})
         }
         Rt::Container(c) => {
-            container_faults::docker(&["kill", &c.id]).unwrap_or_else(|e| panic!("{node}: docker kill {}: {e}", c.id));
+            container_faults::docker(&["kill", &c.id]).unwrap_or_else(|e| panic!("{node:?}: docker kill {}: {e}", c.id));
             let until = Instant::now() + Duration::from_secs(10);
             let after = loop {
-                let i = container_faults::inspect(&c.id).unwrap_or_else(|e| panic!("{node}: inspect after kill: {e}"));
+                let i = container_faults::inspect(&c.id).unwrap_or_else(|e| panic!("{node:?}: inspect after kill: {e}"));
                 if !i.running || Instant::now() >= until {
                     break i;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             };
-            assert!(!after.running, "{node}: the daemon still shows {} running after docker kill: {after:?}", c.id);
+            assert!(!after.running, "{node:?}: the daemon still shows {} running after docker kill: {after:?}", c.id);
             json!({"backend": "container_faults (docker kill + inspect)", "fault": "kill", "runtime": rt.record(), "acknowledged_by": "Docker daemon: container not running", "inspect_after": after})
         }
     }
@@ -3963,17 +3959,17 @@ struct Held {
 }
 
 impl Held {
-    fn hold(node: &str, rt: &Rt) -> (Held, Value) {
+    fn hold(node: &PathName, rt: &Rt) -> (Held, Value) {
         let ack = match rt {
             Rt::Process(r) => {
-                let a = r.apply(SigFault::Stop).unwrap_or_else(|e| panic!("{node}: the exact-runtime hold was refused: {e:?}"));
-                assert_eq!(a.state_after, Some('T'), "{node}: the OS shows the runtime stopped: {a:?}");
+                let a = r.apply(SigFault::Stop).unwrap_or_else(|e| panic!("{node:?}: the exact-runtime hold was refused: {e:?}"));
+                assert_eq!(a.state_after, Some('T'), "{node:?}: the OS shows the runtime stopped: {a:?}");
                 json!({"backend": "process_faults", "fault": "stop", "state_after": "T", "runtime": rt.record()})
             }
             Rt::Container(c) => {
-                container_faults::pause(&c.id).unwrap_or_else(|e| panic!("{node}: docker pause {}: {e}", c.id));
+                container_faults::pause(&c.id).unwrap_or_else(|e| panic!("{node:?}: docker pause {}: {e}", c.id));
                 let i = container_faults::inspect(&c.id).unwrap();
-                assert_eq!(i.status, "paused", "{node}: the daemon shows the container paused: {i:?}");
+                assert_eq!(i.status, "paused", "{node:?}: the daemon shows the container paused: {i:?}");
                 json!({"backend": "container_faults (docker pause + inspect)", "status": i.status, "runtime": rt.record()})
             }
         };
@@ -4023,21 +4019,21 @@ const STOP_NODE_SEND_BOUND: Duration = Duration::from_secs(5);
 /// with a new NodeId under the current Build, which then serves; the held birth's NodeId is listed in no
 /// view again, and no Build is minted. Released, the held birth comes back and is refused, reported and
 /// terminated (Q128).
-async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &mut Invariants) -> Value {
+async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, inv: &mut Invariants) -> Value {
     let n = at(st, node).clone();
     let (node_id, inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
     let rt = exact_runtime(f, node).await;
     let ci = op_to(f, a, &n, None, "control", "before-hold");
-    assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node}: the healthy same-family control: {}", a.traffic.ops[ci].1.out);
+    assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node:?}: the healthy same-family control: {}", a.traffic.ops[ci].1.out);
     let fabric_build = s(&st.fabric["build_id"]);
     let (mut held, hold_ack) = Held::hold(node, &rt);
     let hold_ns = now_ns();
-    progress(&format!("{node} held: {hold_ack}"));
+    progress(&format!("{node:?} held: {hold_ack}"));
     // A call to the held node: its budget (10 s) is the bound; the outcome is typed.
     let hi = op_to(f, a, &n, None, "to-held", "during-hold");
     let held_call = a.traffic.ops[hi].1.out.clone();
     let held_bucket = bucket(&held_call);
-    assert_ne!(held_bucket, Bucket::Reply, "{node}: a held runtime answered: {held_call}");
+    assert_ne!(held_bucket, Bucket::Reply, "{node:?}: a held runtime answered: {held_call}");
     // Re-created at its path: a new NodeId ready there, under the same current Build.
     let floor_ms = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
     let bound = Duration::from_millis(4 * floor_ms + 60_000);
@@ -4047,20 +4043,20 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &
         if let Some(x) = ns.into_iter().find(|x| x["name"] == node && x["status"] == "ready" && x["node_id"] != node_id.as_str()) {
             break x;
         }
-        assert!(t.elapsed() < bound, "{node} was not re-created at its path within {bound:?} of the hold");
+        assert!(t.elapsed() < bound, "{node:?} was not re-created at its path within {bound:?} of the hold");
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
     let recreated_ms = t.elapsed().as_millis() as u64;
     let recreated_ns = now_ns();
     let fabric = a.fabric(f).await.unwrap_or(Value::Null);
-    assert_eq!(s(&fabric["build_id"]), fabric_build, "{node}: the recovery minted no Build: {fabric}");
+    assert_eq!(s(&fabric["build_id"]), fabric_build, "{node:?}: the recovery minted no Build: {fabric}");
     for v in admin_views_of(a, f, node).await {
-        assert!(v["node_id"] != json!(node_id), "{node}: an admin still lists the held birth after its re-creation: {v}");
+        assert!(v["node_id"] != json!(node_id), "{node:?}: an admin still lists the held birth after its re-creation: {v}");
     }
     let ri = op_to(f, a, &ready, None, "after-hold", "after-recreate");
     let after_call = a.traffic.ops[ri].1.out.clone();
-    assert_eq!(after_call["reply"]["result"], json!({"stored": true}), "{node}: the re-created node serves: {after_call}");
-    assert_eq!(after_call["reply"]["incarnation_id"], ready["incarnation_id"], "{node}: served by the re-created birth: {after_call}");
+    assert_eq!(after_call["reply"]["result"], json!({"stored": true}), "{node:?}: the re-created node serves: {after_call}");
+    assert_eq!(after_call["reply"]["incarnation_id"], ready["incarnation_id"], "{node:?}: served by the re-created birth: {after_call}");
     let release_ack = held.release();
     // The released birth comes back: refused by every view, reported by its mesh-primary, and its runtime
     // terminated by the fabric-primary's TerminateRuntime, an attempt of the current Build
@@ -4072,7 +4068,7 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &
         if !rt_alive(&rt) && b["state"] == "complete" {
             break;
         }
-        assert!(t.elapsed() < bound, "{node}: the released held birth was not terminated with the Build complete within {bound:?}: alive={} build {b}", rt_alive(&rt));
+        assert!(t.elapsed() < bound, "{node:?}: the released held birth was not terminated with the Build complete within {bound:?}: alive={} build {b}", rt_alive(&rt));
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     let rec = json!({
@@ -4081,7 +4077,7 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &
         "fabric_build_id": fabric_build, "recreated_ms": recreated_ms, "recreated_ns": recreated_ns, "new_node_id": ready["node_id"], "runtime_held": rt.record(),
     });
     inv.holds(
-        &format!("{node} held by exact-runtime {} (acknowledged by the provider): a call to it ended {held_bucket:?}; it was re-created at its path as {} after {recreated_ms} ms under the same Build, which then served", if provider() == "container" { "pause" } else { "SIGSTOP" }, s(&ready["node_id"])),
+        &format!("{node:?} held by exact-runtime {} (acknowledged by the provider): a call to it ended {held_bucket:?}; it was re-created at its path as {} after {recreated_ms} ms under the same Build, which then served", if provider() == "container" { "pause" } else { "SIGSTOP" }, s(&ready["node_id"])),
         true,
         json!({"node_id": node_id, "new_node_id": ready["node_id"], "recreated_ms": recreated_ms, "call": rec["call_to_held_node"]}),
     );
@@ -4092,24 +4088,24 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &
 /// released (`node.create:<node>`, node-replace.md step 3), ran `node.create.via-build` through the
 /// create pipeline (AllocateIdentity .. WaitForNodeReady), and the new NodeId's own ready span follows;
 /// the old identity's NodeDeleted comes later, from the Build's delete of `<node>.old`.
-fn check_replace_create_chain(spans: &[Value], node: &str, build_id: &str, node_id: &str, incarnation: &str) -> Value {
-    let (successor, create) = (node.to_string(), format!("node.create:{node}"));
+fn check_replace_create_chain(spans: &[Value], node: &PathName, build_id: &str, node_id: &str, incarnation: &str) -> Value {
+    let (successor, create) = (node.to_string(), format!("node.create:{node:?}"));
     let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         // The formation created the node at the same path under the same key: the steps' reconcile is
         // the one whose action is the steps (`AttemptAction::Steps`, its journal tag `"recipe"`).
         .find(|sp| sp["attributes"]["build_id"] == build_id && s(&sp["attributes"]["action"]).contains("\"recipe\"") && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == create)))
         .cloned()
-        .unwrap_or_else(|| panic!("{node}: no reconcile of {build_id} carrying the steps executed {create}"));
+        .unwrap_or_else(|| panic!("{node:?}: no reconcile of {build_id} carrying the steps executed {create}"));
     let action = s(&reconcile["attributes"]["action"]);
-    assert!(action.contains("\"recipe\"") && action.contains(&successor), "{node}: the reconcile carries the steps: {action}");
+    assert!(action.contains("\"recipe\"") && action.contains(&successor), "{node:?}: the reconcile carries the steps: {action}");
     let make = named(spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| sp["attributes"]["node"] == successor.as_str() && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.create.via-build of {successor} under the steps' reconcile"));
-    let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == make["span_id"]).cloned().unwrap_or_else(|| panic!("{node}: no deployment pipeline under its node.create.via-build"));
+    let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == make["span_id"]).cloned().unwrap_or_else(|| panic!("{node:?}: no deployment pipeline under its node.create.via-build"));
     let names: Vec<String> = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipeline["span_id"]).map(|st| s(&st["attributes"]["step"])).collect();
     for want in ["AllocateIdentity", "DeployRuntime", "WaitForNodeReady"] {
-        assert!(names.iter().any(|x| x == want), "{node}: the create pipeline has no `{want}` step creating the successor: {names:?}");
+        assert!(names.iter().any(|x| x == want), "{node:?}: the create pipeline has no `{want}` step creating the successor: {names:?}");
     }
-    let ready = named(spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == node_id && sp["attributes"]["incarnation_id"] == incarnation).cloned().unwrap_or_else(|| panic!("{node}: the new node {node_id} left no ready span"));
+    let ready = named(spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == node_id && sp["attributes"]["incarnation_id"] == incarnation).cloned().unwrap_or_else(|| panic!("{node:?}: the new node {node_id} left no ready span"));
     json!({"node": node, "reconcile_span": reconcile["span_id"], "action": action, "create_span": make["span_id"], "pipeline_span": pipeline["span_id"], "steps": names.len(), "ready_span": ready["span_id"], "new_node_id": node_id})
 }
 
@@ -4155,7 +4151,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let c = probe_call(&f.estate, &["get", "--target", &format!("exact:{new_id}"), "--key", &ckey]);
     assert_eq!((c.out["reply"]["result"].clone(), c.out["reply"]["executing_node"].clone()), (json!({"found": false}), json!(new_id)), "the successor's fresh proof store holds nothing of the deleted node's: {}", c.out);
     f.actions.push(action_row(&c));
-    let c2 = probe_call(&f.estate, &["get", "--target", &format!("path:{victim}"), "--key", &ckey]);
+    let c2 = probe_call(&f.estate, &["get", "--target", &rdm_test::estate::path_target(&victim), "--key", &ckey]);
     assert_eq!((c2.out["reply"]["executing_node"].clone(), c2.out["reply"]["incarnation_id"].clone()), (json!(new_id), json!(new_inc)), "the path now resolves to the successor and only to it: {}", c2.out);
     f.actions.push(action_row(&c2));
     let gi = op_to(&f, &mut a, &old, None, "to-deleted", "after-replacement");
@@ -4226,7 +4222,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     a.traffic.burst(&f, 6, "steady-after").await;
     let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
     let nodes_end = st.nodes.clone();
-    let names_final: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["name"])).collect();
+    let names_final: BTreeSet<PathName> = nodes_end.iter().map(|n| location(&n)).collect();
     assert_eq!(names_final, f.shape.names(), "the topology is the shape again: the replaced and the re-born nodes stand at their path.names");
     let launches_end = check_final_shape(&f, &nodes_end, &mut inv).await;
     let gone_ok: BTreeSet<String> = BTreeSet::from([victim.clone(), victim2.clone()]);
@@ -4361,7 +4357,7 @@ fn exact_rt_from_record(r: &Value, deleted: &Value) -> Rt {
 /// mesh-primary and its runtime terminated by the fabric-primary under the current Build (Q188), which
 /// then completes. What must NOT happen: a Build minted for the recovery, the held runtime terminated by
 /// the recovery itself, the held birth listed after its re-creation, the released birth left running.
-async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &mut Invariants) -> Value {
+async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathName, inv: &mut Invariants) -> Value {
     let n = at(st, node).clone();
     let (node_id, inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
     let rt = exact_runtime(f, node).await;
@@ -4370,7 +4366,7 @@ async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv:
     let hold_ns = now_ns();
     let attempt_before = build_at(&f.estate, &fabric_build).await.map(|b| b["attempt"].as_u64().unwrap());
     let build_id = a.write(f, st, "C17: node.restart of a node whose runtime is held", Write::Restart(node.to_string())).await;
-    assert_eq!(build_id, fabric_build, "{node}: the restart is an attempt of the accepted Build");
+    assert_eq!(build_id, fabric_build, "{node:?}: the restart is an attempt of the accepted Build");
     let restart_attempt = a.attempts[&build_id];
     // Re-created at its path: a new NodeId ready there, under the same current Build. The bound is
     // hold_phase's: a staleness floor to the silence, the investigation, the restart's attempt ending
@@ -4388,7 +4384,7 @@ async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv:
         if let Some(x) = at_path.filter(|x| x["status"] == "ready" && x["node_id"] != node_id.as_str()) {
             break x;
         }
-        assert!(t.elapsed() < bound, "{node} was not re-created at its path within {bound:?} of its restart while its runtime was held");
+        assert!(t.elapsed() < bound, "{node:?} was not re-created at its path within {bound:?} of its restart while its runtime was held");
         tokio::time::sleep(Duration::from_millis(500)).await;
     };
     let recreated_ms = t.elapsed().as_millis() as u64;
@@ -4398,11 +4394,11 @@ async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv:
         Rt::Process(r) => json!({"check": format!("{:?}", r.check()), "state": proc_state_of(r.pid)}),
         Rt::Container(c) => json!(container_faults::inspect(&c.id).map(|i| json!({"status": i.status, "running": i.running})).unwrap_or_else(|e| json!({"gone": e}))),
     };
-    assert!(rt_alive(&rt), "{node}: the recovery terminated the held (os-stopped) runtime, which it leaves as it is: {runtime_at_recreation}");
+    assert!(rt_alive(&rt), "{node:?}: the recovery terminated the held (os-stopped) runtime, which it leaves as it is: {runtime_at_recreation}");
     let fabric = a.fabric(f).await.unwrap_or(Value::Null);
-    assert_eq!(s(&fabric["build_id"]), fabric_build, "{node}: the recovery minted no Build: {fabric}");
+    assert_eq!(s(&fabric["build_id"]), fabric_build, "{node:?}: the recovery minted no Build: {fabric}");
     for v in admin_views_of(a, f, node).await {
-        assert!(v["node_id"] != json!(node_id), "{node}: an admin still lists the held birth after its re-creation: {v}");
+        assert!(v["node_id"] != json!(node_id), "{node:?}: an admin still lists the held birth after its re-creation: {v}");
     }
     let release_ack = held.release();
     let release_ns = now_ns();
@@ -4415,13 +4411,13 @@ async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv:
         if !rt_alive(&rt) && b["state"] == "complete" {
             break b;
         }
-        assert!(t.elapsed() < bound, "{node}: the released held birth was not terminated with the Build complete within {bound:?}: alive={} build {b}", rt_alive(&rt));
+        assert!(t.elapsed() < bound, "{node:?}: the released held birth was not terminated with the Build complete within {bound:?}: alive={} build {b}", rt_alive(&rt));
         tokio::time::sleep(Duration::from_millis(500)).await;
     };
     let attempt_after = after["attempt"].as_u64().unwrap_or(0);
-    assert!(attempt_after > restart_attempt, "{node}: the recovery is a further attempt of the accepted Build than the restart's {restart_attempt}: {after}");
+    assert!(attempt_after > restart_attempt, "{node:?}: the recovery is a further attempt of the accepted Build than the restart's {restart_attempt}: {after}");
     let rt_after = exact_runtime(f, node).await;
-    assert!(!rt.is(&rt_after), "{node}: the re-created birth runs in the held birth's runtime: {:?}", rt_after.record());
+    assert!(!rt.is(&rt_after), "{node:?}: the re-created birth runs in the held birth's runtime: {:?}", rt_after.record());
     let rec = json!({
         "node": node, "node_id": node_id, "incarnation_id": inc, "build_id": build_id, "attempt_before": attempt_before, "restart_attempt": restart_attempt, "attempt_after": attempt_after,
         "hold_ack": hold_ack, "hold_ns": hold_ns, "observations": seen, "recreated_ms": recreated_ms, "recreated_ns": recreated_ns, "new_node_id": ready["node_id"], "new_incarnation_id": ready["incarnation_id"],
@@ -4429,7 +4425,7 @@ async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv:
         "runtimes": {"held": rt.record(), "recreated": rt_after.record()},
     });
     inv.holds(
-        &format!("{node}: a restart requested while its exact runtime was held (acknowledged) did not complete on it; the held birth was recovered at once as {} after {recreated_ms} ms under the same Build (os-stopped, Q188), its runtime left as it is until the release, then terminated as a deleted birth", s(&ready["node_id"])),
+        &format!("{node:?}: a restart requested while its exact runtime was held (acknowledged) did not complete on it; the held birth was recovered at once as {} after {recreated_ms} ms under the same Build (os-stopped, Q188), its runtime left as it is until the release, then terminated as a deleted birth", s(&ready["node_id"])),
         true,
         json!({"node_id": node_id, "new_node_id": ready["node_id"], "recreated_ms": recreated_ms, "restart_attempt": restart_attempt, "attempt_after": attempt_after}),
     );
@@ -4491,16 +4487,16 @@ async fn delete_run(cell: &str, shape: Shape) {
     let mut want_names = f.shape.names();
     want_names.remove(&broker);
     want_names.remove(&gateway);
-    let names_final: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["name"])).collect();
+    let names_final: BTreeSet<PathName> = nodes_end.iter().map(|n| location(&n)).collect();
     assert_eq!(names_final, want_names, "the final view is the shape without the two deleted nodes");
     let mut deleted_runtimes = Vec::new();
     for n in &nodes_end {
-        let name = s(&n["name"]);
-        assert_eq!(n["status"], "ready", "{name}");
+        let name = location(&n);
+        assert_eq!(n["status"], "ready", "{name:?}");
         let o = observe_launch(&f.estate, &name).await;
         let b = f.set.bindings.iter().find(|b| b.launch_id == launch_id(&name)).unwrap();
-        assert_eq!(launched_path(&o), b.executable, "{name} runs the bound executable: {o}");
-        assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{name} runs the bound bytes: {o}");
+        assert_eq!(launched_path(&o), b.executable, "{name:?} runs the bound executable: {o}");
+        assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{name:?} runs the bound bytes: {o}");
         deleted_runtimes.push(o);
     }
     let gone_ok: BTreeSet<String> = BTreeSet::from([broker.clone(), gateway.clone(), compute.clone()]);
@@ -4688,7 +4684,7 @@ async fn close_run_with(
 ) {
     let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
     let nodes_end = st.nodes.clone();
-    let names_final: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["name"])).collect();
+    let names_final: BTreeSet<PathName> = nodes_end.iter().map(|n| location(&n)).collect();
     assert_eq!(names_final, f.shape.names(), "the topology is what it was: the same path.names, nothing added or removed");
     let launches_end = check_final_shape(&f, &nodes_end, &mut inv).await;
     let (final_state, verification) = final_reads(&f, &a, &nodes_end, &gone_ok);
@@ -4736,15 +4732,15 @@ async fn close_run_with(
 }
 
 /// An originate call that reads (`get`): the source answers with the typed outcome of its own call.
-fn orig_get(f: &Formed, holder: &str, dest: &str, key: &str) -> Call {
-    probe_call(&f.estate, &["originate", "--target", &format!("path:{holder}"), "--destination", &format!("path:{dest}"), "--key", key])
+fn orig_get(f: &Formed, holder: &PathName, dest: &str, key: &str) -> Call {
+    probe_call(&f.estate, &["originate", "--target", &rdm_test::estate::path_target(holder), "--destination", &rdm_test::estate::path_target(&dest), "--key", key])
 }
 
 /// `primary` dials `dest` (a core Ping outside route resolution, as a node's own background traffic
 /// reaches a peer): the pooled connection it opens is a Direct Connected fact of its own.
-fn dial(f: &Formed, holder: &str, dest: &str) -> Call {
-    let c = probe_call(&f.estate, &["dial", "--target", &format!("path:{holder}"), "--destination", &format!("path:{dest}"), "--key", "x"]);
-    assert_eq!(c.out["dialed"], "Reply", "{holder} dials {dest}: {}", c.out);
+fn dial(f: &Formed, holder: &PathName, dest: &str) -> Call {
+    let c = probe_call(&f.estate, &["dial", "--target", &rdm_test::estate::path_target(holder), "--destination", &rdm_test::estate::path_target(&dest), "--key", "x"]);
+    assert_eq!(c.out["dialed"], "Reply", "{holder:?} dials {dest}: {}", c.out);
     c
 }
 
@@ -4754,7 +4750,7 @@ fn latest_direct(snap: &Value, dest: &str) -> Option<Value> {
 }
 
 /// Wait (a bound that fires is the finding) until `primary`'s latest Direct toward `dest` satisfies `ok`.
-async fn await_direct(estate: &Estate, holder: &str, dest: &str, what: &str, bound: Duration, ok: impl Fn(&Value) -> bool) -> Value {
+async fn await_direct(estate: &Estate, holder: &PathName, dest: &str, what: &str, bound: Duration, ok: impl Fn(&Value) -> bool) -> Value {
     let until = Instant::now() + bound;
     let t0 = Instant::now();
     loop {
@@ -4764,7 +4760,7 @@ async fn await_direct(estate: &Estate, holder: &str, dest: &str, what: &str, bou
                 return json!({"holder": holder, "destination": dest, "waited_ms": t0.elapsed().as_millis() as u64, "direct": d});
             }
         }
-        assert!(Instant::now() < until, "{holder}'s Direct fact toward {dest} never became `{what}` within {bound:?}: {}", latest_direct(&snap, dest).map(|d| d.to_string()).unwrap_or_else(|| "no Direct fact".into()));
+        assert!(Instant::now() < until, "{holder:?}'s Direct fact toward {dest} never became `{what}` within {bound:?}: {}", latest_direct(&snap, dest).map(|d| d.to_string()).unwrap_or_else(|| "no Direct fact".into()));
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -4830,7 +4826,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     let (src, dst, other_src) = ("mesh1.gateway.1".to_string(), "mesh1.broker.1".to_string(), "mesh2.gateway.1".to_string());
-    let d0 = st.nodes.iter().find(|n| n["name"] == dst.as_str()).cloned().unwrap();
+    let d0 = st.nodes.iter().find(|n| location(n) == *dst).cloned().unwrap();
     let (d_id, d_inc0) = (s(&d0["node_id"]), s(&d0["incarnation_id"]));
     let fp = st.fp_name();
     let mut events = Vec::new();
@@ -4867,7 +4863,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     // is never Direct evidence, and the gateway reaches the compute by no Proxy, so it is no recovery trigger either).
     let t_in0 = now_ns();
     let inbound_from = "mesh1.compute.1".to_string();
-    let inbound = probe_call(&f.estate, &["dial", "--target", &format!("path:{inbound_from}"), "--destination", &format!("path:{src}"), "--key", "x"]);
+    let inbound = probe_call(&f.estate, &["dial", "--target", &rdm_test::estate::path_target(&inbound_from), "--destination", &rdm_test::estate::path_target(&src), "--key", "x"]);
     assert_eq!((inbound.out["dialed"].as_str(), inbound.out["outcome"].as_str()), (Some("Reply"), Some("Reply")), "{}", inbound.out);
     f.actions.push(action_row(&inbound));
     events.push(json!({"event": "inbound-accepted", "from": inbound_from, "dial": inbound.out, "t0_ns": t_in0}));
@@ -4878,7 +4874,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     let recovery = recover_node(&mut f, &mut a, &st, &dst, "C11 destination birth supersession").await;
     a.traffic.aim = None;
     let st2 = a.stable(&mut f, "C11: destination recovered", &both(2), &mut inv).await;
-    let d1 = st2.nodes.iter().find(|n| n["name"] == dst.as_str()).cloned().unwrap();
+    let d1 = st2.nodes.iter().find(|n| location(n) == *dst).cloned().unwrap();
     let (d_id1, d_inc1) = (s(&d1["node_id"]), s(&d1["incarnation_id"]));
     assert!(d_id1 != d_id && d_inc1 != d_inc0, "a node recovery is a new node.id and incarnation at the same path.name (node-recovery.md, New): {d_id}@{d_inc0} -> {d_id1}@{d_inc1}");
     assert_ne!(udp_ports(&st.nodes, &[dst.clone()]), udp_ports(&st2.nodes, &[dst.clone()]), "the new birth is on a new socket (the OS assigns it)");
@@ -4990,7 +4986,7 @@ async fn mock_routes_survive_connection_and_birth_supersession() {
 }
 
 /// The source's durable raw connection log: every fact it wrote, in order.
-async fn durable_history(f: &Formed, node: &str) -> Vec<Value> {
+async fn durable_history(f: &Formed, node: &PathName) -> Vec<Value> {
     f.estate.connection_history(node)
 }
 
@@ -5017,7 +5013,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
 
     // C12: the source holds Direct Failed(1) and Proxy Connected via the carrier (the facts a proven carried path
     // leaves). Its call to the destination is carried: one hop, the destination's own birth executes it.
-    let seeded = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "1", "--key", "x"]);
+    let seeded = probe_call(&f.estate, &["record-proxy", "--target", &rdm_test::estate::path_target(&src), "--destination", &rdm_test::estate::path_target(&dst), "--carrier", &rdm_test::estate::path_target(&car), "--failed-attempts", "1", "--key", "x"]);
     assert_eq!(seeded.out["proxy_recorded"], true, "the source recorded the Proxy: {}", seeded.out);
     assert_eq!((seeded.out["carrier_node_id"].as_str(), seeded.out["destination_node_id"].as_str()), (cn["node_id"].as_str(), dn["node_id"].as_str()), "{}", seeded.out);
     f.actions.push(action_row(&seeded));
@@ -5036,7 +5032,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
     // attempt), and only that dial's Direct Connected owes the deletion. The deletion write is refused (the dial's own
     // history append goes through): the Proxy stays the route; the deletion lands once the write can, and only
     // then is Direct effective.
-    let armed = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
+    let armed = probe_call(&f.estate, &["fault", "--target", &rdm_test::estate::path_target(&src), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
     assert_eq!(armed.out["fault"], "armed", "{}", armed.out);
     f.actions.push(action_row(&armed));
     let t_in0 = now_ns();
@@ -5062,7 +5058,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
     assert_eq!((during.out["route"].as_str(), during.out["carrier"].as_str(), during.out["call_outcome"].as_str()), (Some("via-peer"), Some(car.as_str()), Some("reply")), "the Proxy is still the route while the deletion is refused: {}", during.out);
     let durable_during = durable_history(&f, &src).await;
     assert!(!durable_during.iter().any(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected"), "nothing durable says the Proxy deleted: {} rows", durable_during.len());
-    let released = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--release", "--key", "x"]);
+    let released = probe_call(&f.estate, &["fault", "--target", &rdm_test::estate::path_target(&src), "--release", "--key", "x"]);
     assert_eq!(released.out["fault"], "released", "{}", released.out);
     f.actions.push(action_row(&released));
     let until = Instant::now() + Duration::from_secs(15);
@@ -5333,7 +5329,7 @@ fn lifecycle_marks(spans: &[Value], from: u64, to: u64) -> Vec<String> {
 
 /// Every named member is ready in `view`.
 fn holds_all_ready(view: &[Value], everyone: &[String]) -> bool {
-    everyone.iter().all(|name| view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready"))
+    everyone.iter().all(|name| view.iter().any(|n| location(n) == *name && n["status"] == "ready"))
 }
 
 /// The per-publisher topology_version sequence of the spans, in start order.
@@ -5361,14 +5357,14 @@ async fn partition_run(cell: &str, shape: Shape) {
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
-    let everyone: Vec<String> = st.nodes.iter().map(|n| s(&n["name"])).collect();
-    let admin_names: Vec<String> = st.admins.iter().map(|n| s(&n["name"])).collect();
+    let everyone: Vec<PathName> = st.nodes.iter().map(|n| location(&n)).collect();
+    let admin_names: Vec<PathName> = st.admins.iter().map(|n| location(&n)).collect();
     for name in &admin_names {
-        wait_for(&format!("{name} holds every member ready before the cut"), Duration::from_secs(60), || async { holds_all_ready(&f.estate.node_values_at(name).await, &everyone).then_some(()) }).await;
+        wait_for(&format!("{name:?} holds every member ready before the cut"), Duration::from_secs(60), || async { holds_all_ready(&f.estate.node_values_at(name).await, &everyone).then_some(()) }).await;
     }
-    let side = |m: &str| -> Vec<String> { st.nodes.iter().filter(|n| n["mesh"] == m).map(|n| s(&n["name"])).collect() };
+    let side = |m: &str| -> Vec<PathName> { st.nodes.iter().filter(|n| n["mesh"] == m).map(|n| location(&n)).collect() };
     let (mesh1, mesh2) = (side("mesh1"), side("mesh2"));
-    let before: BTreeMap<String, String> = st.nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+    let before: BTreeMap<PathName, String> = st.nodes.iter().map(|n| (location(&n), s(&n["node_id"]))).collect();
     let fabric_build_before = s(&st.fabric["build_id"]);
     let (g1, b1, b2, g2) = ("mesh1.gateway.1".to_string(), "mesh1.broker.1".to_string(), "mesh2.broker.1".to_string(), "mesh2.gateway.1".to_string());
     let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
@@ -5388,7 +5384,7 @@ async fn partition_run(cell: &str, shape: Shape) {
     let cut_at = now_ns();
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "between": ["mesh1", "mesh2"], "acknowledged": true}));
     // Bounded hold: each admin has handed each peer-mesh admin to its backbone channel twice.
-    let admins: Vec<(String, String)> = st.admins.iter().map(|n| (s(&n["name"]), s(&n["mesh"]))).collect();
+    let admins: Vec<(String, String)> = st.admins.iter().map(|n| (location(&n), s(&n["mesh"]))).collect();
     let held_at = wait_for("every admin re-feeds every peer-mesh admin twice", window * 6 + Duration::from_secs(40), || async {
         let spans = f.estate.spans();
         let att = refeeds(&spans, cut_at);
@@ -5429,7 +5425,7 @@ async fn partition_run(cell: &str, shape: Shape) {
     for (from, to) in [(&g1, &b2), (&g2, &b1)] {
         let until = Instant::now() + Duration::from_secs(60);
         loop {
-            let c = probe_call(&f.estate, &["dial", "--target", &format!("path:{from}"), "--destination", &format!("path:{to}"), "--key", "x"]);
+            let c = probe_call(&f.estate, &["dial", "--target", &rdm_test::estate::path_target(&from), "--destination", &rdm_test::estate::path_target(&to), "--key", "x"]);
             let ok = c.out["dialed"] == "Reply";
             redial.push(json!({"from": from, "to": to, "dialed": c.out["dialed"]}));
             f.actions.push(action_row(&c));
@@ -5504,9 +5500,9 @@ fn advertised_primaries_of(view: &[Value]) -> Value {
 fn one_primary(view: &[Value]) -> Result<(), String> {
     let mut seen: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for n in view.iter().filter(|n| n["is_primary"] == true && n["status"] == "ready") {
-        seen.entry((s(&n["mesh"]), s(&n["kind"]))).or_default().push(s(&n["name"]));
+        seen.entry((s(&n["mesh"]), s(&n["kind"]))).or_default().push(location(&n));
     }
-    let fps: Vec<String> = view.iter().filter(|n| n["is_fabric_primary"] == true && n["status"] == "ready").map(|n| s(&n["name"])).collect();
+    let fps: Vec<PathName> = view.iter().filter(|n| n["is_fabric_primary"] == true && n["status"] == "ready").map(|n| location(&n)).collect();
     match seen.iter().find(|(_, v)| v.len() > 1) {
         Some((k, v)) => Err(format!("two primaries of {k:?}: {v:?}")),
         None if fps.len() > 1 => Err(format!("two fabric-primaries: {fps:?}")),
@@ -5515,8 +5511,8 @@ fn one_primary(view: &[Value]) -> Result<(), String> {
 }
 
 /// The view the admin at `name` answers, as rows; None while it answers nothing.
-async fn view_rows(f: &Formed, name: &str) -> Option<Vec<Value>> {
-    f.estate.node_views_at(&path_of(name)).await.map(|v| v.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect())
+async fn view_rows(f: &Formed, name: &PathName) -> Option<Vec<Value>> {
+    f.estate.node_views_at(name).await.map(|v| v.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect())
 }
 
 /// For `span`, every view an admin of `admins` answers holds at most one primary per (mesh, node type) and one
@@ -5546,7 +5542,7 @@ async fn one_live_birth_per_path(f: &Formed, admins: &[String], paths: &[String]
             one_primary(&view).ok()?;
             let mut at = BTreeMap::new();
             for p in paths {
-                let live: Vec<&Value> = view.iter().filter(|n| n["name"] == p.as_str() && n["status"] == "ready").collect();
+                let live: Vec<&Value> = view.iter().filter(|n| location(n) == *p && n["status"] == "ready").collect();
                 if live.len() != 1 {
                     return None;
                 }
@@ -5661,9 +5657,9 @@ async fn control_run(cell: &str, shape: Shape) {
     let observer = Observer::join(&fabric_id, &mesh2_id, seeds).await;
     // The node whose control traffic is lost: a mesh2 node-admin that is neither mesh2's primary nor the fabric-primary.
     let victim = st.admins.iter().find(|n| n["mesh"] == "mesh2" && n["is_primary"] != true && n["is_fabric_primary"] != true).cloned().expect("a mesh2 node-admin that is neither primary");
-    let vname = s(&victim["name"]);
+    let vname = location(&victim);
     let restart_target = "mesh2.broker.1".to_string();
-    let everyone: Vec<String> = st.nodes.iter().map(|n| s(&n["name"])).collect();
+    let everyone: Vec<PathName> = st.nodes.iter().map(|n| location(&n)).collect();
     let mut events = Vec::new();
 
     // Quiet baseline: once the formation's reinforcement is over, a quiet fabric sends no status frame.
@@ -5678,13 +5674,13 @@ async fn control_run(cell: &str, shape: Shape) {
 
     // Control loss: the victim hears and is heard by no node. Held from the cut for two repair windows less one
     // backbone interval, below mesh investigation's decision step; its coverage goes stale and is re-fed in the first.
-    let others: Vec<String> = everyone.iter().filter(|n| **n != vname).cloned().collect();
+    let others: Vec<PathName> = everyone.iter().filter(|n| **n != vname).cloned().collect();
     // The observer is a gossip member too: the victim loses it as it loses every node, or gossip relays the
     // victim's words around the cut through it and no coverage ever goes stale.
     // On the container provider the observer runs on the host, so the victim is silenced against every
     // container and the host.
     let cut = if provider() == "container" {
-        Cut::Container(container_faults::silence(&f.estate, &[vname.clone()], &st.fp_name()).await.unwrap_or_else(|why| panic!("the container provider cannot silence {vname}: {why}")))
+        Cut::Container(container_faults::silence(&f.estate, &[vname.clone()], &st.fp_name()).await.unwrap_or_else(|why| panic!("the container provider cannot silence {vname:?}: {why}")))
     } else {
         let mut others_ports = udp_ports(&st.nodes, &others);
         others_ports.push(observer.udp_port());
@@ -5743,18 +5739,18 @@ async fn control_run(cell: &str, shape: Shape) {
     tokio::time::sleep(window * 2).await;
     let after1 = now_ns();
     let settled: Vec<Value> = f.estate.node_values_at(&st.fp_name()).await.into_iter().filter(|n| n["status"] == "ready").collect();
-    let renewed: BTreeSet<String> = formed.iter().filter(|n| settled.iter().any(|m| m["name"] == n["name"] && m["node_id"] != n["node_id"])).map(|n| s(&n["name"])).collect();
-    let renewed_ids: Vec<(String, String)> = formed.iter().filter(|n| renewed.contains(&s(&n["name"]))).map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
-    let restarted = settled.iter().find(|n| n["name"] == restart_target.as_str()).cloned().unwrap_or_else(|| panic!("the fabric-primary holds {restart_target} ready once the fabric is quiet"));
+    let renewed: BTreeSet<PathName> = formed.iter().filter(|n| settled.iter().any(|m| m["name"] == n["name"] && m["node_id"] != n["node_id"])).map(|n| location(&n)).collect();
+    let renewed_ids: Vec<(String, String)> = formed.iter().filter(|n| renewed.contains(&location(&n))).map(|n| (location(&n), s(&n["node_id"]))).collect();
+    let restarted = settled.iter().find(|n| location(n) == *restart_target).cloned().unwrap_or_else(|| panic!("the fabric-primary holds {restart_target} ready once the fabric is quiet"));
     events.push(json!({"event": "healed", "victim": vname, "healed_at_ns": healed_at, "quiet_after": [after0, after1], "re_created_after_a_verdict": renewed_ids}));
     a.events.extend(events.iter().cloned());
     let seen = observer.seen.lock().unwrap().clone();
-    let final_roles: BTreeSet<String> = st.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
+    let final_roles: BTreeSet<PathName> = st.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| location(&n)).collect();
     let marks = (cut_at, healed_at, after0, after1, quiet0, quiet1);
     // A restart, node.stop then node.start, keeps the node's id and incarnation (node-stop.md, "Kept":
     // "node.id, incarnation, ..."): the observer hears the restarted broker under the birth it was formed
     // with, and under one more only when the victim's investigation re-created it (its current birth).
-    let formed_broker = formed.iter().find(|n| n["name"] == restart_target.as_str()).cloned().expect("the restarted broker in the formed view");
+    let formed_broker = formed.iter().find(|n| location(n) == *restart_target).cloned().expect("the restarted broker in the formed view");
     let (kept_incarnation, current_incarnation) = (s(&formed_broker["incarnation_id"]), s(&restarted["incarnation_id"]));
     if !renewed.contains(&restart_target) {
         assert_eq!(current_incarnation, kept_incarnation, "{restart_target}: a restart that no recovery followed keeps its birth (node-stop.md, Kept)");
@@ -5886,7 +5882,7 @@ async fn build_attempt(e: &Estate, st: &Stable, build_id: &str) -> Value {
 
 /// The names of the nodes `view` holds as fabric-primary.
 fn fabric_primaries_of(view: &[Value]) -> Vec<String> {
-    view.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect()
+    view.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).collect()
 }
 
 
@@ -5904,14 +5900,14 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
-    let everyone: Vec<String> = st.nodes.iter().map(|n| s(&n["name"])).collect();
-    let admin_names: Vec<String> = st.admins.iter().map(|n| s(&n["name"])).collect();
-    let side = |m: &str| -> Vec<String> { st.nodes.iter().filter(|n| n["mesh"] == m).map(|n| s(&n["name"])).collect() };
+    let everyone: Vec<PathName> = st.nodes.iter().map(|n| location(&n)).collect();
+    let admin_names: Vec<PathName> = st.admins.iter().map(|n| location(&n)).collect();
+    let side = |m: &str| -> Vec<PathName> { st.nodes.iter().filter(|n| n["mesh"] == m).map(|n| location(&n)).collect() };
     let near_mesh = st.mesh_of_fp();
     let far_mesh = if near_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
     let (near, far) = (side(&near_mesh), side(&far_mesh));
     let near_fp = st.fp_name();
-    let sides: Vec<(String, String)> = st.admins.iter().map(|n| (s(&n["name"]), s(&n["mesh"]))).collect();
+    let sides: Vec<(String, String)> = st.admins.iter().map(|n| (location(&n), s(&n["mesh"]))).collect();
     for (name, _) in &sides {
         wait_for(&format!("{name} holds every member ready before the cut"), Duration::from_secs(60), || async { holds_all_ready(&f.estate.node_values_at(name).await, &everyone).then_some(()) }).await;
     }
@@ -5942,7 +5938,7 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     // topology-changing request while the current Build is actively reconciling is refused with a named
     // build-in-progress refusal naming the current Build"), and the gateway it adds is ready on the near side.
     let added = format!("{near_mesh}.gateway.{}", f.shape.gateway + 1);
-    let mut roles: BTreeSet<String> = f.shape.names().into_iter().filter(|n| launch_id(n) != "node_admin").collect();
+    let mut roles: BTreeSet<PathName> = f.shape.names().into_iter().filter(|n| launch_id(n) != "node_admin").collect();
     let spawn = a.write(&mut f, &st, "C9 cut: add a gateway to the near mesh", Write::Create { mesh: near_mesh.to_string(), kind: LaunchKind::Gateway }).await;
     assert_ne!(spawn, formation, "an added node changes the topology: a new accepted Build");
     let v = ask(&f.estate, &near_fp, created(&f.estate, &near_fp, &near_mesh, LaunchKind::Gateway).await).await;
@@ -5950,7 +5946,7 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     a.refused_writes.push(json!({"sent_to": near_fp, "reply": v["reply"], "path": near_mesh, "route": "create", "t_ms": now_ms()}));
     let joined = wait_for(&format!("{added} ready on the near side under the cut"), Duration::from_secs(120), || async {
         let v = f.estate.node_values_at(&near_fp).await;
-        v.iter().find(|n| n["name"] == added.as_str() && n["status"] == "ready").cloned()
+        v.iter().find(|n| location(n) == *added && n["status"] == "ready").cloned()
     })
     .await;
     events.push(json!({"event": "near-add-under-cut", "node": added, "node_id": joined["node_id"], "build_id": spawn, "refused_while_in_flight": v}));
@@ -6036,13 +6032,13 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
-    let everyone: Vec<String> = st.nodes.iter().map(|n| s(&n["name"])).collect();
-    let admin_names: Vec<String> = st.admins.iter().map(|n| s(&n["name"])).collect();
-    let side = |m: &str| -> Vec<String> { st.nodes.iter().filter(|n| n["mesh"] == m).map(|n| s(&n["name"])).collect() };
+    let everyone: Vec<PathName> = st.nodes.iter().map(|n| location(&n)).collect();
+    let admin_names: Vec<PathName> = st.admins.iter().map(|n| location(&n)).collect();
+    let side = |m: &str| -> Vec<PathName> { st.nodes.iter().filter(|n| n["mesh"] == m).map(|n| location(&n)).collect() };
     let near_mesh = st.mesh_of_fp();
     let far_mesh = if near_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
     let (near, far) = (side(&near_mesh), side(&far_mesh));
-    let sides: Vec<(String, String)> = st.admins.iter().map(|n| (s(&n["name"]), s(&n["mesh"]))).collect();
+    let sides: Vec<(String, String)> = st.admins.iter().map(|n| (location(&n), s(&n["mesh"]))).collect();
     for (name, _) in &sides {
         wait_for(&format!("{name} holds every member ready before the cut"), Duration::from_secs(60), || async { holds_all_ready(&f.estate.node_values_at(name).await, &everyone).then_some(()) }).await;
     }
@@ -6082,7 +6078,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
             let want = a.start_after_stop(&f, &st, &victim, &build).await;
             let born = wait_for(&format!("{victim} restarted under the cut"), Duration::from_secs(120), || async {
                 let v = f.estate.node_values_at(&st.fp_name()).await;
-                let n = v.iter().find(|n| n["name"] == victim.as_str() && n["status"] == "ready" && n["node_id"] == victim_id.as_str() && n["incarnation_id"] == victim_inc.as_str()).cloned()?;
+                let n = v.iter().find(|n| location(n) == *victim && n["status"] == "ready" && n["node_id"] == victim_id.as_str() && n["incarnation_id"] == victim_inc.as_str()).cloned()?;
                 let b = build_attempt(&f.estate, &st, &build).await;
                 (b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= want).then_some(n)
             })
@@ -6096,7 +6092,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
             // Node recovery is the next attempt of the current Build in its mesh's lane (node-recovery.md, R-BI7).
             wait_for(&format!("{near_mesh}'s mesh-primary recovers {victim} under the cut"), Duration::from_secs(120), || async {
                 let v = f.estate.node_values_at(&st.fp_name()).await;
-                v.iter().find(|n| n["name"] == victim.as_str() && n["status"] == "ready" && n["node_id"] != victim_id.as_str())?;
+                v.iter().find(|n| location(n) == *victim && n["status"] == "ready" && n["node_id"] != victim_id.as_str())?;
                 let b = build_attempt(&f.estate, &st, &formation).await;
                 let lane = &b["lanes"][near_mesh.as_str()];
                 (lane["state"] == "complete" && lane["attempt"].as_u64().unwrap_or(0) > lane0).then_some(())
@@ -6207,7 +6203,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     assert_eq!(provider(), "process", "REFUSED: the per-node UDP cut is the process provider's; the container provider cuts through its network namespaces");
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
-    let everyone: Vec<String> = st.nodes.iter().map(|n| s(&n["name"])).collect();
+    let everyone: Vec<PathName> = st.nodes.iter().map(|n| location(&n)).collect();
     let fp_mesh = st.mesh_of_fp();
     let other_mesh = if fp_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
     let primary_victim = st.primary_of(&other_mesh);
@@ -6216,10 +6212,10 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     if which == Victims::TwoAdmins {
         victims.push(st.secondary_of(&fp_mesh));
     }
-    let vnames: Vec<String> = victims.iter().map(|v| s(&v["name"])).collect();
-    let observers: Vec<Value> = st.admins.iter().filter(|n| !vnames.contains(&s(&n["name"]))).cloned().collect();
+    let vnames: Vec<PathName> = victims.iter().map(|v| location(&v)).collect();
+    let observers: Vec<Value> = st.admins.iter().filter(|n| !vnames.contains(&location(&n))).cloned().collect();
     assert!(observers.len() >= 2, "two admins observe the cut");
-    let before: BTreeMap<String, (String, String)> = st.nodes.iter().map(|n| (s(&n["name"]), (s(&n["node_id"]), s(&n["incarnation_id"])))).collect();
+    let before: BTreeMap<String, (String, String)> = st.nodes.iter().map(|n| (location(&n), (s(&n["node_id"]), s(&n["incarnation_id"])))).collect();
     let formation = f.build_id.clone();
     let mut events = Vec::new();
 
@@ -6239,7 +6235,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "nodes": vnames, "acknowledged": true}));
     // The cut's own record, written when it is applied: a red before the cell's events are written still names
     // who was cut, on which ports, at which instant, and who held each primary then.
-    eprintln!("{}", json!({"event": "fault.udp-drop", "cut_at_ns": cut_at, "victims": victims.iter().map(|v| json!({"name": v["name"], "node_id": v["node_id"], "incarnation_id": v["incarnation_id"], "udp_ports": udp_ports(&st.nodes, &[s(&v["name"])])})).collect::<Vec<_>>(), "fabric_primary": st.fp["name"], "mesh_primaries": [st.primary_of("mesh1")["name"].clone(), st.primary_of("mesh2")["name"].clone()]}));
+    eprintln!("{}", json!({"event": "fault.udp-drop", "cut_at_ns": cut_at, "victims": victims.iter().map(|v| json!({"name": v["name"], "node_id": v["node_id"], "incarnation_id": v["incarnation_id"], "udp_ports": udp_ports(&st.nodes, &[location(&v)])})).collect::<Vec<_>>(), "fabric_primary": st.fp["name"], "mesh_primaries": [st.primary_of("mesh1")["name"].clone(), st.primary_of("mesh2")["name"].clone()]}));
     let bound = window * 6 + Duration::from_secs(40);
     // Every node-admin of a victim's mesh that is not a victim marks it silent in its own view: its own
     // silence mark (node-recovery.md step 1, `rdm.mesh.topology.update.via-member-stale`) after the cut; an
@@ -6248,12 +6244,12 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     // the fabric-primary once the election names its successor (node-recovery.md step 2, "without the
     // half-floor wait"), so a victim may be recovered, a new birth at its path, within moments of its mark.
     for o in &observers {
-        let name = s(&o["name"]);
-        let own_victims: Vec<String> = victims.iter().filter(|v| v["mesh"] == o["mesh"]).map(|v| s(&v["name"])).collect();
+        let name = location(&o);
+        let own_victims: Vec<PathName> = victims.iter().filter(|v| v["mesh"] == o["mesh"]).map(|v| location(&v)).collect();
         if own_victims.is_empty() {
             continue;
         }
-        wait_for(&format!("{name} holds every victim of its mesh unheard"), bound, || async {
+        wait_for(&format!("{name:?} holds every victim of its mesh unheard"), bound, || async {
             let spans = f.estate.spans();
             let marked: BTreeSet<String> = named(&spans, "rdm.mesh.topology.update.via-member-stale").into_iter().filter(|sp| sp["attributes"]["node"] == name.as_str() && start_ns(sp) >= cut_at).map(|sp| s(&sp["attributes"]["member"])).collect();
             own_victims.iter().all(|v| marked.contains(v)).then_some(())
@@ -6269,10 +6265,10 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     // follows takes the birth out of its view before its own backbone re-feed is due: its ladder for the
     // victim's exact birth is its repair.
     for v in &victims {
-        let (vn, vmesh, vid) = (s(&v["name"]), s(&v["mesh"]), s(&v["node_id"]));
+        let (vn, vmesh, vid) = (location(&v), s(&v["mesh"]), s(&v["node_id"]));
         for o in observers.iter().filter(|o| o["mesh"] != vmesh.as_str()) {
-            let on = s(&o["name"]);
-            wait_for(&format!("{on} re-feeds the silent {vn}, or investigates it to its recovery"), bound, || async {
+            let on = location(&o);
+            wait_for(&format!("{on:?} re-feeds the silent {vn:?}, or investigates it to its recovery"), bound, || async {
                 let spans = f.estate.spans();
                 let refed = refeeds(&spans, cut_at).into_iter().any(|sp| sp["attributes"]["node"] == on.as_str() && sp["attributes"]["peer_node"] == vn.as_str());
                 let investigated = named(&spans, "rdm.node.tickle.returns-unknown.via-unreached").into_iter().any(|sp| start_ns(sp) >= cut_at && sp["attributes"]["caller"] == on.as_str() && sp["attributes"]["node_id"] == vid.as_str());
@@ -6284,16 +6280,16 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     let refed_at = now_ns();
     // Held two more windows, past the decision step: every view an observer answers holds at most one primary
     // per (mesh, node type) and one fabric-primary (Q4); which birth holds a victim's path.name is not pinned.
-    let observer_names: Vec<String> = observers.iter().map(|o| s(&o["name"])).collect();
+    let observer_names: Vec<PathName> = observers.iter().map(|o| location(&o)).collect();
     let during = one_primary_through(&f, &observer_names, cut_at, window * 2, "during the cut").await;
     let held_until = now_ns();
     let mut views = Vec::new();
     for o in &observers {
-        let v = f.estate.node_values_at(&s(&o["name"])).await;
-        let own: Vec<String> = everyone.iter().filter(|n| !vnames.contains(n)).cloned().collect();
-        let seen: Vec<&Value> = v.iter().filter(|n| own.iter().any(|x| n["name"] == x.as_str()) && n["mesh"] == o["mesh"]).collect();
-        assert!(seen.iter().all(|n| n["status"] == "ready" || vnames.contains(&s(&n["name"]))), "{}: every non-victim of its own mesh is still ready in its view: {v:#?}", o["name"]);
-        views.push(json!({"admin": o["name"], "victims": vnames.iter().map(|x| v.iter().find(|n| n["name"] == x.as_str()).map(|n| n["status"].clone())).collect::<Vec<_>>(), "fabric_primaries": fabric_primaries_of(&v)}));
+        let v = f.estate.node_values_at(&location(&o)).await;
+        let own: Vec<PathName> = everyone.iter().filter(|n| !vnames.contains(n)).cloned().collect();
+        let seen: Vec<&Value> = v.iter().filter(|n| own.iter().any(|x| location(n) == *x) && n["mesh"] == o["mesh"]).collect();
+        assert!(seen.iter().all(|n| n["status"] == "ready" || vnames.contains(&location(&n))), "{}: every non-victim of its own mesh is still ready in its view: {v:#?}", o["name"]);
+        views.push(json!({"admin": o["name"], "victims": vnames.iter().map(|x| v.iter().find(|n| location(n) == *x).map(|n| n["status"].clone())).collect::<Vec<_>>(), "fabric_primaries": fabric_primaries_of(&v)}));
     }
     events.push(json!({"event": "control-lost", "victims": vnames, "silent_after_ms": (silent_at - cut_at) / 1_000_000, "refed_after_ms": (refed_at - cut_at) / 1_000_000, "held_ms": (held_until - cut_at) / 1_000_000, "views": views, "primaries_during": during}));
 
@@ -6309,7 +6305,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     // peers' coverage was restored by their next re-feed, one window after their last.)
     // A victim re-created at its path.name under the cut (Q111) is the birth every view converges on (Q4),
     // as in the partition cell; the checkpoint is taken on the converged fabric.
-    let admin_names: Vec<String> = st.admins.iter().map(|n| s(&n["name"])).collect();
+    let admin_names: Vec<PathName> = st.admins.iter().map(|n| location(&n)).collect();
     let converged = one_live_birth_per_path(&f, &admin_names, &everyone).await;
     let st2 = a.stable_by(&mut f, "healed", &both(2), &mut inv, Instant::now() + window + Duration::from_secs(30)).await;
     let renewed: Vec<String> = converged.iter().filter(|(p, id)| before.get(*p).map(|(b, _)| b) != Some(*id)).map(|(p, _)| p.clone()).collect();
@@ -6320,9 +6316,9 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     let after1 = now_ns();
     events.push(json!({"event": "healed", "healed_at_ns": healed_at, "quiet_after": [after0, after1], "converged": converged, "new_node_ids_at": renewed}));
     a.events.extend(events.iter().cloned());
-    let final_roles: BTreeSet<String> = st2.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
-    let (mate_n, mate_id, wm) = (s(&mate["name"]), s(&mate["node_id"]), window_ms);
-    let (f0, vn2, vmeshes) = (formation.clone(), vnames.clone(), victims.iter().map(|v| (s(&v["name"]), s(&v["mesh"]))).collect::<Vec<_>>());
+    let final_roles: BTreeSet<PathName> = st2.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| location(&n)).collect();
+    let (mate_n, mate_id, wm) = (location(&mate), s(&mate["node_id"]), window_ms);
+    let (f0, vn2, vmeshes) = (formation.clone(), vnames.clone(), victims.iter().map(|v| (location(&v), s(&v["mesh"]))).collect::<Vec<_>>());
     // The cut primary's mesh: its mesh topology is the backbone receipt every peer-mesh admin's coverage of that
     // mesh's admins comes from (gossip.md section 6), so their coverage of its mesh-mates lapses with it.
     let pv_mesh = s(&primary_victim["mesh"]);
@@ -6363,7 +6359,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
         // an eligible Ready successor (fabric-node-lifecycle-elections.md; Q119): its mesh-mate.
         let mate_resolved = if which == Victims::MeshPrimary {
             let resolved = named(spans, "rdm.mesh.election.resolve.via-mesh-primary").into_iter().filter(|sp| sp["attributes"]["observer"] == mate_n.as_str() && sp["attributes"]["winner_node_id"] == mate_id.as_str() && start_ns(sp) >= cut_at && start_ns(sp) <= healed_at).count();
-            assert!(resolved >= 1, "the mesh-mate {mate_n} resolved itself the mesh-primary while the victim was unheard past the floor");
+            assert!(resolved >= 1, "the mesh-mate {mate_n:?} resolved itself the mesh-primary while the victim was unheard past the floor");
             resolved
         } else {
             0
@@ -6455,7 +6451,7 @@ async fn direct_connection_run(cell: &str, shape: Shape) {
     // attempt opens, and once the cut is released the connection is Connected again to the same birth.
     let far_mesh = if st.mesh_of_fp() == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
     let primary = st.primary_of(&far_mesh);
-    let (pname, gw) = (s(&primary["name"]), format!("{far_mesh}.gateway.1"));
+    let (pname, gw) = (location(&primary), format!("{far_mesh}.gateway.1"));
     let gwn = node(&gw);
     let control = dial(&f, &gw, &pname);
     f.actions.push(action_row(&control));
@@ -6464,16 +6460,16 @@ async fn direct_connection_run(cell: &str, shape: Shape) {
     let (cut_a, ack_a) = cut_between(&f, &st.nodes, &gw, &pname, &fp).await;
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack_a}));
     let t_cut_a = now_ns();
-    let lost = probe_call(&f.estate, &["dial", "--target", &format!("path:{gw}"), "--destination", &format!("path:{pname}"), "--key", "x"]);
+    let lost = probe_call(&f.estate, &["dial", "--target", &rdm_test::estate::path_target(&gw), "--destination", &rdm_test::estate::path_target(&pname), "--key", "x"]);
     f.actions.push(action_row(&lost));
     assert_eq!(lost.out["outcome"], "Reply", "the probe's own call to {gw} is answered: {}", lost.out);
-    assert!(matches!(lost.out["dialed"].as_str(), Some("NotSent" | "Indeterminate")), "a call from {gw} to {pname} over the cut connection is not answered: {}", lost.out);
+    assert!(matches!(lost.out["dialed"].as_str(), Some("NotSent" | "Indeterminate")), "a call from {gw} to {pname:?} over the cut connection is not answered: {}", lost.out);
     let window = Duration::from_millis(window_ms * 2 + 500);
     let until = Instant::now() + window;
     let mut looks = 0u32;
     while Instant::now() < until {
         for v in admin_views_of(&mut a, &f, &gw).await {
-            assert!(v["lists_path"] == true && v["status"] == "ready" && v["node_id"] == gwn["node_id"], "an admin stopped holding {gw} ready while only its connection to {pname} was cut: {v}");
+            assert!(v["lists_path"] == true && v["status"] == "ready" && v["node_id"] == gwn["node_id"], "an admin stopped holding {gw} ready while only its connection to {pname:?} was cut: {v}");
         }
         looks += 1;
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -6491,7 +6487,7 @@ async fn direct_connection_run(cell: &str, shape: Shape) {
     assert_eq!(a.traffic.ops[ra].1.out["call_outcome"], "reply", "the gateway serves again: {}", a.traffic.ops[ra].1.out);
     events.push(json!({"event": "direct-loss-to-mesh-primary", "gateway": gw, "primary": pname, "ack": ack_a, "t_cut_ns": t_cut_a, "call_under_cut": lost.out, "fact_during": fact_during, "looks": looks, "window_ms": window.as_millis() as u64, "connection_after": connection_a}));
     inv.holds(
-        &format!("C11: {gw}'s Direct connection to {pname}, the primary of {far_mesh}, was cut (acknowledged): its call was not answered, every admin held {gw} ready for {} ms, no attempt opened, and once released the connection was Connected to the same birth", window.as_millis()),
+        &format!("C11: {gw}'s Direct connection to {pname:?}, the primary of {far_mesh}, was cut (acknowledged): its call was not answered, every admin held {gw} ready for {} ms, no attempt opened, and once released the connection was Connected to the same birth", window.as_millis()),
         true,
         json!({"looks": looks, "connection": connection_a}),
     );
@@ -6522,7 +6518,7 @@ async fn carrier_connection_run(cell: &str, shape: Shape) {
     let carrier_connection0 = dial(&f, &car, &other);
     f.actions.push(action_row(&carrier_connection0));
     await_direct(&f.estate, &car, &other, "Connected", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == on["incarnation_id"]).await;
-    let seeded0 = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{other}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "6", "--key", "x"]);
+    let seeded0 = probe_call(&f.estate, &["record-proxy", "--target", &rdm_test::estate::path_target(&src), "--destination", &rdm_test::estate::path_target(&other), "--carrier", &rdm_test::estate::path_target(&car), "--failed-attempts", "6", "--key", "x"]);
     assert_eq!((seeded0.out["proxy_recorded"].as_bool(), seeded0.out["carrier_node_id"].as_str()), (Some(true), cn["node_id"].as_str()), "{}", seeded0.out);
     f.actions.push(action_row(&seeded0));
     let healthy = orig_get(&f, &src, &other, "carried-control");
@@ -6533,12 +6529,12 @@ async fn carrier_connection_run(cell: &str, shape: Shape) {
     let (cut_b, ack_b) = cut_between(&f, &st.nodes, &car, &dst, &fp).await;
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack_b}));
     let t_cut_b = now_ns();
-    let probe_connection = probe_call(&f.estate, &["dial", "--target", &format!("path:{car}"), "--destination", &format!("path:{dst}"), "--key", "x"]);
+    let probe_connection = probe_call(&f.estate, &["dial", "--target", &rdm_test::estate::path_target(&car), "--destination", &rdm_test::estate::path_target(&dst), "--key", "x"]);
     f.actions.push(action_row(&probe_connection));
     assert_eq!(probe_connection.out["dialed"], "NotSent", "the carrier's dial to {dst} over the cut finds no path: {}", probe_connection.out);
     let connection_down = await_direct(&f.estate, &car, &dst, "Failed", Duration::from_secs(30), |d| d["state"] == "Failed").await;
     // The source records the Proxy via the carrier toward the destination it cannot reach Direct either.
-    let seeded = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "6", "--key", "x"]);
+    let seeded = probe_call(&f.estate, &["record-proxy", "--target", &rdm_test::estate::path_target(&src), "--destination", &rdm_test::estate::path_target(&dst), "--carrier", &rdm_test::estate::path_target(&car), "--failed-attempts", "6", "--key", "x"]);
     assert_eq!((seeded.out["proxy_recorded"].as_bool(), seeded.out["carrier_node_id"].as_str()), (Some(true), cn["node_id"].as_str()), "{}", seeded.out);
     f.actions.push(action_row(&seeded));
     let rows0 = proxy_disconnected_rows(&durable_history(&f, &src).await).len();
@@ -6589,13 +6585,13 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     // restarted by the rectifier while calls keep coming. Each call ends typed; none is answered by a birth other
     // than the destination's exact one; none is sent twice; the owed deletion lands once, durably, with a
     // structural reason; then the route is Direct to the same destination birth.
-    let seeded2 = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "1", "--key", "x"]);
+    let seeded2 = probe_call(&f.estate, &["record-proxy", "--target", &rdm_test::estate::path_target(&src), "--destination", &rdm_test::estate::path_target(&dst), "--carrier", &rdm_test::estate::path_target(&car), "--failed-attempts", "1", "--key", "x"]);
     assert_eq!(seeded2.out["proxy_recorded"], true, "{}", seeded2.out);
     f.actions.push(action_row(&seeded2));
     let carried2 = orig_get(&f, &src, &dst, "carried-control-2");
     f.actions.push(action_row(&carried2));
     assert_eq!((carried2.out["route"].as_str(), carried2.out["carrier"].as_str(), carried2.out["call_outcome"].as_str()), (Some("via-peer"), Some(car.as_str()), Some("reply")), "{}", carried2.out);
-    let armed = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
+    let armed = probe_call(&f.estate, &["fault", "--target", &rdm_test::estate::path_target(&src), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
     assert_eq!(armed.out["fault"], "armed", "{}", armed.out);
     f.actions.push(action_row(&armed));
     let inbound = dial(&f, &dst, &src);
@@ -6611,7 +6607,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     let admin = f.estate.entry_birth();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stream = {
-        let (stop, args) = (stop.clone(), ["originate", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--key", "x"].map(String::from));
+        let (stop, args) = (stop.clone(), ["originate", "--target", &rdm_test::estate::path_target(&src), "--destination", &rdm_test::estate::path_target(&dst), "--key", "x"].map(String::from));
         tokio::task::spawn_blocking(move || {
             let mut outs = Vec::new();
             while !stop.load(std::sync::atomic::Ordering::SeqCst) && outs.len() < 60 {
@@ -6632,7 +6628,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     let attempt_c = a.start_after_stop(&f, &st, &car, &build).await;
     let back = wait_for(&format!("{car} ready again as its birth and the restart complete"), Duration::from_secs(120), || async {
         let v = f.estate.node_values_at(&st.fp_name()).await;
-        let n = v.iter().find(|n| n["name"] == car.as_str() && n["status"] == "ready" && n["incarnation_id"] == carrier_inc0.as_str()).cloned()?;
+        let n = v.iter().find(|n| location(n) == *car && n["status"] == "ready" && n["incarnation_id"] == carrier_inc0.as_str()).cloned()?;
         let b = build_attempt(&f.estate, &st, &formation).await;
         // The restart moves the carrier's role to the second gateway first, and the written role move
         // moves its attempt's revision: the stop and start may complete under the next attempt.
@@ -6655,7 +6651,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
         *kinds.entry(kind).or_default() += 1;
     }
     assert!(!calls.is_empty(), "calls ran across the restart");
-    let released = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--release", "--key", "x"]);
+    let released = probe_call(&f.estate, &["fault", "--target", &rdm_test::estate::path_target(&src), "--release", "--key", "x"]);
     assert_eq!(released.out["fault"], "released", "{}", released.out);
     f.actions.push(action_row(&released));
     let landed = wait_for("the owed deletion lands", Duration::from_secs(30), || async {
@@ -6668,7 +6664,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     let reason = s(&rows_c.last().unwrap()["reason"]);
     assert!(matches!(reason.as_str(), "direct-restored" | "carrier-incarnation-superseded" | "connection-lost"), "a structural reason: {reason}");
     let st2 = a.stable(&mut f, "C12: carrier restarted", &both(2), &mut inv).await;
-    let dn2 = st2.nodes.iter().find(|n| n["name"] == dst.as_str()).cloned().unwrap();
+    let dn2 = st2.nodes.iter().find(|n| location(n) == *dst).cloned().unwrap();
     assert_eq!(dn2["incarnation_id"], dn["incarnation_id"], "the destination is the birth it was");
     let d = dial(&f, &dst, &src);
     f.actions.push(action_row(&d));

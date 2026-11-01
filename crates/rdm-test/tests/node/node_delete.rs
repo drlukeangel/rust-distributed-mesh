@@ -18,6 +18,7 @@
 //!    endpoint key; a later spec can inherit them"): the victim's data dir and its endpoint key
 //!    stay, and no step of the delete releases storage.
 
+use rdm_test::estate::location;
 use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, ScopeStatus};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
@@ -92,14 +93,14 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // Every ordinary node of the peer mesh, not only its primary, holds mesh2 at the version that
     // carries the departure (gossip.md §3.3, Q130): a node whose pull came back older than a delta it
     // dropped while the pull was in flight pulls again until it does.
-    for node in after.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node").map(|n| s(&n["name"])) {
+    for node in after.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node").map(|n| location(&n)) {
         estate.holds_departure(&node, "mesh2", &victim_id).await;
-        let held = estate.probe(&["resolve", "--target", &format!("path:{node}"), "--query", &exact_victim]);
-        assert_eq!(resolution(&held), "gone", "{node} holds the departure of {VICTIM}: {held}");
+        let held = estate.probe(&["resolve", "--target", &rdm_test::estate::path_target(&node), "--query", &exact_victim]);
+        assert_eq!(resolution(&held), "gone", "{node:?} holds the departure of {VICTIM}: {held}");
     }
     let gone = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
     assert_eq!(resolution(&gone), "gone", "{gone}");
-    let path = estate.probe(&["resolve", "--target", WITNESS, "--query", &format!("path:{VICTIM}")]);
+    let path = estate.probe(&["resolve", "--target", WITNESS, "--query", &rdm_test::estate::path_target(&VICTIM)]);
     assert_eq!(resolution(&path), "unknown", "the path has no holder: {path}");
     let survivor = estate.probe(&["resolve", "--target", WITNESS, "--query", "path:mesh2.rpc.1"]);
     assert_eq!(resolution(&survivor), "found", "the surviving node is untouched: {survivor}");
@@ -112,8 +113,8 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     Estate::complete(&mut spawn).await;
     let late = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 1)]).await);
     let newcomer = late.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
-    estate.holds_departure(&s(&newcomer["name"]), "mesh2", &victim_id).await;
-    let late_gone = estate.probe(&["resolve", "--target", &format!("path:{}", s(&newcomer["name"])), "--query", &exact_victim]);
+    estate.holds_departure(&location(&newcomer), "mesh2", &victim_id).await;
+    let late_gone = estate.probe(&["resolve", "--target", &rdm_test::estate::path_target(&location(&newcomer)), "--query", &exact_victim]);
     assert_eq!(resolution(&late_gone), "gone", "the newcomer holds the departure it never heard as an event: {late_gone}");
     // And one born into the executor's own mesh, which learns it from its own primary's
     // overlays rather than a forwarded mesh topology.
@@ -121,8 +122,8 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     Estate::complete(&mut spawn2).await;
     let late2 = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 2)]).await);
     let newcomer2 = late2.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
-    estate.holds_departure(&s(&newcomer2["name"]), "mesh2", &victim_id).await;
-    let own_mesh_gone = estate.probe(&["resolve", "--target", &format!("path:{}", s(&newcomer2["name"])), "--query", &exact_victim]);
+    estate.holds_departure(&location(&newcomer2), "mesh2", &victim_id).await;
+    let own_mesh_gone = estate.probe(&["resolve", "--target", &rdm_test::estate::path_target(&location(&newcomer2)), "--query", &exact_victim]);
     assert_eq!(resolution(&own_mesh_gone), "gone", "the newcomer in the executor's own mesh holds the departure: {own_mesh_gone}");
     estate.artifact("late-joiner.json", &json!({"peer_mesh": late_gone, "own_mesh": own_mesh_gone}));
 
@@ -256,7 +257,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| start(sp) > start(deleting[0])).next().is_none(), "a departure is not drift: nothing is repaired");
     let mut births: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| start(sp) > start(deleting[0])).map(|sp| s(&sp["attributes"]["node"])).collect();
     births.sort();
-    let mut asked = vec![s(&newcomer["name"]), s(&newcomer2["name"])];
+    let mut asked = vec![location(&newcomer), location(&newcomer2)];
     asked.sort();
     assert_eq!(births, asked, "the only births after the delete are the two asked for");
 }
@@ -292,7 +293,7 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     assert!(!fp.starts_with("mesh2."), "the fabric-primary is not in mesh2: {fp}");
     let p = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
-    let p_name = s(&p["name"]);
+    let p_name = location(&p);
     let na2 = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != p["name"]).expect("mesh2's other node-admin")["name"]);
     let victim = nodes.iter().find(|n| n["name"] == VICTIM).cloned().expect("the victim");
     let (victim_id, victim_inc) = (s(&victim["node_id"]), s(&victim["incarnation_id"]));
@@ -319,7 +320,7 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
     estate.kill_node(&p_name).await;
 
     // The surviving executor publishes the departure of the exact birth.
-    let published = wait_for(&format!("a surviving executor publishes NodeDeleted for {VICTIM} ({victim_id}) after {p_name} exited"), SETTLE, || async {
+    let published = wait_for(&format!("a surviving executor publishes NodeDeleted for {VICTIM} ({victim_id}) after {p_name:?} exited"), SETTLE, || async {
         named(&estate.spans(), "rdm.node_admin.node.delete.via-node-deleted")
             .into_iter()
             .find(|sp| sp["attributes"]["node_id"] == victim_id.as_str() && sp["start_unix_nano"].as_u64().unwrap_or(0) > killed_at)
@@ -330,7 +331,7 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
     estate.holds_departure(WITNESS_NODE, "mesh2", &victim_id).await;
     let end = Estate::complete(&mut removal).await;
     eprintln!(
-        "s78 B: {p_name} held at the deleted cut of {VICTIM} (attempt {attempt} of {build}) and killed; {na2} survives; NodeDeleted published trace {} span {} attempt {}; {WITNESS_NODE} holds the departure; removal complete {:?}",
+        "s78 B: {p_name:?} held at the deleted cut of {VICTIM} (attempt {attempt} of {build}) and killed; {na2} survives; NodeDeleted published trace {} span {} attempt {}; {WITNESS_NODE} holds the departure; removal complete {:?}",
         s(&published["trace_id"]), s(&published["span_id"]), s(&published["attributes"]["attempt"]), end.build_id,
     );
     estate.record_trace_url(published["trace_id"].as_str().unwrap_or(""));
