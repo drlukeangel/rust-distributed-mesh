@@ -188,6 +188,10 @@ pub struct Claimed {
     /// Under an in-force fabric.delete (Q159): the launch's own new path and name. `None` for the adoption at
     /// the lost birth's path and name.
     pub under_delete: Option<PathName>,
+    /// When the claim was taken, on the clock the claim's attempt open was stamped with: the time
+    /// the lost birth's deletion is recorded at (its `NodeDeleted` lifecycle op), held before this
+    /// process adopts a rafka-time.
+    pub claimed_at_ms: u64,
 }
 
 impl Claimed {
@@ -227,7 +231,7 @@ fn attempt_for(current: &BuildProjection, mesh: &str, action: &AttemptAction) ->
 pub async fn claim(me: &PathName, me_mesh: &str, own: &rdm_core::framing::Birth, a: &Adoptable, builds: &dyn BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, contexts: &crate::build_claim::AttemptContexts, now_ms: u64) -> Result<Claimed, String> {
     let me_id = &own.node_id;
     if let Some(delete) = &a.delete {
-        return claim_under_delete(me, me_mesh, own, a, delete, builds, claims, contexts).await;
+        return claim_under_delete(me, me_mesh, own, a, delete, builds, claims, contexts, now_ms).await;
     }
     let lost = &a.lost;
     let mesh = lost.mesh.clone();
@@ -255,7 +259,7 @@ pub async fn claim(me: &PathName, me_mesh: &str, own: &rdm_core::framing::Birth,
         let claim = BuildAttemptClaim { claimed_mesh: Some(mesh.clone()), executor_mesh: me_mesh.to_owned(), build_id: row.build_id.clone(), attempt, executor: own.clone(), claimant: Some(me_id.clone()), mesh: row.lane.clone() };
         if let Some(held) = crate::build_state::committed_claim(builds, &row.build_id, row.lane.as_deref(), attempt).await.map_err(|e| ("unreadable", e.to_string()))? {
             if held == claim {
-                return Ok(Claimed { row, lost: lost.clone(), under_delete: None });
+                return Ok(Claimed { row, lost: lost.clone(), under_delete: None, claimed_at_ms: now_ms });
             }
             return Err(("lost", format!("the adoption attempt {attempt} is committed to executor {}: this launch's claim lost", held.executor)));
         }
@@ -292,7 +296,7 @@ pub async fn claim(me: &PathName, me_mesh: &str, own: &rdm_core::framing::Birth,
             let _ = claims.release_in_flight(&mesh, &row).await;
             return Err(("unrecorded", e));
         }
-        Ok(Claimed { row, lost: lost.clone(), under_delete: None })
+        Ok(Claimed { row, lost: lost.clone(), under_delete: None, claimed_at_ms: now_ms })
     }
     .instrument(span.clone())
     .await;
@@ -313,7 +317,7 @@ pub async fn claim(me: &PathName, me_mesh: &str, own: &rdm_core::framing::Birth,
 /// an executor, are two claimants and one loses by name; won, the claim is recorded on the journal in the
 /// fabric lane, `me` its executor. One `rdm.node_admin.fabric.update.via-adoption-claim` span, `lane`
 /// `fabric`.
-async fn claim_under_delete(me: &PathName, me_mesh: &str, own: &rdm_core::framing::Birth, a: &Adoptable, delete: &BuildProjection, builds: &dyn BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, contexts: &crate::build_claim::AttemptContexts) -> Result<Claimed, String> {
+async fn claim_under_delete(me: &PathName, me_mesh: &str, own: &rdm_core::framing::Birth, a: &Adoptable, delete: &BuildProjection, builds: &dyn BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, contexts: &crate::build_claim::AttemptContexts, now_ms: u64) -> Result<Claimed, String> {
     let me_id = &own.node_id;
     let lost = &a.lost;
     let mesh = lost.mesh.clone();
@@ -353,7 +357,7 @@ async fn claim_under_delete(me: &PathName, me_mesh: &str, own: &rdm_core::framin
         let claim = BuildAttemptClaim { claimed_mesh: Some(mesh.clone()), executor_mesh: me_mesh.to_owned(), build_id: row.build_id.clone(), attempt, executor: own.clone(), claimant: Some(me_id.clone()), mesh: row.lane.clone() };
         if let Some(held) = crate::build_state::committed_claim(builds, &row.build_id, row.lane.as_deref(), attempt).await.map_err(|e| ("unreadable", e.to_string()))? {
             if held == claim {
-                return Ok(Claimed { row, lost: lost.clone(), under_delete: Some(me.clone()) });
+                return Ok(Claimed { row, lost: lost.clone(), under_delete: Some(me.clone()), claimed_at_ms: now_ms });
             }
             return Err(("lost", format!("the adoption attempt {attempt} is committed to executor {}: this launch's claim lost", held.executor)));
         }
@@ -383,7 +387,7 @@ async fn claim_under_delete(me: &PathName, me_mesh: &str, own: &rdm_core::framin
             let _ = claims.release_in_flight(&mesh, &row).await;
             return Err(("unrecorded", e));
         }
-        Ok(Claimed { row, lost: lost.clone(), under_delete: Some(me.clone()) })
+        Ok(Claimed { row, lost: lost.clone(), under_delete: Some(me.clone()), claimed_at_ms: now_ms })
     }
     .instrument(span.clone())
     .await;
@@ -508,7 +512,7 @@ pub async fn take_new_name(me: &PathName, mesh: &str, me_id: &NodeId, nodes: &dy
 /// ([`crate::node_rows::take_inherited_name`]: the lost birth's row written `Deleted`, then this node's
 /// claim of the path and name), then the deletion's receipt (`node.delete:<path>` `NodeDeleted`, naming the
 /// exact birth) on the journal.
-pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, builds: &dyn BuildStateAdapter, event_at_rafka_ms: u64) -> Result<(), String> {
+pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, builds: &dyn BuildStateAdapter) -> Result<(), String> {
     crate::node_rows::take_inherited_name(nodes, written, &c.lost, me_id).await.map_err(|e| format!("node_id={me_id} claims path={} name={} after lost node_id={}: {e}", c.lost.name.path, c.lost.name.name, c.lost.node_id))?;
     let receipt = BuildStepReceipt {
         build_id: c.row.build_id.clone(),
@@ -521,7 +525,7 @@ pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storag
             build_id: c.row.build_id.to_string(), attempt: c.row.attempt,
             operation: rdm_core::OperationId::node("node.delete", &c.lost.node_id),
             node_id: c.lost.node_id.clone(), incarnation: c.lost.incarnation_id.clone(),
-            event_at_rafka_ms, traceparent: None, tracestate: None,
+            event_at_rafka_ms: c.claimed_at_ms, traceparent: None, tracestate: None,
         }).map_err(|e| format!("the deletion receipt could not be encoded: {e}"))?),
         executor: None,
         mesh: Some(c.mesh().to_string()),
@@ -878,7 +882,7 @@ mod tests {
             assert_eq!(finding, Finding::Exited { code: Some(0) });
 
             let written = WrittenRows::default();
-            release_name(&claimed_3, &me_3, &nodes_store, &written, &builds_store, 3000)
+            release_name(&claimed_3, &me_3, &nodes_store, &written, &builds_store)
                 .await
                 .expect("release_name marks lost birth Deleted and claims path for me_3");
 

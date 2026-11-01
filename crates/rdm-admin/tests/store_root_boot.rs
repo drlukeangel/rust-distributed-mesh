@@ -204,19 +204,19 @@ fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_befor
     let start = |s: &serde_json::Value| s["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
     let boot = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-boot").unwrap_or_else(|| panic!("no boot span: {spans:?}"));
     let node_id = attr(boot, "node_id");
-    assert_eq!(attr(boot, "node"), "mesh1.admin.1", "{boot}");
+    assert_eq!((attr(boot, "node_path"), attr(boot, "node_name")), ("mesh1.admin".to_string(), "1".to_string()), "{boot}");
     // Q208: the bootstrap's first step minted the node id before the process's telemetry, so its first
     // boot span, the deployment's, opened before the boot reads anything, already carries it.
     let deployment = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-deployment").unwrap_or_else(|| panic!("no deployment span: {spans:?}"));
     assert!(rdm_admin::model::NodeId::parse(&node_id).is_ok(), "the boot runs as a minted node id: {boot}");
     assert_eq!(attr(deployment, "node_id"), node_id, "the process's first boot span carries the node id its boot runs as: {deployment}");
-    let rows: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject") == "mesh1.admin.1").collect();
+    let rows: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject_path") == "mesh1.admin" && attr(s, "subject_name") == "1").collect();
     let claims: Vec<&serde_json::Value> = rows.iter().copied().filter(|s| attr(s, "moment") == "claim").collect();
     assert_eq!(claims.len(), 1, "the Day-0 admin claims its own path.name once: every node row span of mesh1.admin.1 {rows:?}");
     let claim = claims[0];
     assert_eq!(
-        (attr(claim, "node"), attr(claim, "node_id"), attr(claim, "outcome")),
-        ("mesh1.admin.1".to_string(), node_id.clone(), "row-written".to_string()),
+        (attr(claim, "node_path"), attr(claim, "node_name"), attr(claim, "node_id"), attr(claim, "outcome")),
+        ("mesh1.admin".to_string(), "1".to_string(), node_id.clone(), "row-written".to_string()),
         "the claim of its own name under its own node.id, written: {claim}"
     );
     assert_eq!(claim["trace_id"], boot["trace_id"], "the claim is a step of the boot's own story: {claim}");
@@ -581,14 +581,14 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     assert_eq!(attr(deployment, "node_id"), node_id, "the process's first boot span carries the new node.id: {deployment}");
     assert!(!incarnation.is_empty() && incarnation != root.incarnation.to_string(), "a new incarnation: {recovery}");
     assert_eq!(
-        (attr(recovery, "node"), attr(recovery, "inherited_node_id"), attr(recovery, "inherited_incarnation_id"), attr(recovery, "fabric_id"), attr(recovery, "supersedes")),
+        (format!("{}.{}", attr(recovery, "node_path"), attr(recovery, "node_name")), attr(recovery, "inherited_node_id"), attr(recovery, "inherited_incarnation_id"), attr(recovery, "fabric_id"), attr(recovery, "supersedes")),
         ("mesh1.admin.1".to_string(), root.node_id.to_string(), root.incarnation.to_string(), root.fabric_id.to_string(), String::new()),
         "the same path.name over the inherited birth, no supersedes lineage: {recovery}"
     );
-    let deleted: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.delete.via-node-row" && attr(s, "subject") == "mesh1.admin.1").collect();
+    let deleted: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.delete.via-node-row" && attr(s, "subject_path") == "mesh1.admin" && attr(s, "subject_name") == "1").collect();
     assert_eq!(deleted.len(), 1, "the inherited birth's node.delete, once: {deleted:?}");
     assert_eq!((attr(deleted[0], "node_id"), attr(deleted[0], "outcome")), (root.node_id.to_string(), "row-deleted".to_string()), "{}", deleted[0]);
-    let claimed: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject") == "mesh1.admin.1" && attr(s, "moment") == "claim").collect();
+    let claimed: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject_path") == "mesh1.admin" && attr(s, "subject_name") == "1" && attr(s, "moment") == "claim").collect();
     assert_eq!(claimed.len(), 1, "this node's name claim, once: {claimed:?}");
     assert_eq!(
         (attr(claimed[0], "node_id"), attr(claimed[0], "moment"), attr(claimed[0], "seeded_from"), attr(claimed[0], "outcome")),
@@ -774,7 +774,8 @@ fn adopter(dir: &std::path::Path, data_dir: &str, store: &std::path::Path, fabri
         .env("RDM_EVIDENCE_DIR", dir)
         .env("MESH_SPAWN_TYPE", "process")
         .env("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0")
-        .env("RDM_NODE_NAME", "mesh1.admin.1")
+        .env("RDM_NODE_PATH", "mesh1.admin")
+        .env("RDM_NODE_NAME", "1")
         .env("RDM_FABRIC_ID", fabric_id)
         .env("RDM_MESH", "mesh1");
     for (k, v) in extra {
@@ -968,7 +969,10 @@ fn two_adoption_launches_claim_one_attempt_one_wins_and_the_other_is_refused_by_
     let until = Instant::now() + ADOPTS_WITHIN;
     while root.row_and_node("").0.is_none_or(|r| r.node_id.to_string() != won_id) {
         assert!(Instant::now() < until, "the winner {won_id} took no row at mesh1.admin.1: {:?}", root.row_and_node("").0);
-        assert!(winner.child.try_wait().unwrap().is_none(), "the winning launch exited");
+        if winner.child.try_wait().unwrap().is_some() {
+            let ended = exited_within(&mut winner, Duration::from_secs(1));
+            panic!("the winning launch exited: {ended:?}");
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
     let (at, of_loser) = root.row_and_node(&attr_of(&lost, "node_id"));
@@ -1024,7 +1028,7 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
     assert_eq!(attr_of(&claim, "outcome"), "won", "{claim}");
     let (status, err) = exited_within(&mut a, ADOPTS_WITHIN).expect("the adoption launch ran on beside the live admin");
     assert!(!status.success(), "{status:?} {err}");
-    assert!(err.contains("refusing to start") && err.contains("NameHeld") && err.contains("mesh1.admin.1"), "refused NameHeld, naming the admin that answered: {err}");
+    assert!(err.contains("refusing to start") && err.contains("NameHeld") && err.contains("path=mesh1.admin name=1"), "refused NameHeld, naming the admin that answered: {err}");
     let spans = spans_of(&d.dir, a.pid);
     let written: Vec<&serde_json::Value> = spans.iter().filter(|s| ["rdm.node_admin.node.delete.via-node-row", "rdm.node_admin.node.create.via-node-row"].contains(&s["name"].as_str().unwrap_or_default())).collect();
     assert!(written.is_empty(), "the refused launch deleted or claimed a row: {written:?}");
@@ -1103,7 +1107,7 @@ fn under_a_fabric_delete_an_adoption_launch_at_the_lost_fabric_primarys_path_nam
     let mut a = adopter(&root.dir, "adopter", &root.store, &root.fabric_id.to_string(), &minted_custody());
     let (status, err) = exited_within(&mut a, ADOPTS_WITHIN).expect("the adoption launch at the lost path.name under a delete did not end");
     assert!(!status.success(), "{status:?} {err}");
-    assert!(err.contains("refusing to start") && err.contains("fabric.delete") && err.contains("mesh1.admin.1") && err.contains("new path.name"), "the refusal names the delete and the path.name it removes: {err}");
+    assert!(err.contains("refusing to start") && err.contains("fabric.delete") && err.contains("path=mesh1.admin name=1") && err.contains("new path and name"), "the refusal names the delete and the path.name it removes: {err}");
     assert!(spans_of(&root.dir, a.pid).iter().all(|s| s["name"] != ADOPTION_CLAIM), "the refused launch claimed");
     let (at, _) = root.row_and_node("");
     assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::Ready)), "the lost birth's row is untouched");
@@ -1118,7 +1122,7 @@ fn under_a_fabric_delete_an_adoption_launch_at_the_lost_fabric_primarys_path_nam
 fn under_a_fabric_delete_with_no_mesh_left_an_adoption_launch_creates_nothing() {
     let root = Prepared::adoptable("under_a_fabric_delete_with_no_mesh_left_an_adoption_launch");
     root.delete_in_force(true);
-    let mut a = adopter(&root.dir, "adopter", &root.store, &root.fabric_id.to_string(), &[minted_custody(), vec![("RDM_NODE_NAME", "mesh1.admin.2".into())]].concat());
+    let mut a = adopter(&root.dir, "adopter", &root.store, &root.fabric_id.to_string(), &[minted_custody(), vec![("RDM_NODE_NAME", "2".into())]].concat());
     let (status, err) = exited_within(&mut a, ADOPTS_WITHIN).expect("the adoption launch with no mesh left did not end");
     assert!(!status.success(), "{status:?} {err}");
     assert!(err.contains("refusing to start") && err.contains("no not-yet-deleted mesh remains") && err.contains("node.delete from outside") && err.contains("nothing is created"), "the refusal names the outside caller's node.delete: {err}");
@@ -1127,12 +1131,12 @@ fn under_a_fabric_delete_with_no_mesh_left_an_adoption_launch_creates_nothing() 
     assert_eq!(at.map(|r| (r.node_id.to_string(), r.status)), Some((root.node_id.to_string(), rdm_admin::model::NodeStatus::Ready)), "the lost birth's row is untouched");
 }
 
-/// The member cert `pid` installed for the birth at `node`, as the evidence spans it
+/// The member cert the process `pid` installed, as its evidence spans it
 /// (`rdm.node.cert.update.via-join`, the bytes' length), within `within`.
-fn member_cert_installed(dir: &std::path::Path, pid: u32, node: &str, within: Duration) -> Option<u64> {
+fn member_cert_installed(dir: &std::path::Path, pid: u32, within: Duration) -> Option<u64> {
     let until = Instant::now() + within;
     loop {
-        let len = spans_of(dir, pid).into_iter().filter(|s| s["name"] == "rdm.node.cert.update.via-join" && s["attributes"]["node"] == node).filter_map(|s| s["attributes"]["cert_len"].as_u64().or_else(|| s["attributes"]["cert_len"].as_str().and_then(|v| v.parse().ok()))).max();
+        let len = spans_of(dir, pid).into_iter().filter(|s| s["name"] == "rdm.node.cert.update.via-join").filter_map(|s| s["attributes"]["cert_len"].as_u64().or_else(|| s["attributes"]["cert_len"].as_str().and_then(|v| v.parse().ok()))).max();
         if len.is_some_and(|l| l > 0) || Instant::now() >= until {
             return len;
         }
@@ -1152,7 +1156,7 @@ fn an_admin_re_created_at_its_path_over_its_inherited_data_dir_holds_a_member_ce
     let root = Prepared::recovering("an_admin_re_created_at_its_path_holds_a_member_cert");
     let mut running = root.start();
     let _ = root.until(&mut running, BUILD_RELOADED, RECOVERS_WITHIN);
-    let installed = member_cert_installed(&root.dir, running.pid, "mesh1.admin.1", Duration::from_secs(20));
+    let installed = member_cert_installed(&root.dir, running.pid, Duration::from_secs(20));
     let _ = root.end(running);
     assert!(installed.is_some_and(|l| l > 0), "the re-created admin installed no member cert of its own: {installed:?}");
 }
@@ -1168,7 +1172,7 @@ fn an_adoption_launch_holds_a_member_cert_once_it_holds_the_path() {
     let mut a = adopter(&root.dir, "adopter", &root.store, &root.fabric_id.to_string(), &minted_custody());
     let claim = claim_of(&root.dir, a.pid, ADOPTS_WITHIN).expect("the adoption launch made no claim");
     assert_eq!(attr_of(&claim, "outcome"), "won", "{claim}");
-    let installed = member_cert_installed(&root.dir, a.pid, "mesh1.admin.1", ADOPTS_WITHIN);
+    let installed = member_cert_installed(&root.dir, a.pid, ADOPTS_WITHIN);
     unsafe { libc::kill(a.pid as i32, libc::SIGTERM) };
     let _ = exited_within(&mut a, ADOPTS_WITHIN);
     assert!(installed.is_some_and(|l| l > 0), "the adoption launch installed no member cert of its own: {installed:?}");

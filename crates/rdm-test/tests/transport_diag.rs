@@ -53,6 +53,7 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     let env = [
         ("RDM_EVIDENCE_DIR", Some(run.as_os_str())),
         ("RDM_DATA_DIR", Some(maker_dir.as_os_str())),
+        ("RDM_NODE_PATH", None),
         ("RDM_NODE_NAME", None),
         ("RDM_MESH", Some(std::ffi::OsStr::new("mesh1"))),
         ("RDM_FABRIC", Some(std::ffi::OsStr::new("diag"))),
@@ -81,7 +82,8 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
                 .args(["--admin-birth", &admin, "get", "--target", &format!("exact:{target}"), "--key", "k"])
                 .env("RDM_EVIDENCE_DIR", &run)
                 .env("RDM_DATA_DIR", &dialler_dir)
-                .env("RDM_NODE_NAME", "mesh1.rpc.9")
+                .env("RDM_NODE_PATH", "mesh1.rpc")
+                .env("RDM_NODE_NAME", "9")
                 .output()
                 .unwrap()
         });
@@ -149,7 +151,7 @@ fn a_process_outside_an_evidence_run_installs_no_transport_diagnostics() {
     let cell = "a_process_outside_an_evidence_run_installs_no_transport_diagnostics";
     let data_dir = cell_dir(cell);
     // A node outside an evidence run: a node log dir and a node name, no evidence dir.
-    let env = [("RDM_EVIDENCE_DIR", None), ("RUST_LOG", None), ("RDM_DATA_DIR", Some(data_dir.as_os_str())), ("RDM_NODE_NAME", Some(std::ffi::OsStr::new("mesh1.rpc.1")))];
+    let env = [("RDM_EVIDENCE_DIR", None), ("RUST_LOG", None), ("RDM_DATA_DIR", Some(data_dir.as_os_str())), ("RDM_NODE_PATH", Some(std::ffi::OsStr::new("mesh1.rpc"))), ("RDM_NODE_NAME", Some(std::ffi::OsStr::new("1")))];
     if crate::own_process::delegated_with_env(module_path!(), cell, &env) {
         return;
     }

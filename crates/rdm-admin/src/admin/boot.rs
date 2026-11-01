@@ -887,7 +887,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                         .await
                         .map_err(|e| format!("{node_id} cannot terminate the lost birth {} ({}) at path {:?}, name {:?}: {e}", lost.node_id, lost.incarnation_id.as_str(), lost.name.path, lost.name.name))?;
                 }
-                super::adoption::release_name(claimed, &node_id, &*nodes_storage, &caches.nodes, &*journal, rafka_time.now_ms()).await
+                super::adoption::release_name(claimed, &node_id, &*nodes_storage, &caches.nodes, &*journal).await
             }
             .instrument(boot.clone())
             .await
