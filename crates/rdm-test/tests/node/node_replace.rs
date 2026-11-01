@@ -3021,3 +3021,133 @@ async fn a_re_created_birth_that_comes_back_is_deleted_by_its_path_name_verified
     assert!(!alive(pid as u64), "the caller's process is gone: {facts}");
     assert_eq!(facts["live_at_path"], json!([s(&after["node_id"])]), "the path keeps one live birth, the re-created one: {facts}");
 }
+
+/// The mesh-primary's recovery submit for `node`'s birth that completed, once exported: a submit
+/// answered build-in-progress is exported under the same name first (node-recovery.md step 1), so the
+/// first span is not the one.
+async fn completed_recovery_span(estate: &Estate, node: &PathName, node_id: &Value) -> Value {
+    wait_for(&format!("the completed recovery submit for {node:?} is exported"), Duration::from_secs(90), || async {
+        let spans = estate.spans();
+        named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| at_location(sp, node) && sp["attributes"]["node_id"] == *node_id && s(&sp["attributes"]["outcome"]).starts_with("complete")).cloned()
+    })
+    .await
+}
+
+/// CONTRACT (node-recovery.md "Execution": "Two recoveries at once never meet: the fabric-primary's one
+/// writer turn orders their opens, each mesh's lane is numbered on its own"; build.md §5.1: the
+/// fabric-primary writes every Build record; R-BI7: one attempt in flight per mesh, not per fabric; Q118):
+/// one rpc node of mesh1 and one of mesh2 are killed (kill -9) in the same instant. Each mesh-primary
+/// investigates and submits its own member's recovery; the fabric-primary opens both, one in each mesh's
+/// lane, both are claimed and run at the same time, and both members are re-created as new births. The
+/// Build's two lanes each hold their own attempt's node.delete (TerminateRuntime first) and node.create
+/// receipts complete, and the Build reads completed once both have converged. Must NOT happen: one
+/// mesh's recovery answered build-in-progress naming the other mesh's attempt; one recovery waiting on
+/// the other; an open or claim of either lane written by a mesh-primary that is not the fabric-primary;
+/// either member recovered twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_members_of_two_meshes_killed_at_once_are_recovered_in_their_own_lanes_at_the_same_time() {
+    let (mut estate, birth_build) = two_mesh_estate("two_members_of_two_meshes_killed_at_once_are_recovered_in_their_own_lanes_at_the_same_time").await;
+    let nodes = estate.node_values().await;
+    let member_of = |mesh: &str| nodes.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "rpc_node" && n["is_primary"] != true).map(location).min().unwrap_or_else(|| panic!("an rpc member of {mesh} holding no primary role"));
+    let primary_of = |mesh: &str| nodes.iter().find(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("{mesh}'s primary"));
+    let (a, b) = (member_of("mesh1"), member_of("mesh2"));
+    let (before_a, before_b) = (estate.node_value(&a).await, estate.node_value(&b).await);
+    estate.kill_node(&a).await;
+    estate.kill_node(&b).await;
+
+    let (after_a, after_b) = tokio::join!(until_new_birth(&estate, &a, &before_a, SETTLE), until_new_birth(&estate, &b, &before_b, SETTLE));
+    let (rec_a, rec_b) = tokio::join!(completed_recovery_span(&estate, &a, &before_a["node_id"]), completed_recovery_span(&estate, &b, &before_b["node_id"]));
+    assert_eq!(s(&rec_a["attributes"]["submitter"]), s(&primary_of("mesh1")["node_id"]), "mesh1's primary submits mesh1's recovery: {rec_a}");
+    assert_eq!(s(&rec_b["attributes"]["submitter"]), s(&primary_of("mesh2")["node_id"]), "mesh2's primary submits mesh2's recovery: {rec_b}");
+    for (rec, mesh) in [(&rec_a, "mesh1"), (&rec_b, "mesh2")] {
+        let attempt = s(&rec["attributes"]["attempt"]);
+        assert_eq!(s(&rec["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "{mesh}'s recovery completes in its own lane: {rec}");
+    }
+    // Neither recovery was answered build-in-progress naming the other mesh's attempt (R-BI7: per mesh).
+    let spans = estate.spans();
+    let cross: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-build-in-progress")
+        .into_iter()
+        .filter(|sp| (at_location(sp, &a) && sp["attributes"]["mesh"] == "mesh2") || (at_location(sp, &b) && sp["attributes"]["mesh"] == "mesh1"))
+        .collect();
+    assert!(cross.is_empty(), "a recovery in one mesh is never refused by the other mesh's attempt: {cross:?}");
+    // The two lanes each hold their own attempt's receipts, complete (the delete and the create).
+    for (mesh, before, node, rec) in [("mesh1", &before_a, &a, &rec_a), ("mesh2", &before_b, &b, &rec_b)] {
+        let attempt = s(&rec["attributes"]["attempt"]);
+        let (deleted, created) = recovery_receipts_held(&estate, &birth_build, mesh, &node_id_of(before), node, &attempt).await;
+        let steps = lane_steps(&build_log::build_value(&estate, &birth_build).await, mesh);
+        let terminate = steps.iter().any(|r| r["attempt"] == deleted["attempt"] && is_operation(&r["operation"], "node.delete", &OperationSubject::Node(node_id_of(before))) && r["step"] == "TerminateRuntime" && r["outcome"] == "complete");
+        assert!(terminate, "{mesh}'s lane holds {node:?}'s TerminateRuntime complete: {steps:?}");
+        let _ = created;
+    }
+    let bv = build_log::build_value(&estate, &birth_build).await;
+    assert_eq!(bv["lanes"]["mesh1"]["attempt"], bv["lanes"]["mesh2"]["attempt"], "each lane is numbered on its own: both recoveries are attempt 1 of their lane: {:?}", bv["lanes"]);
+    // Both opens were the fabric-primary's (build.md §5.1, Q118): the member of the mesh that does not hold
+    // the fabric-primary was reported up as build.create and opened there for that mesh's primary as executor.
+    let fp_row = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary");
+    let (other_mesh, other_before) = if fp_row["mesh"] == "mesh1" { ("mesh2", &before_b) } else { ("mesh1", &before_a) };
+    let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == other_before["node_id"] && matches!(sp["attributes"]["outcome"].as_str(), Some("admitted" | "reported"))).collect();
+    assert_eq!(opened.len(), 1, "{other_mesh}'s recovery is opened once (reported up, opened at the fabric-primary): {opened:?}");
+    assert_eq!(s(&opened[0]["attributes"]["route"]), "build.create", "the open the fabric-primary serves for a mesh-primary's report (Q118): {}", opened[0]);
+    eprintln!(
+        "two-mesh cell: {a:?} and {b:?} killed at once; recovered as {} and {}; traces {} | {}",
+        s(&after_a["node_id"]), s(&after_b["node_id"]), s(&rec_a["trace_id"]), s(&rec_b["trace_id"])
+    );
+    estate.record_trace_url(rec_a["trace_id"].as_str().unwrap_or(""));
+    estate.record_trace_url(rec_b["trace_id"].as_str().unwrap_or(""));
+    estate.settles_to(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
+    estate.stop().await;
+}
+
+/// CONTRACT (node-recovery.md step 1, Q291: "A recovery answered BuildInProgress is owed to its mesh ...
+/// opened then as the mesh's next attempt, claimed by no one ... the mesh-primary claims the recovery as
+/// it stands on its next tick after that end"; R-BI7: one attempt in flight per mesh): two rpc nodes of
+/// one mesh are killed (kill -9) in the same instant. Their mesh-primary submits both recoveries; the
+/// fabric-primary opens the first as the lane's next attempt and the second as the attempt after it,
+/// claimed by no one while the first runs; the first runs to its end and the second is claimed as it
+/// stands on the next tick. Both members are re-created as new births at consecutive attempts of the
+/// one lane. Must NOT happen: both attempts claimed and running at once in one mesh; the second recovery
+/// opened twice; the second recovery's submit dropped (a later attempt of the Build taking the mesh
+/// first); either member recovered twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_members_of_one_mesh_killed_at_once_are_recovered_one_after_the_other_in_its_lane() {
+    let (mut estate, birth_build) = fabric_of("two_members_of_one_mesh_killed_at_once_are_recovered_one_after_the_other_in_its_lane", &[("mesh1", 1, 1), ("mesh2", 1, 3)], Duration::from_secs(90)).await;
+    let nodes = estate.node_values().await;
+    let mut members: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node" && n["is_primary"] != true).map(location).collect();
+    members.sort();
+    assert!(members.len() >= 2, "two rpc members of mesh2 holding no primary role: {members:?}");
+    let (a, b) = (members[0].clone(), members[1].clone());
+    let mesh_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
+    let (before_a, before_b) = (estate.node_value(&a).await, estate.node_value(&b).await);
+    estate.kill_node(&a).await;
+    estate.kill_node(&b).await;
+
+    let (after_a, after_b) = tokio::join!(until_new_birth(&estate, &a, &before_a, SETTLE), until_new_birth(&estate, &b, &before_b, SETTLE));
+    let (rec_a, rec_b) = tokio::join!(completed_recovery_span(&estate, &a, &before_a["node_id"]), completed_recovery_span(&estate, &b, &before_b["node_id"]));
+    for rec in [&rec_a, &rec_b] {
+        assert_eq!(s(&rec["attributes"]["submitter"]), s(&mesh_primary["node_id"]), "mesh2's primary submits both: {rec}");
+        let attempt = s(&rec["attributes"]["attempt"]);
+        assert_eq!(s(&rec["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "{rec}");
+    }
+    let (at_a, at_b) = (rec_a["attributes"]["attempt"].as_u64().or_else(|| s(&rec_a["attributes"]["attempt"]).parse().ok()).expect("attempt a"), rec_b["attributes"]["attempt"].as_u64().or_else(|| s(&rec_b["attributes"]["attempt"]).parse().ok()).expect("attempt b"));
+    assert_ne!(at_a, at_b, "two recoveries in one mesh are two attempts of its lane: {rec_a} | {rec_b}");
+    assert_eq!(at_a.max(at_b), at_a.min(at_b) + 1, "consecutive attempts of the one lane, nothing opened between them: {at_a} and {at_b}");
+    // The later one was opened owed (claimed by no one) or claimed as it stood: never a second open.
+    let spans = estate.spans();
+    let later_id = if at_a > at_b { &before_a["node_id"] } else { &before_b["node_id"] };
+    let opens: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == *later_id && matches!(sp["attributes"]["outcome"].as_str(), Some("admitted" | "reported"))).collect();
+    assert_eq!(opens.len(), 1, "the later recovery is admitted once: {opens:?}");
+    let how = s(&opens[0]["attributes"]["open_attempt"]);
+    assert!(how == "held-open" || how.starts_with("owed-") || how == "opened-here", "the later recovery's open is the lane's next attempt, owed or claimed as it stood: {how}");
+    let refused: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == *later_id && s(&sp["attributes"]["outcome"]).starts_with("build-in-progress")).collect();
+    assert!(!refused.is_empty() || how.starts_with("owed-"), "the later recovery met the earlier attempt holding the mesh (one attempt in flight per mesh): refused submits {refused:?}, open {how}");
+    // Both attempts of the one lane hold their delete and create receipts, complete.
+    for (before, node, rec) in [(&before_a, &a, &rec_a), (&before_b, &b, &rec_b)] {
+        let attempt = s(&rec["attributes"]["attempt"]);
+        let (_deleted, _created) = recovery_receipts_held(&estate, &birth_build, "mesh2", &node_id_of(before), node, &attempt).await;
+    }
+    eprintln!("one-mesh cell: {a:?} and {b:?} killed at once; attempts {at_a} and {at_b} of mesh2's lane; recovered as {} and {}; traces {} | {}", s(&after_a["node_id"]), s(&after_b["node_id"]), s(&rec_a["trace_id"]), s(&rec_b["trace_id"]));
+    estate.record_trace_url(rec_a["trace_id"].as_str().unwrap_or(""));
+    estate.record_trace_url(rec_b["trace_id"].as_str().unwrap_or(""));
+    estate.settles_to(&[("mesh1", 1, 1), ("mesh2", 1, 3)], Duration::from_secs(30)).await;
+    estate.stop().await;
+}
