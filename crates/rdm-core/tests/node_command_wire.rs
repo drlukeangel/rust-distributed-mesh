@@ -123,7 +123,7 @@ fn stop_and_start_append_their_requests_and_report_their_ordered_frames() {
     for (position, name) in [(1, "stop-node"), (2, "start-node")] {
         let mut wire = vec![position];
         wire.extend_from_slice(&birth_bytes);
-        wire.extend_from_slice(&bytes("016201016f")); // build "b", attempt 1, operation "o"
+        wire.extend_from_slice(&bytes("016201016f000000")); // build "b", attempt 1, operation "o" (no subject, step or occurrence)
         let request = NodeCommand::decode_request(&wire).unwrap_or_else(|e| panic!("Q47 {name} request {position} must decode: {e:?}"));
         assert_eq!(request.op(), name);
         assert_eq!(request.subject(), (&node(), &birth()));

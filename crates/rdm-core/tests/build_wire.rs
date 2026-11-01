@@ -35,15 +35,15 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
                     steps: vec![
                         Step::DeleteConnections { node: rdm_core::PathName::new("m.rpc", "1").unwrap() },
                         Step::LeaveMesh { node: rdm_core::PathName::new("m.rpc", "1").unwrap() },
-                        Step::Update { node: rdm_core::PathName::new("m.rpc", "1").unwrap(), name: rdm_core::PathName::new("m.rpc.old", "1").unwrap() },
-                        Step::Stop { node: rdm_core::PathName::new("m.rpc.old", "1").unwrap() },
+                        Step::Update { node: rdm_core::PathName::new("m.rpc", "1").unwrap(), name: rdm_core::PathName::new("m.rpc", "1-old").unwrap() },
+                        Step::Stop { node: rdm_core::PathName::new("m.rpc", "1-old").unwrap() },
                         Step::Create { mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, node: rdm_core::PathName::new("m.rpc", "1").unwrap(), executable: None },
-                        Step::Start { node: rdm_core::PathName::new("m.rpc.old", "1").unwrap() },
-                        Step::Delete { node: rdm_core::PathName::new("m.rpc.old", "1").unwrap() },
+                        Step::Start { node: rdm_core::PathName::new("m.rpc", "1-old").unwrap() },
+                        Step::Delete { node: rdm_core::PathName::new("m.rpc", "1-old").unwrap() },
                     ],
                 }),
             },
-            "00 00 0b 07 05 07 6d2e7270632e31 06 07 6d2e7270632e31 02 07 6d2e7270632e31 0b 6d2e7270632e312e6f6c64 01 0b 6d2e7270632e312e6f6c64 00 07 6d2e7270632e31 01 6d 01 00 03 0b 6d2e7270632e312e6f6c64 04 0b 6d2e7270632e312e6f6c64",
+            "00 00 0b 07 05 05 6d2e727063 01 31 06 05 6d2e727063 01 31 02 05 6d2e727063 01 31 05 6d2e727063 05 312d6f6c64 01 05 6d2e727063 05 312d6f6c64 00 05 6d2e727063 01 31 01 6d 01 00 03 05 6d2e727063 05 312d6f6c64 04 05 6d2e727063 05 312d6f6c64",
         ),
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteFabric) }, "00 00 0c"),
         // position 14 is reserved (the removed change): `a_request_at_the_removed_change_position_is_an_unknown_variant`
@@ -70,7 +70,7 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
                 }),
             },
             // the fabric's topology_storage_provider appended last (storage.md §2): `00`, none named.
-            "00 00 0f 0c 303132333435363738396162 02 09 6d2e61646d696e2e31 01 6d 00 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 00 07 6d2e7270632e31 01 6d 01 00 00 00 01 01 6b 01 76 00",
+            "00 00 0f 0c 303132333435363738396162 02 07 6d2e61646d696e 01 31 01 6d 00 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 00 05 6d2e727063 01 31 01 6d 01 00 00 00 01 01 6b 01 76 00",
         ),
         // a complete topology naming the provider `file`: `01`, then the name.
         (
@@ -245,9 +245,9 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
         (ConnectionsDeleting { reason: s("d") }, "15 01 64"),
         (Malformed { kind: MalformedKind::Corrupt }, "16 02"),
         (Unauthorized { reason: s("u") }, "17 01 75"),
-        (FabricPrimaryMoved { build_id: b(), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) }, "18 01 62 01 01 70"),
+        (FabricPrimaryMoved { build_id: b(), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) }, "18 01 62 01 0c 303132333435363738396162"),
         (FabricPrimaryMoved { build_id: b(), fabric_primary: None }, "18 01 62 00"),
-        (NotClaimant { mesh: Some(s("m")), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()), mesh_primary: None }, "19 01 01 6d 01 01 70 00"),
+        (NotClaimant { mesh: Some(s("m")), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()), mesh_primary: None }, "19 01 01 6d 01 0c 303132333435363738396162 00"),
         // build.get's frames (Q167 R-RD5), appended after NotClaimant.
         (Topology { build_id: b(), chunk_index: 0, chunk_count: 1, nodes: vec![] }, "1a 01 62 00 01 00"),
         (BuildReply::Build { build_id: b(), phase: BuildPhase::Failed, attempt: 2, executor: None, reason: s("r"), last_failure: Some(s("x")), current: true, steps: 1, chunks: 1 }, "1b 01 62 03 02 00 01 72 01 01 78 01 01 01"),
@@ -357,16 +357,16 @@ fn failure_codes_are_appended_and_retained_by_the_build_wire() {
     use rdm_core::outcome::Code;
     for (code, suffix) in [(Code::Unknown, 2), (Code::DeadlineExceeded, 4), (Code::Unavailable, 14)] {
         let terminal = BuildReply::Failed { build_id: "b".into(), attempt: 2, operation: rdm_core::OperationId::unscoped("o"), step: "s".into(), reason: "r".into(), code };
-        let mut golden = bytes("05 01 62 02 01 6f 01 73 01 72"); golden.push(suffix);
+        let mut golden = bytes("05 01 62 02 01 6f 00 00 00 01 73 01 72"); golden.push(suffix);
         assert_eq!(Build::encode_reply(&terminal).unwrap(), golden);
         assert_eq!(Build::decode_reply(&golden).unwrap(), terminal);
         assert_eq!(Build::classify_reply(&terminal).code(), code);
         let receipt = BuildReply::Steps { build_id: "b".into(), chunk_index: 0, chunk_count: 1, steps: vec![StepReceipt { attempt: 1, operation: rdm_core::OperationId::unscoped("o"), step: "s".into(), result: StepResult::Failed { reason: "r".into(), code } }] };
-        let mut golden = bytes("03 01 62 00 01 01 01 01 6f 01 73 01 01 72"); golden.push(suffix);
+        let mut golden = bytes("03 01 62 00 01 01 01 01 6f 00 00 00 01 73 01 01 72"); golden.push(suffix);
         assert_eq!(Build::encode_reply(&receipt).unwrap(), golden);
         assert_eq!(Build::decode_reply(&golden).unwrap(), receipt);
     }
-    assert_eq!(Build::decode_reply(&bytes("05 01 62 02 01 6f 01 73 01 72")), Err(DecodeFailure::Corrupt));
+    assert_eq!(Build::decode_reply(&bytes("05 01 62 02 01 6f 00 00 00 01 73 01 72")), Err(DecodeFailure::Corrupt));
     assert_eq!(Build::decode_reply(&bytes("05 01 62 02 01 6f 01 73 01 72 11")), Err(DecodeFailure::Corrupt));
 }
 
@@ -390,11 +390,11 @@ fn a_request_at_the_removed_change_position_is_an_unknown_variant() {
 /// positions (`DeleteConnections` = 07, `Stop` = 08, `Start` = 09).
 #[test]
 fn a_request_at_the_removed_restart_position_is_an_unknown_variant() {
-    assert_eq!(Build::decode_request(&bytes("00 00 06 0b 6d657368312e7270632e31")), Err(DecodeFailure::UnknownVariant), "a node.restart of mesh1.rpc.1");
+    assert_eq!(Build::decode_request(&bytes("00 00 06 09 6d657368312e727063 01 31")), Err(DecodeFailure::UnknownVariant), "a node.restart of mesh1.rpc.1");
     assert_eq!(Build::decode_request(&bytes("00 00 06")), Err(DecodeFailure::UnknownVariant), "the bare position too");
-    assert!(matches!(Build::decode_request(&bytes("00 00 07 0b 6d657368312e7270632e31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteConnections { .. }) })), "DeleteConnections keeps position 7");
-    assert!(matches!(Build::decode_request(&bytes("00 00 08 0b 6d657368312e7270632e31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Stop { .. }) })), "Stop keeps position 8");
-    assert!(matches!(Build::decode_request(&bytes("00 00 09 0b 6d657368312e7270632e31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Start { .. }) })), "Start keeps position 9");
+    assert!(matches!(Build::decode_request(&bytes("00 00 07 09 6d657368312e727063 01 31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteConnections { .. }) })), "DeleteConnections keeps position 7");
+    assert!(matches!(Build::decode_request(&bytes("00 00 08 09 6d657368312e727063 01 31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Stop { .. }) })), "Stop keeps position 8");
+    assert!(matches!(Build::decode_request(&bytes("00 00 09 09 6d657368312e727063 01 31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Start { .. }) })), "Start keeps position 9");
 }
 
 /// CONTRACT (proposal executable-bindings-at-create.md §3.10(a): "the count forms `ReconcileFabric`,

@@ -119,7 +119,7 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
         (RafkaTime { ms: 300, kind: Some(PrimaryKind::FabricPrimary) }, "0d ac02 01 01"),
         (RafkaTime { ms: 7, kind: Some(PrimaryKind::MeshPrimary) }, "0d 07 01 00"),
         // Q234: the reader's own whole row, a `NodeView` in its field order, then the row's revision (P1).
-        (OwnRow { node: own_row(), revision: 3 }, "0e 07 6d2e7270632e31 01 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 00 00 00 00 \
+        (OwnRow { node: own_row(), revision: 3 }, "0e 05 6d2e727063 01 31 01 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 00 00 00 00 \
             0000000000000000000000000000000000000000000000000000000000000000 00 00 00 00 00 03"),
     ];
     for (r, hex) in fixtures {
@@ -165,7 +165,7 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
     };
     let r = TopologyReply::Snapshot { mesh: "mesh1".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![ProjectionEntry::from(&d)], in_flight: vec![], deleted: vec![] };
     let hex = "00 05 6d65736831 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
-        0c 313132333435363738396162 05 6d65736831 01 0c 303132333435363738396162 0b 6d657368312e7270632e31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
+        0c 313132333435363738396162 05 6d65736831 01 0c 303132333435363738396162 09 6d657368312e727063 01 31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
         01 00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
         00 \
         02 \
