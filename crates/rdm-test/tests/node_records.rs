@@ -512,7 +512,7 @@ async fn a_deleted_birth_cannot_hide_its_successor() {
 /// 1. Stopped then started (the same birth): node.get lists every field as before but the measured
 ///    load and gossip counts and the member cert its start's join issues afresh (fabric-certs.md
 ///    "Every JoinNode issues a fresh member cert"), its property record is the same record, and its lifecycle record differs
-///    only by the stop and start it recorded. 2. Killed: the node recovered at the pair (a new node id
+///    only by the stop and start it recorded and that fresh cert. 2. Killed: the node recovered at the pair (a new node id
 ///    over the inherited data dir) lists the same pair, kind, mesh, config, tags, executable, storage,
 ///    placement, data dir and endpoint key; its own property record holds the config and tags; its
 ///    lifecycle record carries the same identity fields and names its predecessor. Must NOT happen: a
@@ -546,8 +546,10 @@ async fn all_node_fields_survive_node_restart() {
     assert!(now.issued_at >= was.issued_at && now.issuer_expires_at == was.issuer_expires_at, "the start's join issues a fresh member cert under the same issuer: {was:?} -> {now:?}");
     assert_eq!(estate.node_properties(&before.node_id).expect("the property record"), properties, "the whole property record survives the stop and start");
     let restarted = written_by(&estate, &before.node_id, &writer).expect("the lifecycle record after the start");
-    let changed = differing_except(&lifecycle, &restarted, &["operations", "declared"]);
-    assert!(changed.is_empty(), "the lifecycle record differs only by the stop and start it records: {changed:#?}");
+    let changed = differing_except(&lifecycle, &restarted, &["operations", "declared", "cert"]);
+    assert!(changed.is_empty(), "the lifecycle record differs only by the stop and start it records and the fresh member cert: {changed:#?}");
+    let (was, now) = (lifecycle.cert.as_ref().expect("the record's member cert dates"), restarted.cert.as_ref().expect("the started record's member cert dates"));
+    assert!(now.issued_at >= was.issued_at && now.issuer_expires_at == was.issuer_expires_at, "the record holds the fresh member cert of the start's join, under the same issuer: {was:?} -> {now:?}");
 
     // 2. Forced exit: recovered at the pair as a new node over the inherited data dir.
     estate.kill_node(&subject).await;
