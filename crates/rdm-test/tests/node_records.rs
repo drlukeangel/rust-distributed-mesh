@@ -508,7 +508,8 @@ async fn a_deleted_birth_cannot_hide_its_successor() {
 // @feature: node-records
 /// CONTRACT (i150 R12, R13; e2; node-config-update.md "Deferred application and startup": "Existing
 /// durable properties and application recognition survive startup"): every field of a node survives
-/// its restart, compared whole, not sampled. `mesh1.rpc` / `2` updates its own config and is tagged.
+/// its restart, compared whole, not sampled. An rpc node of mesh1 holding no role updates its own
+/// config and is tagged.
 /// 1. Stopped then started (the same birth): node.get lists every field as before but the measured
 ///    load and gossip counts and the member cert its start's join issues afresh (fabric-certs.md
 ///    "Every JoinNode issues a fresh member cert"), its property record is the same record, and its lifecycle record differs
@@ -521,8 +522,10 @@ async fn a_deleted_birth_cannot_hide_its_successor() {
 async fn all_node_fields_survive_node_restart() {
     let test = "all_node_fields_survive_node_restart";
     let mut estate = estate_at(Estate::bootstrap(owner_of(test, "all-fields"), "fabric1", "mesh1").await, &[("mesh1", 1, 2)]).await;
-    let subject = pair("mesh1.rpc", "2");
-    let first = estate.node_view(&subject).await;
+    // The subject holds no role: a primary's stop hands its role over first (node-stop.md "Primary"),
+    // so its `is_primary` is not a field a stop and start keeps.
+    let first = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && !n.is_primary).expect("an rpc node of mesh1 that holds no role");
+    let subject = first.name.clone();
     own_update(&estate, &first, "listener.data=127.0.0.1:45005");
     let labels: BTreeSet<String> = ["rabbit".to_string()].into();
     let tagged = tags_create(&estate, &first, &labels).await;
