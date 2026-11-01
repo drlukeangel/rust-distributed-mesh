@@ -241,7 +241,7 @@ fn a_plain_create_carries_its_create_specs_config_and_a_recovery_inherits_the_de
     let spans: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];
-    assert_eq!((a["moment"].as_str(), (a["subject_path"].as_str(), a["subject_name"].as_str()), a["node_id"].as_str(), a["seeded_from"].as_str(), a["keys"].as_str(), a["outcome"].as_str()), (Some("claim"), (Some("mesh1.rpc"), Some("2")), Some(born.as_str()), Some(old.as_str()), Some("1"), Some("row-seeded")), "{a:#?}");
+    assert_eq!((a["moment"].as_str(), (a["subject_path"].as_str(), a["subject_name"].as_str()), a["node_id"].as_str(), a["seeded_from"].as_str(), a["keys"].as_str(), a["outcome"].as_str()), (Some("claim"), (Some("mesh1.rpc"), Some("2")), Some(born.as_str()), None, Some("1"), Some("row-written")), "a plain create's claim names no seed: a Deleted row's location is not provenance: {a:#?}");
 }
 
 /// CONTRACT (Q305; build-deployment.md §3: a replacement's "config and tags are its Build entry's,
@@ -518,8 +518,8 @@ fn a_take_over_rebuild_finishes_a_lost_writers_pending_release() {
     assert_eq!(old, None, "the rebuild released the old key the lost writer left held");
     assert_eq!(new.map(|r| r.renamed_from), Some(Some(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), "the row at the new key stands as written");
     let releases = cap.spans_named("rdm.node_admin.name.update.via-pending-release");
-    let seen: Vec<_> = releases.iter().map(|s| (s["attributes"]["from"].as_str().unwrap_or("").to_string(), s["attributes"]["moment"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
-    assert_eq!(seen, vec![("mesh1.rpc.1".to_string(), "rebuild".to_string(), "released".to_string())], "{releases:#?}");
+    let seen: Vec<_> = releases.iter().map(|s| (s["attributes"]["from_path"].as_str().unwrap_or("").to_string(), s["attributes"]["from_name"].as_str().unwrap_or("").to_string(), s["attributes"]["moment"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
+    assert_eq!(seen, vec![("mesh1.rpc".to_string(), "1".to_string(), "rebuild".to_string(), "released".to_string())], "{releases:#?}");
     let rows = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     let outcome = |path: &str, name: &str| rows.iter().filter(|s| location_matches(&s["attributes"], "subject", path, name)).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
     assert_eq!(outcome("mesh1.rpc", "1"), vec!["row-held-by-node"], "{rows:#?}");
@@ -546,7 +546,7 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         // P's writes, as its role made them.
         for row in [
             NodeRow { replacement_from: None, kind: rpc1.kind, mesh: rpc1.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None },
-            NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "2-old").unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None },
+            NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "2-old").unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None, renamed_from: Some(rdm_core::PathName::new("mesh1.rpc", "2").unwrap()), app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None },
             NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), node_id: deleted_pred.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None },
         ] {
             p_store.write_record(&row).await.unwrap();
@@ -1217,7 +1217,7 @@ mod writer {
         let a = &settled[0]["attributes"];
         assert_eq!(
             (a["node_id"].as_str(), a["deployment_id"].as_str(), a["operation"].as_str(), a["attempt"].as_str(), a["outcome"].as_str()),
-            (Some(x.as_str()), Some(deployment.as_str()), Some("node.create:mesh1.rpc.7"), Some("2"), Some("never-launched")),
+            (Some(x.as_str()), Some(deployment.as_str()), Some("node.create"), Some("2"), Some("never-launched")),
             "the claim names the birth A allocated and the provider proves no runtime of its deployment exists: {a:#?}"
         );
         let withdrawn = cap.spans_named("rdm.node_admin.node.remove.via-claim-withdrawn");
@@ -1617,7 +1617,7 @@ mod writer {
             (refused, p1.spawned.load(Ordering::SeqCst), fp_err, p2.spawned.load(Ordering::SeqCst))
         });
         let refused = refused.expect_err("another mesh's primary is refused");
-        assert!(refused.contains("PrepareStorage") && refused.contains("mesh2.admin.1"), "refused at the claim, naming the fabric-primary as the writer: {refused}");
+        assert!(refused.contains("PrepareStorage") && refused.contains("is not the writer of mesh1's node rows") && refused.contains("fabric-primary "), "refused at the claim, naming the fabric-primary as the writer: {refused}");
         assert_eq!(spawned_refused, 0, "nothing is launched");
         assert!(fp_err.expect_err("the spawn fails").contains("DeployRuntime"), "the fabric-primary's claim passes and its create reaches DeployRuntime");
         assert_eq!(spawned_fp, 1);
@@ -1745,7 +1745,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
         // The admin's atlas holds every record its writer holds (Q203).
         let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
-        mp.rows.written().feeds(atlas.clone());
+        mp.rows.written().feeds(atlas.clone()).await;
 
         // 1. Create: `mesh1.broker.north` with free-text name `north`, path `mesh1.broker`, node_type `broker`.
         let north_key: PathName = rdm_core::PathName::new("mesh1.broker", "north").expect("free-text node name parses");

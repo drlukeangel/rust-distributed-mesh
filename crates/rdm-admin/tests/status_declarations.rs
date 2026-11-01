@@ -1077,7 +1077,7 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
         resolver.insert(r.clone());
     }
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
-    status.caches.nodes.feeds(atlas.clone());
+    status.caches.nodes.feeds(atlas.clone()).await;
     let _ = status.atlas.set(atlas.clone());
     let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let _ = status.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm")), status.configure.clone(), status.caches.nodes.clone())).await));
@@ -1100,7 +1100,7 @@ async fn fabric_primary_door(rig: &Rig, births: &[&Birth], resolves: &[ResolvedN
     }
     let _ = rig.door.atlas.set(atlas.clone());
     // Every record its writer holds is its atlas's too (Q203, as the boot wires it).
-    rig.door.caches.nodes.feeds(atlas.clone());
+    rig.door.caches.nodes.feeds(atlas.clone()).await;
     let resolver = Arc::new(StaticResolver::new());
     for r in resolves {
         resolver.insert(r.clone());
