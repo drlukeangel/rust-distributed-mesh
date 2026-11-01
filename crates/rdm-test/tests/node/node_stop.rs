@@ -1253,7 +1253,7 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
     let primary_stop = "node.stop".to_string();
     let primary_declared: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declare")
         .into_iter()
-        .filter(|sp| at_location(sp, &primary) && attr(sp, "key").ends_with(", Stopped)") && attr(sp, "operation").contains(&format!("action: {primary_stop:?}")))
+        .filter(|sp| at_location(sp, &primary) && attr(sp, "key").ends_with(", Stopped)") && attr(sp, "operation") == primary_stop)
         .collect();
     // The declaration rides an Owed call (i146 e3 owner 3): the new primary takes it applied, or already
     // applied when the stop stream's `stopped` reached it first (Q36: "from whichever arrives first").
