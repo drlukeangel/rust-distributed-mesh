@@ -143,9 +143,9 @@ async fn fabric_at_its_primary(estate: &Estate) -> (NodeView, ScopeStatus, Optio
 /// lists no nodes at all, is refused by name pointing to fabric.delete"; "a created path whose config names
 /// no executable is refused by name at acceptance, nothing runs"; rule 3, "Recorded on the row at the claim";
 /// rule 7, read from the records). Two callers read the same topology. B's request adds `(path mesh1.rpc, name 2)` on a
-/// new executable with the tag `zone_a` and the config {zone: a} (Q166; node-config-update.md: "A node's
-/// first config is its create spec's `config` in the Build, written to its row at the claim and carried
-/// in its first join") and completes: the node runs that executable, its row records it, the tag and the
+/// new executable with the tag `zone_a` and the config {zone: a} (Q166; node-config-update.md: "A Build
+/// applies its entry to new and existing nodes" and "Launch properties initialize an absent own
+/// record") and completes: the node runs that executable, its row records it, the tag and the
 /// config, and the node carries it (`fabric.nodes.get` answers a live node's config from its digest), and `fabric.nodes.get`
 /// returns them. A's request, built from the earlier read, is refused `based-on-not-current`, nothing
 /// accepted and `(path mesh1.rpc, name 2)` untouched. A re-reads: a request listing no node is refused `no-node-listed`
