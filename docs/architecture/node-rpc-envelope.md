@@ -1237,12 +1237,15 @@ A matching held source version answers Unchanged. Accepted reads stream Started,
 Snapshot, Unchanged or Stored frames, then End. Snapshot uses gossip MeshTopology's shape and
 chunking; a mesh is installed atomically only after every chunk of the same snapshot_id,
 publisher and topology_version is present. End.meshes counts each answered mesh once.
-A mesh with no published snapshot is absent unless the answerer's Atlas supplies it (Stored).
-NotReady means the RPC door is unopened, with the cause named. No answer reads the store
-(Q227). A mesh neither held nor in the Atlas answers UnknownMesh.
+A mesh with no published snapshot is absent unless the answerer writes its records or holds its
+births (Stored). NotReady means the RPC door is unopened, with the cause named. No answer reads the
+store on the reader's behalf at its start (Q227); OwnRow is served from the selected lifecycle and
+property records (Q237). A mesh neither held, written nor in the answerer's durable topology answers
+UnknownMesh.
 
 Stored is reply position 11; REPLY_VARIANTS is 15. Stored is data-class, built from the
-answerer's Atlas records and the births its view holds, never from the store,
+records the answerer writes and the births its view holds (its durable topology included), never
+from the store,
 and carries up to 24 nodes per frame; End.meshes counts a stored mesh once across frames.
 It serves only a mesh the maker holds no snapshot of, never the maker's own mesh. A held
 snapshot wins. The reader never installs Stored as topology: it uses the map only to reach
