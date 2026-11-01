@@ -504,8 +504,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         );
         assert_eq!(*provider.spawn_calls.lock().unwrap(), 1);
 
-        let written_row = store
-            .node_at(&new_path)
+        let written_row = rdm_admin::node_rows::record_at(&*store, &new_path)
             .await
             .unwrap()
             .expect("node row written at claim");

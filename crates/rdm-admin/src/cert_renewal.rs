@@ -915,9 +915,6 @@ mod tests {
         async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.inner.node(node_id).await
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.node_at(name).await
-        }
         async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.inner.nodes(mesh).await
         }
@@ -926,15 +923,6 @@ mod tests {
                 return Err(crate::storage_error::StorageError::Io { file: format!("nodes/{}/records/{}", row.mesh, row.node_id), reason: "the write was lost".into() });
             }
             self.inner.put_node(row).await
-        }
-        async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.index_path(name, node_id).await
-        }
-        async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.index_tags(mesh, node_id, leaving, arriving).await
-        }
-        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
-            self.inner.tagged(label).await
         }
         async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
             self.inner.name_claim(name).await

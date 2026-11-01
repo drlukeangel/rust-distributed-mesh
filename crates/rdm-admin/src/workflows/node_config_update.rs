@@ -7,7 +7,6 @@ pub use crate::node_config::{NodeConfigs, NodeConfigsSlot};
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::collections::BTreeSet;
     use crate::model::{IncarnationId, NodeId, PathName};
     use crate::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
 
@@ -27,9 +26,6 @@ pub(crate) mod tests {
         async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, crate::storage_error::StorageError> {
             self.0.node(node_id).await
         }
-        async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, crate::storage_error::StorageError> {
-            self.0.node_at(name).await
-        }
         async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, crate::storage_error::StorageError> {
             self.0.nodes(mesh).await
         }
@@ -38,15 +34,6 @@ pub(crate) mod tests {
                 file: format!("nodes/records/{}", row.node_id),
                 reason: "simulated disk refusal".into(),
             })
-        }
-        async fn index_path(&self, name: &PathName, node_id: &NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.0.index_path(name, node_id).await
-        }
-        async fn index_tags(&self, mesh: &str, node_id: &NodeId, leaving: &BTreeSet<String>, arriving: &BTreeSet<String>) -> Result<(), crate::storage_error::StorageError> {
-            self.0.index_tags(mesh, node_id, leaving, arriving).await
-        }
-        async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, crate::storage_error::StorageError> {
-            self.0.tagged(label).await
         }
         async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, crate::storage_error::StorageError> {
             self.0.name_claim(name).await

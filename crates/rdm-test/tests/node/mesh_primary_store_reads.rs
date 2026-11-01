@@ -80,10 +80,6 @@ impl NodesStorage for Recorded {
         self.calls.push("node", node_id.to_string());
         self.inner.node(node_id).await
     }
-    async fn node_at(&self, name: &rdm_core::PathName) -> Result<Option<NodeRow>, StorageError> {
-        self.calls.push("node_at", name);
-        self.inner.node_at(name).await
-    }
     async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
         self.calls.push("nodes", mesh);
         self.inner.nodes(mesh).await
@@ -91,18 +87,6 @@ impl NodesStorage for Recorded {
     async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
         self.calls.push("put_node", row.node_id.to_string());
         self.inner.put_node(row).await
-    }
-    async fn index_path(&self, name: &rdm_core::PathName, node_id: &NodeId) -> Result<(), StorageError> {
-        self.calls.push("index_path", node_id.to_string());
-        self.inner.index_path(name, node_id).await
-    }
-    async fn index_tags(&self, mesh: &str, node_id: &NodeId, leaving: &BTreeSet<String>, arriving: &BTreeSet<String>) -> Result<(), StorageError> {
-        self.calls.push("index_tags", node_id.to_string());
-        self.inner.index_tags(mesh, node_id, leaving, arriving).await
-    }
-    async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError> {
-        self.calls.push("tagged", label);
-        self.inner.tagged(label).await
     }
     async fn name_claim(&self, name: &rdm_core::PathName) -> Result<Option<NodeId>, StorageError> {
         self.calls.push("name_claim", name);

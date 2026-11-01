@@ -2035,7 +2035,7 @@ mod tests {
         row.birth_mut(&from, &created);
         row.allocated = Some(crate::storage::Allocation { predecessor: None, build_id: crate::build::BuildId::mint(), operation: rdm_core::OperationId::new("node.create", rdm_core::OperationSubject::Location(created.clone())), incarnation: from.clone(), deployment_id: deployment.clone() });
         rows.put_node(&row).await.unwrap();
-        rows.index_path(&created.renamed().unwrap(), &node_id).await.unwrap();
+        rows.claim_node_name(&created.renamed().unwrap(), &node_id).await.unwrap().unwrap();
         (root, rows, created, node_id, from)
     }
 

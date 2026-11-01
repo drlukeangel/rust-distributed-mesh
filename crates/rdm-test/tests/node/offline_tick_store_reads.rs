@@ -69,23 +69,11 @@ impl NodesStorage for Recorded {
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
         self.inner.node(node_id).await
     }
-    async fn node_at(&self, name: &rdm_core::PathName) -> Result<Option<NodeRow>, StorageError> {
-        self.inner.node_at(name).await
-    }
     async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
         self.inner.nodes(mesh).await
     }
     async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
         self.inner.put_node(row).await
-    }
-    async fn index_path(&self, name: &rdm_core::PathName, node_id: &NodeId) -> Result<(), StorageError> {
-        self.inner.index_path(name, node_id).await
-    }
-    async fn index_tags(&self, mesh: &str, node_id: &NodeId, leaving: &BTreeSet<String>, arriving: &BTreeSet<String>) -> Result<(), StorageError> {
-        self.inner.index_tags(mesh, node_id, leaving, arriving).await
-    }
-    async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError> {
-        self.inner.tagged(label).await
     }
     async fn name_claim(&self, name: &rdm_core::PathName) -> Result<Option<NodeId>, StorageError> {
         self.inner.name_claim(name).await

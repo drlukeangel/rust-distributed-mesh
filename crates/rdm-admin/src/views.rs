@@ -238,21 +238,6 @@ pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, records
     nodes_answer_with_status(me, view, loads, records, &Ok(BTreeMap::new()), filter, &|_| {}, None).await
 }
 
-/// Whether `n` matches `filter` with the labels it holds in the active tags index (lifecycles/
-/// node-replace.md "Inherited": "The successor's tag-index entries use its own id. Retained predecessor
-/// labels are removed from the active index, not erased from its row"): a record marked `inherited_by`
-/// a successor, the retained `<name>-old` row, carries no active label, so a `tags` pair never names it;
-/// the row it is answered with keeps its labels. Every other pair is matched on the row as answered.
-fn matches_active(filter: &Filter, records: &Atlas, n: &NodeView) -> bool {
-    let names_tags = filter.pairs.iter().any(|(p, _)| p == "tags" || p == "!tags");
-    if names_tags && !n.tags.is_empty() && records.record(&n.node_id).is_some_and(|r| r.inherited_by.is_some()) {
-        let mut active = n.clone();
-        active.tags.clear();
-        return filter.matches(&active);
-    }
-    filter.matches(n)
-}
-
 /// [`nodes_answer`] with `planned`, the current Build's paths, naming where a birth the view no
 /// longer holds is answered from its record (R-FM1, R-FM2), and `amend`, what the answering admin
 /// adds to each row before it is matched (the app types its own channels hold).
@@ -312,7 +297,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
                 }
             }
         }
-        nodes.retain(|n| matches_active(filter, records, n));
+        nodes.retain(|n| filter.matches(n));
         let count = nodes.len();
         span.record("nodes", count as u64);
         StatusReply::Nodes { nodes }
@@ -484,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn plural_reads_match_atlas_records_skip_inherited_predecessor_tags_and_emit_serve_and_reject_spans() {
+    fn plural_reads_match_atlas_records_match_each_nodes_own_tags_and_emit_serve_and_reject_spans() {
         // docs/architecture/query.md:11,52 — "A caller outside the node sends `fabric.get`,
         // `mesh.get` and `node.get` to the fabric-primary, which answers from its atlas:
         // every mesh's node records, held in memory... Property: any public field of the row
@@ -562,7 +547,7 @@ mod tests {
             succ_row.births.push(succ_birth);
             atlas.write_record(&succ_row);
 
-            // Retained predecessor row keeps its tags on the row, but `inherited_by` removes them from active tags matching.
+            // Retained predecessor row keeps its tags at its own id (node-replace.md:41): `inherited_by` hides none of them.
             let mut pred_row = NodeRow::new(rpc_pred_path.clone(), "mesh1", NodeKind::RpcNode, rpc_pred_id.clone(), ModelNodeStatus::Ready);
             pred_row.tags = BTreeSet::from(["tier-a".to_string()]);
             pred_row.inherited_by = Some(rpc_succ_id.clone());
@@ -571,14 +556,15 @@ mod tests {
 
             let loads: Loads = Arc::new(BTreeMap::new);
 
-            // 1. Tag query matches only the active successor, not the retained predecessor whose tags were inherited.
+            // 1. A tag query reads each node's own labels: the successor and the retained predecessor both carry tier-a.
             let tag_reply = nodes_answer(&me, &view, &loads, &atlas, &Filter::new().eq("tags", ["tier-a"])).await;
             match tag_reply {
                 StatusReply::Nodes { nodes } => {
-                    assert_eq!(nodes.len(), 1);
-                    assert_eq!(nodes[0].node_id, rpc_succ_id);
-                    assert_eq!(nodes[0].config.get("region").map(String::as_str), Some("eu-west"));
-                    assert_eq!(nodes[0].cert.as_ref().map(|c| c.expires_at), Some(9_000));
+                    assert_eq!(nodes.len(), 2);
+                    let succ = nodes.iter().find(|n| n.node_id == rpc_succ_id).expect("the successor carries tier-a");
+                    assert!(nodes.iter().any(|n| n.node_id == rpc_pred_id), "the retained predecessor's own tier-a stays at its id");
+                    assert_eq!(succ.config.get("region").map(String::as_str), Some("eu-west"));
+                    assert_eq!(succ.cert.as_ref().map(|c| c.expires_at), Some(9_000));
                 }
                 other => panic!("expected StatusReply::Nodes, got {other:?}"),
             }

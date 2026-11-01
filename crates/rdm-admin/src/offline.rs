@@ -1934,25 +1934,12 @@ pub(crate) mod tests {
             self.read();
             self.inner.node(node_id).await
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.read();
-            self.inner.node_at(name).await
-        }
         async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.read();
             self.inner.nodes(mesh).await
         }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
-        }
-        async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.index_path(name, node_id).await
-        }
-        async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.index_tags(mesh, node_id, leaving, arriving).await
-        }
-        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
-            self.inner.tagged(label).await
         }
         async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
             self.inner.name_claim(name).await
@@ -1972,7 +1959,7 @@ pub(crate) mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn the_silence_mark_is_written_on_the_whole_record_held_with_no_read_first() {
-        use crate::model::{IncarnationId, Node, NodeStatus, PathName};
+        use crate::model::{IncarnationId, Node, NodeStatus};
         use crate::storage::NodesStorage;
         let mut held = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         held.incarnation_id = Some(IncarnationId::mint());
@@ -2014,23 +2001,11 @@ pub(crate) mod tests {
         async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.inner.node(node_id).await
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.node_at(name).await
-        }
         async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.inner.nodes(mesh).await
         }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io { file: format!("nodes/{}/records/{}", row.mesh, row.node_id), reason: "No space left on device (os error 28)".into() })
-        }
-        async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.index_path(name, node_id).await
-        }
-        async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.index_tags(mesh, node_id, leaving, arriving).await
-        }
-        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
-            self.inner.tagged(label).await
         }
         async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
             self.inner.name_claim(name).await
@@ -2054,7 +2029,7 @@ pub(crate) mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_refused_silence_status_write_is_spanned_with_the_birth_the_status_and_the_stores_cause() {
-        use crate::model::{IncarnationId, Node, NodeStatus, PathName};
+        use crate::model::{IncarnationId, Node, NodeStatus};
         use crate::storage::NodesStorage;
         let mut held = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         held.incarnation_id = Some(IncarnationId::mint());

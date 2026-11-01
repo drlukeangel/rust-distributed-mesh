@@ -1,6 +1,6 @@
 //! `nodes.storage`'s rows (storage-whole-records.md, "The objects"): each node's record at its node id,
-//! written whole by its mesh-primary, every birth's runtime row and the tags index's changes, and the
-//! point reads of a node's record by its id or by its `(path, name)` (query.md §1, Q237). The node-admin
+//! written whole by its mesh-primary, and every birth's runtime row, and the point reads of a node's
+//! record by its id or by its `(path, name)` through the name claim (query.md §1, Q237). The node-admin
 //! writes them (`rdm_admin::storage::NodesStorage`); any node reads another node's row here, the store
 //! opened on its first read and never at its start, join or create (Q227).
 
@@ -196,10 +196,8 @@ impl RuntimeRow {
 /// written whole by its writer, the node's mesh-primary (the fabric-primary only as the acting primary
 /// of a mesh with none, `rdm_admin::node_rows`), from the copy it caches: its `(path, name)`, status, config,
 /// tags and executable, and the facts of its current birth and of the one a restart replaced. A
-/// `Deleted` record stands and keeps the config for the next node created at the same `(path, name)`.
-/// Beside it: the node's name claim (`NodesStorage::claim_node_name`), the `(path, name)` index
-/// ([`NodeRowsStorage::node_at`]) and the tags index (`NodesStorage::tagged`), whose entries RDM writes
-/// from the moves it computes.
+/// `Deleted` record stands. Beside it: the node's name claim (`NodesStorage::claim_node_name`), through
+/// which a `(path, name)` resolves to the node holding it ([`NodeRowsStorage::node_at`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRow {
     /// The explicitly declared owning mesh.
@@ -214,9 +212,8 @@ pub struct NodeRow {
     pub status: crate::model::NodeStatus,
     /// The application's own key/values on the node; RDM never reads it.
     pub config: BTreeMap<String, String>,
-    /// The node's tag labels (R-TG1), set through `node.tag.create` / `node.tag.delete`, each one a
-    /// row of the tags index while the row is live. A `Deleted` row keeps them, as it keeps the config;
-    /// a row written before tags existed carries none.
+    /// The node's tag labels (R-TG1), set through `node.tag.create` / `node.tag.delete`. A `Deleted`
+    /// row keeps them, as it keeps the config; a row written before tags existed carries none.
     #[serde(default)]
     pub tags: BTreeSet<String>,
     /// What the create that claimed the name allocated (lifecycles/node-create.md step 1: the claim
@@ -244,13 +241,10 @@ pub struct NodeRow {
     /// most recent claim release; cleared only when the replacement rolls back to this pair.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement_from: Option<PathName>,
-    /// The successor that took this row's config and tags at a replace (node-replace.md step 3 and
-    /// Inherited: the successor's row "inherits config and tags from the predecessor row ... whose
-    /// labels leave the active tags index"), written on the retained predecessor's row once the
-    /// successor's claim stands at the name. The row keeps its tags, as a `Deleted` row does, and the
-    /// tags index holds none of them: every label leaves with that write and none arrives with a later
-    /// write at the same key. A rename of the row writes none: the node takes a name again
-    /// (node-replace.md "Rollback" step 3). A row no successor marked carries none.
+    /// The successor whose claim at this row's original pair named it as its predecessor (node-replace.md
+    /// step 3), written on the retained predecessor's row once the successor's claim stands at the name.
+    /// A rename of the row writes none: the node takes a name again (node-replace.md "Rollback" step 3).
+    /// A row no successor marked carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_by: Option<NodeId>,
     /// Immutable application declaration, scoped to the exact incarnation that reported it.
@@ -430,31 +424,18 @@ impl NodeRow {
         };
         &mut self.births[at]
     }
-
-    /// The labels the tags index holds for this node once this record is written over `previous`,
-    /// the node's record as its writer held it before, split into (leaving, arriving): a label the
-    /// previous record carried and this one does not, or every label of a `Deleted` record or of a
-    /// record a successor inherited ([`Self::inherited_by`]), leaves; every label of any other live
-    /// record arrives.
-    pub fn tag_moves(&self, previous: Option<&NodeRow>) -> (BTreeSet<String>, BTreeSet<String>) {
-        let held: BTreeSet<String> = previous.filter(|p| p.node_id == self.node_id).map(|p| p.tags.clone()).unwrap_or_default();
-        if self.status == crate::model::NodeStatus::Deleted || self.inherited_by.is_some() {
-            return (held.union(&self.tags).cloned().collect(), BTreeSet::new());
-        }
-        (held.difference(&self.tags).cloned().collect(), self.tags.clone())
-    }
 }
 
-/// The point reads of the nodes storage: a node's record by its id or by its `(path, name)`, the same
-/// answers the node-admin's `NodesStorage` gives.
+/// The point reads of the nodes storage: a node's record by its id or by its `(path, name)`.
 #[async_trait]
 pub trait NodeRowsStorage: Send + Sync {
     /// The record of `node_id`: a point read of its key, a `Withdrawn` one included; `None` when none
     /// was ever written.
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError>;
-    /// The record the `(path, name)` index names at `name`: the node whose record was last written at it,
-    /// a `Deleted` one included; `None` when no record was ever written there, or when that record is
-    /// `Withdrawn`.
+    /// The record of the node whose name claim holds `name`, while that record stands at `name`: the
+    /// claim names the node, never the record last written at a location. `None` when no claim holds
+    /// the name (a `Deleted` record released it) or the claimant's record stands at another name; a
+    /// claim whose node has no record is unavailable, named.
     async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError>;
 }
 
@@ -466,64 +447,85 @@ pub const RECORD_KIND: &str = "node-record";
 pub const RUNTIME_FORMAT: &str = "node-runtime/1";
 /// The kind of [`RUNTIME_FORMAT`].
 pub const RUNTIME_KIND: &str = "node-runtime";
-/// A change of a node's row of the tags index in `nodes.jsonl`, at `<node id>/<label>` (R-TG1).
-pub const TAG_FORMAT: &str = "node-tag/1";
-/// The kind of [`TAG_FORMAT`].
-pub const TAG_KIND: &str = "node-tag";
+/// The format of a node's name claim, the lock `locks/name/<composite location index>` of the store
+/// root (R-SR5).
+pub const NAME_CLAIM_FORMAT: &str = "node-name/1";
 
-/// One change of the tags index: the node carries the label from this line on, or (`carried` false)
-/// it no longer does.
+/// A node's name claim: the node it names at its separate path and name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TagRow {
-    /// The label.
-    pub label: String,
-    /// The node.
+pub struct NameClaim {
+    /// The claimed path.
+    pub path: String,
+    /// The claimed name within the path.
+    pub name: String,
+    /// The node the claim names.
     pub node_id: NodeId,
-    /// Whether the node carries the label from this line on.
-    pub carried: bool,
+}
+
+/// The node claim a name lock's content holds at `location`, refused by name when it is not a
+/// [`NAME_CLAIM_FORMAT`] claim of exactly that path and name.
+pub fn read_name_claim(file: &std::path::Path, bytes: &[u8], location: &PathName) -> Result<NameClaim, StorageError> {
+    #[derive(Deserialize)]
+    struct Content {
+        format: String,
+        record: NameClaim,
+    }
+    let held: Content = serde_json::from_slice(bytes).map_err(|e| StorageError::Unrecognised { file: file.display().to_string(), reason: e.to_string() })?;
+    if held.format != NAME_CLAIM_FORMAT {
+        return Err(StorageError::Unrecognised { file: file.display().to_string(), reason: format!("a lock in format {:?}, this build reads {NAME_CLAIM_FORMAT:?} here", held.format) });
+    }
+    if held.record.path != location.path || held.record.name != location.name {
+        return Err(StorageError::Unrecognised { file: file.display().to_string(), reason: format!("location index payload mismatch: requested path {:?}, name {:?}; stored path {:?}, name {:?}", location.path, location.name, held.record.path, held.record.name) });
+    }
+    Ok(held.record)
+}
+
+/// The record of the node `claimant` names at `name` (the claim's node), while it stands at `name`;
+/// a claimant with no record is unavailable, named (`file` the claim's lock).
+pub async fn claimed_record(rows: &(impl NodeRowsStorage + ?Sized), file: &str, name: &PathName, claimant: Option<NodeId>) -> Result<Option<NodeRow>, StorageError> {
+    let Some(node_id) = claimant else { return Ok(None) };
+    match rows.node(&node_id).await? {
+        Some(row) => Ok(Some(row).filter(|r| r.name == *name)),
+        None => Err(StorageError::Io { file: file.to_string(), reason: format!("the name claim at path {:?}, name {:?} names node {node_id}, whose record is unavailable", name.path, name.name) }),
+    }
 }
 
 #[cfg(feature = "file-backend")]
 /// The formats `nodes.jsonl` holds: every reader of the file folds all of them.
 pub fn formats() -> crate::store_log::Formats {
-    crate::store_log::Formats::new().with::<NodeRow>(RECORD_FORMAT).with::<RuntimeRow>(RUNTIME_FORMAT).with::<TagRow>(TAG_FORMAT)
+    crate::store_log::Formats::new().with::<NodeRow>(RECORD_FORMAT).with::<RuntimeRow>(RUNTIME_FORMAT)
 }
-
-#[cfg(feature = "file-backend")]
-/// The `(path, name)` index, folded from `nodes.jsonl`: each name's node is the node whose record line
-/// was last appended at it, a `Deleted` or `Withdrawn` one included.
-type PathIndex = std::sync::Arc<std::sync::Mutex<BTreeMap<PathName, NodeId>>>;
 
 #[cfg(feature = "file-backend")]
 /// The nodes' records of the fabric's store root's `nodes.jsonl` (R-SR1), folded from byte 0 at the
 /// first read or append, never at the open (rdm#89, Q227), and from the consumed offset at each read
-/// after it; the `(path, name)` index is the fold of the record lines.
+/// after it; a `(path, name)` resolves through the root's name claims (R-SR5).
 #[derive(Debug, Clone)]
 pub struct FileNodeRows {
     records: crate::store_log::StoreLog,
-    paths: PathIndex,
+    locks: crate::store_log::StoreLocks,
 }
 
 #[cfg(feature = "file-backend")]
 impl FileNodeRows {
     /// Open the store on the fabric's store `root`, reading none of it: its first read folds it.
     pub async fn open(root: &crate::store_root::StoreRoot) -> Result<Self, StorageError> {
-        let paths: PathIndex = Default::default();
-        let index = paths.clone();
-        let observe: crate::store_log::Observer = std::sync::Arc::new(move |l: &crate::store_log::Line| {
-            if l.kind() == RECORD_KIND {
-                if let Ok(row) = NodeRow::deserialize(&l.record) {
-                    index.lock().unwrap_or_else(|e| e.into_inner()).insert(row.name, row.node_id);
-                }
-            }
-        });
-        let records = crate::store_log::StoreLog::open_observed_on_first_read(&root.dir().join(crate::store_root::NODES_FILE), formats(), observe).await?;
-        Ok(Self { records, paths })
+        let records = crate::store_log::StoreLog::open_on_first_read(&root.dir().join(crate::store_root::NODES_FILE), formats()).await?;
+        Ok(Self { records, locks: crate::store_log::StoreLocks::at(root.dir(), &crate::store_log::LogWriter::mint()) })
     }
 
     /// The store's file, read and appended to.
     pub fn log(&self) -> &crate::store_log::StoreLog {
         &self.records
+    }
+
+    /// The node whose name claim holds `name`, if one does.
+    pub async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, StorageError> {
+        let key = name.physical_index_key();
+        match self.locks.read(crate::store_log::LockKind::Name, &key).await? {
+            Some(bytes) => Ok(Some(read_name_claim(&self.locks.path(crate::store_log::LockKind::Name, &key), &bytes, name)?.node_id)),
+            None => Ok(None),
+        }
     }
 }
 
@@ -534,9 +536,8 @@ impl NodeRowsStorage for FileNodeRows {
         self.records.latest(RECORD_KIND, node_id.as_str()).await?.map(|l| l.decode(self.records.path())).transpose()
     }
     async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
-        self.records.advance().await?;
-        let Some(node_id) = self.paths.lock().unwrap_or_else(|e| e.into_inner()).get(name).cloned() else { return Ok(None) };
-        Ok(self.node(&node_id).await?.filter(|r| r.status != crate::model::NodeStatus::Withdrawn))
+        let file = self.locks.path(crate::store_log::LockKind::Name, &name.physical_index_key()).display().to_string();
+        claimed_record(self, &file, name, self.name_claim(name).await?).await
     }
 }
 
@@ -608,11 +609,9 @@ impl IdOrName {
 mod tests {
     use super::*;
 
-    /// CONTRACT: docs/architecture/node-identity-and-state.md:149
-    /// "node.delete releases the node's identity and name; its row stays. The node's mesh-primary writes
-    /// the row with status deleted, keeping the record and its config; the deleted row releases..."
+    /// CONTRACT: a birth's declared state is the greatest it declared in its current cycle.
     #[test]
-    fn declared_state_and_tag_moves_compute_cycle_state_and_tag_diffs() {
+    fn declared_state_is_the_greatest_declared() {
         let inc = IncarnationId::mint();
         let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let mut birth = BirthFacts::new(inc, name.clone());
@@ -622,26 +621,5 @@ mod tests {
         assert_eq!(birth.declared_state(), Some(NodeState::Ready));
         birth.declared.insert(NodeState::Stopped);
         assert_eq!(birth.declared_state(), Some(NodeState::Stopped));
-
-        let node_id = NodeId::mint();
-        let mut prev = NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, node_id.clone(), crate::model::NodeStatus::Ready);
-        prev.tags = BTreeSet::from(["role-rpc".to_string(), "zone-a".to_string()]);
-
-        let mut next = prev.clone();
-        next.tags = BTreeSet::from(["role-rpc".to_string(), "zone-b".to_string()]);
-        let (leaving, arriving) = next.tag_moves(Some(&prev));
-        assert_eq!(leaving, BTreeSet::from(["zone-a".to_string()]));
-        assert_eq!(arriving, BTreeSet::from(["role-rpc".to_string(), "zone-b".to_string()]));
-
-        // A Deleted record or a record with `inherited_by` removes all tags and arrives none.
-        let mut deleted = next.clone();
-        deleted.status = crate::model::NodeStatus::Deleted;
-        let (del_leaving, del_arriving) = deleted.tag_moves(Some(&prev));
-        assert_eq!(
-            del_leaving,
-            BTreeSet::from(["role-rpc".to_string(), "zone-a".to_string(), "zone-b".to_string()])
-        );
-        assert!(del_arriving.is_empty());
     }
 }
-

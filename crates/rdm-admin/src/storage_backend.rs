@@ -637,10 +637,6 @@ macro_rules! nodes_through {
                 let r = self.0.current.read();
                 $nodes(&r.stores().boundaries)?.node(node_id).await
             }
-            async fn node_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, StorageError> {
-                let r = self.0.current.read();
-                $nodes(&r.stores().boundaries)?.node_at(name).await
-            }
             async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, StorageError> {
                 let r = self.0.current.read();
                 $nodes(&r.stores().boundaries)?.nodes(mesh).await
@@ -648,18 +644,6 @@ macro_rules! nodes_through {
             async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), StorageError> {
                 let w = self.0.current.write();
                 $nodes(&w.boundaries)?.put_node(row).await
-            }
-            async fn index_path(&self, name: &PathName, node_id: &crate::model::NodeId) -> Result<(), StorageError> {
-                let w = self.0.current.write();
-                $nodes(&w.boundaries)?.index_path(name, node_id).await
-            }
-            async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), StorageError> {
-                let w = self.0.current.write();
-                $nodes(&w.boundaries)?.index_tags(mesh, node_id, leaving, arriving).await
-            }
-            async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, StorageError> {
-                let r = self.0.current.read();
-                $nodes(&r.stores().boundaries)?.tagged(label).await
             }
             async fn name_claim(&self, name: &PathName) -> Result<Option<crate::model::NodeId>, StorageError> {
                 let r = self.0.current.read();

@@ -2762,7 +2762,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         mesh_left_rows(Some(&rows), &mesh_storage, &Default::default(), &declared, fp.node_id.as_str(), &key(2), "mesh2", &all.receipts)
             .await
             .expect("mesh row Dead is written");
-        let survivor_row = storage.record_at(&survivor_node.name).await.unwrap().expect("mesh-primary row exists");
+        let survivor_row = rdm_admin::storage::NodesStorage::node(&*storage, &survivor_node.node_id).await.unwrap().expect("mesh-primary row exists");
         let mesh_dead = mesh_storage.mesh(&mesh_id).await.unwrap().is_some_and(|r| r.states.contains(&MeshState::Dead));
         (
             reached_refusal,

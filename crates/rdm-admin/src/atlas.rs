@@ -914,9 +914,9 @@ impl Atlas {
     /// on it. `None` when no node row is written at the path: the gossip view never stands in for one
     /// (Q197).
     pub(crate) async fn row(&self, path: &PathName, rows: &dyn NodesStorage, builds: &dyn BuildStateAdapter, observed: &Topology) -> Result<Option<AtlasRow>, String> {
-        // The path's index entry still names a node a rename moved off it (its claim released, the
-        // entry left): that row names another path, so it is not the birth at this one.
-        let row = rows.node_at(path).await.map_err(|e| format!("nodes.storage: the node row at path {:?}, name {:?} could not be read: {e}", path.path, path.name))?.filter(|r| r.name == *path);
+        // The path resolves through its name claim to the claimant's record, never to the record last
+        // written at it.
+        let row = crate::node_rows::record_at(rows, path).await.map_err(|e| format!("nodes.storage: the node row at path {:?}, name {:?} could not be read: {e}", path.path, path.name))?;
         // A version written by a birth this atlas holds deleted is ignored where the atlas holds a record
         // of the path (build.md: "a deleted birth whose writes every reader refuses"; Q109), as `fill`
         // ignores it: a deleted birth still running writes its own row at the path, and the record of
@@ -1269,7 +1269,8 @@ mod tests {
         let store = MemoryNodesStorage::default();
         store.put_node(&new).await.unwrap();
         store.put_node(&old).await.unwrap();
-        store.index_path(&at, &old.node_id).await.unwrap();
+        // The re-creation's claim holds the path: the deleted birth's write there does not take it.
+        store.claim_node_name(&at, &new.node_id).await.unwrap().unwrap();
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         use crate::model::{Fabric, FabricId, ProviderKind, ScopeStatus};
         let observed = crate::topology::Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: Vec::new(), nodes: Vec::new() };
@@ -1278,7 +1279,7 @@ mod tests {
         // A row its writer wrote while live is answered as read.
         let (other, _) = record(path("mesh2.rpc", "1"), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
         store.put_node(&other).await.unwrap();
-        store.index_path(&other.name, &other.node_id).await.unwrap();
+        store.claim_node_name(&other.name, &other.node_id).await.unwrap().unwrap();
         assert_eq!(atlas.row(&other.name, &store, &builds, &observed).await.unwrap().map(|r| r.node_id), Some(other.node_id.clone()));
     }
 
@@ -1463,9 +1464,9 @@ mod tests {
 
             let store = MemoryNodesStorage::default();
             store.put_node(&row1).await.unwrap();
-            store.index_path(&row1.name, &row1.node_id).await.unwrap();
+            store.claim_node_name(&row1.name, &row1.node_id).await.unwrap().unwrap();
             store.put_node(&row2).await.unwrap();
-            store.index_path(&row2.name, &row2.node_id).await.unwrap();
+            store.claim_node_name(&row2.name, &row2.node_id).await.unwrap().unwrap();
             let builds = MemoryBuildStateAdapter::new();
 
             let mut node1 = Node::allocated(path("mesh1.rpc", "1"), "mesh1", rdm_core::NodeKind::RpcNode);

@@ -83,7 +83,7 @@ async fn node_get_answers_data_dir_facts_from_the_atlas_at_their_path_name() {
         storage.clone(),
     );
     // mesh1.rpc.2's predecessor lost its data dir, was deleted by recovery, and recovery's claim over
-    // the Deleted row links predecessor and inherits config and tags; mesh1.rpc.3 was deleted by its
+    // the exited birth its provenance names links predecessor and inherits config and tags; mesh1.rpc.3 was deleted by its
     // recovery and is held with its data dir unreadable.
     let lost = DataDirLost { path: "/data/mesh1.rpc.2".into(), since: 1_700 };
     let (exited_id, exited_birth) = (NodeId::mint(), IncarnationId::mint());
@@ -96,7 +96,9 @@ async fn node_get_answers_data_dir_facts_from_the_atlas_at_their_path_name() {
     exited.birth_mut(&exited_birth, &path("mesh1.rpc", "2")).data_dir_lost = Some(lost.clone());
     status.write_record(&exited).await.unwrap();
     rows.deleted_unreached(&exited_node, &rdm_core::OperationId::node("node.delete", &exited_id)).await.unwrap();
-    let claimed = rows.claim(&path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, &recovered.node_id, &rdm_core::OperationId::location("node.create", &recovered.name), None, None, rdm_admin::node_rows::ClaimFor::Recovery).await.unwrap();
+    // The recovery names the exited birth by its admitted provenance, never by the location.
+    let recovery = rdm_admin::storage::Allocation { predecessor: Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }), build_id: rdm_core::BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &recovered.name), incarnation: recovered.incarnation_id.clone().unwrap(), deployment_id: rdm_admin::model::DeploymentId::mint() };
+    let claimed = rows.claim(&path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, &recovered.node_id, &recovery.operation, Some(&recovery), None, rdm_admin::node_rows::ClaimFor::Recovery).await.unwrap();
     match claimed {
         rdm_admin::node_rows::Claimed::Written { row, seeded_from } => {
             assert_eq!(seeded_from, Some(exited_id.clone()));
@@ -203,18 +205,15 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
     }
 }
 
-/// CONTRACT (lifecycles/node-replace.md "Inherited": "The successor's tag-index entries use its own id.
-/// Retained predecessor labels are removed from the active index, not erased from its row"; step 3: the
-/// retained `<name>-old` row "whose labels leave the active tags index"; rollback step 3: the
-/// predecessor's "tag-index entries restored under its" id; query.md §1: a set field (`tags`) matches
-/// when it contains the value): the successor at `mesh1.rpc.1` and the retained predecessor at
-/// `(mesh1.rpc, 1-old)`, marked `inherited_by` the successor, both carry `rabbit` on their rows.
-/// `node.get [tags: rabbit]` names the successor alone, while `node.get [mesh: mesh1]` answers the
-/// retained row with its `rabbit` kept. Once the mark is cleared (the predecessor takes its name back at a
-/// rollback), `[tags: rabbit]` names it again. Must NOT happen: the retained predecessor named under its
-/// label, or its row's labels erased from what `node.get` answers.
+/// CONTRACT (lifecycles/node-replace.md:41: "The predecessor's tags remain at its own ID; resolving the
+/// current pair selects the successor, not a label index or predecessor"; query.md §1: a set field
+/// (`tags`) matches when it contains the value): the successor at `mesh1.rpc.1` and the retained
+/// predecessor at `(mesh1.rpc, 1-old)`, marked `inherited_by` the successor, both carry `rabbit`.
+/// `node.get [tags: rabbit]` reads each node's own labels and names both; the current pair
+/// `[path: mesh1.rpc, name: 1]` selects the successor alone. Must NOT happen: a label index or the
+/// inherited mark hiding the predecessor's own labels, or the current pair resolving to the predecessor.
 #[tokio::test]
-async fn a_retained_predecessors_labels_leave_the_tags_match_and_stay_on_its_row() {
+async fn a_retained_predecessors_labels_stay_at_its_own_id_and_the_current_pair_selects_the_successor() {
     let (admin, successor, predecessor) = (node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), node(rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
     let view = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
@@ -222,36 +221,25 @@ async fn a_retained_predecessors_labels_leave_the_tags_match_and_stay_on_its_row
         nodes: vec![admin.clone(), successor.clone(), predecessor.clone()],
     };
     let rabbit: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
-    let write = |inherited: bool| {
-        let (successor, predecessor, admin, rabbit) = (&successor, &predecessor, &admin, &rabbit);
-        async move {
-            let status = MemoryNodesStorage::default();
-            status.write_record(&NodeRow::new(admin.name.clone(), admin.mesh.clone(), admin.kind, admin.node_id.clone(), NodeStatus::Ready)).await.unwrap();
-            let mut s = NodeRow::new(successor.name.clone(), successor.mesh.clone(), successor.kind, successor.node_id.clone(), NodeStatus::Ready);
-            s.tags = rabbit.clone();
-            status.write_record(&s).await.unwrap();
-            let mut p = NodeRow::new(predecessor.name.clone(), predecessor.mesh.clone(), predecessor.kind, predecessor.node_id.clone(), NodeStatus::Ready);
-            p.tags = rabbit.clone();
-            p.inherited_by = inherited.then(|| successor.node_id.clone());
-            status.write_record(&p).await.unwrap();
-            status
-        }
-    };
+    let status = MemoryNodesStorage::default();
+    status.write_record(&NodeRow::new(admin.name.clone(), admin.mesh.clone(), admin.kind, admin.node_id.clone(), NodeStatus::Ready)).await.unwrap();
+    let mut s = NodeRow::new(successor.name.clone(), successor.mesh.clone(), successor.kind, successor.node_id.clone(), NodeStatus::Ready);
+    s.tags = rabbit.clone();
+    status.write_record(&s).await.unwrap();
+    let mut p = NodeRow::new(predecessor.name.clone(), predecessor.mesh.clone(), predecessor.kind, predecessor.node_id.clone(), NodeStatus::Ready);
+    p.tags = rabbit.clone();
+    p.inherited_by = Some(successor.node_id.clone());
+    status.write_record(&p).await.unwrap();
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
-    let ids = |nodes: Vec<rdm_core::views::NodeView>| nodes.into_iter().map(|n| n.node_id).collect::<Vec<_>>();
-
-    let marked = write(true).await;
-    assert_eq!(ids(answer(&view, &marked, &planned, Filter::new().eq("tags", ["rabbit"])).await), [successor.node_id.clone()], "[tags: rabbit] names the successor, not the retained predecessor");
-    let listed = answer(&view, &marked, &planned, Filter::new().eq("mesh", ["mesh1"])).await;
-    let retained = listed.iter().find(|n| n.node_id == predecessor.node_id).unwrap_or_else(|| panic!("the retained predecessor is answered at (mesh1.rpc, 1-old): {listed:#?}"));
-    assert_eq!(retained.tags, rabbit, "the retained row keeps its labels: {retained:?}");
-
-    let restored = write(false).await;
-    let mut both = ids(answer(&view, &restored, &planned, Filter::new().eq("tags", ["rabbit"])).await);
+    let ids = |nodes: Vec<rdm_core::views::NodeView>| {
+        let mut ids = nodes.into_iter().map(|n| n.node_id).collect::<Vec<_>>();
+        ids.sort();
+        ids
+    };
+    let mut both = vec![successor.node_id.clone(), predecessor.node_id.clone()];
     both.sort();
-    let mut want = vec![successor.node_id.clone(), predecessor.node_id.clone()];
-    want.sort();
-    assert_eq!(both, want, "with no inherited_by mark the predecessor's labels are in the match again");
+    assert_eq!(ids(answer(&view, &status, &planned, Filter::new().eq("tags", ["rabbit"])).await), both, "[tags: rabbit] reads each node's own labels: the retained predecessor's stay at its own id");
+    assert_eq!(ids(answer(&view, &status, &planned, Filter::new().eq("path", ["mesh1.rpc"]).eq("name", ["1"])).await), [successor.node_id.clone()], "the current pair selects the successor");
 }
 
 /// A nodes store that fails every call, read or write, and counts them: a read answered while it is
@@ -282,23 +270,11 @@ impl rdm_admin::storage::NodesStorage for Unreadable {
     async fn node(&self, _: &NodeId) -> Result<Option<NodeRow>, rdm_admin::storage_error::StorageError> {
         self.fail("records")
     }
-    async fn node_at(&self, _: &PathName) -> Result<Option<NodeRow>, rdm_admin::storage_error::StorageError> {
-        self.fail("records")
-    }
     async fn nodes(&self, _: &str) -> Result<Vec<NodeRow>, rdm_admin::storage_error::StorageError> {
         self.fail("records")
     }
     async fn put_node(&self, _: &NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.fail("records")
-    }
-    async fn index_path(&self, _: &PathName, _: &NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.fail("paths")
-    }
-    async fn index_tags(&self, _: &str, _: &NodeId, _: &std::collections::BTreeSet<String>, _: &std::collections::BTreeSet<String>) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.fail("tags")
-    }
-    async fn tagged(&self, _: &str) -> Result<std::collections::BTreeSet<NodeId>, rdm_admin::storage_error::StorageError> {
-        self.fail("tags")
     }
     async fn name_claim(&self, _: &PathName) -> Result<Option<NodeId>, rdm_admin::storage_error::StorageError> {
         self.fail("names")

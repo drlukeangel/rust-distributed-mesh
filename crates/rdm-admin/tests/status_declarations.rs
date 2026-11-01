@@ -89,23 +89,11 @@ impl NodesStorage for Rows {
     async fn node(&self, node_id: &rdm_admin::model::NodeId) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
         self.inner.node(node_id).await
     }
-    async fn node_at(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_at(name).await
-    }
     async fn nodes(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
         self.inner.nodes(mesh).await
     }
     async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_node(row).await
-    }
-    async fn index_path(&self, name: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.index_path(name, node_id).await
-    }
-    async fn index_tags(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.index_tags(mesh, node_id, leaving, arriving).await
-    }
-    async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<rdm_admin::model::NodeId>, rdm_admin::storage_error::StorageError> {
-        self.inner.tagged(label).await
     }
     async fn name_claim(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::model::NodeId>, rdm_admin::storage_error::StorageError> {
         self.inner.name_claim(name).await
@@ -1243,7 +1231,7 @@ fn a_nodes_own_tags_create_through_an_admin_that_is_not_the_fabric_primary_is_ca
         let StatusReply::TagsCreated { node_id, .. } = reply(&out) else { panic!("tags created: {out:?}") };
         assert_eq!(node_id, rpc1.node.node_id);
         assert_eq!(props(&rig, &rpc1.node.node_id).await.1, labels(&["edge"]), "the node's own record carries the labels");
-        assert!(joined.status.nodes_storage.node_at(&rpc1.node.name).await.unwrap().is_none(), "mesh1.admin.2 writes no row");
+        assert!(rdm_admin::node_rows::record_at(&*joined.status.nodes_storage, &rpc1.node.name).await.unwrap().is_none(), "mesh1.admin.2 writes no row");
         rig.admin.node.node_id.to_string()
     });
     let up = cap.spans("rdm.node_admin.node.update.via-forward");
@@ -1283,7 +1271,7 @@ fn a_node_admins_own_config_update_is_written_by_its_own_writer_and_nothing_trav
         assert_eq!(updated(&reply), updated_of(admin2, &config));
         assert_eq!(config_of(&admin2.node.node_id).await, config, "mesh1.admin.2's own record holds the whole config");
         assert!(fp_atlas.record(&admin2.node.node_id).is_some_and(|r| r.config.is_empty()), "no copy of the map is installed in the fabric-primary's atlas");
-        assert!(joined.status.nodes_storage.node_at(&admin2.node.name).await.unwrap().is_none(), "mesh1.admin.2 writes no row");
+        assert!(rdm_admin::node_rows::record_at(&*joined.status.nodes_storage, &admin2.node.name).await.unwrap().is_none(), "mesh1.admin.2 writes no row");
     });
     for name in ["rdm.node_admin.node.update.via-config", "rdm.node_admin.node.update.via-forward", "rdm.node_admin.node.update.via-fabric-primary"] {
         assert!(cap.spans(name).is_empty(), "nothing travels upward: {name} {:?}", cap.spans(name));

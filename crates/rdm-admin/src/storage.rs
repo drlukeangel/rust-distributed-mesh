@@ -15,7 +15,7 @@
 //!   live mesh's name claim.
 //! - `nodes.storage`: each node's record at its id (its row and the facts of its births: declared
 //!   states, operation effects, silence, data-dir facts, cert dates, the birth's address and the
-//!   primaries recorded for it), its name claim, the `(path, name)` index and the tags index (R-TG1); and
+//!   primaries recorded for it) and its name claim, through which a `(path, name)` resolves (R-SR5); and
 //!   the runtimes this admin started, in its own data dir. A birth's address on its record is a hint:
 //!   never topology, never death proof. The admin's own row (NodeId, path and name, the incarnation it last
 //!   ran, its transport identity), so a restart is the same logical node, is its own seed in its data
@@ -533,66 +533,8 @@ pub fn fold_declared<'a>(records: impl IntoIterator<Item = &'a NodeRow>) -> Hash
     out
 }
 
-/// The index moves of one record write still owed to the indexes: the record was written and an index
-/// write after it was not (storage-whole-records.md: "keeps the pending index moves on the writer until
-/// the index acknowledges them; the retry never recomputes an empty difference from the
-/// already-updated cache").
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct IndexMoves {
-    /// The `(path, name)` the record is at, when its index entry is owed.
-    pub path: Option<PathName>,
-    /// The labels leaving the tags index.
-    pub leaving: BTreeSet<String>,
-    /// The labels arriving in it.
-    pub arriving: BTreeSet<String>,
-}
-
-impl IndexMoves {
-    /// The moves of writing `row` over `previous`, its writer's held copy.
-    pub fn of(row: &NodeRow, previous: Option<&NodeRow>) -> Self {
-        let (leaving, arriving) = row.tag_moves(previous);
-        let held: BTreeSet<String> = previous.filter(|p| p.node_id == row.node_id && p.status != crate::model::NodeStatus::Deleted && p.inherited_by.is_none()).map(|p| p.tags.clone()).unwrap_or_default();
-        let arriving = arriving.difference(&held).cloned().collect();
-        let path = (previous.map(|p| &p.name) != Some(&row.name)).then(|| row.name.clone());
-        Self { path, leaving, arriving }
-    }
-
-    /// Whether nothing is owed.
-    pub fn is_empty(&self) -> bool {
-        self.path.is_none() && self.leaving.is_empty() && self.arriving.is_empty()
-    }
-
-    /// These moves, then `later` over them: what both owe together.
-    pub fn then(mut self, later: IndexMoves) -> Self {
-        for l in &later.arriving {
-            self.leaving.remove(l);
-        }
-        for l in &later.leaving {
-            self.arriving.remove(l);
-        }
-        self.leaving.extend(later.leaving);
-        self.arriving.extend(later.arriving);
-        if later.path.is_some() {
-            self.path = later.path;
-        }
-        self
-    }
-}
-
-/// Write `moves` of `node_id` to the indexes: the `(path, name)` entry and the tags index rows, each a
-/// blind write of its own key.
-pub async fn write_index_moves(nodes: &dyn NodesStorage, mesh: &str, node_id: &NodeId, moves: &IndexMoves) -> Result<(), StorageError> {
-    if let Some(name) = &moves.path {
-        nodes.index_path(name, node_id).await?;
-    }
-    if !moves.leaving.is_empty() || !moves.arriving.is_empty() {
-        nodes.index_tags(mesh, node_id, &moves.leaving, &moves.arriving).await?;
-    }
-    Ok(())
-}
-
-/// The durable record of the nodes: each node's record at its id with its name claim, its `(path, name)`
-/// index entry and its tags index rows, and every birth's runtime row. Nothing is removed (R-SR2): a
+/// The durable record of the nodes: each node's record at its id with its name claim, through which a
+/// `(path, name)` resolves to its node, and every birth's runtime row. Nothing is removed (R-SR2): a
 /// create withdrawn before its node ran leaves its record `Withdrawn`.
 #[async_trait]
 pub trait NodesStorage: Send + Sync {
@@ -605,24 +547,11 @@ pub trait NodesStorage: Send + Sync {
     /// The record of `node_id`: a point read of its key, a `Withdrawn` one included; `None` when none
     /// was ever written.
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError>;
-    /// The record the `(path, name)` index names at `name`: the node whose record was last written at it,
-    /// a `Deleted` one included; `None` when no record was ever written there, or when that record is
-    /// `Withdrawn`.
-    async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError>;
     /// Every node record of `mesh`, a `Withdrawn` one skipped.
     async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError>;
     /// Write `row` whole at its node id, as given (Q109: storage stores and returns what it is given).
     /// Durable before it answers (Q54).
     async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError>;
-    /// The `(path, name)` index entry at `name` names `node_id`: a blind write of its key.
-    async fn index_path(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError>;
-    /// The tags index rows of `node_id` of `mesh`: each of `leaving` tombstoned, each of `arriving`
-    /// put, blind writes of their own keys (R-TG1).
-    async fn index_tags(&self, mesh: &str, node_id: &NodeId, leaving: &BTreeSet<String>, arriving: &BTreeSet<String>) -> Result<(), StorageError>;
-    /// The nodes carrying `label`, in every mesh: a point read of the label's rows of the tags index
-    /// (R-TG1), never a read of any node's record. A `label` that is not a tag label
-    /// ([`rdm_core::status::tag_refusal`]) is refused by name.
-    async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError>;
     /// The node whose name claim holds `name`, if one does.
     async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, StorageError>;
     /// Claim `name` for `node_id`: an insert of the claim's key. A claim this node already holds
@@ -632,25 +561,13 @@ pub trait NodesStorage: Send + Sync {
     async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError>;
 }
 
-/// The refusal of a key the tags index cannot hold: `label` is not a tag label.
-fn tag_key(label: &str, store: &str) -> Result<(), StorageError> {
-    match rdm_core::status::tag_refusal(label) {
-        None => Ok(()),
-        Some(reason) => Err(StorageError::Unrecognised { file: format!("{store} (tags index)"), reason }),
-    }
-}
-
 /// A nodes store held in memory.
 #[derive(Debug, Default)]
 pub struct MemoryNodesStorage {
     runtimes: Mutex<BTreeMap<String, RuntimeRow>>,
     records: Mutex<BTreeMap<NodeId, NodeRow>>,
-    /// The `(path, name)` index: each name's last record.
-    paths: Mutex<BTreeMap<PathName, NodeId>>,
     /// The name claims.
     claims: Mutex<BTreeMap<PathName, NodeId>>,
-    /// The tags index: per label, the nodes carrying it.
-    tags: Mutex<BTreeMap<String, BTreeSet<NodeId>>>,
 }
 
 #[async_trait]
@@ -668,40 +585,12 @@ impl NodesStorage for MemoryNodesStorage {
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
         Ok(self.records.lock().unwrap().get(node_id).cloned())
     }
-    async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
-        let Some(id) = self.paths.lock().unwrap().get(name).cloned() else { return Ok(None) };
-        Ok(self.records.lock().unwrap().get(&id).filter(|r| r.status != crate::model::NodeStatus::Withdrawn).cloned())
-    }
     async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
         Ok(self.records.lock().unwrap().values().filter(|r| r.mesh == mesh && r.status != crate::model::NodeStatus::Withdrawn).cloned().collect())
     }
     async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
         self.records.lock().unwrap().insert(row.node_id.clone(), row.clone());
         Ok(())
-    }
-    async fn index_path(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError> {
-        self.paths.lock().unwrap().insert(name.clone(), node_id.clone());
-        Ok(())
-    }
-    async fn index_tags(&self, _mesh: &str, node_id: &NodeId, leaving: &BTreeSet<String>, arriving: &BTreeSet<String>) -> Result<(), StorageError> {
-        let mut tags = self.tags.lock().unwrap();
-        for l in leaving {
-            if let Some(nodes) = tags.get_mut(l) {
-                nodes.remove(node_id);
-                if nodes.is_empty() {
-                    tags.remove(l);
-                }
-            }
-        }
-        for l in arriving {
-            tag_key(l, "memory nodes store")?;
-            tags.entry(l.clone()).or_default().insert(node_id.clone());
-        }
-        Ok(())
-    }
-    async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError> {
-        tag_key(label, "memory nodes store")?;
-        Ok(self.tags.lock().unwrap().get(label).cloned().unwrap_or_default())
     }
     async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, StorageError> {
         Ok(self.claims.lock().unwrap().get(name).cloned())
@@ -730,39 +619,19 @@ impl NodesStorage for MemoryNodesStorage {
 /// The format of the admin's own row in its data dir ([`FileNodesStorage::own_in`]).
 const NODE_FORMAT: &str = "node-record/4";
 #[cfg(feature = "file-backend")]
-use rdm_node::nodes_storage::{TagRow, RECORD_KIND, RECORD_FORMAT, RUNTIME_FORMAT, RUNTIME_KIND, TAG_FORMAT, TAG_KIND};
-#[cfg(feature = "file-backend")]
-const NAME_CLAIM_FORMAT: &str = "node-name/1";
+use rdm_node::nodes_storage::{read_name_claim, NameClaim, NAME_CLAIM_FORMAT, RECORD_KIND, RECORD_FORMAT, RUNTIME_FORMAT, RUNTIME_KIND};
 
 #[cfg(feature = "file-backend")]
-/// A name claim: the node it names.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct NameEntry {
-    path: String,
-    name: String,
-    node_id: NodeId,
-}
-
-#[cfg(feature = "file-backend")]
-fn node_name_claim(file: &Path, bytes: &[u8], location: &PathName) -> Result<NameEntry, StorageError> {
-    let held: NameEntry = lock_claim(file, bytes, NAME_CLAIM_FORMAT)?;
-    if held.path != location.path || held.name != location.name {
-        return Err(StorageError::Unrecognised { file: file.display().to_string(), reason: format!("location index payload mismatch: requested path {:?}, name {:?}; stored path {:?}, name {:?}", location.path, location.name, held.path, held.name) });
-    }
-    Ok(held)
-}
-
-#[cfg(feature = "file-backend")]
-/// The nodes' records, their runtime rows and the tags index's changes, each write one line of the
+/// The nodes' records and their runtime rows, each write one line of the
 /// root's `nodes.jsonl` (R-SR1, R-SR2), appended straight to the file: a record at its node id, written by its mesh's writer, durable before the answer
 /// (Q54); a runtime row at `<node id>--<incarnation>`, written once by its birth's launching admin, the
-/// durable map a successor proves exits from, as durable as when it stood in the launcher's data dir;
-/// and a tag change at `<node id>/<label>`. The `(path, name)` index and the tags index are the fold. Each name claim is the
+/// durable map a successor proves exits from, as durable as when it stood in the launcher's data dir.
+/// A `(path, name)` resolves through its name claim. Each name claim is the
 /// lock `locks/name/<composite location index>` of the root (R-SR5). The admin's own row stays its own seed in its
 /// data dir, `nodes/self.json` ([`Self::own_in`]).
 #[derive(Debug)]
 pub struct FileNodesStorage {
-    /// The records, the runtime rows and the tags index's changes, and their point reads.
+    /// The records and the runtime rows, and their point reads.
     rows: rdm_node::nodes_storage::FileNodeRows,
     /// The rows' file, appended to.
     records: crate::store_log::StoreLog,
@@ -795,7 +664,7 @@ impl FileNodesStorage {
         FileRecords::open(own_data_dir, "nodes", writer).await?.write("self", NODE_FORMAT, record).await
     }
 
-    /// Finishes every write of the node records, the runtime rows and the tags index this store has
+    /// Finishes every write of the node records and the runtime rows this store has
     /// issued (node-primary-update.md step 3); a name lock is taken or removed before its call answers.
     pub async fn finish_issued_writes(&self) {
         self.records.finish_issued_writes().await;
@@ -824,9 +693,6 @@ impl NodesStorage for FileNodesStorage {
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
         rdm_node::nodes_storage::NodeRowsStorage::node(&self.rows, node_id).await
     }
-    async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
-        rdm_node::nodes_storage::NodeRowsStorage::node_at(&self.rows, name).await
-    }
     async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
         let mut out = Vec::new();
         for l in self.records.latest_of(RECORD_KIND).await? {
@@ -840,44 +706,20 @@ impl NodesStorage for FileNodesStorage {
     async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
         self.records.append(&self.log_writer, RECORD_FORMAT, row.node_id.as_str(), row).await
     }
-    /// The `(path, name)` index is the fold of the record lines: a record's own line is its entry.
-    async fn index_path(&self, _name: &PathName, _node_id: &NodeId) -> Result<(), StorageError> {
-        Ok(())
-    }
-    async fn index_tags(&self, _mesh: &str, node_id: &NodeId, leaving: &BTreeSet<String>, arriving: &BTreeSet<String>) -> Result<(), StorageError> {
-        for (labels, carried) in [(leaving, false), (arriving, true)] {
-            for l in labels {
-                tag_key(l, &self.records.path().display().to_string())?;
-                self.records.append(&self.log_writer, TAG_FORMAT, &format!("{node_id}/{l}"), &TagRow { label: l.clone(), node_id: node_id.clone(), carried }).await?;
-            }
-        }
-        Ok(())
-    }
-    async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError> {
-        tag_key(label, &self.records.path().display().to_string())?;
-        let mut out = BTreeSet::new();
-        for l in self.records.latest_of(TAG_KIND).await? {
-            let row: TagRow = l.decode(self.records.path())?;
-            if row.label == label && row.carried {
-                out.insert(row.node_id);
-            }
-        }
-        Ok(out)
-    }
     async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, StorageError> {
         match self.locks.read(crate::store_log::LockKind::Name, &name.physical_index_key()).await? {
-            Some(bytes) => Ok(Some(node_name_claim(&self.name_lock(name), &bytes, name)?.node_id)),
+            Some(bytes) => Ok(Some(read_name_claim(&self.name_lock(name), &bytes, name)?.node_id)),
             None => Ok(None),
         }
     }
     /// The claim is the lock `locks/name/<composite location index>`, taken create-exclusive (R-SR5): a lock this node
     /// holds answers `Ok`, another node's `NameHeld` naming it.
     async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> {
-        let claim = NameEntry { path: name.path.clone(), name: name.name.clone(), node_id: node_id.clone() };
+        let claim = NameClaim { path: name.path.clone(), name: name.name.clone(), node_id: node_id.clone() };
         match self.locks.take(crate::store_log::LockKind::Name, &name.physical_index_key(), &lock_content(NAME_CLAIM_FORMAT, &claim, &self.log_writer)).await? {
             crate::store_log::LockTaken::Won => Ok(Ok(())),
             crate::store_log::LockTaken::Held(bytes) => {
-                let held = node_name_claim(&self.name_lock(name), &bytes, name)?;
+                let held = read_name_claim(&self.name_lock(name), &bytes, name)?;
                 Ok(if held.node_id == *node_id { Ok(()) } else { Err(NameHeld { name: name.clone(), by: held.node_id }) })
             }
         }
@@ -885,7 +727,7 @@ impl NodesStorage for FileNodesStorage {
     /// The lock goes under the name's reclamation mutex, only while it still names `node_id` (R-SR5).
     async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError> {
         let (file, node_id, location) = (self.name_lock(name), node_id.clone(), name.clone());
-        self.locks.release(crate::store_log::LockKind::Name, &name.physical_index_key(), move |b| node_name_claim(&file, b, &location).is_ok_and(|held| held.node_id == node_id)).await.map(|_| ())
+        self.locks.release(crate::store_log::LockKind::Name, &name.physical_index_key(), move |b| read_name_claim(&file, b, &location).is_ok_and(|held| held.node_id == node_id)).await.map(|_| ())
     }
 }
 
@@ -978,12 +820,8 @@ mod tests {
             async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> { self.inner.runtimes().await }
             async fn runtime(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> { self.inner.runtime(n, i).await }
             async fn node(&self, n: &NodeId) -> Result<Option<NodeRow>, StorageError> { self.log.lock().unwrap().push("read".into()); self.inner.node(n).await }
-            async fn node_at(&self, n: &PathName) -> Result<Option<NodeRow>, StorageError> { self.log.lock().unwrap().push("read".into()); self.inner.node_at(n).await }
             async fn nodes(&self, m: &str) -> Result<Vec<NodeRow>, StorageError> { self.log.lock().unwrap().push("read".into()); self.inner.nodes(m).await }
             async fn put_node(&self, r: &NodeRow) -> Result<(), StorageError> { self.log.lock().unwrap().push("put".into()); self.puts.lock().unwrap().push(r.clone()); self.inner.put_node(r).await }
-            async fn index_path(&self, n: &PathName, id: &NodeId) -> Result<(), StorageError> { self.inner.index_path(n, id).await }
-            async fn index_tags(&self, m: &str, id: &NodeId, l: &BTreeSet<String>, a: &BTreeSet<String>) -> Result<(), StorageError> { self.inner.index_tags(m, id, l, a).await }
-            async fn tagged(&self, l: &str) -> Result<BTreeSet<NodeId>, StorageError> { self.inner.tagged(l).await }
             async fn name_claim(&self, n: &PathName) -> Result<Option<NodeId>, StorageError> { self.inner.name_claim(n).await }
             async fn claim_node_name(&self, n: &PathName, id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> { self.inner.claim_node_name(n, id).await }
             async fn release_node_name(&self, n: &PathName, id: &NodeId) -> Result<(), StorageError> { self.inner.release_node_name(n, id).await }
@@ -1007,10 +845,6 @@ mod tests {
         assert!(puts[1].birth(&inc).unwrap().declared.contains(&NodeState::Ready), "the second put carries the first's fact too");
     }
 
-    /// CONTRACT (storage-whole-records.md cells: "a record write that succeeds while a tag-index write
-    /// fails: the retry writes the pending index moves, and the index matches the record afterwards"):
-    /// the moves of a write whose index write failed stay owed on the writer and go with the node's
-    /// next write, never recomputed from the already-updated copy.
     /// CONTRACT (storage-whole-records.md, "The rule": the copy is filled from storage when the writer
     /// takes the object's writing): a record written after the fill listed the mesh, and before the fill
     /// held it, is the copy the fill leaves, and the next write carries it. Must NOT happen: the listing's
@@ -1027,13 +861,9 @@ mod tests {
             async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> { self.inner.runtimes().await }
             async fn runtime(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> { self.inner.runtime(n, i).await }
             async fn node(&self, n: &NodeId) -> Result<Option<NodeRow>, StorageError> { self.inner.node(n).await }
-            async fn node_at(&self, n: &PathName) -> Result<Option<NodeRow>, StorageError> { self.inner.node_at(n).await }
             // The listing as it stood before the last write landed.
             async fn nodes(&self, _m: &str) -> Result<Vec<NodeRow>, StorageError> { Ok(self.listed.lock().unwrap().clone()) }
             async fn put_node(&self, r: &NodeRow) -> Result<(), StorageError> { self.inner.put_node(r).await }
-            async fn index_path(&self, n: &PathName, id: &NodeId) -> Result<(), StorageError> { self.inner.index_path(n, id).await }
-            async fn index_tags(&self, m: &str, id: &NodeId, l: &BTreeSet<String>, a: &BTreeSet<String>) -> Result<(), StorageError> { self.inner.index_tags(m, id, l, a).await }
-            async fn tagged(&self, l: &str) -> Result<BTreeSet<NodeId>, StorageError> { self.inner.tagged(l).await }
             async fn name_claim(&self, n: &PathName) -> Result<Option<NodeId>, StorageError> { self.inner.name_claim(n).await }
             async fn claim_node_name(&self, n: &PathName, id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> { self.inner.claim_node_name(n, id).await }
             async fn release_node_name(&self, n: &PathName, id: &NodeId) -> Result<(), StorageError> { self.inner.release_node_name(n, id).await }
@@ -1049,49 +879,6 @@ mod tests {
         let stored = store.inner.node(&node_id).await.unwrap().unwrap();
         let b = stored.birth(&inc).unwrap();
         assert!(b.declared.contains(&NodeState::Ready) && b.signing_cert.is_some(), "the write between the listing and the fill stands beside the next: {b:?}");
-    }
-
-    #[tokio::test]
-    async fn a_tag_index_write_that_fails_after_its_record_is_written_by_the_next_write() {
-        #[derive(Default)]
-        struct IndexRefusing {
-            inner: MemoryNodesStorage,
-            refusing: std::sync::atomic::AtomicBool,
-        }
-        #[async_trait]
-        impl NodesStorage for IndexRefusing {
-            async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> { self.inner.put_runtime(row).await }
-            async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> { self.inner.runtimes().await }
-            async fn runtime(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> { self.inner.runtime(n, i).await }
-            async fn node(&self, n: &NodeId) -> Result<Option<NodeRow>, StorageError> { self.inner.node(n).await }
-            async fn node_at(&self, n: &PathName) -> Result<Option<NodeRow>, StorageError> { self.inner.node_at(n).await }
-            async fn nodes(&self, m: &str) -> Result<Vec<NodeRow>, StorageError> { self.inner.nodes(m).await }
-            async fn put_node(&self, r: &NodeRow) -> Result<(), StorageError> { self.inner.put_node(r).await }
-            async fn index_path(&self, n: &PathName, id: &NodeId) -> Result<(), StorageError> { self.inner.index_path(n, id).await }
-            async fn index_tags(&self, m: &str, id: &NodeId, l: &BTreeSet<String>, a: &BTreeSet<String>) -> Result<(), StorageError> {
-                if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
-                    return Err(StorageError::Io { file: format!("nodes/{m}/tags"), reason: "No space left on device (os error 28)".into() });
-                }
-                self.inner.index_tags(m, id, l, a).await
-            }
-            async fn tagged(&self, l: &str) -> Result<BTreeSet<NodeId>, StorageError> { self.inner.tagged(l).await }
-            async fn name_claim(&self, n: &PathName) -> Result<Option<NodeId>, StorageError> { self.inner.name_claim(n).await }
-            async fn claim_node_name(&self, n: &PathName, id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> { self.inner.claim_node_name(n, id).await }
-            async fn release_node_name(&self, n: &PathName, id: &NodeId) -> Result<(), StorageError> { self.inner.release_node_name(n, id).await }
-        }
-        let store = IndexRefusing::default();
-        let written = WrittenRows::default();
-        let (name, node_id): (PathName, NodeId) = (rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), NodeId::mint());
-        written.update(&store, &node_id, Some(NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, node_id.clone(), crate::model::NodeStatus::Ready)), |_| ()).await.unwrap();
-        store.refusing.store(true, std::sync::atomic::Ordering::SeqCst);
-        let refused = written.update(&store, &node_id, None, |r| { r.tags.insert("red".into()); }).await;
-        assert!(refused.is_err(), "the index write's refusal is named");
-        assert!(store.inner.node(&node_id).await.unwrap().unwrap().tags == ["red".to_string()].into(), "the record stands with the label");
-        assert!(store.inner.tagged("red").await.unwrap().is_empty(), "the index does not name it yet");
-        store.refusing.store(false, std::sync::atomic::Ordering::SeqCst);
-        // The next write of the node changes nothing of its tags: the owed move goes with it.
-        written.update(&store, &node_id, None, |r| { r.config.insert("tier".into(), "gold".into()); }).await.unwrap();
-        assert_eq!(store.inner.tagged("red").await.unwrap(), [node_id.clone()].into(), "the index matches the record afterwards");
     }
 
     /// The memory store a reopen hands back: the same rows.
@@ -1111,23 +898,11 @@ mod tests {
         async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.0.node(node_id).await
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.0.node_at(name).await
-        }
         async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.0.nodes(mesh).await
         }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_node(row).await
-        }
-        async fn index_path(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.0.index_path(name, node_id).await
-        }
-        async fn index_tags(&self, mesh: &str, node_id: &crate::model::NodeId, leaving: &std::collections::BTreeSet<String>, arriving: &std::collections::BTreeSet<String>) -> Result<(), crate::storage_error::StorageError> {
-            self.0.index_tags(mesh, node_id, leaving, arriving).await
-        }
-        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<crate::model::NodeId>, crate::storage_error::StorageError> {
-            self.0.tagged(label).await
         }
         async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
             self.0.name_claim(name).await
@@ -1266,14 +1041,15 @@ mod tests {
         NodeRow::new(name.clone(), mesh, kind, NodeId::mint(), crate::model::NodeStatus::Ready)
     }
 
-    /// CONTRACT (node-name-update.md, "Claim and move"; node-delete.md: a delete releases the node's
-    /// name): each node's name is a claim beside its record, `NameHeld { by: node.id }` naming another
-    /// node's live claim, and the `(path, name)` index names the record last written at a name, a
-    /// `Deleted` one included. A claim the node holds is its own again; a delete's record keeps the
-    /// index entry and releases the claim, so the next node created at the name takes it and the index
-    /// then names that node. In memory and on disk alike.
+    /// CONTRACT (node-name-update.md, "Claim and move": "there is no raw `path.name` index lookup";
+    /// node-identity-and-state.md §2: "A current-pair lookup uses the ordinary name claim; it never uses
+    /// the last writer at a path"; node-delete.md: a delete releases the node's name): each node's name
+    /// is a claim beside its record, `NameHeld { by: node.id }` naming another node's live claim, and a
+    /// `(path, name)` resolves to the claimant's record. A claim the node holds is its own again; a
+    /// delete releases the claim, so nothing resolves at the name (the `Deleted` record stands, read by
+    /// id) until the next node created there takes it. In memory and on disk alike.
     #[tokio::test]
-    async fn a_nodes_name_is_a_claim_beside_its_record_and_the_path_index_names_the_record_at_it() {
+    async fn a_nodes_name_is_a_claim_beside_its_record_and_resolves_to_the_claimants_record() {
         let d = crate::test_support::tempdir("node-claims");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let file = FileNodesStorage::open(&d.join("admin-1-1-data"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap();
@@ -1285,17 +1061,17 @@ mod tests {
             assert_eq!(crate::node_rows::take_name(n, &a.name, &a.node_id).await.unwrap(), Ok(()), "a free name is claimed");
             w.put(n, &a).await.unwrap();
             drop(_one);
-            assert_eq!(n.node_at(&a.name).await.unwrap(), w.row_of(&a.node_id), "the index names the record at the name, as its writer wrote it");
+            assert_eq!(crate::node_rows::record_at(n, &a.name).await.unwrap(), w.row_of(&a.node_id), "the name resolves to its claimant's record, as its writer wrote it");
             assert_eq!(crate::node_rows::take_name(n, &a.name, &a.node_id).await.unwrap(), Ok(()), "the node's own claim is its own again");
             let other = row(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
             assert_eq!(crate::node_rows::take_name(n, &a.name, &other.node_id).await.unwrap(), Err(NameHeld { name: a.name.clone(), by: a.node_id.clone() }), "another node's live claim holds the name");
             crate::node_rows::write_deleted(n, &w, &a.name, &a.node_id, None).await.ok().expect("the delete's record");
             assert_eq!(n.name_claim(&a.name).await.unwrap(), None, "a delete releases the name");
-            assert_eq!(n.node_at(&a.name).await.unwrap().map(|r| r.status), Some(crate::model::NodeStatus::Deleted), "the Deleted record stands at the name for the next create's seed");
+            assert_eq!(crate::node_rows::record_at(n, &a.name).await.unwrap(), None, "a released name resolves to no record: the last record written there is not its current one");
             assert_eq!(crate::node_rows::take_name(n, &a.name, &other.node_id).await.unwrap(), Ok(()), "the next node takes the name");
             let _two = w.lock(&other.node_id).await;
             w.put(n, &other).await.unwrap();
-            assert_eq!(n.node_at(&a.name).await.unwrap().map(|r| r.node_id), Some(other.node_id.clone()), "the index names the new node");
+            assert_eq!(crate::node_rows::record_at(n, &a.name).await.unwrap().map(|r| r.node_id), Some(other.node_id.clone()), "the name resolves to the new node");
             assert_eq!(n.node(&a.node_id).await.unwrap().map(|r| r.status), Some(crate::model::NodeStatus::Deleted), "the deleted record stands, read by id");
         }
         let _ = std::fs::remove_dir_all(&d);
@@ -1374,8 +1150,8 @@ mod tests {
         for data in [&data1, &data2] {
             assert!(!data.join(crate::store_root::MESHES_FILE).exists() && !data.join(crate::store_root::NODES_FILE).exists(), "{} holds a shared record", data.display());
         }
-        assert!(n1.node_at(&rdm_core::PathName::new("mesh2.rpc", "1").unwrap()).await.unwrap().is_some(), "mesh1's primary reads mesh2's record from the shared root");
-        assert!(n2.node_at(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await.unwrap().is_some(), "mesh2's primary reads mesh1's record from the shared root");
+        assert!(crate::node_rows::record_at(&n1, &rdm_core::PathName::new("mesh2.rpc", "1").unwrap()).await.unwrap().is_some(), "mesh1's primary reads mesh2's record from the shared root");
+        assert!(crate::node_rows::record_at(&n2, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await.unwrap().is_some(), "mesh2's primary reads mesh1's record from the shared root");
         assert_eq!(live_records(&m1, &n1, "mesh1").await.unwrap().len(), 6, "a restart reads every mesh's records");
     }
 
@@ -1482,7 +1258,7 @@ mod tests {
             assert_eq!(crate::node_rows::write_record(store, &x).await.unwrap(), Ok(()), "{backend}: x claims the name");
             assert!(crate::node_rows::release_record(store, &WrittenRows::default(), &name, &x.node_id).await.unwrap(), "{backend}: x held the name");
             assert_eq!(store.node(&x.node_id).await.unwrap().map(|r| r.status), Some(crate::model::NodeStatus::Withdrawn), "{backend}: the record stands, Withdrawn");
-            assert_eq!(store.node_at(&name).await.unwrap(), None, "{backend}: no record at the name");
+            assert_eq!(crate::node_rows::record_at(store, &name).await.unwrap(), None, "{backend}: no record at the name");
             assert!(store.nodes("mesh1").await.unwrap().iter().all(|r| r.node_id != x.node_id), "{backend}: no mesh lists it");
             assert_eq!(store.name_claim(&name).await.unwrap(), None, "{backend}: the name is released");
             // y appended its Withdrawn record and died before releasing the name.
@@ -1497,81 +1273,6 @@ mod tests {
                 assert_eq!(lines.iter().filter(|l| l.kind() == "node-record" && l.key == x.node_id.as_str()).count(), 2, "x's claim and its Withdrawn record both stand as lines");
             }
         }
-    }
-
-    /// CONTRACT (R-TG1: "node.get with a tag filter names a label and answers every node carrying it,
-    /// through a tags index declared on the node store (a point read per label)"; storage-whole-records.md:
-    /// "RDM computes the index moves from its cached record before the write and the store writes the
-    /// index entries blindly"; R-SR1, R-SR2): each change of a (node id, label) row is one `node-tag` line of
-    /// the root's `nodes.jsonl`, and the index is the fold of them. Two meshes' records carrying `red`
-    /// are read by one label read across the root, a second store of another writer included; a write
-    /// without a label appends that label's row not carried and no other; a rename keeps the node's
-    /// labels (the index is keyed by node id); a `Deleted` record leaves every label it carries. A label
-    /// no record ever carried reads as carried by none; a key that is not a label is refused by name and
-    /// nothing is read.
-    #[tokio::test]
-    async fn the_tags_index_is_one_line_per_label_change_kept_with_every_row_write_and_read_per_label() {
-        let d = crate::test_support::tempdir("tags-index");
-        let store = d.join("store");
-        std::fs::create_dir_all(&store).unwrap();
-        let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
-        let (n1, n2) = (FileNodesStorage::open(&d.join("admin-1-1-data"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap(), FileNodesStorage::open(&d.join("admin-2-1-data"), &root, "mesh2", &crate::store_log::LogWriter::mint()).await.unwrap());
-        let (w1, w2) = (WrittenRows::default(), WrittenRows::default());
-        let tags = |l: &[&str]| l.iter().map(|t| t.to_string()).collect::<BTreeSet<String>>();
-        let row_a = NodeRow { tags: tags(&["rabbit", "red"]), ..row(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode) };
-        let a = row_a.node_id.clone();
-        w1.update(&n1, &a, Some(row_a.clone()), |_| ()).await.unwrap();
-        let row_b = NodeRow { tags: tags(&["red"]), ..row(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode) };
-        let b = row_b.node_id.clone();
-        w2.update(&n2, &b, Some(row_b.clone()), |_| ()).await.unwrap();
-        let carried = |node: &NodeId, label: &str| crate::store_log::read_record(&root.dir().join(crate::store_root::NODES_FILE), "node-tag", Some(&format!("{node}/{label}"))).map(|l| l["record"]["carried"] == true);
-        assert_eq!((carried(&a, "rabbit"), carried(&a, "red"), carried(&b, "red"), carried(&b, "rabbit")), (Some(true), Some(true), Some(true), None), "one row per (label, node id), each a line");
-        let other = FileNodesStorage::open(&d.join("admin-1-2-data"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap();
-        for n in [&n1, &n2, &other] {
-            assert_eq!(n.tagged("red").await.unwrap(), [a.clone(), b.clone()].into(), "one label read answers every mesh's nodes carrying it");
-        }
-        // A write without rabbit tombstones rabbit's row only.
-        w1.update(&n1, &a, None, |r| { r.tags.remove("rabbit"); }).await.unwrap();
-        assert_eq!((carried(&a, "rabbit"), other.tagged("rabbit").await.unwrap().len(), other.tagged("red").await.unwrap().len()), (Some(false), 0, 2), "the dropped label's row is appended not carried, the kept one stands");
-        // A rename keeps the labels: the record moves to its new name.
-        w1.update(&n1, &a, None, |r| r.name = PathName::new("mesh1.rpc", "1-old").unwrap()).await.unwrap();
-        assert_eq!(other.tagged("red").await.unwrap(), [a.clone(), b.clone()].into(), "a renamed node keeps its labels");
-        // A Deleted record tombstones every label it carries, and keeps them on the record.
-        w1.update(&n1, &a, None, |r| r.status = crate::model::NodeStatus::Deleted).await.unwrap();
-        w2.update(&n2, &b, None, |r| r.status = crate::model::NodeStatus::Deleted).await.unwrap();
-        assert!(other.tagged("red").await.unwrap().is_empty(), "neither deleted node is named under red");
-        assert_eq!(n1.node(&a).await.unwrap().map(|r| r.tags), Some(tags(&["red"])), "the Deleted record keeps its tags");
-        // A label no record carried: none.
-        assert!(other.tagged("blue").await.unwrap().is_empty());
-        assert!(matches!(other.tagged("../rows").await, Err(StorageError::Unrecognised { reason, .. }) if reason.contains("\"../rows\"")), "a key that is not a label is refused by name");
-    }
-
-    /// CONTRACT (node-replace.md Inherited: the successor inherits the retained predecessor's tags,
-    /// "Retained predecessor labels are removed from the active index, not erased from its row"):
-    /// between the successor's claim at the name and the retained record's mark, both nodes carry the
-    /// label; the retained record written again with `inherited_by` keeps its tags and the tags index
-    /// names none of them for it; a later write of it (a tags or config write) indexes none again, an
-    /// added label included, while the successor stays named.
-    #[tokio::test]
-    async fn a_row_a_successor_inherited_keeps_its_tags_and_holds_none_in_the_tags_index() {
-        let d = crate::test_support::tempdir("tags-inherited");
-        let store = d.join("store");
-        std::fs::create_dir_all(&store).unwrap();
-        let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
-        let n1 = FileNodesStorage::open(&d.join("admin-1-1-data"), &root, "mesh1", &crate::store_log::LogWriter::mint()).await.unwrap();
-        let w = WrittenRows::default();
-        let tags = |l: &[&str]| l.iter().map(|t| t.to_string()).collect::<BTreeSet<String>>();
-        let old = NodeRow { tags: tags(&["rabbit"]), ..row(PathName::new("mesh1.rpc", "1-old").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode) };
-        let succ_row = NodeRow { tags: tags(&["rabbit"]), ..row(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode) };
-        let (pred, succ) = (old.node_id.clone(), succ_row.node_id.clone());
-        w.update(&n1, &pred, Some(old.clone()), |_| ()).await.unwrap();
-        w.update(&n1, &succ, Some(succ_row.clone()), |_| ()).await.unwrap();
-        assert_eq!(n1.tagged("rabbit").await.unwrap(), [pred.clone(), succ.clone()].into(), "between the successor's claim and the mark both carry the label");
-        w.update(&n1, &pred, None, |r| r.inherited_by = Some(succ.clone())).await.unwrap();
-        assert_eq!(n1.tagged("rabbit").await.unwrap(), [succ.clone()].into(), "the retained record's label left the index");
-        assert_eq!(n1.node(&pred).await.unwrap().map(|r| (r.tags, r.inherited_by)), Some((tags(&["rabbit"]), Some(succ.clone()))), "the retained record keeps its tags and names who inherited it");
-        w.update(&n1, &pred, None, |r| { r.tags.insert("red".into()); }).await.unwrap();
-        assert_eq!((n1.tagged("rabbit").await.unwrap(), n1.tagged("red").await.unwrap()), ([succ.clone()].into(), BTreeSet::new()), "a later write of the inherited record indexes none of its labels");
     }
 
     /// CONTRACT (R14 items 1 and 9, R-SR1; connections.md §3: the raw log and the latest-per-key view
@@ -1703,7 +1404,7 @@ mod tests {
     /// "node.delete releases the node's identity and name; its row stays. The node's mesh-primary writes
     /// the row with status deleted, keeping the record and its config; the deleted row releases..."
     #[tokio::test]
-    async fn clear_address_and_primaries_fold_declared_write_index_moves_and_own_in_behave_as_specified() {
+    async fn clear_address_and_primaries_fold_declared_and_own_in_behave_as_specified() {
         // 1. `clear_address_and_primaries` strips endpoint_id, transport_addr, listeners, and primary revisions.
         let inc = IncarnationId::mint();
         let name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
@@ -1730,26 +1431,7 @@ mod tests {
         let declared = fold_declared([&row]);
         assert_eq!(declared.get(&(node_id.clone(), inc.clone())), Some(&(NodeState::Stopped, name.clone())));
 
-        // 3. `write_index_moves` applies path and tag moves to `NodesStorage`.
-        let store = MemoryNodesStorage::default();
-        store.put_node(&row).await.unwrap();
-        let mut row_tagged = row.clone();
-        row_tagged.tags.insert("tier-edge".into());
-        row_tagged.tags.insert("zone-a".into());
-        let moves1 = IndexMoves::of(&row_tagged, None);
-        write_index_moves(&store, "mesh1", &node_id, &moves1).await.unwrap();
-        assert_eq!(store.node_at(&name).await.unwrap().map(|r| r.node_id), Some(node_id.clone()));
-        assert!(store.tagged("tier-edge").await.unwrap().contains(&node_id));
-        assert!(store.tagged("zone-a").await.unwrap().contains(&node_id));
-
-        let mut row_retagged = row_tagged.clone();
-        row_retagged.tags.remove("zone-a");
-        let moves2 = IndexMoves::of(&row_retagged, Some(&row_tagged));
-        write_index_moves(&store, "mesh1", &node_id, &moves2).await.unwrap();
-        assert!(store.tagged("tier-edge").await.unwrap().contains(&node_id));
-        assert!(!store.tagged("zone-a").await.unwrap().contains(&node_id));
-
-        // 4. `FileNodesStorage::own_in` and `put_own_in` round-trip the admin's own row in its data dir.
+        // 3. `FileNodesStorage::own_in` and `put_own_in` round-trip the admin's own row in its data dir.
         let d = crate::test_support::tempdir("storage-own-in");
         let writer = IncarnationId::mint();
         assert_eq!(FileNodesStorage::own_in(&d, &writer).await.unwrap(), None);

@@ -437,7 +437,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Every node row is Deleted, both mesh rows are Dead in status.storage and mesh.storage, and
     // the fabric name is released.
     for n in &all_nodes {
-        let row = nodes_storage.record_at(&n.name).await.unwrap().expect("node row exists");
+        let row = nodes_storage.node(&n.node_id).await.unwrap().expect("node row exists");
         assert_eq!(row.status, NodeStatus::Deleted, "{:?}'s node row is Deleted", n.name);
     }
     for (id, name) in [(&id1, "mesh1"), (&id2, "mesh2")] {
@@ -555,7 +555,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let UnansweredMeshOutcome::FullyCrashed(manifest) = crashed else { panic!("expected FullyCrashed, got {crashed:?}") };
         assert_eq!(manifest.receipts.len(), 2, "every birth of mesh2 has an exit receipt");
         for n in &m2_nodes {
-            let row = nodes_storage.record_at(&n.name).await.unwrap().unwrap();
+            let row = nodes_storage.node(&n.node_id).await.unwrap().unwrap();
             assert_eq!(row.status, NodeStatus::Deleted, "{:?}'s row is written Deleted by its node.delete", n.name);
         }
         assert!(mesh_storage.mesh(&id2.clone()).await.unwrap().is_some_and(|r| r.states.contains(&MeshState::Dead)), "mesh2 status row is written Dead by acting primary");
@@ -715,9 +715,9 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let left = mesh_left_proof(&manifest, &term_a2).unwrap();
         mesh_left_rows(Some(&rows_fp), &mesh_storage, &Default::default(), &declared, fp.node_id.as_str(), &key_m2, "mesh2", &left.receipts).await.unwrap();
 
-        for name in [&m2_a1.name, &m2_r1.name, &m2_a2.name] {
-            let row = nodes_storage.record_at(name).await.unwrap().unwrap();
-            assert_eq!(row.status, NodeStatus::Deleted, "{name:?}'s node row is Deleted");
+        for n in [&m2_a1, &m2_r1, &m2_a2] {
+            let row = nodes_storage.node(&n.node_id).await.unwrap().unwrap();
+            assert_eq!(row.status, NodeStatus::Deleted, "{:?}'s node row is Deleted", n.name);
         }
         assert!(mesh_storage.mesh(&id2.clone()).await.unwrap().is_some_and(|r| r.states.contains(&MeshState::Dead)));
     }
