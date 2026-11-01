@@ -535,15 +535,13 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &rdm_core::NodeId, destinatio
         ProofOp::Put { key, value } => ProofRequest::Put { key, value },
     };
     let call = seams.client.call_resolved::<ProofStore>(resolution, own, &target.name, &target.node_id, &req, &CallOptions::default()).await;
-    // A Proxy the resolution found invalid is deleted by this source, as the caller of the seam.
-    let deleted = match call.delete {
-        Some((proxy, why)) => {
-            let row = NodeConnection { id: rdm_core::ConnectionId::mint(), state: ConnectionState::Disconnected, reason: Some(why.to_string()), recovery: None, logged_at_ms: now_ms().max(proxy.logged_at_ms + 1), ..proxy };
-            let _ = seams.connections.record(row).await;
-            Some(why.to_string())
-        }
-        None => None,
-    };
+    // Each Proxy the resolution found invalid is deleted by this source, as the caller of the seam;
+    // the reply names the first, the one toward this destination when it was among them.
+    let deleted = call.delete.first().map(|(_, why)| why.to_string());
+    for (proxy, why) in call.delete {
+        let row = NodeConnection { id: rdm_core::ConnectionId::mint(), state: ConnectionState::Disconnected, reason: Some(why.to_string()), recovery: None, logged_at_ms: now_ms().max(proxy.logged_at_ms + 1), ..proxy };
+        let _ = seams.connections.record(row).await;
+    }
     let (route, carrier) = match &call.route {
         rdm_core::connections::EffectiveRoute::ViaPeer { proxy, .. } => ("via-peer".to_string(), proxy.carrier.as_ref().map(|n| n.node_id.clone())),
         other => (other.token().to_string(), None),
@@ -836,9 +834,9 @@ mod tests {
         let gateway = CarrierPolicy::Proxy { carrier_kind: NodeKind::Gateway };
         let r = resolve(&held, &own.node_id, &dest.node_id, gateway);
         assert_eq!(r.route, EffectiveRoute::ViaPeer { carrier: carrier.node_id.clone(), proxy: p });
-        assert_eq!(r.delete, None);
+        assert!(r.delete.is_empty());
         let d = resolve(&held, &own.node_id, &dest.node_id, POLICY);
         assert_eq!(d.route, EffectiveRoute::Direct { known: false }, "the gateway-carried Proxy is not the route under the rpc_node policy: with no Direct fact the pair dials directly");
-        assert_eq!(d.delete, None, "a Proxy through a kind the policy does not name is skipped, never deleted");
+        assert!(d.delete.is_empty(), "a Proxy through a kind the policy does not name is skipped, never deleted");
     }
 }

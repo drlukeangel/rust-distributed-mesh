@@ -164,7 +164,7 @@ fn a_stale_destination_incarnation_is_superseded() {
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
     let r = resolve(&held, &own.node_id, &dest.node_id, RPC);
     assert_eq!(r.route, EffectiveRoute::Direct { known: false });
-    assert_eq!(r.delete, Some((p, INVALID_DESTINATION_SUPERSEDED)), "the superseded Proxy is handed back for delete");
+    assert_eq!(r.delete, vec![(p, INVALID_DESTINATION_SUPERSEDED)], "the superseded Proxy is handed back for delete");
 }
 
 #[test]
@@ -246,6 +246,29 @@ fn a_direct_fact_and_a_proxy_naming_a_deleted_destination_are_not_current() {
     assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: false });
 }
 
+/// CONTRACT (connections.md §8: "If any dependency is superseded, the source writes Proxy
+/// Disconnected with a named structural reason ... `destination-incarnation-superseded`"; §13 I:
+/// "Stale evidence is never used for a new process birth"): the source holds a Proxy to the
+/// destination's birth. The destination is deleted and recovered at its path and name as a new
+/// node. The source's next resolve, naming the new node, hands back the old Proxy for delete with
+/// `destination-incarnation-superseded` and routes the new node on its own (a direct dial). Must
+/// NOT happen: the old Proxy kept because no open names its node again, or the new node routed
+/// over it. A Proxy whose births the topology view still holds is never handed back.
+#[test]
+fn a_proxy_naming_a_deleted_destination_birth_is_handed_back_at_the_next_resolve_toward_its_successor() {
+    let (mut held, own, carrier, dest) = estate();
+    let m = members(&mut held, &[&carrier, &dest]);
+    let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
+    held.apply(p.clone()).unwrap();
+    let successor = end(NodeKind::RpcNode, 3, Some("d2"));
+    m.set(successor.node_id.clone(), successor.name.clone(), successor.incarnation.clone().unwrap());
+    assert!(resolve(&held, &own.node_id, &successor.node_id, RPC).delete.is_empty(), "the Proxy's births are current: nothing is handed back");
+    m.depart(dest.node_id.clone(), dest.name.clone());
+    let r = resolve(&held, &own.node_id, &successor.node_id, RPC);
+    assert_eq!(r.route, EffectiveRoute::Direct { known: false }, "the successor is routed on its own, never over the old birth's Proxy");
+    assert_eq!(r.delete, vec![(p, INVALID_DESTINATION_SUPERSEDED)], "the old birth's Proxy is handed back for delete, by name");
+}
+
 #[test]
 fn a_valid_proxy_through_a_carrier_kind_the_protocol_forbids_is_skipped_not_disconnected() {
     let (own, dest) = (end(NodeKind::RpcNode, 1, Some("o1")), end(NodeKind::RpcNode, 3, Some("d1")));
@@ -257,7 +280,7 @@ fn a_valid_proxy_through_a_carrier_kind_the_protocol_forbids_is_skipped_not_disc
     held.apply(proxy(own.clone(), admin, dest.clone(), 20)).unwrap();
     let r = resolve(&held, &own.node_id, &dest.node_id, RPC);
     assert_eq!(r.route, EffectiveRoute::Direct { known: false });
-    assert_eq!(r.delete, None);
+    assert!(r.delete.is_empty());
 }
 
 #[test]
@@ -354,5 +377,5 @@ fn rename_preserves_routes_and_pair_reuse_keeps_births_independent() {
     held.apply(renamed).unwrap();
     assert_eq!(held.own_active_proxies().len(), 1);
     topology.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::mint());
-    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).delete.map(|(_, reason)| reason), Some(INVALID_DESTINATION_SUPERSEDED));
+    assert_eq!(resolve(&held, &own.node_id, &dest.node_id, RPC).delete.first().map(|(_, reason)| *reason), Some(INVALID_DESTINATION_SUPERSEDED));
 }

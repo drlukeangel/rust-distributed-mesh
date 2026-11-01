@@ -57,7 +57,7 @@ async fn an_active_proxy_is_reused_without_a_fresh_direct_dial_ladder() {
     assert_eq!(served_by(&first.outcome).map(|s| s.0).as_deref(), Some(r.b.resolved.node_id.as_str()), "{:?}", first.outcome);
     assert!(matches!(first.route, EffectiveRoute::ViaPeer { .. }), "{:?}", first.route);
     assert_eq!(first.leg, RouteLeg::ViaPeer { carrier: r.p.resolved.node_id.clone() });
-    assert!(first.delete.is_none(), "a valid Proxy is reused, not deleted");
+    assert!(first.delete.is_empty(), "a valid Proxy is reused, not deleted");
     let ev = first.evidence.expect("one leg ran");
     assert_eq!(ev.node_id, Some(r.p.resolved.node_id.clone()), "the one leg the origin ran went to the carrier");
     assert!(!ev.reused, "the first call dialled the carrier");
@@ -83,14 +83,14 @@ async fn an_indeterminate_alone_never_invalidates_a_proxy() {
     assert!(matches!(held_call.outcome, RpcOutcome::Indeterminate(_)), "{:?}", held_call.outcome);
     assert_eq!(held_call.leg, RouteLeg::ViaPeer { carrier: r.p.resolved.node_id.clone() });
     assert!(held_call.evidence.expect("one leg ran").committed);
-    assert!(held_call.delete.is_none(), "a post-commit loss is not Proxy-health evidence (connections.md §8)");
+    assert!(held_call.delete.is_empty(), "a post-commit loss is not Proxy-health evidence (connections.md §8)");
     // The projection is the seam's read-only input: the Proxy is still valid, nothing is owed, and
     // the next new invocation still goes over it.
     assert!(owed_direct_restored(&held, 1_000).is_empty(), "no delete is owed after an Indeterminate");
     let next = connected(&r, &held, &own, &r.b, b"after").await;
     assert_eq!(served_by(&next.outcome).map(|s| s.0).as_deref(), Some(r.b.resolved.node_id.as_str()), "{:?}", next.outcome);
     assert!(matches!(next.route, EffectiveRoute::ViaPeer { .. }));
-    assert!(next.delete.is_none());
+    assert!(next.delete.is_empty());
     assert_eq!(r.c.handled.load(Ordering::SeqCst), 0, "nothing was replayed anywhere else");
 }
 
@@ -109,7 +109,7 @@ async fn a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_
     let still = connected(&r, &held, &own, &r.b, b"still-proxied").await;
     assert_eq!(still.leg, RouteLeg::ViaPeer { carrier: r.p.resolved.node_id.clone() }, "new calls stay on the proven Proxy until the delete lands");
     assert!(matches!(still.route, EffectiveRoute::ViaPeer { .. }));
-    assert!(still.delete.is_none(), "the seam deletes nothing itself: the obligation is the caller's");
+    assert!(still.delete.is_empty(), "the seam deletes nothing itself: the obligation is the caller's");
     assert!(pooled_to(&r, &r.b).is_empty(), "no direct leg was run on the strength of the row alone");
     // The delete lands durably (the owed row applied, as the writer's ACK would apply it): the
     // next new invocation is Direct.

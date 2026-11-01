@@ -526,13 +526,17 @@ impl EffectiveRoute {
     }
 }
 
-/// One resolution: the route, beside the own Proxy found invalid on the way and why.
+/// One resolution: the route, beside the own Proxies found invalid on the way and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteResolution {
     /// The route.
     pub route: EffectiveRoute,
-    /// The own Proxy found invalid and the reason, for the caller to delete.
-    pub delete: Option<(NodeConnection, &'static str)>,
+    /// Each own Proxy found invalid and the reason, for the caller to delete: first the one toward
+    /// this destination, then any other naming a destination or carrier birth the topology view
+    /// holds superseded (connections.md §8: "If any dependency is superseded, the source writes
+    /// Proxy Disconnected"). A destination recovered at its path and name is a new node, so its
+    /// old birth's Proxy is never the one toward this destination: it is found here.
+    pub delete: Vec<(NodeConnection, &'static str)>,
 }
 
 /// Why `proxy` is not valid now over `held`, or `None` when it is. The destination and carrier
@@ -578,7 +582,8 @@ pub fn resolve_for_carriers(
     proxy: bool,
     carriers: &[NodeKind],
 ) -> RouteResolution {
-    let mut delete = None;
+    let mut delete = Vec::new();
+    let mut via = None;
     if proxy && !carriers.is_empty() {
         if let Some(Some(proxy)) = held.own_proxy_for(destination, alpn) {
             // A valid Proxy through a carrier kind this protocol does not allow is skipped, not
@@ -590,12 +595,24 @@ pub fn resolve_for_carriers(
             match proxy_invalid(held, proxy) {
                 None if kind_allowed => {
                     let carrier = proxy.carrier.as_ref().map(|c| c.node_id.clone()).expect("a valid Proxy names its carrier");
-                    return RouteResolution { route: EffectiveRoute::ViaPeer { carrier, proxy: proxy.clone() }, delete: None };
+                    via = Some(EffectiveRoute::ViaPeer { carrier, proxy: proxy.clone() });
                 }
                 None => {}
-                Some(reason) => delete = Some((proxy.clone(), reason)),
+                Some(reason) => delete.push((proxy.clone(), reason)),
             }
         }
+    }
+    // Every other own Proxy [`proxy_invalid`] judges, its recorded destination or carrier birth
+    // superseded in the topology view: a dependency that is gone is judged at this source's next
+    // open, whichever destination that open names.
+    let toward = |p: &NodeConnection| &p.destination.node_id == destination && p.alpn.as_slice() == alpn;
+    for other in held.own_active_proxies().into_iter().filter(|p| !toward(p)) {
+        if let Some(reason) = proxy_invalid(held, other) {
+            delete.push((other.clone(), reason));
+        }
+    }
+    if let Some(route) = via {
+        return RouteResolution { route, delete };
     }
     let route = match held.active_direct_for(own, destination, alpn) {
         // A Direct fact naming a destination process that is gone is no evidence about the
@@ -868,7 +885,7 @@ mod tests {
                     carrier: car.node_id.clone(),
                     proxy: proxy_conn.clone(),
                 },
-                delete: None,
+                delete: Vec::new(),
             }
         );
 
@@ -877,7 +894,7 @@ mod tests {
             no_proxy_policy,
             RouteResolution {
                 route: EffectiveRoute::Direct { known: true },
-                delete: None,
+                delete: Vec::new(),
             }
         );
 

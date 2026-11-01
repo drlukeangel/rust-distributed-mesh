@@ -140,8 +140,9 @@ pub struct ConnectedCall<R> {
     pub leg: RouteLeg,
     /// The route the call took.
     pub route: EffectiveRoute,
-    /// The caller's own Proxy found invalid, with the reason, for the caller to delete.
-    pub delete: Option<(NodeConnection, &'static str)>,
+    /// The caller's own Proxies found invalid, each with the reason, for the caller to delete
+    /// ([`rdm_core::connections::RouteResolution::delete`]).
+    pub delete: Vec<(NodeConnection, &'static str)>,
 }
 
 impl NodeRpcClient {
@@ -183,7 +184,7 @@ impl NodeRpcClient {
             route = resolution.route.token(),
             deleted = tracing::field::Empty,
         );
-        if let Some((_, why)) = &resolution.delete {
+        if let Some((_, why)) = resolution.delete.first() {
             span.record("deleted", *why);
         }
         let choice = RouteChoice::from(&resolution.route);
@@ -193,7 +194,7 @@ impl NodeRpcClient {
         // 8): the carried call that answers `connection-lost` deletes the Proxy it travelled.
         if let (RpcOutcome::NotSent(n), EffectiveRoute::ViaPeer { proxy, .. }) = (&outcome, &resolution.route) {
             if matches!(n.reason(), NotSentReason::ConnectionLost(_)) {
-                delete = Some((proxy.clone(), INVALID_CONNECTION_LOST));
+                delete.push((proxy.clone(), INVALID_CONNECTION_LOST));
             }
         }
         ConnectedCall { outcome, evidence, leg, route: resolution.route, delete }

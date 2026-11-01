@@ -1485,7 +1485,7 @@ impl Dialer {
                 &self.alpn.carriers,
             )
         };
-        if let Some((invalid_proxy, reason)) = res.delete {
+        for (invalid_proxy, reason) in res.delete {
             self.registry
                 .inner
                 .sink

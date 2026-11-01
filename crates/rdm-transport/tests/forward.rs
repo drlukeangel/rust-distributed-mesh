@@ -198,7 +198,7 @@ async fn a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_dis
         let resolution = resolve(&held, &own, &r.target.resolved.node_id, policy);
         let call = r.origin.call_resolved::<Probe>(resolution, &own, &r.target.resolved.name, &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
         assert!(matches!(call.outcome, RpcOutcome::NotSent(_)), "{:?}", call.outcome);
-        assert_eq!(call.delete, deleted.then_some((proxy, INVALID_CONNECTION_LOST)));
+        assert_eq!(call.delete, deleted.then_some((proxy, INVALID_CONNECTION_LOST)).into_iter().collect::<Vec<_>>());
     }
 }
 
