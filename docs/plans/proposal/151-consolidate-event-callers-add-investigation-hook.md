@@ -33,25 +33,25 @@ A call is "reach the node, send, get its answer, try again". Today that is five 
 
 | # | Where | What it repeats or bounds |
 |---|---|---|
-| 1 | `rdm-transport/src/client.rs:33` `Budget` | four ways to bound one call's time: `Overall(d)` (resolve, dial, send and reply in one deadline; the default, 10 s, `client.rs:116`), `Split { send, reply }` (reply counted from the commit cut), `Stream { send }` (no reply bound: the connection the request committed on is the bound), `Owed` (no bound at all) |
-| 2 | `client.rs:80` `CallOptions.once` | "asked once": a request whose connect fails or whose stream is lost is not resent (the tickle's direct probe, `rdm-admin/src/offline.rs:382`; ten Rafka call sites) |
-| 3 | `client.rs:92` `CallOptions.unsent_is_final` | a carrier's one inner call ends `NotSent` from its first unsent attempt (`forward.rs:177`) |
-| 4 | `client.rs:1302` `until_end` | the attempt loop: resends an unsent or unacked request on the resend schedule; re-dials when no connection is held; `receiver_gone()` checked before every attempt (`client.rs:1323`) |
-| 5 | `client.rs:877` `until_resolved` | an `Owed` request whose receiver this view does not hold yet: reads the view again on the schedule and on every change of the view |
-| 6 | `client.rs:1495` `hold_connection` | acked, response incomplete, stream gone: keeps a connection so the responder can resend |
-| 7 | `client.rs:1399` + `RoutePolicy` (`client.rs:106`) | the next attempt through a carrier once an attempt sent nothing (i146 Q52) |
-| 8 | `rdm-admin/src/node_config.rs:479` `owed()` | a workflow loop over #4: sends a Status request again to the primary the view names next on `RejectedNotPrimary`, `NotReady` (root) or a call that ended with no reply |
-| 9 | `rdm-admin/src/admin/recovery.rs:737` `report_terminate` | a workflow loop with two kinds of turn: a domain answer that keeps the report owed (`BuildInProgress`, `unknown-node`, `NotFabricPrimary`) and a call that ended with no reply, sent again to the fabric-primary the view names |
+| 1 | `rdm-transport/src/client.rs` `Budget` `Budget` | four ways to bound one call's time: `Overall(d)` (resolve, dial, send and reply in one deadline; the default, 10 s, `CallOptions::default`), `Split { send, reply }` (reply counted from the commit cut), `Stream { send }` (no reply bound: the connection the request committed on is the bound), `Owed` (no bound at all) |
+| 2 | `CallOptions` `CallOptions.once` | "asked once": a request whose connect fails or whose stream is lost is not resent (the tickle's direct probe, `rdm-admin/src/offline.rs` `TickleClient::direct`; ten Rafka call sites) |
+| 3 | `CallOptions.unsent_is_final` `CallOptions.unsent_is_final` | a carrier's one inner call ends `NotSent` from its first unsent attempt (`forward.rs` `carry_once`) |
+| 4 | `until_end` `until_end` | the attempt loop: resends an unsent or unacked request on the resend schedule; re-dials when no connection is held; `receiver_gone()` checked before every attempt (`until_end`) |
+| 5 | `until_resolved` `until_resolved` | an `Owed` request whose receiver this view does not hold yet: reads the view again on the schedule and on every change of the view |
+| 6 | `hold_connection` `hold_connection` | acked, response incomplete, stream gone: keeps a connection so the responder can resend |
+| 7 | `until_end`, `leg` + `RoutePolicy` (`RoutePolicy`) | the next attempt through a carrier once an attempt sent nothing (i146 Q52) |
+| 8 | `rdm-admin/src/node_config.rs` `owed` `owed()` | a workflow loop over #4: sends a Status request again to the primary the view names next on `RejectedNotPrimary`, `NotReady` (root) or a call that ended with no reply |
+| 9 | `rdm-admin/src/admin/recovery.rs` `report_terminate` `report_terminate` | a workflow loop with two kinds of turn: a domain answer that keeps the report owed (`BuildInProgress`, `unknown-node`, `NotFabricPrimary`) and a call that ended with no reply, sent again to the fabric-primary the view names |
 
-The responder (`delivery.rs:1082` `push_loop`, `server.rs:771` `answer_refusal`) resends its response
+The responder (`delivery.rs` `push_loop` `push_loop`, `server.rs` `answer_refusal` `answer_refusal`) resends its response
 on the same schedule until it is acked, the response is caught up, or the receiver is gone: the same
 rule in the other direction, with no attempt count.
 
-The schedule (`delivery.rs:39` `Pacing`, `rdm-core/src/delivery.rs:15` `resend_after`): the first delay
+The schedule (`delivery.rs` `Pacing` `Pacing`, `rdm-core/src/delivery.rs` `resend_after` `resend_after`): the first delay
 is the publish cadence, each next one doubles, each carries ±25 % jitter, capped at the staleness floor.
-Inside one attempt the wait for the ack is that attempt's delay (`client.rs:1457`: `ack_by = now +
+Inside one attempt the wait for the ack is that attempt's delay (`until_end`, `ack_by`: `ack_by = now +
 pacing.after(attempt)`), and the next attempt starts at `started + pacing.after(attempt)`
-(`client.rs:1339`), the gap measured from the attempt's start, never from its end.
+(`until_end`, `next_at`), the gap measured from the attempt's start, never from its end.
 
 Non-test call sites in RDM (`grep -rn 'Budget::<V>' crates demo --include=*.rs`, tests excluded):
 `Overall` 19, `Owed` 14, `Split` 12, `Stream` 17; `once: true` 1; `unsent_is_final: true` 1. Rafka:
@@ -62,21 +62,21 @@ context.rs 2, dial_bound.rs 1; tests 8), `once: true` 10.
 Owner loops that are not delivery loops and stay (node-rpc.md §52 bans "a delivery-retry loop in a
 primitive or a workflow", never a loop on a domain answer):
 
-- `rdm-client/src/build_stream.rs:267` `follow_with`: reattaches a Build stream by `build_id` after its
+- `rdm-client/src/build_stream.rs` `follow_with`: reattaches a Build stream by `build_id` after its
   connection closed (build.md "a live run is reattached, never re-claimed"; i146 Q22). A stream op is
   not resent after its commit (§2, R-151.3).
-- `recovery.rs:737`'s turns on `BuildInProgress`, `unknown-node` and `NotFabricPrimary`: answers, not
+- `report_terminate`'s turns on `BuildInProgress`, `unknown-node` and `NotFabricPrimary`: answers, not
   silence. Only its "ended with no reply, sent again to the fabric-primary the view names next" turn is
   a delivery loop (§2, R-151.5).
-- `node_config.rs:479`'s turns on `RejectedNotPrimary` and `NotReady`: the same.
-- `fabric_handover.rs:519`, `:666` `call_once`: one call, its reply read; the hand-over's own rule above.
+- `node_config::owed`'s turns on `RejectedNotPrimary` and `NotReady`: the same.
+- `fabric_handover.rs` `command_update_primary_in`, `update_node_type_primary_in` `call_once`: one call, its reply read; the hand-over's own rule above.
 
 ## 2. The one mechanism
 
 ```rust
 /// How a call is resent: how many attempts it makes and how long one attempt may take.
 pub struct Resend {
-    /// Attempts in all, the first send included. 3 unless the owner's page says one (R-151.1).
+    /// Attempts in all, the first send included: the caller's; `Resend::default()` is 3 (Q311, Q315).
     pub attempts: u8,
     /// How long one attempt may take.
     pub time_limit: TimeLimit,
@@ -101,14 +101,14 @@ pub struct TimeLimit(pub Duration);
 - **R-151.2 What an attempt is and which clock runs inside it (verified against `until_end`).** An
   attempt is one send of the request: direct, or through the carrier the route policy names (#7),
   each counted. Inside an attempt the wait for the ack is the schedule's delay for that attempt
-  (existing, `client.rs:1457`); the `TimeLimit` bounds the attempt's resolve, dial and complete send
+  (existing, `until_end`, `ack_by`); the `TimeLimit` bounds the attempt's resolve, dial and complete send
   (a connect that hangs ends the attempt at the limit, `NotSent(Deadline)`), and once the request is
-  acked, the reply, counted from the ack (today's `Split.reply`, `stream.rs:592`). The next attempt
-  starts at the schedule's next delay from the previous attempt's start (existing, `client.rs:1339`),
+  acked, the reply, counted from the ack (today's `Split.reply`, `call_stream`). The next attempt
+  starts at the schedule's next delay from the previous attempt's start (existing, `until_end`, `next_at`),
   or at the previous attempt's end when the limit ran past it. A receiver this view does not hold yet
   ends that attempt `NotSent(Resolve(Unknown))` (#5 removed: an attempt, not a wait). Between
-  attempts the call wakes early when the resolver changes (existing, `client.rs:1283`) and checks
-  `receiver_gone()` (existing, `client.rs:1323`). An acked request is never resent and spends no
+  attempts the call wakes early when the resolver changes (existing, `pause`) and checks
+  `receiver_gone()` (existing, `until_end`). An acked request is never resent and spends no
   attempt: its wait for the response is bounded by the reply limit from the ack, and #6
   (`hold_connection`, today looping with no bound until the response completes or the receiver is
   gone) runs inside that limit and ends with it.
@@ -117,13 +117,13 @@ pub struct TimeLimit(pub Duration);
   connection ends the invocation `Indeterminate` and the owner reattaches by its own rule); the
   responder suppresses a repeated identity after acceptance (§43), so a resent stream request would
   open no second stream. `Stream` needs no variant: the op's shape says it (`unary` is already on
-  the call slot, `delivery.rs:578`). Before the commit a stream op's attempts count as any other's.
+  the call slot, `on_response`, the slot's `unary`). Before the commit a stream op's attempts count as any other's.
 - **R-151.4 The end of the attempts is named by what crossed the commit cut, never by the last attempt
   alone.** No attempt committed: `NotSent` with the last attempt's reason. Any attempt committed and no
   reply within its limit: `Indeterminate` (node-rpc.md §34 "after that cut, reply timeout is
   Indeterminate"). Acked and the reply not within the limit: `Indeterminate`, and it counts as
   unanswered (the receiver took the command and did not answer it: Q182). `committed` is a loop
-  variable set once (`client.rs:1442`) and must be read at the final send.
+  variable set once (`until_end`) and must be read at the final send.
 - **R-151.5 The owner never resends.** #8 and #9's "no reply, sent again to the primary the view names
   next" turns are removed; their turns on a domain answer stay as they are (§1). A command addressed
   to a role resolves its receiver at each attempt from the view: see R-151.6 for what that can and
@@ -136,12 +136,12 @@ One rule: **an attempt's `TimeLimit` is how long the receiver takes to answer, p
 transport.**
 
 - Every call whose handler answers at once (a status read, a declaration, a config apply): **10 s**,
-  the default today (`client.rs:116`).
+  the default today (`CallOptions::default`).
 - A call whose handler waits on its own bound before answering takes that bound plus 10 s:
   `node.connections.delete { All }` and node.stop wait `RDM_CONNECTIONS_DELETE_DEADLINE_MS` (5 s
-  default), so 15 s (today `node_commands.rs:343` `Split { send: 5 s, reply: connections_delete_reply() }`);
-  a Build step call waits its step's own bound (today `node_commands.rs:357` reply 60 s,
-  `storage_change.rs:98` reply 30 s, `status_rpc.rs:1973`).
+  default), so 15 s (today `send_command_reaching` `Split { send: 5 s, reply: connections_delete_reply() }`);
+  a Build step call waits its step's own bound (today `send_command_reaching` reply 60 s,
+  `storage_change::command_reply` reply 30 s, `carry_lifecycle_reaching`).
 - A stream op: 10 s to resolve, dial, send and receive its first frame; later frames as R-151.3.
 - Behaviour change to name in a cell: today's `Split` gives the reply its own window after the commit;
   one `TimeLimit` per attempt gives it the limit counted from the ack, so a slow dial no longer eats the
@@ -161,31 +161,39 @@ transport.**
      mesh-primary's silence is the fabric-primary's by gossip and the election;
   3. the receiver is the fabric-primary: nothing starts; fabric recovery already owns it
      (fabric-recovery.md step 1, unheard past the floor).
-  A `NodeTarget::Endpoint` call names no birth (`resolve.rs:24`) and starts nothing.
+  A `NodeTarget::Endpoint` call names no birth (`NodeTarget::Endpoint`) and starts nothing.
 - **R-151.8 The report rides the existing Q182 record, never a new direct trigger.** The mesh-primary's
   `CommandView` already holds, per exact birth, the instant a command of this admin was left unanswered
-  (`node_commands.rs:533` contract; `primary_watch.rs:162` reads it on the watch's tick; the tickle
-  reads it so an answer from such a birth is not `reached`, `offline.rs:396`). Under i151 the record is
+  (`CommandView::unanswered_since` contract; `Looker::command_unanswered` reads it on the watch's tick; the tickle
+  reads it so an answer from such a birth is not `reached`, `TickleClient::command_unanswered`). Under i151 the record is
   fed by two writers: this admin's own call whose attempts ended unanswered, and a report. One new
   Status request on the upward path the declarations use (node-rpc-envelope.md Status, `0x1B`):
-  `ReportCallFailed { sender, receiver, op, outcome }` (the same facts `on_call_failed` carries, Q314,
-  so the primary stores the reason, not only the fact), sent with `Resend::default()` to the primary above the
+  `ReportCallFailed { sender, receiver, op, failure }` (the same facts `on_call_failed` carries, Q314,
+  so the primary stores the reason, not only the fact; `failure: CallFailure`, the typed reason only),
+  sent with `Resend::default()` to the primary above the
   birth, answered at once (`Accepted`, or `SubjectUnknown` for a birth the primary does not hold, which
   ends the report by name). The primary writes the report into the same record; the watch's tick
   investigates each birth there as it does today, "once per silence (not again within a staleness
   floor, nor until it is heard ready or unheard again)" (node-recovery.md step 3): fifty callers that
   cannot reach one broker in the same second produce one investigation, not fifty, and the record is
   the one clock. **The clock changes (Q311 replaces Q182's):** today the record reads a birth as
-  unanswered only once the command's send is a staleness floor old (`node_commands.rs:533` contract),
+  unanswered only once the command's send is a staleness floor old (`CommandView::unanswered_since` contract),
   and the watch's tick then marks it. Under i151 the instant the attempts are spent is the mark, the
   way node-recovery.md step 1 already marks a birth "at once when a command to it was never sent for a
-  reachability reason"; step 2's half-floor wait after the mark applies as for silence, so the
-  investigation starts half a floor after the spent instant: at production cadence ~21 s after a call
-  whose connect is refused, ~29 s after one committed and never acked, ~45 s after one whose connect
-  hangs, ~25 s after one acked and unanswered (§5), against today's send + 30 s + the tick. A birth the
+  reachability reason". Step 2's half-floor wait does not apply to it: that wait exists so a node
+  silent on gossip has time to come back, and a spent call is stronger evidence than silence (three
+  sends went unanswered; Q311 says the spent call *starts* investigation). The watch investigates the
+  birth on its next tick (every gossip interval, node-recovery.md "Detection"): at production cadence
+  within 2 s of the spent instant, so ~8 s after a call whose connect is refused, ~16 s after one
+  committed and never acked, ~32 s after one whose connect hangs, ~12 s after one acked and
+  unanswered (§5), against today's send + 30 s + half a floor + the tick. A silence mark keeps its
+  half floor. A birth the
   record already holds unanswered takes no new mark from a later spent call (one investigation per
-  silence). The report is a notice: it is not resent to a next primary when its own attempts end
-  (case 2 above covers the next primary); a report whose attempts end is spanned and dropped.
+  silence). The report is a notice and is itself never reported, marked or hooked: when its own attempts end,
+  that end is spanned (`rdm.node_rpc.delivery.update.via-attempt-ended`) and the report is dropped; it
+  is not resent to a next primary (case 2 above covers the next primary), it writes no record and it
+  does not call `on_call_failed` (the hook is the application's event, and RDM's own report is not an
+  application call). Q311's rule applies to the call that was spent, once; no report about a report.
 - A data-plane call is no different from a command: a Rafka node's call to a broker that ends
   unanswered reports through the same request on the node's declaration path.
 - Investigation itself is unchanged (node-investigation.md: connections index, runtime inspect,
@@ -199,15 +207,15 @@ Production cadences: publish cadence 2 s (`RDM_GOSSIP_INTERVAL_MS`), staleness f
 | Mechanism | Value | Scope | Starts / resets when | On exhaustion | Source and rationale |
 |---|---|---|---|---|---|
 | Attempts | the caller's; `Resend::default()` 3, the first send included; the tickle's direct probe 1 | one call (under R-151.6 arm A: one call to one resolved birth) | the call opens; never reset for an exact birth: a receiver re-resolved to another birth ends the call `ReceiverGone` (existing) and a retarget is the owner's new call; under arm A a new birth the view names for the role starts its own three | the call ends to its owner by name (R-151.4) and the birth is recorded unanswered (R-151.8) | Q311 (3), Q315 (the caller's, RDM's the default); node-recovery.md step 2 (the tickle's 1): existing |
-| Delay before attempt n+1 | `cadence × 2^(n-1)`, ±25 % jitter, capped at the floor: 2 s, 4 s (8 s unused with 3 attempts) | one call | measured from attempt n's start | n/a | `rdm-core/src/delivery.rs:15`, `delivery.rs:39`: existing |
-| Ack wait inside attempt n | that attempt's delay (2 s, 4 s, 8 s) | one attempt | the complete send | the next attempt, or the end at attempt 3 | `client.rs:1457`: existing |
+| Delay before attempt n+1 | `cadence × 2^(n-1)`, ±25 % jitter, capped at the floor: 2 s, 4 s (8 s unused with 3 attempts) | one call | measured from attempt n's start | n/a | `rdm-core/src/delivery.rs` `resend_after`, `delivery.rs` `Pacing`: existing |
+| Ack wait inside attempt n | that attempt's delay (2 s, 4 s, 8 s) | one attempt | the complete send | the next attempt, or the end at attempt 3 | `until_end`, `ack_by`: existing |
 | `TimeLimit` | 10 s; the receiver's own bound + 10 s where it has one (15 s for connections delete and stop; a Build step's bound + 10 s) | one attempt: resolve, dial, complete send; then the reply from the ack | the attempt's start; the reply's from the ack | the attempt ends `NotSent(Deadline)` or `Indeterminate` | proposed (§3): the default is today's 10 s `Overall`; the per-class values are today's `Split.reply` values; validated by the flame of §8 step 4 |
-| Early wake | the resolver's change, the call's own state change | one call | n/a | n/a | `client.rs:1283`: existing |
+| Early wake | the resolver's change, the call's own state change | one call | n/a | n/a | `pause`: existing |
 | Report `ReportCallFailed` | one request, `Resend::default()`, to the primary above the birth | one caller, one birth | the attempts of a call to that birth end unanswered | spanned and dropped: the record is the primary's | proposed (R-151.8) |
-| Coalescing | one unanswered record per exact birth; one investigation per silence | one primary | an answer from the birth, a digest of the exact birth, the birth leaving the view clear it | not a timing value | `node_commands.rs:533`, node-recovery.md step 3: existing |
-| Investigation start | the watch's tick (every gossip interval), half a floor after the mark | one primary | the mark: silence past the floor (existing), a command never sent for a reachability reason (existing), the attempts of a call spent (proposed, R-151.8) | n/a | node-recovery.md "Detection", step 1, step 2: existing; the spent-call mark: proposed |
-| Responder's resend of a response | the same schedule, no attempt count; ends on the ack, caught up, or the receiver gone | one response | the request's stream is lost | n/a (R-151.9) | `delivery.rs:1082`, `:905-919`: existing |
-| Owed response frames held | no bound in items or bytes today | one process | n/a | n/a | `delivery.rs` holds `st.owed` with no cap: verified absent; a bound is proposed in R-151.9, measured before it is set |
+| Coalescing | one unanswered record per exact birth; one investigation per silence | one primary | an answer from the birth, a digest of the exact birth, the birth leaving the view clear it | not a timing value | `CommandView::unanswered_since`, node-recovery.md step 3: existing |
+| Investigation start | the watch's tick (every gossip interval): half a floor after a silence mark; the next tick after a spent-call mark | one primary | the mark: silence past the floor (existing, half floor), a command never sent for a reachability reason (existing), the attempts of a call spent (proposed, R-151.8, next tick) | n/a | node-recovery.md "Detection", step 1, step 2: existing; the spent-call mark and its next-tick start: proposed, by Q311's "starts" |
+| Responder's resend of a response | the same schedule, no attempt count; ends on the ack, caught up, or the receiver gone | one response | the request's stream is lost | n/a (R-151.9) | `delivery.rs` `push_loop`, `push_resend`: existing |
+| Response frames held for resend | no bound in items or bytes today | one process | n/a | n/a | `delivery.rs` holds `st.owed` with no cap: verified absent; a bound is proposed in R-151.9, measured before it is set |
 
 How the budgets combine for one 10 s call to a birth that never answers, at production cadence, no
 jitter:
@@ -220,29 +228,29 @@ jitter:
 | acked, no reply | 0 s; ack; reply limit 10 s | n/a: acked requests are not resent | n/a | **~10 s**, `Indeterminate` |
 
 The earlier text's "about 36 s" assumed every attempt waits its full limit; the loop does not (the ack
-wait is the schedule's delay, `client.rs:1457`). These numbers are what the code as it stands gives
+wait is the schedule's delay, `until_end`, `ack_by`). These numbers are what the code as it stands gives
 once attempts are counted.
 
 The user-visible target, one call to a birth that never answers, at production cadence: the call ends
-to its owner at the "Spent at" instant above; the investigation starts half a floor (15 s) later
-(R-151.8); the verdict follows the ladder's own bounds (node-tickle.md), and `on_node_investigated`
-is called once the verdict is recorded. For the common case (connect refused: the process is gone)
-the owner knows at ~6 s and the investigation starts at ~21 s, inside one staleness floor; a birth
-that is silent on gossip too is marked by the pruner at 30 s and investigated at 45 s as today,
-whichever mark comes first.
+to its owner at the "Spent at" instant above and `on_call_failed` is called then; the investigation
+starts on the watch's next tick, within one gossip interval (2 s) (R-151.8); the verdict follows the
+ladder's own bounds (node-tickle.md), and `on_node_investigated` is called once the verdict is
+recorded. For the common case (connect refused: the process is gone) the owner knows at ~6 s and the
+investigation starts by ~8 s, well inside one staleness floor; a birth that is silent on gossip too is
+marked by the pruner at 30 s and investigated at 45 s as today, whichever mark comes first.
 
 ## 6. The design ceiling: three attempts end before the election (R-151.6: Luke ruled A, Q313)
 
 Every row above ends between ~6 s and ~30 s. A primary is superseded only once it is unheard past the
-staleness floor, 30 s (fabric-node-lifecycle-elections.md:110, :141), and the election then names the
+staleness floor, 30 s (fabric-node-lifecycle-elections.md §4.1, §4.3), and the election then names the
 next one. So a call addressed to a role ("the mesh-primary of mesh M", "the fabric-primary") whose
 receiver dies spends its three attempts on the dead birth before any view can name another, and
 "the owner never resends" (R-151.5) means the command ends to its owner with nothing done. That is
 exactly what #8 and #9 do today: send again to the primary the view names next. The declarations
-(`node.rs:1596`, `Budget::Owed`, one in flight, the next on the previous one's answer by name,
+(`node.rs` `declare_once`, `Budget::Owed`, one in flight, the next on the previous one's answer by name,
 node-rpc.md §43) are the same shape: a node's Stopped declaration during its mesh-primary's death
 would end unanswered and the next declaration go out, the Stopped never recorded. i150 keeps the
-declaration path: node-record.md R-NR3 (`docs/plans/proposal/node-record.md:129`, its table at `:142`)
+declaration path: node-record.md R-NR3 (`docs/plans/proposal/node-record.md`, R-NR3 and its ownership table)
 has `status`, `declared` and `operations` written by the node's mesh-primary, so the node still
 declares to it (verified in the proposal text; the i150 PRD's R3 and R9 move the node's own property
 write only). The ceiling stands after i150, and stands through #8 and #9 alone (an admin's report to
@@ -256,7 +264,7 @@ A) **Attempts are counted per resolved birth, for a role-addressed call.** The c
    birth and the view says the previous one is gone. Not a silent transfer: the owner named the role,
    never a birth, and the message is the same message under the same delivery id. Each spent birth is
    recorded unanswered (R-151.8). An exact-birth call (`ExactNode`) keeps three in all. Needs a
-   `NodeTarget` for a role (today `CurrentPath`, `ExactNode`, `Endpoint`, `resolve.rs:14`): one new
+   `NodeTarget` for a role (today `CurrentPath`, `ExactNode`, `Endpoint`, `resolve.rs` `NodeTarget`): one new
    variant, `Primary { mesh: Option<String> }` (a mesh's mesh-primary; `None` the fabric-primary),
    resolved by the same resolver #8 reads today. Said plainly: a role-addressed call's total elapsed
    time is then unbounded across births (a role whose births keep dying keeps the call open), as #8
@@ -292,16 +300,17 @@ Two moments, two places, two hooks (Luke, 2026-11-01):
 
 - **R-151.13 `on_call_failed`.** Called on the calling node, on a task of its own, once per spent call,
   after the call has ended to its owner; a notice, gates nothing. `CallFailedCtx { sender, receiver, op,
-  outcome, attempts, elapsed, context }`: `sender` and `receiver` each `(node_id, incarnation, path,
+  failure, attempts, elapsed, context }`: `sender` and `receiver` each `(node_id, incarnation, path,
   name)` (the receiver's birth the one the call was addressed to; under Q313 the last birth resolved;
-  none for a `NodeTarget::Endpoint` call, which names no birth); `op` the request's op; `outcome` the
-  reason the call's span stores, typed: `NotSent(NotSentReason)` (connect refused, connect timed out,
-  endpoint unresolved, no active route, `rdm-core/src/outcome.rs`; today's `node_commands.rs:500` names
+  none for a `NodeTarget::Endpoint` call, which names no birth); `op` the request's op; `failure: CallFailure`, the
+  reason the call's span stores and nothing more (never `RpcOutcome`, which can carry a reply):
+  `NotSent(NotSentReason)` (connect refused, connect timed out,
+  endpoint unresolved, no active route, `rdm-core/src/outcome.rs`; today's `node_commands.rs` names
   them `connect-refused`, `connect-timed-out`, `endpoint-unresolved`) or
   `Indeterminate(IndeterminateReason)` (committed and never acked; acked and no reply within the
   limit); `attempts` made; `elapsed` from the call's open; `context` the call's trace context, so the
   application's action parents to the spent call. It runs on every node (the wiring every node has for
-  `on_node_ready`, `rdm-node/src/node_hooks.rs:188`), not only admins. The writer reads `NotSent` as
+  `on_node_ready`, `rdm-node/src/node_hooks.rs` `on_node_ready`), not only admins. The writer reads `NotSent` as
   safe to ask another replica and `Indeterminate` as "the frame may have landed", its own idempotency
   rule deciding (Q316).
 
@@ -314,9 +323,9 @@ and a new section:
 > ## on_call_failed
 >
 > When a call this node opened ends with its attempts spent ([node-rpc.md §43](node-rpc.md#43-resend-delivery-is-the-runtimes)),
-> RDM calls `on_call_failed` once, with `CallFailedCtx { sender, receiver, op, outcome, attempts,
+> RDM calls `on_call_failed` once, with `CallFailedCtx { sender, receiver, op, failure, attempts,
 > elapsed, context }`, on a task of its own, after the call has ended to its owner. `sender` and
-> `receiver` are each the birth's `(node_id, incarnation, path, name)`; `outcome` is the call's stored
+> `receiver` are each the birth's `(node_id, incarnation, path, name)`; `failure` is the call's stored
 > reason, `NotSent` with its reason (nothing reached the receiver) or `Indeterminate` with its reason
 > (the request crossed the commit cut and no answer came). The notice gates nothing: the call's owner
 > already has its outcome by name; the application acts by its own rule (ask another node, mark a
@@ -354,9 +363,9 @@ and a new section:
 ## 8. The responder and the store (R-151.9)
 
 - Verified: a response for an invocation the caller ended (removed from `calls`) is acked, never
-  dropped (`delivery.rs:568-571` with `completed`, `:636-640`: an own sender's ended invocation counts
+  dropped (`Delivery::on_response` with `Delivery::completed`: an own sender's ended invocation counts
   as completed), so a late response to a call whose attempts were spent is acked and the responder's
-  `push_loop` ends `acked` (`delivery.rs:905`). Nothing new is needed there; the earlier text's "the
+  `push_loop` ends `acked` (`push_resend`). Nothing new is needed there; the earlier text's "the
   response direction resends under the call's `Resend`" is withdrawn: the responder does not know the
   caller's `Resend`, and needs no attempt count because the ack of a late frame ends it.
 - The owed-frame store (`st.owed`) has no bound in items or bytes (verified absent). Proposed: a bound
@@ -367,7 +376,7 @@ and a new section:
 
 ## 9. Page text (exact; for Luke's yes on the build)
 
-node-rpc.md §34, the budget shapes. Old (`node-rpc.md:869-884`):
+node-rpc.md §34, the budget shapes. Old (§34, the budget shapes):
 
 > The generic API supports three budget shapes:
 >
@@ -389,14 +398,14 @@ node-rpc.md §34, the budget shapes. Old (`node-rpc.md:869-884`):
 New:
 
 > Every call carries one `Resend { attempts, time_limit }`. `attempts` is how many sends the call makes
-> in all, the first included: three, or one where the owner's page says one (the tickle's direct probe,
-> a writer's leg to a replica). `TimeLimit` is how long one attempt may take: resolve, dial and the
+> in all, the first included: three by default, set by whoever opens the call (the tickle's direct
+> probe is one, node-recovery.md step 2). `TimeLimit` is how long one attempt may take: resolve, dial and the
 > complete request and, once the request is acked, its reply counted from the ack; ten seconds for a
 > call its receiver answers at once, the receiver's own bound plus ten seconds where it has one. A
 > stream op's frames after its first live as long as the connection the request committed on, and a
 > stream request is never resent after its commit: the owner reattaches by its own rule.
 
-node-rpc.md §34, the rest of the section that names a budget. Old (`:885`):
+node-rpc.md §34, the rest of the section that names a budget. Old (the Build carrier paragraph):
 
 > A carried call's inner budget is the `remaining_ms` the source stamps
 
@@ -404,7 +413,7 @@ New:
 
 > A carried call's inner time limit is the `remaining_ms` the source stamps
 
-Old (`:887`):
+Old (the commit-cut paragraph):
 
 > A call's budget is its owner's bound: when it lapses the request is owed no longer (§43); an Owed call has no bound and lapses never; it ends as §43 says. For Budget::Stream, closure of the connection on which the request committed ends the invocation as Indeterminate and ends its delivery obligation: the owner of such a call (the Build carrier, build.get's watch, the handover) declared the connection its bound and reattaches by its own rule, above this layer. For other budgets, connection loss alone does not cancel the invocation; owed delivery continues within the owner's bound.
 
@@ -412,7 +421,7 @@ New:
 
 > A call's `Resend` is its owner's bound: when its attempts are spent the request is resent no longer and the call ends as §43 says. For a stream op, closure of the connection on which the request committed ends the invocation as Indeterminate and ends its delivery obligation: the owner of such a call (the Build carrier, build.get's watch, the handover) declared the connection its bound and reattaches by its own rule, above this layer. For a unary op, connection loss alone does not cancel the invocation; the request is resent within its attempts and the response within the reply limit.
 
-Old (`:889`):
+Old (the execution-deadline paragraph):
 
 > The caller budget is not a generic remote execution deadline.
 
@@ -420,8 +429,8 @@ New:
 
 > The caller's time limit is not a generic remote execution deadline.
 
-`:893` ("A protocol that needs its own execution budget carries a protocol-specific field") and the
-memory sense (`:418` "request-memory budget", `:427` `Busy { MemoryBudget }`, `:541` "server-streaming
+§34's "A protocol that needs its own execution budget carries a protocol-specific field" and the
+memory sense (§18 "request-memory budget" and `Busy { MemoryBudget }`, §22 "server-streaming
 budget") are another sense of the word, not the call's `Budget` type, and stay.
 
 node-rpc.md §43, title and first paragraph. Old:
@@ -446,13 +455,12 @@ New:
 > the commit cut, `Indeterminate` otherwise) and the birth is recorded unanswered at the primary above
 > it ([node investigation](lifecycles/node-investigation.md)). A receiver absent from the view spends an
 > attempt, never a wait. The owner never resends a call; a call's receiver is resolved again at each
-> attempt.
+> attempt, and a call addressed to a primary counts its attempts per birth the view names for it,
+> three per birth, and ends `ReceiverGone` when the role has no birth.
 
-(the elided `[...]` sentences on duplicate suppression stay.) After "resolved again at each attempt",
-by Q313: "a call addressed to a primary counts its attempts per birth the view names for it, three per
-birth, and ends `ReceiverGone` when the role has no birth".
+(the elided `[...]` sentences on duplicate suppression stay; the last sentence is Q313.)
 
-node-rpc.md §43, the route policy paragraph. Old (`:1027`):
+node-rpc.md §43, the route policy paragraph. Old:
 
 > The owner of an Owed request chooses its route policy: the one receiver it is owed to and the carriers it
 > may travel through (§45).
@@ -462,7 +470,7 @@ New:
 > The owner of a call chooses its route policy: the one receiver it is sent to and the carriers it
 > may travel through (§45).
 
-node-rpc.md §45, last sentence. Old (`:1090`):
+node-rpc.md §45, last sentence. Old:
 
 > For an Owed request the owner chooses the route policy and Node RPC executes it on every resend (§43).
 
@@ -470,7 +478,19 @@ New:
 
 > For every call the owner chooses the route policy and Node RPC executes it on every resend (§43).
 
-node-investigation.md:16-18. Old:
+node-recovery.md step 2, first sentences. Old:
+
+> 2. **Investigation.** Only the mesh-primary acts. Half a floor after the mark it runs
+>    [node investigation](node-investigation.md) on the exact birth:
+
+New:
+
+> 2. **Investigation.** Only the mesh-primary acts. Half a floor after a silence mark, and on its next
+>    tick after a spent-call mark (three sends unanswered are stronger evidence than silence,
+>    [node-rpc.md §43](../node-rpc.md#43-resend-delivery-is-the-runtimes)), it runs
+>    [node investigation](node-investigation.md) on the exact birth:
+
+node-investigation.md, the Q182 paragraph. Old:
 
 > A node that does not answer a command is silent, whatever it gossips (Q182): an owed command it
 > leaves unanswered past the staleness floor starts node investigation on its birth as silence does,
@@ -481,13 +501,30 @@ New:
 > unanswered records its birth unanswered at the primary above it (the caller itself when it is that
 > primary; any other caller reports the birth to it with Status `ReportCallFailed`; nothing for the
 > fabric-primary, whose silence is fabric recovery's), and the primary's watch starts node
-> investigation on that birth as silence does, once per silence,
+> investigation on that birth on its next tick, once per silence,
 
-node-rpc-envelope.md, Status (`0x1B`), after `ProbeNodeState` (`:779`): one new request variant,
+node-rpc-envelope.md, Status (`0x1B`): one new request variant, **appended at position 38**, after
+`ApplyNodeProperties` (37): the variants are positional on the wire (postcard), so nothing is inserted
+and no existing position moves; its golden in `crates/rdm-core/tests/status_wire.rs` is written by
+hand and its codec cell added.
 
-> `ReportCallFailed { sender: Birth, receiver: Birth, op: u8, outcome: RpcOutcome }` (`Birth` the `(node_id, incarnation, path, name)` of each end): a caller's report that its call to
-> this exact birth ended with its attempts spent and no answer (node-rpc.md §43); answered `Accepted`,
-> or `SubjectUnknown` for a birth the receiver is not the primary above.
+> `ReportCallFailed { sender: Birth, receiver: Birth, op: u8, failure: CallFailure }` (`Birth` the
+> `(node_id, incarnation, path, name)` of each end; `CallFailure` = `NotSent(NotSentReason)` or
+> `Indeterminate(IndeterminateReason)`, the typed reason only, never a reply payload): a caller's
+> report that its call to this exact birth ended with its attempts spent and no answer (node-rpc.md
+> §43); answered `Accepted`, or `SubjectUnknown` for a birth the receiver is not the primary above.
+> The report is itself never reported: its own spent attempts are spanned and end it.
+
+Code identifiers that name this mechanism are renamed with the pages (CLAUDE.md naming canon), the
+delivery sense only: `rdm-core/src/forward.rs` `OwedDelivery` becomes `ResendDelivery` (and the `owed` field of `Forward`), `client.rs` `OwedCall` becomes `ResendCall`, `owe_steps` becomes
+`resend_steps`, `delivery.rs` `st.owed`, `owe_frame`, `owe_response`, `owe_response_in`,
+`owe_again`, `owed_frames`, `owed_frames_of`, `with_owed`, `owed_drop` take `resend`/`held`
+(`held_frames`: a response frame held for resend), `OwedOne`, and the node's `OwedDeclarations`
+(`node.rs`) becomes `Declarations`; the 19 span texts in `rdm-transport/src` that say "owed" say
+"resent"/"held for resend". The other sense stays as it is: a report or exit an owner owes
+(`exits_owed`, `properties_owed`, `OwedExit`, `owed_submits`, `owes_full`, `OwedRow`, `owed_state`,
+`paths_owed_replacement`, `owed_from_view`, `owed_refused`, `owed_direct_restored`); `OwedWake` goes
+with #9's no-reply turn.
 
 The words `owed` and `budget`, any case (14 architecture pages, 61 lines, `grep -rniw 'owed\|budget'
 docs/architecture`), are replaced where they name this mechanism ("owed until acked" becomes "resent
@@ -509,10 +546,13 @@ staleness floor starts investigation: the clock is now the spent instant, R-151.
 2. `rdm-admin`: #8 and #9's no-reply turns removed, their answer turns kept; every call site given its
    `Resend` (§3); an admin's own spent call writes the Q182 record; `ReportCallFailed` served into the
    same record; `on_node_investigated` called after each verdict, with its ctx in `rdm_admin::wiring`
-   beside `on_build_ended` (`wiring.rs:227`); `on_call_failed` in `rdm-node`'s hook wiring beside
-   `on_node_ready` (`node_hooks.rs:188`), called by the transport client's owner on every node. Cells:
+   beside `on_build_ended` (`wiring.rs` `on_build_ended`); `on_call_failed` in `rdm-node`'s hook wiring beside
+   `on_node_ready` (`node_hooks.rs` `on_node_ready`), called by the transport client's owner on every node. Cells:
    a spent call calls `on_call_failed` once with the stored reason, both births and the call's trace
-   context; a call that is answered never calls it. Cells: fifty callers' reports of one birth within a floor
+   context; a call that is answered never calls it; a `ReportCallFailed` whose own attempts are spent
+   ends spanned, writes no record, sends no report and calls no hook (item 5); a spent call's birth is
+   investigated on the watch's next tick with no half-floor wait, and a silent birth still waits its
+   half floor (R-151.8). Cells: fifty callers' reports of one birth within a floor
    start one investigation; a mesh-primary's spent call to a node and a peer node's spent call to the
    same node both end in the one record; a spent call to a mesh-primary is reported to the
    fabric-primary; the hook fires once per verdict with `next` as node-recovery.md step 3 decides.
@@ -527,8 +567,8 @@ staleness floor starts investigation: the clock is now the spent instant, R-151.
   `Resend { attempts: 3, time_limit: TimeLimit(d) }`, or `Resend::default()` where `d` is 10 s; its ten
   `once: true` sites choose their own `attempts` (Q315), each named in the landing with its reason. No
   site is told its number by RDM (Q316).
-- The writer's leg policy (which replica is asked next, the route vote, `context.rs:46-57`) stays and
-  is driven by `on_call_failed`'s `outcome`: `NotSent` asks the next replica; `Indeterminate` goes
+- The writer's leg policy (which replica is asked next, the route vote, `context.rs` `DataRpcFailure`) stays and
+  is driven by `on_call_failed`'s `failure`: `NotSent` asks the next replica; `Indeterminate` goes
   through the writer's own idempotency rule. How a resent frame stays one write across a replica
   restart (the replica keeping the delivery it accepted durably, Kafka's producer id and sequence, or
   the writer's own frame identity) is Rafka's proposal, not this one.
