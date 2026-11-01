@@ -154,7 +154,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &fp_birth, "mesh1").await.unwrap();
     let topology = Arc::new(RwLock::new(t.clone()));
     let fp_id = t.node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).expect("the fabric-primary is in the view").node_id.clone();
-    let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time());
+    let mut cp = crate::control_plane(builds.clone(), accepted.clone(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time());
     cp.topology = topology.clone();
     let change = crate::named_request(&cp, change).await;
     let opened = cp.submit("test", change).await.unwrap();
@@ -2461,7 +2461,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         let topology = Arc::new(RwLock::new(t.clone()));
         let contexts = Arc::new(AttemptContexts::in_memory());
         let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
-        let mut cp = ControlPlane::new(builds.clone(), accepted, boot.clone(), t, crate::adopted_time()).with_contexts(contexts.clone()).with_claims(claims.clone());
+        let mut cp = crate::control_plane(builds.clone(), accepted, boot.clone(), t, crate::adopted_time()).with_contexts(contexts.clone()).with_claims(claims.clone());
         cp.topology = topology.clone();
 
         let change = TopologyChange::ReconcileMesh {

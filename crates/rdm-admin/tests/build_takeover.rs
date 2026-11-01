@@ -249,7 +249,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         .append_attempt_receipt(&rdm_admin::build_state::BuildAttemptReceipt { mesh: None, build_id: seed.clone(), attempt: 1, outcome: rdm_admin::build_state::AttemptOutcome::Converged })
         .await
         .unwrap();
-    let mut cp = ControlPlane::new(a.builds.clone(), a.accepted.clone(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), topology.read().await.clone(), crate::adopted_time());
+    let mut cp = crate::control_plane(a.builds.clone(), a.accepted.clone(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), topology.read().await.clone(), crate::adopted_time());
     cp.topology = topology.clone();
     let build_id = cp
         .submit("POST /api/build", crate::named_request(&cp, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)]) }).await)

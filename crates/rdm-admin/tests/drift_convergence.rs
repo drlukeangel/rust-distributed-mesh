@@ -532,7 +532,7 @@ impl Estate {
 
     /// `me`'s Build door over the estate's Build log, view, accepted Build and in-flight rows.
     async fn door_at(&self, me: &PathName) -> Arc<rdm_admin::control_plane::ControlPlane> {
-        let mut cp = rdm_admin::control_plane::ControlPlane::new(self.builds.clone(), self.accepted.clone(), me.clone(), self.view.read().await.clone(), crate::adopted_time());
+        let mut cp = crate::control_plane(self.builds.clone(), self.accepted.clone(), me.clone(), self.view.read().await.clone(), crate::adopted_time());
         cp.topology = self.view.clone();
         cp.claims = self.claims.clone();
         Arc::new(cp)
@@ -1269,7 +1269,7 @@ mod one_attempt_number {
     /// (Q197): the view says which births are unheard, the records that they were created.
     async fn door(e: &Estate, builds: Arc<dyn BuildStateAdapter>) -> Arc<ControlPlane> {
         let me: PathName = e.fabric_primary().await.expect("a fabric-primary");
-        let mut cp = ControlPlane::new(builds, e.accepted.clone(), me, e.view.read().await.clone(), crate::adopted_time());
+        let mut cp = crate::control_plane(builds, e.accepted.clone(), me, e.view.read().await.clone(), crate::adopted_time());
         cp.topology = e.view.clone();
         let _ = cp.node_rows.set(crate::records_of(&*e.view.read().await).await);
         Arc::new(cp)
@@ -2243,7 +2243,7 @@ mod refused_caller_terminate {
     async fn a_deleted_birth_whose_re_create_has_not_completed_is_admitted_for_node_terminate() {
         let e = estate().await;
         let me: PathName = e.fabric_primary().await.expect("a fabric-primary");
-        let mut cp = ControlPlane::new(e.builds.clone(), e.accepted.clone(), me.clone(), e.view.read().await.clone(), crate::adopted_time());
+        let mut cp = crate::control_plane(e.builds.clone(), e.accepted.clone(), me.clone(), e.view.read().await.clone(), crate::adopted_time());
         cp.topology = e.view.clone();
         let _ = cp.node_rows.set(crate::records_of(&*e.view.read().await).await);
         let cp = Arc::new(cp);
@@ -2278,7 +2278,7 @@ mod refused_caller_terminate {
     async fn a_birth_the_current_build_holds_deleted_is_admitted_for_node_terminate_before_its_row_is_heard() {
         let e = estate().await;
         let me: PathName = e.fabric_primary().await.expect("a fabric-primary");
-        let mut cp = ControlPlane::new(e.builds.clone(), e.accepted.clone(), me.clone(), e.view.read().await.clone(), crate::adopted_time());
+        let mut cp = crate::control_plane(e.builds.clone(), e.accepted.clone(), me.clone(), e.view.read().await.clone(), crate::adopted_time());
         cp.topology = e.view.clone();
         let _ = cp.node_rows.set(crate::records_of(&*e.view.read().await).await);
         let cp = Arc::new(cp);

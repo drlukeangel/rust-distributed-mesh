@@ -239,7 +239,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial.clone(), &m1_a1.birth().unwrap(), "mesh1").await.unwrap();
-    let mut cp = ControlPlane::new(builds.clone(), accepted, m1_a1.name.clone(), observed.read().await.clone(), crate::adopted_time());
+    let mut cp = crate::control_plane(builds.clone(), accepted, m1_a1.name.clone(), observed.read().await.clone(), crate::adopted_time());
     cp.topology = observed.clone();
     // The fabric-primary's door reads the node records its writers wrote (boot.rs: one nodes store),
     // never a birth from the gossip view (Q197).
@@ -838,7 +838,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let builds = Arc::new(MemoryBuildStateAdapter::new());
         let initial = FabricTopology::of_observed(&*observed.read().await);
         let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial, &fp.birth().unwrap(), "mesh1").await.unwrap();
-        let mut cp = ControlPlane::new(builds.clone(), accepted, fp.name.clone(), observed.read().await.clone(), crate::adopted_time());
+        let mut cp = crate::control_plane(builds.clone(), accepted, fp.name.clone(), observed.read().await.clone(), crate::adopted_time());
         cp.topology = observed.clone();
         let _ = cp.node_rows.set(nodes_storage.clone());
 

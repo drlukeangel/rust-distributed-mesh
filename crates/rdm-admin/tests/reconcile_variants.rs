@@ -273,7 +273,7 @@ async fn row(variant: Variant, timing: Timing) -> Row {
         store.write_record(&row).await.unwrap();
         recorded.insert(n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(sha.into()) });
     }
-    let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), path("mesh1.admin", "1"), t.clone(), crate::adopted_time());
+    let mut cp = crate::control_plane(builds.clone(), accepted.clone(), path("mesh1.admin", "1"), t.clone(), crate::adopted_time());
     cp.topology = topology.clone();
     let _ = cp.node_rows.set(store);
     let change = TopologyChange::Reconcile { topology_storage_provider: None, based_on: builds.current().await.unwrap().expect("day 0's Build is current").build_id, nodes: variant.request(&held) };

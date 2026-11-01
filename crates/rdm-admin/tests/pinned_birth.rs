@@ -54,7 +54,7 @@ async fn control_plane(t: &Topology) -> (Arc<MemoryBuildStateAdapter>, ControlPl
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(t), &t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
     let contexts = Arc::new(MemoryBuildStateAdapter::new());
-    let mut cp = ControlPlane::new(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time())
+    let mut cp = crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time())
         .with_contexts(Arc::new(AttemptContexts::on(contexts as Arc<dyn LocalBuildLog>)));
     // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
     let _ = cp.node_rows.set(crate::records_of(t).await);

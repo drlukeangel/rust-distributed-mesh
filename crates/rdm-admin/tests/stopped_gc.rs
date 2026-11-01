@@ -75,7 +75,7 @@ fn capture(cell: &str) -> (Capture, tracing::subscriber::DefaultGuard) {
 /// The fabric-primary `me` over `builds`, its accepted Build seeded from `t` and settled.
 async fn plane(builds: Arc<MemoryBuildStateAdapter>, t: Topology, me: &PathName) -> Arc<ControlPlane> {
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), desired(&t), &t.node(me).unwrap().birth().unwrap(), &t.node(me).unwrap().mesh).await.unwrap();
-    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, me.clone(), t, crate::adopted_time()));
+    let cp = Arc::new(crate::control_plane(builds.clone(), accepted, me.clone(), t, crate::adopted_time()));
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     settle(&builds, &b0, &executor(&cp).await).await;
     cp
@@ -367,7 +367,7 @@ async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
     let held = Arc::new(MemoryBuildStateAdapter::new());
     held.absorb(&builds.facts().await.unwrap()).await;
     let accepted = AcceptedStore::seeded(&*held, moved.fabric.id.clone(), desired(&moved), &moved.node(&PathName::new("mesh1.admin", "2").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
-    let successor = ControlPlane::new(held.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), moved, crate::adopted_time());
+    let successor = crate::control_plane(held.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), moved, crate::adopted_time());
     let b = successor.builds.current_build().await.unwrap().into_build_id().unwrap();
     if !matches!(held.read_build(&b).await.unwrap().state, rdm_admin::build_state::BuildState::Complete) {
         settle(&held, &b, &executor(&successor).await).await;
@@ -498,11 +498,11 @@ async fn a_stopped_node_whose_current_build_cannot_be_read_is_skipped_as_an_unre
     let t = view(&PathName::new("mesh1.admin", "1").unwrap());
     let held = MemoryBuildStateAdapter::new();
     let accepted = AcceptedStore::seeded(&held, t.fabric.id.clone(), desired(&t), &t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
-    let cp = ControlPlane::new(Arc::new(UnreadableCurrent(held)), accepted.clone(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time());
+    let cp = crate::control_plane(Arc::new(UnreadableCurrent(held)), accepted.clone(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time());
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     let unreadable = spans.spans("rdm.node_admin.node.reject.via-unreadable-build-log");
     assert!(unreadable.iter().any(|(_, a)| (a["node_path"].as_str(), a["node_name"].as_str()) == (stopped().path.as_str(), stopped().name.as_str()) && a["reason"].contains("refuses the acceptance-order index read")), "{unreadable:?}");
-    let empty = ControlPlane::new(Arc::new(MemoryBuildStateAdapter::new()), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time());
+    let empty = crate::control_plane(Arc::new(MemoryBuildStateAdapter::new()), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time());
     assert_eq!(empty.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     let none = spans.spans("rdm.node_admin.node.reject.via-no-current-build");
     assert!(none.iter().any(|(_, a)| (a["node_path"].as_str(), a["node_name"].as_str()) == (stopped().path.as_str(), stopped().name.as_str())), "{none:?}");

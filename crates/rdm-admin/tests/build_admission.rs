@@ -128,7 +128,7 @@ async fn rig() -> (Arc<Held>, Arc<ControlPlane>) {
     held.first.store(true, Ordering::SeqCst);
     let accepted = AcceptedStore::seeded(&*held, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
     held.first.store(false, Ordering::SeqCst);
-    let mut cp = ControlPlane::new(held.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time());
+    let mut cp = crate::control_plane(held.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time());
     cp.topology = Arc::new(tokio::sync::RwLock::new(t));
     (held, Arc::new(cp))
 }

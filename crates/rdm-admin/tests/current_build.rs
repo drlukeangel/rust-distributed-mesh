@@ -44,7 +44,7 @@ async fn fabric_primary() -> (Arc<ControlPlane>, Arc<MemoryBuildStateAdapter>, B
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = observed();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
-    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time()));
+    let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time()));
     let b0 = builds.list_active().await.unwrap();
     assert!(b0.is_empty(), "the seeded Build is settled: {b0:?}");
     let facts = builds.facts().await.unwrap();

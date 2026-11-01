@@ -54,7 +54,7 @@ async fn rig(status: ScopeStatus) -> Rig {
     let admin = t.nodes.iter().find(|n| n.is_fabric_primary).unwrap();
     let executor = rdm_core::framing::Birth { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap() };
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &executor, "mesh1").await.unwrap();
-    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time()));
+    let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time()));
     Rig { executor, cp, builds }
 }
 

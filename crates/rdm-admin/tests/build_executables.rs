@@ -253,7 +253,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
             );
         }
 
-        let mut cp = ControlPlane::new(
+        let mut cp = crate::control_plane(
             builds.clone(),
             accepted.clone(),
             rdm_core::PathName::new("mesh1.admin", "1").unwrap(),

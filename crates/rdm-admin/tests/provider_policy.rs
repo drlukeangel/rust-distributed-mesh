@@ -30,7 +30,7 @@ async fn first_admin(spawn_type: Option<&str>) -> (Arc<MemoryBuildStateAdapter>,
     };
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*builds, topology.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&topology), &executor, "mesh1").await.unwrap();
-    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), topology, crate::adopted_time()));
+    let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), topology, crate::adopted_time()));
     (builds, cp)
 }
 
