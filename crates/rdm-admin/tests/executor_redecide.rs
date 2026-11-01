@@ -423,15 +423,17 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
             "own_rerun_kept": own_birth.node_id.to_string(),
             "unborn_identity_kept": decided_node_id,
             "terminated_pids": fleet.terminated.lock().unwrap().clone(),
+            "lost_executor": lost.template.launcher.node_id.to_string(),
+            "successor_executor": successor.template.launcher.node_id.to_string(),
         })
     });
     let spans = cap.spans();
     let rejections: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.deployment.reject.via-lost-executor").collect();
     assert_eq!(rejections.len(), 1, "exactly the stranded birth is refused by name: {} such spans", rejections.len());
     let a = &rejections[0]["attributes"];
-    assert_eq!(a["node"], "mesh1.rpc.3");
-    assert!(a["recorded_executor"].as_str().unwrap().contains("lostadminkey"), "{a}");
-    assert!(a["executor"].as_str().unwrap().contains("successoradminkey"), "{a}");
+    assert_eq!((&a["node_path"], &a["node_name"]), (&serde_json::json!("mesh1.rpc"), &serde_json::json!("3")));
+    assert!(a["recorded_executor"].as_str().unwrap().contains(result["lost_executor"].as_str().unwrap()), "{a}");
+    assert!(a["executor"].as_str().unwrap().contains(result["successor_executor"].as_str().unwrap()), "{a}");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     let mut result = result;
     result["rejection_span_attributes"] = rejections[0]["attributes"].clone();

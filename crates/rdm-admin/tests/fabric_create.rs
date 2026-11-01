@@ -221,7 +221,8 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         .named("rdm.node_admin.node.create.via-node-row")
         .into_iter()
         .filter(|s| {
-            s.attributes.get("subject").map(String::as_str) == Some("mesh1.admin.1")
+            s.attributes.get("subject_path").map(String::as_str) == Some("mesh1.admin")
+                && s.attributes.get("subject_name").map(String::as_str) == Some("1")
                 && s.attributes.get("moment").map(String::as_str) == Some("claim")
         })
         .collect();

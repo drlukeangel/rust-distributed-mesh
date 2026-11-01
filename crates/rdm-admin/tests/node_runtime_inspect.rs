@@ -241,14 +241,11 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
     let spans = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
     assert_eq!(spans.len(), 4);
 
-    let verdicts: Vec<(&str, &str, &str)> = spans
+    let verdicts: Vec<(String, &str, &str)> = spans
         .iter()
         .map(|s| {
             (
-                s.attributes
-                    .get("node")
-                    .map(String::as_str)
-                    .unwrap_or_default(),
+                format!("{}.{}", s.attributes.get("node_path").map(String::as_str).unwrap_or_default(), s.attributes.get("node_name").map(String::as_str).unwrap_or_default()),
                 s.attributes
                     .get("verdict")
                     .map(String::as_str)
@@ -263,10 +260,10 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
     assert_eq!(
         verdicts,
         vec![
-            ("mesh1.rpc.1", "running", ""),
-            ("mesh1.rpc.2", "exited", "4"),
-            ("mesh1.rpc.3", "unavailable", ""),
-            ("mesh1.rpc.4", "unavailable", ""),
+            ("mesh1.rpc.1".to_string(), "running", ""),
+            ("mesh1.rpc.2".to_string(), "exited", "4"),
+            ("mesh1.rpc.3".to_string(), "unavailable", ""),
+            ("mesh1.rpc.4".to_string(), "unavailable", ""),
         ]
     );
     for (idx, s) in spans.iter().enumerate() {

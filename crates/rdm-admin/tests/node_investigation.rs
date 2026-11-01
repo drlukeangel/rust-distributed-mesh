@@ -105,7 +105,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
     ));
     std::fs::create_dir_all(&dir).unwrap();
 
-    rt.block_on(async {
+    let lead_id = rt.block_on(async {
         let admin = ready_node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         let mut target = ready_node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         target.status = NodeStatus::PendingReconnect;
@@ -113,6 +113,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
         let target_inc = target.incarnation_id.clone().unwrap();
 
         let lead_carrier = ready_node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode);
+        let lead_id = lead_carrier.node_id.to_string();
         let lead_id = lead_carrier.node_id.clone();
         let lead_inc = lead_carrier.incarnation_id.clone().unwrap();
 
@@ -317,6 +318,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
         let _ = router.shutdown().await;
         carrier_ep.close().await;
         admin_ep.close().await;
+        lead_id
     });
 
     drop(rt);
@@ -326,14 +328,14 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
     assert_eq!(direct_spans.len(), 1, "case B sends no tickle: the inspect proved the runtime exited");
     assert_eq!(
         direct_spans[0].attributes.get("leads").map(String::as_str),
-        Some("mesh2.rpc.1")
+        Some(lead_id.as_str())
     );
 
     let peer_spans = capture.named("rdm.node.tickle.resolve.via-peer");
     assert_eq!(peer_spans.len(), 1);
     assert_eq!(
         peer_spans[0].attributes.get("carrier").map(String::as_str),
-        Some("mesh2.rpc.1")
+        Some(lead_id.as_str())
     );
     assert_eq!(
         peer_spans[0].attributes.get("lead").map(String::as_str),

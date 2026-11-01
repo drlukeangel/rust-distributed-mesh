@@ -145,7 +145,7 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
         .build()
         .unwrap();
 
-    rt.block_on(async {
+    let peer2_id = rt.block_on(async {
         let admin = ready_node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         let mut target = ready_node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         target.status = NodeStatus::PendingReconnect;
@@ -154,6 +154,7 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
 
         let peer1 = ready_node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         let peer2 = ready_node(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let peer2_id = (peer1.node_id.to_string(), peer2.node_id.to_string());
         let peer3 = ready_node(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
 
         let view = Topology {
@@ -319,6 +320,7 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
         p1_ep.close().await;
         p2_ep.close().await;
         admin_ep.close().await;
+        peer2_id
     });
 
     drop(rt);
@@ -330,7 +332,7 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
     assert!(
         peer_spans
             .iter()
-            .any(|s| s.attributes.get("carrier").map(String::as_str) == Some("mesh1.rpc.3")
+            .any(|s| s.attributes.get("carrier").map(String::as_str) == Some(peer2_id.1.as_str())
                 && s.attributes.get("answer").map(String::as_str) == Some("current-stopped")),
         "peer span must record carrier=mesh1.rpc.3 and answer=current-stopped"
     );
@@ -342,7 +344,7 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
             .attributes
             .get("carriers")
             .map(String::as_str),
-        Some("mesh1.rpc.2,mesh1.rpc.3")
+        Some(format!("{},{}", peer2_id.0, peer2_id.1).as_str())
     );
     assert_eq!(
         unreached_spans[0]
