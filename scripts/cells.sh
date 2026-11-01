@@ -23,10 +23,23 @@ lane=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd); cd "$lane"; out=$lane/tar
 # A tree with uncommitted changes runs as it stands: a rebase never stashes a seat's edits.
 basef=${RDM_LANE_STATE_ROOT:-$HOME/lane-queue/rdm}/$(basename "$lane")/base
 base_moved=0
+# Another cells.sh run in this lane: a rebase now would move the tree under its build or its cells.
+other_run() {
+  local p cwd
+  for p in $(pgrep -f "scripts/cells.sh"); do
+    [ "$p" = "$$" ] && continue
+    cwd=$(readlink "/proc/$p/cwd" 2>/dev/null) || continue
+    case "$cwd/" in "$lane"/*) return 0 ;; esac
+  done
+  return 1
+}
 rebase_on_base() {
   [ -s "$basef" ] || return 0
   local b; b=$(cat "$basef")
   git merge-base --is-ancestor "$b" HEAD && return 0
+  if other_run; then
+    echo "cells: not rebased on $b: another cells.sh run is in this lane (runs one at a time rebase)" >&2; return 0
+  fi
   if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     echo "cells: not rebased on $b: uncommitted changes (a proof runs on a commit)" >&2; return 0
   fi

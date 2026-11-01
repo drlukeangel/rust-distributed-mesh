@@ -76,7 +76,8 @@ branch where it would take `origin/main` (`lane-lib.sh::lane_base`):
 
 - `cells.sh` rebases a clean tree on it before the run and again after it. A base that moved during
   the run is taken and the run exits 3: rerun the proof on the new tip. A tree with uncommitted
-  changes runs as it stands and is never stashed. A conflict aborts the rebase and is refused, naming
+  changes runs as it stands and is never stashed. While another `cells.sh` run is in the lane, a run does not
+  rebase (it would move the tree under the other's build); run cells one at a time to take the base. A conflict aborts the rebase and is refused, naming
   the files (exit 4);
 - `post-land-gate.sh` rebases on it and proves the tip against it;
 - `lane-land.sh` stands the `GREEN` on it and fast-forwards the lead lane's branch in the lead lane
