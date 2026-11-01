@@ -403,7 +403,7 @@ impl Estate {
         let me: PathName = self.fabric_primary().await?;
         let t = self.view.read().await.clone();
         let mut started = HashSet::new();
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &self.digest_view, &self.provider, &*self.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &self.digest_view, &self.provider, &*self.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &Default::default()).await
     }
 
     /// The fabric-primary drives the accepted Build until no Build is active: the claim on its own
@@ -1051,7 +1051,7 @@ async fn a_successor_recovers_a_sibling_admin_known_only_by_its_durable_runtime_
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await;
+    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &Default::default()).await;
     assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the durable row's exact runtime exited: the next attempt of the same Build is open");
     let current = e.builds.current().await.unwrap().unwrap();
     let action = current.action;
@@ -1100,7 +1100,7 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
     // The fabric-primary's drift folds the row and leaves the birth to that mesh-primary.
     let me = fp.clone();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut HashSet::new(), &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await;
+    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut HashSet::new(), &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &Default::default()).await;
     assert_eq!(opened, None, "the fabric-primary opens nothing for a node-admin its mesh-primary recovers");
 
     // The mesh-primary's tick: what it watches, from its view and its durable rows.
@@ -1284,7 +1284,7 @@ mod one_attempt_number {
         let me: PathName = e.fabric_primary().await.expect("a fabric-primary");
         let mut cp = crate::control_plane(builds, e.accepted.clone(), me, e.view.read().await.clone(), crate::adopted_time());
         cp.topology = e.view.clone();
-        let _ = cp.node_rows.set(crate::records_of(&*e.view.read().await).await);
+        crate::bind_records(&cp, &[&*e.view.read().await]).await;
         Arc::new(cp)
     }
 
@@ -1318,7 +1318,7 @@ mod one_attempt_number {
         let me: PathName = e.fabric_primary().await.expect("a fabric-primary");
         let t = e.view.read().await.clone();
         let mut started = HashSet::new();
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), admission, &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), admission, &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &Default::default()).await
     }
 
     /// CONTRACT: the proven-drift pass has read the settled Build and computed attempt k+1 for a lost
@@ -1497,7 +1497,8 @@ mod one_attempt_number {
         let t = e.view.read().await.clone();
         let me_id = own_id(&t, &me);
         let refused = {
-            let mut pass = Box::pin(rdm_admin::admin::reconcile_drift(&time, &me, &me_id, &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false));
+            let no_moved = std::collections::HashSet::new();
+            let mut pass = Box::pin(rdm_admin::admin::reconcile_drift(&time, &me, &me_id, &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false, &no_moved));
             // One poll while the stop holds the admission inside its write.
             let early = tokio::select! {
                 biased;
@@ -1515,7 +1516,7 @@ mod one_attempt_number {
         let settled = e.builds.current().await.unwrap().unwrap();
         assert_eq!((settled.build_id.clone(), settled.attempt), (before.build_id.clone(), before.attempt + 1), "the stop's attempt completed on the same Build");
         let t = e.view.read().await.clone();
-        let opened = rdm_admin::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false).await;
+        let opened = rdm_admin::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &recovery, &|_| false, &Default::default()).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");
         let action = e.builds.current().await.unwrap().unwrap().action;
         assert_eq!(one_step_create_of(&action).as_ref(), Some(&admins[0]), "the connection-lost verdict runs node.create of the mesh's first node-admin in path order, a single step: {action:?}");
@@ -1554,9 +1555,9 @@ async fn a_decided_peer_mesh_held_ready_from_topology_opens_the_one_create_step(
     assert!(t.nodes_of_type(lost, NodeKind::NodeAdmin).all(|a| a.status.is_live()), "the view still holds the dead admins ready");
     let mut started = HashSet::new();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let undecided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await;
+    let undecided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &Default::default()).await;
     assert_eq!(undecided, None, "nothing names the mesh's admins before the ladder decides");
-    let decided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, &|_| false).await;
+    let decided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, &|_| false, &Default::default()).await;
     assert_eq!(decided, Some((before.build_id.clone(), before.attempt + 1)), "the verdict opens the next attempt of the same Build");
     let opened = e.builds.current().await.unwrap().unwrap();
     assert_eq!(one_step_create_of(&opened.action).as_ref(), Some(&PathName::new(&format!("{lost}.admin"), "1").unwrap()), "node.create of the mesh's first node-admin, a single step on the existing carrier: {:?}", opened.action);
@@ -1587,7 +1588,7 @@ async fn a_durable_runtime_row_of_a_deleted_birth_opens_no_attempt() {
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false).await;
+    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &Default::default()).await;
     assert_eq!(opened, None, "a proven departure is held: its runtime row is not drift");
 }
 
@@ -2054,7 +2055,7 @@ mod unheard_mesh_hold {
         let t = e.view.read().await.clone();
         // The provider's probe of what is recorded at a path, as the running admin's runner is (set once).
         records.set_path_probe(Arc::new(Probe(e.world.clone())));
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.recovery_decided), &|m| peer(m).is_some_and(|p| p.recovery_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided)).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.digest_view, &e.provider, &*e.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.recovery_decided), &|m| peer(m).is_some_and(|p| p.recovery_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided), &Default::default()).await
     }
 
     const UNHEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(4_000), recovery_decided: false, unreachable_decided: false });
@@ -2258,7 +2259,7 @@ mod refused_caller_terminate {
         let me: PathName = e.fabric_primary().await.expect("a fabric-primary");
         let mut cp = crate::control_plane(e.builds.clone(), e.accepted.clone(), me.clone(), e.view.read().await.clone(), crate::adopted_time());
         cp.topology = e.view.clone();
-        let _ = cp.node_rows.set(crate::records_of(&*e.view.read().await).await);
+        crate::bind_records(&cp, &[&*e.view.read().await]).await;
         let cp = Arc::new(cp);
         let before = e.builds.current().await.unwrap().unwrap();
         let path: PathName = secondary_rpc(&e, &e.view.read().await.node(&me).unwrap().mesh).await;
@@ -2293,7 +2294,7 @@ mod refused_caller_terminate {
         let me: PathName = e.fabric_primary().await.expect("a fabric-primary");
         let mut cp = crate::control_plane(e.builds.clone(), e.accepted.clone(), me.clone(), e.view.read().await.clone(), crate::adopted_time());
         cp.topology = e.view.clone();
-        let _ = cp.node_rows.set(crate::records_of(&*e.view.read().await).await);
+        crate::bind_records(&cp, &[&*e.view.read().await]).await;
         let cp = Arc::new(cp);
         let before = e.builds.current().await.unwrap().unwrap();
         let path: PathName = secondary_rpc(&e, &e.view.read().await.node(&me).unwrap().mesh).await;

@@ -460,7 +460,8 @@ impl AdminRunner {
         let Some(node_id) = self.nodes_storage.name_claim(location).await
             .map_err(|error| format!("path {:?}, name {:?}: name claim could not be read: {error}", location.path, location.name))? else { return Ok(None) };
         if let Some(node) = self.topology.read().await.own(&node_id).cloned() { return Ok(Some(node)); }
-        Ok(self.handles.lock().unwrap().get(&node_id).map(|(node, _)| node.clone()))
+        // The claim names `location` for this node: the cached runtime's record at its current pair.
+        Ok(self.handles.lock().unwrap().get(&node_id).map(|(node, _)| Node { name: location.clone(), ..node.clone() }))
     }
 
     /// Drop only the cached runtime of this exact birth, preserving a later incarnation.
@@ -472,7 +473,9 @@ impl AdminRunner {
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", node.node_id))?;
         if let Some((rec, h)) = self.handles.lock().unwrap().get(&node.node_id).cloned() {
             if rec.incarnation_id.as_ref() == Some(&incarnation) {
-                return Ok((rec, h));
+                // The handle is the exact runtime launched; the pair is the node's as the caller holds it
+                // now, its row's after a rename (node-name-update.md), never the pair it was launched at.
+                return Ok((Node { name: node.name.clone(), ..rec }, h));
             }
         }
         let me = self.held_name();
@@ -1021,12 +1024,10 @@ impl AdminRunner {
         // stopped and its row is read (node-replace.md steps 1-2). Its row's name is the operation's path.
         let held = pin.held_in(&*self.topology.read().await, &rdm_core::OperationId::node(op, &pin.node_id), node).map_err(|r| crate::executor::RunEnd::failed(r.to_string()))?;
         let (record, handle) = match held {
-            Some(n) => {
-                let (record, handle) = self.handle_for(&n).await?;
-                (Node { name: node.clone(), ..record }, handle)
-            }
+            Some(n) => self.handle_for(&n).await?,
             None => self.handles.lock().unwrap().get(&pin.node_id).cloned().filter(|(rec, _)| pin.is(rec)).ok_or_else(|| crate::executor::RunEnd::Incomplete(format!("{op}:path {node_path:?}, name {node_name:?}: birth {} at incarnation {} is not in this admin's view and no runtime handle of it is held", pin.node_id, pin.incarnation.as_str(), node_path = &node.path, node_name = &node.name)))?,
         };
+        let record = Node { name: node.clone(), ..record };
         let template = self.template_for(record.kind, &record.mesh).await?;
         let req = DeleteRequest { operation: operation.clone(), build_id: build_id.clone(), attempt, node: record.clone(), handle, unreached: false };
         if stop {
@@ -1247,6 +1248,8 @@ impl AdminRunner {
             Some(n) => Node { name: node.clone(), stopped: n.stopped, ..record },
             None => Node { name: node.clone(), ..record },
         };
+        // Its row's name is the operation's path, never the pair a launched runtime's record kept.
+        let record = Node { name: node.clone(), ..record };
         if record.node_id == self.node_id {
             self.delete_own(build_id, attempt, record.clone(), handle, operation).await?;
             return Ok(Some(record));

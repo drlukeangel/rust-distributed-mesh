@@ -220,7 +220,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     let records = crate::records_of(&t).await;
     let executor_birth = t.node(&me).unwrap().birth().unwrap();
     let control = Arc::new(crate::control_plane(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
-    let _ = control.node_rows.set(records.clone());
+    crate::bind_store(&control, records.clone(), &*control.topology.read().await).await;
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
     let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() });

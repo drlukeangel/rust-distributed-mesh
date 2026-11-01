@@ -1309,7 +1309,11 @@ impl StatusDoor {
                     Ok(None) => Vec::new(),
                     Err(e) => return rdm_core::reply::status::bounded_source_failed("builds.storage", req.op(), &format!("path {me_name_path:?}, name {me_name_name:?} could not read its current Build: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
                 };
-                return match atlas.view(paths, &*self.nodes_storage, &*self.builds, &view).await {
+                let Some(node_records) = self.configs.get().and_then(|c| c.records()) else {
+                    return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} holds no node records yet; {} is refused", req.op(), me_name_path = &me_name.path, me_name_name = &me_name.name));
+                };
+                let records = crate::current_record::CurrentRecords { claims: &*self.nodes_storage, meshes: &*self.meshes_storage, records: &**node_records };
+                return match atlas.view(paths, &records, &*self.builds, &view).await {
                     Ok(atlas) => StatusReply::within_reply_bound(StatusReply::Atlas { atlas }, req.op()),
                     Err(e) => rdm_core::reply::status::bounded_source_failed("nodes.storage", req.op(), &e),
                 };

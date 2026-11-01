@@ -69,6 +69,7 @@ pub mod election;
 pub mod executor;
 pub mod path_investigation;
 pub mod atlas;
+pub mod current_record;
 pub(crate) mod refused_caller;
 pub mod fabric_builds;
 pub mod fabric_status;

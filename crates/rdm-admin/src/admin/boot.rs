@@ -1763,6 +1763,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let _ = control.node_rows.set(nodes_storage.clone());
                                 let _ = control.node_records.set(topology_storage.node_records());
                                 let _ = records.node_records.set(topology_storage.node_records());
+                                // Every record this admin's writer puts persists its lifecycle record under this admin's
+                                // writer birth, its role flags the election result's (build.md §5.3; node-primary-update.md step 5).
+                                written.writes_lifecycle_to(topology_storage.node_records(), topology_view.primaries().clone(), cfg.fabric_id.clone());
                                 let _ = control.node_id.set(node_id.clone());
                                 let _ = control.incarnation.set(incarnation.clone());
                                 records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_fabric_recovery(crate::fabric_recovery::reader(digest_view.clone(), records.clone())).with_configs(configs_slot.clone()).with_written(written.clone()).with_lifecycle(topology_storage.node_records(), topology_storage.finish_writes())));
@@ -3342,6 +3345,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (digest_view, records, fabric, fabric_id, provider) = (digest_view.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
                                         let (me, me_id, deployer, drift_builds, drift_contexts) = (name.clone(), node_id.clone(), runner.provider.clone(), builds_dyn.clone(), attempt_contexts.clone());
                                         let drift_admission = control.admission.clone();
+                                        let drift_control = control.clone();
                                         let (drives, drive_env) = (drives.clone(), drive_env.clone());
                                         let drift_time = rafka_time.clone();
                                         let drift_nodes = nodes_storage.clone();
@@ -3382,7 +3386,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // proven drift.
                                                 {
                                                     let durable_rows = fabric_rows.for_pass(now.is_fabric_primary(&me_id), &*drift_nodes, &me).await;
-                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &digest_view, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh_unheard(mesh, digest_view.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| (digest_view.backbone_meshes().contains(mesh) || now.members().any(|n| n.mesh == mesh)) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh)).await;
+                                                    // The births a rename moved off the entry the accepted topology names them by (their
+                                                    // current records' provenance, query.md §1): those entries' nodes, never surplus.
+                                                    let moved = drift_control.moved_off_entries(&now).await;
+                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &digest_view, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh_unheard(mesh, digest_view.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| (digest_view.backbone_meshes().contains(mesh) || now.members().any(|n| n.mesh == mesh)) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh), &moved).await;
                                                     // The attempt is planned from the view as it is now.
                                                     if opened.is_some() {
                                                         records.install_read(&me, &topology, &digest_view, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &digest_view, &records, reads)).await;

@@ -129,7 +129,7 @@ async fn rig(t: Topology) -> Rig {
     let mut cp = crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time())
         .with_contexts(Arc::new(AttemptContexts::on(contexts.clone() as Arc<dyn LocalBuildLog>)));
     // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
-    let _ = cp.node_rows.set(crate::records_of(&t).await);
+    crate::bind_records(&cp, &[&t]).await;
     cp.topology = Arc::new(tokio::sync::RwLock::new(t));
     Rig { builds, contexts, cp: Arc::new(cp) }
 }
@@ -278,7 +278,7 @@ async fn a_claim_the_moment_the_open_lands_takes_the_opening_requests_context() 
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &executor(&t), "mesh1").await.unwrap();
     let mut cp = crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time()).with_contexts(contexts.clone());
     // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
-    let _ = cp.node_rows.set(crate::records_of(&t).await);
+    crate::bind_records(&cp, &[&t]).await;
     cp.topology = Arc::new(tokio::sync::RwLock::new(t));
     let current = builds.current().await.unwrap().expect("the seeded Build is current");
     // The previous attempt's context: another request's trace.

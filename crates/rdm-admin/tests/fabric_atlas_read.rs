@@ -18,6 +18,7 @@ use rdm_transport::{
     CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth,
     ServerBuilder,
 };
+use rdm_node::node_records::NodeRecordsStorage as _;
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -155,6 +156,19 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         nodes_storage.claim_node_name(&rpc_name, &rpc_id).await.unwrap().unwrap();
         nodes_storage.put_node(&deleted_row).await.unwrap();
         nodes_storage.claim_node_name(&deleted_name, &deleted_id).await.unwrap().unwrap();
+        // What fabric.atlas.get reads (query.md §1): each row's lifecycle record under mesh1's installed
+        // mesh-primary's writer birth, mesh1's Mesh record, and the node records bound on the config door.
+        let node_records: Arc<dyn rdm_node::node_records::NodeRecordsStorage> = Arc::new(rdm_node::node_records::MemoryNodeRecords::default());
+        let writer = rdm_admin::storage::BirthRef { node_id: admin_id.clone(), incarnation_id: admin_inc.clone() };
+        for row in [&admin_row, &rpc_row, &deleted_row] {
+            let record = rdm_admin::node_rows::lifecycle_record(row, &fabric_id, Some(&mesh_id), row.node_type().to_string(), &writer, (false, false)).expect("a keyed record");
+            node_records.put_lifecycle(&record).await.unwrap();
+        }
+        let meshes_storage = Arc::new(MemoryMeshStorage::default());
+        rdm_admin::storage::MeshStorage::put_mesh(&*meshes_storage, &rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")).await.unwrap();
+        let configs = crate::bound_configs_over(node_records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(admin_ep.clone(), Arc::new(LiveNodeResolver::default()))), Default::default())).await;
+        let configs_slot: rdm_admin::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
+        let _ = configs_slot.set(Arc::new(configs));
 
         let builds = Arc::new(MemoryBuildStateAdapter::new());
         let build_id =
@@ -196,7 +210,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
             fabric_id,
             topology,
             declared: Arc::new(Mutex::new(Declared::default())),
-            meshes_storage: Arc::new(MemoryMeshStorage::default()),
+            meshes_storage: meshes_storage.clone(),
             fabric_storage: Arc::new(MemoryFabricStorage::default()),
             nodes_storage: nodes_storage.clone(),
             caches: Default::default(),
@@ -210,7 +224,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
             fabric_states: Default::default(),
             atlas: atlas_slot.clone(),
             fabric_recovery: Default::default(),
-            configs: Default::default(),
+            configs: configs_slot.clone(),
             republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),

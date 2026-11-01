@@ -212,6 +212,45 @@ pub async fn records_of_views(views: &[&rdm_admin::topology::Topology]) -> std::
     rows
 }
 
+/// [`records_of_views`] bound on `cp` as the records its acceptance and name lookups read ([`bind_store`]).
+pub async fn bind_records(cp: &rdm_admin::control_plane::ControlPlane, views: &[&rdm_admin::topology::Topology]) -> std::sync::Arc<rdm_admin::storage::MemoryNodesStorage> {
+    let rows = records_of_views(views).await;
+    bind_store(cp, rows.clone(), views[0]).await;
+    rows
+}
+
+/// Bind on `cp` the records its acceptance and name lookups read (query.md §1: the pair's name claim,
+/// then the lifecycle record under the subject mesh's current writer): `rows`, the nodes store its name
+/// claims are read from, and, for every record `rows` holds of a mesh `t` names, its lifecycle record
+/// written under that mesh's writer in `t` (its installed mesh-primary, else the fabric-primary,
+/// `current_record::writer_of`), each mesh given its Mesh record in `cp`'s mesh store. A mesh `t` names
+/// no writer of has none written. Called again after a fixture rewrites a record in `rows`, it writes
+/// that record's lifecycle record again.
+pub async fn bind_store(cp: &rdm_admin::control_plane::ControlPlane, rows: std::sync::Arc<rdm_admin::storage::MemoryNodesStorage>, t: &rdm_admin::topology::Topology) {
+    use rdm_admin::storage::{MeshStorage as _, NodesStorage as _};
+    use rdm_node::node_records::NodeRecordsStorage as _;
+    let _ = cp.node_rows.set(rows.clone());
+    let records = cp.node_records.get_or_init(|| std::sync::Arc::new(rdm_node::node_records::MemoryNodeRecords::default()) as std::sync::Arc<dyn rdm_node::node_records::NodeRecordsStorage>).clone();
+    let meshes: std::collections::BTreeSet<String> = t.nodes.iter().map(|n| n.mesh.clone()).chain(t.meshes.iter().map(|m| m.name.clone())).collect();
+    for mesh in meshes {
+        let Ok(writer) = rdm_admin::current_record::writer_of(t, &mesh) else { continue };
+        let writer = rdm_admin::storage::BirthRef { node_id: writer.node_id, incarnation_id: writer.incarnation_id };
+        let mesh_id = match cp.claims.mesh_named(&mesh).await.expect("the mesh store reads") {
+            Some(m) => m.mesh_id,
+            None => {
+                let id = t.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone()).unwrap_or_else(rdm_admin::model::MeshId::mint);
+                cp.claims.put_mesh(&rdm_admin::storage::MeshRecord::new(id.clone(), mesh.clone())).await.expect("the Mesh record is written");
+                id
+            }
+        };
+        for row in rows.nodes(&mesh).await.expect("the nodes store reads") {
+            if let Some(record) = rdm_admin::node_rows::lifecycle_record(&row, &t.fabric.id, Some(&mesh_id), row.node_type().to_string(), &writer, (false, false)) {
+                records.put_lifecycle(&record).await.expect("the lifecycle record is written");
+            }
+        }
+    }
+}
+
 #[cfg(feature = "file-backend")]
 mod admin_app_alpns;
 mod app_protocol_dials;

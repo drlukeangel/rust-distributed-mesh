@@ -518,6 +518,7 @@ pub async fn reconcile_drift(
     defers: &(dyn Fn(&str) -> bool + Sync),
     decided: &(dyn Fn(&str) -> bool + Sync),
     unreachable: &(dyn Fn(&str) -> bool + Sync),
+    moved: &HashSet<NodeId>,
 ) -> Option<(crate::build::BuildId, u32)> {
     let primary = t.fabric_primary().filter(|n| n.node_id == *me_id)?;
     let me = &primary.name;
@@ -679,6 +680,8 @@ pub async fn reconcile_drift(
     let mut surplus: Vec<(NodeId, IncarnationId)> = t
         .members()
         .filter(|n| n.status.is_live() && current.topology.meshes.contains_key(&n.mesh) && !current.topology.contains(&n.name))
+        // A birth a rename moved off the entry the topology names it by is that entry's node, not surplus.
+        .filter(|n| !moved.contains(&n.node_id))
         .filter(|n| n.mesh == primary.mesh || hold(&n.mesh).is_none())
         // A birth whose deletion the Build already receipted (`NodeDeleting` of this exact birth) is
         // not surplus: that operation deletes it, and this view is only late in hearing it go.

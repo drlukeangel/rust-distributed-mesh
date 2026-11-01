@@ -733,12 +733,16 @@ impl ControlPlane {
             if let Some(held) = holding(&current, Some(&mesh)) {
                 return Err(Refusal::BuildInProgress(held));
             }
-            let predecessor = n.renamed_from.is_some();
+            // The pair resolves through its name claim to the node's record; a node a rename moved off its
+            // accepted entry (a replacement's retained predecessor, or a node renamed live and stopped there)
+            // is acted on as that entry's node, whatever its new name spells.
+            let entry_left = n.entry_left(&current.topology).cloned();
+            let predecessor = entry_left.is_some();
             let stopped_old = kind == ActionKind::Delete && predecessor;
             let deleted_mesh = kind == ActionKind::Delete && !predecessor
                 && !current.topology.meshes.contains_key(&mesh)
                 && t.meshes.iter().any(|m| m.name == mesh && m.status == crate::model::ScopeStatus::Dead);
-            let accepted_path = n.renamed_from.as_ref().unwrap_or(&path);
+            let accepted_path = entry_left.as_ref().unwrap_or(&path);
             if (kind == ActionKind::Delete && !(predecessor || deleted_mesh))
                 || (!stopped_old && !deleted_mesh && !current.topology.contains(accepted_path)) {
                 let reject = BuildReject::UnknownNode { node: path.clone(), step: None };
@@ -872,16 +876,22 @@ impl ControlPlane {
         .await
     }
 
-    /// Whether `path` is a birth of a mesh deleted at mesh.deleted, as the live view holds it: the
-    /// mesh's status is deleted (its row Dead), and its last admin lives on until its own node.delete
-    /// (mesh-delete.md steps 6-7).
+    /// Whether `path` names a birth the accepted topology never names there, deleted by the next attempt
+    /// of the accepted Build: a node a rename moved off its accepted entry (its record's provenance names
+    /// the entry, [`crate::atlas::AtlasRow::entry_left`]), or a birth of a mesh deleted at mesh.deleted, as
+    /// the live view holds it: the mesh's status is deleted (its row Dead), and its last admin lives on
+    /// until its own node.delete (mesh-delete.md steps 6-7).
     pub async fn of_deleted_mesh(&self, path: &PathName) -> Result<bool, Refusal> {
         let t = match self.view_now.get() {
             Some(project) => project().await,
             None => self.topology.read().await.clone(),
         };
         let Some(n) = self.atlas_row(path, &t).await? else { return Ok(false) };
-        Ok(n.renamed_from.is_some() || t.meshes.iter().any(|m| m.name == n.mesh && m.status == crate::model::ScopeStatus::Dead))
+        // A node a rename moved off the entry the accepted topology names (the pair resolved through its
+        // claim to the node's record, whose provenance names the entry): the topology never names its pair.
+        let current = self.builds.current().await.map_err(Refusal::State)?;
+        let left = current.as_ref().is_some_and(|c| n.entry_left(&c.topology).is_some());
+        Ok(left || t.meshes.iter().any(|m| m.name == n.mesh && m.status == crate::model::ScopeStatus::Dead))
     }
 
     /// Open and claim the recovery of `path` from its exited birth `(node_id, incarnation)` as the

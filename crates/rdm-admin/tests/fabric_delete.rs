@@ -241,7 +241,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     cp.topology = observed.clone();
     // The fabric-primary's door reads the node records its writers wrote (boot.rs: one nodes store),
     // never a birth from the gossip view (Q197).
-    let _ = cp.node_rows.set(nodes_storage.clone());
+    crate::bind_store(&cp, nodes_storage.clone(), &*observed.read().await).await;
     let opened = cp.submit("POST /api/build", TopologyChange::DeleteFabric).await.expect("DeleteFabric is accepted as a Build");
     let build_id = opened.build_id;
     builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: m1_a1.birth().unwrap() }).await.unwrap();
@@ -838,7 +838,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial, &fp.birth().unwrap(), "mesh1").await.unwrap();
         let mut cp = crate::control_plane(builds.clone(), accepted, fp.name.clone(), observed.read().await.clone(), crate::adopted_time());
         cp.topology = observed.clone();
-        let _ = cp.node_rows.set(nodes_storage.clone());
+        crate::bind_store(&cp, nodes_storage.clone(), &*observed.read().await).await;
 
         // Step 42: a node stop is node lifecycle and starts no fabric.delete.
         let stop_opened = cp
