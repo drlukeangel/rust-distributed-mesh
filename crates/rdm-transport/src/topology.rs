@@ -3269,13 +3269,13 @@ impl TopologyView {
         }
     }
 
-    /// Hold `row` as this birth's own whole row at `revision`, the one its mesh-primary's hydration
-    /// sync carried (Q234): its config installed over an older revision.
-    pub fn set_own_row(&self, row: rdm_core::views::NodeView, revision: u64) {
+    /// Hold `row` as this birth's own whole row, the one its mesh-primary's hydration sync carried
+    /// (Q234); a node record carries no revision, so its config is installed at 0.
+    pub fn set_own_row(&self, row: rdm_core::views::NodeView) {
         let config = row.config.clone();
         *self.own_row.lock().unwrap() = Some(row);
         let mut held = self.config.lock().unwrap();
-        held.install(config, revision);
+        held.install(config, 0);
         self.show_config(&held);
     }
 

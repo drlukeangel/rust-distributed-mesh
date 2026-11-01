@@ -1071,16 +1071,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     let (held, birth) = (topology_view.clone(), name.clone());
                     connections.follow_held_name(move || held.held_name(&birth))?;
                 }
-                // The row's name and config a launched admin's join handed: held before it publishes anything
+                // The row's name a launched admin's join handed: held before it publishes anything
                 // (R-JN1); at a first start the name is its create spec's, verified by the join.
-                let handed: Option<(Option<PathName>, Option<BTreeMap<String, String>>)> = joined.as_ref().map(|a| (a.control.name.clone(), a.control.config.clone()));
-                if let Some((n, c)) = &handed {
-                    if let Some(n) = n {
-                        topology_view.set_name(n.clone());
-                    }
-                    if let Some(c) = c {
-                        topology_view.set_config(c.clone());
-                    }
+                let handed: Option<PathName> = joined.as_ref().and_then(|a| a.control.name.clone());
+                if let Some(n) = &handed {
+                    topology_view.set_name(n.clone());
                 }
                 tracing::info_span!(
                     parent: &step,
@@ -1813,7 +1808,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 fabric_id: cfg.fabric_id.clone(),
                                 node: MeshNode { mesh: cfg.mesh.clone(), kind: NodeKind::NodeAdmin,
                                     node_id: node_id.clone(),
-                                    name: handed.as_ref().and_then(|(n, _)| n.clone()).unwrap_or_else(|| name.clone()),
+                                    name: handed.clone().unwrap_or_else(|| name.clone()),
                                     endpoint_id: EndpointId(key.public().to_string()),
                                     // The mesh endpoint as bound (a rebind may have moved it).
                                     transport_addr: mesh_addr,
@@ -2044,9 +2039,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 v.config = own.config;
                                                 v.tags = own.tags;
                                             }
-                                            // A lifecycle row has no revision (node-identity-and-state.md §2.5); the
-                                            // OwnRow frame still carries one on the wire, sent as 0.
-                                            Some((v, 0))
+                                            Some(v)
                                         })
                                     })
                                 };

@@ -215,8 +215,8 @@ mod tests {
                         placement: None,
                         topology_storage_provider: None,
                     };
-                    Some((view, 4u64))
-                }) as std::pin::Pin<Box<dyn std::future::Future<Output = Option<(NodeView, u64)>> + Send>>
+                    Some(view)
+                }) as std::pin::Pin<Box<dyn std::future::Future<Output = Option<NodeView>> + Send>>
             });
 
             let stored_mesh2_id = MeshId::mint();
@@ -281,8 +281,7 @@ mod tests {
             assert_eq!(read.stored.len(), 1);
             assert_eq!(read.stored[0].mesh, "mesh2");
             assert_eq!(read.stored[0].mesh_id, Some(stored_mesh2_id));
-            let (own_row, rev) = read.own_row.as_ref().expect("own_row present");
-            assert_eq!(*rev, 4);
+            let own_row = read.own_row.as_ref().expect("own_row present");
             assert_eq!(own_row.config.get("tier").map(String::as_str), Some("gold"));
             assert!(read.rafka_time.is_some());
             read.adopt_rafka_time(

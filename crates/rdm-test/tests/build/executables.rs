@@ -146,8 +146,7 @@ async fn fabric_at_its_primary(estate: &Estate) -> (NodeView, ScopeStatus, Optio
 /// new executable with the tag `zone_a` and the config {zone: a} (Q166; node-config-update.md: "A node's
 /// first config is its create spec's `config` in the Build, written to its row at the claim and carried
 /// in its first join") and completes: the node runs that executable, its row records it, the tag and the
-/// config, its first join hands it the config (the join span's `config_keys` 1, never 0) and the node
-/// carries it (`fabric.nodes.get` answers a live node's config from its digest), and `fabric.nodes.get`
+/// config, and the node carries it (`fabric.nodes.get` answers a live node's config from its digest), and `fabric.nodes.get`
 /// returns them. A's request, built from the earlier read, is refused `based-on-not-current`, nothing
 /// accepted and `(path mesh1.rpc, name 2)` untouched. A re-reads: a request listing no node is refused `no-node-listed`
 /// naming fabric.delete, one creating `(path mesh1.rpc, name 3)` with no executable `executable-missing`, one creating it

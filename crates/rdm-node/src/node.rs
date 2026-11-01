@@ -258,16 +258,13 @@ pub fn install_join_cert(registry: &rdm_transport::connections::ConnectionsRegis
         .in_scope(|| tracing::info!("the member cert the join answered is installed: every connection opened from now presents it"));
 }
 
-/// Hold the row's name and config a join answer handed (R-JN1, node-start.md step 2): every digest
-/// `topology_view` publishes from now on carries them.
+/// Hold the row's name a join answer handed (R-JN1, node-start.md step 2): every digest
+/// `topology_view` publishes from now on carries it.
 fn install_handed(topology_view: &TopologyView, control: &crate::wire::JoinControl) {
     if let Some(name) = &control.name {
         topology_view.set_name(name.clone());
     }
-    if let Some(config) = &control.config {
-        topology_view.set_config(config.clone());
-    }
-    tracing::info!(path = ?control.name.as_ref().map(|n| &n.path), name = ?control.name.as_ref().map(|n| &n.name), config_keys = control.config.as_ref().map_or(0, |c| c.len()), "the row's name and config the join handed are held");
+    tracing::info!(path = ?control.name.as_ref().map(|n| &n.path), name = ?control.name.as_ref().map(|n| &n.name), "the row's name the join handed is held");
 }
 
 #[cfg(feature = "file-backend")]

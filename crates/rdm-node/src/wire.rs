@@ -46,9 +46,6 @@ pub struct JoinControl {
     /// it publishes anything or declares readiness (R-JN1, node-start.md step 2). Filled by the join
     /// door for the accepted birth; a node refuses an answer without it.
     pub name: Option<PathName>,
-    /// The config the birth's row holds, handed beside its name; `None` when no row was ever
-    /// written at the name.
-    pub config: Option<std::collections::BTreeMap<String, String>>,
     /// The fabric's cert policy (fabric-certs.md §Tracking): its TTLs and renewal point, read once by
     /// the bootstrap admin and carried to every later admin in its entry pull the way the provider is.
     /// `None` from an admin that answers with none.
@@ -80,7 +77,6 @@ struct WireControl {
     rafka_time_ms: u64,
     member_cert: Vec<u8>,
     name: Option<PathName>,
-    config: Option<std::collections::BTreeMap<String, String>>,
     cert_policy: Option<rdm_core::certs::CertPolicy>,
 }
 
@@ -102,7 +98,6 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
             rafka_time_ms: c.rafka_time_ms,
             member_cert: c.member_cert.clone(),
             name: c.name.clone(),
-            config: c.config.clone(),
             cert_policy: c.cert_policy,
         },
         statuses: answer.statuses.clone(),
@@ -122,7 +117,6 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
             rafka_time_ms: w.control.rafka_time_ms,
             member_cert: w.control.member_cert,
             name: w.control.name,
-            config: w.control.config,
         },
         statuses: w.statuses,
     })

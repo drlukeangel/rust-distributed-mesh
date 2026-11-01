@@ -163,7 +163,6 @@ mod tests {
     use rdm_core::join::{Join, JoinReply, JoinRequest};
     use rdm_core::{EndpointId, FabricId, IncarnationId, MeshId, MeshNode};
     use rdm_transport::ServerBuilder;
-    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
     struct TestJoinNode {
@@ -435,10 +434,6 @@ mod tests {
                     rafka_time_ms: 4_200_000,
                     member_cert: Vec::new(),
                     name: Some(handed_name.clone()),
-                    config: Some(BTreeMap::from([(
-                        "log_level".to_string(),
-                        "info".to_string(),
-                    )])),
                     cert_policy: None,
                 },
                 statuses: Vec::new(),
@@ -572,7 +567,6 @@ mod tests {
                     rafka_time_ms: 4_200_000,
                     member_cert: Vec::new(),
                     name: Some(rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
-                    config: None,
                     cert_policy: None,
                 },
                 statuses: Vec::new(),

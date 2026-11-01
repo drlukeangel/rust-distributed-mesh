@@ -157,7 +157,6 @@ fn join_door_refuses_mismatched_listener_reports_and_publishes_verified_listener
                             rafka_time_ms: 1_000,
                             member_cert: Vec::new(),
                             name: None,
-                            config: None,
                         },
                         statuses: Vec::new(),
                     })
