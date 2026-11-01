@@ -2269,9 +2269,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     let decided = incumbency_of(&digest_view, &records);
                                                     let t = project_decided(&fabric_name, &fabric_id, view_provider, &digest_view, &records, &decided, &reads);
                                                     // The election's result this admin holds: its digest carries it and, as its
-                                                    // mesh's writer, it records it on the rows.
-                                                    for (role, primary) in role_announcements(&t, &mesh_name, (&node_id, &incarnation), &decided) {
-                                                        backbone_ready.hold_primary(role, primary);
+                                                    // mesh's writer, it records it on the rows. A role that writes lifecycle records is
+                                                    // published only once its takeover preparation completed (node-primary-update.md:
+                                                    // "Before installing or publishing a role that writes lifecycle records, the
+                                                    // candidate ... finishes the frozen takeover snapshot"), after Ready (the lone
+                                                    // fabric-primary's store read, Q227). An outstanding preparation publishes no role:
+                                                    // the hierarchy's view install prepares again on its own turns and its announcement
+                                                    // publishes the role once the prepared view is installed.
+                                                    if records.prepare_takeover(&t).await.is_ok() {
+                                                        for (role, primary) in role_announcements(&t, &mesh_name, (&node_id, &incarnation), &decided) {
+                                                            backbone_ready.hold_primary(role, primary);
+                                                        }
                                                     }
                                                     // The current Build the not-ready check above found held: the Ready span names it,
                                                     // so "it held the current Build before Ready" is read off the Ready itself.
