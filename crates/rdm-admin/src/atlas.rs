@@ -500,11 +500,6 @@ impl Atlas {
         self.held.lock().unwrap().records.values().find(|r| r.name == *path).cloned()
     }
 
-    /// Every record the atlas holds, in node id order.
-    pub fn records(&self) -> Vec<NodeRow> {
-        self.held.lock().unwrap().records.values().cloned().collect()
-    }
-
     /// Fill the records of each mesh in `meshes` from the node records, read whole (one listing per
     /// mesh): at the fabric-primary's start or hand-over (Q204), and once a Build's attempt completed
     /// (its op results on every mesh it names, Q197). A mesh this admin writes is not read: its records

@@ -1970,19 +1970,20 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let _ = join_slot.set(door);
                                 // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
                                 let own = digest.clone();
-                                // For a mesh it holds no snapshot of, this admin answers from the records its atlas holds
-                                // (the meshes it is primary for) and the births its view holds now, never from the store
-                                // (Q227): a read is never refused because the store is mid-write.
-                                let (atlas, held_digest_view, held_fabric, held_me, held_ids) = (control.atlas.clone(), digest_view.clone(), cfg.fabric_id.clone(), node_id.clone(), records.clone());
+                                // For a mesh it holds no snapshot of, this admin answers from the records it writes and the
+                                // births its view holds now (its durable topology included), never from the store (Q227;
+                                // node-rpc-envelope.md Topology, Stored): a read is never refused because the store is
+                                // mid-write.
+                                let (written, held_digest_view, held_fabric, held_me, held_ids) = (records.caches.nodes.clone(), digest_view.clone(), cfg.fabric_id.clone(), node_id.clone(), records.clone());
                                 let stored: crate::topology_read::StoredSource = Arc::new(move || {
-                                    let (atlas, held_digest_view, held_fabric, held_me, held_ids) = (atlas.clone(), held_digest_view.clone(), held_fabric.clone(), held_me.clone(), held_ids.clone());
+                                    let (written, held_digest_view, held_fabric, held_me, held_ids) = (written.clone(), held_digest_view.clone(), held_fabric.clone(), held_me.clone(), held_ids.clone());
                                     Box::pin(async move {
                                         // The id this admin holds for each mesh it knows, a deleted mesh's none.
                                         let mut ids = held_ids.meshes.lock().unwrap().clone();
                                         let deleted = held_ids.deleted_meshes.lock().unwrap().clone();
                                         ids.retain(|_, id| !deleted.contains(id));
-                                        let mut nodes: BTreeMap<NodeId, rdm_core::topology::StoredNode> = atlas
-                                            .records()
+                                        let mut nodes: BTreeMap<NodeId, rdm_core::topology::StoredNode> = written
+                                            .rows()
                                             .iter()
                                             .filter(|r| r.status != NodeStatus::Deleted)
                                             .filter_map(crate::reenter::MapNode::of_record)
