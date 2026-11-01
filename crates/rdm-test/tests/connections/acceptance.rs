@@ -847,6 +847,8 @@ async fn a_proxy_naming_a_replaced_destination_birth_is_disconnected_by_name_and
     for witness in [&*SOURCE, &*CARRIER] {
         estate.witness_holds_birth(witness, &*DEST).await;
     }
+    // The block names a birth's node id: the new birth's Direct dials are blocked the same way.
+    block_direct(&estate, &*SOURCE, &*DEST, true);
     carrier_connection_of(&estate, &new_inc).await;
     // What the source writes from here on: the old birth's series (its attempts under the block until
     // the kill) is history before this point.

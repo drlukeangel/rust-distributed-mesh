@@ -468,19 +468,22 @@ impl Declarer {
             StatusRequest::DeclareNodeState { operation: Some(op), .. } => Some(&op.operation),
             _ => None,
         };
-        tracing::info_span!(
+        let span = tracing::info_span!(
             "rdm.node_admin.status.update.via-declare",
             node_path = %me.path, node_name = %me.name,
             key = ?p.key,
-            operation = ?operation,
+            operation = tracing::field::Empty, operation_subject = tracing::field::Empty,
             to_node_id = %target.node_id,
             via,
             attempt = p.attempts + 1,
             outcome = %outcome,
             finished,
             addressed,
-        )
-        .in_scope(|| tracing::info!("declared to the authority"));
+        );
+        if let Some(op) = operation {
+            span.record("operation", op.action.as_str()).record("operation_subject", format!("{:?}", op.subject).as_str());
+        }
+        span.in_scope(|| tracing::info!("declared to the authority"));
         if finished {
             self.pending.lock().unwrap().remove(&p.key);
             self.done.lock().unwrap().insert(p.key.clone(), (outcome, target.node_id.clone(), target.incarnation_id.clone()));

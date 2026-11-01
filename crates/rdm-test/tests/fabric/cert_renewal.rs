@@ -1128,7 +1128,8 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
         let new = certs::mint_key();
         let hex = |k: &certs::VerifyingKey| rdm_core::launch::encode_hex(k.as_bytes());
         // The call goes to the fabric-primary once its view names it so.
-        until("mesh1.admin.1's view names it the fabric-primary", BOUND, async || fabric_get(&root).await.and_then(|f| f.fabric_primary).filter(|p| p.to_string() == "mesh1.admin.1")).await;
+        let root_id = root.digest.lock().unwrap().node.node_id.clone();
+        until("mesh1.admin.1's view names it the fabric-primary", BOUND, async || fabric_get(&root).await.and_then(|f| f.fabric_primary).filter(|p| *p == root_id)).await;
         let answered = door.apply(None, &StatusRequest::UpdateRoot { secret: RootSecretHex(certs::encode_key(&new)) }).await;
         assert_eq!(answered, StatusReply::RootUpdated { phase: RootsPhase::Minted }, "the rotation is accepted at minted");
         let same = door.apply(None, &StatusRequest::UpdateRoot { secret: RootSecretHex(certs::encode_key(&new)) }).await;

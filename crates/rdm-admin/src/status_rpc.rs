@@ -1522,7 +1522,7 @@ impl StatusDoor {
                 let expiry = key.expiry_ms();
                 let installed = key.cert().clone();
                 let previous = certs.install_issuer(key);
-                tracing::info_span!("rdm.node_admin.issuer.update.via-installed", node_path = %self.me.path, node_name = %self.me.name, node_id = %self.node_id, mesh = %me.mesh, sender, issuer_expires_at = expiry, previous_issuer_expires_at = previous.unwrap_or(0))
+                tracing::info_span!("rdm.node_admin.issuer.update.via-installed", node_path = %self.me.path, node_name = %self.me.name, node_id = %self.node_id, mesh = %me.mesh, sender_node_id = sender, issuer_expires_at = expiry, previous_issuer_expires_at = previous.unwrap_or(0))
                     .in_scope(|| tracing::info!("the mesh's new issuer is installed: member certs are signed with it from now"));
                 // A mesh-primary writes its own signing cert dates on its own record at its install
                 // (node-issuer-update.md step 4).

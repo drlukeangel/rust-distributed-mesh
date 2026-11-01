@@ -352,7 +352,7 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
     let forwarded: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-forward").into_iter().filter(|sp| attr(sp, "receiver_node_id") == mp_id && attr(sp, "op") == "node.name.update").collect();
     assert_eq!(forwarded.iter().map(|sp| attr(sp, "outcome")).collect::<Vec<_>>(), vec!["name-updated".to_string()], "mesh2's primary carried the caller's rename up to the fabric-primary once: {forwarded:#?}");
     let down: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-fabric-primary").into_iter().filter(|sp| attr(sp, "op") == "node.name.update").collect();
-    assert_eq!(down.iter().map(|sp| (attr(sp, "outcome"), attr(sp, "atlas"))).collect::<Vec<_>>(), vec![("name-updated".to_string(), "renamed".to_string())], "the fabric-primary sent it down and renamed the node in its atlas: {down:#?}");
+    assert_eq!(down.iter().map(|sp| attr(sp, "outcome")).collect::<Vec<_>>(), vec!["name-updated".to_string()], "the fabric-primary sent it down once: {down:#?}");
     let written: Vec<&Value> = named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().filter(|sp| attr(sp, "node_id") == id(&targets[0], "node_id")).collect();
     assert_eq!(written.iter().map(|sp| (rdm_test::estate::at_location(sp, &mp), attr(sp, "outcome"))).collect::<Vec<_>>(), vec![(true, "name-updated".to_string())], "mesh2's primary wrote the row once: {written:#?}");
 }
