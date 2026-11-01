@@ -377,9 +377,7 @@ impl PrimaryRecordBatch {
     /// election. Consumers fold the outputs using Primary::supersedes, never append order.
     fn key(&self) -> String {
         let mut canonical = self.clone();
-        canonical.records.sort_by(|(ar, a), (br, b)|
-            (ar, &a.mesh, a.revision, &a.node_id, a.incarnation.as_str())
-                .cmp(&(br, &b.mesh, b.revision, &b.node_id, b.incarnation.as_str())));
+        canonical.records.sort_by_key(|(r, p)| (*r, p.mesh.clone(), p.revision, p.node_id.clone(), p.incarnation.as_str().to_string()));
         serde_json::to_string(&canonical).expect("primary outputs serialize")
     }
 }

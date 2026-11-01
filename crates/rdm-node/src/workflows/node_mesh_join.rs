@@ -147,6 +147,8 @@ async fn join(node: &str, client: &NodeRpcClient, to: &JoinTo, digest: &MeshDige
 /// Whom a join goes to, in words.
 fn whom(to: &JoinTo) -> String {
     match to {
+        // The launcher by the exact process the join dials: its node id.
+        JoinTo::Launcher { target: NodeTarget::ExactNode(id), .. } => id.to_string(),
         JoinTo::Launcher { target, .. } => format!("{target:?}"),
         JoinTo::Commander(commander) => format!("the admin whose call commanded it (endpoint {})", *commander.borrow()),
     }
@@ -255,7 +257,7 @@ mod tests {
                 endpoint: sample_key,
                 name: admin_name.clone(),
             };
-            assert_eq!(whom(&launcher_to), "mesh1.admin.1");
+            assert_eq!(whom(&launcher_to), admin_id.to_string());
             let (_tx, rx) = tokio::sync::watch::channel(sample_key);
             let commander_to = JoinTo::Commander(rx);
             assert!(whom(&commander_to).contains(&sample_key.to_string()));
@@ -411,7 +413,7 @@ mod tests {
             };
             assert_eq!(err.step, "node.join");
             assert!(
-                err.reason.contains("was refused its join by mesh1.admin.1: incarnation"),
+                err.reason.contains(&format!("was refused its join by {admin_id}: incarnation")),
                 "unexpected refusal reason: {}",
                 err.reason
             );
