@@ -213,14 +213,15 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         learn_addresses(&m_node.ep, &[p_addr.clone()]).unwrap();
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
-        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![p_addr], &[]).await.unwrap();
+        // The primary joins under its node id, as every node does: its spans and its publisher name that id.
         let p_birth = IncarnationId::mint();
         let p_node_id = NodeId::mint();
-        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock(), vec![], &[]).await.unwrap();
+        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![p_addr], &[]).await.unwrap();
+        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: p_node_id.to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         m.wait_for_neighbour().await;
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
+        let publisher = PublisherId { node: p_node_id.to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { bb.publish(&p, bb.own_members(&p)).await };
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 
@@ -309,8 +310,8 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         assert_eq!(ended.len(), 1, "the member ended the stop once, at the ordered move: {ended:#?}");
         assert_eq!((attr(ended[0], "node"), attr(ended[0], "held_version"), attr(ended[0], "topology_version"), attr(ended[0], "status")), ("mesh1.rpc.2".to_string(), v2.to_string(), v3.to_string(), "Pending".to_string()));
         let joined: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-node-joined").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
-        assert_eq!((joined.len(), joined.first().map(|s| attr(s, "node"))), (1, Some("mesh1.admin.1".to_string())), "the mesh-primary took node.joined once: {joined:#?}");
-        let delta: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.admin.1" && attr(s, "mesh") == "mesh1" && attr(s, "topology_version") == v3.to_string()).collect();
+        assert_eq!((joined.len(), joined.first().map(|s| attr(s, "node"))), (1, Some(p_node_id.to_string())), "the mesh-primary took node.joined once: {joined:#?}");
+        let delta: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == p_node_id.as_str() && attr(s, "mesh") == "mesh1" && attr(s, "topology_version") == v3.to_string()).collect();
         assert_eq!(delta.len(), 1, "the primary published the projection that clears the stop on its own channel: {delta:#?}");
         assert_eq!((attr(delta[0], "base_version"), attr(delta[0], "changed"), attr(delta[0], "in_flight")), (v2.to_string(), "1".to_string(), "0".to_string()), "the clear travels as the birth's own changed entry");
         let statuses: Vec<String> = named(&spans, "rdm.mesh.topology.update.via-projected-status").into_iter().filter(|s| attr(s, "member_id") == id.as_str() && attr(s, "node") == "mesh1.rpc.2").map(|s| format!("{}@{}", attr(s, "status"), attr(s, "topology_version"))).collect();
@@ -345,14 +346,15 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         learn_addresses(&m_node.ep, &[p_addr.clone()]).unwrap();
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
-        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![p_addr], &[]).await.unwrap();
+        // The primary joins under its node id, as every node does: its spans and its publisher name that id.
         let p_birth = IncarnationId::mint();
         let p_node_id = NodeId::mint();
-        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock(), vec![], &[]).await.unwrap();
+        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![p_addr], &[]).await.unwrap();
+        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: p_node_id.to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         m.wait_for_neighbour().await;
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
+        let publisher = PublisherId { node: p_node_id.to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { bb.publish(&p, bb.own_members(&p)).await };
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 

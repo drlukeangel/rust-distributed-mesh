@@ -213,7 +213,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         }
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let at = |name: &str, node: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && attr(s, "node") == node).collect() };
-        let ignored: Vec<&Value> = at("rdm.mesh.topology.reject.via-stale", "mesh1.rpc.1").into_iter()
+        let ignored: Vec<&Value> = at("rdm.mesh.topology.reject.via-stale", rpc1.node.node_id.as_str()).into_iter()
             .filter(|s| s["start_unix_nano"].as_u64().is_some_and(|t| t >= late_from)).collect();
         let fields = |s: &Value| (attr(s, "channel"), attr(s, "frame"), attr(s, "subject"), attr(s, "held_key"), attr(s, "frame_key"), s["name"].as_str().unwrap_or_default().to_string());
         let mut said: Vec<_> = ignored.iter().map(|s| fields(s)).collect();

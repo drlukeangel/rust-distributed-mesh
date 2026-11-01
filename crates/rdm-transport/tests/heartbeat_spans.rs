@@ -69,10 +69,12 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         let (a, b) = (node().await, node().await);
         rdm_transport::topology::learn_addresses(&b.ep, &[iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).map(|s| std::net::SocketAddr::from(([127, 0, 0, 1], s.port()))).unwrap())]).unwrap();
         let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
-        let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let seed = iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())));
-        let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![seed], &[]).await.unwrap();
+        // Each node joins under its node id, as every node does; its digest names its (path, name).
         let (da, db) = (digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &a.ep), digest(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &b.ep));
+        let (a_id, b_id) = (da.node.node_id.clone(), db.node.node_id.clone());
+        let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, a_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let seed = iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())));
+        let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, b_id.as_str(), rdm_transport::clock::os_clock(), vec![seed], &[]).await.unwrap();
         let started = std::time::Instant::now();
         let pa = ma.publish_every(Duration::from_millis(500), move || da.clone());
         let pb = mb.publish_every(Duration::from_millis(500), move || db.clone());
@@ -87,7 +89,7 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         let ran = started.elapsed();
 
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
-        let beats: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-heartbeat" && s["attributes"]["node"] == "mesh1.rpc.1").collect();
+        let beats: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-heartbeat" && s["attributes"]["node_path"] == "mesh1.rpc" && s["attributes"]["node_name"] == "1").collect();
         // ~6.5 s of 500 ms digests is 13 publishes: the heartbeat is the 5 s cadence, not the digest cadence.
         let due = (ran.as_millis() / rdm_transport::topology::HEARTBEAT_EVERY.as_millis()) as usize + 1;
         assert!(beats.len() == due || beats.len() + 1 == due, "heartbeat spans of mesh1.rpc.1 over {ran:?} ({due} due at most, one fewer when the last mark falls at the window's edge): {beats:#?}");
@@ -95,8 +97,8 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         assert_eq!(num(last, "peer_count"), 1, "the heartbeat counts the other member, not itself: {last}");
         assert!(num(last, "wall_time_ms") > 0 && last["attributes"].get("clock_skew_ms").is_some(), "{last}");
         assert!(last["parent_span_id"] == "", "a heartbeat is a root span: {last}");
-        let stale: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-member-stale" && s["attributes"]["node"] == "mesh1.rpc.1").collect();
+        let stale: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-member-stale" && s["attributes"]["node"] == a_id.as_str()).collect();
         assert_eq!(stale.len(), 1, "one span names the member that fell silent: {stale:#?}");
-        assert_eq!(stale[0]["attributes"]["member"], "mesh1.rpc.2");
+        assert_eq!(stale[0]["attributes"]["member_id"], b_id.as_str());
     });
 }
