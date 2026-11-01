@@ -676,11 +676,22 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         let rpc1 = before.nodes.iter().find(|n| n.name == rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).cloned().unwrap();
         let (old_pred, deleted_pred) = (NodeId::mint(), NodeId::mint());
         // P's writes, as its role made them.
-        for row in [
-            NodeRow { replacement_from: None, kind: rpc1.kind, mesh: rpc1.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None },
-            NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "2-old").unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None, renamed_from: Some(rdm_core::PathName::new("mesh1.rpc", "2").unwrap()), app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None },
-            NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), node_id: deleted_pred.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None },
-        ] {
+        let (successor, fresh) = (node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false), node(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false));
+        let (old_inc, deleted_inc) = (IncarnationId::mint(), IncarnationId::mint());
+        let mut live = NodeRow::new(rpc1.name.clone(), rpc1.mesh.clone(), rpc1.kind, rpc1.node_id.clone(), NodeStatus::ConnectionsDeleting);
+        live.birth_mut(rpc1.incarnation_id.as_ref().unwrap(), &rpc1.name);
+        let mut renamed = NodeRow::new(PathName::new("mesh1.rpc", "2-old").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, old_pred.clone(), NodeStatus::Deleted);
+        renamed.renamed_from = Some(PathName::new("mesh1.rpc", "2").unwrap());
+        renamed.birth_mut(&old_inc, &PathName::new("mesh1.rpc", "2").unwrap());
+        let mut deleted = NodeRow::new(PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, deleted_pred.clone(), NodeStatus::Deleted);
+        deleted.birth_mut(&deleted_inc, &PathName::new("mesh1.rpc", "3").unwrap());
+        // Each later birth's claim names its predecessor's exact birth.
+        let claim = |n: &Node, pred: &NodeId, inc: &IncarnationId| {
+            let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Starting);
+            row.allocated = Some(rdm_admin::storage::Allocation { predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.clone(), incarnation_id: inc.clone() }), build_id: BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &n.name), incarnation: n.incarnation_id.clone().unwrap(), deployment_id: DeploymentId::mint() });
+            row
+        };
+        for row in [live, renamed, deleted, claim(&successor, &old_pred, &old_inc), claim(&fresh, &deleted_pred, &deleted_inc)] {
             p_store.write_record(&row).await.unwrap();
         }
         let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
@@ -688,7 +699,6 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         let me_id = before.node(&me).unwrap().node_id.clone();
         let topology = Arc::new(RwLock::new(before));
         records.set_rows(Arc::new(NodeRows::new(me.clone(), me_id, topology.clone(), n_store.clone())));
-        let (successor, fresh) = (node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false), node(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false));
         let (succ, fresh_id) = (successor.node_id.clone(), fresh.node_id.clone());
         // N takes mesh1's role (and the fabric-primary role P held with it): the mesh-primary writes its
         // mesh's rows (R13), so the rebuild is the mesh-primary role's.
@@ -713,16 +723,16 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
 }
 
 /// CONTRACT (R14 item 7 and acceptance "a mesh role change: the successor rebuilds and holds the
-/// predecessor's rows (Node rows, `-old` name, Deleted, config)"): the predecessor P and the successor N
-/// are two admins with their own data dirs and their own store instances over one shared root. P
-/// held the role and wrote the rows: a live member's row (status ConnectionsDeleting, config platinum), a
-/// renamed predecessor's row moved to `path mesh1.rpc, name 2-old` (Deleted, config bronze) and a deleted
-/// node's row at `mesh1.rpc.3` (Deleted, config silver). N takes the role over a view whose live
-/// digests hold mesh1.rpc.1 ready, a successor at mesh1.rpc.2 and a new node at mesh1.rpc.3. N's
-/// rebuild reads P's rows from the shared root: the live member's row stands untouched, the new
-/// node at the Deleted row's name is seeded silver, the successor is seeded bronze from the `-old` name
-/// row, and N holds every one of P's rows. A row never overrides a live digest's status: N's view
-/// holds mesh1.rpc.1 ready while its row says ConnectionsDeleting.
+/// predecessor's rows (Node rows, `-old` name, Deleted)"): the predecessor P and the successor N are two
+/// admins with their own data dirs and their own store instances over one shared root. P held the role
+/// and wrote the rows: a live member's row (status ConnectionsDeleting), a renamed predecessor's row
+/// moved to `path mesh1.rpc, name 2-old` (Deleted), a deleted node's row at `mesh1.rpc.3` (Deleted), and
+/// the claims of the two births created after them, each naming its predecessor's exact birth by
+/// explicit provenance (`Allocation.predecessor`): a successor at `mesh1.rpc.2` and a new node at
+/// `mesh1.rpc.3`. N takes the role over a view whose live digests hold mesh1.rpc.1 ready and the two
+/// new births. N's rebuild reads P's rows from the shared root and holds every one as written, the
+/// claims' provenance included: no row is seeded from what a location last held. A row never overrides
+/// a live digest's status: N's view holds mesh1.rpc.1 ready while its row says ConnectionsDeleting.
 #[test]
 fn a_take_over_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() {
     let cap = crate::mesh_delete_resume::capture();
@@ -733,17 +743,18 @@ fn a_take_over_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() {
     });
     println!("trace_id={trace_id}");
     let row = |name: &PathName| rows[name].clone().unwrap_or_else(|| panic!("the successor holds no row at {name:?}: {rows:#?}"));
-    assert_eq!((row(&PathName::new("mesh1.rpc", "1").unwrap()).status, row(&PathName::new("mesh1.rpc", "1").unwrap()).config), (NodeStatus::ConnectionsDeleting, tier("platinum")), "the live member's row stands as P wrote it");
+    let predecessor = |r: NodeRow| r.allocated.and_then(|a| a.predecessor).map(|p| p.node_id);
+    assert_eq!(row(&PathName::new("mesh1.rpc", "1").unwrap()).status, NodeStatus::ConnectionsDeleting, "the live member's row stands as P wrote it");
     assert_eq!((row(&PathName::new("mesh1.rpc", "2-old").unwrap()).node_id, row(&PathName::new("mesh1.rpc", "2-old").unwrap()).status), (old_pred.clone(), NodeStatus::Deleted), "N holds P's renamed row");
-    assert_eq!((row(&PathName::new("mesh1.rpc", "2").unwrap()).node_id, row(&PathName::new("mesh1.rpc", "2").unwrap()).config), (succ.clone(), tier("bronze")), "the successor is seeded from the renamed row");
-    assert_eq!((row(&PathName::new("mesh1.rpc", "3").unwrap()).node_id, row(&PathName::new("mesh1.rpc", "3").unwrap()).config), (fresh.clone(), tier("silver")), "the node created at the Deleted row's name is seeded from it, its row overwritten at that key");
+    assert_eq!((row(&PathName::new("mesh1.rpc", "2").unwrap()).node_id, predecessor(row(&PathName::new("mesh1.rpc", "2").unwrap()))), (succ.clone(), Some(old_pred.clone())), "N holds the successor's claim and its provenance as P wrote them");
+    assert_eq!((row(&PathName::new("mesh1.rpc", "3").unwrap()).node_id, predecessor(row(&PathName::new("mesh1.rpc", "3").unwrap()))), (fresh.clone(), Some(deleted_pred.clone())), "N holds the new node's claim at the Deleted row's name, its provenance the deleted node");
     assert_eq!(view_status, Some(NodeStatus::Ready), "a row never overrides a live digest's status");
     let spans: Vec<Value> = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row").collect();
     assert!(spans.iter().all(|s| s["trace_id"] == trace_id.as_str()), "every rebuild claim is the cell's own story: {spans:#?}");
     let outcome = |path: &str, name: &str| spans.iter().filter(|s| location_matches(&s["attributes"], "subject", path, name)).map(|s| (s["attributes"]["outcome"].as_str().unwrap_or("").to_string(), s["attributes"]["seeded_from"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>();
-    assert_eq!(outcome("mesh1.rpc", "1"), vec![("row-held-by-node".to_string(), String::new())], "{spans:#?}");
-    assert_eq!(outcome("mesh1.rpc", "2"), vec![("row-seeded".to_string(), old_pred.to_string())], "{spans:#?}");
-    assert_eq!(outcome("mesh1.rpc", "3"), vec![("row-seeded".to_string(), deleted_pred.to_string())], "{spans:#?}");
+    for name in ["1", "2", "3"] {
+        assert_eq!(outcome("mesh1.rpc", name), vec![("row-held-by-node".to_string(), String::new())], "mesh1.rpc.{name}: {spans:#?}");
+    }
 }
 
 /// CONTRACT: a node lets go only of its own row: a release of a `(path, name)` by another node leaves
@@ -1852,23 +1863,26 @@ fn a_replayed_delete_of_the_lost_birth_writes_nothing_against_its_replacement() 
 }
 
 /// CONTRACT (e12.s41 / crit:e12.s41.1; proposal node-primary-update-fabric-mesh-and-node-type.md
-/// Part A): a node created with a free-text name (`mesh1.broker.north`, where `path` is
-/// `"mesh1.broker"`, `name` is `"north"`, and `node_type` is `"broker"`) round-trips `name`, `path`
-/// and `node_type` through:
+/// Part A; node-identity-and-state.md:86: "`node_type` is a field of the node record, a string the
+/// caller sets in node.create's spec ... It is immutable"): a node created with a free-text name
+/// (`mesh1.broker.north`, where `path` is `"mesh1.broker"`, `name` is `"north"`, and `node_type` is
+/// `"broker"`) round-trips `name`, `path` and `node_type` through:
 /// 1. `create` (claiming `mesh1.broker.north` and installing the birth into the view),
-/// 2. `get` (`views::nodes_answer` by id and by mesh),
+/// 2. `get` (`views::nodes_answer_with_status` by id, its config and tags read from the node's own
+///    property record),
 /// 3. `stop`/`start` (stopped on its row and started back to `Ready`),
 /// 4. `recovery` (`NodeDeleted` writing the `Deleted` row at `mesh1.broker.north`, then the
-///    recovered birth claiming `mesh1.broker.north` with `ClaimFor::Recovery` and inheriting
-///    config, tags and `node_type`), and
-/// 5. `replace` (the predecessor renamed to `path mesh1.broker, name north-old` with `name = "north-old"`, and
-///    the successor created at `mesh1.broker.north`, the name it released, its claim a successor's
-///    (`ClaimFor::Successor`), inheriting config, tags and `node_type` from `north-old`, whose row is
-///    marked inherited and whose labels leave the active tags index).
+///    recovered birth claiming `mesh1.broker.north` with `ClaimFor::Recovery`, naming the exited
+///    birth by explicit provenance and inheriting its `node_type`), and
+/// 5. `replace` (the predecessor renamed to `path mesh1.broker, name north-old` under the replacement
+///    intent, and the successor created at `mesh1.broker.north`, the name it released, its claim a
+///    successor's (`ClaimFor::Successor`) naming the predecessor's exact birth, its `node_type` its own
+///    create spec's, the retained row marked inherited).
 #[test]
 fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_through_create_get_stop_start_recovery_and_replace() {
     use rdm_core::filter::Filter;
     use rdm_core::status::StatusReply;
+    use rdm_node::node_records::NodeRecordsStorage as _;
     let cap = capture();
     cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
@@ -1878,6 +1892,37 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         // The admin's atlas holds every record its writer holds (Q203).
         let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
         mp.rows.written().feeds(atlas.clone()).await;
+        let properties = rdm_node::node_records::MemoryNodeRecords::default();
+        let get = |filter: Filter| {
+            let (view, loads, atlas, properties, me) = (mp.view.clone(), loads.clone(), atlas.clone(), &properties, me.clone());
+            async move {
+                let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer_with_status(&me, &*view.read().await, &loads, &atlas, &Ok(BTreeMap::new()), &filter, &|_| {}, Some(properties)).await else {
+                    panic!("expected StatusReply::Nodes");
+                };
+                nodes
+            }
+        };
+        // A birth that ran: its lifecycle record carries its exact birth, its properties its own record.
+        let ran = |n: &Node, status: NodeStatus| {
+            let (n, rows, storage) = (n.clone(), mp.rows.clone(), storage.clone());
+            async move {
+                rows.written().update(&*storage, &n.node_id, None, |r| {
+                    r.status = status;
+                    r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
+                }).await.unwrap().expect("its claim's record");
+            }
+        };
+        let own = |n: &Node, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>| rdm_node::node_records::NodeProperties {
+            birth: rdm_node::node_records::RecordBirth { node_id: n.node_id.clone(), incarnation_id: n.incarnation_id.clone().unwrap() },
+            config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(), applied: Default::default(),
+        };
+        let provenance = |pred: &Node, at: &PathName| rdm_admin::storage::Allocation {
+            predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.node_id.clone(), incarnation_id: pred.incarnation_id.clone().unwrap() }),
+            build_id: rdm_core::BuildId::mint(),
+            operation: rdm_core::OperationId::location("node.create", at),
+            incarnation: IncarnationId::mint(),
+            deployment_id: rdm_admin::model::DeploymentId::mint(),
+        };
 
         // 1. Create: `mesh1.broker.north` with free-text name `north`, path `mesh1.broker`, node_type `broker`.
         let north_key: PathName = rdm_core::PathName::new("mesh1.broker", "north").expect("free-text node name parses");
@@ -1886,29 +1931,20 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         assert_eq!((north.path().as_str(), north.node_name().as_str(), north.node_type()), ("mesh1.broker", "north", "broker"));
         let (_, claimed_type) = mp
             .rows
-            .claim_with_node_type(&north_key, "mesh1", rdm_core::NodeKind::Broker, &north.node_id, "broker", &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.broker", "north").unwrap()), None, None, ClaimFor::Create)
+            .claim_with_node_type(&north_key, "mesh1", rdm_core::NodeKind::Broker, &north.node_id, "broker", &rdm_core::OperationId::location("node.create", &north_key), None, None, ClaimFor::Create)
             .await
             .expect("the free-text name is claimed");
         assert_eq!(claimed_type, "broker");
-        // The node runs and takes its config and tags: its record, written by its mesh-primary.
-        mp.rows
-            .written()
-            .update(&*storage, &north.node_id, None, |r| {
-                r.status = NodeStatus::Ready;
-                r.config = tier("gold");
-                r.tags = ["blue".to_string()].into();
-            })
-            .await
-            .unwrap();
+        // The node runs: its mesh-primary writes its lifecycle, the node writes its own properties.
+        ran(&north, NodeStatus::Ready).await;
+        properties.put_properties(&own(&north, tier("gold"), ["blue".to_string()].into())).await.unwrap();
         let created_row = storage.record_at(&north_key).await.unwrap().expect("row at mesh1.broker.north");
         assert_eq!((created_row.path().as_str(), created_row.node_name().as_str(), created_row.node_type()), ("mesh1.broker", "north", "broker"));
         let north_for_view = north.clone();
         install(&mp.records, &mp.view, move |v| v.nodes.push(north_for_view)).await;
 
-        // 2. Get: `nodes_answer` round-trips `name`, `path` and `node_type`.
-        let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &atlas, &Filter::new().eq("id", [north.node_id.to_string()])).await else {
-            panic!("expected StatusReply::Nodes");
-        };
+        // 2. Get: round-trips `name`, `path` and `node_type`, and the node's own config and tags.
+        let nodes = get(Filter::new().eq("id", [north.node_id.to_string()])).await;
         assert_eq!(nodes.len(), 1);
         assert_eq!(
             (nodes[0].path().as_str(), nodes[0].node_name().as_str(), nodes[0].node_type(), &nodes[0].config, &nodes[0].tags),
@@ -1926,9 +1962,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         })
         .await;
         mp.rows.written().update(&*storage, &north.node_id, None, |r| r.status = NodeStatus::Stopped).await.unwrap();
-        let StatusReply::Nodes { nodes: stopped } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &atlas, &Filter::new().eq("id", [north.node_id.to_string()])).await else {
-            panic!("expected StatusReply::Nodes");
-        };
+        let stopped = get(Filter::new().eq("id", [north.node_id.to_string()])).await;
         assert!(stopped[0].stopped);
         assert_eq!((stopped[0].path().as_str(), stopped[0].node_name().as_str(), stopped[0].node_type()), ("mesh1.broker", "north", "broker"));
 
@@ -1941,29 +1975,29 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         })
         .await;
         mp.rows.written().update(&*storage, &north.node_id, None, |r| r.status = NodeStatus::Ready).await.unwrap();
-        let StatusReply::Nodes { nodes: started } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &atlas, &Filter::new().eq("id", [north.node_id.to_string()])).await else {
-            panic!("expected StatusReply::Nodes");
-        };
+        let started = get(Filter::new().eq("id", [north.node_id.to_string()])).await;
         assert!(!started[0].stopped);
         assert_eq!((started[0].path().as_str(), started[0].node_name().as_str(), started[0].node_type()), ("mesh1.broker", "north", "broker"));
 
         // 4. Recovery: `NodeDeleted` writes the Deleted row at `mesh1.broker.north`, and the
-        //    recovered node claims `mesh1.broker.north` with `ClaimFor::Recovery`, copying
-        //    `node_type`, `config` and `tags`.
+        //    recovered node claims `mesh1.broker.north` with `ClaimFor::Recovery`, naming the exited
+        //    birth, and inherits its `node_type`.
         mp.rows.deleted(&north, &rdm_core::OperationId::node("node.delete", &north.node_id)).await.expect("Deleted row written at mesh1.broker.north");
         let recovered_north = node(rdm_core::PathName::new("mesh1.broker", "north").unwrap(), "mesh1", rdm_core::NodeKind::Broker, false, false);
+        let recovery = provenance(&north, &north_key);
         let (_, recovered_type) = mp
             .rows
-            .claim_with_node_type(&north_key, "mesh1", rdm_core::NodeKind::Broker, &recovered_north.node_id, "", &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.broker", "north").unwrap()), None, None, ClaimFor::Recovery)
+            .claim_with_node_type(&north_key, "mesh1", rdm_core::NodeKind::Broker, &recovered_north.node_id, "", &recovery.operation, Some(&recovery), None, ClaimFor::Recovery)
             .await
             .expect("recovery claims mesh1.broker.north");
         assert_eq!(recovered_type, "broker", "recovery copies the exited node's node_type");
         assert_eq!(mp.rows.node_type_of(&recovered_north.node_id), "broker");
         let recovered_row = storage.record_at(&north_key).await.unwrap().expect("recovered row at mesh1.broker.north");
         assert_eq!(
-            (recovered_row.node_id.clone(), recovered_row.path().as_str(), recovered_row.node_name().as_str(), recovered_row.node_type(), &recovered_row.config, &recovered_row.tags),
-            (recovered_north.node_id.clone(), "mesh1.broker", "north", "broker", &tier("gold"), &["blue".to_string()].into())
+            (recovered_row.node_id.clone(), recovered_row.path().as_str(), recovered_row.node_name().as_str(), recovered_row.node_type(), recovered_row.predecessor.clone()),
+            (recovered_north.node_id.clone(), "mesh1.broker", "north", "broker", recovery.predecessor.clone())
         );
+        ran(&recovered_north, NodeStatus::Ready).await;
         let rec_for_view = recovered_north.clone();
         let exited_id = north.node_id.clone();
         install(&mp.records, &mp.view, move |v| {
@@ -1972,10 +2006,10 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         })
         .await;
 
-        // 5. Replace (node-replace.md steps 2-3): the predecessor moves to `path mesh1.broker, name north-old`
-        //    (`north-old`), and the successor is created at `mesh1.broker.north`, the name it released,
-        //    its claim a successor's: it inherits `node_type` from the retained row, and its `config` and
-    //    `tags` are its Build entry's (Q305: tier silver, never the retained row's gold).
+        // 5. Replace (node-replace.md steps 2-3): the predecessor moves to `path mesh1.broker, name
+        //    north-old`, and the successor is created at `mesh1.broker.north`, the name it released, its
+        //    claim a successor's naming the predecessor's exact birth; its `node_type` is its own create
+        //    spec's.
         let old_key = north_key.renamed().unwrap();
         assert_eq!((old_key.path().as_str(), old_key.name().as_str()), (north_key.path().as_str(), "north-old"));
         assert_eq!(north_key.with_name("north-old").unwrap(), old_key);
@@ -1989,17 +2023,17 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
 
         let mut succ = node(rdm_core::PathName::new("mesh1.broker", "north").unwrap(), "mesh1", rdm_core::NodeKind::Broker, false, false);
         succ.status = NodeStatus::Pending;
-        let succ_tags: std::collections::BTreeSet<String> = ["blue".to_string()].into();
-        mp.rows.claim_spec(&north_key, "mesh1", rdm_core::NodeKind::Broker, &succ.node_id, &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.broker", "north").unwrap()), None, None, &succ_tags, &tier("silver"), None, ClaimFor::Successor).await.expect("the successor claims mesh1.broker.north");
+        let replacement = provenance(&recovered_north, &north_key);
+        let (claimed, succ_type) = mp.rows.claim_with_node_type(&north_key, "mesh1", rdm_core::NodeKind::Broker, &succ.node_id, "broker", &replacement.operation, Some(&replacement), None, ClaimFor::Successor).await.expect("the successor claims mesh1.broker.north");
+        assert!(matches!(&claimed, rdm_admin::node_rows::Claimed::Written { seeded_from: Some(from), .. } if *from == recovered_north.node_id), "{claimed:?}");
         let succ_row = storage.record_at(&north_key).await.unwrap().expect("successor row at mesh1.broker.north");
         assert_eq!(
-            (succ_row.node_id.clone(), succ_row.path().as_str(), succ_row.node_name().as_str(), succ_row.node_type(), &succ_row.config, &succ_row.tags),
-            (succ.node_id.clone(), "mesh1.broker", "north", "broker", &tier("silver"), &succ_tags)
+            (succ_row.node_id.clone(), succ_row.path().as_str(), succ_row.node_name().as_str(), succ_row.node_type()),
+            (succ.node_id.clone(), "mesh1.broker", "north", "broker")
         );
-        assert_eq!(mp.rows.node_type_of(&succ.node_id), "broker", "replace copies predecessor node_type to successor");
+        assert_eq!((succ_type.as_str(), mp.rows.node_type_of(&succ.node_id)), ("broker", "broker".to_string()), "the successor's node_type is its own create spec's");
         let retained_old = storage.record_at(&old_key).await.unwrap().expect("retained predecessor row at path mesh1.broker, name north-old");
         assert_eq!((retained_old.node_name().as_str(), retained_old.inherited_by.as_ref()), ("north-old", Some(&succ.node_id)));
-        assert_eq!(storage.tagged("blue").await.unwrap(), [succ.node_id.clone()].into(), "active tag index holds only the successor after its claim");
 
         let mut succ_ready = succ.clone();
         succ_ready.name = north_key.clone();
@@ -2014,10 +2048,10 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
             v.nodes.push(succ_ready);
         })
         .await;
+        properties.put_properties(&own(&succ, Default::default(), Default::default())).await.unwrap();
+        properties.put_properties(&own(&recovered_north, Default::default(), Default::default())).await.unwrap();
 
-        let StatusReply::Nodes { nodes: mesh_nodes } = rdm_admin::views::nodes_answer(&me, &*mp.view.read().await, &loads, &atlas, &Filter::new().eq("mesh", ["mesh1"])).await else {
-            panic!("expected StatusReply::Nodes");
-        };
+        let mesh_nodes = get(Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["broker"])).await;
         let active = mesh_nodes.iter().find(|n| n.name == north_key).expect("active successor at mesh1.broker.north");
         assert_eq!((active.node_id.clone(), active.path().as_str(), active.node_name().as_str(), active.node_type()), (succ.node_id.clone(), "mesh1.broker", "north", "broker"));
         let retained = mesh_nodes.iter().find(|n| n.name == old_key).expect("retained predecessor at path mesh1.broker, name north-old");
