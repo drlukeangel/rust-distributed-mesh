@@ -1856,9 +1856,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         let mp = mesh_primary(&storage);
         let me: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
         let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
-        // The admin's atlas holds every record its writer holds (Q203).
         let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
-        mp.rows.written().feeds(atlas.clone()).await;
         let properties = rdm_node::node_records::MemoryNodeRecords::default();
         let meshes = rdm_admin::storage::MemoryMeshStorage::default();
         // Each record read through the reader (query.md §1): the writer's records as lifecycle records

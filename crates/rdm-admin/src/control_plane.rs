@@ -417,7 +417,7 @@ impl ControlPlane {
             // Each birth as the ops left it (R-FA1: the fabric-primary accepts or denies from the atlas, the
             // gossip view context only): a node-admin a start just made ready is a successor here, whatever
             // the gossip view has heard of it; a birth an op deleted is not in it.
-            self.atlas.apply(&mut observed);
+            self.apply_atlas(&mut observed).await?;
             // node.delete's target (node-delete.md "Operation contract"; build.md §4.4 gate 5): a live
             // birth, a stopped one, or one whose exact runtime node investigation reads exited
             // ([`crate::build::delete_admits`]). A birth the view marks Dead with neither fact is refused
@@ -679,7 +679,7 @@ impl ControlPlane {
                 None => self.topology.read().await.clone(),
             };
             // Each birth as the ops left it (R-FA1): a primary's successor, a step's node.
-            self.atlas.apply(&mut t);
+            self.apply_atlas(&mut t).await?;
             // A node stands at every path a step acts on, before its mesh is read heard and before a
             // primary's successor is looked for (build.md §4.4's order).
             let action = match crate::accepted::steps_action(steps.clone(), &t) {
@@ -731,7 +731,7 @@ impl ControlPlane {
                 Some(project) => project().await,
                 None => self.topology.read().await.clone(),
             };
-            self.atlas.apply(&mut t);
+            self.apply_atlas(&mut t).await?;
             // build.md §4.4, "A node stands at the path": none stands there, refused by name on its span.
             let Some(n) = self.atlas_row(&path, &t).await? else {
                 let reject = BuildReject::UnknownNode { node: path.clone(), step: None };
@@ -864,7 +864,15 @@ impl ControlPlane {
             // birth (the fabric-primary writes every receipt), whether or not the recovery's re-create
             // has completed and whether or not this atlas has heard the deleting mesh-primary's row.
             let deleted_here = current.steps.iter().filter_map(|s| crate::build_state::delete_step_birth(s, "NodeDeleted")).any(|(p, n, i)| p == path && n == node_id && i == incarnation);
-            if !deleted_here && !self.atlas.holds_deleted(&node_id, &incarnation) && self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)?.is_none() {
+            // The node's current record (query.md §1), what says it is deleted beside the atlas's ops.
+            let row = match (deleted_here, self.current_records()) {
+                (false, Some(records)) => {
+                    let observed = self.topology.read().await.clone();
+                    records.row(&observed, &node_id).await.map_err(Refusal::Unavailable)?
+                }
+                _ => None,
+            };
+            if !deleted_here && !self.atlas.holds_deleted(&node_id, &incarnation, row.as_ref()) && self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)?.is_none() {
                 let reject = BuildReject::UnknownNode { node: path.clone(), step: None };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
@@ -1745,7 +1753,7 @@ mod tests {
             lanes: Default::default(),
         };
         let atlas = crate::atlas::Atlas::default();
-        assert_eq!(atlas.take_receipt(&p, 16, &operation, &None), crate::atlas::Taken::Effect(Some("started")), "the start's Complete receipt is the atlas's");
+        assert_eq!(atlas.take_receipt(&p, 16, &operation, &None, &[]), crate::atlas::Taken::Effect(Some("started")), "the start's Complete receipt is the atlas's");
         let viewed = |status: NodeStatus, stopped: bool| {
             let mut view = t.clone();
             for n in view.nodes.iter_mut().filter(|n| n.name == started) {
@@ -1753,7 +1761,8 @@ mod tests {
                 n.stopped = stopped;
                 n.routable = false;
             }
-            atlas.apply(&mut view);
+            // The ops' effects alone: the cell's birth has no record (Atlas::apply with no reader).
+            view.nodes.retain_mut(|n| atlas.answer(n, None));
             view
         };
         for (status, stopped, projection) in [(NodeStatus::Leaving, true, "the projection carrying its stop"), (NodeStatus::Pending, false, "the projection published at its node.joined, the stop over")] {

@@ -57,7 +57,7 @@ async fn answer(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admi
 /// ([`crate::write_lifecycles`]), its properties the node's own ([`properties`]).
 async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin::views::Planned, filter: &Filter) -> StatusReply {
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
-    let atlas = crate::fed_atlas().await;
+    let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     let meshes = rdm_admin::storage::MemoryMeshStorage::default();
     crate::write_lifecycles(status, view, &meshes, properties()).await;
     let current = rdm_admin::current_record::CurrentRecords { claims: status, meshes: &meshes, records: properties() };
@@ -389,8 +389,8 @@ async fn nodes_get_and_fabrics_get_answer_from_the_records_while_the_nodes_store
         row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name).cert = Some(rdm_admin::storage::CertDates { issued_at: 1_000_000, expires_at, issuer_expires_at: 20_000_000, renew_at: expires_at - 1_000 });
         records.write_record(&row).await.unwrap();
     }
-    let atlas = crate::fed_atlas().await;
-    atlas.scope(&records, ["mesh1".to_string()].into()).await.expect("the fabric-primary takes mesh1: its atlas is filled from the node records, once");
+    let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
+    atlas.scope(["mesh1".to_string()].into());
     // Each record a lifecycle record under mesh1's writer, the fabric-primary (query.md §1).
     let meshes = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
     let node_records = Arc::new(rdm_node::node_records::MemoryNodeRecords::default());

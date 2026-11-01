@@ -672,12 +672,13 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
                 Some(held) => return (rdm_core::reply::stale(held.clone()), None),
                 None => return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None),
             }
-            // A birth this admin's atlas holds deleted (its record deleted, or its delete completed; a
-            // withdrawn claim is not a delete) is not held, whatever the view still
+            // A birth deleted (its record, as this admin, its mesh's writer, holds it, deleted, or its
+            // delete completed; a withdrawn claim is not a delete) is not held, whatever the view still
             // shows before the departure lands: refused `SubjectUnknown` and decided as every refused
             // caller is, deleted and never re-admitted (node-investigation.md; Q207, Q217), as the join
             // door refuses it on `status`.
-            if door.atlas.get().is_some_and(|a| a.holds_deleted_by_delete(&subject.node_id, incarnation)) {
+            let held_row = door.caches.nodes.row_of(&subject.node_id);
+            if door.atlas.get().is_some_and(|a| a.holds_deleted_by_delete(&subject.node_id, incarnation, held_row.as_ref())) {
                 return (rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown), None);
             }
             if let Some(operation) = operation {
@@ -1259,7 +1260,7 @@ impl StatusDoor {
             // step 1), the fabric-primary's atlas written on its way back.
             StatusRequest::UpdateName { .. } => {
                 self.commands.admitted().await;
-                let routed = crate::node_name_update::routed(&me_name, &self.node_id, &*self.nodes_storage, &self.topology, self.configs.get().map(|c| &**c), self.atlas.get().map(|a| &**a), crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await;
+                let routed = crate::node_name_update::routed(&me_name, &self.node_id, &self.topology, self.configs.get().map(|c| &**c), crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await;
                 return match routed {
                     crate::node_name_update::Routed::Answered(reply) => reply,
                     crate::node_name_update::Routed::Here => self.update_name(req).await,
@@ -1267,13 +1268,13 @@ impl StatusDoor {
             }
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
                 self.commands.admitted().await;
-                return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), self.atlas.get().map(|a| &**a), crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await;
+                return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await;
             }
             StatusRequest::UpdateNodeConfig { node_id, .. } => {
                 self.commands.admitted().await;
                 let view = self.topology.read().await.clone();
                 return match self.configs.get() {
-                    Some(configs) => configs.serve(&me_name, &self.node_id, &view, &self.topology, &*self.nodes_storage, self.atlas.get().map(|a| &**a), crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await,
+                    Some(configs) => configs.serve(&me_name, &self.node_id, &view, &self.topology, &*self.nodes_storage, crate::node_config::SentBy::of_writer_call(sender.as_ref()), req).await,
                     None => rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} has no node-RPC client yet; {} is refused", req.op(), me_name_path = &me_name.path, me_name_name = &me_name.name)),
                 };
             }
@@ -1619,9 +1620,26 @@ impl StatusDoor {
                     Ok(r) => r,
                     Err(e) => return rdm_core::reply::status::bounded_source_failed("fabric.storage", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read the Fabric record: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
                 };
+                // The cert dates of the births of the meshes this admin is primary for (its atlas's scope,
+                // Q207), each on its record read through the reader (query.md §1): a read that fails is
+                // named, never answered as no expiry.
+                let mut certs = None;
+                if let (Some(atlas), Some(records)) = (self.atlas.get(), self.configs.get().and_then(|c| c.records())) {
+                    let reader = crate::current_record::CurrentRecords { claims: &*self.nodes_storage, meshes: &*self.meshes_storage, records: &**records };
+                    let scope = atlas.meshes();
+                    let mut rows = Vec::new();
+                    for n in view.births().filter(|n| scope.contains(&n.mesh)) {
+                        match reader.row(view, &n.node_id).await {
+                            Ok(Some(row)) => rows.push(row),
+                            Ok(None) => {}
+                            Err(e) => return rdm_core::reply::status::bounded_source_failed("node records", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read the record of node {}: {e}", n.node_id, me_name_path = &me_name.path, me_name_name = &me_name.name)),
+                        }
+                    }
+                    certs = Some(rows);
+                }
                 match self.builds.current_build().await {
                     Ok(current) => {
-                        crate::views::fabric_answer_with_status(me_name, view, current.into_build_id().map(|b| b.to_string()), self.atlas.get().map(|a| &**a), self.certs.as_ref().and_then(|c| c.now_ms()), record.as_ref(), &read.filter)
+                        crate::views::fabric_answer_with_status(me_name, view, current.into_build_id().map(|b| b.to_string()), certs.as_deref(), self.certs.as_ref().and_then(|c| c.now_ms()), record.as_ref(), &read.filter)
                     }
                     Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read its current Build: {e}", me_name_path = &me_name.path, me_name_name = &me_name.name)),
                 }

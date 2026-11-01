@@ -1502,9 +1502,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // The record the writer of this admin's mesh rows holds, shared with its config door: a config
                                 // put through the door is what the node's next row carries (`crate::node_rows::WrittenRows`).
                                 let written = records.caches.nodes.clone();
-                                // Every record the writer holds is this admin's atlas's too (Q203).
-                                written.feeds(control.atlas.clone()).await;
-                                control.atlas.writes(&own_mesh);
                                 let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), written.clone());
                                 configs.uses_records(topology_storage.node_records(), topology_view.clone());
                                 // A command it sends down that a mesh-primary not yet holding the primary refused waits on the view's next change (D12).
@@ -2990,7 +2987,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         // (states.md "The check-in checklist"): node start's Build floor read again, the current Build's
                                         // committed records from the Build storage (Q292), owed until read.
                                         let (build_read_store, build_read_log) = (control.builds.clone(), journal.clone());
-                                        let (atlas, atlas_rows) = (control.atlas.clone(), nodes_storage.clone());
+                                        let atlas = control.atlas.clone();
                                         hierarchy = tokio::spawn(async move {
                                             let mut was_fabric_primary = false;
                                             let mut was_mesh_primary = false;
@@ -3118,11 +3115,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     records.set_adopted_degraded(adopted);
                                                 }
                                                 // The atlas covers the meshes this admin is primary for (Q207): every mesh its view and
-                                                // the current Build name as the fabric-primary, its own as a mesh-primary, none else. A
-                                                // mesh this admin writes holds its writer's rows, read once from the store as its writing
-                                                // was taken (storage-whole-records.md); any other mesh taken (the fabric-primary's start or
-                                                // hand-over) is filled once from its node records (Q204); a mesh handed away is narrowed off.
-                                                atlas.writing(written.clone());
+                                                // the current Build name as the fabric-primary, its own as a mesh-primary, none else;
+                                                // a mesh handed away is narrowed off. It holds no node record: each is read through the
+                                                // reader (query.md §1).
                                                 let scope: std::collections::BTreeSet<String> = if fabric_primary {
                                                     t.members().map(|n| n.mesh.clone()).chain(current.and_then(|c| c.as_ref()).map(|b| b.topology.mesh_names().into_iter().collect::<Vec<_>>()).unwrap_or_default()).collect()
                                                 } else if mesh_primary {
@@ -3130,24 +3125,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 } else {
                                                     Default::default()
                                                 };
-                                                match atlas.scope(&*atlas_rows, scope.clone()).await {
-                                                    Ok((taken, handed)) if taken.is_empty() && handed.is_empty() => {}
-                                                    filled => {
-                                                        let (taken, handed) = filled.as_ref().map(|(t, h)| (t.join(","), h.join(","))).unwrap_or_default();
-                                                        tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-filled", node_path = %me.path, node_name = %me.name, meshes = %scope.iter().map(String::as_str).collect::<Vec<_>>().join(","), taken = %taken, handed = %handed, fabric_primary, mesh_primary, outcome = if filled.is_ok() { "filled" } else { "fill-refused" }, detail = %filled.err().unwrap_or_default(), "otel.kind" = "internal")
-                                                            .in_scope(|| tracing::info!("the atlas holds the node records of the meshes this admin is primary for: those it writes from its writer, each other read once as it was taken"));
-                                                    }
-                                                }
-                                                if !scope.is_empty() {
-                                                    // A birth first heard in one of its meshes this admin does not write (another
-                                                    // mesh-primary's self-healing among them) has its record read once into the atlas
-                                                    // (Q197, Q203); a mesh it writes holds its writer's rows.
-                                                    let births: Vec<(rdm_core::NodeId, rdm_core::IncarnationId)> = t.births().filter(|n| scope.contains(&n.mesh) && !written.contains(&n.mesh)).filter_map(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))).collect();
-                                                    let read = atlas.read_new_births(&*atlas_rows, births).await;
-                                                    if read > 0 {
-                                                        tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-births-read", node_path = %me.path, node_name = %me.name, records = read as u64, "otel.kind" = "internal")
-                                                            .in_scope(|| tracing::info!("the records of births first heard are the atlas's"));
-                                                    }
+                                                let (taken, handed) = atlas.scope(scope.clone());
+                                                if !taken.is_empty() || !handed.is_empty() {
+                                                    tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-scope", node_path = %me.path, node_name = %me.name, meshes = %scope.iter().map(String::as_str).collect::<Vec<_>>().join(","), taken = %taken.join(","), handed = %handed.join(","), fabric_primary, mesh_primary, "otel.kind" = "internal")
+                                                        .in_scope(|| tracing::info!("the atlas covers the meshes this admin is primary for"));
                                                 }
                                                 if fabric_primary {
                                                     records.set_published_degraded(false);

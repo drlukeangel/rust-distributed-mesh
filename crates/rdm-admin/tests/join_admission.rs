@@ -595,14 +595,14 @@ fn a_join_report_whose_listeners_are_not_exactly_the_assigned_is_refused_by_name
 }
 
 /// CONTRACT (Q227: no node reads the store on create, start or rejoin; Q234: what a node is handed
-/// about its own row comes from its mesh-primary's atlas, never the store): the admin that deployed a
-/// birth holds its row in its atlas (its writer feeds every row it claims or writes there), and the
-/// fabric's nodes store ends in an object another writer has not finished (an unended final line).
-/// The birth's join is admitted from the atlas, handed no config. Must NOT happen: the join
-/// refused `not-ready` because the store could not be read (`via-join`, outcome `not-ready`).
+/// about its own row comes from its mesh-primary, never the store; query.md §1: never an atlas copy):
+/// the admin that deployed a birth holds its row as its mesh's writer (every row it claims or writes),
+/// and the fabric's nodes store ends in an object another writer has not finished (an unended final
+/// line). The birth's join is admitted from the writer's records, handed no config. Must NOT happen:
+/// the join refused `not-ready` because the store could not be read (`via-join`, outcome `not-ready`).
 #[test]
-fn a_join_is_admitted_from_the_atlas_with_the_store_unreadable() {
-    let cell = "a_join_is_admitted_from_the_atlas_with_the_store_unreadable";
+fn a_join_is_admitted_from_the_writers_records_with_the_store_unreadable() {
+    let cell = "a_join_is_admitted_from_the_writers_records_with_the_store_unreadable";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let cap = capture(cell);
@@ -615,8 +615,6 @@ fn a_join_is_admitted_from_the_atlas_with_the_store_unreadable() {
         let storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::FileNodesStorage::open(&store, &rdm_admin::store_root::StoreRoot::at(&store), "mesh1", &writer).await.unwrap());
         let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: dep.kind, mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
         let written = Arc::new(rdm_admin::node_rows::WrittenRows::default());
-        let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
-        written.feeds(atlas.clone()).await;
         written.put(&*storage, &row).await.unwrap();
         let file = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().is_some_and(|n| n == "nodes.jsonl")).expect("the nodes store's file");
         use std::io::Write as _;
@@ -624,15 +622,14 @@ fn a_join_is_admitted_from_the_atlas_with_the_store_unreadable() {
 
         let joins = Arc::new(Joins::default());
         let mut door = door_over(joins.clone(), Arc::default(), row);
+        // Wired as the admin's boot wires it: the records its writer holds.
         door.nodes = Some((storage.clone(), written.clone()));
-        // Wired as the admin's boot wires it: the atlas its writer feeds.
-        door.atlas = Some(atlas.clone());
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34571");
         let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&good).into(), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("the join was refused with the store unreadable: {joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
-        assert_eq!(answer.control.config, None, "the birth is admitted from the atlas and handed no config: {answer:?}");
+        assert_eq!(answer.control.config, None, "the birth is admitted from the writer's records and handed no config: {answer:?}");
         let _ = std::fs::remove_dir_all(&store);
         json!({ "cell": cell, "joined": format!("{joined:?}") })
     });

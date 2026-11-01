@@ -435,12 +435,12 @@ fn fabrics_reply(me: &PathName, fabrics: Vec<FabricView>, filter: &Filter) -> St
     StatusReply::Fabrics { fabrics }
 }
 
-/// [`fabric_answer`] with the cert dates the node records of `records`, this admin's atlas, hold
-/// giving the next expiry across the fabric and each mesh whose renewals stall at `now_ms`, this
-/// admin's rafka-time (fabric-certs.md §Tracking; no store read, query.md §1; none without an atlas),
-/// and `record`, what the Fabric row adds (its topology_storage_provider and the providers it left,
-/// storage.md §2).
-pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, records: Option<&Atlas>, now_ms: Option<u64>, record: Option<&crate::fabric_storage::FabricRecord>, filter: &Filter) -> StatusReply {
+/// [`fabric_answer`] with the cert dates `records` hold (the current records of the births of the meshes
+/// this admin is primary for, read through the reader, query.md §1; none: no cert summary) giving the
+/// next expiry across the fabric and each mesh whose renewals stall at `now_ms`, this admin's
+/// rafka-time (fabric-certs.md §Tracking), and `record`, what the Fabric row adds (its
+/// topology_storage_provider and the providers it left, storage.md §2).
+pub fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, records: Option<&[crate::storage::NodeRow]>, now_ms: Option<u64>, record: Option<&crate::fabric_storage::FabricRecord>, filter: &Filter) -> StatusReply {
     let (next_expiry, stalled) = records.map(|r| crate::cert_renewal::fabric_watch(view, r, now_ms)).unwrap_or_default();
     let mut f = fabric(view, build_id);
     f.next_expiry = next_expiry;
@@ -654,7 +654,7 @@ mod tests {
                 &me,
                 &view,
                 Some(build_id.clone()),
-                Some(&atlas),
+                Some(&[]),
                 Some(2_000),
                 Some(&crate::fabric_storage::FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: Some("file".to_string()), previous_topology_storage_providers: vec!["memory".to_string()], ca: None, roots: None }),
                 &Filter::new().eq("name", ["fabric1"]).eq("build_id", [build_id.clone()]),

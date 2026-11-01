@@ -238,7 +238,7 @@ mod tests {
     use crate::storage::{NodeRow, NodesStorage as _};
     use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest};
 
-    /// The fabric-primary `admin`'s atlas over mesh1's `rows`, filled, deciding its refused callers
+    /// The fabric-primary `admin`'s atlas scoped to its mesh, deciding its refused callers over mesh1's `rows`
     /// through a recovery submitter that holds no Build door and no client: the decision's terminate
     /// report is spanned and its open refused naming the missing door.
     async fn atlas_deciding(admin: &Node, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>) -> Arc<Atlas> {
@@ -249,10 +249,8 @@ mod tests {
     /// refused callers it installed.
     async fn atlas_deciding_over(admin: &Node, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>, client: Option<Arc<rdm_transport::NodeRpcClient>>) -> (Arc<Atlas>, Arc<RefusedCallers>) {
         let atlas = Arc::new(Atlas::default());
-        // The admin's row writer feeds its atlas, as boot wires it: the atlas publishes rows under that writer.
         let written: Arc<crate::node_rows::WrittenRows> = Default::default();
-        written.feeds(atlas.clone()).await;
-        atlas.scope(&**rows, [admin.mesh.clone()].into()).await.unwrap();
+        atlas.scope([admin.mesh.clone()].into());
         let recovery = crate::admin::RecoverySubmitter {
             me: admin.name.clone(),
             me_id: admin.node_id.clone(),

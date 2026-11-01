@@ -13,13 +13,13 @@ use tokio::sync::RwLock;
 
 /// Serve a caller's `CreateTags` or `DeleteTags` at the admin `me` (born `me_id`): one span holds the
 /// whole command, its outcome the reply's name. At the fabric-primary of a node of another mesh, the
-/// command goes down to the node's mesh-primary, owed until it answers, and the answer's labels are
-/// written to the node's record in `atlas` (Q203, Q204: each op writes the atlas; commands go down,
-/// fabric-primary to mesh-primary; [`crate::node_config::NodeConfigs::send_down`]). A caller's
+/// command goes down to the node's mesh-primary, owed until it answers (commands go down,
+/// fabric-primary to mesh-primary; [`crate::node_config::NodeConfigs::send_down`]): the labels are the
+/// node's own property record, what any later read reads (query.md §1). A caller's
 /// (`sent_by`) at an admin that is not the fabric-primary is carried up to it and its answer handed back
 /// ([`crate::node_config::NodeConfigs::forward_up`]), as `node.config.update` is.
 #[allow(clippy::too_many_arguments)]
-pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, atlas: Option<&crate::atlas::Atlas>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> StatusReply {
+pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> StatusReply {
     let (node_id, incarnation, change) = match req {
         StatusRequest::CreateTags { node_id, incarnation, labels } => (node_id, incarnation, Change::Create(labels)),
         StatusRequest::DeleteTags { node_id, incarnation, scope } => (node_id, incarnation, Change::Delete(scope)),
@@ -44,13 +44,6 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
             );
             let down = tracing::Instrument::instrument(door.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
             if let crate::node_config::Down::Answered(reply) = down {
-                if let Some(a) = atlas {
-                    if matches!(reply, StatusReply::TagsCreated { .. } | StatusReply::TagsDeleted { .. }) {
-                        if let Err(error) = a.refresh_record(storage, node_id).await {
-                            span.record("detail", error.as_str());
-                        }
-                    }
-                }
                 span.record("outcome", reply.name());
                 span.in_scope(|| tracing::info!("{} at the fabric-primary decided", req.op()));
                 return reply;
@@ -232,7 +225,7 @@ mod tests {
             labels: set(&[".hidden"]),
         };
         assert!(matches!(
-            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &bad_req).await,
+            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &bad_req).await,
             StatusReply::RejectedTags { .. }
         ));
 
@@ -243,11 +236,11 @@ mod tests {
             labels: set(&["gold", "ssd"]),
         };
         assert!(matches!(
-            tags(&admin2.name, &admin2.node_id, &view, &storage, Some(&door), None, SentBy::Other, &create_req).await,
+            tags(&admin2.name, &admin2.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await,
             StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }
         ));
 
-        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &create_req).await, StatusReply::NotReady { .. }));
+        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await, StatusReply::NotReady { .. }));
         assert!(storage.node(&admin1.node_id).await.unwrap().is_none());
         use rdm_node::node_records::{MemoryNodeRecords, NodeRecordsStorage};
         let records = Arc::new(MemoryNodeRecords::default());
@@ -259,7 +252,7 @@ mod tests {
 
         // 3. Create {"gold", "ssd"} persists both labels in node-owned properties.
         assert_eq!(
-            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &create_req).await,
+            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await,
             StatusReply::TagsCreated {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),
@@ -274,7 +267,7 @@ mod tests {
             labels: set(&["gold"]),
         };
         assert_eq!(
-            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &dup_req).await,
+            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &dup_req).await,
             StatusReply::TagsCreated {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),
@@ -289,7 +282,7 @@ mod tests {
             scope: TagScope::Labels(set(&["gold", "missing"])),
         };
         assert_eq!(
-            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &del_req).await,
+            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &del_req).await,
             StatusReply::TagsDeleted {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),
@@ -302,10 +295,10 @@ mod tests {
             node_id: admin1.node_id.clone(), incarnation: admin1.incarnation_id.clone().unwrap(),
             labels: (0..32).map(|i| format!("tag-{i}")).collect(),
         };
-        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &too_many).await, StatusReply::RejectedTags { .. }));
+        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &too_many).await, StatusReply::RejectedTags { .. }));
         assert_eq!(records.properties(&admin1.node_id).await.unwrap().unwrap().tags, set(&["ssd"]));
         let stale = StatusRequest::CreateTags { node_id: admin1.node_id.clone(), incarnation: IncarnationId::mint(), labels: set(&["stale"]) };
-        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
+        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
 
         // 6. Delete All clears the remaining tags.
         let del_all = StatusRequest::DeleteTags {
@@ -314,7 +307,7 @@ mod tests {
             scope: TagScope::All,
         };
         assert_eq!(
-            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &del_all).await,
+            tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &del_all).await,
             StatusReply::TagsDeleted {
                 node_id: admin1.node_id.clone(),
                 incarnation: admin1.incarnation_id.clone().unwrap(),

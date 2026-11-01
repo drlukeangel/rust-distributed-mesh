@@ -67,16 +67,6 @@ pub async fn bound_configs_over(records: std::sync::Arc<dyn rdm_node::node_recor
     configs
 }
 
-/// An atlas with its writer installed, as boot installs it (`WrittenRows::feeds`): the writer lives
-/// as long as the cell.
-pub async fn fed_atlas() -> std::sync::Arc<rdm_admin::atlas::Atlas> {
-    let atlas = std::sync::Arc::new(rdm_admin::atlas::Atlas::default());
-    let writer = std::sync::Arc::new(rdm_admin::node_rows::WrittenRows::default());
-    writer.feeds(atlas.clone()).await;
-    std::mem::forget(writer);
-    atlas
-}
-
 /// One application notice of a Build's opening or ending, as a cell's application recorded it.
 #[derive(Debug, Clone)]
 pub enum Notice {
