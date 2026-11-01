@@ -250,15 +250,10 @@ pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRo
 }
 
 /// `node.get` (Q167) answered by the node-admin `me` from its `view`, its nodes' `loads` and the
-/// lifecycle the ops left each birth in (`records`, its atlas), reading no record: every birth that
-/// matches every pair of `filter`, by `(path, name)`. A filter the node schema refuses is
-/// `RejectedFilter` naming the pair, and nothing is read. Its span names the read, the pairs and how
-/// many nodes were answered.
-pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, records: &Atlas, filter: &Filter) -> StatusReply {
-    nodes_answer_with_status(me, view, loads, records, &Ok(BTreeMap::new()), filter, &|_| {}, None).await
-}
-
-/// [`nodes_answer`] with `current`, the reader each birth's record is read through (query.md §1: its
+/// lifecycle the ops left each birth in (`records`, its atlas): every birth that matches every pair of
+/// `filter`, by `(path, name)`. A filter the node schema refuses is `RejectedFilter` naming the pair,
+/// and nothing is read. Its span names the read, the pairs and how many nodes were answered. It takes
+/// `current`, the reader each birth's record is read through (query.md §1: its
 /// lifecycle record under its mesh's current writer, its properties at its own node ID; never a copy an
 /// atlas holds), `planned`, the current Build's paths, naming where a birth the view no longer holds is
 /// answered from its record (R-FM1, R-FM2), and `amend`, what the answering admin adds to each row
@@ -634,7 +629,7 @@ mod tests {
             }
 
             // 3. Invalid filter on node.get is refused naming the pair.
-            let bad_node_reply = nodes_answer(&me, &view, &loads, &atlas, &Filter::new().eq("unknown_field", ["x"])).await;
+            let bad_node_reply = nodes_answer_with_status(&me, &view, &loads, &atlas, &Ok(BTreeMap::new()), &Filter::new().eq("unknown_field", ["x"]), &|_| {}, None).await;
             assert!(matches!(bad_node_reply, StatusReply::RejectedFilter { ref reason } if reason.contains("(unknown_field, [x])")));
 
             // 4. mesh.get and fabric.get serve matching views and refuse invalid filters.
