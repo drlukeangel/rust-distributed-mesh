@@ -193,7 +193,11 @@ PY
     # `removed: <module>::<cell>` (the name `--list` prints), and only those may leave discovery.
     REMOVED="$D/discovery-removed.txt"
     git log --format=%b "$BASE"..HEAD 2>/dev/null | sed -n 's/^removed: *//p' > "$REMOVED"
-    python3 - "$MAIN_DISC" "$CAND_DISC" "$REMOVED" <<'PY'
+    # A renamed cell is named `renamed: <module>::<old> -> <new name>` (full, or the fn name alone): its old
+    # name leaves discovery only when the new name is in the candidate's same binary.
+    RENAMED="$D/discovery-renamed.txt"
+    git log --format=%b "$BASE"..HEAD 2>/dev/null | sed -n 's/^renamed: *//p' > "$RENAMED"
+    python3 - "$MAIN_DISC" "$CAND_DISC" "$REMOVED" "$RENAMED" <<'PY'
 import collections, json, sys
 base = json.load(open(sys.argv[1]))
 cand = json.load(open(sys.argv[2]))
@@ -201,6 +205,12 @@ cand = json.load(open(sys.argv[2]))
 allowed_full = collections.Counter(l.strip() for l in open(sys.argv[3]) if l.strip())
 allowed_leaf = collections.Counter(t.split("::")[-1] for t in allowed_full.elements())
 allowed_used = 0
+renamed = {}
+for l in open(sys.argv[4]):
+    if "->" in l:
+        old, new = (x.strip() for x in l.split("->", 1))
+        renamed.setdefault(old, []).append(new)
+        renamed.setdefault(old.split("::")[-1], []).append(new)
 base_tot = sum(b["count"] for p in base.values() for b in p.values())
 cand_tot = sum(b["count"] for p in cand.values() for b in p.values())
 print(f"[discovery] origin/main={base_tot} tests across {len(base)} packages; candidate={cand_tot} tests across {len(cand)} packages")
@@ -237,8 +247,12 @@ for pkg, bins in sorted(base.items()):
         cur_c = collections.Counter(c_info["tests"]) if c_info is not None else collections.Counter()
         left = old_c - cur_c
         missing = []
+        cur_leaves = {x.split("::")[-1] for x in cur_c}
         for t, n in sorted(left.items()):
             leaf = t.split("::")[-1]
+            if any(new in cur_c or new.split("::")[-1] in cur_leaves for new in renamed.get(t, renamed.get(leaf, []))):
+                print(f"[discovery] renamed by name: {pkg}:{tname} {t}")
+                continue
             if added_full[t] >= n:
                 added_full[t] -= n
                 added_leaf[leaf] -= n
