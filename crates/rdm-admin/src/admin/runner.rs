@@ -1027,7 +1027,7 @@ impl AdminRunner {
             Some(n) => self.handle_for(&n).await?,
             None => self.handles.lock().unwrap().get(&pin.node_id).cloned().filter(|(rec, _)| pin.is(rec)).ok_or_else(|| crate::executor::RunEnd::Incomplete(format!("{op}:path {node_path:?}, name {node_name:?}: birth {} at incarnation {} is not in this admin's view and no runtime handle of it is held", pin.node_id, pin.incarnation.as_str(), node_path = &node.path, node_name = &node.name)))?,
         };
-        let record = Node { name: node.clone(), ..record };
+        let record = at_operation_pair(record, node);
         let template = self.template_for(record.kind, &record.mesh).await?;
         let req = DeleteRequest { operation: operation.clone(), build_id: build_id.clone(), attempt, node: record.clone(), handle, unreached: false };
         if stop {
@@ -1062,7 +1062,7 @@ impl AdminRunner {
         }
         // Its row's name is the operation's path, as `standalone` takes it: a predecessor this Build
         // renamed `<name>-old` is deleted there, never at the name it was launched at (node-replace.md).
-        let record = Node { name: node.clone(), ..record };
+        let record = at_operation_pair(record, node);
         let template = self.template_for(record.kind, &record.mesh).await?;
         let req = DeleteRequest { operation: operation.clone(), build_id: build_id.clone(), attempt, node: record.clone(), handle, unreached: false };
         self.pipeline(&template).delete_stopped(&req).await.map_err(crate::executor::RunEnd::from)?;
@@ -1175,7 +1175,7 @@ impl AdminRunner {
         let seen = seen.ok_or_else(|| crate::executor::RunEnd::Incomplete(format!("{op}:path {node_path:?}, name {node_name:?} is not in this admin's view", node_path = &node.path, node_name = &node.name)))?;
         let (record, handle) = self.handle_for(&seen).await?;
         // The record the pipeline starts is the view's: it carries the endpoint, the address and the data dir the birth was admitted at.
-        let record = Node { status: seen.status, stopped: seen.stopped, ..record };
+        let record = Node { status: seen.status, stopped: seen.stopped, ..at_operation_pair(record, node) };
         let record = Node { endpoint_id: seen.endpoint_id.clone().or(record.endpoint_id), transport_addr: seen.transport_addr.or(record.transport_addr), data_dir: seen.data_dir.clone().or(record.data_dir), ..record };
         let deployed = self.deployed_for(&record, &handle)?;
         Ok((record, handle, deployed))
@@ -1245,8 +1245,8 @@ impl AdminRunner {
         // as `standalone` takes it: a predecessor renamed `<name>-old` by this Build is deleted there,
         // never at the name it was deployed at (node-replace.md).
         let record = match &seen {
-            Some(n) => Node { name: node.clone(), stopped: n.stopped, ..record },
-            None => Node { name: node.clone(), ..record },
+            Some(n) => Node { stopped: n.stopped, ..at_operation_pair(record, node) },
+            None => at_operation_pair(record, node),
         };
         // Its row's name is the operation's path, never the pair a launched runtime's record kept.
         let record = Node { name: node.clone(), ..record };
@@ -1686,6 +1686,15 @@ impl AdminRunner {
             }
         }
     }
+}
+
+/// `record`, the exact birth an operation was pinned to, named by the operation's `(path, name)`: a
+/// birth renamed live publishes nothing more, so this admin's view lists it at the name it last
+/// published and its launch handle at the name it was launched under, while the operation's pair is
+/// the one its record holds now (node-replace.md steps 1-2; node-delete.md step 3 writes the row there;
+/// node-start.md "Identity": the start keeps that path/name).
+fn at_operation_pair(record: Node, node: &PathName) -> Node {
+    Node { name: node.clone(), ..record }
 }
 
 /// The birth `from` at `node` that no topology view holds, rebuilt from the records (node-admin-lifecycle.md

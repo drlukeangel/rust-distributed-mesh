@@ -727,8 +727,12 @@ impl ControlPlane {
                 None => self.topology.read().await.clone(),
             };
             self.atlas.apply(&mut t);
-            let n = self.atlas_row(&path, &t).await?.ok_or_else(||
-                Refusal::Reject(BuildReject::UnknownNode { node: path.clone(), step: None }))?;
+            // build.md §4.4, "A node stands at the path": none stands there, refused by name on its span.
+            let Some(n) = self.atlas_row(&path, &t).await? else {
+                let reject = BuildReject::UnknownNode { node: path.clone(), step: None };
+                outer.in_scope(|| reject_span(route, &reject));
+                return Err(Refusal::Reject(reject));
+            };
             let mesh = n.mesh.clone();
             if let Some(held) = holding(&current, Some(&mesh)) {
                 return Err(Refusal::BuildInProgress(held));
