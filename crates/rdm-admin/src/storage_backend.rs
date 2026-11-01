@@ -1177,8 +1177,6 @@ mod tests {
             endpoint_id: crate::model::EndpointId(iroh::SecretKey::generate().public().to_string()),
             transport_addr: "127.0.0.1:41001".parse().unwrap(),
             listeners: vec![("control".into(), "127.0.0.1:41002".parse().unwrap())],
-            is_primary: None,
-            is_fabric_primary: None,
             topology_storage_provider: None,
         };
         let memory = MemoryBackend;

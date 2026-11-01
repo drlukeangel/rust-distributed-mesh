@@ -428,16 +428,14 @@ impl MeshStorage for FileMeshStorage {
 
 pub use rdm_node::nodes_storage::{AppTypes, Allocation, BirthFacts, BirthRef, CertDates, DataDirLost, DataDirUnreadable, NodeOperation, NodeRow, RuntimeRow, SigningCertDates, BIRTHS_KEPT};
 
-/// The address of `birth` and the primaries recorded for it leave its facts: a birth whose exit is
-/// proven is no node to reach and holds no primary (mesh-delete.md step 7, "Deleted births resolve
-/// Gone"). The mesh-primary's write, never a node's: a node records no primary (rdm-node's
-/// `node_base_holds_no_comparator`).
-pub fn clear_address_and_primaries(birth: &mut BirthFacts) {
+/// The address of `birth` leaves its facts: a birth whose exit is proven is no node to reach
+/// (mesh-delete.md step 7, "Deleted births resolve Gone"). The mesh-primary's write, never a node's.
+/// The election's results are not on the facts: they persist in the node records' own election
+/// results ([`rdm_node::node_records::PrimaryRecordBatch`]).
+pub fn clear_address(birth: &mut BirthFacts) {
     birth.endpoint_id = None;
     birth.transport_addr = None;
     birth.listeners.clear();
-    birth.is_primary = None;
-    birth.is_fabric_primary = None;
 }
 
 // ---------------------------------------------------------------- nodes.storage
@@ -472,15 +470,6 @@ pub struct NodeRecord {
     /// Non-Iroh listeners (the own row of a node-admin: its `control` API).
     #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
-    /// The revision at which this birth is its node type's primary in its mesh, when it is: the
-    /// election's result, recorded by the mesh-primary (node-identity-and-state.md §2.7); the write
-    /// records the role and does not grant it. A row written before primaries were recorded carries none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_primary: Option<u64>,
-    /// The revision at which this birth is the fabric-primary, when it is, recorded by the node-admin
-    /// on its own row (node-identity-and-state.md §2.8), as [`Self::is_primary`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_fabric_primary: Option<u64>,
     /// The `topology_storage_provider` this birth writes (storage.md §2), kept on the own row in its
     /// data dir and written again at each move: a start with no launcher opens the provider it names
     /// ("a restart with no launcher (the adoption launch) | the node itself | its own row in its data
@@ -927,8 +916,6 @@ mod tests {
             endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
             transport_addr: "127.0.0.1:41001".parse().unwrap(),
             listeners: vec![],
-            is_primary: None,
-            is_fabric_primary: None,
             topology_storage_provider: None,
         }
     }
@@ -1404,25 +1391,21 @@ mod tests {
     /// "node.delete releases the node's identity and name; its row stays. The node's mesh-primary writes
     /// the row with status deleted, keeping the record and its config; the deleted row releases..."
     #[tokio::test]
-    async fn clear_address_and_primaries_fold_declared_and_own_in_behave_as_specified() {
-        // 1. `clear_address_and_primaries` strips endpoint_id, transport_addr, listeners, and primary revisions.
+    async fn clear_address_fold_declared_and_own_in_behave_as_specified() {
+        // 1. `clear_address` strips endpoint_id, transport_addr and listeners.
         let inc = IncarnationId::mint();
         let name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let mut birth = BirthFacts::new(inc.clone(), name.clone());
         birth.endpoint_id = Some(EndpointId("ep-1".into()));
         birth.transport_addr = Some("127.0.0.1:9000".parse().unwrap());
         birth.listeners.push(("control".into(), "127.0.0.1:9001".parse().unwrap()));
-        birth.is_primary = Some(3);
-        birth.is_fabric_primary = Some(4);
         birth.declared.insert(NodeState::Ready);
         birth.declared.insert(NodeState::Stopped);
 
-        clear_address_and_primaries(&mut birth);
+        clear_address(&mut birth);
         assert_eq!(birth.endpoint_id, None);
         assert_eq!(birth.transport_addr, None);
         assert!(birth.listeners.is_empty());
-        assert_eq!(birth.is_primary, None);
-        assert_eq!(birth.is_fabric_primary, None);
 
         // 2. `fold_declared` extracts the greatest declared state and path name per (node_id, incarnation_id).
         let node_id = NodeId::mint();
@@ -1445,8 +1428,6 @@ mod tests {
             endpoint_id: EndpointId(secret.public().to_string()),
             transport_addr: "127.0.0.1:9100".parse().unwrap(),
             listeners: vec![("control".into(), "127.0.0.1:9101".parse().unwrap())],
-            is_primary: Some(1),
-            is_fabric_primary: Some(1),
             topology_storage_provider: Some("file".into()),
         };
         FileNodesStorage::put_own_in(&d, &writer, &own_record).await.unwrap();

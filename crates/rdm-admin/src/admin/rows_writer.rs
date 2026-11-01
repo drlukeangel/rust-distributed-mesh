@@ -53,11 +53,59 @@ pub(crate) struct MeshRowsWriter {
     /// store answered it; `Some(Ok)` once it won; `Some(Err)` when it was refused (another mesh's
     /// live row holds the name, or this mesh is Dead): the mesh's rows stay unwritten for the tenure.
     pub(crate) claim: Option<Result<(), crate::storage::MeshClaimRefused>>,
+    /// The election's results this writer records (node-primary-update.md step 5: "The existing
+    /// election revision is persisted independently and is not reconstructed from lifecycle flags"),
+    /// each at its own result identity in the node records, written as this admin's birth.
+    pub(crate) elections: ElectionResults,
+}
+
+/// The existing election's results a lifecycle writer persists in the node records
+/// ([`rdm_node::node_records::PrimaryRecordBatch`]), each at its own result identity, beside and
+/// independent of the boolean role flags its lifecycle records carry (node-primary-update.md "The
+/// record"; build.md §5.3: "Existing election results and revisions persist independently of
+/// lifecycle role flags"). The results the store acknowledged are not written again.
+pub(crate) struct ElectionResults {
+    records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>,
+    writer: rdm_node::node_records::RecordBirth,
+    written: std::collections::HashSet<(rdm_core::PrimaryRole, rdm_core::Primary)>,
+}
+
+impl ElectionResults {
+    /// The results this admin, born as `writer`, writes to `records`.
+    pub(crate) fn new(records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>, writer: rdm_node::node_records::RecordBirth) -> Self {
+        Self { records, writer, written: Default::default() }
+    }
+
+    /// Persist the results `held` of `fabric` the store has not acknowledged from this writer yet, as
+    /// one batch: one installation's results together. `Ok(0)`: every one was written before.
+    pub(crate) async fn persist(&mut self, fabric: &FabricId, held: Vec<(rdm_core::PrimaryRole, rdm_core::Primary)>) -> Result<usize, crate::storage_error::StorageError> {
+        let owed: Vec<_> = held.into_iter().filter(|r| !self.written.contains(r)).collect();
+        if owed.is_empty() {
+            return Ok(0);
+        }
+        let batch = rdm_node::node_records::PrimaryRecordBatch { fabric_id: fabric.clone(), writer: self.writer.clone(), records: owed.clone() };
+        self.records.put_primary_records(&batch).await?;
+        let n = owed.len();
+        self.written.extend(owed);
+        Ok(n)
+    }
+}
+
+/// The election's results the digest `d` carries for its own birth: its node type's primary of its
+/// mesh at `is_primary`, the fabric-primary at `is_fabric_primary`.
+pub(crate) fn results_of(d: &MeshDigest) -> Vec<(rdm_core::PrimaryRole, rdm_core::Primary)> {
+    let n = &d.node;
+    let record = |revision| rdm_core::Primary { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation.clone(), revision };
+    d.is_primary
+        .map(|revision| (rdm_core::PrimaryRole::of_node_type(n.kind), record(revision)))
+        .into_iter()
+        .chain(d.is_fabric_primary.map(|revision| (rdm_core::PrimaryRole::FabricPrimary, record(revision))))
+        .collect()
 }
 
 impl MeshRowsWriter {
-    pub(crate) fn new(me: &str, mesh: &str, mesh_id: MeshId, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>, caches: crate::record_cache::Caches) -> Self {
-        Self { me: me.to_string(), mesh: mesh.to_string(), mesh_id, nodes, meshes, caches, claim: None }
+    pub(crate) fn new(me: &str, mesh: &str, mesh_id: MeshId, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>, caches: crate::record_cache::Caches, elections: ElectionResults) -> Self {
+        Self { me: me.to_string(), mesh: mesh.to_string(), mesh_id, nodes, meshes, caches, claim: None, elections }
     }
 
     /// One sweep over the births `held` (every birth of the fabric this admin holds, itself
@@ -91,8 +139,21 @@ impl MeshRowsWriter {
         // A deleted birth is never written: its node's record is written `Deleted` by its delete.
         for d in held.iter().filter(|d| !deleted(&d.node.node_id) && writes.contains(&d.node.mesh) && !primaried.contains(d.node.mesh.as_str()) && (d.node.mesh != self.mesh || own)) {
             let mesh_id = if d.node.mesh == self.mesh { Some(self.mesh_id.clone()) } else { d.mesh_id.clone() };
-            // The birth's address and the primaries the view holds, put whole on its record from the copy
-            // this admin holds; a `Deleted` record is left as it stands.
+            // The election's results the view holds for the birth, persisted at their own identities,
+            // apart from its record (node-primary-update.md step 5).
+            let results = results_of(d);
+            match self.elections.persist(&d.fabric_id, results.clone()).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info_span!("rdm.node_admin.primary.update.via-election-result", writer_node_id = %self.me, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.as_str(), results = n as u64, primaries = %results.iter().map(|(r, p)| format!("{}={p}", r.name())).collect::<Vec<_>>().join(","), outcome = "written")
+                    .in_scope(|| tracing::info!("the election's results the view holds for the birth are persisted at their own identities")),
+                Err(e) => {
+                    owed = true;
+                    tracing::info_span!("rdm.node_admin.primary.update.via-election-result", writer_node_id = %self.me, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.as_str(), results = results.len() as u64, outcome = "owed", error = %e)
+                        .in_scope(|| tracing::info!("the store did not acknowledge the election's results: they are owed and written again under the one backoff rule"));
+                }
+            }
+            // The birth's address, put whole on its record from the copy this admin holds; a `Deleted`
+            // record is left as it stands.
             let written = self
                 .caches
                 .nodes
@@ -107,19 +168,17 @@ impl MeshRowsWriter {
                     let b = r.birth_mut(&d.node.incarnation, &d.node.name);
                     b.endpoint_id = Some(d.node.endpoint_id.clone());
                     b.transport_addr = Some(d.node.transport_addr);
-                    b.is_primary = d.is_primary;
-                    b.is_fabric_primary = d.is_fabric_primary;
                     *r != before
                 })
                 .await;
             match written {
-                Ok(Some(true)) => tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "written")
-                    .in_scope(|| tracing::info!("the node's record is put whole, the birth's address and the primaries the view holds recorded on it")),
+                Ok(Some(true)) => tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, outcome = "written")
+                    .in_scope(|| tracing::info!("the node's record is put whole, the birth's address recorded on it")),
                 Ok(Some(false)) => {}
                 Ok(None) => owed = true,
                 Err(e) => {
                     owed = true;
-                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "owed", error = %e)
+                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, outcome = "owed", error = %e)
                         .in_scope(|| tracing::info!("the store did not acknowledge the node's record: it is owed and written again under the one backoff rule"));
                 }
             }
@@ -193,21 +252,16 @@ pub(crate) async fn recorded_births(meshes: &dyn crate::storage::MeshStorage, no
     Ok(crate::storage::live_records(meshes, nodes, own_mesh).await?.iter().filter_map(crate::reenter::MapNode::of_record).collect())
 }
 
-/// Hold the primaries the node records on the store root record (`is_primary`, `is_fabric_primary` on
-/// each record's newest birth, a `Deleted` record's included: [`crate::storage::records`]), the own
-/// record's included: an election input (elections §3), each
-/// held only when it supersedes the record held. The records record the role; the election decides it.
-/// The store root is the fabric's own, so every record on it is of this fabric.
-pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str, primaries: &rdm_transport::topology::PrimaryView) -> Result<usize, crate::storage_error::StorageError> {
+/// Hold the existing election's results persisted in the node records (node-primary-update.md step 5;
+/// [`ElectionResults`]), the own included: an election input (elections §3), each held only when it
+/// supersedes the record held, so the order the store answers them in decides nothing. The results are
+/// restored as they were persisted, never reconstructed from a lifecycle record's role flags. The
+/// store root is the fabric's own, so every result on it is of this fabric.
+pub(crate) async fn take_recorded_primaries(records: &dyn rdm_node::node_records::NodeRecordsStorage, primaries: &rdm_transport::topology::PrimaryView) -> Result<usize, crate::storage_error::StorageError> {
     let mut taken = 0;
-    for r in crate::storage::records(meshes, nodes, own_mesh).await? {
-        let Some(b) = r.newest_birth() else { continue };
-        let record = |revision| rdm_core::Primary { mesh: r.mesh.clone(), node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone(), revision };
-        if let Some(revision) = b.is_primary {
-            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::of_node_type(r.kind), &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
-        }
-        if let Some(revision) = b.is_fabric_primary {
-            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::FabricPrimary, &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
+    for batch in records.primary_records().await? {
+        for (role, primary) in &batch.records {
+            taken += usize::from(matches!(primaries.take(*role, primary), rdm_transport::topology::RoleTaken::Held { .. }));
         }
     }
     Ok(taken)
@@ -448,8 +502,8 @@ pub(crate) async fn claim_fabric_name(storage: &dyn crate::fabric_storage::Fabri
 /// `fabric/` on the fabric's store root, written by the fabric-primary alone (R14 item 2): while this
 /// birth holds the fabric-primary role it writes the Fabric identity it is configured for, so a role that
 /// came to it from a lost primary still leaves the Fabric row on the store root. Who is primary is no `fabric/` row: it is the
-/// election's result, recorded as `is_primary` and `is_fabric_primary` on the node rows (build.md
-/// §5.3). The Fabric row carries no pointer to the newest Build (R-BI3). The claim of the
+/// election's result, persisted in the node records at its own result identity ([`ElectionResults`],
+/// build.md §5.3). The Fabric row carries no pointer to the newest Build (R-BI3). The claim of the
 /// fabric's name comes first: nothing else is written to `fabric/` until it wins, and a name another
 /// Fabric's identity holds leaves `fabric/` unwritten by this writer, named once. While it does not
 /// hold the role it writes nothing to `fabric/`.
