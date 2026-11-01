@@ -510,7 +510,8 @@ async fn a_deleted_birth_cannot_hide_its_successor() {
 /// durable properties and application recognition survive startup"): every field of a node survives
 /// its restart, compared whole, not sampled. `mesh1.rpc` / `2` updates its own config and is tagged.
 /// 1. Stopped then started (the same birth): node.get lists every field as before but the measured
-///    load and gossip counts, its property record is the same record, and its lifecycle record differs
+///    load and gossip counts and the member cert its start's join issues afresh (fabric-certs.md
+///    "Every JoinNode issues a fresh member cert"), its property record is the same record, and its lifecycle record differs
 ///    only by the stop and start it recorded. 2. Killed: the node recovered at the pair (a new node id
 ///    over the inherited data dir) lists the same pair, kind, mesh, config, tags, executable, storage,
 ///    placement, data dir and endpoint key; its own property record holds the config and tags; its
@@ -537,8 +538,12 @@ async fn all_node_fields_survive_node_restart() {
     let started = estate
         .until_node(&subject, "the same birth is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id == before.node_id && n.incarnation_id == before.incarnation_id).cloned())
         .await;
-    let changed = differing_except(&before, &started, &["load", "gossip"]);
+    // fabric-certs.md "Every JoinNode issues a fresh member cert": the start's join (node-start.md step
+    // 2) issues the same birth a new cert under the same issuer; every other listed field stands.
+    let changed = differing_except(&before, &started, &["load", "gossip", "cert"]);
     assert!(changed.is_empty(), "every listed field survives the stop and start: {changed:#?}");
+    let (was, now) = (before.cert.expect("the birth's member cert"), started.cert.expect("the started birth's member cert"));
+    assert!(now.issued_at >= was.issued_at && now.issuer_expires_at == was.issuer_expires_at, "the start's join issues a fresh member cert under the same issuer: {was:?} -> {now:?}");
     assert_eq!(estate.node_properties(&before.node_id).expect("the property record"), properties, "the whole property record survives the stop and start");
     let restarted = written_by(&estate, &before.node_id, &writer).expect("the lifecycle record after the start");
     let changed = differing_except(&lifecycle, &restarted, &["operations", "declared"]);
