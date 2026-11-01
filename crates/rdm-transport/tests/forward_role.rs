@@ -82,8 +82,8 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         let src_m = TopologyView::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.admin.1", clock(), vec![], &[]).await.unwrap();
         let admin_m = TopologyView::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.admin.2", clock(), vec![], &[]).await.unwrap();
         let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.rpc.1", clock(), vec![admin_addr.clone()], &[]).await.unwrap();
-        let src_bb = Backbone::join(&src.gossip, &src.ep, &src_m, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
-        let admin_bb = Backbone::join(&admin.gossip, &admin.ep, &admin_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
+        let src_bb = Backbone::join(&src.gossip, &src.ep, &src_m, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
+        let admin_bb = Backbone::join(&admin.gossip, &admin.ep, &admin_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
         src_bb.set_mesh_primary(true);
         assert!(!admin_bb.is_mesh_primary(), "mesh1.admin.2 holds no role");
         rpc_m.wait_for_neighbour().await;

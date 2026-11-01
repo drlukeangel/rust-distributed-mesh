@@ -3912,7 +3912,7 @@ pub fn status_announcements(
     .flatten()
     .collect();
     if fabric_pub.author.is_some() {
-        frames.extend(observe_peer_degraded(&me.node, &author, &held_meshes, &primary_revisions, peer_pubs, degraded_meshes, now));
+        frames.extend(observe_peer_degraded(me.node_id.as_str(), &author, &held_meshes, &primary_revisions, peer_pubs, degraded_meshes, now));
     } else {
         peer_pubs.clear();
     }
@@ -3925,7 +3925,7 @@ impl Backbone {
     }
 
     fn current_publisher(&self) -> PublisherId {
-        PublisherId { node: self.current_name(), ..self.publisher.clone() }
+        self.publisher.clone()
     }
 
     /// Test seam: hand this backbone the [`Withhold`] it asks before each announcement it covers
@@ -3959,7 +3959,8 @@ impl Backbone {
     /// Join the backbone with the author's exact birth. Every publication retains this supplied
     /// node id and incarnation; no receiver or forwarder reconstructs them from a name.
     pub async fn join(gossip: &Gossip, endpoint: &Endpoint, topology_view: &TopologyView, mesh: &str, author: PublisherId, seeds: Vec<EndpointAddr>) -> Result<Self> {
-        let node = author.node.as_str();
+        // The node is named by its node id on its channel and status spans (no name rides with the author, Q309).
+        let node = author.node_id.as_str();
         let birth = crate::envelope::Birth::publisher(&topology_view.fabric, &author);
         *topology_view.mesh.author.lock().unwrap() = Some(birth.clone());
         topology_view.view.forwarder.lock().unwrap().set_author(birth);
@@ -4154,7 +4155,7 @@ impl Backbone {
         let mut first: Vec<Frame> = [mesh_frame, fabric_frame].into_iter().flatten().collect();
         if is_fabric_primary {
             let mut peers = self.peer_mesh_status.lock().unwrap();
-            first.extend(observe_peer_degraded(&me.node, &author, &held_meshes, &primary_revisions, &mut peers, degraded_meshes, now));
+            first.extend(observe_peer_degraded(me.node_id.as_str(), &author, &held_meshes, &primary_revisions, &mut peers, degraded_meshes, now));
         } else {
             self.peer_mesh_status.lock().unwrap().clear();
         }
@@ -6471,7 +6472,7 @@ mod tests {
     fn a_member_holds_the_primary_records_its_mesh_primarys_projection_carries() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let view = test_view("mesh1", "mesh1.rpc.1");
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
+        let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
         // The member holds its mesh-primary from its entry read.
         view.digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: publisher.node_id.clone(), incarnation: publisher.incarnation.clone(), revision: 1 });
         let (me, my_inc) = (NodeId::parse("000000000002").unwrap(), IncarnationId::mint());
@@ -6676,7 +6677,7 @@ mod tests {
     fn mesh_topology(mesh: &str, publisher: &str, forwarded_by: Option<&str>, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, deleted: Vec<LifecycleOp>) -> Frame {
         Frame::MeshTopology {
             mesh: mesh.into(),
-            publisher: PublisherId { node: publisher.into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() },
+            publisher: PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() },
             forwarded_by: forwarded_by.map(String::from),
             topology_version: 1,
             published_at_rafka_ms: 1,
@@ -6925,7 +6926,7 @@ mod tests {
         let _capture = crate::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let view = test_view("mesh1", "mesh1.admin.2");
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let b = |status, seq| digest(&id, &inc, None, status, seq);
         let stop = op(&id, &inc, "node.stop");
@@ -6989,7 +6990,7 @@ mod tests {
         // A node joins under its node id: before its first publication it knows itself by that id.
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let view = test_view("mesh1", id.as_str());
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let itself = |status, seq| digest(&id, &inc, None, status, seq);
         let mesh_topology = |version: u64, d: MeshDigest| Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some(publisher.node_id.to_string()), topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d], in_flight: vec![], deleted: vec![] };
         view.take_snapshot(&mesh_topology(1, itself(MemberStatus::Pending, 1)), &fabric, Side::MeshChannel, &mut view.order.lock().unwrap());
@@ -7018,7 +7019,7 @@ mod tests {
     fn an_admin_holds_an_own_mesh_birth_its_primarys_projection_lists_unheard_since_it_first_held_it() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let view = test_view("mesh1", "mesh1.admin.2");
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let mesh_topology = |version: u64, digests: Vec<MeshDigest>, deleted: Vec<LifecycleOp>| Frame::MeshTopology {
             mesh: "mesh1".into(),
             publisher: publisher.clone(),
@@ -7070,7 +7071,7 @@ mod tests {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let view = test_view("mesh1", "mesh1.admin.2");
         view.primary.store(true, Ordering::Relaxed);
-        let predecessor = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let predecessor = PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(view.digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 5)), "the primary holds its member's heartbeat");
         assert!(view.digest_view.started(&id, &inc, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), "and sets it ready from its node.started");
@@ -7745,7 +7746,7 @@ mod tests {
             d.node.mesh = "mesh2".into();
             d
         };
-        let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
+        let publisher = PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
         let forwarder_id = NodeId::mint();
         let first = Frame::MeshTopology {
             mesh: "mesh2".into(),
@@ -7879,7 +7880,7 @@ mod tests {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let m1 = MeshId::mint();
         let (admin, connections_deleting, leaving) = (born("mesh1", rdm_core::NodeKind::NodeAdmin, 1, Some(&m1), 1), born("mesh1", rdm_core::NodeKind::RpcNode, 1, None, 1), born("mesh1", rdm_core::NodeKind::RpcNode, 2, None, 1));
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() };
+        let publisher = PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() };
         let mesh_topology = |version: u64, digests: Vec<MeshDigest>| Frame::MeshTopology {
             mesh: "mesh1".into(),
             publisher: publisher.clone(),
@@ -8285,7 +8286,7 @@ mod tests {
     }
 
     fn publisher_of(d: &MeshDigest) -> PublisherId {
-        PublisherId { node: d.node.node_id.to_string(), incarnation: d.node.incarnation.clone(), node_id: d.node.node_id.clone() }
+        PublisherId { incarnation: d.node.incarnation.clone(), node_id: d.node.node_id.clone() }
     }
 
     /// `f`, a `MeshTopology` or `MeshTopologyDelta`, stamped `published_at_rafka_ms`.
@@ -8839,7 +8840,7 @@ mod tests {
         });
         let clock: SharedClock = racing.clone();
         let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", clock, vec![], &[]).await.unwrap();
-        let bb = Backbone::join(&gossip, &ep, &m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() }, vec![]).await.unwrap();
+        let bb = Backbone::join(&gossip, &ep, &m, "mesh1", rdm_core::PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         // Clear `full_due` after initial role take so publication 1 is a normal source full and publication 2 is a delta.
         bb.full_due.store(false, Ordering::Relaxed);
@@ -9079,7 +9080,7 @@ mod tests {
     /// member, moves a member's key or removes one, and a load-free copy.
     #[test]
     fn a_projected_member_is_found_by_its_endpoint_key_as_a_scan_of_the_sources_finds_it() {
-        let p = |mesh: &str| PublisherId { node: format!("{mesh}.admin.1"), incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
+        let p = |mesh: &str| PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() };
         let (p1, p2) = (p("mesh1"), p("mesh2"));
         let chunk = |mesh: &str, publisher: &PublisherId, digests: Vec<MeshDigest>| Chunk { mesh: mesh.into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests, in_flight: vec![], deleted: vec![] };
         let (a, b, c) = (NodeId::mint(), NodeId::mint(), NodeId::mint());

@@ -111,7 +111,7 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![], &[]).await.unwrap();
         let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr.clone()], &[]).await.unwrap();
         let y = TopologyView::join(&y_node.gossip, &y_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.1", clock(), vec![p_addr], &[]).await.unwrap();
-        p.set_author(&rdm_core::PublisherId { node: "mesh2.admin.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, None);
+        p.set_author(&rdm_core::PublisherId { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, None);
         let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
         m.wait_for_neighbour().await;
         y.wait_for_neighbour().await;
@@ -190,7 +190,7 @@ fn an_application_span_made_from_a_deleted_operation_shares_the_deletes_trace() 
         let clock = rdm_transport::clock::os_clock;
         let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![], &[]).await.unwrap();
         let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr], &[]).await.unwrap();
-        p.set_author(&rdm_core::PublisherId { node: "mesh2.admin.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, None);
+        p.set_author(&rdm_core::PublisherId { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, None);
         m.wait_for_neighbour().await;
 
         // The delete's span: the Build step's, its caller's tracestate carried in.

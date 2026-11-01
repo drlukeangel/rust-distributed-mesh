@@ -107,13 +107,11 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
 
         let src_digest = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &src_node.ep);
         let src_pub = PublisherId {
-            node: "mesh2.admin.1".to_string(),
             incarnation: src_digest.node.incarnation.clone(),
             node_id: src_digest.node.node_id.clone(),
         };
         let fwd_digest = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &fwd_node.ep);
         let fwd_pub = PublisherId {
-            node: "mesh1.admin.1".to_string(),
             incarnation: fwd_digest.node.incarnation.clone(),
             node_id: fwd_digest.node.node_id.clone(),
         };

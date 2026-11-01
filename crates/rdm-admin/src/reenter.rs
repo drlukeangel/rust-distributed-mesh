@@ -517,7 +517,6 @@ mod tests {
             let snap = rdm_transport::snapshot::SourceSnapshot {
                 mesh: "mesh1".into(),
                 publisher: rdm_core::PublisherId {
-                    node: "mesh1.admin.1".into(),
                     incarnation: IncarnationId::mint(),
                     node_id: NodeId::mint(),
                 },

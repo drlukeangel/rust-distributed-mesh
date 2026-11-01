@@ -95,8 +95,8 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         let fp_m = TopologyView::join(&fp.gossip, &fp.ep, &fab, "mesh1", &mesh1, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
         let m2_m = TopologyView::join(&m2.gossip, &m2.ep, &fab, "mesh2", &mesh2, "mesh2.admin.2", clock(), vec![], &[]).await.unwrap();
         let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh2", &mesh2, "mesh2.rpc.1", clock(), vec![m2_addr.clone()], &[]).await.unwrap();
-        let fp_bb = Backbone::join(&fp.gossip, &fp.ep, &fp_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: NodeId::mint() }, vec![]).await.unwrap();
-        let m2_bb = Backbone::join(&m2.gossip, &m2.ep, &m2_m, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.2".to_string(), incarnation: IncarnationId::mint(), node_id: NodeId::mint() }, vec![fp_addr.clone()]).await.unwrap();
+        let fp_bb = Backbone::join(&fp.gossip, &fp.ep, &fp_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() }, vec![]).await.unwrap();
+        let m2_bb = Backbone::join(&m2.gossip, &m2.ep, &m2_m, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() }, vec![fp_addr.clone()]).await.unwrap();
         fp_bb.set_mesh_primary(true);
         fp_bb.set_fabric_primary(true);
         m2_bb.set_mesh_primary(true);

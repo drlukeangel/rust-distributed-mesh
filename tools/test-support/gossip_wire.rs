@@ -79,7 +79,7 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
     if let Some(s) = state { attrs.push(("tracestate", s.into())); }
     let mut body = old[1..].to_vec();
     if let Frame::MeshTopology { mesh, publisher, topology_version, published_at_rafka_ms, snapshot_id, .. } = f.data() {
-        let mut prefix = Vec::new(); text(mesh, &mut prefix); text(&publisher.node, &mut prefix); text(publisher.incarnation.as_str(), &mut prefix); text(publisher.node_id.as_str(), &mut prefix);
+        let mut prefix = Vec::new(); text(mesh, &mut prefix); text(publisher.incarnation.as_str(), &mut prefix); text(publisher.node_id.as_str(), &mut prefix);
         if let Frame::MeshTopology { forwarded_by, .. } = f.data() { match forwarded_by { None => prefix.push(0), Some(by) => { prefix.push(1); text(by, &mut prefix); } } }
         number(*topology_version, &mut prefix); number(*published_at_rafka_ms, &mut prefix);
         assert!(body.starts_with(&prefix)); let start = prefix.len(); number(*snapshot_id, &mut prefix); let end = prefix.len();

@@ -48,7 +48,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         assert_eq!(frame.golden_encode(), golden(&frame, &bytes(&heartbeat)), "a {status} heartbeat");
     }
 
-    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("p")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
+    let publisher = PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("p")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
     let members = Frame::MeshTopology {
         mesh: "mesh1".into(),
         publisher: publisher.clone(),
@@ -62,7 +62,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         in_flight: vec![],
         deleted: vec![],
     };
-    let mesh_topology_hex = format!("01 05 6d65736831 0d 6d657368312e61646d696e2e31 0c 79727a64396a333034326266 0c 303132333435363738396162 00 03 05 09 00 01 01 {WIRE_DIGEST} 01 00 00");
+    let mesh_topology_hex = format!("01 05 6d65736831 0c 79727a64396a333034326266 0c 303132333435363738396162 00 03 05 09 00 01 01 {WIRE_DIGEST} 01 00 00");
     let mesh_topology_golden = golden(&members, &bytes(&mesh_topology_hex));
     assert_eq!(members.golden_encode(), mesh_topology_golden, "MeshTopology: one projection entry, digest then status");
     let Frame::MeshTopology { digests, .. } = Frame::decode(&mesh_topology_golden).expect("the MeshTopology frame decodes").into_data() else { panic!("not MeshTopology") };
@@ -79,7 +79,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         in_flight: vec![],
         deleted: vec![],
     };
-    let delta_hex = format!("02 05 6d65736831 0d 6d657368312e61646d696e2e31 0c 79727a64396a333034326266 0c 303132333435363738396162 02 03 05 01 {WIRE_DIGEST} 01 00 00 00");
+    let delta_hex = format!("02 05 6d65736831 0c 79727a64396a333034326266 0c 303132333435363738396162 02 03 05 01 {WIRE_DIGEST} 01 00 00 00");
     let delta_golden = golden(&delta, &bytes(&delta_hex));
     assert_eq!(delta.golden_encode(), delta_golden, "MeshTopologyDelta: one changed projection entry, digest then status");
     let Frame::MeshTopologyDelta { changed, .. } = Frame::decode(&delta_golden).expect("the MeshTopologyDelta frame decodes").into_data() else { panic!("not MeshTopologyDelta") };
@@ -126,7 +126,7 @@ fn members_chunks_are_sized_against_the_complete_message() {
     let mut first = digest("ready"); first.admin_api_base = Some("x".repeat(1800));
     let mut second = first.clone(); second.node.node_id = rdm_core::NodeId::parse("1123456789ab").unwrap(); second.node.name = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
     let author = crate::gossip_wire::author();
-    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: author.incarnation.clone(), node_id: author.node.clone() };
+    let publisher = PublisherId { incarnation: author.incarnation.clone(), node_id: author.node.clone() };
     let shape = |digests, in_flight, deleted, chunk_index, chunk_count| Frame::MeshTopology { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, deleted }.authored(&author, 0, 1);
     let complete = shape(vec![first.clone(), second.clone()], vec![], vec![], 0, 1).encode();
     let (_, body): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&complete).unwrap();
@@ -167,7 +167,7 @@ fn the_traced_envelope_wire_matches_the_hand_golden_and_complete_ceiling() {
 #[test]
 fn members_chunks_include_the_maximum_trace_context_in_their_complete_size() {
     let author = crate::gossip_wire::author();
-    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: author.incarnation.clone(), node_id: author.node.clone() };
+    let publisher = PublisherId { incarnation: author.incarnation.clone(), node_id: author.node.clone() };
     let state = format!("a={},b={}", "x".repeat(256), "y".repeat(251));
     assert_eq!(state.len(), rdm_core::context::MAX_TRACESTATE_BYTES);
     let mut d = digest("ready"); d.admin_api_base = Some("x".repeat(1600));

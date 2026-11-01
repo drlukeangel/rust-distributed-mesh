@@ -112,9 +112,9 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
         let reader = TopologyView::join(&r_node.gossip, &r_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.3", clock(), vec![], &[]).await.unwrap();
         let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());
-        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
+        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
+        let publisher = PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication") };
 
         let p_digest = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_101);
@@ -175,7 +175,7 @@ fn a_read_of_one_mesh_serves_that_mesh_as_the_whole_read_does() {
         let mesh_id = MeshId::mint();
         let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());
-        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
+        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         p.publish(&digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_201)).await.unwrap();
         let (one, one_birth) = (NodeId::mint(), IncarnationId::mint());

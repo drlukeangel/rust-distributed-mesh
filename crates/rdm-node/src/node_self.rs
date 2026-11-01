@@ -340,7 +340,7 @@ impl NodeSelf {
         declare: Option<Declare>,
         connections_delete_deadline: Duration,
     ) -> Self {
-        topology_view.set_author(&rdm_core::PublisherId { node: name.name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }, None);
+        topology_view.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, None);
         Self { kind, node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
     }
 
@@ -1958,7 +1958,6 @@ mod tests {
                 &topology_view,
                 "mesh1",
                 rdm_core::PublisherId {
-                    node: name.name.clone(),
                     node_id: node_id.clone(),
                     incarnation: incarnation.clone(),
                 },

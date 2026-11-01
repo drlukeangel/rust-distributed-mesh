@@ -98,7 +98,6 @@ mod tests {
             let caller_path = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
 
             let pub_id = PublisherId {
-                node: "mesh1.admin.1".to_string(),
                 incarnation: server_inc.clone(),
                 node_id: server_node_id.clone(),
             };

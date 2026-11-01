@@ -246,7 +246,8 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(publisher.node, "mesh2.admin.1", "the version belongs to the source Mesh's primary");
+    let mesh2_admin = nodes.iter().find(|n| n.name == PathName::new("mesh2.admin", "1").unwrap()).map(|n| n.node_id.clone()).expect("mesh2.admin.1 in the settled views");
+    assert_eq!(publisher.node_id, mesh2_admin, "the version belongs to the source Mesh's primary");
     let stripped_full_bytes: usize = {
         // The chunks of the newest forwarded full of mesh2 (one snapshot).
         let newest = join_full.iter().filter_map(|x| match x.frame.data() { Frame::MeshTopology { snapshot_id, .. } => Some(*snapshot_id), _ => None }).max().unwrap();

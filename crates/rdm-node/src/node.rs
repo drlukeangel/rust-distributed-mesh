@@ -675,7 +675,7 @@ async fn start_booted(
                 step.record("seeds", seeds.len());
 
             let topology_view = TopologyView::join(&g, &ep0, &launch.fabric_id, &launch.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds, &app_types.iter().map(String::as_str).collect::<Vec<_>>()).await?;
-            topology_view.set_author(&rdm_core::PublisherId { node: name.clone(), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() }, launch.supersedes.clone());
+            topology_view.set_author(&rdm_core::PublisherId { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() }, launch.supersedes.clone());
             // The name this birth holds is its topology view's (R12): its connections rows name it as their
             // source from here on, and every door names the node by it, whatever name the join hands it
             // or an `ApplyNodeName` gives it.

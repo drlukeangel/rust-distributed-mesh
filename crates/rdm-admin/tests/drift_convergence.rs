@@ -1849,7 +1849,7 @@ mod fully_crashed_mesh {
         let fp_inc = IncarnationId::parse("yrz49j303y01").unwrap();
         let peer_node = NodeId::parse("300000000001").unwrap();
         let peer_inc = IncarnationId::parse("yrz49j303y02").unwrap();
-        let fp_pub = PublisherId { node: fp_node.to_string(), node_id: fp_node.clone(), incarnation: fp_inc.clone() };
+        let fp_pub = PublisherId { node_id: fp_node.clone(), incarnation: fp_inc.clone() };
         let digest_view = DigestView::default();
         // mesh1 holds primary revision 1 (and fabric-primary revision 1); mesh2's Mesh row holds revision 7.
         digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone(), revision: 1 });

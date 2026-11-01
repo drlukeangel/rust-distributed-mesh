@@ -42,7 +42,7 @@ impl Member {
         let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
         let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let node_id = NodeId::mint();
-        let author = PublisherId { node: node_id.to_string(), node_id, incarnation: IncarnationId::mint() };
+        let author = PublisherId { node_id, incarnation: IncarnationId::mint() };
         let topology_view = TopologyView::join(&gossip, &endpoint, fabric, mesh_name, mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), seeds.iter().map(|s| s.0.clone()).collect(), types)
             .await
             .unwrap_or_else(|e| panic!("{name:?}: the member does not join mesh {mesh_name} ({mesh}): {e}"));

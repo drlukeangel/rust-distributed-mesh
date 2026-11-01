@@ -15,7 +15,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 fn publisher() -> PublisherId {
-    PublisherId { node: "a".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("b")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() }
+    PublisherId { incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("b")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() }
 }
 
 fn digest() -> rdm_core::MeshDigest {
@@ -49,7 +49,7 @@ fn requests_match_the_frozen_wire_schema() {
     let fixtures = [
         (TopologyRequest::GetTopology { mesh: None, since: None }, "00 00 00"),
         (TopologyRequest::GetTopology { mesh: Some("mesh1".into()), since: None }, "00 01 05 6d65736831 00"),
-        (TopologyRequest::GetTopology { mesh: None, since: Some(SourceVersion { publisher: publisher(), topology_version: 7 }) }, "00 00 01 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 07"),
+        (TopologyRequest::GetTopology { mesh: None, since: Some(SourceVersion { publisher: publisher(), topology_version: 7 }) }, "00 00 01 0c 7972797a396a333033776435 0c 303132333435363738396162 07"),
     ];
     for (q, hex) in fixtures {
         assert_eq!(Topology::encode_request(&q).unwrap(), bytes(hex), "{q:?}");
@@ -100,8 +100,8 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use TopologyReply::*;
     let fixtures = [
-        (Snapshot { mesh: "m".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] }, "00 016d 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 00 00 00"),
-        (Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 7 }, "01 016d 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 07"),
+        (Snapshot { mesh: "m".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] }, "00 016d 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 00 00 00"),
+        (Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 7 }, "01 016d 0c 7972797a396a333033776435 0c 303132333435363738396162 07"),
         (End { meshes: 2 }, "0202"),
         (NotReady { reason: "n".into() }, "03016e"),
         (UnknownMesh { mesh: "m".into() }, "04016d"),
@@ -164,7 +164,7 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
         gossip: None, is_primary: None, is_fabric_primary: None
     };
     let r = TopologyReply::Snapshot { mesh: "mesh1".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![ProjectionEntry::from(&d)], in_flight: vec![], deleted: vec![] };
-    let hex = "00 05 6d65736831 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
+    let hex = "00 05 6d65736831 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
         0c 313132333435363738396162 05 6d65736831 01 0c 303132333435363738396162 09 6d657368312e727063 01 31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
         01 00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
         00 \

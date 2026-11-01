@@ -95,7 +95,7 @@ fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
 }
 
 fn publisher(node: &str) -> PublisherId {
-    PublisherId { node: node.into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }
+    PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }
 }
 
 /// The chunks of `full` as the source primary's backbone `MeshTopology`.
@@ -451,8 +451,8 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let mem_m = TopologyView::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()], &[]).await.unwrap();
         let src_birth = IncarnationId::mint();
-        let src_bb = Backbone::join(&src_node.gossip, &src_node.ep, &src_m, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: src_birth.clone(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
-        let fwd_bb = Backbone::join(&fwd_node.gossip, &fwd_node.ep, &fwd_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
+        let src_bb = Backbone::join(&src_node.gossip, &src_node.ep, &src_m, "mesh2", rdm_core::PublisherId { incarnation: src_birth.clone(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
+        let fwd_bb = Backbone::join(&fwd_node.gossip, &fwd_node.ep, &fwd_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
         let _ = backbone_channel(&fab);
         src_bb.set_mesh_primary(true);
         fwd_bb.set_mesh_primary(true);
@@ -471,7 +471,6 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
             })
             .await
         };
-        assert_eq!(held_by_fwd.0.node, "mesh2.admin.1");
         assert_eq!(held_by_fwd.0.incarnation, src_birth, "the publisher is the exact birth");
         let v1 = held_by_fwd.1;
         assert_eq!(v1, 1, "one projection, one version, however many publications");

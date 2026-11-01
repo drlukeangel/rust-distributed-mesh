@@ -535,15 +535,15 @@ mod tests {
     /// The source's descriptive row name cannot reset the exact birth's installed floor.
     #[test]
     fn a_renamed_publisher_keeps_its_installed_version_floor() {
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+        let publisher = PublisherId { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
         let mut order = ReceiveOrder::default();
         order.installed_projection("mesh1", &publisher, 10, None, &crate::snapshot::Full::default(), None);
-        let renamed = PublisherId { node: "mesh1.admin.2".into(), ..publisher };
+        let renamed = PublisherId { ..publisher };
         let old = Frame::MeshTopology { mesh: "mesh1".into(), publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] };
         assert!(order.admit(&old).is_err());
         let operation = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation.clone(), renamed.clone(), 20)).is_ok());
-        let relabeled = PublisherId { node: "mesh1.admin.3".into(), ..renamed };
+        let relabeled = PublisherId { ..renamed };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation, relabeled, 19)).is_err(), "a carried projection floor belongs to the birth, not its label");
     }
 
@@ -607,7 +607,7 @@ mod tests {
     }
 
     fn publisher(path: &str) -> PublisherId {
-        PublisherId { node: path.into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }
+        PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }
     }
 
     fn op(d: &MeshDigest, action: &str) -> LifecycleOp {

@@ -328,7 +328,7 @@ fn gossip_author(fabric: &rdm_core::FabricId) -> rdm_transport::envelope::Birth 
 
 fn declare_gossip_probe(topology_view: &rdm_transport::topology::TopologyView) {
     let birth = gossip_author(topology_view.fabric_id());
-    topology_view.set_author(&rdm_core::PublisherId { node: "mesh1.rpc.9".into(), node_id: birth.node, incarnation: birth.incarnation }, None);
+    topology_view.set_author(&rdm_core::PublisherId { node_id: birth.node, incarnation: birth.incarnation }, None);
 }
 
 #[path = "gossip/envelope_receive.rs"]

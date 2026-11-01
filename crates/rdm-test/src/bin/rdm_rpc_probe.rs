@@ -644,7 +644,7 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             let parts: Vec<&str> = s.split('|').collect();
             let [node, node_id, incarnation, version] = parts[..] else { return Err(format!("--since {s:?} is not <node>|<node_id>|<incarnation>|<version>")) };
             Some(SourceVersion {
-                publisher: rdm_core::PublisherId { node: node.to_string(), incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("--since incarnation: {e}"))?, node_id: rdm_core::NodeId::parse(node_id).map_err(|e| format!("--since node_id: {e}"))? },
+                publisher: rdm_core::PublisherId { incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("--since incarnation: {e}"))?, node_id: rdm_core::NodeId::parse(node_id).map_err(|e| format!("--since node_id: {e}"))? },
                 topology_version: version.parse().map_err(|e| format!("--since version {version:?}: {e}"))?,
             })
         }
@@ -661,12 +661,12 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
                 match item {
                     StreamItem::Frame(_, f) => frames.push(match f {
                         TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } => json!({
-                            "frame": "snapshot", "mesh": mesh, "publisher_node": publisher.node, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version,
+                            "frame": "snapshot", "mesh": mesh, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version,
                             "snapshot_id": snapshot_id, "chunk_index": chunk_index, "chunk_count": chunk_count,
                             "members": digests.into_iter().map(|d| rdm_core::MeshDigest::from(d).node.node_id).collect::<Vec<_>>(),
                             "in_flight": in_flight.len(), "deleted": deleted.len(),
                         }),
-                        TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node": publisher.node, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version}),
+                        TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version}),
                         TopologyReply::End { meshes } => json!({"frame": "end", "meshes": meshes}),
                         other => json!({"frame": other.name(), "detail": format!("{other:?}")}),
                     }),

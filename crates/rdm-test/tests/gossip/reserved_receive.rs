@@ -32,7 +32,7 @@ fn reserved(kind: Kind) {
         let mut mesh_channel = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
         let mut backbone_channel = gossip.subscribe(backbone_channel(&fabric), vec![]).await.unwrap();
         let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![addr.clone()], &[]).await.unwrap();
-        let _backbone = Backbone::join(&recv_gossip, &recv_ep, &receiver, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![addr]).await.unwrap();
+        let _backbone = Backbone::join(&recv_gossip, &recv_ep, &receiver, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![addr]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), mesh_channel.joined()).await.unwrap().unwrap();
         tokio::time::timeout(Duration::from_secs(5), backbone_channel.joined()).await.unwrap().unwrap();
         let (mesh_sender, _mesh_rx) = mesh_channel.split();
@@ -59,7 +59,7 @@ fn reserved(kind: Kind) {
             Kind::ConnectionsDeleted => Frame::NodeConnectionsDeleted { op, forwarded_by: None },
             Kind::Leaving => Frame::NodeLeaving { op, forwarded_by: None },
             Kind::Left => Frame::NodeLeft { op, forwarded_by: None },
-            Kind::Restarting => Frame::NodeRestarting { op: LifecycleOp { operation: rdm_core::OperationId::location("node.restart", &rdm_core::PathName::new("mesh1.admin", "2").unwrap()), ..op }, forwarded_by: None, publisher: { let a = crate::gossip_author(&fabric); rdm_core::PublisherId { node: "mesh1.admin.1".into(), incarnation: a.incarnation, node_id: a.node } }, topology_version: 2 },
+            Kind::Restarting => Frame::NodeRestarting { op: LifecycleOp { operation: rdm_core::OperationId::location("node.restart", &rdm_core::PathName::new("mesh1.admin", "2").unwrap()), ..op }, forwarded_by: None, publisher: { let a = crate::gossip_author(&fabric); rdm_core::PublisherId { incarnation: a.incarnation, node_id: a.node } }, topology_version: 2 },
             Kind::FabricPrimary => Frame::NewFabricPrimary { primary: Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 99 }, endpoint_id: unknown.to_string(), transport_addr: "127.0.0.1:12009".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:9".into()) },
         };
         assert_eq!(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).context().unwrap().kind, kind.type_name(), "the reserved frame travels as its reserved type");

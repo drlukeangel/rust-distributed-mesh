@@ -2281,7 +2281,7 @@ mod tests {
         let incarnation = IncarnationId::mint();
 
         let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh1_id, "mesh1.admin.1", Arc::new(time.clone()), vec![], &[]).await.unwrap();
-        let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: incarnation.clone(), node_id: node_id.clone() }, vec![]).await.unwrap();
+        let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() }, vec![]).await.unwrap();
         let providers = crate::storage_backend::TopologyStorageProviders::file(dir.clone());
         let scope = crate::storage_backend::StorageScope { data_dir: dir.clone(), fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: incarnation.clone(), node_id: node_id.clone() };
         let topology_storage = crate::storage_backend::TopologyStorageHandle::open(&providers, "file", scope).await.unwrap();

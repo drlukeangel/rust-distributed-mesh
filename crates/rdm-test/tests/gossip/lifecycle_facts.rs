@@ -31,10 +31,10 @@ fn story(kind: StatusEvent, scenario: Story) {
         let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), vec![addr], &[]).await.unwrap();
         let command = match kind { StatusEvent::Deleting => "delete", StatusEvent::Stopped => "stop" };
         let op = LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), build_id: rdm_core::BuildId::mint().to_string(), attempt: 1, operation: rdm_core::OperationId::node(format!("node.{command}"), &subject_id), node_id: subject_id, incarnation: IncarnationId::mint(), name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
-        let publisher = PublisherId { node: sender_id.to_string(), incarnation: IncarnationId::mint(), node_id: sender_id.clone() };
+        let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: sender_id.clone() };
         // The publisher that takes the role after it: another birth, which re-publishes the operation its
         // predecessor published under the same identity (a resumed attempt replays its receipted step).
-        let successor = PublisherId { node: successor_id.to_string(), incarnation: IncarnationId::mint(), node_id: successor_id };
+        let successor = PublisherId { incarnation: IncarnationId::mint(), node_id: successor_id };
         sender.set_author(&publisher, None);
         receiver.digest_view.record(MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode, node_id: op.node_id.clone(), name: op.name.clone(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None });
         assert!(receiver.digest_view.started(&op.node_id, &op.incarnation, &op.name, &"mesh1"));

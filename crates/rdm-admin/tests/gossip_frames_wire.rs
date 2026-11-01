@@ -85,7 +85,7 @@ fn op(action: &str, name: PathName, mesh: &str, kind: NodeKind) -> LifecycleOp {
 
 fn publisher() -> PublisherId {
     let node_id = NodeId::mint();
-    PublisherId { node: node_id.to_string(), incarnation: IncarnationId::mint(), node_id }
+    PublisherId { incarnation: IncarnationId::mint(), node_id }
 }
 
 /// One explicit executor birth shared by these independent wire-shape samples.

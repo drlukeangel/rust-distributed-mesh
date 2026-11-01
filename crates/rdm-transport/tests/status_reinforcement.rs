@@ -177,7 +177,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // Nothing rides inside MeshTopology: its fields are digests and overlays only.
         let members = Frame::MeshTopology {
             mesh: "mesh1".into(),
-            publisher: PublisherId { node: me.into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
+            publisher: PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
             forwarded_by: None,
             topology_version: 1,
             published_at_rafka_ms: 1,
@@ -203,7 +203,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
             (ep, g)
         };
         let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let author = rdm_core::PublisherId { node: me.to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let author = rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let backbone = Backbone::join(&gossip, &endpoint, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.announce_statuses("pending", "pending", true, true).await;
         assert!(topology_view.mesh_status("mesh1").is_none() && topology_view.fabric_status().is_none(), "a node holding no role publishes no status");
@@ -220,8 +220,9 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         assert_eq!(topology_view.mesh_status("mesh1").map(|s| s.status), Some("pending".to_string()), "the first state is sent first");
         backbone.announce_statuses("ready", "ready", true, true).await;
         let (m, f) = (topology_view.mesh_status("mesh1").expect("the mesh status is held"), topology_view.fabric_status().expect("the fabric status is held"));
-        assert_eq!((m.publisher.as_str(), m.status.as_str()), (me, "ready"));
-        assert_eq!((f.publisher.as_str(), f.status.as_str()), (me, "ready"));
+        // The publisher is named by the author's node id (Q309: no name rides with it).
+        assert_eq!((m.publisher.as_str(), m.status.as_str()), (author.node_id.as_str(), "ready"));
+        assert_eq!((f.publisher.as_str(), f.status.as_str()), (author.node_id.as_str(), "ready"));
         // The real status sender runs on the real clock: its five sends are the spans below.
         tokio::time::sleep(Duration::from_millis(5_500)).await;
         backbone.announce_statuses("ready", "ready", true, true).await;
@@ -477,7 +478,7 @@ fn fabric_primary_join_answer_serves_the_kept_lifecycle_frame_while_degraded_is_
     let lost_inc = IncarnationId::parse("yrz49j303yaa").unwrap();
     let successor_node = NodeId::parse("0123456789cc").unwrap();
     let successor_inc = IncarnationId::parse("yrz49j303ycc").unwrap();
-    let fp_pub = PublisherId { node: "mesh1.admin.1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone() };
+    let fp_pub = PublisherId { node_id: fp_node.clone(), incarnation: fp_inc.clone() };
     let base = Instant::now();
     let x = 1_000;
 
@@ -512,9 +513,9 @@ fn fabric_primary_join_answer_serves_the_kept_lifecycle_frame_while_degraded_is_
     }
 
     // Gossip sends degraded for mesh2 (both on initial announce, reinforcing due, and gossip held_frames).
-    assert!(emitted.iter().any(|f| matches!(f.data(), Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms: 61_000, .. } if mesh == "mesh2" && status == "degraded" && publisher == "mesh1.admin.1")));
+    assert!(emitted.iter().any(|f| matches!(f.data(), Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms: 61_000, .. } if mesh == "mesh2" && status == "degraded" && publisher == fp_node.as_str())));
     let due_mesh2 = peer_pubs.get_mut("mesh2").unwrap().due(base + Duration::from_secs(61)).expect("reinforcing gossip send for mesh2");
-    assert_eq!((status_of(&due_mesh2), ts(&due_mesh2), publisher_of(&due_mesh2)), ("degraded", 61_000, "mesh1.admin.1"));
+    assert_eq!((status_of(&due_mesh2), ts(&due_mesh2), publisher_of(&due_mesh2)), ("degraded", 61_000, fp_node.as_str()));
     assert_eq!(digest_view.statuses.mesh("mesh2").unwrap().status, "degraded");
     assert_eq!(digest_view.statuses.mesh("mesh3").unwrap().status, "degraded");
 
@@ -563,7 +564,7 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
             (ep, g)
         };
         let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let author = rdm_core::PublisherId { node: me.to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let author = rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let backbone = Backbone::join(&gossip, &endpoint, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
 
         let primary1 = rdm_core::Primary { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };

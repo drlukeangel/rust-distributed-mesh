@@ -95,7 +95,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         let fab = fabric();
         let fp_own = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 41_001);
         let fp_m = TopologyView::join(&fp_n.gossip, &fp_n.ep, &fab, "mesh1", &MeshId::mint(), fp_own.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let fp_bb = Backbone::join(&fp_n.gossip, &fp_n.ep, &fp_m, "mesh1", rdm_core::PublisherId { node: fp_own.node.node_id.to_string(), incarnation: fp_own.node.incarnation.clone(), node_id: fp_own.node.node_id.clone() }, vec![]).await.unwrap();
+        let fp_bb = Backbone::join(&fp_n.gossip, &fp_n.ep, &fp_m, "mesh1", rdm_core::PublisherId { incarnation: fp_own.node.incarnation.clone(), node_id: fp_own.node.node_id.clone() }, vec![]).await.unwrap();
         fp_bb.set_mesh_primary(true);
         // The view a node-admin hands its backbone at each install: it names mesh2 live, for the
         // accepted Build names it (rafka-node-admin-core admin.rs `project_decided_at`); a live mesh
@@ -144,7 +144,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
             .and_then(|s| s["attributes"]["topology_version"].as_u64().or_else(|| s["attributes"]["topology_version"].as_str().and_then(|v| v.parse().ok())))
             .expect("the fabric-primary's own mesh was published at a version");
         assert_eq!(stamped, published, "stamped with the version the fabric-primary holds of its own mesh, no counter of mesh2");
-        assert_eq!(publisher.node, fp_own.node.node_id.as_str(), "the executor stamps the event under its own node id");
+        assert_eq!(publisher.node_id, fp_own.node.node_id, "the executor stamps the event under its own node id");
         for name in ["rdm.mesh.backbone.update.via-acting-primary", "rdm.mesh.backbone.reject.via-mesh-has-primary"] {
             let found: Vec<&Value> = spans.iter().filter(|s| s["name"] == name).collect();
             assert!(found.is_empty(), "{name}: the fabric-primary is no mesh's acting primary: {found:#?}");

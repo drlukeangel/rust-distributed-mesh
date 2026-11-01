@@ -1064,7 +1064,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 let topology_view = TopologyView::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &node_id.to_string(), clock.clone(), seed_addrs.clone(), &wiring.types.iter().map(String::as_str).collect::<Vec<_>>())
                     .await
                     .map_err(|e| format!("topology view: {e}"))?;
-                topology_view.set_author(&rdm_core::PublisherId { node: name.name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }, supersedes.clone());
+                topology_view.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, supersedes.clone());
                 // The name this admin holds is its topology view's (R12): its connections rows name it as their
                 // source from here on, whatever name the join hands it or an `ApplyNodeName` gives it.
                 {
@@ -1161,7 +1161,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     }
                     other => other,
                 };
-                let backbone = Backbone::join(&gossip, &endpoint, &topology_view, &cfg.mesh, rdm_core::PublisherId { node: node_id.to_string(), incarnation: incarnation.clone(), node_id: node_id.clone() }, seed_addrs.clone())
+                let backbone = Backbone::join(&gossip, &endpoint, &topology_view, &cfg.mesh, rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() }, seed_addrs.clone())
                     .await
                     .map_err(|e| format!("backbone: {e}"))?;
                 tracing::info_span!(

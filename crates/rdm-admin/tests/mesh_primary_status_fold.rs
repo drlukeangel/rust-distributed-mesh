@@ -256,7 +256,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                 let after_take = status(&rpc1);
                 assert!(topology_view.digest_view.record(heartbeat(&fabric_id, &rpc2)), "rpc.2's heartbeat is held after the role take");
                 let rpc2_heard = status(&rpc2);
-                let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { node: b.node_id.to_string(), incarnation: b.incarnation_id.clone().unwrap(), node_id: b.node_id.clone() }, vec![]).await.unwrap();
+                let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: b.incarnation_id.clone().unwrap(), node_id: b.node_id.clone() }, vec![]).await.unwrap();
                 let mut projected: Vec<(rdm_core::PathName, MemberStatus)> = backbone.own_members(&topology_view).into_iter().filter(|d| d.node.kind == rdm_core::NodeKind::RpcNode).map(|d| (d.node.name.clone(), d.status)).collect();
                 projected.sort_by(|a, b| a.0.cmp(&b.0));
                 // rpc.1 declares to its new primary.
@@ -430,8 +430,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let topology = RwLock::new(Topology { nodes: Vec::new(), ..before.clone() });
                 records.install_projected(&topology, || before.clone()).await;
                 topology_view.set_mesh_primary(true);
-                let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId {
-                    node: b.node_id.to_string(), incarnation: b.incarnation_id.clone().unwrap(), node_id: b.node_id.clone(),
+                let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: b.incarnation_id.clone().unwrap(), node_id: b.node_id.clone(),
                 }, vec![]).await.unwrap();
                 let first = backbone.own_members(&topology_view).into_iter().find(|d| d.node.node_id == rpc.node_id && Some(&d.node.incarnation) == rpc.incarnation_id.as_ref()).unwrap();
                 let _ = std::fs::remove_dir_all(&dir);

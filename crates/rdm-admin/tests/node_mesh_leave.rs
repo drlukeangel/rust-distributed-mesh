@@ -652,7 +652,6 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             &admin_top,
             "mesh1",
             rdm_core::PublisherId {
-                node: admin_id.to_string(),
                 node_id: admin_id.clone(),
                 incarnation: admin_inc.clone(),
             },

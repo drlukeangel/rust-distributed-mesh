@@ -763,7 +763,6 @@ mod tests {
             &topology_view,
             "mesh2",
             rdm_core::PublisherId {
-                node: "mesh2.admin.1".to_string(),
                 incarnation: incarnation.clone(),
                 node_id: node_id.clone(),
             },

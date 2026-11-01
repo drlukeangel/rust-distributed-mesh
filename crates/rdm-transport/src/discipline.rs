@@ -214,7 +214,7 @@ mod tests {
     }
 
     fn publisher(name: &str, id: &NodeId, inc: &IncarnationId) -> PublisherId {
-        PublisherId { node: name.into(), incarnation: inc.clone(), node_id: id.clone() }
+        PublisherId { incarnation: inc.clone(), node_id: id.clone() }
     }
 
     /// CONTRACT: a mesh primary takes the stamp of the mesh topology its fabric-primary published,

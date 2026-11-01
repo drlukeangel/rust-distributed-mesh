@@ -130,11 +130,11 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let m1 = TopologyView::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, p1_d.node.node_id.as_str(), clock(), vec![], &[]).await.unwrap();
         let m2 = TopologyView::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, p2_d.node.node_id.as_str(), clock(), vec![a1.clone()], &[]).await.unwrap();
         let m = TopologyView::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, rpc1.node.node_id.as_str(), clock(), vec![a1.clone()], &[]).await.unwrap();
-        let bb1 = Backbone::join(&n1.gossip, &n1.ep, &m1, "mesh1", rdm_core::PublisherId { node: p1_d.node.node_id.to_string(), incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, vec![]).await.unwrap();
-        let bb2 = Backbone::join(&n2.gossip, &n2.ep, &m2, "mesh1", rdm_core::PublisherId { node: p2_d.node.node_id.to_string(), incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() }, vec![a1.clone()]).await.unwrap();
+        let bb1 = Backbone::join(&n1.gossip, &n1.ep, &m1, "mesh1", rdm_core::PublisherId { incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, vec![]).await.unwrap();
+        let bb2 = Backbone::join(&n2.gossip, &n2.ep, &m2, "mesh1", rdm_core::PublisherId { incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() }, vec![a1.clone()]).await.unwrap();
         m2.wait_for_neighbour().await;
         m.wait_for_neighbour().await;
-        let (pub1, pub2) = (PublisherId { node: p1_d.node.node_id.to_string(), incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, PublisherId { node: p2_d.node.node_id.to_string(), incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() });
+        let (pub1, pub2) = (PublisherId { incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, PublisherId { incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() });
         let held_at_member = || m.held_source_version("mesh1");
         let seq_at_member = |d: &MeshDigest| m.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.digest_seq);
         for digest_view in [&m1.digest_view, &m2.digest_view] {
@@ -311,7 +311,7 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
         learn_addresses(&source.ep, &[addr_of(&probe.ep)]).unwrap();
         let mesh = MeshId::mint();
         let node_id = NodeId::mint();
-        let author = PublisherId { node: node_id.to_string(), node_id, incarnation: IncarnationId::mint() };
+        let author = PublisherId { node_id, incarnation: IncarnationId::mint() };
         let topology_view = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let backbone = Backbone::join(&source.gossip, &source.ep, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.set_mesh_primary(true);

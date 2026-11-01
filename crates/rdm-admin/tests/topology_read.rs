@@ -91,7 +91,7 @@ fn open(n: &Node, fabric: &FabricId) {
 }
 
 fn publisher(node_id: &NodeId) -> PublisherId {
-    PublisherId { node: node_id.to_string(), incarnation: IncarnationId::parse("100000000001").unwrap(), node_id: node_id.clone() }
+    PublisherId { incarnation: IncarnationId::parse("100000000001").unwrap(), node_id: node_id.clone() }
 }
 
 /// `s` held by `m` as a complete snapshot its primary put into the mesh.
@@ -174,7 +174,7 @@ async fn a_mesh_primary_that_has_published_nothing_serves_the_members_its_view_h
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), rdm_core::NodeKind::RpcNode, |b| b).await, node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), rdm_core::NodeKind::RpcNode, |b| b).await);
     open(&server, &fabric);
-    let backbone = rdm_transport::topology::Backbone::join(&server.gossip, &server.ep, &server.topology_view, "mesh1", rdm_core::PublisherId { node: server.resolved.node_id.to_string(), incarnation: server.resolved.incarnation.clone(), node_id: server.resolved.node_id.clone() }, vec![]).await.unwrap();
+    let backbone = rdm_transport::topology::Backbone::join(&server.gossip, &server.ep, &server.topology_view, "mesh1", rdm_core::PublisherId { incarnation: server.resolved.incarnation.clone(), node_id: server.resolved.node_id.clone() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
     server.topology_view.digest_view.record(member_of(&fabric, "mesh1", "rpc", 2));
     let t = target_of(&caller, &server);
