@@ -620,7 +620,8 @@ fn a_config_update_at_the_mesh_primary_ends_updated_and_the_node_carries_it() {
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(updated(&reply), updated_of(rpc1, &config));
         let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
-        assert_eq!((row.node_id.clone(), row.config.clone()), (rpc1.node.node_id.clone(), config.clone()), "the row at mesh1.rpc.1 is this node with the whole config");
+        let (row_config, row_tags) = props(&rig, &row.node_id).await;
+        assert_eq!((row.node_id.clone(), row_config.clone()), (rpc1.node.node_id.clone(), config.clone()), "the row at mesh1.rpc.1 is this node with the whole config");
         assert_eq!(
             node.seen.lock().unwrap().clone(),
             vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config, revision: row.revision }],
@@ -656,7 +657,8 @@ fn a_config_update_naming_a_node_at_its_old_row_name_is_decided_for_that_exact_b
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(updated(&reply), updated_of(rpc1, &config));
         let row = rig.nodes.record_at(&old).await.unwrap().expect("the mesh-primary wrote the node's row at its .old name");
-        assert_eq!((row.node_id.clone(), row.config.clone()), (rpc1.node.node_id.clone(), config.clone()));
+        let (row_config, row_tags) = props(&rig, &row.node_id).await;
+        assert_eq!((row.node_id.clone(), row_config.clone()), (rpc1.node.node_id.clone(), config.clone()));
         assert_eq!(node.seen.lock().unwrap().len(), 1, "the birth was told once");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-config");
@@ -688,7 +690,8 @@ fn a_stopped_nodes_config_update_completes_on_its_row_and_tells_the_node_nothing
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(stopped), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(updated(&reply), updated_of(stopped, &config), "a stopped node's config update completes on its row");
         let row = rig.nodes.record_at(&stopped.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
-        assert_eq!((row.node_id.clone(), row.config.clone(), row.tags.clone()), (stopped.node.node_id.clone(), config, labels(&["edge"])), "the row holds the whole config and keeps its tags");
+        let (row_config, row_tags) = props(&rig, &row.node_id).await;
+        assert_eq!((row.node_id.clone(), row_config.clone(), row_tags.clone()), (stopped.node.node_id.clone(), config, labels(&["edge"])), "the row holds the whole config and keeps its tags");
         assert!(node.seen.lock().unwrap().is_empty(), "the stopped node is told nothing: {:?}", node.seen.lock().unwrap());
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-config");
@@ -773,7 +776,8 @@ fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
         assert!(reason.ends_with('…'), "the birth's long answer is cut to the reply's budget: {reason}");
         assert_eq!(node.seen.lock().unwrap().len(), 1, "the birth was told once");
         let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("the mesh-primary wrote the row before telling the birth");
-        assert_eq!(row.config, config);
+        let (row_config, row_tags) = props(&rig, &row.node_id).await;
+        assert_eq!(row_config, config);
         (reason.clone(), refusal)
     });
     let (cut, refusal) = cut;
@@ -964,7 +968,8 @@ fn a_caller_reaches_the_nodes_mesh_primary_through_a_carrier_and_it_writes_and_a
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &route, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(updated(&reply), updated_of(rpc1, &config));
         let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("mesh1's primary wrote the row");
-        assert_eq!(row.config, config);
+        let (row_config, row_tags) = props(&rig, &row.node_id).await;
+        assert_eq!(row_config, config);
         assert_eq!(
             node.seen.lock().unwrap().clone(),
             vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config, revision: row.revision }],
@@ -1005,7 +1010,8 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
         let reply = rdm_client::NodeRpc::new(&client).config_update(&me.node_id, &rdm_transport::RouteChoice::Direct, &exact(&rig.admin), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(updated(&reply), (me.node_id.clone(), me.incarnation_id.clone().unwrap(), config.clone()));
         let row = rig.nodes.record_at(&me.name).await.unwrap().expect("mesh1's primary wrote its own row");
-        assert_eq!((row.node_id.clone(), row.config.clone()), (me.node_id.clone(), config.clone()));
+        let (row_config, row_tags) = props(&rig, &row.node_id).await;
+        assert_eq!((row.node_id.clone(), row_config.clone()), (me.node_id.clone(), config.clone()));
         assert_eq!(held.lock().unwrap().clone(), vec![rdm_admin::status_rpc::ConfigHeld::Told { config, revision: row.revision }], "the admin holds the whole config at the row's revision, once");
         assert!(node.seen.lock().unwrap().is_empty(), "no other node is told");
     });
@@ -1245,7 +1251,8 @@ fn a_nodes_own_tags_create_through_an_admin_that_is_not_the_fabric_primary_is_ca
         let StatusReply::TagsCreated { node_id, .. } = reply(&out) else { panic!("tags created: {out:?}") };
         assert_eq!(node_id, rpc1.node.node_id);
         let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("mesh1's primary wrote the node's row");
-        assert_eq!(row.tags, labels(&["edge"]));
+        let (row_config, row_tags) = props(&rig, &row.node_id).await;
+        assert_eq!(row_tags, labels(&["edge"]));
         assert!(joined.status.nodes_storage.node_at(&rpc1.node.name).await.unwrap().is_none(), "mesh1.admin.2 writes no row");
     });
     let up = cap.spans("rdm.node_admin.node.update.via-forward");
@@ -1288,7 +1295,8 @@ fn a_node_admins_own_config_update_goes_to_its_mesh_primary_which_writes_it_and_
         assert_eq!(updated(&reply), updated_of(admin2, &config));
         let StatusReply::ConfigUpdated { revision, .. } = reply else { unreachable!() };
         let row = rig.nodes.record_at(&admin2.node.name).await.unwrap().expect("mesh1's primary wrote mesh1.admin.2's row");
-        assert_eq!((row.config.clone(), row.revision), (config.clone(), revision));
+        let (row_config, row_tags) = props(&rig, &row.node_id).await;
+        assert_eq!(row_config, config);
         assert_eq!(fp_atlas.record(&admin2.node.node_id).map(|r| (r.config, r.revision)), Some((config.clone(), revision)), "the fabric-primary's atlas, mesh1's primary's own, holds it with the row");
         use rdm_admin::status_rpc::ConfigHeld;
         assert_eq!(held.lock().unwrap().clone(), vec![ConfigHeld::Sent(config.clone()), ConfigHeld::Answered(Some((config.clone(), revision)))], "held at once, then the row as written; never told");
@@ -1927,7 +1935,7 @@ fn a_config_or_tags_put_that_meets_a_pending_release_finishes_it() {
         let config = StatusRequest::UpdateNodeConfig { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "a".to_string())].into() };
         let configured = reply(&call(&rig, &b["admin2"], &config).await);
         assert_eq!(holds(base.clone()).await, None, "the config put released {base:?}: {configured:?}");
-        assert_eq!(rig.nodes.record_at(&old).await.unwrap().map(|r| r.config), Some([("zone".to_string(), "a".to_string())].into()), "the config put wrote the row at {old:?}");
+        assert_eq!(match rig.nodes.record_at(&old).await.unwrap() { Some(r) => Some(props(&rig, &r.node_id).await.0), None => None }, Some([("zone".to_string(), "a".to_string())].into()), "the config put wrote the row at {old:?}");
 
         rig.refuse_release.store(true, Ordering::SeqCst);
         let back = reply(&call(&rig, &b["admin2"], &update_name(stopped, "2")).await);
@@ -1936,7 +1944,7 @@ fn a_config_or_tags_put_that_meets_a_pending_release_finishes_it() {
         let tagged = reply(&call(&rig, &b["admin2"], &create_tags(stopped, &["red"])).await);
         assert_eq!(tagged, StatusReply::TagsCreated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap(), already_carried: Default::default() });
         assert_eq!(holds(old.clone()).await, None, "the tags put released {old:?}");
-        assert_eq!(rig.nodes.record_at(&base).await.unwrap().map(|r| r.tags), Some(labels(&["red"])), "the tags put wrote the row at {base:?}");
+        assert_eq!(match rig.nodes.record_at(&base).await.unwrap() { Some(r) => Some(props(&rig, &r.node_id).await.1), None => None }, Some(labels(&["red"])), "the tags put wrote the row at {base:?}");
     });
     let releases = cap.spans("rdm.node_admin.name.update.via-pending-release");
     let seen: Vec<(String, String, String)> = releases.iter().map(|(_, a)| (a.get("moment").cloned().unwrap_or_default(), a.get("from").cloned().unwrap_or_default(), a.get("outcome").cloned().unwrap_or_default())).collect();
@@ -2056,14 +2064,15 @@ fn node_tags_commands_and_a_config_update_before_the_fabric_first_reaches_ready_
         let config = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone.clone() };
         assert_eq!(updated(&reply(&call(&rig, &b["admin2"], &config).await)), updated_of(rpc1, &zone), "node.config.update is admitted before the first ready");
         let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("the config update writes the row");
-        assert_eq!((row.config.clone(), row.tags.clone()), (zone.clone(), Default::default()), "the row carries the map and no tag");
+        let (row_config, row_tags) = props(&rig, &row.node_id).await;
+        assert_eq!((row_config.clone(), row_tags.clone()), (zone.clone(), Default::default()), "the row carries the map and no tag");
         assert!(rig.nodes.tagged("rabbit").await.unwrap().is_empty(), "no tags index entry is written");
         assert_eq!(node.seen.lock().unwrap().drain(..).collect::<Vec<_>>(), vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone, revision: row.revision }], "the birth is sent the map");
 
         let (id, birth) = (rpc1.node.node_id.clone(), rpc1.node.incarnation_id.clone().unwrap());
         let created = |already: &[&str]| StatusReply::TagsCreated { node_id: id.clone(), incarnation: birth.clone(), already_carried: labels(already) };
         let deleted = |not: &[&str]| StatusReply::TagsDeleted { node_id: id.clone(), incarnation: birth.clone(), not_carried: labels(not) };
-        let row_tags = || async { rig.nodes.record_at(&rpc1.node.name).await.unwrap().map(|r| r.tags).unwrap_or_default() };
+        let row_tags = || async { match rig.nodes.record_at(&rpc1.node.name).await.unwrap() { Some(r) => Some(props(&rig, &r.node_id).await.1), None => None }.unwrap_or_default() };
         assert_eq!(reply(&call(&rig, &b["admin2"], &create_tags(rpc1, &["rabbit"])).await), created(&[]));
         assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [id.clone()].into());
         assert_eq!(reply(&call(&rig, &b["admin2"], &create_tags(rpc1, &["rabbit", "red"])).await), created(&["rabbit"]));
@@ -2113,14 +2122,16 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
         assert_eq!(created, StatusReply::TagsCreated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), already_carried: Default::default() });
         assert!(node.seen.lock().unwrap().is_empty(), "a tags command tells the birth nothing: {:?}", node.seen.lock().unwrap());
         let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("mesh1's primary wrote rpc.1's row");
-        assert_eq!((row.node_id.clone(), row.tags.clone()), (rpc1.node.node_id.clone(), labels(&["rabbit", "red"])), "the row holds the tags the create added");
+        let (row_config, row_tags) = props(&rig, &row.node_id).await;
+        assert_eq!((row.node_id.clone(), row_tags.clone()), (rpc1.node.node_id.clone(), labels(&["rabbit", "red"])), "the row holds the tags the create added");
         assert_eq!(tagged("rabbit").await, [rpc1.node.node_id.clone()].into(), "the tags index names rpc.1 under rabbit");
 
         let config: BTreeMap<String, String> = [("zone".to_string(), "c".to_string())].into();
         let req = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: config.clone() };
         assert_eq!(updated(&reply(&call(&rig, &b["admin2"], &req).await)), updated_of(rpc1, &config));
         let row = rig.nodes.record_at(&rpc1.node.name).await.unwrap().expect("rpc.1's row");
-        assert_eq!((row.config, row.tags), (config, labels(&["rabbit", "red"])), "the config put writes the new config and keeps the tags");
+        let (row_config, row_tags) = props(&rig, &row.node_id).await;
+        assert_eq!((row_config, row_tags), (config, labels(&["rabbit", "red"])), "the config put writes the new config and keeps the tags");
         assert_eq!(tagged("rabbit").await, [rpc1.node.node_id.clone()].into(), "the index is unchanged by a config put");
 
         hold_left(&rig, rpc2).await;
@@ -2129,7 +2140,7 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
         let to: PathName = rdm_core::PathName::new("mesh1.rpc", "2-old").unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2-old")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() });
-        assert_eq!(rig.nodes.record_at(&to).await.unwrap().map(|r| r.tags), Some(labels(&["red"])), "the row at the new name keeps the tags");
+        assert_eq!(match rig.nodes.record_at(&to).await.unwrap() { Some(r) => Some(props(&rig, &r.node_id).await.1), None => None }, Some(labels(&["red"])), "the row at the new name keeps the tags");
         assert_eq!(tagged("red").await, [rpc1.node.node_id.clone(), rpc2.node.node_id.clone()].into(), "the index still names the renamed node: it is keyed by node id");
     });
     let spans = cap.spans(NAME_SPAN);
@@ -2439,7 +2450,8 @@ fn a_replace_successor_takes_its_entrys_properties_keeps_its_later_updates_on_a_
         let claim = || rows.claim_spec(&base_name, &succ.node.mesh, succ.node.kind, &succ.node.node_id, &create_operation, None, None, &entry_tags, &entry_cfg, None, ClaimFor::Successor);
         assert!(matches!(claim().await, Ok(rdm_admin::node_rows::Claimed::Written { .. })), "the successor claims the released name");
         let succ_row = rig.nodes.record_at(&base_name).await.unwrap().expect("successor row at mesh1.rpc.2");
-        assert_eq!((succ_row.node_id.clone(), succ_row.config.clone(), succ_row.tags.clone()), (succ.node.node_id.clone(), entry_cfg.clone(), labels(&["rabbit", "red"])), "the successor's row is its entry's, never the predecessor's {{zone: a}}");
+        let (succ_row_config, succ_row_tags) = props(&rig, &succ_row.node_id).await;
+        assert_eq!((succ_row.node_id.clone(), succ_row_config.clone(), succ_row_tags.clone()), (succ.node.node_id.clone(), entry_cfg.clone(), labels(&["rabbit", "red"])), "the successor's row is its entry's, never the predecessor's {{zone: a}}");
         let retained = rig.nodes.record_at(&old_name).await.unwrap().expect("retained predecessor row at mesh1.rpc.old.2");
         assert_eq!((retained.node_id.clone(), retained.tags.clone(), retained.inherited_by.clone()), (pred.node.node_id.clone(), labels(&["rabbit", "red"]), Some(succ.node.node_id.clone())));
         assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [succ.node.node_id.clone()].into(), "only the successor's id is in the active index after its claim");
